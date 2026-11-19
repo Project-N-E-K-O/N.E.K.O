@@ -36,6 +36,7 @@ from .api_shared import (  # noqa: F401
     _keyboard_mouse_availability,
     _model_images_status,
     _probe_lost_a_race,
+    _put_switch_off,
     _set_capability,
     _try_refresh_model_probe,
     app,
@@ -60,6 +61,7 @@ from .api_runtime import (  # noqa: F401
     _user_plugins_enabled,
     _voice_transcript_plugin_gate_reason,
     cancel_task,
+    forget_turns_for_task_agents,
     complete_deferred_task,
     get_task,
     health,
@@ -246,8 +248,8 @@ async def set_agent_flags(payload: Dict[str, Any]):
         if not isinstance(bf, bool) and old_flags.get("browser_use_enabled", False):
             Modules.browser_use_lifecycle_seq += 1
             browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
-        Modules.agent_flags["computer_use_enabled"] = False
-        Modules.agent_flags["browser_use_enabled"] = False
+        _put_switch_off("computer_use_enabled")
+        _put_switch_off("browser_use_enabled")
         first_reason = (gate.get('reasons') or ['AGENT_ENDPOINT_NOT_CONFIGURED'])[0]
         browser_use_close_reason = first_reason
         _set_capability("computer_use", False, first_reason)
@@ -265,7 +267,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
             if not Modules.model_probe:
                 _try_refresh_model_probe(force=True)
             if not Modules.model_probe:
-                Modules.agent_flags["computer_use_enabled"] = False
+                _put_switch_off("computer_use_enabled")
                 Modules.notification = json.dumps({"code": "AGENT_CU_MODULE_NOT_LOADED"})
                 logger.warning("[Agent] Cannot enable Computer Use: Module not loaded")
             elif not getattr(Modules.model_probe, "init_ok", False):
@@ -280,23 +282,23 @@ async def set_agent_flags(payload: Dict[str, Any]):
                     if avail.get("ready"):
                         Modules.agent_flags["computer_use_enabled"] = True
                     else:
-                        Modules.agent_flags["computer_use_enabled"] = False
+                        _put_switch_off("computer_use_enabled")
                         reason = avail.get('reasons', [])[0] if avail.get('reasons') else 'unknown'
                         Modules.notification = json.dumps({"code": "AGENT_CU_UNAVAILABLE", "details": {"reason_code": reason}})
                         logger.warning(f"[Agent] Cannot enable Computer Use: {avail.get('reasons')}")
                 except Exception as e:
-                    Modules.agent_flags["computer_use_enabled"] = False
+                    _put_switch_off("computer_use_enabled")
                     Modules.notification = json.dumps({"code": "AGENT_CU_ENABLE_FAILED", "details": {"error": str(e)}})
                     logger.error(f"[Agent] Cannot enable Computer Use: Check failed {e}")
         else: # Disabling
-            Modules.agent_flags["computer_use_enabled"] = False
+            _put_switch_off("computer_use_enabled")
 
     # 2.5. Handle Browser Use Flag with Capability Check
     if isinstance(bf, bool):
         if bf:
             dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
             if not dependency_ready:
-                Modules.agent_flags["browser_use_enabled"] = False
+                _put_switch_off("browser_use_enabled")
                 _set_capability("browser_use", False, dependency_error)
                 Modules.notification = json.dumps({"code": "AGENT_BU_UNAVAILABLE", "details": {"reason_code": dependency_error}})
             elif not getattr(Modules.model_probe, "init_ok", False):
@@ -307,7 +309,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 Modules.agent_flags["browser_use_enabled"] = True
                 _set_capability("browser_use", True, "")
         else:
-            Modules.agent_flags["browser_use_enabled"] = False
+            _put_switch_off("browser_use_enabled")
 
     # Explicit disable and automatic gate demotion: a browser the tools
     # started that shows no window is closed; one with a window is left to
@@ -360,7 +362,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                     if not Modules.analyzer_enabled:
                         return
                     if not started:
-                        Modules.agent_flags["user_plugin_enabled"] = False
+                        _put_switch_off("user_plugin_enabled")
                         Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
                         logger.warning("[Agent] Cannot enable UserPlugin: lifecycle startup failed")
                         return
@@ -371,7 +373,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
 
                     registry_status = registry.get("status")
                     if registry_status == "empty":
-                        Modules.agent_flags["user_plugin_enabled"] = False
+                        _put_switch_off("user_plugin_enabled")
                         Modules.notification = json.dumps({"code": "AGENT_NO_PLUGINS_FOUND"})
                         logger.warning(
                             "[Agent] Cannot enable UserPlugin: registry confirmed empty "
@@ -401,7 +403,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
                         )
                 except Exception as exc:
                     if _owns_generation():
-                        Modules.agent_flags["user_plugin_enabled"] = False
+                        _put_switch_off("user_plugin_enabled")
                         Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
                         logger.error("[Agent] Background plugin enable failed: %s", exc)
                 finally:
@@ -413,7 +415,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
             Modules._persistent_tasks.add(_bg)
             _bg.add_done_callback(Modules._persistent_tasks.discard)
         else:  # Disabling UserPlugin — non-blocking
-            Modules.agent_flags["user_plugin_enabled"] = False
+            _put_switch_off("user_plugin_enabled")
             _set_capability("user_plugin", True, "")
 
             async def _bg_plugin_disable():
@@ -522,6 +524,8 @@ async def agent_command(payload: Dict[str, Any]):
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
+            # Nothing of the main dialogue is kept for task agents while it is off.
+            forget_turns_for_task_agents()
             # Invalidate an in-flight user-plugin enable/readiness task before
             # stopping its lifecycle.  The sub-flag intent itself remains ON.
             Modules.user_plugin_lifecycle_seq += 1
@@ -835,7 +839,7 @@ async def computer_use_availability():
         asyncio.ensure_future(_fire_agent_llm_connectivity_check())
     if not Modules.model_probe:
         if Modules.agent_flags.get("computer_use_enabled"):
-            Modules.agent_flags["computer_use_enabled"] = False
+            _put_switch_off("computer_use_enabled")
             Modules.notification = json.dumps({"code": "AGENT_CU_AUTO_CLOSED"})
         raise HTTPException(503, "ComputerUse not ready")
     if not getattr(Modules.model_probe, "init_ok", False):
@@ -854,7 +858,7 @@ async def computer_use_availability():
         # Auto-update flag if capability lost
         if not status.get("ready") and Modules.agent_flags.get("computer_use_enabled"):
             logger.info("[Agent] Computer Use capability lost, disabling flag")
-            Modules.agent_flags["computer_use_enabled"] = False
+            _put_switch_off("computer_use_enabled")
             Modules.notification = json.dumps({"code": "AGENT_CU_CAPABILITY_LOST", "details": {"reason_code": status.get('reasons', [])[0] if status.get('reasons') else 'unknown'}})
 
     # The tool works from screenshots: whether the model is sent any, and why not.
@@ -1042,6 +1046,7 @@ async def admin_control(payload: Dict[str, Any]):
     elif action == "disable_analyzer":
         Modules.analyzer_enabled = False
         Modules.analyzer_profile = {}
+        forget_turns_for_task_agents()
         # cascade end_all
         await admin_control({"action": "end_all"})
         return {"success": True, "analyzer_enabled": False}

@@ -31,6 +31,7 @@ from typing import Callable, Dict, Any, Optional, Tuple
 from . import _shared
 from ._shared import (
     logger,
+    _put_switch_off,
     _set_capability,
     _bump_state_revision,
 )
@@ -317,10 +318,10 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
             else:
                 logger.warning("[Agent] Agent-LLM connectivity check failed: %s", reason)
                 if _shared.Modules.agent_flags.get("computer_use_enabled"):
-                    _shared.Modules.agent_flags["computer_use_enabled"] = False
+                    _put_switch_off("computer_use_enabled")
                     _shared.Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_COMPUTER", "details": {"reason_code": reason}})
                 if _shared.Modules.agent_flags.get("browser_use_enabled"):
-                    _shared.Modules.agent_flags["browser_use_enabled"] = False
+                    _put_switch_off("browser_use_enabled")
                     _shared.Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_BROWSER", "details": {"reason_code": reason}})
                     # Put off for the user, not by them: a window they can
                     # see is not taken from them.
@@ -338,9 +339,9 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
             _set_capability("computer_use", False, "AGENT_LLM_UNREACHABLE")
             _set_capability("browser_use", False, "AGENT_LLM_UNREACHABLE")
             if _shared.Modules.agent_flags.get("computer_use_enabled"):
-                _shared.Modules.agent_flags["computer_use_enabled"] = False
+                _put_switch_off("computer_use_enabled")
             if _shared.Modules.agent_flags.get("browser_use_enabled"):
-                _shared.Modules.agent_flags["browser_use_enabled"] = False
+                _put_switch_off("browser_use_enabled")
                 await _close_browser(capability_reason="AGENT_LLM_UNREACHABLE", leave_window=True)
             _shared.Modules.notification = json.dumps({"code": "AGENT_LLM_CHECK_ERROR"})
             _bump_state_revision()

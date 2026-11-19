@@ -5,6 +5,10 @@ to start. A plugin is a small Python project that describes itself in
 `plugin.toml` and exposes features through a `NekoPluginBase` class. You do not
 need to understand the whole N.E.K.O codebase before creating one.
 
+::: tip Using a Coding Agent?
+If you build with Codex, DeepSeek Harness (`dsh`), Trae, Claude Code, Cursor, or another AI coding agent, open [Build Plugins with Coding Agents](./coding-agents) — it walks you through creating a project in Plugin studio and letting the agent build it for you.
+:::
+
 ## Start with two files
 
 The CLI creates the usual project structure for you. At first, focus on these

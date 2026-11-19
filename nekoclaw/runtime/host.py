@@ -110,6 +110,16 @@ Callbacks, their payload and their result:
 
 The four ``subagent_*`` callbacks are offered together or not at all;
 ``wait_agent`` needs no callback and appears with them.
+
+``budget``  (no tool)
+    Asked before every model request of a run, between two steps: whether
+    what the session works on may use more. Payload: ``{}``. Result:
+    ``{}`` to go on; ``{"notice": str}`` to go on with that text said to the
+    model in front of the request; ``{"stop": true}`` to end the run without
+    the request. The host answers at once while there is room. When there is
+    none it may ask the user first, and the request waits for as long as
+    that takes. Without this callback nothing is asked. A callback that
+    fails does not hold the request up.
 """
 
 from __future__ import annotations
@@ -134,6 +144,7 @@ HOST_CALLS: tuple[str, ...] = (
     "note_lesson",
     "web_search",
     *SUBAGENT_CALLS,
+    "budget",
 )
 
 
@@ -165,6 +176,7 @@ class HostCallbacks:
     subagent_list: HostCallback | None = None
     subagent_send: HostCallback | None = None
     subagent_interrupt: HostCallback | None = None
+    budget: HostCallback | None = None
 
     @property
     def capabilities(self) -> frozenset[str]:

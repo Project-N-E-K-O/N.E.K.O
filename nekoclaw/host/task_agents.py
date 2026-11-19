@@ -47,7 +47,13 @@
   reports, lessons, web search and child task agents;
 * hands a task agent what the task agent space (``space.py``) holds for its
   commission when it starts, files the commission under the project it names,
-  and lets task agents read the space without asking and never write it.
+  and lets task agents read the space without asking and never write it;
+* keeps count of what the model requests of every session use, with the
+  session and with the commission (``Ledger.add_usage``), and asks the user
+  before the work on one commission uses more than it may (``_cb_budget``);
+* makes a session from another by copying what was said in it
+  (``fork_session``), and, when that is switched on, sums up the
+  conversation of a session that has been idle for long (``_idle_compact``).
 
 Status changes all go through ``Ledger.transition``. In particular a
 commission that was stopped is ``cancelled`` before its session is told to
@@ -57,21 +63,24 @@ stop, so nothing the session still says can turn it into anything else.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
+import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from nekoclaw.host.capabilities import CapabilityRegistry
-from nekoclaw.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger
+from nekoclaw.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger, Session, new_session_id
 from nekoclaw.host.paths import DEFAULT_PROJECT, DSH_SESSION_NAME, TRANSCRIPT_NAME, HostPaths
 from nekoclaw.host.permissions import (
     CHOICES,
     DENIED_BY_SETTINGS,
     SPACE_COMMAND,
+    USAGE_LIMIT,
     PermissionAsk,
     PermissionDecision,
     PermissionGate,
@@ -88,9 +97,40 @@ WEB_SEARCH_PLUGIN_ID = "web_search"
 WEB_SEARCH_ENTRY_ID = "search"
 _WEB_SEARCH_PARALLEL = 3
 _SHUTDOWN_START_WAIT_SECONDS = 5.0
+# How long a runtime gets to say that a session the host had open by itself
+# is closed before that is noted in the log; it is waited for all the same
+# while the host is up, and whether it still is is looked at this often.
+_SERVICE_CLOSE_SECONDS = 15.0
+_SERVICE_CLOSE_POLL_SECONDS = 1.0
+# How long a commission waits for a session the host has open by itself to
+# be given back, before it fails with that as its reason.
+_SERVICE_HANDOVER_SECONDS = 30.0
+# How often, and how far apart, the directory of a copy that came to nothing
+# is tried again when it could not be removed and the host is shutting down.
+_FORK_REMOVE_RETRIES = 3
+_FORK_REMOVE_RETRY_SECONDS = 1.0
+_SESSION_NOT_GIVEN_BACK = (
+    "its session is still being closed after the host had it open to sum it up; "
+    "it can be handed in again in a moment"
+)
+# The key of what is put among the runtimes' events to learn when they are
+# caught up with (``_caught_up``), and how long that is waited for.
+_REACHED = "nekoclaw/reached"
+# What is to be done at that point, by whoever handles the events.
+_THEN = "nekoclaw/then"
+_CAUGHT_UP_SECONDS = 10.0
 _SHUT_DOWN_REASON = "the host was shut down"
 _QUOTA_REASON = "the free daily quota of the agent model is used up"
 _STOPPED_MEANWHILE_REASON = "stopped while it was being taken up again"
+_USAGE_REASON = "it used as many tokens as one commission may, and the user allowed no more"
+# The kinds of session the host sums up while they are idle: those that go
+# on being handed commissions. A session of one commission, or of a task
+# agent another started, is seldom opened again.
+_IDLE_COMPACT_KINDS = frozenset({"project"})
+# Added to what is left of the idle time when a timer came due a moment
+# before the ledger had the session idle for long enough: more than the
+# steps of a wall clock, so that the next look is not early again.
+_IDLE_TIMER_MARGIN_SECONDS = 0.05
 # A task agent started by a task agent does not wait in the queue: its parent
 # keeps its own place while it waits, so with every place held by parents
 # nothing would ever move.
@@ -151,6 +191,10 @@ class LessonSink(Protocol):
         """Store one lesson; the returned text is told to the model."""
 
 
+class ForkRefused(RuntimeError):
+    """A session could not be made from another by copying it; the message says why."""
+
+
 class LedgerLessonSink:
     """Keeps lessons as ``lesson`` events of the commission that filed them."""
 
@@ -180,6 +224,14 @@ class _Session:
     update_names: dict[str, str] = field(default_factory=dict)
     # Set while a host callback waits for the user's answer.
     question: asyncio.Future[dict[str, Any]] | None = None
+    # Done the moment the answer to that question is in, before whoever
+    # asked goes on. Set and taken away with the question it was asked
+    # with (``_ask``): the answer to another one does not do it.
+    at_answer: Callable[[], None] | None = None
+    # Which question the commission waits with (its ``id`` in what the
+    # ledger has of it), asked through a tool call or by a report: an
+    # answer that was read against another one is not this one's.
+    question_id: str = ""
     ask_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # True after a ``waiting`` report: the answer becomes the session's next work.
     awaiting_prompt: bool = False
@@ -227,6 +279,17 @@ class _Session:
     held_end: dict[str, Any] | None = None
     # The address and the name of the model the session was started with.
     model: tuple[Any, Any] | None = None
+    # Set once the task agent was told to hand over what it has, the user
+    # having allowed no more to be used: how many model requests it has left
+    # for that. None while it works as usual.
+    wind_up_left: int | None = None
+    # The run it was told in is over. What the runtime was told goes with
+    # the run it was told for, so it is said again before the next request,
+    # should the session be given more of the same round.
+    wind_up_told_again: bool = True
+    # The host ended the commission itself when those were used, and closes
+    # the session: what the run says as it is stopped decides nothing.
+    wound_up: bool = False
 
 
 def _shows_work_taken(event: dict[str, Any], sent: int) -> bool:
@@ -337,6 +400,80 @@ def build_answers(questions: list[Any], text: str) -> dict[str, Any]:
     return {"answers": answers}
 
 
+class _UsageCut:
+    """Where what a commission had used ends when the user allows it more.
+
+    Begun the moment the answer is in (``begin``, with nothing
+    awaited before). From then on no write of usage begins, so what
+    the ledger has is what was written before the answer; and a mark
+    is put where what the runtimes had said by then ends. What is
+    handled before the mark was used before the answer: it is in the
+    ledger, or owed. What comes after the mark is put down as owed
+    as well for the time being (nothing is written), and noted
+    apart: used after the answer, it is not part of what the new
+    limit is counted from, and comes out of what was allowed.
+    """
+
+    def __init__(self, manager: "TaskAgentManager") -> None:
+        self._manager = manager
+        self._begun = False
+        self._over = False
+        self._reached: "asyncio.Future[None] | None" = None
+        self._late: dict[Any, Any] | None = None
+
+    def begin(self) -> None:
+        """Put the end where things stand now; nothing is awaited. Once only."""
+        if self._begun or self._over:
+            return
+        self._begun = True
+        manager = self._manager
+        manager._usage_reading += 1
+        self._reached = manager._mark(self._after)
+        if self._reached is None:
+            # Nothing handles what the runtimes say: nothing is on its way.
+            self._after()
+
+    def _after(self) -> None:
+        # From here on what is put down as owed was said after the answer.
+        if self._late is None and not self._over:
+            self._late = {}
+            self._manager._usage_late.append(self._late)
+
+    async def owed(self, root: str) -> int:
+        """Return what the work of ``root`` used before the answer that the ledger does not have."""
+        manager = self._manager
+        # The writes that were under way end in the ledger, or as owed.
+        await manager._usage_at_rest()
+        await manager._reach(self._reached)
+        # (Not reached in time: what is owed by now is what there is to go by.)
+        self._after()
+        # Both as they stand at one moment: what is owed, less what of it
+        # came after the answer. Taken off for each session and commission
+        # by itself, before whose work each is of is looked up, once:
+        # looked up for the two apart, one of the two may fail, and what
+        # came after the answer would be allowed on top.
+        late = self._late or {}
+        before: dict[Any, Any] = {}
+        for key, owed in manager._usage_owed.items():
+            after = late.get(key, (0, 0, 0, 0, 0))
+            left = tuple(max(0, owed[at] - after[at]) for at in range(1, 5))
+            if any(left):
+                before[key] = (owed[0], *left)
+        return await manager._owed_tokens(root, owed_at=before)
+
+    def end(self) -> None:
+        """Let usage be written again. Once only, and only if it was begun."""
+        if self._over:
+            return
+        self._over = True
+        if not self._begun:
+            return
+        manager = self._manager
+        if self._late is not None:
+            manager._usage_late[:] = [late for late in manager._usage_late if late is not self._late]
+        manager._usage_read_over()
+
+
 class TaskAgentManager:
     """Runs task agents for commissions. See the module docstring."""
 
@@ -362,8 +499,18 @@ class TaskAgentManager:
         space: Any = None,
         dsh: Any = None,
         dsh_runtime_factory: Any = None,
+        conversation: Any = None,
+        switched_on: Callable[[], bool] | None = None,
     ) -> None:
         self._meter = meter
+        # ``nekoclaw.host.conversation.RecentConversation``, or None: then a
+        # commission that opens a new session is handed no excerpt of what
+        # was said in the main dialogue just before it.
+        self._conversation = conversation
+        # Whether NekoClaw is switched on, as the task brain reads it; None
+        # when nobody says. Asked before the host makes a model request of
+        # its own (summing up an idle session), which no dispatch stands behind.
+        self._switched_on = switched_on
         # ``nekoclaw.host.space.TaskAgentSpace``, or None: then task agents
         # start with nothing from earlier commissions and lessons stay in
         # the ledger.
@@ -443,6 +590,93 @@ class TaskAgentManager:
         # (``hold_files``); a commission is started in one of them once that
         # is done.
         self._clearing: dict[str, asyncio.Event] = {}
+        # What she and the user said just before a commission was handed
+        # over (``conversation.Turn``), kept from then until its session is
+        # opened: a commission may wait for its place, and what is said
+        # meanwhile is not what it refers to.
+        self._excerpts: dict[str, list[Any]] = {}
+        # Sessions whose record a runtime is making from another's right
+        # now (``fork_session``), each with what waits for the runtime's word.
+        self._forks: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        # The commissions no task agent started whose work has used as much
+        # as it may and for which the user allowed no more: every task agent
+        # of such a one is told to hand over what it has. And, for each such
+        # commission, the lock that keeps the user from being asked the same
+        # thing by two of its task agents at once.
+        self._refused_more: set[str] = set()
+        self._usage_asks: dict[str, asyncio.Lock] = {}
+        # Sessions the host has open by itself, for no commission (summing
+        # up an idle one): what the runtime says of such a session goes to
+        # whoever opened it, here, and to no commission.
+        self._service: dict[str, asyncio.Queue[dict[str, Any]]] = {}
+        # Idle sessions that are to be summed up, each with the timer that
+        # says when; those being summed up right now, each with its task;
+        # and when sessions were summed up while idle, for the daily limit.
+        self._idle_timers: dict[str, asyncio.TimerHandle] = {}
+        self._compacting: dict[str, asyncio.Task[Any]] = {}
+        self._idle_compacted_at: deque[float] = deque()
+        # Those that got past the daily limit and have not asked for their
+        # summary yet: counted with the ones above, so that sessions whose
+        # time comes together do not get past the limit side by side.
+        self._idle_compacts_under_way = 0
+        # Sessions that are being given back after a summing up, each with
+        # the task that does it.
+        self._idle_over: dict[str, asyncio.Task[Any]] = {}
+        # How often everything was stopped, and the sessions that were in
+        # use when it last was: nothing is asked of a model for them by
+        # the host itself until something new is to be worked on in them.
+        self._idle_stops = 0
+        self._idle_stopped: set[str] = set()
+        # Sessions a copy is being made from right now, each with how many:
+        # what was said in them is not removed until the copy is on record
+        # (``hold_files``), or it would be made of a record that is going,
+        # and kept when the session it came from starts over.
+        self._copying_from: dict[str, int] = {}
+        # Copies whose making was given up (the runtime took too long,
+        # whoever asked for it left, the host shuts down), each with the
+        # directory it was to be written into.
+        self._forks_given_up: dict[str, str] = {}
+        # Copies the runtime was asked for that are still waited for,
+        # each with the directory it is written into.
+        self._fork_dirs: dict[str, str] = {}
+        # Copies the runtime has written that are being put on record.
+        # Not among the tasks shutting down gives up on: each is carried
+        # through, to a copy that is on record or to one that is removed.
+        self._fork_records: set[asyncio.Task[Any]] = set()
+        # What requests used that the ledger did not take when it was to be
+        # written, by session and commission (requests, input, output,
+        # cache reads, cache writes, and how long the conversation was as
+        # of the last of them that said so): written with the next one,
+        # when the session is let go of, or when the host shuts down.
+        # The last two: that length, and when it was said (``_context_said``).
+        self._usage_owed: dict[tuple[str, str | None], tuple[int, int, int, int, int, int | None, int]] = {}
+        # Writes of usage under way. Not among the tasks shutting down
+        # gives up on: what such a write comes to (written, or owed) is
+        # for it alone to tell.
+        self._usage_writes: set[asyncio.Task[Any]] = set()
+        # How many are reading the account of a commission right now: no
+        # write of usage begins meanwhile (``_usage_read``), and which
+        # were put off for it. And where what is put off is noted apart
+        # (``_UsageCut``).
+        self._usage_reading = 0
+        self._usage_put_off: set[tuple[str, str | None]] = set()
+        self._usage_late: list[dict[Any, Any]] = []
+        # Commissions whose task agent was told to hand over what it has,
+        # each with the requests it has left for that: kept apart from
+        # the session it was told in, which an idle runtime closes while
+        # the task agent waits for an answer. The session that is opened
+        # for the answer goes on with these, and is told again.
+        self._winding_up: dict[str, int] = {}
+        # A count that goes up with every request that says how long its
+        # session's conversation is, and for each session the count of
+        # the one the ledger has: what an older request said of it,
+        # written late, does not take the place of what a newer one did.
+        self._context_said = 0
+        self._context_written: dict[str, int] = {}
+        # One write of a session's usage at a time: whether a length is
+        # the newest is looked at, the ledger written and the count
+        # noted with nothing of the same session in between.
+        self._usage_locks: dict[str, asyncio.Lock] = {}
         self._starting: set[asyncio.Task[Any]] = set()
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pump: asyncio.Task[None] | None = None
@@ -544,6 +778,7 @@ class TaskAgentManager:
             subagent_list=self._cb_subagent_list,
             subagent_send=self._cb_subagent_send,
             subagent_interrupt=self._cb_subagent_interrupt,
+            budget=self._cb_budget,
         )
 
     async def _choose_runtime(
@@ -570,6 +805,18 @@ class TaskAgentManager:
         while True:
             event = await self._events.get()
             try:
+                reached = event.get(_REACHED)
+                if reached is not None:
+                    # Not a runtime's word: someone waits to know that
+                    # everything said before this has been handled.
+                    if not reached.done():
+                        then = event.get(_THEN)
+                        if then is not None:
+                            # Done here, between two events: what it
+                            # sees is as things stand at this point.
+                            then()
+                        reached.set_result(None)
+                    continue
                 await self._handle(event)
             except asyncio.CancelledError:
                 raise
@@ -582,35 +829,96 @@ class TaskAgentManager:
         """Wait until every event received so far has been handled."""
         await self._events.join()
 
+    def _mark(self, then: Callable[[], None] | None = None) -> "asyncio.Future[None] | None":
+        """Mark where what the runtimes have said up to now ends; None when nothing handles what they say.
+
+        Not a coroutine: the mark is where it is put, with nothing
+        awaited before. ``then`` is called at that very point by
+        whoever handles the events, before what was said after it is
+        handled (and not at all once nobody waits for the mark).
+        """
+        if self._pump is None or self._pump.done():
+            return None
+        reached: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._events.put_nowait({_REACHED: reached, _THEN: then})
+        return reached
+
+    async def _reach(self, reached: "asyncio.Future[None] | None", within: float = _CAUGHT_UP_SECONDS) -> None:
+        """Wait until a mark is reached, and no longer than a moment."""
+        if reached is None:
+            return
+        try:
+            await asyncio.wait_for(reached, within)
+        except asyncio.TimeoutError:
+            logger.warning("the runtime's events were not caught up with in time; going on")
+
+    async def _caught_up(self, within: float = _CAUGHT_UP_SECONDS) -> None:
+        """Wait until what the runtimes have said up to now is handled, and no longer than a moment.
+
+        For a callback of a session whose answer depends on what the
+        session said just before: a runtime's events are handled one at a
+        time, in a task of their own, and a callback is not one of them.
+        Unlike ``settle`` this does not wait for what is said meanwhile.
+        """
+        await self._reach(self._mark(), within)
+
     # -- starting ---------------------------------------------------------
 
-    async def submit(self, commission: Commission, *, candidate_plugin_ids: Any = (), wait: bool = True) -> bool:
+    async def submit(
+        self,
+        commission: Commission,
+        *,
+        candidate_plugin_ids: Any = (),
+        wait: bool = True,
+        still_wanted: Callable[[], bool] | None = None,
+    ) -> bool:
         """Hand a commission to a task agent: now if a place is free, else when one is.
 
         With ``wait`` False a commission that finds no free place is failed
         instead of queued. Returns whether it was started or queued.
+
+        ``still_wanted`` is asked once its session is made ready, which
+        takes a moment, and before it takes a place or is queued, with
+        nothing awaited in between: a commission that is not wanted
+        any more (NekoClaw was switched off meanwhile) is neither
+        started nor queued, and is left as it is for whoever handed
+        it over to say what became of it.
         """
         self._candidates[commission.id] = tuple(str(item) for item in candidate_plugin_ids)
+        stops = self._idle_stops
         if commission.route != "task_agent":
             await self._ledger.update(commission.id, route="task_agent")
         if not self._closed:
             try:
                 commission = await self._give_session(commission)
             except asyncio.CancelledError:
+                self._excerpts.pop(commission.id, None)
                 raise
             except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
                 logger.warning("giving commission %s a session failed: %s", commission.id, exc)
                 self._candidates.pop(commission.id, None)
+                self._excerpts.pop(commission.id, None)
                 await self._fail(commission.id, f"the task agent could not be started: {exc}")
                 return False
         if self._closed:
             self._candidates.pop(commission.id, None)
+            self._excerpts.pop(commission.id, None)
             self._session_of.pop(commission.id, None)
             await self._ledger.transition(commission.id, "failed", reason=_SHUT_DOWN_REASON)
             return False
+        if still_wanted is not None and not still_wanted():
+            self._candidates.pop(commission.id, None)
+            self._excerpts.pop(commission.id, None)
+            self._session_of.pop(commission.id, None)
+            return False
+        self._new_work_in(self._session_of.get(commission.id), stops)
+        # Up to when it was filed, which is when the sentence was dispatched.
+        # (Kept then already for one that was filed by the task brain.)
+        self._keep_excerpt(commission, upto=commission.created_at)
         if not self._take_place(commission.id):
             if not wait:
                 self._candidates.pop(commission.id, None)
+                self._excerpts.pop(commission.id, None)
                 self._session_of.pop(commission.id, None)
                 await self._ledger.transition(commission.id, "failed", reason=_NO_PLACE_REASON)
                 return False
@@ -621,7 +929,13 @@ class TaskAgentManager:
                 # Its session is at work on another commission: it is next
                 # after that one, however many places are free.
                 queued["behind"] = holder
-            await self._ledger.append_event(commission.id, "queued", queued)
+            try:
+                await self._ledger.append_event(commission.id, "queued", queued)
+            except Exception:  # noqa: BLE001 - the note is for showing; the commission is queued
+                # Told as a handing over that failed, it would be put down
+                # as failed while it still has its place in the queue, and
+                # be started from there later.
+                logger.warning("noting that commission %s is queued failed", commission.id, exc_info=True)
             return True
         # Started as a task of its own: whoever handed the commission over may
         # be cancelled (the host shutting down), and a session half set up
@@ -655,6 +969,9 @@ class TaskAgentManager:
             return False
         self._sessions[commission_id] = _Session(commission_id, session_id=session_id)
         self._held_by[session_id] = commission_id
+        # It is no longer idle. (One that is being summed up right now is
+        # cut short where the commission is started, ``_start``.)
+        self._drop_idle_timer(session_id)
         return True
 
     def _session_free_for(self, commission_id: str) -> bool:
@@ -674,8 +991,11 @@ class TaskAgentManager:
     async def _give_session(self, commission: Commission) -> Commission:
         """Make known the session a commission is worked on in, giving it one when it has none.
 
-        A commission that follows another up was filed with that one's
-        session. Otherwise: a task agent started by another gets a session
+        A commission that names a session keeps it: one that follows
+        another up was given that one's session once it was chosen for a
+        task agent (``TaskBrain._second_round``), and one that is to be
+        worked on in a copy of a session was filed with the copy
+        (``fork_session``). Otherwise: a task agent started by another gets a session
         of its own, whose parent is the session of the one that started it;
         a commission filed under a project gets the project's session, the
         one all commissions of that project are worked on in, for this
@@ -723,27 +1043,142 @@ class TaskAgentManager:
         Nothing of the commission itself: a session takes several, and its
         system prompt is kept as it was first opened with (the runtime
         reads these again only after the conversation was summed up).
-        Whom the task agent works for, how the host's capabilities are
-        reached, and what the task agent space holds for the project.
+        How the host's capabilities are reached, whom the task agent works
+        for, and what the task agent space holds: for every task agent,
+        then for the project.
+
+        In that order, which is from what every session is told alike to
+        what only this one is: the system prompts of two sessions are then
+        the same up to where they differ, and a provider that kept the
+        head of one session's requests has it for the other's as well.
+        (The runtime puts what it says itself of one session, its working
+        directory, behind all of this: ``runtime/prompt.py``.)
         """
         from config.nekoclaw_settings import TASK_AGENT_BRIEF_MAX_TOKENS
         from config.prompts import prompts_nekoclaw_brain as texts
         from utils.tokenize import truncate_to_tokens
 
+        parts = [texts.TASK_AGENT_BRIEF_GATEWAY_NOTE] if with_gateway else []
         if commission.parent_id is not None:
-            parts = [texts.TASK_AGENT_CHILD_FRAME]
+            parts.append(texts.TASK_AGENT_CHILD_FRAME)
         else:
-            parts = [texts.TASK_AGENT_SESSION_FRAME.format(lanlan_name=commission.lanlan_name)]
-        if with_gateway:
-            parts.append(texts.TASK_AGENT_BRIEF_GATEWAY_NOTE)
+            parts.append(texts.TASK_AGENT_SESSION_FRAME.format(lanlan_name=commission.lanlan_name))
         own = truncate_to_tokens("\n\n".join(parts), TASK_AGENT_BRIEF_MAX_TOKENS)
         kept = await self._space_brief(commission)
         # After the cap above and with one of its own (``SPACE_BRIEF_MAX_TOKENS``):
         # neither part can push the other out.
         return own + "\n\n" + kept if kept else own
 
+    def note_filed(self, commission: Commission) -> None:
+        """Keep what she and the user said just before a commission that was filed this moment.
+
+        For the task agent that may take it. Who does it is chosen
+        next, which takes a model request, and what is said meanwhile
+        pushes what was said before out of what is kept of the main
+        dialogue. Dropped again when no task agent takes the
+        commission (``drop_excerpt``). Nothing having been said is kept
+        as that: a message that is told of late, while it is chosen who
+        does the commission, is not read as said before it after all.
+        """
+        if commission.id not in self._excerpts:
+            self._excerpts[commission.id] = self._said_before(commission, upto=commission.created_at)
+
+    def drop_excerpt(self, commission_id: str) -> None:
+        """Drop what ``note_filed`` kept for a commission that no task agent takes."""
+        self._excerpts.pop(commission_id, None)
+
+    def _keep_excerpt(self, commission: Commission, *, upto: float | None = None) -> None:
+        """Keep what she and the user said just before a commission, until its session is opened.
+
+        Her own commissions only: a task agent that another one started is
+        told its part by that one. Taken now, when the commission is handed
+        over, and not when its session is opened: it may wait for a place,
+        and what is said meanwhile is not what it refers to. Kept in memory;
+        no model is asked and nothing is read from anywhere else.
+        """
+        if commission.id in self._excerpts:
+            return
+        turns = self._said_before(commission, upto=upto)
+        if turns:
+            self._excerpts[commission.id] = turns
+
+    def _said_before(self, commission: Commission, *, upto: float | None = None) -> list[Any]:
+        """Return what she and the user said in the main dialogue just before now, or before ``upto``; empty for none.
+
+        For her own commissions only (see ``_keep_excerpt``).
+        """
+        if self._conversation is None or commission.parent_id is not None:
+            return []
+        try:
+            turns = self._conversation.recent(commission.lanlan_name)
+        except Exception:  # noqa: BLE001 - it starts without an excerpt
+            logger.warning("reading what was said before a commission failed", exc_info=True)
+            return []
+        if upto is not None:
+            # What was said after the sentence was dispatched (while it was
+            # being routed, say) is not what it refers to.
+            turns = [turn for turn in turns if turn.at <= upto]
+        return list(turns)
+
+    def _times_dropped(self, commission: Commission) -> int:
+        """Return how many times what is kept of the main dialogue for a commission's character has been dropped."""
+        return self._conversation.times_dropped(commission.lanlan_name) if self._conversation is not None else 0
+
+    def _excerpt(self, commission: Commission) -> str:
+        """Return the part of a commission's opening message that holds what was said just before it; empty for none.
+
+        Word for word, the newest messages first to be kept, within a cap
+        of its own (``TASK_AGENT_EXCERPT_MAX_TOKENS``; the lines that say
+        what it is come on top). Wrapped as background that gives no
+        instructions: what she said in it she said to the user.
+        """
+        from config.nekoclaw_settings import TASK_AGENT_EXCERPT_MAX_TOKENS, TASK_AGENT_EXCERPT_MESSAGE_MAX_TOKENS
+        from config.prompts import prompts_nekoclaw_brain as texts
+        from nekoclaw.host.conversation import excerpt_lines
+
+        # (Nothing is kept for a task agent another one started: ``_keep_excerpt``.)
+        turns = self._excerpts.get(commission.id)
+        if turns:
+            # Taken when the commission was filed or handed over, which
+            # may be before what is kept of the main dialogue was last
+            # dropped (NekoClaw went off): what was said before that
+            # is not handed to a task agent after it, wherever it was
+            # kept meanwhile. (By how many times it had been dropped when
+            # each was kept, and not by when each was said: a clock
+            # may be set back, and says the same time twice.)
+            now_kept_in = self._times_dropped(commission)
+            turns = [turn for turn in turns if turn.kept_in == now_kept_in]
+        if not turns:
+            return ""
+        # With the cap at nothing no line fits, and nothing is handed over.
+        lines = excerpt_lines(
+            turns,
+            lanlan_name=commission.lanlan_name,
+            max_tokens=TASK_AGENT_EXCERPT_MAX_TOKENS,
+            message_max_tokens=TASK_AGENT_EXCERPT_MESSAGE_MAX_TOKENS,
+            # Stated by the commission itself, right above.
+            # As the opening message states the user's words.
+            already_told=commission.user_text or commission.dispatch_text,
+        )
+        if not lines:
+            return ""
+        return "\n".join(
+            [
+                texts.TASK_AGENT_COMMISSION_EXCERPT_INTRO.format(lanlan_name=commission.lanlan_name),
+                texts.TASK_AGENT_COMMISSION_EXCERPT_OPEN,
+                *lines,
+                texts.TASK_AGENT_COMMISSION_EXCERPT_CLOSE,
+            ]
+        )
+
     async def _opening(
-        self, commission: Commission, *, cleared: bool, back: bool = False, documents: str = ""
+        self,
+        commission: Commission,
+        *,
+        cleared: bool,
+        back: bool = False,
+        excerpt: str = "",
+        documents: str = "",
     ) -> str:
         """Return the message that opens a commission in its session.
 
@@ -756,11 +1191,14 @@ class TaskAgentManager:
         session before was removed since: a commission that follows another
         up is then told what came of that one. ``back`` says that the
         commission was opened in this session before and that the session
-        worked on others since. ``documents`` is the list of the files the
-        repository it works in keeps for agents (``_repository_documents``),
-        empty for none: said with every commission, since what was said in
-        the session before is summed up in time and the message that opens
-        the commission under way is what is kept.
+        worked on others since. ``excerpt`` is what was said in the main
+        dialogue just before the commission (``_excerpt``), for a session
+        that holds nothing to tell what the commission refers to.
+        ``documents`` is the list of the files the repository it works in
+        keeps for agents (``_repository_documents``), empty for none: said
+        with every commission, since what was said in the session before
+        is summed up in time and the message that opens the commission
+        under way is what is kept.
 
         What a task agent hands to one it starts is not cut: it is all that
         one is told of its part, and the task agent that wrote it is told
@@ -804,6 +1242,8 @@ class TaskAgentManager:
         capped = truncate_to_tokens("\n\n".join(parts), TASK_AGENT_BRIEF_MAX_TOKENS) if parts else ""
         opening = "\n\n".join(part for part in (whole, capped) if part)
         # After the cap above, each within a cap of its own.
+        if excerpt:
+            opening += "\n\n" + excerpt
         picked = await self._picked_entries(commission)
         if picked:
             opening += "\n\n" + picked
@@ -1029,6 +1469,18 @@ class TaskAgentManager:
                 # What was said in its session long ago is being removed
                 # this moment; the session is opened once that is done.
                 await clearing.wait()
+            # The host is summing its session up this moment, nothing having
+            # been at work in it: that is cut short, and the session is the
+            # commission's once the runtime has let go of it.
+            if not await self._stop_compacting(session.session_id):
+                # The runtime has not said that it closed the session the
+                # host had open. Opened for the commission now, what the
+                # runtime says of that earlier opening would be taken for
+                # the commission's. So the commission fails, with this as
+                # its reason, and can be handed in again; the session
+                # stays the host's until the runtime has said that it is
+                # closed, or is gone.
+                raise RuntimeError(_SESSION_NOT_GIVEN_BACK)
             commission = await self._ledger.get(commission_id)
             if commission is None or commission.status not in ("queued", "blocked", "failed", "waiting_user"):
                 self._discard(commission_id)
@@ -1048,7 +1500,6 @@ class TaskAgentManager:
             place = dataclasses.replace(
                 kept, workdir=kept.workdir or commission.workdir, project=kept.project or commission.project
             )
-            from nekoclaw.runtime import TaskAgentSpec, ModelConfig
             from nekoclaw.runtime.protocol import GatewaySpec
 
             def prepare() -> tuple[str, str, str | None]:
@@ -1069,25 +1520,11 @@ class TaskAgentManager:
             opened = await self._ledger.has_event(commission.id, "opened")
             at_it = opened and await self._ledger.opened_last(session.session_id) == commission.id
 
-            if "supports_images" not in config:
-                config = {**config, "supports_images": await self._sees_images(config)}
-            if "context_window" not in config:
-                config = {**config, "context_window": await self._context_window(config)}
-            if "compact_at" not in config:
-                config = {**config, "compact_at": await self._compact_at(config)}
-            model = ModelConfig(**config)
+            model = await self._model_of(config)
             session.model = (config.get("base_url"), config.get("model"))
 
             gateway_spec = None
-            image_retention: dict[str, int] = {}
-            image_pools: dict[str, str] = {}
             if self._gateway is not None:
-                # For every built-in tool that hands pictures back, whether it
-                # can be called right now or not: every one of them is
-                # reached through the gateway's call tool, one that is
-                # switched on while the task agent works included, and its
-                # screenshots are limited too.
-                image_retention, image_pools = self._image_retention(self._registry.builtins())
                 # Whether or not anything can be called right now: the
                 # session keeps the tools it is opened with, and what can be
                 # called changes while it lasts.
@@ -1096,22 +1533,13 @@ class TaskAgentManager:
                     commission.id,
                     candidate_plugin_ids=self._candidates.get(commission.id, ()),
                     supports_images=model.supports_images,
+                    # A copy of a session changes nothing, whichever way.
+                    reads_only=kept.kind == "fork",
                 )
                 gateway_spec = GatewaySpec(url=url, token=token)
 
-            spec = TaskAgentSpec(
-                session_id=session.session_id,
-                workdir=workdir,
-                session_dir=session_path,
-                model=model,
-                instructions=await self._instructions(commission, with_gateway=gateway_spec is not None),
-                reply_language=_REPLY_LANGUAGES.get(commission.lang or "", None),
-                top_level=commission.parent_id is None,
-                # A task agent started by a task agent starts none itself.
-                disabled_tools=["subagent"] if commission.parent_id is not None else [],
-                image_retention=image_retention,
-                image_pools=image_pools,
-                gateway=gateway_spec,
+            spec = await self._spec(
+                commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec
             )
             runtime_name, runtime, fallback = await self._choose_runtime(commission, model, begun_in)
             session.runtime, session.runtime_name = runtime, runtime_name
@@ -1184,11 +1612,19 @@ class TaskAgentManager:
             unsaid = runtime_name == RUNTIME_BUILTIN and not opens_in(RUNTIME_BUILTIN)
             documents = "" if unsaid else await self._repository_documents(workdir, session_path)
 
-            async def worded(*, cleared: bool, back: bool = False) -> str:
-                return await self._opening(commission, cleared=cleared, back=back, documents=documents)
+            async def worded(*, cleared: bool, back: bool = False, excerpt: str = "") -> str:
+                return await self._opening(
+                    commission, cleared=cleared, back=back, excerpt=excerpt, documents=documents
+                )
 
+            # A session that holds nothing in the runtime that takes the
+            # commission (the second wording) is told, besides, what she
+            # and the user said just before it: a session with something
+            # in it has that to tell what the commission refers to.
+            excerpt_as_of = self._times_dropped(commission)
+            excerpt = self._excerpt(commission)
             onward = await worded(cleared=False)
-            anew = await worded(cleared=True) if commission.continues else onward
+            anew = await worded(cleared=True, excerpt=excerpt) if commission.continues or excerpt else onward
             back_at_it = await worded(cleared=False, back=True) if opened and not at_it else onward
 
             def first_message(runtime_name: str) -> tuple[str, bool]:
@@ -1270,10 +1706,27 @@ class TaskAgentManager:
                 # What was passed on while the failure was being written.
                 self._keep_unsent(session)
                 return False
-            if await stopped_meanwhile():
-                # The stop has closed the session already.
-                await self._close_session(session)
-                return False
+            while True:
+                if await stopped_meanwhile():
+                    # The stop has closed the session already.
+                    await self._close_session(session)
+                    return False
+                if not excerpt or self._times_dropped(commission) == excerpt_as_of:
+                    # (Nothing is awaited between this and the message
+                    # being sent: it is not stopped, and the session is
+                    # still its own, when it is.)
+                    break
+                # What is kept of the main dialogue was dropped while the
+                # session was being set up, which takes a while (NekoClaw
+                # went off; it may be on again by now). What was said
+                # before that is not handed over after it: the opening
+                # message is made again, without it. Making it waits for
+                # something, so whether the commission was stopped, and
+                # whether more was dropped, is looked at once more.
+                excerpt_as_of = self._times_dropped(commission)
+                excerpt = self._excerpt(commission)
+                anew = await worded(cleared=True, excerpt=excerpt) if commission.continues or excerpt else onward
+                text, opens = first_message(runtime_name)
             await self._send_text(runtime, session, "prompt", text, opening=opens)
             session.ready = True
             # What was passed on while the session was being set up. Like the
@@ -1312,6 +1765,66 @@ class TaskAgentManager:
             await self._fail(commission_id, f"the task agent could not be started: {exc}")
             self._keep_unsent(session)
             return False
+
+    async def _model_of(self, config: dict[str, Any]) -> Any:
+        """Return the ``ModelConfig`` a session is opened with, from the model as it is configured.
+
+        With what is remembered of the model where the configuration does
+        not say: whether it sees pictures, the window its sessions are
+        managed for, and the length from which a conversation is summed up.
+        """
+        from nekoclaw.runtime import ModelConfig
+
+        if "supports_images" not in config:
+            config = {**config, "supports_images": await self._sees_images(config)}
+        if "context_window" not in config:
+            config = {**config, "context_window": await self._context_window(config)}
+        if "compact_at" not in config:
+            config = {**config, "compact_at": await self._compact_at(config)}
+        return ModelConfig(**config)
+
+    async def _spec(
+        self, commission: Commission, kept: Session, model: Any, *, workdir: str, session_dir: str, gateway: Any
+    ) -> Any:
+        """Return what a runtime is given to open a session with, for the commission that is worked on in it.
+
+        ``kept`` is the session as the ledger has it. One that was made
+        from another by copying what was said in it is opened without the
+        tools that write files, run commands and call capabilities
+        (``TASK_AGENT_FORK_WITHHELD_TOOLS``): it has the working directory
+        of the session it was copied from, and a working directory is
+        written by one session at a time. Its token for the gateway
+        calls nothing either (``_start``).
+        """
+        from config.nekoclaw_settings import TASK_AGENT_FORK_WITHHELD_TOOLS
+        from nekoclaw.runtime import TaskAgentSpec
+
+        image_retention: dict[str, int] = {}
+        image_pools: dict[str, str] = {}
+        if self._gateway is not None:
+            # For every built-in tool that hands pictures back, whether it
+            # can be called right now or not: every one of them is reached
+            # through the gateway's call tool, one that is switched on while
+            # the task agent works included, and its screenshots are
+            # limited too.
+            image_retention, image_pools = self._image_retention(self._registry.builtins())
+        # A task agent started by a task agent starts none itself.
+        withheld = {"subagent"} if commission.parent_id is not None else set()
+        if kept.kind == "fork":
+            withheld.update(TASK_AGENT_FORK_WITHHELD_TOOLS)
+        return TaskAgentSpec(
+            session_id=kept.id,
+            workdir=workdir,
+            session_dir=session_dir,
+            model=model,
+            instructions=await self._instructions(commission, with_gateway=gateway is not None),
+            reply_language=_REPLY_LANGUAGES.get(commission.lang or "", None),
+            top_level=commission.parent_id is None,
+            disabled_tools=sorted(withheld),
+            image_retention=image_retention,
+            image_pools=image_pools,
+            gateway=gateway,
+        )
 
     async def _leave_cleared(self, session: _Session) -> None:
         """Write a session down as cleared again after a start that failed before a runtime had it open.
@@ -1513,6 +2026,7 @@ class TaskAgentManager:
         """
         session = self._sessions.pop(commission_id, None)
         self._candidates.pop(commission_id, None)
+        self._excerpts.pop(commission_id, None)
         self._search_rulings.pop(commission_id, None)
         if self._gateway is not None:
             self._gateway.revoke(commission_id)
@@ -1554,8 +2068,18 @@ class TaskAgentManager:
             # It waits for the user, or for task agents it started.
             return
         del self._held_by[session_id]
+        if commission is not None:
+            # Nothing more is asked of the user for it, and nobody is told
+            # to hand anything over: it is over (taken up again, a stuck
+            # one is asked about anew).
+            self._usage_settled(commission)
         if self._queue:
             self._spawn(self._start_next())
+        # What its requests used that the ledger did not take is tried again.
+        self._settle_usage_of(session_id)
+        # Nothing is at work in it from here on: when that lasts, and the
+        # host is set to, its conversation is summed up.
+        self._schedule_idle_compact(session_id)
 
     def _settle_hold_of(self, commission_id: str) -> None:
         """Have the hold on a commission's session looked at again, if it holds one.
@@ -1694,16 +2218,66 @@ class TaskAgentManager:
         from config.nekoclaw_settings import TASK_AGENT_EVENT_TEXT_MAX_CHARS
 
         kind = event.get("type")
+        spoken_of = str(event.get("session_id") or "")
+        forking = self._forks.get(spoken_of)
+        if forking is not None and (kind == "forked" or (kind == "error" and event.get("command") == "fork")):
+            # The runtime's word on a session it was asked to make from another.
+            if not forking.done():
+                forking.set_result(event)
+            return
+        given_up = self._forks_given_up.get(spoken_of)
+        if given_up is not None and (kind == "forked" or (kind == "error" and event.get("command") == "fork")):
+            # Its making was no longer waited for, and the runtime is
+            # through with it now: what it wrote is on no record, and
+            # nothing would ever come by it to remove it.
+            # Whichever it said: a copy that failed may have left what
+            # it could not remove itself. And what cannot be removed now
+            # either is still this host's to remove (``_remove_fork_dir``).
+            # Among what shutting down waits for before it is taken off
+            # the list of what shutting down removes: the host may be
+            # shutting down this moment, and would be gone, with the
+            # copy on neither, before it is removed. Not waited for
+            # here: what the runtimes say next (what a request used,
+            # among it) is not held up by a directory that is slow to
+            # go, or tried again.
+            self._remove_fork_dir_soon(spoken_of, given_up)
+            del self._forks_given_up[spoken_of]
+            return
+        service = self._service.get(spoken_of)
+        if service is not None:
+            # Of a session the host has open by itself: no commission's.
+            service.put_nowait(event)
+            return
         # A runtime speaks of sessions; what it says is about the commission
         # that holds the session.
-        session = self._sessions.get(self._held_by.get(str(event.get("session_id") or ""), ""))
+        session = self._sessions.get(self._held_by.get(spoken_of, ""))
         if session is None:
             # Process-level messages, and events of sessions already released.
             return
         if session.untaken_answer is not None and _shows_work_taken(event, session.sent):
             session.untaken_answer = None
-        if session.sent > 0 and _shows_run_at_work(event):
+        at_work = session.sent > 0 and _shows_run_at_work(event)
+        if at_work:
             session.carried = []
+        if kind == "usage":
+            # Counted whether or not it can be noted among the commission's
+            # events (a request with no text in front of it is the first
+            # the host sees of a run, so that the commission was opened
+            # is noted here as well): a ledger that does not take a note
+            # may take what was used a moment later, and what it does
+            # not take is owed. Left out when a note fails, the request
+            # would be missing from the account, and from what the limit
+            # goes by. What the noting failed with is raised as before,
+            # once it is counted.
+            try:
+                if at_work:
+                    await self._note_opened(session)
+                await self._flush(session)
+                await self._ledger.append_event(session.commission_id, str(kind), self._compact(event))
+            finally:
+                await self._on_usage(session, event)
+            return
+        if at_work:
             await self._note_opened(session)
         if kind == "text":
             delta = str(event.get("delta") or "")
@@ -1725,8 +2299,6 @@ class TaskAgentManager:
             await self._on_ended(session, event)
         elif kind == "error":
             await self._on_error(session, event)
-        elif kind == "usage":
-            await self._on_usage(session)
         elif kind == "model_capability":
             await self._on_model_capability(session, event)
         elif kind == "compacted":
@@ -1758,7 +2330,7 @@ class TaskAgentManager:
             return
         commission_id = session.commission_id
         if status == "waiting":
-            question = {"kind": "report", "question": summary, "details": details}
+            question = {"kind": "report", "question": summary, "details": details, "id": uuid.uuid4().hex}
             moved = await self._ledger.transition(
                 commission_id,
                 "waiting_user",
@@ -1767,6 +2339,7 @@ class TaskAgentManager:
             )
             if moved.applied and moved.commission is not None:
                 session.awaiting_prompt = True
+                session.question_id = question["id"]
                 session.run_ended = False
                 session.held_answer = None
                 await self._reporter.question(moved.commission, question)
@@ -1871,6 +2444,11 @@ class TaskAgentManager:
 
         commission_id = session.commission_id
         reason = event.get("reason")
+        if session.wind_up_left is not None:
+            # A run of one that was told to hand over what it has is over.
+            # Given more of the same round (it asked the user something,
+            # and is answered), it is told again: see ``_wind_up_step``.
+            session.wind_up_told_again = False
         if session.closing and reason == "error" and event.get("error") == PROCESS_EXITED_ERROR:
             # A close was asked for, and the runtime process went away
             # before answering it: the close will not come back. It ends
@@ -1925,7 +2503,17 @@ class TaskAgentManager:
                 if session.held_answer is not None:
                     await self._deliver_answer(session, session.held_answer)
                 return
-            if commission.status == "working":
+            if commission.status == "working" and session.wind_up_left is not None:
+                # It was told to hand over what it has, the user having
+                # allowed no more to be used, and ended its run without a
+                # closing report: its last words are what it handed over,
+                # and the commission is stuck, not done. Whatever task
+                # agents it started are not waited for.
+                text = str(event.get("text") or "") or await self._usage_stopped_text(commission)
+                await self._end(
+                    commission_id, "blocked", reason=_USAGE_REASON, text=text, result_summary=self._summary(text)
+                )
+            elif commission.status == "working":
                 # A blocked child has reported already and its session is
                 # gone; it produces nothing more to wait for.
                 if await self._ledger.select(parent_id=commission_id, statuses=_STILL_WORKING):
@@ -1938,7 +2526,10 @@ class TaskAgentManager:
                     commission_id, "done", reason="the run completed", text=text, result_summary=self._summary(text)
                 )
         elif reason == "aborted":
-            await self._end(commission_id, "cancelled", reason="the run was stopped", text="")
+            if not session.wound_up:
+                # (One the host ended itself, for what it used, was put
+                # down as stuck before its run was stopped: it stays so.)
+                await self._end(commission_id, "cancelled", reason="the run was stopped", text="")
         elif reason == "error":
             if session.sent == 0:
                 # Ended before its prompt was sent (the runtime process
@@ -1966,13 +2557,263 @@ class TaskAgentManager:
             await self.abort(child.id)
         await self._close_session(session)
 
-    async def _on_usage(self, session: _Session) -> None:
+    async def _note_usage(self, session_id: str, commission_id: str | None, event: dict[str, Any]) -> None:
+        """Add what one model request used to its session and to the commission it was made for, if for one.
+
+        As the runtime reports it, which is as the provider counted it:
+        what was sent that no cache had, what was read from a cache and
+        written to one, and what came back. A provider that does not say
+        how much it read from a cache has it all counted as sent; nothing
+        is estimated. A ledger that cannot be written does not stop the work.
+        """
+
+        def number(key: str) -> int:
+            value = event.get(key)
+            return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+        # Nothing is said of the conversation's length by the request that
+        # summed it up.
+        context = number("context_tokens") or None
+        said = 0
+        if context is not None:
+            self._context_said += 1
+            said = self._context_said
+        await self._write_usage(
+            (session_id, commission_id),
+            (1, number("input"), number("output"), number("cache_read"), number("cache_write")),
+            context,
+            said,
+        )
+
+    async def _write_usage(
+        self,
+        key: tuple[str, str | None],
+        amounts: tuple[int, int, int, int, int],
+        context: int | None,
+        said: int,
+    ) -> None:
+        """Write what requests used, with what the ledger did not take before for the same session and commission.
+
+        The account catches up once the ledger takes it. The writing is
+        a task of its own, carried through whatever becomes of whoever
+        waits for it: the ledger writes in a thread, which a
+        cancellation does not stop, so only what sees how the writing
+        ended can tell whether it is still owed. Put down as owed by
+        whoever was cancelled, what was written all the same would be
+        written a second time.
+        """
+        if self._usage_reading and not self._closed:
+            # The account of a commission is being read: put down as
+            # owed, where whoever reads finds it, and written once the
+            # reading is over (``_usage_read``). Begun now, it would be
+            # in neither place for a moment.
+            self._owe(key, amounts, context, said)
+            for late in self._usage_late:
+                self._owe(key, amounts, context, said, into=late)
+            self._usage_put_off.add(key)
+            return
+        owed = self._usage_owed.pop(key, None)
+        if owed is not None:
+            amounts = (
+                amounts[0] + owed[0],
+                amounts[1] + owed[1],
+                amounts[2] + owed[2],
+                amounts[3] + owed[3],
+                amounts[4] + owed[4],
+            )
+            if context is None:
+                # As of the latest request that said how long it was.
+                context, said = owed[5], owed[6]
+        # Not a task shutting down gives up on (``_spawn``): cut off while
+        # the ledger writes, it could no longer say that the writing
+        # failed, and what was used would be neither written nor owed.
+        writing = asyncio.ensure_future(self._usage_written(key, amounts, context, said))
+        self._usage_writes.add(writing)
+        writing.add_done_callback(self._usage_writes.discard)
+        await asyncio.shield(writing)
+
+    async def _usage_written(
+        self,
+        key: tuple[str, str | None],
+        amounts: tuple[int, int, int, int, int],
+        context: int | None,
+        said: int,
+    ) -> None:
+        # One at a time for a session: another write of it that is under
+        # way has to be through (taken, or not) before this one looks at
+        # what the ledger has of the conversation's length.
+        async with self._usage_locks.setdefault(key[0], asyncio.Lock()):
+            # How long the conversation was, only when nothing said later
+            # of the same session is written already: a request that is
+            # written late is counted, and what it said of the length is
+            # the older.
+            newest = context is not None and said > self._context_written.get(key[0], 0)
+            try:
+                await self._ledger.add_usage(
+                    session_id=key[0],
+                    commission_id=key[1],
+                    requests=amounts[0],
+                    tokens_in=amounts[1],
+                    tokens_out=amounts[2],
+                    cache_read=amounts[3],
+                    cache_write=amounts[4],
+                    context_tokens=context if newest else None,
+                )
+            except Exception:  # noqa: BLE001 - what was used is for showing and for the limit; the work goes on
+                logger.warning("writing down what a model request used failed; written later", exc_info=True)
+                # With what came to be owed meanwhile, whichever of the
+                # two said later how long the conversation was.
+                self._owe(key, amounts, context, said)
+            else:
+                if newest:
+                    self._context_written[key[0]] = max(said, self._context_written.get(key[0], 0))
+
+    def _owe(
+        self,
+        key: tuple[str, str | None],
+        amounts: tuple[int, int, int, int, int],
+        context: int | None,
+        said: int,
+        *,
+        into: dict[Any, Any] | None = None,
+    ) -> None:
+        """Put what requests used down as owed, with what is owed of the same session and commission already.
+
+        ``into``: noted there instead, in the same way.
+        """
+        owed = self._usage_owed if into is None else into
+        before = owed.get(key, (0, 0, 0, 0, 0, None, 0))
+        # How long the conversation was, as of whichever said so later.
+        length = (context, said) if context is not None and said > before[6] else (before[5], before[6])
+        owed[key] = (
+            amounts[0] + before[0],
+            amounts[1] + before[1],
+            amounts[2] + before[2],
+            amounts[3] + before[3],
+            amounts[4] + before[4],
+            *length,
+        )
+
+    @contextlib.asynccontextmanager
+    async def _usage_read(self) -> AsyncIterator[None]:
+        """Keep what was used where it is while the account of a commission is read.
+
+        What was used is in the ledger or owed, and while it is being
+        written in neither: taken from what is owed, and not in the
+        ledger yet. So the writes under way are waited for first (each
+        ends in the ledger or owed again), and none begins until the
+        reading is over: what is to be written meanwhile is put down
+        as owed (``_write_usage``), and written right after. Whoever
+        reads the ledger and what is owed in here reads each thing
+        that was used once.
+        """
+        self._usage_reading += 1
+        try:
+            await self._usage_at_rest()
+            yield
+        finally:
+            self._usage_read_over()
+
+    async def _usage_at_rest(self) -> None:
+        """Wait until no write of usage is under way: each has ended in the ledger, or as owed again."""
+        while self._usage_writes:
+            await asyncio.wait(list(self._usage_writes))
+
+    def _usage_read_over(self) -> None:
+        """Let usage be written again, now that an account is read; what was put off is written."""
+        self._usage_reading -= 1
+        if not self._usage_reading and self._usage_put_off:
+            # What was put off is written now, and that only: what was
+            # owed before this, because the ledger did not take it, is
+            # tried again when it always was, and not with every
+            # reading. With the writes of usage, which shutting down
+            # waits for and does not cut off.
+            put_off, self._usage_put_off = self._usage_put_off, set()
+            if not self._closed:
+                writing = asyncio.ensure_future(self._write_put_off(put_off))
+                self._usage_writes.add(writing)
+                writing.add_done_callback(self._usage_writes.discard)
+
+    async def _write_put_off(self, keys: set[tuple[str, str | None]]) -> None:
+        """Write what was put off while the account of a commission was read, each once."""
+        for key in keys:
+            if key in self._usage_owed:
+                await self._write_usage(key, (0, 0, 0, 0, 0), None, 0)
+
+    async def _settle_usage(self) -> None:
+        """Write what is owed of usage before the host is gone, as far as that can be done in the time a start gets.
+
+        What is owed is tried once more, each once. Writes under way
+        are waited for and not cancelled (how each ends is for it to
+        tell), and what one of them turns out to have failed with
+        while this goes on is tried as well. What is still owed after
+        that, or still being written, is lost with the host.
+        """
+        loop = asyncio.get_running_loop()
+        until = loop.time() + _SHUTDOWN_START_WAIT_SECONDS
+        tried: set[tuple[str, str | None]] = set()
+
+        def being_written(session_id: str) -> bool:
+            lock = self._usage_locks.get(session_id)
+            return lock is not None and lock.locked()
+
+        while loop.time() < until:
+            # What is owed first, and not what a write under way holds up
+            # (one write of a session at a time): that is looked at again
+            # once the write is through.
+            owed = [key for key in self._usage_owed if key not in tried and not being_written(key[0])]
+            if owed:
+                tried.update(owed)
+                for key in owed:
+                    if key not in self._usage_owed:
+                        continue
+                    try:
+                        await asyncio.wait_for(
+                            self._write_usage(key, (0, 0, 0, 0, 0), None, 0), max(0.01, until - loop.time())
+                        )
+                    except asyncio.TimeoutError:
+                        break
+                continue
+            if not self._usage_writes:
+                break
+            await asyncio.wait(
+                list(self._usage_writes),
+                timeout=max(0.0, until - loop.time()),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        if self._usage_owed or self._usage_writes:
+            logger.warning("what model requests used could not all be written before the host shut down")
+
+    def _settle_usage_of(self, session_id: str) -> None:
+        """Have what is owed of a session's usage written, now that nothing is at work in it.
+
+        Without this it would be written only with the next request of
+        the same session and commission, and the last request of a
+        commission has none after it. Tried once; what the ledger does
+        not take this time either stays owed, and the host tries once
+        more when it shuts down.
+        """
+        if not self._closed and any(key[0] == session_id for key in self._usage_owed):
+            self._spawn(self._write_owed_usage(session_id))
+
+    async def _write_owed_usage(self, session_id: str | None = None) -> None:
+        """Try once to write what is owed of one session's usage, or of every session's."""
+        for key in [key for key in self._usage_owed if session_id is None or key[0] == session_id]:
+            if key in self._usage_owed:
+                await self._write_usage(key, (0, 0, 0, 0, 0), None, 0)
+
+    async def _on_usage(self, session: _Session, event: dict[str, Any]) -> None:
         """Count one model request; a commission whose quota is used up fails.
 
-        The runtime reports usage once per request, after the request, so the
-        request that uses the last unit still completes.
+        What it used is added to the session and the commission. Against
+        the daily quota it is counted as one request, unless it is the
+        request that summed the conversation up, which is none of the
+        run's own and was never counted there. The runtime reports usage
+        once per request, after the request, so the request that uses the
+        last unit still completes.
         """
-        if self._meter is None or session.closing:
+        await self._note_usage(session.session_id, session.commission_id, event)
+        if self._meter is None or session.closing or event.get("summary"):
             return
         if session.prepaid_requests > 0:
             # Counted before it was sent.
@@ -2194,6 +3035,9 @@ class TaskAgentManager:
         self._resume.pop(commission_id, None)
         session = self._sessions.get(commission_id)
         if session is None:
+            # Stopped before it had a place: what was kept of the main
+            # dialogue for its opening message is of no use any more.
+            self._excerpts.pop(commission_id, None)
             # It may have held its session without a place in a runtime (it
             # waited for an answer, or for a place to be taken up again at):
             # no runtime session ends, so the hold is looked at here.
@@ -2230,7 +3074,21 @@ class TaskAgentManager:
             if still_wanted is not None and not still_wanted():
                 return False
             await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
-            return await self._take_up_again(commission_id, text, still_wanted=still_wanted)
+            # Should it open a session with nothing said in it (its start
+            # failed before, or what was said was removed, being old), it is
+            # handed what was said in the main dialogue just before this:
+            # what was kept when it was first handed over went when it ended.
+            # (Or is still there, when its start failed and it is taken up
+            # before that was let go of: this round is about what is said
+            # now, so that takes its place.) Read here, and kept only if
+            # this call is the one that starts or queues the round: one
+            # that joins a round under way adds its words to it, and the
+            # round keeps what was said before it began.
+            fresh = self._said_before(commission)
+            taken = await self._take_up_again(commission_id, text, still_wanted=still_wanted, excerpt=fresh)
+            if not taken and fresh and self._excerpts.get(commission_id) is fresh:
+                del self._excerpts[commission_id]
+            return taken
         if commission.status == "queued" or (session is not None and not session.ready and not session.closing):
             called_off = self._called_off(commission_id)
             if called_off is not None:
@@ -2253,13 +3111,27 @@ class TaskAgentManager:
         return False
 
     async def _take_up_again(
-        self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None
+        self,
+        commission_id: str,
+        text: str,
+        *,
+        still_wanted: Callable[[], bool] | None = None,
+        same_round: bool = False,
+        excerpt: list[Any] | None = None,
     ) -> bool:
         """Start a commission's task agent again where its transcript ends, ``text`` its next work.
 
         Its old session is gone or on its way out. Without a free place it is
         queued, which a stop can still end. Returns whether it was started or
         queued.
+
+        ``same_round`` is for the answer to a question its task agent
+        asked: more of the round it was at, not a new one (what was
+        refused for the round, and what it has left to hand over, stand).
+        ``excerpt`` is what was said in the main dialogue just before,
+        for one that is taken up as a new round: kept for it when this
+        call is the one that starts or queues it, and not when it only
+        joins one that is doing so already.
         """
         if self._closed:
             return False
@@ -2284,6 +3156,14 @@ class TaskAgentManager:
         if still_wanted is not None and not still_wanted():
             # Stopped while the ledger was read.
             return False
+        if commission_id in self._queue:
+            # An earlier sentence took it up again, and it waits for a place
+            # by now (this one read the commission before that was
+            # written): it goes along with that one. Queued a second
+            # time, it would take the place of the first sentence, or be
+            # refused and be lost.
+            self._notes.setdefault(commission_id, []).append(text)
+            return True
         if commission_id in self._taking_up or commission_id in self._requeueing:
             called_off = self._called_off(commission_id)
             if called_off is not None:
@@ -2294,7 +3174,9 @@ class TaskAgentManager:
                 # other to be out of the way and takes the commission up
                 # by itself.
                 await asyncio.wait([called_off])
-                return await self._take_up_again(commission_id, text, still_wanted=still_wanted)
+                return await self._take_up_again(
+                    commission_id, text, still_wanted=still_wanted, same_round=same_round, excerpt=excerpt
+                )
             # An earlier sentence is taking it up again or queueing it right
             # now: this one goes along with that rather than starting or
             # queueing a second time, which would then be refused.
@@ -2305,6 +3187,7 @@ class TaskAgentManager:
             # so a caller cancelled meanwhile does not leave a half set-up
             # session behind a commission that says it is working.
             self._taking_up.add(commission_id)
+            self._new_round_of(commission_id, same_round=same_round, excerpt=excerpt)
             launch = self._spawn(self._launch(commission_id, prompt=text, still_wanted=still_wanted))
             self._note_under_way(commission_id, still_wanted, launch)
 
@@ -2322,9 +3205,40 @@ class TaskAgentManager:
         # Marked at once, before anything is awaited, so a sentence arriving
         # meanwhile joins this one.
         self._requeueing.add(commission_id)
+        self._new_round_of(commission_id, same_round=same_round, excerpt=excerpt)
         queueing = self._spawn(self._requeue(commission_id, text, still_wanted=still_wanted))
         self._note_under_way(commission_id, still_wanted, queueing)
         return await asyncio.shield(queueing)
+
+    def _new_round_of(
+        self, commission_id: str, *, same_round: bool = False, excerpt: list[Any] | None = None
+    ) -> None:
+        """Note that a commission is taken up again: started now, or queued for a place.
+
+        Its session has something new to be worked on in it (it may be
+        summed up again once that is over, ``_new_work_in``). And
+        whether more may be used was refused for the round that is over:
+        that may still be on record, since this can come before the hold
+        on its session is looked at, which is where it is forgotten.
+        Kept, the new round would be told to hand over at once instead
+        of the user being asked.
+
+        Not so for more of the same round (``same_round``: the answer to
+        a question the task agent asked, in a session that was closed
+        meanwhile): the user answers that question, and is not asked
+        about usage a second time; what the task agent had left to hand
+        over stands as well.
+
+        ``excerpt`` takes the place of what was kept for the commission
+        before: this is where a round becomes this call's.
+        """
+        self._new_work_in(self._session_of.get(commission_id), self._idle_stops)
+        if not same_round:
+            self._refused_more.discard(commission_id)
+            self._winding_up.pop(commission_id, None)
+            self._excerpts.pop(commission_id, None)
+            if excerpt:
+                self._excerpts[commission_id] = excerpt
 
     def _note_under_way(
         self, commission_id: str, still_wanted: Callable[[], bool] | None, task: asyncio.Future[Any]
@@ -2398,12 +3312,29 @@ class TaskAgentManager:
             self._spawn(self._start_next())
         return True
 
-    async def answer(self, commission_id: str, text: str, choice: str | None = None) -> bool:
-        """Give the user's answer to a commission that waits for it."""
+    async def answer(
+        self, commission_id: str, text: str, choice: str | None = None, *, question_id: str | None = None
+    ) -> bool:
+        """Give the user's answer to a commission that waits for it.
+
+        ``question_id`` is which question the answer was read against
+        (the ``id`` of what the commission asked, as the ledger had
+        it then). Reading a sentence as an answer takes a while, and
+        that question may be answered or gone by now, with another
+        one waiting in its place: the answer is not that one's, and
+        is turned away with nothing changed. Not said (None), the
+        answer is for whichever question waits.
+        """
         session = self._sessions.get(commission_id)
         if session is None:
-            return await self._answer_closed(commission_id, text)
+            return await self._answer_closed(commission_id, text, question_id=question_id)
+        if question_id is not None and question_id != session.question_id:
+            return False
         if session.question is not None and not session.question.done():
+            if session.at_answer is not None:
+                # With nothing awaited between this and the answer being
+                # in: whoever asked gets to go on only later.
+                session.at_answer()
             session.question.set_result({"text": text, "choice": choice})
             return True
         if session.awaiting_prompt and self._runtime_of(session) is not None:
@@ -2418,7 +3349,9 @@ class TaskAgentManager:
             return await self._deliver_answer(session, text)
         return False
 
-    async def _answer_closed(self, commission_id: str, text: str, *, claimed: bool = False) -> bool:
+    async def _answer_closed(
+        self, commission_id: str, text: str, *, claimed: bool = False, question_id: str | None = None
+    ) -> bool:
         """Answer a ``waiting`` report whose session was closed meanwhile.
 
         A runtime with nothing to do exits after a while and closes its idle
@@ -2444,8 +3377,11 @@ class TaskAgentManager:
             # this way.
             if question.get("kind") != "report":
                 return False
+            if question_id is not None and question_id != question.get("id"):
+                # Read against another question than the one it waits with now.
+                return False
             await self._ledger.append_event(commission_id, "answered", {"text": text, "resumed": True})
-            return await self._take_up_again(commission_id, text)
+            return await self._take_up_again(commission_id, text, same_round=True)
         finally:
             self._answering_closed.discard(commission_id)
 
@@ -2487,7 +3423,11 @@ class TaskAgentManager:
             moved = await self._ledger.transition(
                 commission_id, "waiting_user", reason="its session closed before it took the answer"
             )
-            if moved.applied and not await self._take_up_again(commission_id, text) and self._closed:
+            if (
+                moved.applied
+                and not await self._take_up_again(commission_id, text, same_round=True)
+                and self._closed
+            ):
                 # Shutting down began while the status was written: nothing will
                 # take the answer up, and neither the queue nor the sessions hold
                 # it for shutting down to end. It ends here, as they do.
@@ -2495,17 +3435,25 @@ class TaskAgentManager:
         finally:
             self._answering_closed.discard(commission_id)
 
-    async def _ask(self, commission_id: str, question: dict[str, Any]) -> dict[str, Any]:
+    async def _ask(
+        self, commission_id: str, question: dict[str, Any], *, at_answer: Callable[[], None] | None = None
+    ) -> dict[str, Any]:
         """Put a question to the user and wait for the answer.
 
         The commission is ``waiting_user`` meanwhile and ``working`` again
-        afterwards.
+        afterwards. ``at_answer`` is done the moment the answer to this
+        question is in (``answer``), with nothing awaited before: this
+        gets to go on only a while later.
         """
         session = self._sessions.get(commission_id)
         if session is None:
             raise RuntimeError("the commission has no session to ask for")
         async with session.ask_lock:
             future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+            # Which question this is, for whoever reads a sentence as
+            # its answer: by the time the answer is handed in, another
+            # question may wait in its place (``answer``).
+            question = {**question, "id": uuid.uuid4().hex}
             moved = await self._ledger.transition(
                 commission_id,
                 "waiting_user",
@@ -2514,12 +3462,15 @@ class TaskAgentManager:
             )
             if not moved.applied or moved.commission is None:
                 raise RuntimeError(f"the commission cannot wait for the user ({moved.refusal})")
-            session.question = future
+            session.question, session.at_answer, session.question_id = future, at_answer, question["id"]
             try:
                 await self._reporter.question(moved.commission, question)
                 return await future
             finally:
-                session.question = None
+                session.question, session.at_answer = None, None
+                if session.question_id == question["id"]:
+                    # (Not what a report asked meanwhile, should there be one.)
+                    session.question_id = ""
                 # Back to working only from waiting: a commission stopped, or
                 # failed (by shutting down, say) meanwhile, stays as it is.
                 await asyncio.shield(
@@ -2538,7 +3489,7 @@ class TaskAgentManager:
 
     async def ask_permission(self, commission_id: str, ask: PermissionAsk) -> str:
         """Ask the user to approve something; the ``Asker`` of the permission gate."""
-        answer = await self._ask(commission_id, ask.to_json())
+        answer = await self._ask(commission_id, ask.to_json(), at_answer=ask.at_answer)
         choice = answer.get("choice")
         # Anything that is not one of the four answers is a refusal. An
         # approval wider than the question offered is narrowed by the gate.
@@ -2844,13 +3795,27 @@ class TaskAgentManager:
         a commission that is to be started in the session waits instead of
         opening files that are being removed under it.
         """
-        if session_id in self._held_by or session_id in self._clearing:
-            return False
-        in_hand = (*self._sessions, *self._queue, *self._taking_up, *self._requeueing)
-        if any(self._session_of.get(commission_id) == session_id for commission_id in in_hand):
+        if self._in_use(session_id):
             return False
         self._clearing[session_id] = asyncio.Event()
+        # Not summed up later either: there is nothing left to sum up.
+        self._drop_idle_timer(session_id)
         return True
+
+    def _in_use(self, session_id: str) -> bool:
+        """Whether something is at work in a session or on its way into it, or the host has claimed it for itself.
+
+        A commission holds it; its files are being removed; it is being
+        summed up; a copy of it is being made (looked at again later);
+        or a commission that is worked on in it has a place, waits for
+        one, or is being taken up again.
+        """
+        if session_id in self._held_by or session_id in self._clearing or session_id in self._compacting:
+            return True
+        if session_id in self._copying_from:
+            return True
+        in_hand = (*self._sessions, *self._queue, *self._taking_up, *self._requeueing)
+        return any(self._session_of.get(commission_id) == session_id for commission_id in in_hand)
 
     def release_files(self, session_id: str) -> None:
         """Give back what ``hold_files`` claimed; a start that waited goes on."""
@@ -3011,11 +3976,969 @@ class TaskAgentManager:
         await self.abort(target.id)
         return None
 
+    # -- what a commission may use ----------------------------------------
+
+    async def _owed_tokens(self, root: str, owed_at: dict[Any, Any] | None = None) -> int:
+        """Return what the work a commission belongs to used that the ledger has not taken yet.
+
+        Of the commission no task agent started (``root``) and of those
+        that descend from it. Reported by a runtime, and not in what
+        the ledger says was used: left out, the work would go past
+        what it may use without the user being asked.
+        """
+        total = 0
+        # (``owed_at``: what was owed at some point, in place of what is now.)
+        for (_session_id, commission_id), owed in list((self._usage_owed if owed_at is None else owed_at).items()):
+            if commission_id is None:
+                # A request the host made by itself: no commission's.
+                continue
+            if commission_id != root:
+                try:
+                    standing = await self._ledger.usage_standing(commission_id)
+                except Exception:  # noqa: BLE001 - whose work it is cannot be told: not counted
+                    continue
+                if standing is None or standing.root != root:
+                    continue
+            total += owed[1] + owed[2] + owed[3] + owed[4]
+        return total
+
+    def _usage_settled(self, commission: Commission) -> None:
+        """Forget what was noted of the usage of a commission that is over: whether more was refused for it."""
+        self._winding_up.pop(commission.id, None)
+        if commission.parent_id is None:
+            self._refused_more.discard(commission.id)
+            self._usage_asks.pop(commission.id, None)
+
+    async def _usage_stopped_text(self, commission: Commission) -> str:
+        """Return what she is told of a commission that was put down for what it used, in its language."""
+        from config.prompts.prompts_nekoclaw_brain import USAGE_LIMIT_STOPPED_TEXT
+        from nekoclaw.host.reports import tokens_text
+        from nekoclaw.host.task_brain import _texts
+
+        standing = await self._ledger.usage_standing(commission.id)
+        used = standing.used if standing is not None else commission.tokens
+        return _texts(USAGE_LIMIT_STOPPED_TEXT, commission.lang or "en").format(used=tokens_text(used))
+
+    async def _cb_budget(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """Say, before a model request of a session, whether the work it belongs to may use more.
+
+        The built-in runtime asks this before every request of a run,
+        between two steps (``runtime/host.py``): nothing of the run is
+        under way then, so nothing is cut off. What is looked at is what
+        the commission no task agent started has used, the task agents it
+        started counted in (``Ledger.usage_standing``), against what it
+        may: ``TASK_AGENT_USAGE_LIMIT_TOKENS``, or what the user allowed
+        since. Looked at once everything the session said before it asked
+        is handled (``_caught_up``): what its last request used is written
+        down by then, and a report that ended the commission has ended it.
+        Only a commission that is at work is asked about.
+
+        With room left, the answer is at once and empty. With none, the
+        user is asked, as for a permission (the commission waits for the
+        user meanwhile, and holds its session): how much was used, and
+        that as much again is asked for. Allowed, that much more may be
+        used from there. Refused, or with nobody to ask, the task agent
+        is told to hand over what it has (``notice``), and has a few
+        requests left for that; when those are used and it has not
+        reported, the commission is put down as stuck and the run ends
+        (``stop``). Every task agent of the same commission is told the
+        same, and none of them asks the user a second time.
+        """
+        from config.nekoclaw_settings import TASK_AGENT_USAGE_LIMIT_TOKENS, TASK_AGENT_USAGE_WIND_UP_REQUESTS
+        from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_USAGE_WIND_UP
+        from nekoclaw.host.reports import tokens_text
+
+        del payload
+        limit = int(TASK_AGENT_USAGE_LIMIT_TOKENS or 0)
+        commission_id = self._held_by.get(session_id)
+        session = self._sessions.get(commission_id or "")
+        if limit <= 0 or commission_id is None or session is None or session.closing:
+            return None
+        # Always, however far from the line the account stands: what is
+        # still on its way from the runtimes has no bound to go by (a
+        # window can be of any size, and a commission has several task
+        # agents), so nothing is concluded from what is written down so
+        # far alone.
+        await self._caught_up()
+        if self._sessions.get(commission_id) is not session or session.closing:
+            # Over meanwhile: its run ends by itself.
+            return None
+        if any(key[0] == session_id for key in self._usage_owed):
+            # What requests of this session used that the ledger did not
+            # take: tried once more before the account is looked at.
+            await self._write_owed_usage(session_id)
+            if self._sessions.get(commission_id) is not session or session.closing:
+                return None
+        if session.wind_up_left is None and commission_id in self._winding_up:
+            # More of a round in which it was told to hand over, in a
+            # session opened anew (the one it was told in was closed
+            # while it waited for an answer): with what it had left.
+            session.wind_up_left = self._winding_up[commission_id]
+            session.wind_up_told_again = False
+        if session.wind_up_left is not None:
+            return await self._wind_up_step(session)
+
+        async def standing_over() -> Any:
+            # What stands against it, when nothing more may be used; else None.
+            commission = await self._ledger.get(commission_id)
+            if commission is None or commission.status != "working":
+                # It has reported how it ended, or waits for the user as it is.
+                return None
+            # With what was used and is not in the ledger yet (it did not
+            # take it): used all the same, and counted once, here or there.
+            # Read with no write of usage under way or beginning, which
+            # would have it in neither place (a session that was let go
+            # of has what it owes written by a task of its own).
+            async with self._usage_read():
+                standing = await self._ledger.usage_standing(commission_id)
+                if standing is None:
+                    return None
+                owed = await self._owed_tokens(standing.root)
+            if owed:
+                standing = dataclasses.replace(standing, used=standing.used + owed)
+            allowed = standing.allowed if standing.allowed is not None else limit
+            return standing if standing.used >= allowed else None
+
+        standing = await standing_over()
+        if standing is None:
+            return None
+        if standing.root not in self._refused_more:
+            async with self._usage_asks.setdefault(standing.root, asyncio.Lock()):
+                # Looked at again: another task agent of the commission
+                # may have asked meanwhile, and been answered.
+                standing = await standing_over()
+                if standing is None:
+                    return None
+                if standing.root not in self._refused_more:
+                    # As much again, if the user allows it, from what had
+                    # been used when they said so: begun the moment the
+                    # answer is in (``_UsageCut``), and not when this
+                    # gets to go on, which is a while later (the
+                    # commission is put back to work first).
+                    # Of this question's answer, and of no other's: one
+                    # that was asked for the commission before it (by
+                    # something it called, say) is answered first.
+                    cut = _UsageCut(self)
+                    try:
+                        decision = await self._permissions.ask_each_time(
+                            commission_id,
+                            USAGE_LIMIT,
+                            detail={"used": tokens_text(standing.used), "more": tokens_text(limit)},
+                            at_answer=cut.begin,
+                        )
+                        if decision.allow:
+                            # (Answered by a way that does not come by the
+                            # session: it ends here, then.)
+                            cut.begin()
+                            # What was used before the answer and is not
+                            # in the ledger is allowed on top: left out,
+                            # that much of what was allowed would be
+                            # gone the moment it is written.
+                            owed = await cut.owed(standing.root)
+                            await self._ledger.allow_usage(commission_id, limit + owed)
+                    finally:
+                        cut.end()
+                    if decision.allow:
+                        # What the ledger did not take before is tried
+                        # once more (the user may have taken a while).
+                        await self._write_owed_usage()
+                        return None
+                    self._refused_more.add(standing.root)
+        if self._sessions.get(commission_id) is not session or session.closing:
+            # Stopped while the user was asked.
+            return {"stop": True}
+        # The request this is asked before is the first of those it has left.
+        session.wind_up_left = max(0, TASK_AGENT_USAGE_WIND_UP_REQUESTS - 1)
+        self._winding_up[commission_id] = session.wind_up_left
+        try:
+            await self._ledger.append_event(
+                commission_id, "usage_refused", {"used": standing.used, "requests_left": TASK_AGENT_USAGE_WIND_UP_REQUESTS}
+            )
+        except Exception:  # noqa: BLE001 - the note is for the record; the task agent is told all the same
+            # Left untold, it would go on working on the requests it has
+            # left, and be stopped without ever having been told to hand
+            # over what it has.
+            logger.warning("noting that more usage was refused failed", exc_info=True)
+        return {"notice": TASK_AGENT_USAGE_WIND_UP.format(requests=TASK_AGENT_USAGE_WIND_UP_REQUESTS)}
+
+    async def _wind_up_step(self, session: _Session) -> dict[str, Any] | None:
+        """Let a task agent that is handing over what it has make one more request, or end its commission.
+
+        It was told how many requests it has for that. When they are used
+        and it has reported nothing that ended the commission, the
+        commission is put down as stuck with the reason, what it started
+        is stopped, and its session is closed.
+        """
+        if session.wind_up_left:
+            left = session.wind_up_left
+            session.wind_up_left -= 1
+            self._winding_up[session.commission_id] = session.wind_up_left
+            if not session.wind_up_told_again:
+                # The first request of another run of the same round: what
+                # it was told went with the run it was told in, and without
+                # it the task agent would go on working on what it is to
+                # hand over, on the requests it has left for that.
+                from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_USAGE_WIND_UP
+
+                session.wind_up_told_again = True
+                return {"notice": TASK_AGENT_USAGE_WIND_UP.format(requests=left)}
+            return None
+        commission_id = session.commission_id
+        commission = await self._ledger.get(commission_id)
+        if commission is not None and commission.status in ("working", "waiting_user"):
+            text = await self._usage_stopped_text(commission)
+            # Before its run is stopped: what the run says as it stops
+            # must not turn it into a stopped one.
+            session.wound_up = True
+            await self._end(commission_id, "blocked", reason=_USAGE_REASON, text=text, result_summary=self._summary(text))
+            for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
+                await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
+                await self.abort(child.id)
+        await self._close_session(session)
+        return {"stop": True}
+
+    async def usage_of(self, commission_id: str) -> dict[str, Any] | None:
+        """Return what a commission has used and what it may, for a display; None for an unknown one.
+
+        ``commission`` is the commission's own count (the task agents it
+        started included); ``limit`` what the work it belongs to may use
+        before the user is asked, and ``used`` what that work has used
+        (the same numbers, for a commission no task agent started);
+        ``session`` what its session used over all its commissions, with
+        the length of its conversation as of its last request. What the
+        model's window is and where a conversation is summed up is told
+        by ``ModelCapabilityStore.describe_window``.
+        """
+        from config.nekoclaw_settings import TASK_AGENT_USAGE_LIMIT_TOKENS
+
+        commission = await self._ledger.get(commission_id)
+        if commission is None:
+            return None
+        standing = await self._ledger.usage_standing(commission_id)
+        kept = await self._ledger.get_session(commission.session_id)
+
+        def counted(row: Any) -> dict[str, int]:
+            return {
+                "requests": row.requests,
+                "input": row.tokens_in,
+                "output": row.tokens_out,
+                "cache_read": row.tokens_cache_read,
+                "cache_write": row.tokens_cache_write,
+                "tokens": row.tokens,
+            }
+
+        limit = int(TASK_AGENT_USAGE_LIMIT_TOKENS or 0)
+        allowed = standing.allowed if standing is not None and standing.allowed is not None else limit
+        return {
+            "commission": counted(commission),
+            # For a commission no task agent started, its own count as it
+            # was read above: one reading, so the two numbers agree.
+            "used": standing.used if standing is not None and standing.root != commission.id else commission.tokens,
+            "limit": allowed if limit > 0 else None,
+            "session": ({**counted(kept), "context_tokens": kept.context_tokens} if kept is not None else None),
+        }
+
+    # -- copying a session ------------------------------------------------
+
+    async def fork_session(self, source_session_id: str, *, name: str | None = None, upto: str | None = None) -> Session:
+        """Make a session from another by copying what was said in it, and return it. Raises ``ForkRefused``.
+
+        The new session (kind ``fork``) holds the other's conversation up
+        to one entry of its record (``upto``; all of it when none is
+        named), cut back to the last place where it is whole: the other
+        may be at work, and is not disturbed. It is opened with the system
+        prompt and the tool definitions the other was opened with, so a
+        provider that kept the head of the other's requests has the same
+        head for this one's. See ``nekoclaw/runtime/fork.py``.
+
+        It is the other's in everything but what was said: the same
+        character, project and working directory; a directory of its own
+        for its record. Nothing is at work in it: it is ``closed``, and a
+        commission whose ``session_id`` names it is worked on in it like
+        in any session (``submit``), without the tools that write files
+        and run commands (``_spec``). What its requests use is counted
+        with it and with that commission. What was said in it is removed
+        like any session's when it is old, with the session it was copied
+        from when that one's is, and at once by ``SpaceKeeper.clear_session``.
+
+        Only a session the built-in runtime holds can be copied: dsh keeps
+        what was said itself and has no command for it.
+        """
+        if self._closed:
+            raise ForkRefused("the host is shutting down")
+        # From before the session is looked at until its copy is on record
+        # (or given up), with no await before this: what was said in it
+        # is not removed meanwhile (``hold_files``; one whose record is
+        # being removed this moment is refused below). Removed in between,
+        # the copy would not be found among the session's copies, which
+        # go when it does, and would keep what the session no longer has.
+        self._copying_from[source_session_id] = self._copying_from.get(source_session_id, 0) + 1
+        registering: asyncio.Task[Session] | None = None
+        try:
+            registering = await self._fork(source_session_id, name=name, upto=upto)
+        finally:
+            if registering is None:
+                # Not written, or no longer waited for.
+                self._copied_from(source_session_id)
+        # The copy is written. Putting it on record is a task of its own,
+        # which lets go of the session it was made from when it is through.
+        # Whoever asked may be cancelled meanwhile, and hears of that at
+        # once; the record of that session is still not removed under a
+        # copy that is on no record yet.
+        return await asyncio.shield(registering)
+
+    def _copied_from(self, source_session_id: str) -> None:
+        """Let go of a session a copy was being made from (of this copy's share in it, if there are several)."""
+        left = self._copying_from[source_session_id] - 1
+        if left > 0:
+            self._copying_from[source_session_id] = left
+        else:
+            del self._copying_from[source_session_id]
+
+    async def _fork(self, source_session_id: str, *, name: str | None, upto: str | None) -> "asyncio.Task[Session]":
+        """Have the runtime write the copy ``fork_session`` returns; returns the task that puts it on record.
+
+        The session it is made from is held by the caller until this
+        returns or raises, and by that task from then on.
+        """
+        from config.nekoclaw_settings import TASK_AGENT_FORK_SECONDS
+
+        source = await self._ledger.get_session(source_session_id)
+        if source is None:
+            raise ForkRefused(f"there is no session {source_session_id!r}")
+        if source.runtime == RUNTIME_DSH:
+            raise ForkRefused("a session that runs in dsh cannot be copied: dsh has no command for it")
+        if source.status == "cleared" or source_session_id in self._clearing:
+            raise ForkRefused("what was said in the session is no longer kept")
+        source_dir = await asyncio.to_thread(self._session_dir_of, source)
+        if not await asyncio.to_thread(_in_builtin, source_dir):
+            raise ForkRefused("nothing was said in the session yet")
+        if self._closed:
+            # Shut down while the session's files were looked at. Shutting
+            # down did not see this (it was neither started nor waited
+            # for yet), and is over or all but: no runtime is made for
+            # it now, and nothing is copied.
+            raise ForkRefused("the host is shutting down")
+        session_id = new_session_id()
+        target_dir = self._paths.session_dir(session_id, source.project)
+        runtime = self._runtimes.builtin()
+        if self._pump is None:
+            self._pump = asyncio.ensure_future(self._pump_events())
+        answer: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._forks[session_id] = answer
+        self._fork_dirs[session_id] = str(target_dir)
+        try:
+            await runtime.fork(
+                session_id,
+                session_dir=str(target_dir),
+                source_session_id=source.id,
+                source_dir=str(source_dir),
+                upto=upto,
+            )
+            event = await asyncio.wait_for(answer, TASK_AGENT_FORK_SECONDS)
+        except asyncio.TimeoutError:
+            # It may still write the copy: removed when it says it has.
+            self._fork_given_up(session_id, target_dir, answer)
+            raise ForkRefused("the runtime did not answer in time") from None
+        except asyncio.CancelledError:
+            # Whoever asked for the copy is gone, and the runtime may write
+            # it all the same: likewise removed when it says it has.
+            self._fork_given_up(session_id, target_dir, answer)
+            raise
+        finally:
+            self._forks.pop(session_id, None)
+            self._fork_dirs.pop(session_id, None)
+        if event.get("type") != "forked":
+            # It may have written a part of it and not got to remove that
+            # (a snapshot something had open): the directory was set aside
+            # for this copy, and is on no record. Removed by a task of
+            # its own: whoever asked may be cancelled while it is, and
+            # what cannot be removed yet would be nobody's to remove.
+            await asyncio.shield(self._remove_fork_dir_soon(session_id, target_dir))
+            raise ForkRefused(str(event.get("message") or "the runtime could not copy the session"))
+        # With no await since the runtime's word was taken: nothing comes
+        # between the copy being written and its being put on record.
+        # A task that shutting down waits for and does not cancel: cut
+        # off before the ledger got to it, the copy would be on the disk
+        # and on no record, with nothing left that knows of it.
+        registering = asyncio.ensure_future(
+            self._put_fork_on_record(
+                source, session_id, target_dir, name=name, forked_at=str(event.get("upto") or "") or None
+            )
+        )
+        self._fork_records.add(registering)
+        registering.add_done_callback(self._fork_records.discard)
+        # What it fails with is read here, should whoever asked have left.
+        registering.add_done_callback(lambda done: done.cancelled() or done.exception())
+        return registering
+
+    def _fork_given_up(self, session_id: str, target_dir: Any, answer: "asyncio.Future[dict[str, Any]]") -> None:
+        """Note that a copy is no longer waited for: what the runtime writes of it is removed when it says it is through.
+
+        It may have said so already, in the moment whoever waited left
+        (the runtime in this process says it before its command
+        returns). Nothing more is said of the copy then, so what there
+        is of it is removed now, by a task of its own.
+        """
+        if answer.done() and not answer.cancelled() and answer.exception() is None:
+            self._remove_fork_dir_soon(session_id, target_dir)
+            return
+        self._forks_given_up[session_id] = str(target_dir)
+
+    def _remove_fork_dir_soon(self, session_id: str, target_dir: Any) -> "asyncio.Future[None]":
+        """Begin to remove what was written of a copy that is on no record, in a task of its own.
+
+        Kept with the copies that are being put on record: shutting
+        down waits for these and does not cut them off (``shutdown``,
+        ``forks_settled``).
+        """
+        removing = asyncio.ensure_future(self._remove_fork_dir(session_id, target_dir))
+        self._fork_records.add(removing)
+        removing.add_done_callback(self._fork_records.discard)
+
+        def seen(removing: "asyncio.Future[None]") -> None:
+            # Mostly nobody waits for it: what it ended with would go by unseen.
+            if not removing.cancelled() and removing.exception() is not None:
+                logger.error(
+                    "removing what was copied to %s ended with an error; it may be left there, on no record",
+                    target_dir,
+                    exc_info=removing.exception(),
+                )
+
+        removing.add_done_callback(seen)
+        return removing
+
+    async def _put_fork_on_record(
+        self, source: Session, session_id: str, target_dir: Any, *, name: str | None, forked_at: str | None
+    ) -> Session:
+        """Put a copy the runtime has written on record, and let go of the session it was made from.
+
+        All of it, whatever becomes of whoever asked for the copy: the
+        copy is written, and without its row nothing would find it;
+        when the row cannot be written, what was written is removed
+        (the runtime is through with it: it said so); and only then is
+        the session it was made from let go of.
+        """
+        try:
+            return await self._ledger.create_session(
+                id=session_id,
+                name=name or f"{source.name}/fork",
+                lanlan_name=source.lanlan_name,
+                kind="fork",
+                project=source.project,
+                workdir=source.workdir,
+                session_dir=str(target_dir),
+                runtime=RUNTIME_BUILTIN,
+                forked_from=source.id,
+                forked_at=forked_at,
+                status="closed",
+            )
+        except Exception as exc:  # noqa: BLE001 - told as a copy that was not made
+            # Written, and not on record: nothing would ever come by it to remove it.
+            logger.warning("a copied session could not be put on record; what was copied is removed", exc_info=True)
+            await self._remove_fork_dir(session_id, target_dir)
+            raise ForkRefused(f"the copy could not be put on record: {exc}") from exc
+        finally:
+            self._copied_from(source.id)
+
+    async def _remove_fork_dir(self, session_id: str, target_dir: Any) -> None:
+        """Remove the directory that was set aside for a copy that came to nothing; it is on no record.
+
+        One that cannot be removed (something has it open, say) is
+        still this host's to remove: with the copies nobody waited for
+        any more, when it shuts down. Should the host be shutting down
+        already, that may be over, and this tries again itself, a few
+        times.
+        """
+        import os
+        import shutil
+
+        def removed() -> bool:
+            shutil.rmtree(target_dir, True)
+            return not os.path.lexists(str(target_dir))
+
+        if await asyncio.to_thread(removed):
+            return
+        if not self._closed:
+            logger.error("what was copied to %s could not be removed; tried again when the host shuts down", target_dir)
+            self._forks_given_up[session_id] = str(target_dir)
+            return
+        for _attempt in range(_FORK_REMOVE_RETRIES):
+            await asyncio.sleep(_FORK_REMOVE_RETRY_SECONDS)
+            if await asyncio.to_thread(removed):
+                return
+        logger.error("what was copied to %s could not be removed; it is left there, on no record", target_dir)
+
+    # -- summing up idle sessions -------------------------------------------
+
+    def _drop_idle_timer(self, session_id: str) -> None:
+        timer = self._idle_timers.pop(session_id, None)
+        if timer is not None:
+            timer.cancel()
+
+    def _schedule_idle_compact(self, session_id: str, *, after: float | None = None) -> None:
+        """Have a session summed up once nothing has been at work in it for ``TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS``.
+
+        Only while that is switched on (``TASK_AGENT_IDLE_COMPACT_ENABLED``).
+        Whether it is worth it for this session is looked at when the
+        time has come. A commission that takes the session before then
+        drops the timer. ``after`` is how long from now, when that is
+        not the whole time (the time had come by the timer, and not yet
+        by what the ledger has of the session: ``_idle_compact``).
+        """
+        from config.nekoclaw_settings import TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS, TASK_AGENT_IDLE_COMPACT_ENABLED
+
+        self._drop_idle_timer(session_id)
+        if not TASK_AGENT_IDLE_COMPACT_ENABLED or self._closed:
+            return
+        if session_id in self._idle_stopped:
+            # What was at work in it was stopped with everything else, and
+            # nothing new has been asked for in it since: the host makes
+            # no request for it by itself (``drop_idle_work``).
+            return
+        stops = self._idle_stops
+
+        def due() -> None:
+            self._idle_timers.pop(session_id, None)
+            if not self._closed:
+                self._spawn(self._idle_compact(session_id, stops))
+
+        self._idle_timers[session_id] = asyncio.get_running_loop().call_later(
+            max(0.0, float(TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS if after is None else after)), due
+        )
+
+    def drop_idle_work(self) -> None:
+        """Give up everything the host was going to do by itself in idle sessions, and what it is doing there now.
+
+        For when the user stops everything: no model request is made
+        after that unless something is dispatched anew. A session comes to
+        be summed up again once another commission has ended in it.
+
+        That holds for the sessions in use right now as well: the
+        commissions in them are stopped next, and let their sessions go
+        after this. Letting go does not set a timer for a session that
+        was in use when everything was stopped, until a commission is
+        handed over or taken up again in it (``_new_work_in``).
+        """
+        self._idle_stops += 1
+        in_hand = (*self._sessions, *self._queue, *self._taking_up, *self._requeueing)
+        self._idle_stopped.update(self._held_by)
+        self._idle_stopped.update(
+            self._session_of[commission_id] for commission_id in in_hand if commission_id in self._session_of
+        )
+        for session_id in list(self._idle_timers):
+            self._drop_idle_timer(session_id)
+        for task in list(self._compacting.values()):
+            self._cut_short(task)
+
+    @staticmethod
+    def _cut_short(task: "asyncio.Task[Any]") -> None:
+        """Cancel a summing up once.
+
+        Cancelled, it closes the session in the runtime and waits for
+        that before it gives the session up. A second cancel would reach
+        it while it waits, and have it leave: the runtime would still
+        hold the session, the gateway its token, and the session would
+        stay marked as being summed up.
+        """
+        if not task.done() and not task.cancelling():
+            task.cancel()
+
+    def _new_work_in(self, session_id: str | None, stops: int) -> None:
+        """Note that something new is to be worked on in a session: it may be summed up again once that has ended.
+
+        ``stops`` is how often everything had been stopped when whoever
+        brings the work began to. If everything was stopped since, the
+        work is stopped with it, and the session stays one that was in
+        use when everything was stopped.
+        """
+        if not session_id:
+            return
+        if stops == self._idle_stops:
+            self._idle_stopped.discard(session_id)
+        else:
+            self._idle_stopped.add(session_id)
+
+    async def _stop_compacting(self, session_id: str) -> bool:
+        """Cut short the summing up of an idle session, and wait until the runtime has let go of the session.
+
+        Returns whether the session is free of it. The runtime gets
+        ``_SERVICE_HANDOVER_SECONDS`` to say that it closed the session.
+        When it does not, the session stays the host's (what the runtime
+        says of that opening later is still taken there, and the
+        session is given back then), and whoever asked goes without it.
+        """
+        task = self._compacting.get(session_id)
+        if task is None or task is asyncio.current_task():
+            return True
+        self._cut_short(task)
+        loop = asyncio.get_running_loop()
+        until = loop.time() + _SERVICE_HANDOVER_SECONDS
+        await asyncio.wait([task], timeout=_SERVICE_HANDOVER_SECONDS)
+        over = self._idle_over.get(session_id)
+        if over is not None:
+            # The task left while the session was being given back.
+            await asyncio.wait([over], timeout=max(0.0, until - loop.time()))
+        return self._compacting.get(session_id) is not task
+
+    def _idle_compact_allowed(self, kept: Session | None, now: float) -> bool:
+        """Whether a session, as the ledger has it, is to be summed up while idle: by its kind, its length and the limits."""
+        from config.nekoclaw_settings import (
+            TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS,
+            TASK_AGENT_IDLE_COMPACT_MIN_GAP_SECONDS,
+            TASK_AGENT_IDLE_COMPACT_MIN_TOKENS,
+            TASK_AGENT_IDLE_COMPACTS_PER_DAY,
+        )
+
+        if kept is None or kept.status != "closed" or kept.kind not in _IDLE_COMPACT_KINDS:
+            return False
+        if kept.runtime != RUNTIME_BUILTIN or kept.context_tokens < TASK_AGENT_IDLE_COMPACT_MIN_TOKENS:
+            # dsh sums up by itself; a short conversation costs more to sum up than it saves.
+            return False
+        if now - kept.last_active_at < TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS:
+            return False
+        if kept.compacted_at is not None and now - kept.compacted_at < TASK_AGENT_IDLE_COMPACT_MIN_GAP_SECONDS:
+            return False
+        # Counted, not removed: this is also asked about a moment that has
+        # not come yet, and what is still within the day now stays on record.
+        within_the_day = sum(1 for at in self._idle_compacted_at if now - at < 24 * 3600.0)
+        return within_the_day + self._idle_compacts_under_way < TASK_AGENT_IDLE_COMPACTS_PER_DAY
+
+    def _is_switched_on(self) -> bool:
+        """Whether NekoClaw is switched on, as far as this was told how to find out; a switch that cannot be read is off."""
+        if self._switched_on is None:
+            return True
+        try:
+            return bool(self._switched_on())
+        except Exception:  # noqa: BLE001 - an unreadable switch counts as off
+            return False
+
+    def _idle_now(self, session_id: str) -> bool:
+        """Whether nothing is at work in a session, or on its way to be, and nothing else has claimed it."""
+        return not self._closed and not self._in_use(session_id)
+
+    async def _idle_compact(self, session_id: str, stops: int | None = None) -> bool:
+        """Sum up the conversation of a session nothing has been at work in for long. Returns whether it was summed up.
+
+        One model request, of the length of the conversation at the most,
+        made by the host itself: for no commission, so it is counted with
+        the session alone, against the daily quota of the agent model as
+        one request, and against no commission's limit. Not made when
+        NekoClaw is switched off, when the quota is used up, or when the
+        session, by the time this gets to it, is in use or not worth it
+        (``_idle_compact_allowed``).
+
+        The session is opened in the built-in runtime as a commission's
+        would be (the system prompt and the tools it was opened with
+        before, so what a provider kept of its requests is used), told to
+        sum itself up, and closed. A commission that is to be worked on in
+        it meanwhile cuts this short (``_start``) and waits only for the
+        runtime to let go: nothing of the conversation changes unless the
+        summary was written.
+        """
+        from config.nekoclaw_settings import (
+            TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS,
+            TASK_AGENT_IDLE_COMPACT_ENABLED,
+            TASK_AGENT_IDLE_COMPACT_SECONDS,
+        )
+        from nekoclaw.runtime.protocol import GatewaySpec
+
+        if not TASK_AGENT_IDLE_COMPACT_ENABLED or not self._idle_now(session_id):
+            return False
+        if stops is not None and stops != self._idle_stops:
+            # Everything was stopped between the timer and this.
+            return False
+        if not self._is_switched_on():
+            return False
+        task = asyncio.current_task()
+        assert task is not None
+        # Claimed before anything is awaited: a commission that takes the
+        # session from here on finds this, and cuts it short.
+        self._compacting[session_id] = task
+        events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        runtime: Any = None
+        # What the gateway knows this opening of the session by: no
+        # commission's name, so no commission's token is touched.
+        grant = f"session:{session_id}"
+        marked = opened = compacted = counted = asked = False
+        # When the session was told to sum itself up: what the day's limit goes by.
+        asked_at = 0.0
+        # Set when the timer brought this here a moment early: how long to wait still.
+        too_early: float | None = None
+        now = self._ledger._clock()
+        try:
+            kept = await self._ledger.get_session(session_id)
+            if kept is None or not self._idle_compact_allowed(kept, now):
+                if stops is not None and kept is not None:
+                    # A timer set when the session was let go runs by the
+                    # loop's clock; how long the session has been idle is
+                    # told by what the ledger wrote down, by the clock on
+                    # the wall, and that may have been written a moment
+                    # after the timer was set. When nothing but that
+                    # stands in the way, it is looked at again once the
+                    # time is up by the ledger, and not given up.
+                    up = kept.last_active_at + float(TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS)
+                    if up > now and self._idle_compact_allowed(kept, up):
+                        too_early = up - now
+                return False
+            # Counted from here on, before anything else is awaited.
+            self._idle_compacts_under_way += 1
+            counted = True
+            last = await self._ledger.select(session_id=session_id, limit=1)
+            config = await self._model_config()
+            if not last or not config or not config.get("model"):
+                return False
+            commission = last[0]
+            place = dataclasses.replace(
+                kept, workdir=kept.workdir or commission.workdir, project=kept.project or commission.project
+            )
+
+            def prepare() -> tuple[str, str, bool]:
+                session_dir = self._session_dir_of(place)
+                return str(session_dir), str(self._workdir_of(place, session_dir)), _in_builtin(session_dir)
+
+            session_path, workdir, has_record = await asyncio.to_thread(prepare)
+            if not has_record:
+                return False
+            # Before the ledger is asked: cancelled while it writes, the
+            # status may be written all the same, and has to be taken
+            # back (which changes nothing if it was not).
+            marked = True
+            if not await self._ledger.begin_compacting(session_id):
+                return False
+            model = await self._model_of(config)
+            gateway_spec = None
+            if self._gateway is not None:
+                # As a commission's session is opened: after the summary the
+                # runtime puts the system prompt and the tool definitions
+                # together anew from what it has, and that has to be what
+                # the next commission is to find.
+                url = await self._gateway.start()
+                gateway_spec = GatewaySpec(
+                    url=url,
+                    token=self._gateway.issue(grant, candidate_plugin_ids=(), supports_images=model.supports_images),
+                )
+            spec = await self._spec(commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec)
+            runtime = self._runtimes.builtin()
+            if self._pump is None:
+                self._pump = asyncio.ensure_future(self._pump_events())
+            self._service[session_id] = events
+            opened = True
+            await runtime.start(spec)
+
+            async def summed_up() -> None:
+                nonlocal asked, asked_at, compacted
+                while True:
+                    event = await events.get()
+                    kind = event.get("type")
+                    if kind == "started" and not asked:
+                        if not self._is_switched_on():
+                            # Switched off while the session was being
+                            # opened: the host asks nothing of a model
+                            # by itself, and nothing is charged.
+                            return
+                        # Charged here, when the request is about to be
+                        # made, and not before the session was marked
+                        # and opened: nothing is charged for a summing
+                        # up that never got as far as asking.
+                        if self._meter is not None and not await self._meter(commission.id):
+                            # The daily quota is used up: the host makes no request of its own.
+                            return
+                        if not self._is_switched_on():
+                            # Switched off while the quota was looked at,
+                            # which waits for something: nothing is asked
+                            # of a model, though the request was paid for.
+                            return
+                        asked = True
+                        asked_at = self._ledger._clock()
+                        await runtime.compact(session_id)
+                    elif kind == "usage":
+                        await self._note_usage(session_id, None, event)
+                    elif kind == "compacted":
+                        # Written, whatever becomes of this from here on.
+                        compacted = True
+                    elif kind in ("ended", "error"):
+                        # The summing up is over, or was refused; or the
+                        # session could not be opened at all.
+                        return
+
+            await asyncio.wait_for(summed_up(), TASK_AGENT_IDLE_COMPACT_SECONDS)
+            return compacted
+        except asyncio.TimeoutError:
+            logger.warning("summing up idle session %s took too long; given up", session_id)
+            return False
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the session is as it was; the next commission goes on from that
+            logger.warning("summing up idle session %s failed", session_id, exc_info=True)
+            return False
+        finally:
+            if counted:
+                self._idle_compacts_under_way -= 1
+                if asked or compacted:
+                    # The session was told to sum itself up: a request the
+                    # host made by itself, whatever became of it, and one
+                    # of those the day has a limit for. By when it was told.
+                    self._count_idle_compact(asked_at or self._ledger._clock())
+            # Whatever became of it (also when a commission cut it short):
+            # the runtime lets go of the session before anyone else has
+            # it. In a task of its own, waited for here: cancelled while
+            # it waits (this is where a stop or a commission finds a
+            # summing up that is all but over), this leaves, and the
+            # giving back is carried through all the same.
+            # (Not a task shutting down gives up on, ``_spawn``: cut off
+            # there, the gateway would keep its token and the ledger
+            # would not be told that the session was summed up.)
+            over = asyncio.ensure_future(
+                self._idle_compact_over(
+                    session_id, task, runtime=runtime, events=events, opened=opened, grant=grant,
+                    marked=marked, compacted=compacted, too_early=too_early, stops=stops,
+                )
+            )
+            self._idle_over[session_id] = over
+            await asyncio.shield(over)
+
+    def _count_idle_compact(self, told_at: float) -> None:
+        """Count a summing up the host asked for by itself against the day's limit; what is older than a day goes.
+
+        A method of its own, and not a loop where it is called from: that
+        is a ``finally`` a ``return`` passes through, and a loop there
+        loses what was returned when the application is built (see
+        ``tests/unit/test_no_return_through_looping_finally.py``).
+        """
+        while self._idle_compacted_at and told_at - self._idle_compacted_at[0] >= 24 * 3600.0:
+            self._idle_compacted_at.popleft()
+        self._idle_compacted_at.append(told_at)
+
+    async def _idle_compact_over(
+        self,
+        session_id: str,
+        task: "asyncio.Task[Any]",
+        *,
+        runtime: Any,
+        events: "asyncio.Queue[dict[str, Any]]",
+        opened: bool,
+        grant: str,
+        marked: bool,
+        compacted: bool,
+        too_early: float | None,
+        stops: int | None,
+    ) -> None:
+        """Give a session back after the host had it to sum it up (``_idle_compact``).
+
+        The runtime closes it, its token for the gateway is taken back,
+        the ledger has it closed again, and it is no longer claimed.
+        All of it, whatever becomes of the task that summed it up:
+        ``_stop_compacting`` waits for this.
+        """
+        try:
+            if await self._end_service(session_id, runtime, events, opened):
+                # Said while the session was being closed.
+                compacted = True
+            if self._gateway is not None:
+                self._gateway.revoke(grant)
+            if marked:
+                try:
+                    await self._ledger.end_compacting(session_id, compacted=compacted)
+                except Exception:  # noqa: BLE001 - the status is for showing
+                    logger.warning("noting that a session is no longer being summed up failed", exc_info=True)
+        finally:
+            if self._compacting.get(session_id) is task:
+                del self._compacting[session_id]
+            if self._idle_over.get(session_id) is asyncio.current_task():
+                del self._idle_over[session_id]
+            # What the request that summed it up used, should the ledger not have taken it.
+            self._settle_usage_of(session_id)
+            if too_early is not None and stops == self._idle_stops and self._idle_now(session_id):
+                # A little more than what is left, so that it is not a
+                # moment early once more.
+                self._schedule_idle_compact(session_id, after=too_early + _IDLE_TIMER_MARGIN_SECONDS)
+
+    async def _end_service(
+        self, session_id: str, runtime: Any, events: "asyncio.Queue[dict[str, Any]]", opened: bool
+    ) -> bool:
+        """Close a session the host opened by itself and wait until the runtime says it is gone.
+
+        Returns whether the runtime said meanwhile that the conversation was summed up.
+        """
+        from nekoclaw.runtime.protocol import PROCESS_EXITED_ERROR
+
+        summed_up = False
+        try:
+            if not opened or runtime is None:
+                return False
+            await runtime.close(session_id)
+
+            async def gone() -> None:
+                nonlocal summed_up
+                while True:
+                    event = await events.get()
+                    kind = event.get("type")
+                    if kind == "usage":
+                        await self._note_usage(session_id, None, event)
+                    elif kind == "compacted":
+                        summed_up = True
+                    elif kind == "ended" and event.get("reason") == "closed":
+                        return
+                    elif kind == "error" and event.get("command") in ("close", "start"):
+                        # It was never there, or is gone already.
+                        return
+                    elif kind == "ended" and event.get("error") == PROCESS_EXITED_ERROR:
+                        # The runtime process went away, and the session with it.
+                        return
+
+            # However long it takes, while the host is up. Given back
+            # before the runtime said so, the session could be taken by
+            # a commission, and what the runtime says of this opening of
+            # it afterwards (that it is closed) would be taken for that
+            # commission's. (A commission that is to be worked on in it
+            # does not wait as long: ``_stop_compacting``.) A host that
+            # shuts down stops its runtimes next and gives the session
+            # to nobody: it waits as long as it waits for anything then,
+            # and what is left to do for the session is done all the same.
+            waiting = asyncio.ensure_future(gone())
+            try:
+                loop = asyncio.get_running_loop()
+                asked = loop.time()
+                noted = False
+                done: set[Any] = set()
+                while not done:
+                    waited = loop.time() - asked
+                    if self._closed and waited >= _SHUTDOWN_START_WAIT_SECONDS:
+                        break
+                    if not noted and waited >= _SERVICE_CLOSE_SECONDS:
+                        noted = True
+                        logger.warning(
+                            "the runtime has not said that session %s is closed; still waited for", session_id
+                        )
+                    done, _pending = await asyncio.wait({waiting}, timeout=_SERVICE_CLOSE_POLL_SECONDS)
+                if done:
+                    # What the waiting failed with, if it did, is raised here.
+                    waiting.result()
+            finally:
+                if not waiting.done():
+                    waiting.cancel()
+        except Exception:  # noqa: BLE001 - nothing more can be done for it
+            logger.warning("closing a session the host had open failed", exc_info=True)
+        finally:
+            if self._service.get(session_id) is events:
+                del self._service[session_id]
+        return summed_up
+
     # -- shutdown ---------------------------------------------------------
 
     async def shutdown(self) -> None:
         """Stop the runtime and every session. Commissions under way end as failed."""
         self._closed = True
+        for session_id in list(self._idle_timers):
+            self._drop_idle_timer(session_id)
+        for session_id, waiting in list(self._forks.items()):
+            if not waiting.done():
+                # The runtime may write the copy all the same. Removed when
+                # it says it has, like the others nobody waits for any
+                # more, or below once the runtimes are stopped.
+                self._forks_given_up[session_id] = self._fork_dirs[session_id]
+                waiting.set_exception(ForkRefused("the host is shutting down"))
         queued = list(self._queue)
         self._queue.clear()
         for commission_id in queued:
@@ -3028,6 +4951,12 @@ class TaskAgentManager:
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
+        if self._fork_records:
+            # Copies that are being put on record: waited for as long as
+            # a start is, and left to go on after that. A ledger that is
+            # closed before it got to one has it fail, and what was
+            # written of that copy is removed.
+            await asyncio.wait(list(self._fork_records), timeout=_SHUTDOWN_START_WAIT_SECONDS)
         # Recorded first: what the closing sessions still say must not turn a
         # commission nobody stopped into a stopped one.
         for commission_id in list(self._sessions):
@@ -3049,6 +4978,31 @@ class TaskAgentManager:
                 await runtime.shutdown()
             except Exception:  # noqa: BLE001 - shutting down goes on regardless
                 logger.exception("shutting the runtime down failed")
+        # What the runtimes said as they stopped is handled before the
+        # sessions are forgotten and nobody listens any more: what the
+        # last requests used is among it, and would be on no account.
+        await self._caught_up(within=_SHUTDOWN_START_WAIT_SECONDS)
+        # Copies nobody waited for any more, of which no runtime said what
+        # became of them before it stopped: they are on no record, and
+        # nothing would ever come by them to remove them. No runtime
+        # writes them from here on. (One that is on record stays: it was
+        # waited for, and is not among these.) Each is seen to be gone,
+        # and tried again a few times when it is not: nothing comes by
+        # after this (``_remove_fork_dir``).
+        given_up, self._forks_given_up = self._forks_given_up, {}
+        if given_up:
+            await asyncio.gather(
+                *(self._remove_fork_dir(session_id, target) for session_id, target in given_up.items())
+            )
+        if self._idle_over:
+            # Sessions the host had open by itself that are being given
+            # back: each waits for its runtime no longer than this, and
+            # then does what is left (the gateway's token taken back, the
+            # ledger told). Waited for, so that the ledger is still open.
+            await asyncio.wait(
+                list(self._idle_over.values()),
+                timeout=_SHUTDOWN_START_WAIT_SECONDS + _SERVICE_CLOSE_POLL_SECONDS,
+            )
         for commission_id in list(self._sessions):
             self._discard(commission_id)
         self._held_by.clear()
@@ -3057,3 +5011,21 @@ class TaskAgentManager:
         if pump is not None:
             pump.cancel()
             await asyncio.gather(pump, return_exceptions=True)
+        await self._settle_usage()
+
+    async def forks_settled(self) -> None:
+        """Wait for what is still being done about copies once the ledger is closed, for no longer than that takes.
+
+        A copy whose record was being written when the host shut down
+        is left to go on (``shutdown``). With the ledger closed its
+        record fails, and what was written of it is removed, tried
+        again a few times (``_remove_fork_dir``). The process may end
+        right after the host has shut down, and would cut that off:
+        so whoever closes the ledger waits here, for as long as a
+        start gets and the tries take.
+        """
+        if self._fork_records:
+            await asyncio.wait(
+                list(self._fork_records),
+                timeout=_SHUTDOWN_START_WAIT_SECONDS + _FORK_REMOVE_RETRIES * _FORK_REMOVE_RETRY_SECONDS,
+            )

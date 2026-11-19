@@ -61,15 +61,27 @@ Volume 是配置地区/语言下 Google Ads 的月搜索需求估算，不是 N.
 | .cn 产品主页 | YYYY-MM-DD | X | X | X% | X | ±X | indexed/submitted（覆盖率）+ errors/warnings |
 | .online 文档站 | YYYY-MM-DD | X | X | X% | X | ±X | indexed/submitted（覆盖率）+ errors/warnings |
 
-- 高曝光低 CTR 页面：列出页面、曝光、CTR 与证据窗口。
-- GSC 新查询：列出新增 query；API 没有数据时写 `N/A`。
-
 ### GSC 连续 7 日环比
 
 | 站点 | 当前窗口 | 点击 | Δ前7日 | 曝光 | Δ前7日 | CTR | Δ前7日 | 平均排名 | Δ前7日 |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
 | .cn 产品主页 | YYYY-MM-DD → YYYY-MM-DD | X | ±X | X | ±X | X% | ±X pp | X | 改善/下降 |
 | .online 文档站 | YYYY-MM-DD → YYYY-MM-DD | X | ±X | X | ±X | X% | ±X pp | X | 改善/下降 |
+
+- 高曝光低 CTR 页面：列出页面、曝光、CTR 与证据窗口。
+- GSC 新查询：列出新增 query。API 没有返回数据时写 `N/A`。
+- 限制：按查询词与页面分组的数据受 Search Console API 返回行数限制。
+
+### GSC 首页关键词 · .cn 产品主页
+
+- 页面 https://project-neko.cn/ · YYYY-MM-DD → YYYY-MM-DD
+
+| 查询词 | 点击 | 展示 | CTR | 平均排名 |
+|---|---:|---:|---:|---:|
+| 数字生命 | X | X | X% | X |
+| AI 数字生命 | N/A | N/A | N/A | N/A |
+
+- `N/A` 表示 Google 未返回该词的数据行。
 
 ## 🤖 GEO / AI 搜索战况
 

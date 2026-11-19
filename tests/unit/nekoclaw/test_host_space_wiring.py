@@ -105,11 +105,12 @@ async def test_an_empty_space_adds_nothing_to_a_task_agents_instructions(hosts, 
 
     system = _system(llm)
     assert SPACE_NOTE not in system and "task_agent_space" not in system
-    # What the host adds is whom the task agent works for and how the gateway is used, word
-    # for word, and says nothing of the commission, which is the message that opens it.
-    assert system.endswith(
-        TASK_AGENT_SESSION_FRAME.format(lanlan_name="Lan") + "\n\n" + TASK_AGENT_BRIEF_GATEWAY_NOTE
-    )
+    # What the host adds is how the gateway is used and whom the task agent works for, word
+    # for word, and says nothing of the commission, which is the message that opens it. What
+    # is the session's own (where it works, the language it answers in) comes after it.
+    own = TASK_AGENT_BRIEF_GATEWAY_NOTE + "\n\n" + TASK_AGENT_SESSION_FRAME.format(lanlan_name="Lan")
+    assert own + "\n\nWorking directory: " in system
+    assert system.endswith("in English.")
     assert "sort the photos" not in system
     assert llm.requests[0][-1]["content"].startswith(
         f"Commission {receipt.commission_id}\nsort the photos\nWhat the user said: can you sort my photos"
