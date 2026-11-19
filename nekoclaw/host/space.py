@@ -865,16 +865,22 @@ def paths_named_in(text: Any) -> list[str]:
 
     # An address of the web is no file, whatever it ends in.
     said = _WEB_ADDRESS.sub(" ", str(text or ""))
-    # A path in quotes is taken whole (``data/old report.csv``), and what
-    # is in the quotes is not taken apart: a part of it is no file named.
-    # Blanked out as long as they were, so that the rest stands where it did.
-    quoted = [
-        (match.start(), next(group for group in match.groups() if group is not None).strip())
-        for match in _QUOTED.finditer(said)
-    ]
-    said = _QUOTED.sub(lambda match: " " * len(match.group(0)), said)
+    # What is in quotes is taken whole (``data/old report.csv``). Inside
+    # it the first part with a separator is a path all the same (the file
+    # in ``python src/app.py``). Not a bare name, nor a part after one
+    # with a separator: either may be the end of a path with a space in
+    # it (``D:/My Work/app.py``). The words between spaces are not looked
+    # for there.
+    quotes = list(_QUOTED.finditer(said))
+    quoted = [(match.start(), next(group for group in match.groups() if group is not None).strip()) for match in quotes]
 
     def whole(run: re.Match[str]) -> bool:
+        part = run.group(0)
+        for match in quotes:
+            if match.start() < run.start() < match.end():
+                before = said[match.start() + 1 : run.start()]
+                if ("/" not in part and "\\" not in part) or "/" in before or "\\" in before:
+                    return False
         # Not the end of a path with words of another script in it
         # (``notes/旧report.csv``): what follows the last separator before
         # it is not a file of its own name. That path is a word as white
@@ -889,7 +895,7 @@ def paths_named_in(text: Any) -> list[str]:
     found: list[str] = []
     # In the order they are written.
     runs = sorted([*quoted, *((run.start(), run.group(0)) for run in _PLAIN_PATH.finditer(said) if whole(run))])
-    for word in [*(item for _at, item in runs), *_WORD_BREAKS.split(said)]:
+    for word in [*(item for _at, item in runs), *_WORD_BREAKS.split(_QUOTED.sub(" ", said))]:
         word = word.rstrip(".,;:!?…")
         if len(word) < 3 or word in found or _A_NUMBER.fullmatch(word):
             continue

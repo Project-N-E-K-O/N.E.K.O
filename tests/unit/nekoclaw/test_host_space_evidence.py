@@ -619,9 +619,14 @@ def test_a_path_comes_before_the_clause_it_stands_in_and_a_number_is_none():
     # A whole path after a colon is still one.
     assert paths_named_in("入口:/home/me/repo/app.py") == ["/home/me/repo/app.py", "入口:/home/me/repo/app.py"]
     # A path in quotes is taken whole, spaces and all, and not taken apart.
-    assert paths_named_in("Read `data/old report.csv` first.") == ["data/old report.csv"]
-    assert paths_named_in("先看“D:/My Work/app.py”再改") == ["D:/My Work/app.py"]
+    # (``data/old`` is a part with a separator; a directory counts for nothing where files are looked for.)
+    assert paths_named_in("Read `data/old report.csv` first.") == ["data/old report.csv", "data/old"]
+    assert paths_named_in("先看“D:/My Work/app.py”再改") == ["D:/My Work/app.py", "D:/My"]
     assert paths_named_in("It's in `config` and \"src/app.py\"") == ["src/app.py"]
+    # In quotes, a part with a separator is a path all the same; a bare name is not taken by itself.
+    assert paths_named_in("Run `python src/app.py` with the extra flag") == ["python src/app.py", "src/app.py"]
+    assert paths_named_in("See `notes.md`, then `vim notes.md`.") == ["notes.md", "vim notes.md"]
+    assert paths_named_in("Open `my report.csv` now.") == ["my report.csv"]
     assert paths_named_in("1.2.3 and 10.0 and 2026.11 and .5.") == []
 
 
