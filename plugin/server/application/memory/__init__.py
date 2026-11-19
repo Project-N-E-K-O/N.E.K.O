@@ -49,6 +49,45 @@ def _target(request: dict[str, Any]) -> MemoryTarget:
         raise _error("INVALID_ARGUMENT", str(exc), 400) from exc
 
 
+def _acquire_memory_request_slot() -> None:
+    """Take one of the shared memory-server request slots, or raise BUSY.
+
+    Reject rather than queue behind a slow memory server. Only the short
+    counter update is locked; HTTP clients remain owned by their own loops.
+    """
+    global _active_memory_requests
+    with _memory_request_lock:
+        if _active_memory_requests >= _MAX_MEMORY_HTTP_REQUESTS:
+            raise _error("BUSY", "Memory request capacity exhausted", 429)
+        _active_memory_requests += 1
+
+
+def _release_memory_request_slot() -> None:
+    global _active_memory_requests
+    with _memory_request_lock:
+        _active_memory_requests -= 1
+
+
+class memory_request_slot:  # noqa: N801 - used like a function: `with memory_request_slot():`
+    """Hold one shared memory-server request slot for the enclosed work.
+
+    Every plugin-side caller of the memory server's recall endpoints must
+    hold a slot, so the cap bounds their combined load instead of each entry
+    point getting a budget of its own.
+
+    A plain class rather than ``contextlib.contextmanager``: the generator
+    form re-raises the body's exception through the generator and assigns its
+    traceback, which fails on the frozen ``ServerDomainError``.
+    """
+
+    def __enter__(self) -> None:
+        _acquire_memory_request_slot()
+
+    def __exit__(self, *_exc_info: object) -> bool:
+        _release_memory_request_slot()
+        return False
+
+
 def _check_size(value: object, code: str) -> None:
     try:
         size = len(
@@ -63,18 +102,12 @@ def _check_size(value: object, code: str) -> None:
 async def _fetch(
     ctx: RpcContext, method: str, path: str, body: dict | None = None
 ) -> dict:
-    global _active_memory_requests
     from config import MEMORY_SERVER_PORT
 
     remaining = ctx.remaining()
     if remaining <= 0:
         raise _error("MEMORY_TIMEOUT", "Memory request timed out", 504)
-    # Reject rather than queue behind a slow memory server. Only the short
-    # counter update is locked; HTTP clients remain owned by their own loops.
-    with _memory_request_lock:
-        if _active_memory_requests >= _MAX_MEMORY_HTTP_REQUESTS:
-            raise _error("BUSY", "Memory request capacity exhausted", 429)
-        _active_memory_requests += 1
+    _acquire_memory_request_slot()
     try:
         async with asyncio.timeout(remaining):
             client = get_internal_http_client()
@@ -154,8 +187,7 @@ async def _fetch(
             {"error_type": type(exc).__name__},
         ) from exc
     finally:
-        with _memory_request_lock:
-            _active_memory_requests -= 1
+        _release_memory_request_slot()
 
 
 async def search(ctx: RpcContext, request: dict[str, Any]) -> dict:

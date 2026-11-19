@@ -188,6 +188,9 @@ class MemoryQueryService:
         normalized_timeout = _coerce_timeout(timeout)
         query_len = len(normalized_query)
         httpx = await ensure_httpx()
+        # Imported here, not at module level: the adapter imports httpx, and
+        # the plugin server keeps httpx out of its startup import graph.
+        from plugin.server.application.memory import memory_request_slot
 
         try:
             # No "language" field: the plugin server has no session locale to
@@ -205,23 +208,29 @@ class MemoryQueryService:
             # running after the plugin has already given up on it.
             deadline = _deadline_seconds(normalized_timeout)
             async with asyncio.timeout(deadline):
-                async with httpx.AsyncClient(timeout=deadline, proxy=None, trust_env=False) as client:
-                    response = await client.post(
-                        _build_memory_query_url(lanlan_name=normalized_lanlan_name),
-                        json=body,
-                    )
-                    response.raise_for_status()
-                    results = _extract_results(_decode_upstream_json(response))
-                    if not results:
-                        return {"result": ""}
-                    lang = await _fetch_render_language(
-                        client, httpx, lanlan_name=normalized_lanlan_name,
-                    )
+                # Recall is expensive on the memory server (query embedding
+                # plus a full candidate scan). Share the cap MemoryClient.search
+                # uses, so this entry point is not an unthrottled bypass of it;
+                # at the cap the call fails fast with BUSY instead of queueing.
+                # Rendering is local work and runs after the slot is released.
+                with memory_request_slot():
+                    async with httpx.AsyncClient(timeout=deadline, proxy=None, trust_env=False) as client:
+                        response = await client.post(
+                            _build_memory_query_url(lanlan_name=normalized_lanlan_name),
+                            json=body,
+                        )
+                        response.raise_for_status()
+                        results = _extract_results(_decode_upstream_json(response))
+                        if not results:
+                            return {"result": ""}
+                        lang = await _fetch_render_language(
+                            client, httpx, lanlan_name=normalized_lanlan_name,
+                        )
                 text = await asyncio.to_thread(_render_results, results, lang)
             return {"result": text}
         except ServerDomainError as exc:
             logger.warning(
-                "query_memory upstream recall error: code={}, lanlan_name={}, query_len={}, details={}",
+                "query_memory failed with domain error: code={}, lanlan_name={}, query_len={}, details={}",
                 exc.code,
                 normalized_lanlan_name,
                 query_len,

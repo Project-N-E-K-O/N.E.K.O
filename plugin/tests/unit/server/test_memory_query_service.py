@@ -7,6 +7,8 @@ from collections.abc import Callable
 import httpx
 import pytest
 
+from plugin.sdk.shared.contracts.memory import MemoryTarget
+from plugin.server.application import memory as adapter
 from plugin.server.application.messages import memory_query_service as module
 from plugin.server.domain.errors import ServerDomainError
 from plugin.utils.http_imports import load_httpx
@@ -210,6 +212,85 @@ async def test_query_memory_maps_truncated_json_to_upstream_error(
     assert exc_info.value.code == "MEMORY_QUERY_UPSTREAM_ERROR"
     assert exc_info.value.status_code == 502
     assert exc_info.value.details == {"upstream_code": "invalid_json"}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_fails_fast_with_busy_when_slots_are_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _install_transport(monkeypatch, _router(query_json={"results": []}))
+    monkeypatch.setattr(adapter, "_active_memory_requests", adapter._MAX_MEMORY_HTTP_REQUESTS)
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        await module.MemoryQueryService().query_memory(
+            lanlan_name="Neko", query="tea", timeout=5
+        )
+
+    assert exc_info.value.code == "BUSY"
+    assert exc_info.value.status_code == 429
+    assert seen == []
+    # A rejected call never took a slot, so it must not give one back.
+    assert adapter._active_memory_requests == adapter._MAX_MEMORY_HTTP_REQUESTS
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_shares_the_slot_cap_with_memory_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A query_memory call in flight counts against MemoryClient.search's cap."""
+    monkeypatch.setattr(adapter, "_MAX_MEMORY_HTTP_REQUESTS", 1)
+    arrived = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        arrived.set()
+        await release.wait()
+        return httpx.Response(200, json={"results": []})
+
+    _install_transport(monkeypatch, handler)
+    task = asyncio.create_task(
+        module.MemoryQueryService().query_memory(lanlan_name="Neko", query="tea", timeout=5)
+    )
+    try:
+        await asyncio.wait_for(arrived.wait(), 5)
+
+        class _Ctx:
+            @staticmethod
+            def remaining() -> float:
+                return 5.0
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            await adapter.search(
+                _Ctx(),
+                {"target": MemoryTarget.private("Neko").to_wire(), "query": "tea"},
+            )
+        assert exc_info.value.code == "BUSY"
+    finally:
+        release.set()
+        result = await task
+
+    assert result == {"result": ""}
+    assert adapter._active_memory_requests == 0
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_releases_its_slot_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_transport(
+        monkeypatch,
+        _router(query_status=503, query_json={"detail": "not initialized"}),
+    )
+
+    with pytest.raises(ServerDomainError):
+        await module.MemoryQueryService().query_memory(
+            lanlan_name="Neko", query="tea", timeout=5
+        )
+
+    assert adapter._active_memory_requests == 0
 
 
 @pytest.mark.plugin_unit
