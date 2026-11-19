@@ -120,6 +120,14 @@ def test_named_subcommands_are_registered(path: Path) -> None:
     assert not unknown, f"neko-plugin subcommands not registered in cli.py: {unknown}"
 
 
+def test_subcommand_scan_skips_template_placeholders() -> None:
+    # Rendered commands such as {lint_command} are filled in by the generator,
+    # so the scan must not read a placeholder as a subcommand name.
+    text = "`{lint_command}`\n{precheck_command}\n`uv run neko-plugin {subcommand} .`"
+    assert _SUBCOMMAND.findall(text) == []
+    assert _command_table_names("| Command | Use |\n|---|---|\n| `{lint_command}` | lint |") == set()
+
+
 def _numbered(text: str, pattern: str) -> list[str]:
     return [match.strip() for match in re.findall(pattern, text, re.MULTILINE)]
 
