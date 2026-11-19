@@ -10001,7 +10001,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         return { status: 'preview_requested' };
     }
 
-    // The UI script is absent in production until the complete N3 activation.
+    // The UI script is absent in production pages without the local N3 context.
     // Mount after initial character restoration, using only these narrow hooks.
     if (window.NekoModelWorkshop) {
         window.NekoModelWorkshop.mount(document.getElementById('model-workshop-panel'), {

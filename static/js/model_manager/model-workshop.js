@@ -48,8 +48,11 @@
         function errorKey(code) {
             if (code === 'model_workshop_task_not_found') return 'taskMissing';
             if (['csrf_validation_failed', 'local_access_required', 'origin_not_allowed'].includes(code)) return 'accessDenied';
-            if (['model_bundle_too_large', 'request_body_too_large'].includes(code)) return 'tooLarge';
-            if (['model_workshop_busy', 'model_workshop_state_busy', 'model_workshop_closed'].includes(code)) return 'busy';
+            // Main's body/startup guards reject before parsing. Reuse the translated
+            // size/availability messages instead of calling a blocked import a bad package.
+            if (['model_bundle_too_large', 'request_body_too_large', 'payload_too_large'].includes(code)) return 'tooLarge';
+            if (['model_workshop_busy', 'model_workshop_state_busy', 'model_workshop_closed',
+                'storage_startup_blocked', 'model_workshop_storage_blocked'].includes(code)) return 'busy';
             if (code === 'model_workshop_install_conflict') return 'conflict';
             return 'importFailed';
         }

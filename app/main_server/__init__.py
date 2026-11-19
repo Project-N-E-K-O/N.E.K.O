@@ -598,6 +598,14 @@ def _is_main_limited_mode_allowed_path(path: str, method: str) -> bool:
     )
 
 
+# Register the importer before the startup middleware: Starlette wraps earlier
+# registrations with later ones. Storage selection must reject the request
+# before the importer acquires a writer, recovers transactions or reads a body.
+# The existing Host/instance/global-body guards below remain outside both.
+from main_routers.model_market_router import ModelImportBodyGuard
+app.add_middleware(ModelImportBodyGuard, config_getter=lambda: _config_manager)
+
+
 @app.middleware("http")
 async def main_storage_limited_mode_guard(request: Request, call_next):
     if _runtime_startup_init_completed or not _main_runtime_limited_mode_enabled:
@@ -701,6 +709,7 @@ from .web_app import (  # noqa: F401
     live2d_router,
     memory_router,
     mmd_router,
+    model_market_router,
     music_router,
     pages_router,
     pngtuber_router,

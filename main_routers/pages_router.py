@@ -35,6 +35,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from .local_access import is_direct_loopback_request
 from .shared_state import get_templates
 from .visit_router.local_guard import require_visit_enabled
 
@@ -283,6 +284,10 @@ def _render_model_manager(request: Request):
     templates = get_templates()
     return templates.TemplateResponse(request, "templates/model_manager.html", {
         "request": request,
+        # Enable the manual importer only where its API's direct-local policy
+        # applies. Both manager URLs share this context; remote managers retain
+        # their existing controls without exposing an unusable local importer.
+        "model_workshop_enabled": is_direct_loopback_request(request),
         **_vrm_defaults_ctx(),
         **_static_assets_ctx(),
     })

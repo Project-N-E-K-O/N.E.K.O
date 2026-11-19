@@ -398,6 +398,7 @@ from main_routers.live2d_router import router as live2d_router  # noqa
 from main_routers.memory_router import router as memory_router  # noqa
 from main_routers.chat_sync_router import router as chat_sync_router, close_runtime as close_chat_sync_runtime  # noqa
 from main_routers.mmd_router import router as mmd_router  # noqa
+from main_routers.model_market_router import router as model_market_router  # noqa
 from main_routers.music_router import router as music_router  # noqa
 from main_routers.pages_router import router as pages_router  # noqa
 from main_routers.pngtuber_router import router as pngtuber_router  # noqa
@@ -828,6 +829,9 @@ app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
 app.include_router(mmd_router)
+# The independent package importer uses its own pre-body guard in the facade;
+# it must precede the page fallback and never register through the Steam router.
+app.include_router(model_market_router)
 app.include_router(pngtuber_router)
 app.include_router(jukebox_router)
 app.include_router(workshop_router)
