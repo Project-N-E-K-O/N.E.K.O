@@ -1081,6 +1081,44 @@ def test_a_manifest_override_does_not_exempt_a_router_entry_missing_its_handler(
     assert load() is None
 
 
+def test_a_row_restating_decorator_defaults_is_indistinguishable_from_manifest_only(
+    tmp_path: Path, isolated_registry
+):
+    """Known, accepted blind spot of the stale-artifact check.
+
+    A manifest row that spells out exactly what the decorator would have
+    contributed (``name`` equal to the id, an empty ``input_schema``) leaves
+    the router entry's packaged preview identical to a manifest-only entry's,
+    and an artifact predating host router handlers carries no other trace of
+    where the entry came from. Such an artifact is still reused; rebuilding it
+    with ``neko-plugin build`` restores the handler. Telling the two apart
+    would need a new packaged-metadata field. Change this test on purpose if
+    that is ever added.
+    """
+    from plugin.server.application.plugins.lifecycle_service import (
+        _read_packaged_isolated_metadata,
+    )
+    from plugin.server.infrastructure import packaged_metadata
+
+    plugin_dir = tmp_path / "contract"
+    payload = _write_router_package(
+        plugin_dir, '[[entries]]\nid="slow"\nname="slow"\ninput_schema={}\ntimeout=100\n'
+    )
+    stale = copy.deepcopy(payload)
+    for key in ("contract.slow", "contract:plugin_entry:slow"):
+        del stale["handlers"][key]
+    (plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME).write_text(
+        json.dumps(stale), encoding="utf-8"
+    )
+    config = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
+    assert registry._manifest_only_entry_ids(
+        "contract", stale["entries"], config, config["plugin"]
+    ) == {"slow"}
+    assert _read_packaged_isolated_metadata(
+        plugin_dir / "plugin.toml", "contract", conf=config, pdata=config["plugin"]
+    ) is not None
+
+
 def test_only_keys_runs_looks_up_count_as_entry_handlers():
     """A plugin-entry record under another event key is not what ``/runs`` finds."""
     from plugin.server.infrastructure.packaged_metadata import (
