@@ -1681,6 +1681,7 @@ test('VRM 真实 animateLoop：放宽后的上限严格执行（低估成 60、r
     ];
     rows.forEach((r) => (t && t.diagnostic ? t.diagnostic(r) : console.log(r)));
     assert.ok(under.fps <= 90.5, rows[0] + '：不超过放宽后的上限 90');
+    assert.ok(under.fps >= 89.5, rows[0] + '：也不能被过度限帧（例如误按配置或其它更低的间隔节流）');
     assert.equal(normal.renders, normal.frames, '60Hz 测准时逐帧渲染，不跳帧');
     // 非 Pet 不放宽，且仍走原有 0.9 容差路径：96Hz（10.4ms）< 15ms 门槛，恰好隔帧渲染 = 48fps
     assert.ok(Math.abs(nonPet.fps - 48) < 0.5, rows[2] + '：非 Pet 行为与改前一致');
