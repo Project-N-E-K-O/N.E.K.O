@@ -121,8 +121,9 @@ _THEN = "nekoclaw/then"
 _CAUGHT_UP_SECONDS = 10.0
 _SHUT_DOWN_REASON = "the host was shut down"
 # She reads them when she asks how the commission went: they name no period,
-# price or plan (``TASK_AGENT_FAILED_WHY``). The first is before the task
-# agent made a request for the commission, the second after it made some.
+# price or plan (``TASK_AGENT_FAILED_WHY``). The first is before a task agent
+# was ever at work on the commission, the second once one was (in this run,
+# or in an earlier one it is taken up again after).
 _QUOTA_REASON = "the task agent's model ran out of quota"
 _QUOTA_RUN_REASON = "the task agent's model ran out of quota partway through"
 # Failures of the host's own that she is not woken for and that nothing shows.
@@ -1598,7 +1599,14 @@ class TaskAgentManager:
                 # does: a new session of the same commission started before
                 # that would be released by it.
                 self._keep_unsent(session)
-                await self._fail(commission.id, _QUOTA_REASON, said="quota")
+                # Taken up again after it was at work on it before (its quota
+                # ran out then, say): part of it may be done, and what she is
+                # told, and keeps, must not say it never started.
+                await self._fail(
+                    commission.id,
+                    _QUOTA_RUN_REASON if opened else _QUOTA_REASON,
+                    said="quota_run" if opened else "quota",
+                )
                 await self._close_session(session)
                 # What was passed on while the failure was being written.
                 self._keep_unsent(session)
@@ -2811,9 +2819,10 @@ class TaskAgentManager:
         """End a commission as failed for a reason of the host's own.
 
         ``reason`` is what goes on record, in English. ``said`` says what
-        it was: ``quota`` (the task agent's model ran out of quota before
-        it made a request for it), ``quota_run`` (the same, after it made
-        some: part of the work may be done), ``start`` (the task agent
+        it was: ``quota`` (the task agent's model ran out of quota before a
+        task agent was ever at work on it), ``quota_run`` (the same, once
+        one was, now or before it was taken up again: part of the work may
+        be done), ``start`` (the task agent
         could not start on it: nothing of it was taken) or ``run`` (its run
         stopped on an error). She is told that,
         in English, as the host tells a model what happened

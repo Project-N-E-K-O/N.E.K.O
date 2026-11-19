@@ -1283,6 +1283,38 @@ async def test_the_quota_running_out_midway_stops_the_task_agent_after_that_requ
     assert 3 <= len(llm.requests) <= 4
 
 
+async def test_a_task_taken_up_again_while_there_is_still_no_quota_is_still_said_to_be_partly_done(hosts, tmp_path):
+    left = [True, True, False]
+
+    async def meter(commission_id: str) -> bool:
+        return left.pop(0) if left else False
+
+    step = [call("todo_write", {"todos": []}), usage(100), stop("tool_calls")]
+    llm = ScriptedLLM([step, step, step, _report_ready("done")])
+    host = _task_agent_host(hosts, tmp_path, llm, task_agent_meter=meter)
+    receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="en")
+    await wait_status(host, receipt.commission_id, "failed")
+    await wait_until(lambda: receipt.commission_id not in host.task_agents._sessions, what="the session being released")
+    sent = len(llm.requests)
+
+    # The user has it go on at once, and there is still no quota: not one request goes out.
+    await host.task_agents.tell(receipt.commission_id, "go on with the rest")
+
+    async def reported_again() -> bool:
+        return len(await outbox(host, "task_result")) == 2
+
+    await wait_until(reported_again, what="the second failure being reported")
+    again = (await outbox(host, "task_result"))[-1]
+    failed = await host.ledger.get(receipt.commission_id)
+    # Part of it was done the first time: neither what she is told now nor what she reads
+    # when she asks says it never started.
+    said = TASK_AGENT_FAILED_NOTICE.format(why=TASK_AGENT_FAILED_WHY["quota_run"])
+    assert again.payload["summary"] == failed.result_summary == said
+    assert failed.status_reason == "the task agent's model ran out of quota partway through"
+    assert (again.payload["delivery_mode"], again.payload["visibility"]) == ("passive", [])
+    assert len(llm.requests) == sent
+
+
 async def test_a_task_agent_stopped_while_its_first_request_is_counted_gets_no_work(hosts, tmp_path, caplog):
     import logging
 
