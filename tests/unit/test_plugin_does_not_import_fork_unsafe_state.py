@@ -27,7 +27,7 @@ def _forbidden(module: str) -> bool:
 
 def _import_function_names(tree: ast.AST) -> set[str]:
     """Names that call importlib.import_module here, aliases included (`import_module as load`)."""
-    names = set(_IMPORTLIB_CALLS)
+    names = {'__import__'}  # a builtin; import_module counts only when bound from importlib
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == 'importlib':
             names.update(alias.asname or alias.name for alias in node.names if alias.name == 'import_module')
@@ -81,6 +81,15 @@ def test_plugin_code_does_not_import_recent_file_or_chat_sync():
         'inherited half-updated. Make that state fork-safe before using it from plugins.\n'
         + '\n'.join(violations)
     )
+
+
+def test_scanner_ignores_an_unbound_import_module_name():
+    tree = ast.parse(
+        'def import_module(name):\n'
+        '    return name\n'
+        'import_module("utils.recent_file")\n'
+    )
+    assert [module for _, module in _imported_modules(tree) if _forbidden(module)] == []
 
 
 def test_scanner_catches_each_import_form(tmp_path):
