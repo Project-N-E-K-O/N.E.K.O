@@ -3285,6 +3285,24 @@ async def test_a_directory_that_holds_a_record_under_a_second_name_is_not_search
     await asked("write", project / "docs", "outside_write")
     assert gone_through == []
     assert await asked("grep", project / "src") == refused and len(gone_through) == 1
+    # Nor is it asked whether what is written is a directory: every file a task agent writes
+    # among its own comes by here, and asking costs a call each time.
+    asked_whether: list[str] = []
+    isdir = os.path.isdir
+
+    def noting_which(path: Any) -> bool:
+        asked_whether.append(os.fspath(path))
+        return isdir(path)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os.path, "isdir", noting_which)
+        await asked("write", mine / "plain" / "new.txt", "workdir_files")
+        await asked("write", mine / "plain", "workdir_files")
+        await asked("write", project / "docs", "outside_write")
+        assert asked_whether == []
+        # (A search asks, once.)
+        assert await asked("grep", project / "src") == refused
+        assert asked_whether == [str(project / "src")]
     # And a directory that is not to be reached says no, where asking of it would raise: the
     # search is ruled on as any other, and not refused for an error.
     elsewhere = tmp_path / "elsewhere"

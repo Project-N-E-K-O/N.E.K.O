@@ -502,12 +502,17 @@ def _lies_in(
     name is a file like any other: a working tree of git has one). The
     directories in ``apart`` are not gone into: other sessions' own
     directories, which are ruled on by themselves. They are given by
-    name (as the file system compares names), each name with which
-    directories of that name they are, by device and number: a
-    directory is told by what it is, however the path to it is written,
-    and is asked of itself only where its name is one of theirs. (What
-    the listing says of a directory's number is not gone by: at a mount
-    point it is another, and on Windows it costs the call all the same.)
+    name, each name with which directories of that name they are, by
+    device and number: a directory is told by what it is, however the
+    path to it is written, and is asked of itself only where its name
+    is one of theirs. (Names are compared as ``os.path.normcase``
+    leaves them, which is not everywhere as the file system compares
+    them: where it takes two ways of writing a name for one and the
+    directory is met under the other, it is not known for one of theirs
+    and is gone into. That refuses a search which need not be refused,
+    and allows none. What the listing says of a directory's number is
+    not gone by: at a mount point it is another, and on Windows it
+    costs the call all the same.)
     What kind of entry it is, the directory tells; the entry itself is
     asked only where more must be known (which file it is), as that
     costs a call each. No more than ``limit`` entries are looked at: a
@@ -4920,18 +4925,19 @@ class TaskAgentManager:
                                 record = (other.st_dev, other.st_ino) == (found.st_dev, found.st_ino)
                             except OSError:
                                 pass  # The record is not there: not the same file.
-            # A directory whose files would be read. (Asked once, and so
-            # that one which is not to be reached says no, and does not
-            # raise.)
-            searched = not names_only and os.path.isdir(target)
+            # A directory whose files would be read: not one that is
+            # written to, which searches nothing. (Asked once, and only
+            # where it is gone by: it costs a call, and every file a task
+            # agent writes comes by here. Asked so that a directory which
+            # is not to be reached says no, and does not raise.)
+            searched = not writes and not names_only and os.path.isdir(target)
             holds = (
                 (in_own or in_work)
                 and searched
                 and any(session_dir and is_inside(Path(session_dir), target) for _id, _workdir, session_dir in places)
             )
             aliased = False
-            # (Not for a write, which searches nothing.)
-            if searched and not writes:
+            if searched:
                 # Only a record that has a second name can lie anywhere
                 # under one, and it has none unless somebody gave it one:
                 # as a rule nothing is looked for, and no directory is
