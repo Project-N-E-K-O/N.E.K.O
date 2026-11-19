@@ -125,22 +125,17 @@ def build_host_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
                 "content": content,
                 "category": str(args["category"]),
                 "scope": str(args.get("scope", "project")),
-                # How it is known, and the files that show it. The host
-                # looks for the files and tells from both whether the
-                # lesson takes effect; nothing is checked here. A session
-                # that was opened before the tool asked for this keeps the
-                # definition it was opened with, and says nothing of it
-                # (``newer`` below, so that such a call gets here): the
-                # host takes such a lesson for inferred. So it does one
-                # from a session opened since that leaves it out: which
-                # definition a session was opened with is not kept apart.
-                "confidence": str(args.get("confidence") or ""),
+                # How it is known (required: a call without it is turned
+                # down before it gets here), and the files that show it.
+                # The host looks for the files and tells from both whether
+                # the lesson takes effect; nothing else is checked here.
+                "confidence": str(args["confidence"]),
                 "evidence": [str(path) for path in args.get("evidence") or [] if str(path).strip()],
             }
             reply = await ask_host("note_lesson", payload, call)
             return f"lesson submitted.{_host_note(reply)}"
 
-        tools.append(define_tool(schemas["note_lesson"], note_lesson, newer=("confidence",)))
+        tools.append(define_tool(schemas["note_lesson"], note_lesson))
 
     if offers_subagents(capabilities):
 

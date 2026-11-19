@@ -518,7 +518,7 @@ TASK_AGENT_REVIEW_INPUT_MAX_TOKENS = 7000
 """Cap on everything sent to the model for one review, the instructions
 included."""
 
-TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS = 3300
+TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS = 3200
 """Cap on the account of what the task agent did within that input. Of a
 longer one the beginning and the end are kept. With every other part at its
 own cap the whole still fits in ``TASK_AGENT_REVIEW_INPUT_MAX_TOKENS``, so

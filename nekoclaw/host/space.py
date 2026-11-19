@@ -3614,7 +3614,10 @@ class TaskAgentSpace:
         ``evidence`` or in its title, description and text, that exist in
         ``bases`` (see ``evidence_of``). With one it counts as observed
         and takes effect; with none it counts as inferred and waits to be
-        seen again, like a note of a task agent (``_take_note``).
+        seen again, like a note of a task agent (``_take_note``). A global
+        one (``project`` None) counts as inferred whatever files it names:
+        the files of one project do not show that it holds for every
+        project. They are kept with it all the same.
 
         Returns the entry, None for one that waits, and whether it is a
         new file. For one that waits, the name of the pending entry it is
@@ -3661,8 +3664,11 @@ class TaskAgentSpace:
                 description=description,
                 source=source,
                 known=_Known(
-                    # Seen, when a file it names is there to be seen.
-                    confidence=OBSERVED if any(path not in untold for path in found) else INFERRED,
+                    # Seen, when a file it names is there to be seen; and
+                    # for the project the file is in, not for every one.
+                    confidence=(
+                        OBSERVED if project is not None and any(path not in untold for path in found) else INFERRED
+                    ),
                     evidence=tuple(found),
                     outside=tuple(apart),
                     untold=tuple(untold),
