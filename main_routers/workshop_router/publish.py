@@ -357,6 +357,11 @@ async def prepare_workshop_upload(request: Request):
         }, status_code=500)
 
 
+# Module-level alias so tests can simulate Windows' case-insensitive
+# comparison without patching the shared ``os.path`` module.
+_normcase = os.path.normcase
+
+
 def _resolve_workshop_export_child(path: str, workshop_export_dir: str) -> tuple[str, str, bool]:
     """Resolve ``path`` and check that it is a direct child of WorkshopExport.
 
@@ -370,8 +375,8 @@ def _resolve_workshop_export_child(path: str, workshop_export_dir: str) -> tuple
     resolved = os.path.realpath(os.path.normpath(path))
     root = os.path.realpath(os.path.normpath(workshop_export_dir))
     allowed = (
-        os.path.normcase(resolved) != os.path.normcase(root)
-        and os.path.normcase(os.path.dirname(resolved)) == os.path.normcase(root)
+        _normcase(resolved) != _normcase(root)
+        and _normcase(os.path.dirname(resolved)) == _normcase(root)
     )
     return resolved, root, allowed
 
@@ -407,14 +412,24 @@ async def cleanup_temp_folder(request: Request):
             temp_folder, workshop_export_dir
         )
         if not allowed:
+            # Keep server paths out of the response; the log has the details.
+            logger.warning(f"拒绝清理不在允许范围内的临时目录: {temp_folder}（允许: {workshop_export_dir} 下的子目录）")
             return JSONResponse({
                 "success": False,
-                "error": f"临时目录路径不在允许的范围内。临时目录: {temp_folder}, 允许路径: {workshop_export_dir} 下的子目录"
+                "error": "临时目录路径不在允许的范围内"
             }, status_code=403)
         
         # Delete the temporary directory.
         if os.path.exists(temp_folder):
             await asyncio.to_thread(_delete_content_folder, temp_folder)
+            # rmtree runs with ignore_errors=True, so verify it actually went
+            # away (locked files on Windows, or a plain file instead of a dir).
+            if os.path.exists(temp_folder):
+                logger.warning(f"临时目录删除后仍然存在: {temp_folder}")
+                return JSONResponse({
+                    "success": False,
+                    "error": "临时目录删除失败"
+                }, status_code=500)
             logger.info(f"临时目录已删除: {temp_folder}")
             return JSONResponse({
                 "success": True,

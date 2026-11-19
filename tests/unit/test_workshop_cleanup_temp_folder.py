@@ -59,6 +59,39 @@ async def test_root_itself_is_rejected(export_root):
     _assert_untouched(export_root)
 
 
+async def test_rejection_does_not_echo_server_paths(export_root, tmp_path):
+    status, body = await _cleanup(str(export_root))
+
+    assert status == 403, body
+    assert str(tmp_path) not in body['error'], '403 不许把服务端路径回给客户端'
+
+
+async def test_plain_file_is_not_reported_as_deleted(export_root):
+    """rmtree(ignore_errors=True) silently skips a file; that is not a 200."""
+    stray = export_root / 'stray.txt'
+    stray.write_text('x', encoding='utf-8')
+
+    status, body = await _cleanup(str(stray))
+
+    assert status == 500, body
+    assert body['success'] is False
+    assert stray.exists()
+    _assert_untouched(export_root)
+
+
+async def test_folder_that_survives_rmtree_is_reported_as_failed(
+    export_root, monkeypatch
+):
+    """Simulate a locked file on Windows: rmtree gives up quietly."""
+    monkeypatch.setattr(publish, '_delete_content_folder', lambda folder: None)
+
+    status, body = await _cleanup(str(export_root / 'item_aaa'))
+
+    assert status == 500, body
+    assert body['success'] is False
+    assert (export_root / 'item_aaa').exists()
+
+
 @pytest.mark.parametrize('suffix', [os.sep, os.sep * 2, os.sep + '.'])
 async def test_root_with_trailing_separator_is_rejected(export_root, suffix):
     status, body = await _cleanup(str(export_root) + suffix)
@@ -89,7 +122,7 @@ async def test_symlink_to_root_is_rejected(export_root):
 
 async def test_root_with_different_case_is_rejected_on_windows(export_root, monkeypatch):
     """Simulate Windows' case-insensitive comparison on any platform."""
-    monkeypatch.setattr(publish.os.path, 'normcase', lambda p: p.lower())
+    monkeypatch.setattr(publish, '_normcase', lambda p: p.lower())
     upper_root = os.path.join(str(export_root.parent), 'WORKSHOPEXPORT') + os.sep
 
     status, body = await _cleanup(upper_root)
@@ -100,7 +133,7 @@ async def test_root_with_different_case_is_rejected_on_windows(export_root, monk
 
 def test_child_with_different_case_is_still_allowed_on_windows(export_root, monkeypatch):
     """Case-insensitive matching must not reject a legitimate child either."""
-    monkeypatch.setattr(publish.os.path, 'normcase', lambda p: p.lower())
+    monkeypatch.setattr(publish, '_normcase', lambda p: p.lower())
     child = os.path.join(str(export_root.parent), 'workshopexport', 'item_aaa')
 
     _, _, allowed = publish._resolve_workshop_export_child(
