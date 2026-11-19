@@ -1003,9 +1003,14 @@ class Live2DManager {
             app.ticker.maxFPS = this._idleTickSavedMaxFPS;
         }
         // The timer has been driving these tickers by hand; resume rAF from the last manual update.
+        // The external ticker.stop() path (restartGlobals: false) stops app.ticker right after this,
+        // so it keeps the plain start and leaves no guard behind.
         if (restartGlobals) this._releaseGlobalTickers({ keepClock: true });
         if (app && app.ticker && app.ticker.started === false && this._tickerOrigStart) {
-            try { this._startTickerKeepingClock(app.ticker, this._tickerOrigStart); } catch (_) {}
+            try {
+                if (restartGlobals) this._startTickerKeepingClock(app.ticker, this._tickerOrigStart);
+                else this._tickerOrigStart();
+            } catch (_) {}
         }
         this._idleTickSavedMaxFPS = null;
         this._idleTickFps = null;
@@ -1019,8 +1024,10 @@ class Live2DManager {
      *   value (the last manual update) so the first rAF frame's elapsedMS covers that span.
      * - rAF timestamps are the frame's begin time and can be earlier than that last manual
      *   update (which used performance.now()). PIXI would then move lastTime backwards and
-     *   count the overlap twice, so rAF timestamps are clamped to the restored lastTime until
-     *   one passes it; the guard then removes itself.
+     *   count the overlap twice, so timestamps earlier than the ticker's current lastTime are
+     *   clamped to it. The guard removes itself at the first numeric timestamp that is not
+     *   earlier; argument-less update() calls (e.g. `start(); update();` "ensure render" paths)
+     *   pass through and keep it installed, since the next rAF frame can still be earlier.
      * PIXI's own minFPS cap (_maxElapsedMS) still clamps oversized gaps.
      * Only for paths where the timer was driving the ticker until now. Resuming after an
      * external pause keeps PIXI's reset semantics.
@@ -1035,8 +1042,10 @@ class Live2DManager {
         const hadOwnUpdate = Object.prototype.hasOwnProperty.call(ticker, 'update');
         const innerUpdate = ticker.update;
         const guardedUpdate = function (time) {
-            if (typeof time === 'number' && time < lastTime) {
-                return innerUpdate.call(this, lastTime);
+            if (typeof time !== 'number') return innerUpdate.call(this, time);
+            const floor = ticker.lastTime;
+            if (Number.isFinite(floor) && time < floor) {
+                return innerUpdate.call(this, floor);
             }
             if (ticker.update === guardedUpdate) {
                 if (hadOwnUpdate) ticker.update = innerUpdate;

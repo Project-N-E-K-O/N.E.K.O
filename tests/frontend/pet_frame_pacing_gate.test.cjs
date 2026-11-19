@@ -597,11 +597,13 @@ function makePixiV7Ticker(sb, name) {
             t._requestId = null;
             if (t.started) {
                 t.update(time);
-                if (t.started && t._requestId === null) t._requestId = sb.sandbox.requestAnimationFrame(t._tick);
+                if (t.started && t._requestId === null && t.hasListeners) t._requestId = sb.sandbox.requestAnimationFrame(t._tick);
             }
         },
+        // PIXI only (re)requests rAF and resets lastTime when the ticker has listeners (_head.next).
+        hasListeners: true,
         _requestIfNeeded() {
-            if (this._requestId === null) {
+            if (this._requestId === null && this.hasListeners) {
                 this.lastTime = now();
                 this._lastFrame = this.lastTime;
                 this._requestId = sb.sandbox.requestAnimationFrame(this._tick);
@@ -743,6 +745,61 @@ test('Live2D：退出定时器模式后 lastTime 接着最后一次手动 update
         assert.equal(t.started, true);
         assert.equal(t.lastTime, now, `${t.name}：暂停后恢复从现在起算，不把暂停时长补进模型时钟`);
     }
+}));
+
+test('Live2D：定时器模式下走「确保渲染」的 start(); update(); 之后，rAF 帧时间早于这次 update 也不倒退', withMockTimers(() => {
+    const sb = createSandbox({ pet: false, targetFrameRate: 60 });
+    const { mgr, app } = setupLive2DWithPixiV7Tickers(sb);
+    mgr.boostInteractiveFPS();
+    runWallClock(sb, 1000);
+    assert.equal(mgr._idleTickMode, true);
+    // 停在距上一拍 ≥10ms 的位置，让下面的 rAF 帧时间落在「上一拍」和「这次 update」之间
+    while (sb.sandbox.performance.now() - app.ticker.lastTime < 10) sb.tick(1);
+    const t = app.ticker;
+    if (!t.started) t.start();
+    // 退出后 maxFPS 恢复为地板值，带门时这次 update() 会被挡掉、lastTime 不动；
+    // 清掉门，覆盖 update() 真把 lastTime 推到 now 的情况
+    t.maxFPS = 0;
+    t.update();
+    const ensuredAt = sb.sandbox.performance.now();
+    assert.equal(t.lastTime, ensuredAt);
+    const clockBefore = t.modelClockMs;
+    const raf = sb.rafQueue.splice(0, sb.rafQueue.length);
+    assert.ok(raf.length > 0, '切回 rAF 后排了下一帧');
+    raf.forEach((e) => e.fn(ensuredAt - 5)); // 帧开始时间早于 ensure 路径的 update()
+    assert.equal(t.lastTime, ensuredAt, 'lastTime 不倒退');
+    sb.rafQueue.splice(0, sb.rafQueue.length).forEach((e) => e.fn(ensuredAt + 12));
+    assert.equal(t.modelClockMs - clockBefore, 12, '下一帧只走真实经过的 12ms，不重复计时');
+    assert.equal(t.update, t.originalUpdate, '越过后包装撤掉');
+}));
+
+test('Live2D：外部 ticker.stop() 退出定时器模式时 app.ticker 不留防倒退包装', withMockTimers(() => {
+    const sb = createSandbox({ pet: true, targetFrameRate: 60 });
+    sb.measureRefresh(60);
+    const { mgr, app } = setupLive2DWithPixiV7Tickers(sb);
+    mgr.boostInteractiveFPS();
+    runWallClock(sb, 1000);
+    assert.equal(mgr._idleTickMode, true);
+    mgr.pauseRendering();
+    assert.equal(app.ticker.started, false);
+    assert.ok(!Object.prototype.hasOwnProperty.call(app.ticker, 'update'), '停住的 ticker 上没有实例 update');
+}));
+
+test('Live2D：没有监听者的全局 ticker（PIXI 不重置 lastTime）退出定时器模式也不出错', withMockTimers(() => {
+    const sb = createSandbox({ pet: false, targetFrameRate: 60 });
+    const { mgr, system } = setupLive2DWithPixiV7Tickers(sb);
+    mgr.boostInteractiveFPS();
+    runWallClock(sb, 1000);
+    assert.equal(mgr._idleTickMode, true);
+    system.hasListeners = false;
+    runWallClock(sb, 50);
+    const lastManual = system.lastTime;
+    mgr.boostInteractiveFPS();
+    assert.equal(system.started, true);
+    assert.equal(system.lastTime, lastManual, 'start() 没动 lastTime，也不被改动');
+    assert.equal(system._requestId, null, '无监听者不排 rAF');
+    system.update(sb.sandbox.performance.now());
+    assert.equal(system.update, system.originalUpdate, '下一次带时间戳的 update 撤掉包装');
 }));
 
 test('契约：Live2D 交互层在坐标变化时记录 _lastPointerMoveAt', () => {
