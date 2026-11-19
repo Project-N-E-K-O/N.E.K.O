@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 # Maximum size of the intermediate-frame candidate set. Sampling only needs to cover the full segment approximately;
@@ -192,6 +192,35 @@ class MultimodalTurn:
     # Per image, aligned with ``images``: the request_id of a screenshot the
     # user attached (sampled with the live frames), None for a live frame.
     image_request_ids: tuple[str | None, ...] = ()
+    # Screen-consent revocation epoch (``_proactive_vision_revocation_epoch``)
+    # when the frames were frozen; None: not tracked.
+    consent_epoch: int | None = None
+
+
+def multimodal_turn_after_revocation(turn, current_epoch: int):
+    """The turn as it may still be sent after a screen-consent revocation.
+
+    Unchanged while consent was not revoked since the freeze. Otherwise only
+    the screenshots the user attached (frames with a request_id) stay; None
+    when no frame is left, so the caller submits the transcript as text.
+    """
+    frozen_epoch = getattr(turn, "consent_epoch", None)
+    if frozen_epoch is None or frozen_epoch == current_epoch:
+        return turn
+    request_ids = tuple(getattr(turn, "image_request_ids", ()) or ())
+    kept = [
+        (image, request_ids[index])
+        for index, image in enumerate(turn.images)
+        if index < len(request_ids) and request_ids[index] is not None
+    ]
+    if not kept:
+        return None
+    return replace(
+        turn,
+        images=tuple(image for image, _ in kept),
+        image_request_ids=tuple(rid for _, rid in kept),
+        consent_epoch=current_epoch,
+    )
 
 
 def multimodal_turn_attachment_kwargs(turn) -> dict:

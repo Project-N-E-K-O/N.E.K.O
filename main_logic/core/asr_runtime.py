@@ -91,6 +91,7 @@ from .multimodal_turn import (
     MultimodalTurn,
     _CoreMultimodalTurnRecord,
     _IndependentVisualFrame,
+    multimodal_turn_after_revocation,
 )
 from main_logic.voice_input.activation.wiring import (
     VoiceSessionActivationFactory,
@@ -1240,6 +1241,7 @@ class AsrRuntimeMixin:
             source=newest.source,
             request_id=newest.request_id,
             image_request_ids=tuple(frame.request_id for frame in frames),
+            consent_epoch=getattr(self, "_proactive_vision_revocation_epoch", 0),
         )
     def _schedule_core_asr_cleanup(
         self,
@@ -6622,11 +6624,18 @@ class AsrRuntimeMixin:
                             raise RuntimeError(
                                 "DIRECT_MULTIMODAL_SUBMIT_UNAVAILABLE"
                             )
-                        if visual_ownership_lost():
+                        # Screen consent revoked since the freeze (e.g. during
+                        # retrieval): only the user's own screenshots may go.
+                        multimodal_turn = multimodal_turn_after_revocation(
+                            multimodal_turn,
+                            getattr(self, "_proactive_vision_revocation_epoch", 0),
+                        )
+                        if multimodal_turn is None or visual_ownership_lost():
                             # Sending transcripts, restoring previews, and acquiring the swap gate all await after
                             # the earlier check. This is the final synchronous point
                             # before actually invoking the provider.
-                            note_visual_ownership_lost()
+                            if multimodal_turn is not None:
+                                note_visual_ownership_lost()
                             multimodal_turn = None
                             await self._submit_core_voice_turn(
                                 event.text,

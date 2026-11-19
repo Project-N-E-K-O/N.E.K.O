@@ -483,6 +483,69 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
     assert turn_id not in runtime._core_multimodal_turns
 
 
+async def _dispatch_with_revocation_after_freeze(frames):
+    """Freeze ``frames`` ((image, request_id) pairs), revoke consent, then dispatch.
+
+    The revocation lands after the freeze and before the submit, where the
+    real dispatch awaits the transcript send and the memory / knowledge
+    retrieval.
+    """
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime._proactive_vision_revocation_epoch = 0
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="direct_atomic"
+    )
+    runtime.session.submit_multimodal_turn = AsyncMock()
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    for offset, (image, request_id) in enumerate(frames):
+        assert runtime._stage_independent_visual_frame(
+            image,
+            source="screen",
+            request_id=request_id,
+            captured_at=record.started_at + offset * 0.001,
+        )
+
+    accepted = runtime.handle_input_transcript
+
+    async def accept_then_revoke(*args, **kwargs):
+        result = await accepted(*args, **kwargs)
+        runtime._proactive_vision_revocation_epoch += 1  # privacy mode on
+        return result
+
+    runtime.handle_input_transcript = accept_then_revoke
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(turn_token=token, provider="openai", text="look here")
+    )
+    return runtime
+
+
+@pytest.mark.unit
+async def test_revocation_after_freeze_keeps_only_the_users_screenshot() -> None:
+    runtime = await _dispatch_with_revocation_after_freeze(
+        [("live-frame", None), ("user-shot", "req-1")]
+    )
+
+    runtime.session.submit_multimodal_turn.assert_awaited_once()
+    assert runtime.session.submit_multimodal_turn.await_args.args[1] == ("user-shot",)
+    runtime.session.submit_external_voice_turn.assert_not_awaited()
+
+
+@pytest.mark.unit
+async def test_revocation_after_freeze_sends_live_only_turn_as_text() -> None:
+    runtime = await _dispatch_with_revocation_after_freeze([("live-frame", None)])
+
+    runtime.session.submit_multimodal_turn.assert_not_awaited()
+    runtime.session.submit_external_voice_turn.assert_awaited_once()
+    assert "look here" in runtime.session.submit_external_voice_turn.await_args.args
+
+
 @pytest.mark.unit
 async def test_final_superseded_after_freeze_submits_text_without_frames() -> None:
     """Freezing the frames is not the last word; the submit is.
