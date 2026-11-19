@@ -168,6 +168,11 @@ class Entry:
     # The ones of ``evidence`` that lie outside the working directories:
     # looked at only while the user lets task agents read there unasked.
     evidence_outside: tuple[str, ...] = ()
+    # Files kept with it for whoever reads it, and for nothing else: they
+    # neither have it take effect nor have it expire. The ones a review or
+    # the summary of a project names for a global entry: the files of one
+    # project do not show that it holds for every project.
+    noted: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
@@ -175,6 +180,7 @@ class Entry:
         data["evidence"] = list(self.evidence)
         data["seen_by"] = list(self.seen_by)
         data["evidence_outside"] = list(self.evidence_outside)
+        data["noted"] = list(self.noted)
         return data
 
 
@@ -315,6 +321,8 @@ class _Known:
     # Files the entry it is kept in rested on that were found gone just
     # now: they go from its record.
     gone: tuple[str, ...] = ()
+    # Files kept with it for reference only (``Entry.noted``).
+    noted: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -642,6 +650,28 @@ def _evidence_in(document: _Document) -> list[str]:
     if not isinstance(listed, list):
         return []
     return [item for item in listed if isinstance(item, str) and item]
+
+
+def _noted_in(document: _Document) -> list[str]:
+    """Return the files an entry keeps for reference only (``Entry.noted``), as its front matter lists them."""
+    raw = document.get("noted")
+    if not raw:
+        return []
+    try:
+        listed = json.loads(raw)
+    except ValueError:
+        return []
+    if not isinstance(listed, list):
+        return []
+    return [item for item in listed if isinstance(item, str) and item]
+
+
+def _set_noted(document: _Document, paths: list[str]) -> None:
+    """Write the files an entry keeps for reference only into its front matter, as JSON; none, no line."""
+    if paths:
+        document.set("noted", json.dumps(paths, ensure_ascii=False))
+    else:
+        document.drop("noted")
 
 
 def _seen_in(document: _Document) -> int:
@@ -1433,6 +1463,16 @@ def _keep_known(
     if evidence != before or outside != apart:
         _set_evidence(document, evidence, outside)
         changed = True
+    # For reference only: none that it rests on by now (that one says more).
+    noted_before = _noted_in(document)
+    noted = [
+        path
+        for path in _joined(noted_before, list(known.noted), SPACE_EVIDENCE_MAX_PATHS)
+        if path not in evidence
+    ]
+    if noted != noted_before:
+        _set_noted(document, noted)
+        changed = True
     # An entry that names nobody who has seen it was filed from the
     # console, or before this was kept: the commissions it came from are
     # the ones that have seen it.
@@ -2191,6 +2231,7 @@ class TaskAgentSpace:
             status=_status_of(document),
             seen_by=tuple(_listed(document, "seen_by")),
             evidence_outside=tuple(_outside_in(document)),
+            noted=tuple(_noted_in(document)),
         )
 
     def _entries(self, directory: Path, project: str | None, *, with_content: bool = False) -> list[Entry]:
@@ -2515,6 +2556,8 @@ class TaskAgentSpace:
         if known is not None and known.confidence:
             document.set("confidence", known.confidence)
         _set_evidence(document, evidence, outside)
+        if known is not None:
+            _set_noted(document, [path for path in known.noted if path not in evidence][-SPACE_EVIDENCE_MAX_PATHS:])
         if seen_by:
             document.set("seen", str(len(seen_by)))
             document.set("seen_by", ", ".join(seen_by[-SPACE_SEEN_BY_KEPT:]))
@@ -2563,6 +2606,7 @@ class TaskAgentSpace:
                 status=ENTRY_PENDING if pending else ENTRY_ACTIVE,
                 seen_by=tuple(seen_by),
                 evidence_outside=tuple(outside),
+                noted=tuple(path for path in known.noted if path not in evidence) if known is not None else (),
             )
         if unlisted is not None:
             # The entry is a file by now, and is not taken away again.
@@ -2927,6 +2971,7 @@ class TaskAgentSpace:
             observer=known.observer,
             seen_before=tuple(dict.fromkeys((*pending.seen_by, *known.seen_before))),
             sources_before=pending.sources[:-1],
+            noted=pending.noted,
         )
         target: Entry = into
         added = False
@@ -2936,11 +2981,13 @@ class TaskAgentSpace:
             logger.warning("a pending entry holds a text longer than a text may be; it is not put into another entry")
             return into, False, None
         for part in parts:
+            # What the write of this part told of the files. An entry that
+            # had expired comes back by this write, by the note: what its
+            # files are told as it is written is the last word on them, and
+            # the note is judged anew where one of them spoke for it and
+            # does not by now.
+            looked: dict[str, bool | None] = {}
             try:
-                # An entry that had expired comes back by this write, by
-                # the note: what its files are told as it is written is the
-                # last word on them, and the note is judged anew where one
-                # of them spoke for it and does not by now.
                 target, how = self._file_entry(
                     project,
                     title=into.title,
@@ -2952,13 +2999,29 @@ class TaskAgentSpace:
                     may_add=may_add,
                     allowed=allowed,
                     by_files=by_files,
-                    told=told,
+                    told=looked,
                     judged_with=known,
                 )
             except _LineNotAdded as exc:
                 # In its file all the same; the rest is still filed.
                 target, how, unlisted = exc.entry, exc.how, exc
             added = added or how == _ADDED
+            if told is not None:
+                told.update(looked)
+            # The entry is in effect by now and its files are not asked
+            # about again: the next part does not bring back one this
+            # write found gone, and one of which nothing was told stays
+            # on record and speaks for nothing.
+            carried = replace(
+                carried,
+                evidence=tuple(path for path in carried.evidence if looked.get(path) is not False),
+                outside=tuple(path for path in carried.outside if looked.get(path) is not False),
+                untold=tuple(
+                    path
+                    for path in carried.evidence
+                    if looked.get(path) is not False and (path in carried.untold or (path in looked and looked[path] is None))
+                ),
+            )
         self._discard_as_read(path, before)
         return target, added, unlisted
 
@@ -3121,6 +3184,9 @@ class TaskAgentSpace:
             observer=observer,
             seen_before=note.known.seen_before,
             sources_before=note.known.sources_before,
+            # What its own pending entry noted stays in that entry's file,
+            # and goes along where that goes into another (``_fold``).
+            noted=tuple(path for path in note.known.noted if path not in evidence),
         )
         # A place of the commission is used by what it puts on file: a note
         # that begins to wait, or one that becomes an entry. Not by what is
@@ -3646,9 +3712,10 @@ class TaskAgentSpace:
         ``bases`` (see ``evidence_of``). With one it counts as observed
         and takes effect; with none it counts as inferred and waits to be
         seen again, like a note of a task agent (``_take_note``). A global
-        one (``project`` None) counts as inferred whatever files it names:
-        the files of one project do not show that it holds for every
-        project. They are kept with it all the same.
+        one (``project`` None) counts as inferred whatever files it names,
+        and rests on none of them: the files of one project do not show
+        that it holds for every project. They are kept with it for
+        reference (``Entry.noted``), and do not have it expire either.
 
         Returns the entry, None for one that waits, and whether it is a
         new file. For one that waits, the name of the pending entry it is
@@ -3694,16 +3761,19 @@ class TaskAgentSpace:
                 kind=kind,
                 description=description,
                 source=source,
-                known=_Known(
-                    # Seen, when a file it names is there to be seen; and
-                    # for the project the file is in, not for every one.
-                    confidence=(
-                        OBSERVED if project is not None and any(path not in untold for path in found) else INFERRED
-                    ),
-                    evidence=tuple(found),
-                    outside=tuple(apart),
-                    untold=tuple(untold),
-                    observer=observer,
+                known=(
+                    _Known(
+                        # Seen, when a file it names is there to be seen.
+                        confidence=OBSERVED if any(path not in untold for path in found) else INFERRED,
+                        evidence=tuple(found),
+                        outside=tuple(apart),
+                        untold=tuple(untold),
+                        observer=observer,
+                    )
+                    if project is not None
+                    # For every project: what one project's files show is
+                    # noted, and nothing more.
+                    else _Known(confidence=INFERRED, observer=observer, noted=tuple(found))
                 ),
                 files_vouch=project is not None,
             )
@@ -3944,6 +4014,7 @@ class TaskAgentSpace:
                     observer=seen_by[-1] if seen_by else None,
                     seen_before=tuple(seen_by[:-1]),
                     sources_before=tuple(sources[:-1]),
+                    noted=entry.noted,
                 ),
                 # It waits since it was first filed, not since today.
                 waited=(entry.created, entry.updated),

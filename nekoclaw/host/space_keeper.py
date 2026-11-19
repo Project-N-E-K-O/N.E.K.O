@@ -737,10 +737,12 @@ class SpaceKeeper:
             waits: list[str] = []
             try:
                 # Judged like a note of a task agent: the model read an
-                # account and checked nothing, so what it made takes effect
-                # when a file it gives, or one its words name, exists where
-                # the commission worked, and waits to be seen again
-                # otherwise.
+                # account and checked nothing, so what it made for the
+                # project takes effect when a file it gives, or one its
+                # words name, exists where the commission worked, and waits
+                # to be seen again otherwise. A global one waits whatever
+                # files it names, which are kept for reference only
+                # (``propose_entry``).
                 entry, _created = await self._space.propose_entry(
                     None if everywhere else project,
                     title=str(item.get("title") or ""),
@@ -1060,8 +1062,9 @@ class SpaceKeeper:
                     # Nobody is named as having seen it: the summary is
                     # made from what the project's own commissions did,
                     # so it says again what one of them found and is no
-                    # second sighting of it. A file it names still speaks
-                    # for it.
+                    # second sighting of it. It is global, so it waits
+                    # whatever files it names, which are kept for
+                    # reference only (``propose_entry``).
                     await self._space.propose_entry(
                         None,
                         title=str(item.get("title") or ""),

@@ -2196,6 +2196,50 @@ async def test_an_expired_entry_a_guess_goes_into_does_not_come_back_by_a_file_t
     assert "evidence_counted" not in _lesson_event(events, "c1") or app not in _lesson_event(events, "c1")["evidence_counted"]
 
 
+async def _two_texts_waiting_beside_an_entry_that_expired(space: TaskAgentSpace, root: Path, workdir: Path) -> None:
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    (workdir / "src" / "app.py").write_text("print('app')\n", encoding="utf-8")
+    # Two guesses under its title, resting on the file that is back.
+    for text in ("Videos may have no date.", "It reads config.toml first."):
+        reply = await space.submit(_commission(workdir), _lesson("Entry point", text, "inferred", ["src/app.py"]))
+        assert reply.startswith("not in effect yet")
+    (waiting,) = _pending(root)
+    assert waiting["evidence"] == [_where(workdir / "src" / "app.py")]
+
+
+async def test_both_texts_of_a_pending_entry_go_into_an_entry_that_expired(space, root, workdir):
+    await _two_texts_waiting_beside_an_entry_that_expired(space, root, workdir)
+
+    reply = await space.submit(_commission(workdir, id="c3"), _lesson("Entry point", "The app starts in app.py.", "verified"))
+
+    assert "in effect again" in reply and _pending(root) == []
+    said = (_memory(root) / "entry-point.md").read_text(encoding="utf-8")
+    assert "Videos may have no date." in said and "It reads config.toml first." in said
+    assert _rests_on(_memory(root) / "entry-point.md")[0] == (_where(workdir / "src" / "app.py"),)
+
+
+async def test_a_file_the_first_text_found_gone_is_not_brought_back_by_the_second(space, root, workdir, monkeypatch):
+    app = _where(workdir / "src" / "app.py")
+    await _two_texts_waiting_beside_an_entry_that_expired(space, root, workdir)
+
+    def gone() -> None:
+        (workdir / "src" / "app.py").unlink()
+
+    # There as what waited is asked about; gone as the entry that expired is written with the first text.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", gone])
+
+    await space.submit(_commission(workdir, id="c3"), _lesson("Entry point", "The app starts in app.py.", "verified"))
+
+    # Checked by hand: in effect again, with both texts; the file is not on its record.
+    assert len(looks) >= 2 and _pending(root) == [] and _in_effect(root) == ["entry-point"]
+    said = (_memory(root) / "entry-point.md").read_text(encoding="utf-8")
+    assert "Videos may have no date." in said and "It reads config.toml first." in said
+    assert app not in _rests_on(_memory(root) / "entry-point.md")[0]
+
+
 async def test_an_entry_that_expired_is_not_added_to_by_a_note_that_is_only_about_something_like_it(space, root, workdir):
     await space.submit(
         _commission(workdir), _lesson("pip install fails on Windows", "A long path.", "observed", ["README.md"])
