@@ -1349,7 +1349,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     message = {
                         **message,
                         "_visual_input_consent_epoch": getattr(
-                            stream_mgr, "_proactive_vision_revocation_epoch", 0
+                            stream_mgr, "_screen_consent_revocation_epoch", 0
                         ),
                     }
                 _record_stream_engagement_ingress(

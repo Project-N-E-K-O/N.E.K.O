@@ -104,6 +104,9 @@ class ProactiveMixin:
             self._proactive_vision_revocation_epoch = (
                 getattr(self, "_proactive_vision_revocation_epoch", 0) + 1
             )
+            self._screen_consent_revocation_epoch = (
+                getattr(self, "_screen_consent_revocation_epoch", 0) + 1
+            )
         self._proactive_vision_enabled = enabled
         if revoked:
             # Privacy mode promises the character cannot see the screen; screen

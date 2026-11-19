@@ -196,6 +196,43 @@ async def test_dispatch_hands_the_ownership_predicate_to_the_handoff() -> None:
 
 
 @pytest.mark.unit
+async def test_revoked_live_only_turn_skips_the_offline_handoff() -> None:
+    """No frame left after a revocation: no switch to the offline VLM, text on this session."""
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime._screen_consent_revocation_epoch = 0
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="handoff_required"
+    )
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    runtime._handoff_to_offline_vlm_and_submit = AsyncMock(return_value=True)
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    assert runtime._stage_independent_visual_frame(
+        "live-frame", source="screen", request_id=None,
+        captured_at=record.started_at,
+    )
+    accepted = runtime.handle_input_transcript
+
+    async def accept_then_revoke(*args, **kwargs):
+        result = await accepted(*args, **kwargs)
+        runtime._screen_consent_revocation_epoch += 1  # privacy mode on
+        return result
+
+    runtime.handle_input_transcript = accept_then_revoke
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(turn_token=token, provider="openai", text="look here")
+    )
+
+    runtime._handoff_to_offline_vlm_and_submit.assert_not_awaited()
+    runtime.session.submit_external_voice_turn.assert_awaited_once()
+
+
+@pytest.mark.unit
 async def test_route_close_drops_the_staged_visual_caches() -> None:
     """Staged originals belong to the route, not to the process.
 
@@ -493,7 +530,7 @@ async def _dispatch_with_revocation_after_freeze(frames, *, revoke_before_freeze
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "openai")
     runtime._asr_route_mode = "independent"
-    runtime._proactive_vision_revocation_epoch = 0
+    runtime._screen_consent_revocation_epoch = 0
     runtime.session.get_multimodal_turn_delivery = MagicMock(
         return_value="direct_atomic"
     )
@@ -513,13 +550,13 @@ async def _dispatch_with_revocation_after_freeze(frames, *, revoke_before_freeze
 
     if revoke_before_freeze:
         # Staged under consent, frozen after the revocation.
-        runtime._proactive_vision_revocation_epoch += 1
+        runtime._screen_consent_revocation_epoch += 1
     else:
         accepted = runtime.handle_input_transcript
 
         async def accept_then_revoke(*args, **kwargs):
             result = await accepted(*args, **kwargs)
-            runtime._proactive_vision_revocation_epoch += 1  # privacy mode on
+            runtime._screen_consent_revocation_epoch += 1  # privacy mode on
             return result
 
         runtime.handle_input_transcript = accept_then_revoke
@@ -574,7 +611,7 @@ async def test_revocation_while_the_provider_compresses_drops_live_frames(
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "openai")
     runtime._asr_route_mode = "independent"
-    runtime._proactive_vision_revocation_epoch = 0
+    runtime._screen_consent_revocation_epoch = 0
     runtime.session.get_multimodal_turn_delivery = MagicMock(
         return_value="direct_atomic"
     )
@@ -583,7 +620,7 @@ async def test_revocation_while_the_provider_compresses_drops_live_frames(
     async def revoke_while_compressing(*_args, **kwargs):
         cb = kwargs["visual_still_owned"]
         owned.append(cb())
-        runtime._proactive_vision_revocation_epoch += 1  # privacy mode on
+        runtime._screen_consent_revocation_epoch += 1  # privacy mode on
         owned.append(cb())
 
     runtime.session.submit_multimodal_turn = AsyncMock(
@@ -617,7 +654,7 @@ async def test_frame_that_arrived_before_a_revocation_stays_out(
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "openai")
     runtime._asr_route_mode = "independent"
-    runtime._proactive_vision_revocation_epoch = 1  # revoked after arrival
+    runtime._screen_consent_revocation_epoch = 1  # revoked after arrival
     runtime.session.get_multimodal_turn_delivery = MagicMock(
         return_value="direct_atomic"
     )
@@ -642,6 +679,58 @@ async def test_frame_that_arrived_before_a_revocation_stays_out(
     else:
         runtime.session.submit_multimodal_turn.assert_not_awaited()
         runtime.session.submit_external_voice_turn.assert_awaited_once()
+
+
+@pytest.mark.unit
+async def test_declined_proactive_screenshot_keeps_the_voice_turn_frames() -> None:
+    """Declining one proactive screenshot (tutorial, unresolved window) is not a revocation."""
+    from main_logic.core import LLMSessionManager
+
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime._screen_consent_revocation_epoch = 0
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="direct_atomic"
+    )
+    runtime.session.submit_multimodal_turn = AsyncMock()
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    assert runtime._stage_independent_visual_frame(
+        "live-frame", source="screen", request_id=None,
+        captured_at=record.started_at, consent_epoch=0,
+    )
+    runtime._proactive_screenshot_request_id = "shot-1"
+    runtime._screenshot_future = None
+    LLMSessionManager.resolve_screenshot_request(
+        runtime, "", declined=True, request_id="shot-1",
+    )
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(turn_token=token, provider="openai", text="look here")
+    )
+
+    runtime.session.submit_multimodal_turn.assert_awaited_once()
+    assert runtime.session.submit_multimodal_turn.await_args.args[1] == ("live-frame",)
+    runtime.session.submit_external_voice_turn.assert_not_awaited()
+
+
+@pytest.mark.unit
+def test_only_a_consent_revocation_moves_the_screen_consent_epoch() -> None:
+    from main_logic.core import LLMSessionManager
+
+    runtime = _Runtime()
+    runtime._screen_consent_revocation_epoch = 0
+    runtime._proactive_vision_revocation_epoch = 0
+    runtime._proactive_vision_enabled = True
+    runtime.session = None
+    LLMSessionManager.update_proactive_vision_consent(runtime, False)
+    assert runtime._screen_consent_revocation_epoch == 1
+    LLMSessionManager.update_proactive_vision_consent(runtime, False)  # already off
+    assert runtime._screen_consent_revocation_epoch == 1
 
 
 @pytest.mark.unit

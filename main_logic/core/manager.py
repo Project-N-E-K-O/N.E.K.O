@@ -122,6 +122,9 @@ class LLMSessionManager(
         # Live browser consent can arrive before the settings POST is persisted.
         self._proactive_vision_enabled: bool | None = None
         self._proactive_vision_revocation_epoch: int = 0
+        # Bumped only when screen consent goes from allowed to revoked (not on a
+        # declined proactive screenshot); voice-turn live frames are fenced by it.
+        self._screen_consent_revocation_epoch: int = 0
         self._avatar_position: dict | None = None  # Frontend normalized Avatar coordinates {centerX, centerY, width, height}.
         # One-shot handoff slot between request_fresh_screenshot and resolve_screenshot_request.
         # Deliberately separate from _avatar_position, overwritten by every stream_data (screen-share frames,

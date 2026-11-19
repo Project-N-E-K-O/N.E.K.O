@@ -962,10 +962,10 @@ def _fast_path_manager_revoking_during_tts():
     manager._core_voice_session_swap_barrier_timeout_s = 1.0
     manager.response_backend = "offline_vlm"
     manager.handle_new_message = AsyncMock()
-    manager._proactive_vision_revocation_epoch = 3
+    manager._screen_consent_revocation_epoch = 3
 
     async def revoke():
-        manager._proactive_vision_revocation_epoch += 1
+        manager._screen_consent_revocation_epoch += 1
 
     manager.ensure_tts_pipeline_alive = AsyncMock(side_effect=revoke)
     session = OmniOfflineClient.__new__(OmniOfflineClient)
@@ -1049,10 +1049,10 @@ async def test_handoff_candidate_path_revocation_after_freeze(
     manager._cleanup_pending_session_resources = AsyncMock()
     manager.ensure_tts_pipeline_alive = AsyncMock()
     manager._consume_next_session_context_messages = MagicMock()
-    manager._proactive_vision_revocation_epoch = 3
+    manager._screen_consent_revocation_epoch = 3
 
     async def revoke():
-        manager._proactive_vision_revocation_epoch += 1
+        manager._screen_consent_revocation_epoch += 1
 
     manager._sync_tools_to_active_session = AsyncMock(side_effect=revoke)
     old_session = SimpleNamespace(

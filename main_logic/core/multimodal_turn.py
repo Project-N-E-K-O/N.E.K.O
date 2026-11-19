@@ -194,7 +194,7 @@ class MultimodalTurn:
     # Per image, aligned with ``images``: the request_id of a screenshot the
     # user attached (sampled with the live frames), None for a live frame.
     image_request_ids: tuple[str | None, ...] = ()
-    # Screen-consent revocation epoch (``_proactive_vision_revocation_epoch``)
+    # Screen-consent revocation epoch (``_screen_consent_revocation_epoch``)
     # when the frames were frozen; None: not tracked.
     consent_epoch: int | None = None
 
@@ -221,6 +221,7 @@ def multimodal_turn_after_revocation(turn, current_epoch: int):
         turn,
         images=tuple(image for image, _ in kept),
         image_request_ids=tuple(rid for _, rid in kept),
+        request_id=kept[-1][1],
         consent_epoch=current_epoch,
     )
 

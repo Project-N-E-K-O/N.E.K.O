@@ -1877,7 +1877,7 @@ class LifecycleMixin:
                     # Screen consent revoked since the freeze: only the user's
                     # own screenshots may go (None: none left, send as text).
                     sendable_turn = multimodal_turn_after_revocation(
-                        turn, getattr(self, '_proactive_vision_revocation_epoch', 0)
+                        turn, getattr(self, '_screen_consent_revocation_epoch', 0)
                     )
                     if sendable_turn is None or (
                         visual_still_owned is not None and not visual_still_owned()
@@ -2220,7 +2220,7 @@ class LifecycleMixin:
                 # Screen consent revoked since the freeze: only the user's
                 # own screenshots may go (none left: send as text).
                 sendable_turn = multimodal_turn_after_revocation(
-                    turn, getattr(self, '_proactive_vision_revocation_epoch', 0)
+                    turn, getattr(self, '_screen_consent_revocation_epoch', 0)
                 )
                 if sendable_turn is None or (
                     visual_still_owned is not None and not visual_still_owned()

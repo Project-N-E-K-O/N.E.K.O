@@ -711,7 +711,7 @@ class AsrRuntimeMixin:
             consent_epoch=(
                 consent_epoch
                 if isinstance(consent_epoch, int)
-                else getattr(self, "_proactive_vision_revocation_epoch", 0)
+                else getattr(self, "_screen_consent_revocation_epoch", 0)
             ),
         )
         if supersedes_latest_cache:
@@ -1235,7 +1235,7 @@ class AsrRuntimeMixin:
             > self._independent_visual_frame_ttl_s
         ):
             return None
-        consent_epoch = getattr(self, "_proactive_vision_revocation_epoch", 0)
+        consent_epoch = getattr(self, "_screen_consent_revocation_epoch", 0)
         frames = tuple(
             frame
             for frame in record.sampled_frames()
@@ -1250,6 +1250,8 @@ class AsrRuntimeMixin:
         )
         if not frames:
             return None
+        # Turn-level provenance follows the newest frame that is kept.
+        labelled = newest if newest in frames else frames[-1]
         return MultimodalTurn(
             turn_id=turn_id,
             session_epoch=record.session_epoch,
@@ -1259,8 +1261,8 @@ class AsrRuntimeMixin:
             captured_at=newest.captured_at,
             images=tuple(frame.image_b64 for frame in frames),
             transcript=transcript,
-            source=newest.source,
-            request_id=newest.request_id,
+            source=labelled.source,
+            request_id=labelled.request_id,
             image_request_ids=tuple(frame.request_id for frame in frames),
             consent_epoch=consent_epoch,
         )
@@ -6519,6 +6521,14 @@ class AsrRuntimeMixin:
                 """
                 return turn_record is not None and turn_record.invalidated.is_set()
 
+            def note_screen_consent_revoked() -> None:
+                logger.info(
+                    "[%s] independent ASR turn %s saw screen consent revoked "
+                    "after freeze; submitting transcript without its frames",
+                    self.lanlan_name,
+                    external_turn_id,
+                )
+
             def note_visual_ownership_lost() -> None:
                 logger.info(
                     "[%s] independent ASR turn %s superseded after freeze; "
@@ -6649,7 +6659,7 @@ class AsrRuntimeMixin:
                         # retrieval): only the user's own screenshots may go.
                         multimodal_turn = multimodal_turn_after_revocation(
                             multimodal_turn,
-                            getattr(self, "_proactive_vision_revocation_epoch", 0),
+                            getattr(self, "_screen_consent_revocation_epoch", 0),
                         )
                         if multimodal_turn is None or visual_ownership_lost():
                             # Sending transcripts, restoring previews, and acquiring the swap gate all await after
@@ -6657,6 +6667,8 @@ class AsrRuntimeMixin:
                             # before actually invoking the provider.
                             if multimodal_turn is not None:
                                 note_visual_ownership_lost()
+                            else:
+                                note_screen_consent_revoked()
                             multimodal_turn = None
                             await self._submit_core_voice_turn(
                                 event.text,
@@ -6689,7 +6701,7 @@ class AsrRuntimeMixin:
                                                 turn,
                                                 getattr(
                                                     self,
-                                                    "_proactive_vision_revocation_epoch",
+                                                    "_screen_consent_revocation_epoch",
                                                     0,
                                                 ),
                                             )
@@ -6726,10 +6738,22 @@ class AsrRuntimeMixin:
                         handoff_target = session_ref
             finally:
                 session_swap_lock.release()
-            if handoff_target is not None and visual_ownership_lost():
+            if handoff_target is not None:
+                # A turn left without frames by a screen-consent revocation
+                # needs no switch to the offline VLM; it goes as text here.
+                multimodal_turn = multimodal_turn_after_revocation(
+                    multimodal_turn,
+                    getattr(self, "_screen_consent_revocation_epoch", 0),
+                )
+            if handoff_target is not None and (
+                multimodal_turn is None or visual_ownership_lost()
+            ):
                 # Handoff also connects candidate sessions, taking longer than direct submission. Recheck ownership
                 # after releasing the swap gate or the whole handoff moves frames for a successor.
-                note_visual_ownership_lost()
+                if multimodal_turn is None:
+                    note_screen_consent_revoked()
+                else:
+                    note_visual_ownership_lost()
                 handoff_target = None
                 multimodal_turn = None
                 await self._submit_core_voice_turn(
