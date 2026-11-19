@@ -2067,6 +2067,11 @@ def test_suggested_refresh_only_rewrites_the_agent_kit(
     refresh = fix.split("fix: neko-plugin ", 1)[1].split(" --no-vscode", 1)[0] + " --no-vscode"
     if os.name == "nt":
         arguments = [arg.strip('"') for arg in shlex.split(refresh, posix=False)]
+        if any(char in str(plugin_dir) for char in "%$`"):
+            # No Windows quoting keeps such a path literal in both cmd and
+            # PowerShell, so the hint names a placeholder for the user to fill.
+            assert arguments[1] == "<plugin directory>"
+            arguments[1] = str(plugin_dir)
     else:
         arguments = shlex.split(refresh)
         # A real shell must not expand anything in the quoted path.
