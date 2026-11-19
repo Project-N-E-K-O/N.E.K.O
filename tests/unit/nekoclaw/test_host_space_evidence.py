@@ -2166,6 +2166,36 @@ async def test_the_same_text_filed_again_brings_an_expired_entry_back_only_when_
     assert space._added_by == {"c1": 2}
 
 
+async def test_an_expired_entry_a_guess_goes_into_does_not_come_back_by_a_file_that_is_gone_as_it_is_written(
+    space, root, workdir, events, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    # The same text, seen with no file there: it waits beside the entry.
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"]))
+    (workdir / "src" / "app.py").write_text("print('app')\n", encoding="utf-8")
+
+    def gone() -> None:
+        (workdir / "src" / "app.py").unlink()
+
+    # There as the note is looked at, and it is judged with it; gone as what waited goes into the entry
+    # that expired, which is asked about its files as it comes back.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", gone])
+
+    reply = await space.submit(
+        _commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"])
+    )
+
+    # The file was all it stood on: it is judged anew, and waits. The entry stays as it was.
+    assert len(looks) >= 2 and not reply.startswith("already in") and not reply.startswith("kept in")
+    assert "not found" in reply
+    assert _expired(root) == ["entry-point"]
+    assert "evidence_counted" not in _lesson_event(events, "c1") or app not in _lesson_event(events, "c1")["evidence_counted"]
+
+
 async def test_an_entry_that_expired_is_not_added_to_by_a_note_that_is_only_about_something_like_it(space, root, workdir):
     await space.submit(
         _commission(workdir), _lesson("pip install fails on Windows", "A long path.", "observed", ["README.md"])

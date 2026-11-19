@@ -1353,6 +1353,7 @@ def _keep_known(
     pending: bool = False,
     judged: bool = False,
     told: dict[str, bool | None] | None = None,
+    judged_with: _Known | None = None,
 ) -> bool:
     """Write into an entry what a filing adds to what is known of it. Returns whether anything changed.
 
@@ -1380,7 +1381,10 @@ def _keep_known(
     something else (checked by hand, seen by enough commissions) is
     not held up: it is written, without the files found gone. What
     was told of each file that was asked about is put into ``told``,
-    for whoever tells what became of the note.
+    for whoever tells what became of the note. ``judged_with`` is what
+    the note was judged with where that is not ``known``: a pending
+    entry that goes into one that had expired brings what it says of
+    itself, and the entry comes back by the note.
     """
     from config.nekoclaw_settings import SPACE_EVIDENCE_MAX_PATHS, SPACE_SEEN_BY_KEPT
 
@@ -1404,7 +1408,8 @@ def _keep_known(
         asked = [path for path in rested if allowed or path not in apart]
         there = _stood(asked)
         answers = {path: there.get(path) for path in asked}
-        if judged and known is not None and _speaks_no_more(known, answers):
+        judge = judged_with if judged_with is not None else known
+        if judged and judge is not None and _speaks_no_more(judge, answers):
             raise _Rewritten("a file the note was judged with does not speak for it by now", told=answers)
         gone_now = {path for path, stands in answers.items() if stands is False}
         not_gone_now = {path for path, stands in answers.items() if stands is not False}
@@ -2296,6 +2301,7 @@ class TaskAgentSpace:
         must_say: bool = False,
         by_files: bool = False,
         told: dict[str, bool | None] | None = None,
+        judged_with: _Known | None = None,
     ) -> tuple[Entry, str]:
         """Keep one entry. Returns it and what became of it: a new file, added to one, or there already.
 
@@ -2328,6 +2334,9 @@ class TaskAgentSpace:
         pending one that was filed elsewhere some time ago and is brought
         along: the day it was first filed and the day it was last filed,
         which it keeps.
+
+        ``by_files``, ``told`` and ``judged_with`` are as for
+        ``_keep_known``.
 
         ``may_add`` is False for a note whose text was seen to be in
         ``into`` and whose commission has no place left: should the text
@@ -2412,7 +2421,13 @@ class TaskAgentSpace:
                 # is theirs; it is given no evidence, no count and no state.
                 try:
                     noted = bool(marks) and _keep_known(
-                        document, known, allowed, pending=pending, judged=by_files, told=at_write
+                        document,
+                        known,
+                        allowed,
+                        pending=pending,
+                        judged=by_files,
+                        told=at_write,
+                        judged_with=judged_with,
                     )
                 except _Rewritten as exc:
                     # The files that were asked about are on the record of this entry.
@@ -2922,6 +2937,10 @@ class TaskAgentSpace:
             return into, False, None
         for part in parts:
             try:
+                # An entry that had expired comes back by this write, by
+                # the note: what its files are told as it is written is the
+                # last word on them, and the note is judged anew where one
+                # of them spoke for it and does not by now.
                 target, how = self._file_entry(
                     project,
                     title=into.title,
@@ -2932,6 +2951,9 @@ class TaskAgentSpace:
                     known=carried,
                     may_add=may_add,
                     allowed=allowed,
+                    by_files=by_files,
+                    told=told,
+                    judged_with=known,
                 )
             except _LineNotAdded as exc:
                 # In its file all the same; the rest is still filed.
