@@ -1011,151 +1011,64 @@ def _write_router_package(plugin_dir: Path, manifest_extra: str = "") -> dict:
     return derive_plugin_metadata(plugin_dir)
 
 
-def test_packaged_metadata_without_router_handlers_is_not_reused(
+def test_a_pre_router_handler_v4_artifact_is_rescanned_once_and_rewritten(
     tmp_path: Path, isolated_registry
 ):
-    """An artifact built before #3522 lists router entries without handlers; starting must rescan.
+    """A v4 file may predate host router handlers; schema 5 makes the start path repair it once.
 
-    Reusing it would install no host handler for the router entry, so ``/runs``
-    falls back to the global default timeout again.
+    Such a file matches every source fingerprint and this machine's build
+    environment, yet lists the router entry ``slow`` without a handler.
+    Reusing it would leave ``slow`` on the global default timeout. The file
+    is refused like any older schema, the scan the start path then runs
+    rewrites it in place, and the next start reuses the rewritten file.
     """
-    from plugin.server.application.plugins.lifecycle_service import (
-        _read_packaged_isolated_metadata,
-    )
+    from plugin.server.application.plugins import lifecycle_service
     from plugin.server.infrastructure import packaged_metadata
 
     plugin_dir = tmp_path / "contract"
-    payload = _write_router_package(plugin_dir)
-    assert payload["handlers"]["contract.slow"]["timeout"] == 120
+    payload = _write_router_package(plugin_dir, '[[entries]]\nid="slow"\ntimeout=100\n')
+    assert payload["schema_version"] == 5
+    assert payload["handlers"]["contract.slow"]["timeout"] == 100
     meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
-    config = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
+    config_path = plugin_dir / "plugin.toml"
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
 
     def load():
-        return _read_packaged_isolated_metadata(
-            plugin_dir / "plugin.toml", "contract", conf=config, pdata=config["plugin"]
+        return lifecycle_service._read_packaged_isolated_metadata(
+            config_path, "contract", conf=config, pdata=config["plugin"]
         )
 
-    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+    stale = copy.deepcopy(payload)
+    stale["schema_version"] = 4
+    for key in ("contract.slow", "contract:plugin_entry:slow"):
+        del stale["handlers"][key]
+    meta_path.write_text(json.dumps(stale), encoding="utf-8")
+    assert load() is None
+
+    # What start_plugin does after the refusal: snapshot, scan, rewrite.
+    before_scan = lifecycle_service._snapshot_package_tree_for_rebuild(
+        config_path, plugin_id="contract", conf=config, pdata=config["plugin"]
+    )
+    assert before_scan is not None
+    lifecycle_service._refresh_scanned_packaged_metadata(
+        config_path,
+        "contract",
+        metadata_scanner.IsolatedPluginMetadata(
+            payload["entries"], payload["handlers"], payload["entry_methods"]
+        ),
+        before_scan=before_scan,
+        conf=config,
+        pdata=config["plugin"],
+    )
+    assert json.loads(meta_path.read_text(encoding="utf-8"))["schema_version"] == 5
+
     loaded = load()
     assert loaded is not None
     metadata_scanner.install_isolated_plugin_metadata("contract", loaded)
-    assert state.event_handlers["contract.slow"].meta.timeout == 120
-
-    stale = copy.deepcopy(payload)
-    for key in ("contract.slow", "contract:plugin_entry:slow"):
-        del stale["handlers"][key]
-    meta_path.write_text(json.dumps(stale), encoding="utf-8")
-    assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None
-    assert load() is None
-
-
-@pytest.mark.parametrize("row", ['timeout=100', 'name="Slow"\ntimeout=100'])
-@pytest.mark.parametrize("in_plugin_table", [False, True])
-def test_a_manifest_override_does_not_exempt_a_router_entry_missing_its_handler(
-    tmp_path: Path, isolated_registry, in_plugin_table, row
-):
-    """Overriding ``slow`` in ``[[entries]]`` does not make it manifest-only: a stale artifact still rescans."""
-    from plugin.server.application.plugins.lifecycle_service import (
-        _read_packaged_isolated_metadata,
-    )
-    from plugin.server.infrastructure import packaged_metadata
-
-    table = "[[plugin.entries]]" if in_plugin_table else "[[entries]]"
-    plugin_dir = tmp_path / "contract"
-    payload = _write_router_package(plugin_dir, f'{table}\nid="slow"\n{row}\n')
-    assert payload["handlers"]["contract.slow"]["timeout"] == 100
-    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
-    config = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
-
-    def load():
-        return _read_packaged_isolated_metadata(
-            plugin_dir / "plugin.toml", "contract", conf=config, pdata=config["plugin"]
-        )
-
-    meta_path.write_text(json.dumps(payload), encoding="utf-8")
-    assert load() is not None
-    stale = copy.deepcopy(payload)
-    for key in ("contract.slow", "contract:plugin_entry:slow"):
-        del stale["handlers"][key]
-    meta_path.write_text(json.dumps(stale), encoding="utf-8")
-    assert load() is None
-
-
-def test_a_row_restating_decorator_defaults_is_indistinguishable_from_manifest_only(
-    tmp_path: Path, isolated_registry
-):
-    """Known, accepted blind spot of the stale-artifact check.
-
-    A manifest row that spells out exactly what the decorator would have
-    contributed (``name`` equal to the id, an empty ``input_schema``) leaves
-    the router entry's packaged preview identical to a manifest-only entry's,
-    and an artifact predating host router handlers carries no other trace of
-    where the entry came from. Such an artifact is still reused; rebuilding it
-    with ``neko-plugin build`` restores the handler. Telling the two apart
-    would need a new packaged-metadata field. Change this test on purpose if
-    that is ever added.
-    """
-    from plugin.server.application.plugins.lifecycle_service import (
-        _read_packaged_isolated_metadata,
-    )
-    from plugin.server.infrastructure import packaged_metadata
-
-    plugin_dir = tmp_path / "contract"
-    payload = _write_router_package(
-        plugin_dir, '[[entries]]\nid="slow"\nname="slow"\ninput_schema={}\ntimeout=100\n'
-    )
-    stale = copy.deepcopy(payload)
-    for key in ("contract.slow", "contract:plugin_entry:slow"):
-        del stale["handlers"][key]
-    (plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME).write_text(
-        json.dumps(stale), encoding="utf-8"
-    )
-    config = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
-    assert registry._manifest_only_entry_ids(
-        "contract", stale["entries"], config, config["plugin"]
-    ) == {"slow"}
-    assert _read_packaged_isolated_metadata(
-        plugin_dir / "plugin.toml", "contract", conf=config, pdata=config["plugin"]
-    ) is not None
-
-
-def test_only_keys_runs_looks_up_count_as_entry_handlers():
-    """A plugin-entry record under another event key is not what ``/runs`` finds."""
-    from plugin.server.infrastructure.packaged_metadata import (
-        PackagedPluginMetadata,
-        packaged_entries_without_handlers,
-    )
-
-    entries = [{"id": "slow", "event_type": "plugin_entry"}]
-    record = {"event_type": "plugin_entry", "id": "slow"}
-    for key, expected in (
-        ("contract.slow", []),
-        ("contract:plugin_entry:slow", []),
-        ("contract:message:slow", ["slow"]),
-        ("other.slow", ["slow"]),
-    ):
-        packaged = PackagedPluginMetadata(entries=entries, handlers={key: record})
-        assert packaged_entries_without_handlers(packaged, "contract") == expected, key
-
-
-def test_manifest_only_entries_do_not_refuse_packaged_metadata(tmp_path: Path, isolated_registry):
-    """A manifest entry with no decorator behind it never gets a handler; that alone is not staleness."""
-    from plugin.server.application.plugins.lifecycle_service import (
-        _read_packaged_isolated_metadata,
-    )
-    from plugin.server.infrastructure import packaged_metadata
-
-    plugin_dir = tmp_path / "contract"
-    payload = _write_router_package(plugin_dir, '[[entries]]\nid="ghost"\nname="Ghost"\n')
-    assert "ghost" in {entry["id"] for entry in payload["entries"]}
-    assert "contract.ghost" not in payload["handlers"]
-    (plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME).write_text(
-        json.dumps(payload), encoding="utf-8"
-    )
-    config = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
-    assert _read_packaged_isolated_metadata(
-        plugin_dir / "plugin.toml", "contract", conf=config, pdata=config["plugin"]
-    ) is not None
+    assert state.event_handlers["contract.slow"].meta.timeout == 100
+    assert lifecycle_service._snapshot_package_tree_for_rebuild(
+        config_path, plugin_id="contract", conf=config, pdata=config["plugin"]
+    ) is None
 
 
 def test_lifekit_router_entries_list_the_same_from_handlers_as_from_preview(isolated_registry):

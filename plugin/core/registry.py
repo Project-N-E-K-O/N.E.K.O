@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
-import json
 import inspect
 import os
 import re
@@ -984,43 +983,6 @@ def _overlay_entry_declaration(
         preview.update(declared)
         results[position] = preview
     return results
-
-
-def _manifest_only_entry_ids(
-    pid: str, previews: Iterable[Any], conf: dict, pdata: dict,
-) -> set[str]:
-    """Ids whose preview is exactly what a manifest row with no decorator yields.
-
-    Such an entry never gets a host handler, so it is the one legitimate gap
-    between a packaged entry list and its handler table. A configured id is
-    not enough: a manifest row can also override a decorated (for instance a
-    router) entry, and that entry must have a handler. A decorator normally
-    contributes something the bare row does not (its name defaults to the id,
-    its input schema comes from the signature), so the preview tells the two
-    apart; previews are compared in their JSON form, as packaged. Best effort:
-    a row restating exactly those decorator defaults is taken as manifest-only.
-    """
-    by_id = {
-        str(preview.get("id")): preview
-        for preview in previews
-        if isinstance(preview, dict)
-    }
-    manifest_only: set[str] = set()
-    for ent in _effective_entries(conf, pdata):
-        eid = str(ent.get("id") or "") if isinstance(ent, dict) else str(ent)
-        preview = by_id.get(eid)
-        if not eid or preview is None:
-            continue
-        expected = _overlay_entry_declaration([_entry_preview(pid, eid, None)], conf, pdata)[0]
-        try:
-            expected = json.loads(json.dumps(expected, default=str))
-        except (TypeError, ValueError):
-            continue
-        # The event key embeds the packaging-time plugin id; identity is the id.
-        expected.pop("event_key", None)
-        if {k: v for k, v in preview.items() if k != "event_key"} == expected:
-            manifest_only.add(eid)
-    return manifest_only
 
 
 def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> List[Dict[str, Any]]:

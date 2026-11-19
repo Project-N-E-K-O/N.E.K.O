@@ -184,20 +184,16 @@ def test_builtin_plugin_packaged_metadata_matches_source_tree():
 def test_builtin_plugin_packaged_metadata_backs_every_entry_with_a_handler():
     """Every packaged entry needs a host handler, router entries included (#3066).
 
-    The source fingerprint above cannot see this: ``plugin.meta.json`` built
-    before router entries were registered on the host still matches its
-    sources, but lists those entries without handlers. The start path refuses
-    such a file and rescans the plugin on every start, so a shipped one only
-    costs time, yet it means the file was not rebuilt. Manifest-only
-    ``[[entries]]`` with no decorator behind them are the one legitimate gap.
+    The source fingerprint above cannot see this: a ``plugin.meta.json`` whose
+    handler table predates host-side router registration still matches its
+    sources. Schema 5 exists because of exactly that, and a shipped file
+    should be built by a scanner that registers router entries. Entries the
+    manifest declares without a decorator behind them are the one legitimate
+    gap, so ids from the manifest's effective entries table are skipped.
 
     To fix a failure, rebuild the plugin as described in the module docstring.
     """
-    from plugin.core.registry import _manifest_only_entry_ids
-    from plugin.server.infrastructure.packaged_metadata import (
-        PackagedPluginMetadata,
-        packaged_entries_without_handlers,
-    )
+    from plugin.core.registry import _effective_entries
 
     unbacked: dict[str, list[str]] = {}
     for plugin_dir in sorted(p for p in PLUGINS_DIR.iterdir() if p.is_dir()):
@@ -208,12 +204,17 @@ def test_builtin_plugin_packaged_metadata_backs_every_entry_with_a_handler():
         manifest = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
         pdata = manifest.get("plugin") if isinstance(manifest.get("plugin"), dict) else {}
         plugin_id = str(pdata.get("id") or plugin_dir.name)
-        # Same entry-table selection and exemption the start path applies.
-        missing = packaged_entries_without_handlers(
-            PackagedPluginMetadata(entries=raw["entries"], handlers=raw["handlers"]),
-            plugin_id,
-            _manifest_only_entry_ids(plugin_id, raw["entries"], manifest, pdata),
-        )
+        declared = {
+            str(entry.get("id") or "") if isinstance(entry, dict) else str(entry)
+            for entry in _effective_entries(manifest, pdata)
+        }
+        missing = [
+            entry["id"]
+            for entry in raw["entries"]
+            if (entry.get("event_type") or "plugin_entry") == "plugin_entry"
+            and entry["id"] not in declared
+            and f"{plugin_id}.{entry['id']}" not in raw["handlers"]
+        ]
         if missing:
             unbacked[plugin_dir.name] = missing
     assert not unbacked, f"packaged entries without host handlers: {unbacked}"

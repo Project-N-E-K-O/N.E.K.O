@@ -29,7 +29,6 @@ from plugin.core.registry import (
     _check_plugin_dependency,
     _find_missing_python_requirements,
     _effective_entries,
-    _manifest_only_entry_ids,
     _overlay_entry_declaration,
     _parse_plugin_dependencies,
     _resolve_plugin_id_conflict,
@@ -71,7 +70,6 @@ from plugin.server.application.plugins._metadata_scan_settings import (
 from plugin.server.infrastructure.packaged_metadata import (
     SourceTreeSnapshot,
     entries_config_digest,
-    packaged_entries_without_handlers,
     packaged_metadata_needs_rebuild,
     read_packaged_metadata,
     refresh_stale_packaged_metadata,
@@ -302,7 +300,11 @@ def _read_packaged_isolated_metadata(
     (codex). An artifact written under an older schema is refused by the reader
     and takes the worker path; ``start_plugin`` then rewrites it from that scan
     (``_refresh_scanned_packaged_metadata``), so the cost is one import, not one
-    per start. Schema 3 never shipped in a release, so no in-memory migration.
+    per start, wherever that rewrite is possible (a read-only package or one
+    whose entries the effective configuration overrides keeps scanning).
+    Schema 3 never shipped in a release, so no in-memory migration. Schema 4
+    did, but a v4 file cannot say whether its handlers cover ``__routers__``
+    entries (#3066), so every v4 file takes this one rescan.
 
     Returns ``None`` when there is no usable metadata at all.
     """
@@ -336,33 +338,11 @@ def _read_packaged_isolated_metadata(
             plugin_id,
         )
         return None
-    conf_dict = dict(conf) if isinstance(conf, Mapping) else {}
-    pdata_dict = dict(pdata) if isinstance(pdata, Mapping) else {}
-    # Artifacts built before router entries were registered on the host list
-    # those entries without handlers; reusing one would bring that gap back
-    # (#3066). The digest gate above already pinned the effective entries
-    # table to the packaged one, so an entry a manifest row alone produced is
-    # the only legitimate handler-less entry. A manifest row overriding a
-    # router entry does not exempt it.
-    unbacked = packaged_entries_without_handlers(
-        packaged,
-        plugin_id,
-        _manifest_only_entry_ids(plugin_id, packaged.entries, conf_dict, pdata_dict),
-    )
-    if unbacked:
-        logger.info(
-            "packaged metadata lists entries without handlers, likely built "
-            "before router entries were registered; rescanning (rebuild with "
-            "'neko-plugin build' to refresh it): plugin_id={}, entries={}",
-            plugin_id,
-            len(unbacked),
-        )
-        return None
     return IsolatedPluginMetadata(
         entries_preview=_overlay_entry_declaration(
             packaged.entries,
-            conf_dict,
-            pdata_dict,
+            dict(conf) if isinstance(conf, Mapping) else {},
+            dict(pdata) if isinstance(pdata, Mapping) else {},
         ),
         handlers=dict(packaged.handlers),
         entry_methods=dict(packaged.entry_methods),

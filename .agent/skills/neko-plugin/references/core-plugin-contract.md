@@ -266,9 +266,10 @@ class MyPlugin(NekoPluginBase):
   A `timeout` override is fully honored only when it shortens the decorator's:
   the plugin process still enforces the decorator `timeout` as an upper bound,
   so raising 30 s to 60 s in the manifest does not let the call run 60 s. A
-  package built by an older `neko-plugin build` may list router entries
-  without handlers; the host then rescans the plugin on every start. Rebuild
-  it with `neko-plugin build`.
+  package built by an older `neko-plugin build` (metadata schema 4 or older)
+  may list router entries without handlers. The host cannot tell, so it
+  rescans every such package once on its first start and rewrites its
+  metadata. Rebuild with the current `neko-plugin build` to skip that.
 - Until `include_router` binds it, a router's `ctx`, `config`, and `store` are
   `None`. A router has no `push_message`, `data_path`, or `i18n`; use
   `self.main_plugin`.
