@@ -764,3 +764,27 @@ async def test_a_copy_whose_files_cannot_be_removed_is_not_put_on_record_as_clea
     copy = await host.ledger.get_session(child.session_id)
     assert copy.status != "cleared" and Path(copy.session_dir).exists()
     release.set()
+
+
+async def test_what_a_task_agent_hands_back_is_not_steered_into_an_asker_that_was_stopped(hosts, tmp_path):
+    # The asker was stopped, and its session is not closed yet: what one of its task agents
+    # hands back (a question that failed, say) starts no turn there.
+    release, held = _held()
+    scripts = {PHOTOS: _photos(), BUILD: held}
+    host = _host(hosts, tmp_path, scripts)
+    await _at_rest(host, scripts)
+    asker = await _asker_at_work(host, scripts)
+    child, _created = await host.ledger.create(
+        lanlan_name="Lan", title="part", dispatch_text="part", source="task_agent", route="task_agent",
+        parent_id=asker.id, name="part",
+    )
+    told = _steered_into(host, asker.id)
+    # At work, it is told.
+    await host.task_agents._tell_parent(child, "failed", "it went wrong")
+    assert len(told) == 1
+    # Stopped, with its session still open: not told.
+    await host.ledger.transition(asker.id, "cancelled", reason="stopped by the user")
+    assert asker.id in host.task_agents._sessions
+    await host.task_agents._tell_parent(child, "failed", "it went wrong again")
+    assert len(told) == 1
+    release.set()

@@ -4121,6 +4121,18 @@ class TaskAgentManager:
                 truncate_to_tokens(text, TASK_AGENT_CHILD_RESULT_MAX_TOKENS) or words.CHILD_RESULT_NOTHING,
                 nonce,
             )
+        try:
+            stands = await self._ledger.get(parent_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - handed on as ever where it cannot be told
+            stands = None
+        if stands is not None and stands.status == "cancelled":
+            # Stopped: its session is about to be closed, if it is not yet,
+            # and nothing waits for the result any more. Steered in, it would
+            # start a turn of a commission that was stopped. (Nothing is
+            # awaited from here to where it would be handed on.)
+            return
         parent = self._sessions.get(parent_id)
         if parent is None:
             await self._wake_closed_parent(parent_id, message)
