@@ -703,6 +703,7 @@ class AsrRuntimeMixin:
             captured_at=stable_captured_at,
             source=str(source or "unknown"),
             request_id=(str(request_id) if request_id is not None else None),
+            consent_epoch=getattr(self, "_proactive_vision_revocation_epoch", 0),
         )
         if supersedes_latest_cache:
             self._latest_independent_visual_frame = frame
@@ -1225,8 +1226,18 @@ class AsrRuntimeMixin:
             > self._independent_visual_frame_ttl_s
         ):
             return None
+        consent_epoch = getattr(self, "_proactive_vision_revocation_epoch", 0)
         frames = tuple(
-            frame for frame in record.sampled_frames() if record.accepts(frame)
+            frame
+            for frame in record.sampled_frames()
+            if record.accepts(frame)
+            # A live frame staged before a screen-consent revocation stays
+            # out; a screenshot the user attached (request_id) may go.
+            and (
+                frame.request_id is not None
+                or frame.consent_epoch is None
+                or frame.consent_epoch == consent_epoch
+            )
         )
         if not frames:
             return None
@@ -1242,7 +1253,7 @@ class AsrRuntimeMixin:
             source=newest.source,
             request_id=newest.request_id,
             image_request_ids=tuple(frame.request_id for frame in frames),
-            consent_epoch=getattr(self, "_proactive_vision_revocation_epoch", 0),
+            consent_epoch=consent_epoch,
         )
     def _schedule_core_asr_cleanup(
         self,

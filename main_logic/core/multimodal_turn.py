@@ -55,6 +55,8 @@ class _IndependentVisualFrame:
     captured_at: float
     source: str
     request_id: str | None
+    # Screen-consent revocation epoch when the frame was staged; None: not tracked.
+    consent_epoch: int | None = None
 
 
 @dataclass(slots=True)

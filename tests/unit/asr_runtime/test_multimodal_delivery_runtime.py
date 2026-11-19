@@ -483,7 +483,7 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
     assert turn_id not in runtime._core_multimodal_turns
 
 
-async def _dispatch_with_revocation_after_freeze(frames):
+async def _dispatch_with_revocation_after_freeze(frames, *, revoke_before_freeze=False):
     """Freeze ``frames`` ((image, request_id) pairs), revoke consent, then dispatch.
 
     The revocation lands after the freeze and before the submit, where the
@@ -511,14 +511,18 @@ async def _dispatch_with_revocation_after_freeze(frames):
             captured_at=record.started_at + offset * 0.001,
         )
 
-    accepted = runtime.handle_input_transcript
+    if revoke_before_freeze:
+        # Staged under consent, frozen after the revocation.
+        runtime._proactive_vision_revocation_epoch += 1
+    else:
+        accepted = runtime.handle_input_transcript
 
-    async def accept_then_revoke(*args, **kwargs):
-        result = await accepted(*args, **kwargs)
-        runtime._proactive_vision_revocation_epoch += 1  # privacy mode on
-        return result
+        async def accept_then_revoke(*args, **kwargs):
+            result = await accepted(*args, **kwargs)
+            runtime._proactive_vision_revocation_epoch += 1  # privacy mode on
+            return result
 
-    runtime.handle_input_transcript = accept_then_revoke
+        runtime.handle_input_transcript = accept_then_revoke
 
     await runtime._dispatch_core_asr_transcript(
         VoiceTranscriptEvent(turn_token=token, provider="openai", text="look here")
@@ -527,9 +531,13 @@ async def _dispatch_with_revocation_after_freeze(frames):
 
 
 @pytest.mark.unit
-async def test_revocation_after_freeze_keeps_only_the_users_screenshot() -> None:
+@pytest.mark.parametrize("revoke_before_freeze", [False, True])
+async def test_revocation_after_freeze_keeps_only_the_users_screenshot(
+    revoke_before_freeze,
+) -> None:
     runtime = await _dispatch_with_revocation_after_freeze(
-        [("live-frame", None), ("user-shot", "req-1")]
+        [("live-frame", None), ("user-shot", "req-1")],
+        revoke_before_freeze=revoke_before_freeze,
     )
 
     runtime.session.submit_multimodal_turn.assert_awaited_once()
@@ -538,8 +546,13 @@ async def test_revocation_after_freeze_keeps_only_the_users_screenshot() -> None
 
 
 @pytest.mark.unit
-async def test_revocation_after_freeze_sends_live_only_turn_as_text() -> None:
-    runtime = await _dispatch_with_revocation_after_freeze([("live-frame", None)])
+@pytest.mark.parametrize("revoke_before_freeze", [False, True])
+async def test_revocation_after_freeze_sends_live_only_turn_as_text(
+    revoke_before_freeze,
+) -> None:
+    runtime = await _dispatch_with_revocation_after_freeze(
+        [("live-frame", None)], revoke_before_freeze=revoke_before_freeze,
+    )
 
     runtime.session.submit_multimodal_turn.assert_not_awaited()
     runtime.session.submit_external_voice_turn.assert_awaited_once()
