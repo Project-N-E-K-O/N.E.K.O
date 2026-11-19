@@ -1197,6 +1197,13 @@ class _StreamingMixin:
                 registry = self._in_flight_user_messages = {}
             registry[asyncio.current_task()] = user_message
             _in_flight_user_messages_owner = registry
+
+        def _release_in_flight() -> None:
+            """This turn's message is not heading to the provider anymore."""
+            nonlocal _in_flight_user_messages_owner
+            if _in_flight_user_messages_owner is not None:
+                _in_flight_user_messages_owner.pop(asyncio.current_task(), None)
+                _in_flight_user_messages_owner = None
         if getattr(self, "_auto_capture_discard_epoch", 0) != _auto_capture_epoch:
             # Consent was revoked while this turn was being assembled: its
             # proactive screenshot must not go out (no await since append).
@@ -1546,9 +1553,7 @@ class _StreamingMixin:
                             # The provider has this turn's request now: its user
                             # message is no longer heading there (an interrupted
                             # reply's cleanup may run long after this point).
-                            if _in_flight_user_messages_owner is not None:
-                                _in_flight_user_messages_owner.pop(asyncio.current_task(), None)
-                                _in_flight_user_messages_owner = None
+                            _release_in_flight()
                             if _pending_bus_frames is not None:
                                 _bus_images, _bus_sources = _pending_bus_frames
                                 _pending_bus_frames = None
@@ -2386,6 +2391,10 @@ class _StreamingMixin:
                         and not _is_api_key_rejected_error(e)
                     ):
                         _hold_in_flight_for_resend()
+                    else:
+                        # The turn ends here: not in flight during the status
+                        # and completion callbacks below.
+                        _release_in_flight()
                     if not observation_committed:
                         observation_failed = True
                     # A failed stream's text is discarded below, never kept.
@@ -2470,6 +2479,8 @@ class _StreamingMixin:
                             status_reported = True
                         break
                 except Exception as e:
+                    # This path always ends the turn (break below).
+                    _release_in_flight()
                     if not observation_committed:
                         observation_failed = True
                     cut_keeps_shown = False

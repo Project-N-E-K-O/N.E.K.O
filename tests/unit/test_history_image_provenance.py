@@ -671,8 +671,13 @@ async def test_turn_retried_after_its_first_chunk_keeps_its_live_frames():
 
 
 @pytest.mark.asyncio
-async def test_turn_failing_its_last_attempt_is_not_held_in_flight():
-    """No retry follows the last failed attempt: the turn is not re-registered."""
+@pytest.mark.parametrize("before_first_chunk", [False, True])
+async def test_turn_failing_its_last_attempt_is_not_held_in_flight(before_first_chunk):
+    """No retry follows the last failed attempt: the turn is not held in flight.
+
+    Also when no attempt ever reached its first chunk (the release there
+    never ran): the turn is released before the status callback.
+    """
     import json
     from unittest.mock import patch
 
@@ -683,7 +688,10 @@ async def test_turn_failing_its_last_attempt_is_not_held_in_flight():
     async def fail_mid_stream():
         raise _connection_error()
 
-    client.script = [[_text("partial"), fail_mid_stream]]
+    client.script = (
+        [_connection_error()] if before_first_chunk
+        else [[_text("partial"), fail_mid_stream]]
+    )
     held_at_status = []
 
     async def on_status_message(payload):
@@ -702,3 +710,21 @@ async def test_turn_failing_its_last_attempt_is_not_held_in_flight():
 
     assert len(client.requests) == 3
     assert held_at_status == [0]
+
+
+@pytest.mark.asyncio
+async def test_turn_ending_on_a_non_retryable_error_is_not_held_in_flight():
+    client = _client()
+    client.script = [RuntimeError("provider exploded")]
+    held_at_status = []
+
+    async def on_status_message(_payload):
+        held_at_status.append(len(client._in_flight_user_messages))
+
+    client.on_status_message = on_status_message
+    await client.stream_text(
+        "what is on screen?", turn_images=(_png_b64(40, 40),),
+        turn_source="screen", turn_source_count=1,
+    )
+
+    assert held_at_status and set(held_at_status) == {0}
