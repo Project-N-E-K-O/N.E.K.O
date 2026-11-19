@@ -78,10 +78,9 @@ function loadWebsocket() {
 
     function open(socket) {
         socket.readyState = 1;
-        try { socket.onopen(); } catch (_) {
-            // Collaborators onopen pokes after the latch reset (agent HUD,
-            // greeting check, ...) are not stubbed here.
-        }
+        // No try/catch: an exception from onopen must fail the test rather
+        // than hide a reset that never ran.
+        socket.onopen();
     }
     function deliver(socket, payload) {
         socket.onmessage({ data: JSON.stringify(payload) });
@@ -138,7 +137,9 @@ test('character switch clears the latch on the new socket, old socket tail still
     const oldSocket = env.connect();
     env.deliver(oldSocket, { type: 'session_ended_by_server', input_mode: 'text' });
 
-    // What handleCatgirlSwitch does: close, retarget, flag greeting switch, reconnect.
+    // Replays handleCatgirlSwitch's socket steps: close, retarget, flag greeting
+    // switch, reconnect. test_session_control_contract.py pins that the real switch
+    // still takes this path (a new socket, hence a new onopen).
     oldSocket.close();
     env.window.lanlan_config.lanlan_name = 'Beta';
     env.S._pendingGreetingSwitch = true;

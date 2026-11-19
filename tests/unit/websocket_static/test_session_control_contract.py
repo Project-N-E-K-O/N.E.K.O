@@ -218,6 +218,24 @@ def test_new_socket_open_clears_session_end_suppression():
     assert "if (S.socket !== _thisSocket) {" in onmessage_head
 
 
+def test_character_switch_opens_a_new_socket_for_the_latch_reset():
+    """The runtime test replays handleCatgirlSwitch's socket steps by hand.
+
+    Pin that the real switch still closes the old socket and reconnects, so the
+    new socket's onopen (which clears the session-end latch) runs. If the switch
+    ever reused an open socket instead, this fails rather than the replay
+    staying green.
+    """
+    character = (APP_WEBSOCKET_PATH.parent / "app-character.js").read_text(encoding="utf-8")
+    switch_block = character.split("if (S.socket) S.socket.close();", 1)
+    assert len(switch_block) == 2, "handleCatgirlSwitch no longer closes the old socket"
+    tail = switch_block[1]
+    assert "window.lanlan_config.lanlan_name = newCatgirl;" in tail
+    flag = "S._pendingGreetingSwitch = true;"
+    assert flag in tail
+    assert tail.index("window.lanlan_config.lanlan_name = newCatgirl;") < tail.index(flag)
+    assert tail.index(flag) < tail.index("connectWebSocket();")
+
 def test_session_end_suppression_reset_runtime():
     """Drive the real app-websocket.js in a node vm (see the .cjs file)."""
     import shutil
