@@ -1238,6 +1238,28 @@ async def test_the_main_server_takes_a_quota_failure_without_waking_her_or_showi
         assert shown == [row.payload["text"]] and row.payload["text"] != row.payload["summary"]
 
 
+async def test_a_silent_commission_whose_quota_runs_out_is_reported_neither_now_nor_later(hosts, tmp_path):
+    async def meter(commission_id: str) -> bool:
+        return False
+
+    host = _task_agent_host(hosts, tmp_path, ScriptedLLM([_report_ready("done")]), task_agent_meter=meter)
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan",
+        title="sort the photos",
+        dispatch_text="sort the photos",
+        source="dispatch",
+        route="task_agent",
+        delivery="silent",
+    )
+
+    await host.task_agents.submit(commission)
+
+    failed = await wait_status(host, commission.id, "failed")
+    assert failed.status_reason == "the task agent's model ran out of quota"
+    # Kept for later is not louder than silent: there is no report to keep.
+    assert await outbox(host, "task_result") == []
+
+
 async def test_a_report_whose_shown_words_are_empty_shows_its_summary(hosts, tmp_path):
     host = _task_agent_host(hosts, tmp_path, ScriptedLLM([]))
     commission, _created = await host.ledger.create(
