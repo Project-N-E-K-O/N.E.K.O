@@ -9,8 +9,9 @@ Write only inside the plugin directory: the folder holding `plugin.toml`. In a
 N.E.K.O source checkout that is usually `plugin/plugins/<plugin_id>/`; a
 project created elsewhere (Plugin studio, `init --output`) is the folder you
 are in. Reading anything else for context is fine and encouraged. Outputs the
-CLI itself produces (packages under the checkout's `target/` from `build`,
-`check -r`, or `precheck`; `vendor/` from `sync`) are expected and fine.
+CLI itself produces (packages in the CLI's own `target/` directory from
+`build`, `check -r`, or `precheck`; `vendor/` from `sync`) are expected and
+fine.
 
 ## Hard Constraints
 

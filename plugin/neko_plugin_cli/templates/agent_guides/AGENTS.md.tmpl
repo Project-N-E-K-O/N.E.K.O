@@ -14,15 +14,18 @@ that as this directory.
   point at it, or this plugin sits inside it. Check with the `check` command
   below (or `uv run neko-plugin --help` in the checkout).
 - **B, desktop build**: no checkout (the Verify commands still show
-  `<path-to-this-directory>` and no checkout exists). The CLI cannot run. Say so instead of guessing; the user tests with Start/Reload on the
-  plugin page and pastes errors from its Logs tab.
+  `<path-to-this-directory>` and no checkout exists). The CLI does not run;
+  say so instead of guessing. The user tests with Start/Reload on the plugin
+  page, pastes errors from its Logs tab, and builds a package with Build
+  package in the Plugin studio (插件制作工作台). Only `precheck` and
+  publishing need a checkout.
 
 ## Hard Constraints
 
 Full reasons: `.agents/skills/neko-plugin/references/execution-boundary.md`.
 
 1. **Do not edit N.E.K.O itself**: host changes never reach users of this plugin.
-2. **Do not import host internals** (`utils.*`, `plugin.core`, `plugin.sdk.shared`, ...): they bypass consent disclosure and break without notice; use `plugin.sdk.plugin`.
+2. **Do not import host internals** (`utils.*`, `plugin.core`, `plugin.sdk.shared`, ...): they bypass consent disclosure and break without notice; use `plugin.sdk.plugin` (adapters: `plugin.sdk.adapter`).
 3. **Do not call N.E.K.O's local services directly**: ports differ per install and it bypasses permission checks; use the SDK.
 4. **Do not use `print`**: it never reaches the plugin log; use `self.logger`.
 5. **Do not log conversation text, secrets, or tokens**: logs are shared files; log lengths, IDs, error types.
@@ -46,8 +49,8 @@ Full reasons: `.agents/skills/neko-plugin/references/execution-boundary.md`.
   locale files with at least `zh-CN` and `en`.
 - Market: id matches `^[a-z][a-z0-9_]*$` (at most 100 characters); the
   release tag is `v<version>`; the GitHub repo is conventionally
-  `n.e.k.o_plugin_<id>`. `type = "extension"` was removed in v0.9
-  ([migration](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/plugins/migration-v0.9.md));
+  `n.e.k.o_plugin_<id>`. `type = "extension"` was removed
+  ([migration guide](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/plugins/migration-v0.9.md));
   use `type = "plugin"`.
 
 ## Runtime Model
@@ -74,15 +77,17 @@ Details: `.agents/skills/neko-plugin/references/runtime-model.md`.
 
 Run in this order before reporting done: `check` → `lint` → `sync --clean` →
 `precheck`. For `lint` and `precheck`, copy the `check` line and replace only
-the word `check`; keep every other part. `precheck` reruns lint, sync, and `check -r` (tests in `tests/`, package
+the subcommand (the word right after `neko-plugin`); keep every other part.
+`precheck` reruns lint, sync, and `check -r` (tests in `tests/`, package
 build), which is what Market CI runs. Ruff is pinned and runs with
 `--ignore-noqa`, so `# noqa` does not silence it: fix the code.
 Outside the checkout's built-in plugin folder, `check -r` and `precheck` fail
 on uncommitted changes in this repository. Do not commit for the user
 unasked; report the actual result.
 Build a package with `{build_command}`.
-Route B: none of these run. Review the code against the constraints above,
-then ask the user to Start/Reload and report back.
+Route B: none of these commands run. Review the code against the constraints
+above, then ask the user to Start/Reload and report back; packages come from
+Build package in the Plugin studio.
 
 ## When Something Fails
 

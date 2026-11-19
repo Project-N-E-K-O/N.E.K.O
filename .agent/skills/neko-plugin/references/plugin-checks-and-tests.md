@@ -184,7 +184,6 @@ Search before editing platform code:
 These are not the first-line plugin-authoring checks, but they may catch plugin code issues when paths are passed explicitly:
 
 ```bash
-uv run neko-plugin lint <plugin_id|plugin_path>
 uv run python scripts/check_async_blocking.py plugin/plugins/<plugin_id>
 ```
 
@@ -195,8 +194,10 @@ Many repository convention scripts intentionally exclude `plugin/plugins` by def
 Plugin-facing by default:
 
 - `uv run neko-plugin check <plugin_id|plugin_path>`
-- `uv run neko-plugin check <plugin_id|plugin_path> --release`
+- `uv run neko-plugin lint <plugin_id|plugin_path>` (the pinned ruff check Market CI runs)
 - `uv run neko-plugin sync <plugin_id> --clean`
+- `uv run neko-plugin check <plugin_id|plugin_path> --release`
+- `uv run neko-plugin precheck <plugin_id|plugin_path>` (lint + sync + `check --release`, the Market CI gates)
 - `uv run neko-plugin build <plugin_id>`
 - plugin-local tests under `plugin/plugins/<plugin_id>/tests`
 - targeted hosted TSX checks for `plugin/plugins/<plugin_id>`

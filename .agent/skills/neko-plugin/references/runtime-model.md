@@ -35,9 +35,12 @@ Consequences:
 
 ## startup
 
-- The host waits for `startup` to finish, up to `[plugin_runtime].timeout`
-  seconds (default 10). Past that, the process is killed and the start fails
-  with a startup timeout. Keep `startup` short: read config, validate, return.
+- The host waits for the whole start, up to `[plugin_runtime].timeout`
+  seconds (default 10): process spawn, importing the entry module and its
+  `vendor/` dependencies, `__init__`, state restore, and `startup`. Past that,
+  the process is killed and the start fails with a startup timeout. Keep
+  module top level and `__init__` light (no heavy imports or I/O there), and
+  keep `startup` short: read config, validate, return.
 - `startup` must be `async def`. A sync one still runs, but the host then
   reports it as a startup error.
 - An exception in `startup` is logged. With the default

@@ -32,15 +32,17 @@ format in `references/execution-boundary.md`.
   storage, cross-plugin calls, and ordinary external API/device integrations.
 - `adapter`: only for bridging an external protocol or request stream into
   N.E.K.O plugin calls. Calling an external service does not make an adapter.
-- `extension` was removed in v0.9; see the
+- `extension` was removed; see the
   [migration guide](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/plugins/migration-v0.9.md).
 
 ## CLI
 
 From a N.E.K.O source checkout, `uv run neko-plugin <command> <plugin>`, where
 `<plugin>` is an id under the checkout's plugin root or a path. Confirm
-arguments with `--help`. Without a checkout (desktop build) none of these
-run: tell the user rather than guessing.
+arguments with `--help`. Without a checkout (desktop build) the CLI does not
+run: tell the user rather than guessing. The user can still Start/Reload the
+plugin and build a package in the Plugin studio; only `precheck` and
+publishing need a checkout.
 
 | Command | Use |
 |---|---|
@@ -64,12 +66,15 @@ If the current folder already has a `plugin.toml`, skip to Modify.
 
 1. Read `references/plugin-creation-workflow.md`. Offer only `plugin` and
    `adapter` as package types; ignore its `extension` and host-plugin
-   questions (removed in v0.9).
+   questions (removed).
 2. Ask only the unresolved minimum: name, purpose, package type, first-version
    scope, out of scope. Show the Identity Lock and a short design brief.
 3. After confirmation, scaffold with `neko-plugin init`; never hand-write the
    initial directory, `plugin.toml`, or entry class.
-4. Add `DESIGN.md`, then implement inside the new plugin directory.
+4. Add `DESIGN.md`, then implement inside the new plugin directory. Read
+   `references/core-plugin-contract.md` before changing the manifest,
+   identity, entries, or UI.
+5. Validate in the order under CLI.
 
 ### Modify
 
