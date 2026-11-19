@@ -45,10 +45,16 @@ maintainer with access before shipping.
 
 The renderer uses the existing settings IPC contract and trusted-sender checks.
 The main-process snapshot includes `silentStartup`; its patch handler accepts
-only booleans, saves a copy before publishing the in-memory change, and reports
-failure to the existing settings controller. Failed or thrown writes leave the
-live preference unchanged. Detailed configuration logging is disabled for this
-write.
+only booleans and saves a copy before publishing the in-memory change. It now
+requires a synchronously returned boolean `true` from `saveConfig` before
+publishing or notifying subscribers. A false, missing, non-boolean or Promise
+result is rejected; a thrown write reaches the existing controller's failure
+handling. Detailed configuration logging is disabled for this write.
+
+This is an explicit acknowledgment contract, not a claim that the installed
+0.9.1 `saveConfig` implementation has been verified. Integrators must confirm or
+adapt that function to return synchronous `true` only after a successful write;
+a successful write with no return value is not silently treated as success.
 
 The switch uses the existing card/toggle design. An associated label and
 help/status description support screen readers; a visible keyboard focus ring
@@ -92,12 +98,30 @@ native dialog. A settings change after startup does not create a loading window.
 - Source file hashes: `desktop-silent-startup/source-manifest.json`
 - Node regression tests: `desktop-silent-startup/startup.test.cjs`
 - Isolated Electron UI test: `desktop-silent-startup/electron-ui.cjs`
+- Self-contained patch persistence contract: `tests/unit/desktop_silent_startup_patch.test.js`
 
 Only five desktop files change: `src/main.js`,
 `src/main/desktop-settings-actions.js`, `src/main/tray-settings-pet-locales.js`,
 `src/renderer/settings/settings.js`, and `src/renderer/settings/settings.css`.
-The manifest identifies the exact before/after contents; an installed package
-baseline must not be assumed to equal current upstream HEAD.
+The manifest retains the known baseline hashes. After the 2026-11-19
+strict-success change, `src/main/desktop-settings-actions.js` has a pending
+`after_sha256` rather than a claimed new hash; its previous verified hash is
+explicitly dated and retained. The other four after hashes are unchanged, and
+the compatibility-check section is labeled as historical. A matching full
+desktop source must be used to regenerate the pending hash and repeat patch
+application checks; an installed baseline must not be assumed to equal current
+upstream HEAD.
+
+The proposed persistence case can be tested from this public repository without
+desktop source:
+
+```sh
+node --test tests/unit/desktop_silent_startup_patch.test.js
+```
+
+This test extracts and executes the actual case body from the patch with
+controlled dependencies. It does not load the production desktop settings module
+or establish the real `saveConfig` return contract.
 
 From the matching Electron source checkout:
 
@@ -117,15 +141,35 @@ The UI fixture requires an untouched before-source directory and defaults to a
 new system temporary output directory when no output path is provided.
 
 If the preflight fails, port the five small changes onto current source rather
-than forcing a patch or replacing whole files. The tests need the Electron
-source modules; they are not runnable against this Python repository alone.
+than forcing a patch or replacing whole files. The matching-source startup and
+Electron UI suites need the desktop modules; only the self-contained patch
+contract above runs in this public repository without those modules.
 
-## Validation
+## Current persistence revision — 2026-11-19
 
-Validation refreshed on 2026-11-13:
+The previous `=== false` guard could publish a successful save when the callback
+returned `undefined`, another non-boolean value, or a Promise. The proposed case
+now uses `!== true`, without changing the surrounding asynchronous API.
+
+- The self-contained patch contract runs 16 tests. Against the previous guard,
+  11 failed and 5 passed; with the strict-success guard, all 16 passed.
+- It covers both preference directions, false/missing/non-boolean/Promise
+  acknowledgments, thrown writes, explicit synchronous success, notification
+  order, preservation of unrelated settings and invalid IPC values.
+- The matching-source `startup.test.cjs` suite now includes the same acknowledgment
+  variants. Only its syntax was checked here: the full desktop modules are not
+  available for another integration run.
+- No full-source patch application, regenerated desktop-file hash, Electron UI
+  or macOS native-launch result is claimed for this revision. The two real macOS
+  checks for the revised `activate` handler remain pending.
+
+## Historical validation — 2026-11-13
+
+The following results precede the 2026-11-19 strict-success guard:
 
 - `git apply --check` passed against the hash-recorded baseline. All five
-  generated files match the manifest's after hashes.
+  generated files matched the then-verified after hashes; the settings-actions
+  hash is now retained as a historical value, not the new revision's output.
 - The current installed 0.9.1 source already contains the original silent-startup
   patch and additional local changes. In an extracted copy, reversing that
   original patch and applying the revised patch both passed without forcing or

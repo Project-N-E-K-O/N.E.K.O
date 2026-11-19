@@ -10,7 +10,11 @@
     {
       "path": "src/main/desktop-settings-actions.js",
       "before_sha256": "4d348895b84dd02f3b58481d842f80a6931d0c271ae4761c3695e1b433fa16f4",
-      "after_sha256": "a56d66b18be42b3bfc21611ed1e042253fe50c5f879eb85f2822ac90be124042"
+      "after_sha256": null,
+      "after_sha256_status": "pending_matching_source_verification",
+      "previous_verified_after_sha256": "a56d66b18be42b3bfc21611ed1e042253fe50c5f879eb85f2822ac90be124042",
+      "previous_verified_at": "2026-11-13",
+      "previous_verified_patch": "Before the 2026-11-19 strict-success persistence guard"
     },
     {
       "path": "src/main/tray-settings-pet-locales.js",
@@ -52,6 +56,7 @@
   ],
   "compatibility_check": {
     "date": "2026-11-13",
+    "status": "Historical verification before the 2026-11-19 strict-success persistence guard",
     "package_version": "0.9.1",
     "source": "Current installed desktop archive, checked in an extracted copy",
     "procedure": "Reverse the original PR patch, then apply this revision; preserve unrelated local changes",

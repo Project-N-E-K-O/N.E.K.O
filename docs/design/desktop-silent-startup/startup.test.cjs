@@ -26,9 +26,11 @@ test('toggle persists before notification, retains unrelated preferences and sur
   assert.equal(await actions.applyPatch('silentStartup',false),true);assert.equal(harness(JSON.parse(fs.readFileSync(file))).getSnapshot().silentStartup,false);
  } finally {fs.rmSync(dir,{recursive:true,force:true});}
 });
-test('write rejection leaves live preference unchanged and sends no success notification',async()=>{
- const cfg={silentStartup:false};const actions=harness(cfg,()=>false);let notified=0;actions.subscribe(()=>notified++);
- assert.equal(await actions.applyPatch('silentStartup',true),false);assert.equal(cfg.silentStartup,false);assert.equal(notified,0);
+test('only an explicit synchronous success can publish the saved preference',async()=>{
+ for(const result of [false,undefined,null,0,1,'true','false',{},[],new Boolean(true),Promise.resolve(true),Promise.resolve(false)]){
+  const cfg={silentStartup:false};const actions=harness(cfg,()=>result);let notified=0;actions.subscribe(()=>notified++);
+  assert.equal(await actions.applyPatch('silentStartup',true),false);assert.equal(cfg.silentStartup,false);assert.equal(notified,0);
+ }
 });
 test('thrown write leaves live preference unchanged',async()=>{
  const cfg={silentStartup:true};const actions=harness(cfg,()=>{throw new Error('fixture ENOSPC');});

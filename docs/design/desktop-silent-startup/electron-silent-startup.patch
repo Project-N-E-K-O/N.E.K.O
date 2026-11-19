@@ -120,9 +120,9 @@ diff --git a/src/main/desktop-settings-actions.js b/src/main/desktop-settings-ac
 +        if (typeof value !== 'boolean') return false;
 +        const cfg = ensureAppConfig();
 +        if (!cfg) return false;
-+        // Publish the preference only after the persisted write succeeds.
++        // Require an explicit synchronous success acknowledgment before publishing.
 +        const nextConfig = { ...cfg, silentStartup: value };
-+        if (saveConfig(nextConfig, { logDetails: false }) === false) return false;
++        if (saveConfig(nextConfig, { logDetails: false }) !== true) return false;
 +        cfg.silentStartup = value;
 +        notifyChanged();
          return true;
