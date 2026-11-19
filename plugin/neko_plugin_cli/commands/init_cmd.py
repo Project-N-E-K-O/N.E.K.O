@@ -15,6 +15,7 @@ from plugin._types.plugin_types import SCAFFOLDABLE_PLUGIN_TYPES
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
 from ..repo_state import git_output
+from ..templates import agent_kit
 from ..templates.generator import PluginSpec, generate_repo_support_files
 from ..core.plugin_source import load_plugin_source
 from ..core.project import create_project
@@ -93,7 +94,11 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
             "プレビューのみ（書き込みなし）"
         ),
     )
-    setup_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing support files")
+    setup_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing support files, including AGENTS.md, CLAUDE.md and the skill snapshot",
+    )
     setup_parser.add_argument("--git", action="store_true", help="Initialize a git repository if this plugin directory does not have its own")
     setup_parser.add_argument("--remote", help="Add a git remote named origin after --git initialization")
     setup_parser.add_argument("--no-readme", action="store_true", help="Do not generate README.md")
@@ -331,11 +336,13 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
                 )
             return 0
         _preflight_git_request(plugin_dir, initialize_git=args.git, remote=args.remote)
+        skipped_agent_kit: list[Path] = []
         created = generate_repo_support_files(
             spec,
             plugin_dir,
             repo_root=defaults.repo_root,
             overwrite=args.overwrite,
+            skipped_agent_kit=skipped_agent_kit,
         )
         git_initialized = False
         if args.git:
@@ -350,6 +357,7 @@ def handle_setup_repo(args: argparse.Namespace) -> int:
             print(f"  └── {path.relative_to(plugin_dir)}")
     else:
         print("  support files already exist; use --overwrite to regenerate them")
+    _print_skipped_agent_kit(skipped_agent_kit)
     print(f"\n  plugin: {source.plugin_id}")
     print(f"  entry:  {source.entry_point}")
     if git_initialized:
@@ -368,6 +376,30 @@ def _market_repo_name(plugin_id: str) -> str:
 # Exit code the UI reads as "gh cannot do this; show the manual steps" rather
 # than a hard failure. 0 = done, 1 = failed, 3 = manual fallback needed.
 MANUAL_FALLBACK_EXIT = 3
+
+
+def _print_skipped_agent_kit(skipped: list[Path]) -> None:
+    """One line per kept agent kit file, then how to bring in the official text."""
+    if not skipped:
+        return
+    print()
+    for relative in skipped:
+        print(f"  [SKIPPED] {relative.as_posix()} -> {agent_kit.source_url(relative)}")
+    print(
+        "  "
+        + _tri(
+            "These files already existed and were kept. Compare them with the official "
+            "versions above and merge what you need by hand (hard constraints, sync/async "
+            "rules, Verify commands), or rerun with --overwrite to replace them with the "
+            "official versions (this discards your edits).",
+            "这些文件已存在，已保留原样。请对照上面的官方版本，手动并入需要的内容"
+            "（硬约束、同步与异步规则、Verify 命令）；也可以加 --overwrite 重新运行，"
+            "用官方版本整体替换（会覆盖你的修改）。",
+            "これらのファイルは既に存在するため、そのまま残しました。上の公式版と見比べて、"
+            "必要な内容（ハード制約、同期・非同期のルール、Verify コマンド）を手動で取り込むか、"
+            "--overwrite を付けて再実行し公式版で置き換えてください（あなたの変更は上書きされます）。",
+        )
+    )
 
 
 def handle_create_repo(args: argparse.Namespace) -> int:

@@ -32,7 +32,12 @@ on has ended, it
 * then, at most every few hours, **tidies**: archives projects nothing was
   commissioned for in a month (one model call for the summary), removes what
   was said in sessions that ended a month ago (never a working directory),
-  and makes the reviews that are due late.
+  and makes the reviews that are due late. Last, it has a model look over
+  the entries of a layer (the space as a whole, or one project) in which an
+  entry was added or changed since it was last looked over, one call a
+  layer: the model names entries that say the same thing, have gone out of
+  date, are easily confused, or say "yesterday", and the space makes each
+  change that holds (``TaskAgentSpace.tidy_entries``).
 
 None of it is on the way of anything: it starts after the report to her has
 been stored, holds no task agent place, and a failure is recorded and not
@@ -53,10 +58,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from nekoclaw.host.decision import TIER_ARCHIVE, TIER_REVIEW
+from nekoclaw.host.decision import TIER_ARCHIVE, TIER_CONSOLIDATE, TIER_REVIEW
 from nekoclaw.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger, LedgerEvent
 from nekoclaw.host.paths import DEFAULT_PROJECT, SYSTEM_SNAPSHOT_NAME, TRANSCRIPT_NAME, safe_segment
-from nekoclaw.host.space import ENTRY_TYPES, Project, SpaceError, TaskAgentSpace
+from nekoclaw.host.space import ENTRY_EXPIRED, ENTRY_PENDING, ENTRY_TYPES, Layer, Project, SpaceError, TaskAgentSpace
 
 logger = logging.getLogger(__name__)
 
@@ -178,13 +183,25 @@ def _salvage(raw: str, text_key: str, more: tuple[str, ...] = ()) -> dict[str, A
     main = string_of(text_key)
     if main is None or not main.strip():
         return None
-    data: dict[str, Any] = {text_key: main, "entries": []}
+    data: dict[str, Any] = {text_key: main, "entries": _whole_items(text, "entries") or []}
     for key in more:
         value = string_of(key)
         if value is not None:
             data[key] = value
-    listed = re.search(r'"entries"\s*:\s*\[', text)
-    position = listed.end() if listed is not None else len(text)
+    return data
+
+
+def _whole_items(text: str, key: str) -> list[dict[str, Any]] | None:
+    """Return the objects of the list ``key`` of an answer that may be cut off, as far as they are whole.
+
+    None when the answer has no such list.
+    """
+    listed = re.search(rf'"{re.escape(key)}"\s*:\s*\[', text)
+    if listed is None:
+        return None
+    decoder = json.JSONDecoder()
+    items: list[dict[str, Any]] = []
+    position = listed.end()
     while position < len(text):
         while position < len(text) and text[position] in " \t\r\n,":
             position += 1
@@ -195,8 +212,162 @@ def _salvage(raw: str, text_key: str, more: tuple[str, ...] = ()) -> dict[str, A
         except ValueError:
             break
         if isinstance(item, dict):
-            data["entries"].append(item)
-    return data
+            items.append(item)
+    return items
+
+
+# The changes a model may ask for when it looks over a layer, and the fields
+# of each that name entries (``TaskAgentSpace.tidy_entries``).
+_CHANGES: dict[str, tuple[str, ...]] = {
+    "merge": ("from", "into"),
+    "outdated": ("entry", "by"),
+    "retitle": ("entry", "apart_from"),
+    "date": ("entry",),
+}
+
+
+def _changes_of(raw: str) -> list[dict[str, Any]] | None:
+    """Return the changes a model asked for when it looked over a layer; None when it answered with no list of them.
+
+    Of an answer that was cut off at the cap on what the model may
+    write, the changes that are whole.
+    """
+    data = _parse_object(raw)
+    if data is not None:
+        listed = data.get("operations")
+        return [item for item in listed if isinstance(item, dict)] if isinstance(listed, list) else None
+    return _whole_items(str(raw or ""), "operations")
+
+
+def _named(change: dict[str, Any], handles: dict[str, str]) -> dict[str, Any] | None:
+    """Return a change with the entries it names by the ids of their files; None when it names one not shown.
+
+    The model is shown the entries as ``n1``, ``n2``, ...: it names no
+    file, and cannot name one it was not shown.
+    """
+    kind = str(change.get("op") or "").strip().lower()
+    fields = _CHANGES.get(kind)
+    if fields is None:
+        return None
+    named: dict[str, Any] = {**change, "op": kind}
+    for field_name in fields:
+        entry_id = handles.get(str(change.get(field_name) or "").strip())
+        if entry_id is None:
+            return None
+        named[field_name] = entry_id
+    return named
+
+
+def _layer_key(project: str | None) -> str:
+    """Return how a layer is kept in what the space remembers about tidying: empty for the space as a whole."""
+    return "" if project is None else project
+
+
+# Cap on one line of the list of entries a model looks over: a title and a
+# description at their caps, with what is said of how it stands.
+_LIST_LINE_MAX_TOKENS = 100
+
+
+def _consolidate_messages(
+    look: Layer, changed: list[str], now: float
+) -> tuple[list[dict[str, str]], dict[str, str], set[str]]:
+    """Return what the model is sent to look over a layer, the entries it may name, and the ones it was shown whole. Blocking.
+
+    The model names entries by ``n1``, ``n2``, ... Every entry the host
+    made that has not expired is listed, one line each, and the ones the
+    user wrote, which it may not name. When they do not all fit, the new
+    and changed ones go first, then the pending ones, then the newest.
+    The full texts are of the new and changed ones, then of the pending
+    ones, as many as fit. Shown whole is one whose text was given, and
+    one that is listed and no news: a new or changed one whose text did
+    not fit is news to the next round as well.
+    """
+    from config.nekoclaw_settings import (
+        SPACE_CONSOLIDATE_INPUT_MAX_TOKENS,
+        SPACE_CONSOLIDATE_LIST_MAX_TOKENS,
+        SPACE_CONSOLIDATE_MAX_OPERATIONS,
+        SPACE_CONSOLIDATE_TEXT_MAX_TOKENS,
+        SPACE_CONSOLIDATE_TEXTS_MAX_TOKENS,
+    )
+    from config.prompts import prompts_nekoclaw_space as texts
+    from nekoclaw.host.space import _date
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    nothing = texts.TASK_AGENT_REVIEW_NOTHING
+    fresh = set(changed)
+    hosts = [entry for entry in look.entries if entry.id in look.made and entry.status != ENTRY_EXPIRED]
+    # The newest first, then the pending ones before the rest, then the new and changed ones before all.
+    hosts.sort(key=lambda entry: (entry.updated, entry.created), reverse=True)
+    hosts.sort(key=lambda entry: (entry.id not in fresh, entry.status != ENTRY_PENDING))
+    handles: dict[str, str] = {}
+    lines: dict[str, str] = {}
+    used = 0
+    for entry in hosts:
+        handle = f"n{len(handles) + 1}"
+        about = f" — {entry.description}" if entry.description else ""
+        line = _cut(
+            f"- {handle}: {entry.title}{about} ({entry.type}; {entry.confidence or 'not said how it is known'}; "
+            f"seen {entry.seen}; {entry.created} to {entry.updated})",
+            _LIST_LINE_MAX_TOKENS,
+        )
+        cost = count_tokens(line) + 1
+        if used + cost > SPACE_CONSOLIDATE_LIST_MAX_TOKENS:
+            break
+        used += cost
+        handles[handle] = entry.id
+        lines[entry.id] = line
+    users: list[str] = []
+    for entry in look.entries:
+        if entry.id in look.made:
+            continue
+        about = f" — {entry.description}" if entry.description else ""
+        line = _cut(f"- {entry.title}{about}", _LIST_LINE_MAX_TOKENS)
+        cost = count_tokens(line) + 1
+        if used + cost > SPACE_CONSOLIDATE_LIST_MAX_TOKENS:
+            break
+        used += cost
+        users.append(line)
+    shown = [entry for entry in hosts if entry.id in lines]
+    handle_of = {entry_id: handle for handle, entry_id in handles.items()}
+    full: list[str] = []
+    # What the model is shown of each entry as much as there is to see:
+    # its full text, or its line where it is no news.
+    seen = {entry.id for entry in shown if entry.id not in fresh}
+    used = 0
+    for entry in shown:
+        if entry.id not in fresh and entry.status != ENTRY_PENDING:
+            continue
+        block = (
+            f"[{handle_of[entry.id]}] {entry.title} (created {entry.created}, updated {entry.updated}):\n"
+            f"{truncate_to_tokens(entry.content, SPACE_CONSOLIDATE_TEXT_MAX_TOKENS)}"
+        )
+        cost = count_tokens(block) + 2
+        if used + cost > SPACE_CONSOLIDATE_TEXTS_MAX_TOKENS:
+            continue
+        used += cost
+        full.append(block)
+        seen.add(entry.id)
+    system = texts.SPACE_CONSOLIDATE_SYSTEM_PROMPT.format(max_operations=SPACE_CONSOLIDATE_MAX_OPERATIONS)
+    layer = (
+        texts.SPACE_CONSOLIDATE_LAYER_GLOBAL
+        if look.project is None
+        else texts.SPACE_CONSOLIDATE_LAYER_PROJECT.format(project=look.project)
+    )
+    user = texts.SPACE_CONSOLIDATE_USER_TEMPLATE.format(
+        today=_date(now),
+        layer=layer,
+        active="\n".join(lines[entry.id] for entry in shown if entry.status != ENTRY_PENDING) or nothing,
+        pending="\n".join(lines[entry.id] for entry in shown if entry.status == ENTRY_PENDING) or nothing,
+        user="\n".join(users) or nothing,
+        texts="\n\n".join(full) or nothing,
+    )
+    # The parts have caps of their own that add up to less; this is what holds whatever they are.
+    room = SPACE_CONSOLIDATE_INPUT_MAX_TOKENS - count_tokens(system)
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": truncate_to_tokens(user, max(room, 0))},
+    ]
+    return messages, handles, seen
 
 
 def tool_calls(events: list[LedgerEvent]) -> int:
@@ -302,9 +473,10 @@ def _steps(events: list[LedgerEvent], line_max_tokens: int, children: dict[str, 
 class SpaceKeeper:
     """Reviews finished commissions and tidies the space. See the module docstring.
 
-    ``llm`` is a ``DecisionLLM`` that knows ``TIER_REVIEW`` and
-    ``TIER_ARCHIVE``; without one nothing is reviewed and projects are
-    archived without a summary. ``session_dir_of`` returns where a
+    ``llm`` is a ``DecisionLLM`` that knows ``TIER_REVIEW``,
+    ``TIER_ARCHIVE`` and ``TIER_CONSOLIDATE``; without one nothing is
+    reviewed, projects are archived without a summary, and no layer is
+    looked over. ``session_dir_of`` returns where a
     session is kept (blocking; ``TaskAgentManager.session_dir_of``).
     ``hold_session`` and ``release_session`` are the manager's: while a
     commission is held for its review, it is not taken up again, and one
@@ -891,6 +1063,8 @@ class SpaceKeeper:
                 ("late reviews", lambda: self._late_reviews(now, float(since))),
                 ("archiving", lambda: self._archive_idle(now)),
                 ("old sessions", lambda: self._clean_sessions(now, state)),
+                # Last: it looks over what the steps before left.
+                ("entries", lambda: self._consolidate(now, state)),
             ):
                 try:
                     await step()
@@ -1101,6 +1275,185 @@ class SpaceKeeper:
             moved += 1
             self._summaries.pop(project.name, None)
             logger.info("archived an idle project of the task agent space (summary: %s)", bool(summary) or kept)
+
+    async def _consolidate(self, now: float, state: dict[str, Any]) -> None:
+        """Have a model look over the layers in which an entry was added or changed since they were last looked over.
+
+        A layer is looked over when it has ``SPACE_CONSOLIDATE_MIN_ENTRIES``
+        entries the host made that have not expired, and one of those says
+        something else than when it was last looked over (or was not there
+        then): a new one, a pending one, one that was added to. One that
+        only expired or came back has not changed what it says, and one
+        that expired is not shown to the model at all. At most
+        ``SPACE_CONSOLIDATE_LAYERS_PER_UPKEEP`` a round, the ones looked
+        over longest ago first; the rest are looked over by a later round.
+
+        What the entries said is remembered once a layer was looked over
+        (``consolidated`` among what the space keeps about its upkeep): of
+        each entry the model was shown, what it said then; of each one a
+        change was made to, what it says after that, so the change is not
+        taken for news by the next round. An entry that was not shown (the
+        list was full) or that changed while the model looked keeps what
+        was remembered of it before, and is news to the next round. So it
+        is when the model's answer cannot be read: what it was shown is
+        not asked about again. A layer the model cannot be asked about just
+        now is asked about by a later round, after the other layers that
+        wait had their turn.
+        """
+        from config.nekoclaw_settings import (
+            SPACE_CONSOLIDATE_ENABLED,
+            SPACE_CONSOLIDATE_LAYERS_PER_UPKEEP,
+            SPACE_CONSOLIDATE_MIN_ENTRIES,
+        )
+
+        if self._llm is None or not SPACE_CONSOLIDATE_ENABLED:
+            return
+        layers = await self._space.tidy_layers()
+        kept_before = state.get("consolidated")
+        # Of the layers there are: an archived project is looked over no more.
+        keys = {_layer_key(layer) for layer in layers}
+        kept: dict[str, Any] = {
+            key: value
+            for key, value in (kept_before.items() if isinstance(kept_before, dict) else ())
+            if key in keys and isinstance(value, dict)
+        }
+        due: list[tuple[float, int, Layer, list[str], dict[str, str]]] = []
+        for layer in layers:
+            try:
+                # With no model: what earlier tidying could not finish.
+                await self._space.settle_tidied(layer)
+            except (SpaceError, OSError, ValueError) as exc:
+                logger.warning("what earlier tidying left could not be finished (%s)", type(exc).__name__)
+            look = await self._layer_or_none(layer)
+            if look is None:
+                continue
+            live = sorted(entry.id for entry in look.entries if entry.id in look.made and entry.status != ENTRY_EXPIRED)
+            if len(live) < SPACE_CONSOLIDATE_MIN_ENTRIES:
+                continue
+            record = kept.get(_layer_key(layer), {})
+            said = record.get("said")
+            before = {key: value for key, value in said.items() if isinstance(value, str)} if isinstance(said, dict) else {}
+            changed = [entry_id for entry_id in live if before.get(entry_id) != look.said.get(entry_id)]
+            if not changed:
+                continue
+            # When it was last looked over, or last tried: a layer the model
+            # cannot be asked about does not keep the others from their turn.
+            times = [record.get(name) for name in ("at", "tried")]
+            at = max((float(value) for value in times if isinstance(value, (int, float))), default=0.0)
+            due.append((at, len(due), look, changed, before))
+        for _at, _order, look, changed, before in sorted(due, key=lambda item: item[:2])[:SPACE_CONSOLIDATE_LAYERS_PER_UPKEEP]:
+            if self._closed:
+                return
+            key = _layer_key(look.project)
+            seen = await self._look_over(look, changed, now)
+            after = await self._layer_or_none(look.project) if seen is not None else None
+            if seen is None or after is None:
+                # Asked again by a later round, after the others had their turn.
+                kept[key] = {**kept.get(key, {}), "tried": now}
+            else:
+                shown, written = seen
+                remembered = {**before, **{entry_id: look.said[entry_id] for entry_id in shown if entry_id in look.said}}
+                # What a change wrote, while the file still says just that:
+                # one saved over since is news to the next round.
+                remembered.update(
+                    {
+                        entry_id: after.said[entry_id]
+                        for entry_id, mark in written.items()
+                        if mark is not None and after.marks.get(entry_id) == mark
+                    }
+                )
+                for entry_id, mark in written.items():
+                    if mark is None:
+                        # Merged into another and still there (its file could
+                        # not be removed), or named by a change that failed
+                        # half way: news to the next round, which makes the
+                        # change once more.
+                        remembered.pop(entry_id, None)
+                kept[key] = {
+                    "at": now,
+                    # Of the entries that are there.
+                    "said": {entry_id: value for entry_id, value in remembered.items() if entry_id in after.said},
+                }
+            try:
+                await self._space.write_state(consolidated=kept)
+            except OSError:
+                logger.warning("what tidying looked over could not be kept; it is looked over again", exc_info=True)
+
+    async def _layer_or_none(self, project: str | None) -> Layer | None:
+        """Return a layer as tidying reads it (``TaskAgentSpace.read_layer``); None when it cannot be read.
+
+        One layer that cannot be read (a project directory whose name is
+        no name the space takes) does not keep the others from being
+        looked over.
+        """
+        try:
+            return await self._space.read_layer(project)
+        except (SpaceError, OSError, ValueError) as exc:
+            logger.warning("a layer of the task agent space could not be read for tidying (%s)", type(exc).__name__)
+            return None
+
+    async def _look_over(self, look: Layer, changed: list[str], now: float) -> tuple[set[str], dict[str, str | None]] | None:
+        """Have the model look over one layer and make the changes it asks for that hold.
+
+        Returns the entries the model was shown, and of the ones a change
+        was made to the mark of what was written last (None for one that
+        went, or was written again where that mark is not known); None
+        when the model could not be asked. Each change is
+        checked by the space, against the entries as they were shown to
+        the model (``TaskAgentSpace.tidy_entries``); one that does not hold
+        is not made, and why is logged.
+        """
+        from config.nekoclaw_settings import SPACE_CONSOLIDATE_MAX_OPERATIONS
+
+        async with self._lock():
+            messages, handles, shown = await asyncio.to_thread(_consolidate_messages, look, changed, now)
+            try:
+                raw = await self._llm.complete(TIER_CONSOLIDATE, messages)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - asked again by a later round
+                logger.warning("looking over the entries of the task agent space failed (%s)", type(exc).__name__)
+                return None
+        written: dict[str, str | None] = {}
+        changes = _changes_of(raw)
+        if changes is None:
+            logger.warning("what the model answered on looking over the entries could not be read (%d characters)", len(str(raw)))
+            return shown, written
+        marks = dict(look.marks)
+        made = 0
+        for change in changes[:SPACE_CONSOLIDATE_MAX_OPERATIONS]:
+            named = _named(change, handles)
+            if named is None:
+                logger.info("tidying was asked for a change of no kind it makes, or of an entry it did not show")
+                continue
+            try:
+                outcome, now_marks = await self._space.tidy_entries(look.project, named, marks)
+            except (SpaceError, OSError) as exc:
+                logger.warning("a change tidying was asked for could not be made (%s)", type(exc).__name__)
+                # It may have been made in part (a file could not be written
+                # half way): the entries it names are news to the next round.
+                for field_name in _CHANGES[named["op"]]:
+                    written[named[field_name]] = None
+                    marks.pop(named[field_name], None)
+                continue
+            if outcome != "made":
+                logger.info("tidying did not make a change (%s): %s", named["op"], outcome)
+                continue
+            made += 1
+            written.update(now_marks)
+            # The next change is checked against the entries as this one wrote them.
+            for entry_id, mark in now_marks.items():
+                if mark is None:
+                    marks.pop(entry_id, None)
+                else:
+                    marks[entry_id] = mark
+        logger.info(
+            "task agent space: looked over %d entries, %d of %d changes made",
+            len(shown),
+            made,
+            len(changes),
+        )
+        return shown, written
 
     def _closed_long_ago(
         self, conn: sqlite3.Connection, after: float, after_id: str, until: float

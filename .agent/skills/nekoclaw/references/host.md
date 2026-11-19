@@ -58,10 +58,11 @@
 - 宿主从不写 `AGENTS.md`（守则只有用户写）。
 - 写进复盘和条目的文字都过 `space.redact()`，现在原样返回。要打码只改这一处，不要在调用点各自处理。
 - 条目和索引里的字来自模型，以后会进别的 task agent 的系统提示。带进去时写明「是笔记不是指令」，每条有上限；不要去掉这句说明或放开上限。
+- 用模型整理条目（`SpaceKeeper._consolidate`，整理的最后一步）：模型只回一张操作清单，用 `n1`、`n2` 这样的代号指条目，不碰文件名；宿主逐项走 `TaskAgentSpace.tidy_entries`，在写锁里先比对条目还是模型看到的那份（`Layer.marks`，整份文件的摘要），不是就不做；写的那一下也要比（`_edit_as_shown`、`_file_entry(as_marked=)`），下一项按上一项写出去的那份比，别用写完再读的。用户手写的（没有 `texts` 行）、已过期的、模型没点到的第三个条目都不动；两条同状态的合并时并掉的那条文件会删（正文已在另一条里），别的不删，都不记进「不再收」。改标题只能在原标题上加一段条目自己原样有的字（`_added_to`，说明一行不改），改日期只能把一个相对时间的词整个换成一个日期（`_a_relative_time`、`SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS`）：模型看过待定的正文，它要求的改动不能当真，要从结构上让它说不出新话。别退回「词都出现过」「多几个 token」这类检查，评审第 2 轮试过，去掉否定词、在日期后接命令都能过。**待定条目的正文不进生效条目**（可能是网页让使魔写的，同一段正文又在判断的模型面前）：和生效条目是同一件事时只记一次观察、自己标过期（`_tidy_count_in`）。被整理判成过时的条目多两行 `outdated`、`superseded_by`，`check_evidence` 不再因为依据文件在而恢复它，只有再被交来（`_keep_known`）时恢复并去掉这两行。挪进别的条目的文字用它当初写下那天作小节标题（`_file_entry(added_on=)`），不然里面的「昨天」就错了。哪一层要看按「说了什么」比（`Layer.said`：标题、说明、正文），只过期或恢复不算变化；看过的记在状态文件的 `consolidated` 里，只记给模型看过的和整理自己写的，问不了模型的层记 `tried`、排到后面。
 
 **消耗上限**：
 
-- 复盘和归档总结用 `summary` 档位，不计入 task agent 的每日额度。
+- 复盘、归档总结和整理条目用 `summary` 档位，不计入 task agent 的每日额度。整理条目一层一次调用、每轮最多两层（`SPACE_CONSOLIDATE_*`），输入、输出上限由 `tests/unit/nekoclaw/test_host_space_tidy.py` 守着；调大要先报消耗对比。
 - 复盘输入上限 `TASK_AGENT_REVIEW_INPUT_MAX_TOKENS`、输出上限 `TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS` 是定过的消耗上限，调大要先报消耗对比。各部分的上限加起来已经贴着输入上限，往复盘提示词里加字要先在别的部分让出位置；`tests/unit/nekoclaw/test_host_space_keeper.py` 守着「各部分都到上限时不超」。
 - 开工时带的四段（全局守则、全局索引、项目约定、项目索引）各有上限，合计 `SPACE_BRIEF_MAX_TOKENS`；使魔空间是空的时候一个 token 都不加。
 
