@@ -14,8 +14,8 @@
  *      their rAF chain entirely and tick manually via setInterval at the configured rate
  *      (same mechanism as the existing idle low-rate tick mode, just at a different rate);
  *   3. answers "what cap should a rAF-driven backend enforce" — when the configured rate
- *      is at or above the refresh rate the display already caps it, so backends drop their
- *      own throttle instead of letting rAF jitter make it skip whole frames.
+ *      is at or above the refresh rate the display already caps it, so backends loosen their
+ *      own throttle (with bounded headroom) instead of letting rAF jitter skip whole frames.
  *
  * Non-Pet pages (browser single window, model manager, character cards, ...) do not load
  * this file, `window.nekoFramePacing` does not exist there, and every backend keeps its
@@ -32,6 +32,13 @@
     // driving: a 60fps setting stays on rAF on a 60Hz display (vsync-aligned is smoother
     // and a timer would save nothing) and only switches on 120/144Hz displays.
     const TIMER_DRIVE_REFRESH_RATIO = 0.9;
+    // When the configured rate is at or above the refresh rate, rAF-driven backends cap at
+    // "refresh rate x this ratio" instead of the configured rate. On a correctly measured
+    // display the display stays the real cap; the headroom keeps vsync jitter (rAF arriving
+    // 16.6ms apart vs a 16.667ms cap) from skipping frames, and if the refresh rate was
+    // underestimated (e.g. sampled while rAF was throttled) the rate still stays bounded
+    // instead of running at the real refresh rate.
+    const RAF_CAP_HEADROOM_RATIO = 1.5;
 
     // displayEpoch bumps on every display change; measuredEpoch is the epoch at which the
     // last successful sample *started*. They differ while the current display is unmeasured.
@@ -74,10 +81,11 @@
     /**
      * Frame-rate cap a rAF-driven backend should actually enforce for a target rate.
      * When the target is at or above the measured display refresh rate, the display is
-     * already the cap, so return 0 (no software throttle). This matters because frame
-     * throttles that compare against an exact 1000/fps interval (PIXI 7 Ticker truncates
-     * the elapsed time to whole ms before comparing) drop a whole frame whenever a rAF
-     * interval lands slightly short, e.g. 16.6ms vs 16.667ms on a 60Hz display.
+     * already the cap, so the software cap is raised to max(target, refresh x
+     * RAF_CAP_HEADROOM_RATIO). This matters because frame throttles that compare against
+     * an exact 1000/fps interval (PIXI 7 Ticker truncates the elapsed time to whole ms
+     * before comparing) drop a whole frame whenever a rAF interval lands slightly short,
+     * e.g. 16.6ms vs 16.667ms on a 60Hz display.
      * Anything else returns the target unchanged: non-Pet pages, refresh rate unknown or
      * not yet re-measured after a display change, target below the refresh rate, or 0.
      */
@@ -87,13 +95,15 @@
         if (!(fps > 0)) return fps;
         if (!isElectronPet()) return fps;
         if (!(state.refreshHz > 0) || state.measuredEpoch !== state.displayEpoch) return fps;
-        return fps >= state.refreshHz ? 0 : fps;
+        if (fps < state.refreshHz) return fps;
+        return Math.max(fps, Math.round(state.refreshHz * RAF_CAP_HEADROOM_RATIO));
     }
 
     /**
      * Estimate the refresh rate from the median interval of consecutive rAF timestamps.
-     * The error is conservative: load-time jank only lengthens intervals (refresh rate
-     * underestimated -> more likely to stay on rAF), it never overestimates it.
+     * Load-time jank only lengthens intervals, so the error is an underestimate, never an
+     * overestimate. For activeTimerTickFps that is conservative (more likely to stay on
+     * rAF); rafCapFps bounds it with RAF_CAP_HEADROOM_RATIO.
      */
     function measureDisplayRefreshRate(onDone) {
         if (typeof requestAnimationFrame !== 'function') return;
@@ -198,6 +208,7 @@
         getDisplayRefreshHz,
         activeTimerTickFps,
         rafCapFps,
+        RAF_CAP_HEADROOM_RATIO,
         currentTimerTickFps,
         requestPacedFrame,
         measureDisplayRefreshRate,

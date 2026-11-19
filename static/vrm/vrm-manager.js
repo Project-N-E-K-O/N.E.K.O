@@ -949,7 +949,7 @@ class VRMManager {
             // 下发送速率退化；关闭时保留原渲染节流行为，隔离功能影响。
             const now = performance.now();
             // 与定时器路径同一套解析：负数/NaN/Infinity 一律按 60，0 = 不限帧；
-            // 配置 ≥ 实测刷新率时不再软件节流（见 _resolveRafCapFps）
+            // 配置 ≥ 实测刷新率时放宽软件上限（见 _resolveRafCapFps）
             const targetFps = this._resolveRafCapFps(this._resolveConfiguredTargetFps());
             if (targetFps > 0) {
                 const frameInterval = 1000 / targetFps;
@@ -985,7 +985,7 @@ class VRMManager {
         return Number.isFinite(raw) && raw >= 0 ? raw : 60;
     }
 
-    // rAF 驱动下实际执行的帧率上限：配置帧率 ≥ 实测显示器刷新率时返回 0（不节流），
+    // rAF 驱动下实际执行的帧率上限：配置帧率 ≥ 实测显示器刷新率时放宽到 max(配置, 刷新率×1.5)，
     // 显示器本身就是上限。与 live2d-core.js / mmd-core.js 的同名方法对称，判定在 frame-pacing.js；
     // 非 Pet / 刷新率未测出 / 换屏后未重测 / 配置低于刷新率：原样返回。
     _resolveRafCapFps(fps) {

@@ -379,7 +379,7 @@ class Live2DManager {
                 this._lastPIXIContext = { ...requestedInitContext };
                 if (typeof window.targetFrameRate === 'number' && this.pixi_app.ticker) {
                     // 经归一化再写：已存的负数/非法配置不能直接进 PIXI maxFPS；
-                    // 再过一遍刷新率判定（配置 ≥ 刷新率时不节流，见 _resolveRafCapFps）
+                    // 再过一遍刷新率判定（配置 ≥ 刷新率时放宽软件上限，见 _resolveRafCapFps）
                     this.pixi_app.ticker.maxFPS = this._resolveRafCapFps(this._resolveConfiguredTargetFps());
                 }
                 // 包装 ticker.stop/start：外部代码（app-character / live2d-model 等）直接
@@ -810,7 +810,7 @@ class Live2DManager {
         return Number.isFinite(fps) && fps > 0 ? fps : null;
     }
 
-    // rAF 驱动下实际交给 PIXI maxFPS 的上限：配置帧率 ≥ 实测显示器刷新率时返回 0（不节流），
+    // rAF 驱动下实际交给 PIXI maxFPS 的上限：配置帧率 ≥ 实测显示器刷新率时放宽到 max(配置, 刷新率×1.5)，
     // 显示器本身就是上限。PIXI 7 Ticker 节流先把帧间隔截成整数 ms 再和 1000/maxFPS 比，
     // 60Hz 屏 + maxFPS=60 时 16.6ms 截成 16 < 16.667，整帧被跳、下一帧双倍 delta。
     // 非 Pet / 刷新率未测出 / 换屏后未重测 / 配置低于刷新率：原样返回（由 frame-pacing.js 判定）。
@@ -1092,7 +1092,8 @@ class Live2DManager {
             // 否则动作/拖拽/口型同步永远无法把帧率拉回来。
             if (!this._idleTickMode && this.pixi_app.ticker.started === false) return;
             // rAF 驱动期间按最新刷新率重判上限（换屏 / 重测完成后不必等下一次 boost）；
-            // 未变化时 _applyRafMaxFps 不写 ticker。
+            // 未变化时 _applyRafMaxFps 不写 ticker。VRM / MMD 每帧重判，这里最多晚一个
+            // 探测周期（300ms），期间上限最多是刷新率×1.5，有界。
             if (!this._idleTickMode && typeof this._rafMaxFpsRequested === 'number') {
                 this._applyRafMaxFps(this._rafMaxFpsRequested);
             }
