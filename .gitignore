@@ -93,6 +93,10 @@ __pycache__/
 .cursor/
 .pytest_cache/
 /.pytest_tmp*/
+/pytest-of-*/
+# plugin/tests/pytest.ini 用相对 --basetemp / cache_dir 生成，落点随 cwd 变化
+.pytest-run/
+.pytest-cache-plugin/
 .DS_Store
 .codex
 # Local investigation material: raw provider responses, synthetic fixtures
