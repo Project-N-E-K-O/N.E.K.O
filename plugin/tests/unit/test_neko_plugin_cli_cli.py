@@ -1908,6 +1908,8 @@ def test_refresh_hint_never_prints_a_windows_path_cmd_would_expand(
     # PowerShell expands these inside double quotes.
     assert release_cmd._shell_quote(r"C:\work\$tmp\demo") is None
     assert release_cmd._shell_quote("C:\\work\\a`b\\demo") is None
+    # cmd with delayed expansion expands !NAME! inside double quotes.
+    assert release_cmd._shell_quote(r"C:\work\plugin!KIT!") is None
     fix = release_cmd._suggest_fix(
         "agent kit snapshot is older than this neko-plugin CLI: ...",
         plugin_id="demo",
@@ -2067,7 +2069,7 @@ def test_suggested_refresh_only_rewrites_the_agent_kit(
     refresh = fix.split("fix: neko-plugin ", 1)[1].split(" --no-vscode", 1)[0] + " --no-vscode"
     if os.name == "nt":
         arguments = [arg.strip('"') for arg in shlex.split(refresh, posix=False)]
-        if any(char in str(plugin_dir) for char in "%$`"):
+        if any(char in str(plugin_dir) for char in release_cmd._WINDOWS_EXPANDING_CHARS):
             # No Windows quoting keeps such a path literal in both cmd and
             # PowerShell, so the hint names a placeholder for the user to fill.
             assert arguments[1] == "<plugin directory>"

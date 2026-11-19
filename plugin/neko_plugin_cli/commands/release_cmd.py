@@ -638,19 +638,22 @@ def _print_issues(
 
 
 _WINDOWS_SHELL = os.name == "nt"
+# Expanded inside double quotes by cmd (%VAR%, !VAR! with delayed expansion)
+# or PowerShell ($name, ` escapes).
+_WINDOWS_EXPANDING_CHARS = "%!$`"
 
 
 def _shell_quote(value: str) -> str | None:
     """Quote one argument of a command the user copies into their shell.
 
-    None when no quoting keeps it literal for every Windows shell: cmd
-    expands %VAR% and PowerShell expands $name and ` escapes even inside
-    double quotes, which could point the command at another directory.
+    None when no quoting keeps it literal for every Windows shell (see
+    _WINDOWS_EXPANDING_CHARS), which could point the command at another
+    directory.
     """
     if not _WINDOWS_SHELL:
         # POSIX shells expand $ and ` inside double quotes.
         return shlex.quote(value)
-    return None if any(char in value for char in "%$`") else f'"{value}"'
+    return None if any(char in value for char in _WINDOWS_EXPANDING_CHARS) else f'"{value}"'
 
 
 def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> str:
