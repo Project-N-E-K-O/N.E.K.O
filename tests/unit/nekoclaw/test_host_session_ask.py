@@ -861,6 +861,54 @@ async def test_two_questions_asked_at_once_are_not_named_alike(hosts, tmp_path):
     release.set()
 
 
+async def test_a_question_and_a_task_agent_started_at_once_are_not_named_alike(hosts, tmp_path):
+    # A task agent its lead starts may be given any name, that of a question too: it is named
+    # under the same hold as a question, and the two are not filed under one name.
+    release, held = _held()
+    part = "Make the little part."
+    scripts = {
+        part: ScriptedLLM([[say("Done."), finish()]]),
+        QUESTION: ScriptedLLM([[say("An answer."), finish()]]),
+        PHOTOS: _photos(),
+        BUILD: held,
+    }
+    host = _host(hosts, tmp_path, scripts, max_task_agents=4)
+    photos = await _at_rest(host, scripts)
+    await host.ledger.update_session(photos.session_id, name="photos")
+    asker = await _asker_at_work(host, scripts)
+    manager = host.task_agents
+    fork, team = manager.fork_session, manager._team
+    forked, reading, go_on = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def copied_then_held(session_id: str, **kwargs: Any) -> Any:
+        copy = await fork(session_id, **kwargs)
+        forked.set()
+        await asyncio.wait_for(go_on.wait(), 10)
+        return copy
+
+    async def read_a_while_ago(commission_id: str) -> Any:
+        # What was read is a while old by the time a name is chosen from it.
+        found = await team(commission_id)
+        reading.set()
+        await asyncio.sleep(0.2)
+        return found
+
+    manager.fork_session = copied_then_held
+    manager._team = read_a_while_ago
+    asking = asyncio.ensure_future(_ask(host, asker))
+    await asyncio.wait_for(forked.wait(), 10)
+    # The task agent's names are read first, and the question's while that reading is not filed yet.
+    starting = asyncio.ensure_future(
+        manager._cb_subagent_start(asker.session_id, {"name": "ask-1", "prompt": part, "description": "a part"})
+    )
+    await asyncio.wait_for(reading.wait(), 10)
+    go_on.set()
+    await asyncio.gather(asking, starting)
+    names = [child.name for child in await host.ledger.select(parent_id=asker.id)]
+    assert len(names) == 2 and len(set(names)) == 2
+    release.set()
+
+
 async def test_what_a_task_agent_hands_back_is_not_steered_into_an_asker_that_was_stopped(hosts, tmp_path):
     # The asker was stopped, and its session is not closed yet: what one of its task agents
     # hands back (a question that failed, say) starts no turn there.

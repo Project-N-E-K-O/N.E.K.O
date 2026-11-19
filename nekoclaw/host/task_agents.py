@@ -1001,10 +1001,11 @@ class TaskAgentManager:
         # (``hold_files``), or it would be made of a record that is going,
         # and kept when the session it came from starts over.
         self._copying_from: dict[str, int] = {}
-        # Held from when the name of the commission a question is filed as
-        # is chosen until it is filed (``_cb_session_ask``): two questions
-        # asked at once are not given the same name.
-        self._naming_questions = asyncio.Lock()
+        # Held from when the names of a team are read for the name of a task
+        # agent its lead starts, or of a question it asks, until that one is
+        # filed (``_cb_subagent_start``, ``_cb_session_ask``): two started
+        # at once are not given the same name.
+        self._naming_members = asyncio.Lock()
         # Copies whose making was given up (the runtime took too long,
         # whoever asked for it left, the host shuts down), each with the
         # directory it was to be written into.
@@ -5010,29 +5011,34 @@ class TaskAgentManager:
             raise RuntimeError("unknown commission")
         if parent.parent_id is not None:
             raise RuntimeError("a child task agent cannot start further task agents")
-        _lead, members = await self._team(session_id)
-        taken = {member.name for member in members}
-        name = payload.get("name")
-        if not isinstance(name, str) or not name or name in taken or name == LEAD_NAME:
-            number = len(members) + 1
-            while f"agent-{number}" in taken:
-                number += 1
-            name = f"agent-{number}"
         workdir = await self._child_workdir(parent, payload.get("cwd"))
-        child, _created = await self._ledger.create(
-            lanlan_name=parent.lanlan_name,
-            title=str(payload.get("description") or name),
-            dispatch_text=str(payload.get("prompt") or ""),
-            user_text=parent.user_text,
-            source="task_agent",
-            route="task_agent",
-            parent_id=parent.id,
-            name=name,
-            project=parent.project,
-            workdir=workdir,
-            conversation_id=parent.conversation_id,
-            lang=parent.lang,
-        )
+        async with self._naming_members:
+            # Read and filed with no other member of the team named between
+            # (a question it asks is named under the same hold): one started
+            # at once would read the names before this one is filed, and may
+            # take the same.
+            _lead, members = await self._team(session_id)
+            taken = {member.name for member in members}
+            name = payload.get("name")
+            if not isinstance(name, str) or not name or name in taken or name == LEAD_NAME:
+                number = len(members) + 1
+                while f"agent-{number}" in taken:
+                    number += 1
+                name = f"agent-{number}"
+            child, _created = await self._ledger.create(
+                lanlan_name=parent.lanlan_name,
+                title=str(payload.get("description") or name),
+                dispatch_text=str(payload.get("prompt") or ""),
+                user_text=parent.user_text,
+                source="task_agent",
+                route="task_agent",
+                parent_id=parent.id,
+                name=name,
+                project=parent.project,
+                workdir=workdir,
+                conversation_id=parent.conversation_id,
+                lang=parent.lang,
+            )
         # A stop of the parent sets its status before it looks for children,
         # so a child filed after that look is caught here, and one filed
         # before it is stopped by the stop itself.
@@ -6090,10 +6096,10 @@ class TaskAgentManager:
                     await not_asked()
                     return refusals["no_copy"].format(name=target.name, reason=str(exc))
                 copies.append(copy)
-                async with self._naming_questions:
-                    # Read and filed with no other question named between:
-                    # one asked at once would read the names before this
-                    # one is filed, and take the same.
+                async with self._naming_members:
+                    # Read and filed with no other member of a team named
+                    # between: one started at once would read the names
+                    # before this one is filed, and may take the same.
                     _lead, members = await self._team(caller.id)
                     taken = {member.name for member in members}
                     number = 1
