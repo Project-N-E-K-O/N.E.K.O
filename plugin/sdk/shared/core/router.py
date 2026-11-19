@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 from dataclasses import dataclass
 from typing import Any, Awaitable, Mapping, Protocol
 
+from plugin._types.entry_metadata import detached_copy
 from plugin.sdk.shared.constants import EVENT_META_ATTR
 from plugin.sdk.shared.models import Err, Ok, Result
 from plugin.sdk.shared.models.exceptions import EntryConflictError, PluginRouterError, RouterErrorLike
@@ -186,23 +188,17 @@ class PluginRouter:
             if entry_id in resolved:
                 raise EntryConflictError(f"duplicate entry id: {entry_id!r}")
             # Normalize meta.id and dictionary keys to match, including prefix in both
-            normalized = EventMeta(
-                event_type=meta.event_type,
+            # Copy every EventMeta field (dataclasses.replace), then override
+            # identity and detach the mutable containers. Spelling fields out
+            # one by one silently dropped any field added to EventMeta later.
+            normalized = dataclasses.replace(
+                meta,
                 id=entry_id,
                 name=meta.name if meta.name else entry_id,
-                description=meta.description,
                 input_schema=dict(meta.input_schema) if meta.input_schema is not None else None,
-                kind=meta.kind,
-                auto_start=meta.auto_start,
-                persist=meta.persist,
-                params=meta.params,
-                model_validate=meta.model_validate,
-                timeout=meta.timeout,
                 llm_result_fields=list(meta.llm_result_fields) if meta.llm_result_fields else None,
                 llm_result_schema=dict(meta.llm_result_schema) if meta.llm_result_schema else None,
-                llm_result_model=meta.llm_result_model,
-                quick_action=meta.quick_action,
-                quick_action_config=meta.quick_action_config,
+                output_schema=detached_copy(meta.output_schema) if meta.output_schema is not None else None,
                 extra=dict(meta.extra),
                 metadata=dict(meta.metadata),
             )
@@ -224,6 +220,7 @@ class PluginRouter:
         description: str = "",
         input_schema: Mapping[str, JsonValue] | None = None,
         replace: bool = False,
+        output_schema: Mapping[str, JsonValue] | None = None,
     ) -> Result[bool, RouterErrorLike]:
         trimmed = entry_id.strip()
         if trimmed == "":
@@ -237,6 +234,7 @@ class PluginRouter:
             name=name or full_entry_id,
             description=description,
             input_schema=dict(input_schema) if input_schema is not None else None,
+            output_schema=detached_copy(output_schema) if output_schema is not None else None,
         )
         self._entries[full_entry_id] = _EntryRecord(meta=meta, handler=handler)
         return Ok(True)

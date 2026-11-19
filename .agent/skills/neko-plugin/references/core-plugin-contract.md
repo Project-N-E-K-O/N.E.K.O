@@ -152,6 +152,7 @@ Entry rules:
 - `input_schema` and `params` are mutually exclusive.
 - `llm_result_fields`, `llm_result_model`, and `fields` are mutually exclusive.
 - `input_schema` describes exposed shape; Pydantic runtime validation requires `params` or an inferred single model parameter.
+- `output_schema` is the output contract (JSON Schema of the whole return value), independent of `llm_result_*` and not in their exclusion group. Symmetric with inputs: a Pydantic return annotation (`-> Model` / `-> Model | None`) infers it and returned data is validated by building the model, like `params`; an explicit `output_schema={...}` is published only, like `input_schema`. Return the model instance rather than a serialized dict (aliases, serializers, `exclude` may not read back). Checked before the state snapshot (value in `Ok`, bare value, or `finish()`/`ok()` `data`; `Err`/`fail()` not checked). Default: rate-limited warning with field paths and error types only. `strict_output=True`: the call fails with `PLUGIN_OUTPUT_SCHEMA_VIOLATION` and the snapshot is skipped.
 - Entry timeout can be set on `@plugin_entry(timeout=...)`; `timeout <= 0` disables the timeout.
 - Entry names, descriptions, schemas, and return payloads should match the plugin purpose and be traceable from `plugin.toml` and `DESIGN.md`.
 
