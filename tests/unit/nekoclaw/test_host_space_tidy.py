@@ -143,17 +143,80 @@ async def test_a_layer_is_looked_over_again_only_when_an_entry_of_it_says_someth
     assert len(world.llm.calls) == 3
 
 
-async def test_an_entry_that_only_expired_or_came_back_is_not_news(world):
-    await world.active("Build with make", "Run make in the root, not in src.")
+async def test_an_entry_that_only_expired_came_back_or_was_seen_again_is_not_news(world):
+    one = await world.active("Build with make", "Run make in the root, not in src.")
     await world.active("Tests need a display", "Set DISPLAY before running the UI tests.")
     await world.tidy()
-    path = world.memory() / "Build-with-make.md"
+    path = world.memory() / f"{one}.md"
     text = path.read_text(encoding="utf-8")
     path.write_text(text.replace("---\n\n", "status: expired\nexpired: 2027-01-01\n---\n\n", 1), encoding="utf-8")
+    await world.tidy()
+    path.write_text(text, encoding="utf-8")
+    # Filed again, in the same words, by another commission: counted, nothing new said.
+    await world.space.propose_entry(
+        None, title="Build with make", content="Run make in the root, not in src.", source="c9", observer="c9"
+    )
+    assert "c9" in (await world.entry(one)).seen_by
 
     await world.tidy()
 
     assert len(world.llm.calls) == 1
+
+
+async def test_what_changed_while_the_model_looked_is_news_to_the_next_round(world):
+    one = await world.active("Build with make", "Run make in the root, not in src.")
+    await world.active("Tests need a display", "Set DISPLAY before running the UI tests.")
+
+    async def meanwhile(messages: list[dict[str, Any]]) -> dict[str, Any]:
+        # Another commission adds to an entry while the model looks.
+        await world.space.file_entry(None, title="Build with make", content="make -j8 halves the time.")
+        return {"operations": []}
+
+    world.llm.answer = meanwhile
+    await world.tidy()
+    world.llm.answer = {"operations": []}
+
+    await world.tidy()
+
+    assert len(world.llm.calls) == 2
+    assert "make -j8 halves the time." in world.llm.calls[-1][-1]["content"]
+    assert (await world.entry(one)).status == ENTRY_ACTIVE
+
+
+async def test_what_tidying_changed_itself_is_no_news_to_the_next_round(world):
+    await world.active("Server down", "The staging server was down yesterday.")
+    await world.active("Mirror", "The mirror is at mirror.local.")
+    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "on 2027-01-14"}])
+    await world.tidy()
+
+    await world.tidy()
+
+    assert len(world.llm.calls) == 1
+
+
+async def test_an_entry_the_list_had_no_room_for_is_news_to_the_next_round(world, monkeypatch):
+    for number in range(3):
+        await world.active(f"Entry {number}", f"Text {number}.")
+    one_line = len("- n1: Entry 0 — Text 0. (lesson; not said how it is known; seen 1; 2027-01-15 to 2027-01-15)")
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_CONSOLIDATE_LIST_MAX_TOKENS", one_line // 2)
+
+    await world.tidy()
+    first = set(handles(world.llm.calls[-1]))
+    await world.tidy()
+
+    assert len(world.llm.calls) == 2
+    assert first and not first & set(handles(world.llm.calls[-1]))
+
+
+async def test_a_layer_of_expired_entries_is_not_looked_over(world):
+    for title in ("Build with make", "Tests need a display"):
+        entry_id = await world.active(title, f"{title}, as it was.")
+        path = world.memory() / f"{entry_id}.md"
+        path.write_text(path.read_text(encoding="utf-8").replace("---\n\n", "status: expired\nexpired: 2027-01-01\n---\n\n", 1), encoding="utf-8")
+
+    await world.tidy()
+
+    assert world.llm.calls == []
 
 
 async def test_a_layer_with_fewer_than_two_entries_of_the_host_is_not_looked_over(world):
@@ -216,6 +279,28 @@ async def test_a_model_that_cannot_be_asked_is_asked_again_and_one_that_answers_
     assert len(world.llm.calls) == 3
 
 
+async def test_layers_the_model_cannot_be_asked_about_do_not_keep_another_from_its_turn(world):
+    for name in ("alpha", "beta"):
+        await world.space.open_project(name)
+    for layer in (None, "alpha", "beta"):
+        await world.active("Build with make", f"Run make in the root of {layer}.", layer)
+        await world.active("Tests need a display", f"Set DISPLAY for {layer}.", layer)
+
+    async def refused(messages: list[dict[str, Any]]) -> Any:
+        if "Notes of: project beta" in messages[-1]["content"]:
+            return {"operations": []}
+        return TimeoutError("refused")
+
+    world.llm.answer = refused
+
+    await world.tidy()
+    await world.tidy()
+
+    asked = [call[-1]["content"].split("\n")[1] for call in world.llm.calls]
+    assert asked[:2] == ["Notes of: all projects", "Notes of: project alpha"]
+    assert "Notes of: project beta" in asked[2:]
+
+
 async def test_the_model_sees_the_new_and_pending_texts_and_the_users_entries_without_a_handle(world):
     await world.active("Build with make", "Run make in the root, not in src.")
     await world.active("Mirror", "The mirror is at mirror.local.")
@@ -262,18 +347,21 @@ async def test_two_entries_in_effect_that_say_the_same_become_one(world):
     assert (await world.space.read_notes(None))["removed"] == []
 
 
-async def test_a_pending_guess_merged_into_an_entry_in_effect_goes_into_it_whichever_way_round(world):
+async def test_a_guess_that_says_what_an_entry_in_effect_says_is_counted_there_and_its_text_left_out(world):
     one = await world.active("Build with make", "Run make in the root, not in src.")
     guess = await world.pending("Make needs the root", "make fails when started in src.", by="c7")
+    # Whichever way round the model names them.
     world.answer(lambda shown: [{"op": "merge", "from": shown["Build with make"], "into": shown["Make needs the root"]}])
 
     await world.tidy()
 
-    assert not (world.memory() / f"{guess}.md").exists()
     kept = await world.entry(one)
-    assert kept.status == ENTRY_ACTIVE
-    assert "make fails when started in src." in kept.content
-    assert "c7" in kept.seen_by
+    assert kept.status == ENTRY_ACTIVE and "c7" in kept.seen_by
+    # Nobody checked what the guess says beyond the entry: it is not put into it.
+    assert "make fails when started in src." not in kept.content
+    gone = await world.entry(guess)
+    assert gone.status == ENTRY_EXPIRED and gone.outdated == "the same as Build with make"
+    assert f"memory/{guess}.md" not in await world.space.read_index(None)
 
 
 async def test_two_guesses_two_commissions_filed_in_other_words_take_effect_as_one(world):
@@ -317,31 +405,55 @@ async def test_merging_two_guesses_does_not_have_them_wait_from_today(world):
     assert (kept.created, kept.updated) == ("2027-01-15", "2027-01-20")
 
 
-async def test_a_guess_merged_into_an_entry_keeps_the_day_it_was_filed(world):
-    await world.pending("Make needs the root", "make fails when started in src.", by="c7")
-    world.clock.now += 2 * DAY
-    one = await world.active("Build with make", "Run make in the root, not in src.")
-    world.answer(lambda shown: [{"op": "merge", "from": shown["Make needs the root"], "into": shown["Build with make"]}])
-
-    await world.tidy()
-
-    assert "## 2027-01-15\n\nmake fails when started in src." in (await world.entry(one)).content
-
-
-async def test_guesses_that_take_effect_as_one_go_into_the_entry_of_their_title(world):
+async def test_guesses_that_take_effect_as_one_wait_on_beside_an_entry_in_effect_of_their_title(world):
     first = await world.pending("Make needs the root", "make fails when started in src.", by="c1")
     await world.pending("Build only from top", "Building from a subdirectory breaks.", by="c2")
     # Filed from the console under that title: an entry of its own, beside the guess.
     one = await world.active("Make needs the root", "Run make in the root.")
     assert one != first and (await world.entry(first)).status == ENTRY_PENDING
+    before = (world.memory() / f"{one}.md").read_text(encoding="utf-8")
     world.answer(lambda shown: [{"op": "merge", "from": shown["Build only from top"], "into": shown["Make needs the root"]}])
 
     await world.tidy()
 
-    assert not (world.memory() / f"{first}.md").exists()
-    kept = await world.entry(one)
-    assert "make fails when started in src." in kept.content
-    assert "Building from a subdirectory breaks." in kept.content
+    # The entry the change did not name is left as it was.
+    assert (world.memory() / f"{one}.md").read_text(encoding="utf-8") == before
+    kept = await world.entry(first)
+    assert kept.status == ENTRY_PENDING and "Building from a subdirectory breaks." in kept.content
+
+
+async def test_guesses_that_take_effect_as_one_leave_an_entry_of_their_title_the_user_wrote_alone(world):
+    first = await world.pending("Make needs the root", "make fails when started in src.", by="c1")
+    await world.pending("Build only from top", "Building from a subdirectory breaks.", by="c2")
+    mine = world.memory() / "mine.md"
+    mine.write_text("---\nname: Make needs the root\n---\n\nAlways run make from the top.\n", encoding="utf-8")
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Build only from top"], "into": shown["Make needs the root"]}])
+
+    await world.tidy()
+
+    assert mine.read_text(encoding="utf-8") == "---\nname: Make needs the root\n---\n\nAlways run make from the top.\n"
+    kept = await world.entry(first)
+    assert kept.status == ENTRY_PENDING and "Building from a subdirectory breaks." in kept.content
+
+
+async def test_an_entry_merged_into_another_whose_file_cannot_go_is_merged_again_by_the_next_round(world, monkeypatch):
+    one = await world.active("Build with make", "Run make in the root, not in src.")
+    other = await world.active("Make from the root", "make only works from the repository root.")
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Make from the root"], "into": shown["Build with make"]}])
+    # Held open by another program: it cannot be removed.
+    monkeypatch.setattr(TaskAgentSpace, "_discard", staticmethod(lambda path: None))
+
+    await world.tidy()
+
+    assert (world.memory() / f"{other}.md").exists()
+    assert f"memory/{other}.md" not in await world.space.read_index(None)
+    monkeypatch.undo()
+
+    await world.tidy()
+
+    assert len(world.llm.calls) == 2
+    assert not (world.memory() / f"{other}.md").exists()
+    assert (await world.entry(one)).content.count("make only works from the repository root.") == 1
 
 
 async def test_an_entry_that_expired_is_not_merged(world):
@@ -373,6 +485,67 @@ async def test_an_entry_the_user_saved_while_the_model_looked_is_not_merged(worl
 
     assert path.exists() and "Saved by hand." in path.read_text(encoding="utf-8")
     assert "repository root" not in (await world.entry(one)).content
+
+
+async def test_of_two_guesses_the_later_goes_into_the_older_whichever_way_round(world):
+    older = await world.pending("Make needs the root", "make fails when started in src.", by="c1")
+    world.clock.now += 5 * DAY
+    newer = await world.pending("Build broke yesterday", "The build broke yesterday in a subdirectory.", by="c1")
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Make needs the root"], "into": shown["Build broke yesterday"]}])
+
+    await world.tidy()
+
+    assert not (world.memory() / f"{newer}.md").exists()
+    kept = await world.entry(older)
+    assert kept.created == "2027-01-15"
+    assert "## 2027-01-20\n\nThe build broke yesterday in a subdirectory." in kept.content
+
+
+async def test_nothing_is_merged_into_an_entry_saved_just_before_it_is_written(world, monkeypatch):
+    from nekoclaw.host import space as space_module
+
+    one = await world.active("Build with make", "Run make in the root.")
+    other = await world.active("Make from the root", "make only works from the repository root.")
+    path = world.memory() / f"{one}.md"
+    recorded = space_module._recorded
+
+    def saved_meanwhile(*args: Any, **kwargs: Any) -> Any:
+        # Between the check of the entry and its write.
+        path.write_text(path.read_text(encoding="utf-8") + "\nSaved by hand.\n", encoding="utf-8")
+        return recorded(*args, **kwargs)
+
+    monkeypatch.setattr(space_module, "_recorded", saved_meanwhile)
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Make from the root"], "into": shown["Build with make"]}])
+
+    await world.tidy()
+
+    assert "repository root" not in path.read_text(encoding="utf-8")
+    assert (world.memory() / f"{other}.md").exists()
+
+
+async def test_a_date_is_not_put_into_an_entry_saved_just_before_it_is_written(world, monkeypatch):
+    from nekoclaw.host import space as space_module
+
+    one = await world.active("Server down", "The staging server was down yesterday.")
+    await world.active("Mirror", "The mirror is at mirror.local.")
+    path = world.memory() / f"{one}.md"
+    texts_of = space_module._texts_of
+    saved: list[bool] = []
+
+    def saved_meanwhile(*args: Any, **kwargs: Any) -> Any:
+        # Between the check of the entry and its write.
+        if not saved:
+            saved.append(True)
+            path.write_text(path.read_text(encoding="utf-8") + "\nSaved by hand.\n", encoding="utf-8")
+        return texts_of(*args, **kwargs)
+
+    monkeypatch.setattr(space_module, "_texts_of", saved_meanwhile)
+    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "on 2027-01-14"}])
+
+    await world.tidy()
+
+    text = path.read_text(encoding="utf-8")
+    assert saved and "Saved by hand." in text and "2027-01-14" not in text
 
 
 async def test_a_merge_that_would_make_an_entry_too_long_is_not_made(world, monkeypatch):
@@ -501,6 +674,21 @@ async def test_an_entry_is_retitled_only_apart_from_one_that_is_there(world):
     assert (await world.entry(one)).title == "Tests"
 
 
+async def test_an_entry_is_not_retitled_apart_from_one_that_changed_meanwhile(world):
+    one = await world.active("Tests", "Run pytest with -n 4.")
+    other = await world.active("Testing", "Tests need DISPLAY set.")
+    layer = await world.space.read_layer(None)
+    path = world.memory() / f"{other}.md"
+    path.write_text(path.read_text(encoding="utf-8") + "\nSaved by hand.\n", encoding="utf-8")
+
+    outcome, _changed = await world.space.tidy_entries(
+        None, {"op": "retitle", "entry": one, "apart_from": other, "title": "Parallel tests"}, layer.marks
+    )
+
+    assert "changed since" in outcome
+    assert (await world.entry(one)).title == "Tests"
+
+
 async def test_no_entry_is_given_a_title_the_user_removed(world):
     one = await world.active("Tests", "Run pytest with -n 4.")
     await world.active("Testing", "Tests need DISPLAY set.")
@@ -573,6 +761,7 @@ async def test_words_that_stand_twice_or_a_replacement_with_no_date_are_left(wor
         lambda shown: [
             {"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "on 2027-01-14"},
             {"op": "date", "entry": shown["Server down"], "old": "Down yesterday", "new": "Down the day before"},
+            {"op": "date", "entry": shown["Server down"], "old": "Down yesterday", "new": "Down on 2027-02-30"},
         ]
     )
 
@@ -599,7 +788,7 @@ async def test_an_entry_the_user_saved_while_the_model_looked_is_left_as_they_sa
 
     await world.tidy()
 
-    assert "down yesterday" in path.read_text(encoding="utf-8")
+    assert "2027-01-14" not in path.read_text(encoding="utf-8")
     assert "Saved by hand." in path.read_text(encoding="utf-8")
 
 

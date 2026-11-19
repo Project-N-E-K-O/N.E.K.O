@@ -1271,19 +1271,25 @@ class SpaceKeeper:
         """Have a model look over the layers in which an entry was added or changed since they were last looked over.
 
         A layer is looked over when it has ``SPACE_CONSOLIDATE_MIN_ENTRIES``
-        entries the host made and one of those says something else than
-        when it was last looked over (or was not there then): a new one, a
-        pending one, one that was added to. One that only expired or came
-        back has not changed what it says. At most
+        entries the host made that have not expired, and one of those says
+        something else than when it was last looked over (or was not there
+        then): a new one, a pending one, one that was added to. One that
+        only expired or came back has not changed what it says, and one
+        that expired is not shown to the model at all. At most
         ``SPACE_CONSOLIDATE_LAYERS_PER_UPKEEP`` a round, the ones looked
         over longest ago first; the rest are looked over by a later round.
 
-        What each entry says once a layer was looked over is remembered
-        (``consolidated`` among what the space keeps about its upkeep), the
-        changes that were made counted in, so they are not taken for news
-        by the next round. So it is when the model's answer cannot be read:
-        it is not asked about the same again. A model that cannot be asked
-        just now is asked by a later round.
+        What the entries said is remembered once a layer was looked over
+        (``consolidated`` among what the space keeps about its upkeep): of
+        each entry the model was shown, what it said then; of each one a
+        change was made to, what it says after that, so the change is not
+        taken for news by the next round. An entry that was not shown (the
+        list was full) or that changed while the model looked keeps what
+        was remembered of it before, and is news to the next round. So it
+        is when the model's answer cannot be read: what it was shown is
+        not asked about again. A layer the model cannot be asked about just
+        now is asked about by a later round, after the other layers that
+        wait had their turn.
         """
         from config.nekoclaw_settings import (
             SPACE_CONSOLIDATE_ENABLED,
@@ -1302,38 +1308,70 @@ class SpaceKeeper:
             for key, value in (kept_before.items() if isinstance(kept_before, dict) else ())
             if key in keys and isinstance(value, dict)
         }
-        due: list[tuple[float, int, Layer, list[str]]] = []
+        due: list[tuple[float, int, Layer, list[str], dict[str, str]]] = []
         for layer in layers:
             look = await self._space.read_layer(layer)
-            if len(look.made) < SPACE_CONSOLIDATE_MIN_ENTRIES:
+            live = sorted(entry.id for entry in look.entries if entry.id in look.made and entry.status != ENTRY_EXPIRED)
+            if len(live) < SPACE_CONSOLIDATE_MIN_ENTRIES:
                 continue
             record = kept.get(_layer_key(layer), {})
             said = record.get("said")
-            before = said if isinstance(said, dict) else {}
-            changed = [entry_id for entry_id in sorted(look.made) if before.get(entry_id) != look.said.get(entry_id)]
+            before = {key: value for key, value in said.items() if isinstance(value, str)} if isinstance(said, dict) else {}
+            changed = [entry_id for entry_id in live if before.get(entry_id) != look.said.get(entry_id)]
             if not changed:
                 continue
-            at = record.get("at")
-            due.append((float(at) if isinstance(at, (int, float)) else 0.0, len(due), look, changed))
-        for _at, _order, look, changed in sorted(due, key=lambda item: item[:2])[:SPACE_CONSOLIDATE_LAYERS_PER_UPKEEP]:
+            # When it was last looked over, or last tried: a layer the model
+            # cannot be asked about does not keep the others from their turn.
+            times = [record.get(name) for name in ("at", "tried")]
+            at = max((float(value) for value in times if isinstance(value, (int, float))), default=0.0)
+            due.append((at, len(due), look, changed, before))
+        for _at, _order, look, changed, before in sorted(due, key=lambda item: item[:2])[:SPACE_CONSOLIDATE_LAYERS_PER_UPKEEP]:
             if self._closed:
                 return
-            if not await self._look_over(look, changed, now):
-                continue
-            after = await self._space.read_layer(look.project)
-            kept[_layer_key(look.project)] = {"at": now, "said": {entry_id: after.said[entry_id] for entry_id in after.made}}
+            key = _layer_key(look.project)
+            seen = await self._look_over(look, changed, now)
+            if seen is None:
+                # Asked again by a later round, after the others had their turn.
+                kept[key] = {**kept.get(key, {}), "tried": now}
+            else:
+                shown, written = seen
+                after = await self._space.read_layer(look.project)
+                remembered = {**before, **{entry_id: look.said[entry_id] for entry_id in shown if entry_id in look.said}}
+                # What a change wrote, while the file still says just that:
+                # one saved over since is news to the next round.
+                remembered.update(
+                    {
+                        entry_id: after.said[entry_id]
+                        for entry_id, mark in written.items()
+                        if mark is not None and after.marks.get(entry_id) == mark
+                    }
+                )
+                for entry_id, mark in written.items():
+                    if mark is None:
+                        # Merged into another and still there (its file could
+                        # not be removed), or written again: news to the next
+                        # round, which merges it once more.
+                        remembered.pop(entry_id, None)
+                kept[key] = {
+                    "at": now,
+                    # Of the entries that are there.
+                    "said": {entry_id: value for entry_id, value in remembered.items() if entry_id in after.said},
+                }
             try:
                 await self._space.write_state(consolidated=kept)
             except OSError:
                 logger.warning("what tidying looked over could not be kept; it is looked over again", exc_info=True)
 
-    async def _look_over(self, look: Layer, changed: list[str], now: float) -> bool:
+    async def _look_over(self, look: Layer, changed: list[str], now: float) -> tuple[set[str], dict[str, str | None]] | None:
         """Have the model look over one layer and make the changes it asks for that hold.
 
-        Returns whether the model answered. Each change is checked by the
-        space, against the entries as they were shown to the model
-        (``TaskAgentSpace.tidy_entries``); one that does not hold is not
-        made, and why is logged.
+        Returns the entries the model was shown, and of the ones a change
+        was made to the mark of what was written last (None for one that
+        went, or was written again where that mark is not known); None
+        when the model could not be asked. Each change is
+        checked by the space, against the entries as they were shown to
+        the model (``TaskAgentSpace.tidy_entries``); one that does not hold
+        is not made, and why is logged.
         """
         from config.nekoclaw_settings import SPACE_CONSOLIDATE_MAX_OPERATIONS
 
@@ -1345,11 +1383,13 @@ class SpaceKeeper:
                 raise
             except Exception as exc:  # noqa: BLE001 - asked again by a later round
                 logger.warning("looking over the entries of the task agent space failed (%s)", type(exc).__name__)
-                return False
+                return None
+        shown = set(handles.values())
+        written: dict[str, str | None] = {}
         changes = _changes_of(raw)
         if changes is None:
             logger.warning("what the model answered on looking over the entries could not be read (%d characters)", len(str(raw)))
-            return True
+            return shown, written
         marks = dict(look.marks)
         made = 0
         for change in changes[:SPACE_CONSOLIDATE_MAX_OPERATIONS]:
@@ -1366,7 +1406,8 @@ class SpaceKeeper:
                 logger.info("tidying did not make a change (%s): %s", named["op"], outcome)
                 continue
             made += 1
-            # The next change is checked against the entries as this one left them.
+            written.update(now_marks)
+            # The next change is checked against the entries as this one wrote them.
             for entry_id, mark in now_marks.items():
                 if mark is None:
                     marks.pop(entry_id, None)
@@ -1374,11 +1415,11 @@ class SpaceKeeper:
                     marks[entry_id] = mark
         logger.info(
             "task agent space: looked over %d entries, %d of %d changes made",
-            len(look.made),
+            len(shown),
             made,
             len(changes),
         )
-        return True
+        return shown, written
 
     def _closed_long_ago(
         self, conn: sqlite3.Connection, after: float, after_id: str, until: float
