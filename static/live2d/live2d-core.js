@@ -1002,17 +1002,57 @@ class Live2DManager {
         if (app && app.ticker && typeof this._idleTickSavedMaxFPS === 'number') {
             app.ticker.maxFPS = this._idleTickSavedMaxFPS;
         }
-        if (restartGlobals) this._releaseGlobalTickers();
+        // The timer has been driving these tickers by hand; resume rAF from the last manual update.
+        if (restartGlobals) this._releaseGlobalTickers({ keepClock: true });
         if (app && app.ticker && app.ticker.started === false && this._tickerOrigStart) {
-            try { this._tickerOrigStart(); } catch (_) {}
+            try { this._startTickerKeepingClock(app.ticker, this._tickerOrigStart); } catch (_) {}
         }
         this._idleTickSavedMaxFPS = null;
         this._idleTickFps = null;
     }
 
+    /**
+     * Start a ticker without dropping or double-counting time at the timer → rAF switch.
+     * - PIXI v7 Ticker.start() resets lastTime to performance.now() (via _requestIfNeeded), so
+     *   the span between the last manual update() and now would be lost: model physics, breath
+     *   and motions fall behind a few ms on every switch. Restore lastTime to its pre-start
+     *   value (the last manual update) so the first rAF frame's elapsedMS covers that span.
+     * - rAF timestamps are the frame's begin time and can be earlier than that last manual
+     *   update (which used performance.now()). PIXI would then move lastTime backwards and
+     *   count the overlap twice, so rAF timestamps are clamped to the restored lastTime until
+     *   one passes it; the guard then removes itself.
+     * PIXI's own minFPS cap (_maxElapsedMS) still clamps oversized gaps.
+     * Only for paths where the timer was driving the ticker until now. Resuming after an
+     * external pause keeps PIXI's reset semantics.
+     */
+    _startTickerKeepingClock(ticker, startFn) {
+        const lastTime = ticker.lastTime;
+        startFn();
+        if (!(ticker.started && Number.isFinite(lastTime) && lastTime >= 0 &&
+            Number.isFinite(ticker.lastTime) && lastTime <= ticker.lastTime)) return;
+        ticker.lastTime = lastTime;
+        if (typeof ticker.update !== 'function') return;
+        const hadOwnUpdate = Object.prototype.hasOwnProperty.call(ticker, 'update');
+        const innerUpdate = ticker.update;
+        const guardedUpdate = function (time) {
+            if (typeof time === 'number' && time < lastTime) {
+                return innerUpdate.call(this, lastTime);
+            }
+            if (ticker.update === guardedUpdate) {
+                if (hadOwnUpdate) ticker.update = innerUpdate;
+                else delete ticker.update;
+            }
+            return innerUpdate.call(this, time);
+        };
+        ticker.update = guardedUpdate;
+    }
+
     // 把定时器模式接管（停掉）的全局 shared/system ticker 拉回来并恢复它们的帧率上限。
     // 幂等：没接管过就什么都不做。
-    _releaseGlobalTickers() {
+    // `keepClock: true` is only for leaving timer mode (the timer kept updating them); the
+    // external ticker.stop() → start() pause path keeps PIXI's lastTime reset.
+    _releaseGlobalTickers(options) {
+        const keepClock = !!(options && options.keepClock === true);
         if (!this._globalTickersHeld) return;
         this._globalTickersHeld = false;
         const PixiTicker = (typeof PIXI !== 'undefined' && PIXI.Ticker) ? PIXI.Ticker : null;
@@ -1020,8 +1060,12 @@ class Live2DManager {
         try {
             if (typeof this._idleTickSavedSharedMaxFPS === 'number') PixiTicker.shared.maxFPS = this._idleTickSavedSharedMaxFPS;
             if (typeof this._idleTickSavedSystemMaxFPS === 'number') PixiTicker.system.maxFPS = this._idleTickSavedSystemMaxFPS;
-            if (this._idleTickSharedWasStarted && !PixiTicker.shared.started) PixiTicker.shared.start();
-            if (this._idleTickSystemWasStarted && !PixiTicker.system.started) PixiTicker.system.start();
+            const restart = (t) => {
+                if (keepClock) this._startTickerKeepingClock(t, () => t.start());
+                else t.start();
+            };
+            if (this._idleTickSharedWasStarted && !PixiTicker.shared.started) restart(PixiTicker.shared);
+            if (this._idleTickSystemWasStarted && !PixiTicker.system.started) restart(PixiTicker.system);
         } catch (_) {}
         this._idleTickSharedWasStarted = false;
         this._idleTickSystemWasStarted = false;

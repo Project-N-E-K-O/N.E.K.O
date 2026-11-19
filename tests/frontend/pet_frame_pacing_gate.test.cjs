@@ -572,6 +572,173 @@ test('Live2D：光标停在悬停范围内（isFocusing 常驻）不算持续活
     assert.equal(mgr._hasRenderActivity(), true, '拖拽仍无条件算活动');
 }));
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Live2D: switching from timer-driven ticks back to rAF must not drop model time.
+// PIXI v7 Ticker.start() resets lastTime to performance.now(); the ticker below mirrors
+// the parts of v7.4.3 Ticker that matter here (start/_requestIfNeeded, update, maxFPS
+// gate, minFPS cap) and integrates deltaMS into a model clock.
+// ─────────────────────────────────────────────────────────────────────────────
+function makePixiV7Ticker(sb, name) {
+    const now = () => sb.sandbox.performance.now();
+    const t = {
+        name,
+        started: false,
+        lastTime: -1,
+        _lastFrame: -1,
+        _minElapsedMS: 0,
+        _maxElapsedMS: 100,
+        _requestId: null,
+        deltaMS: 0,
+        modelClockMs: 0,
+        lastUpdateAt: null,
+        get maxFPS() { return this._minElapsedMS ? Math.round(1000 / this._minElapsedMS) : 0; },
+        set maxFPS(fps) { this._minElapsedMS = fps === 0 ? 0 : 1000 / Math.max(10, fps); },
+        _tick(time) {
+            t._requestId = null;
+            if (t.started) {
+                t.update(time);
+                if (t.started && t._requestId === null) t._requestId = sb.sandbox.requestAnimationFrame(t._tick);
+            }
+        },
+        _requestIfNeeded() {
+            if (this._requestId === null) {
+                this.lastTime = now();
+                this._lastFrame = this.lastTime;
+                this._requestId = sb.sandbox.requestAnimationFrame(this._tick);
+            }
+        },
+        start() { if (!this.started) { this.started = true; this._requestIfNeeded(); } },
+        stop() {
+            if (this.started) {
+                this.started = false;
+                if (this._requestId !== null) { sb.sandbox.cancelAnimationFrame(this._requestId); this._requestId = null; }
+            }
+        },
+        update(time = now()) {
+            if (time > this.lastTime) {
+                let e = time - this.lastTime;
+                if (e > this._maxElapsedMS) e = this._maxElapsedMS;
+                if (this._minElapsedMS) {
+                    const n = (time - this._lastFrame) | 0;
+                    if (n < this._minElapsedMS) return;
+                    this._lastFrame = time - (n % this._minElapsedMS);
+                }
+                this.deltaMS = e;
+                this.modelClockMs += e;
+                this.lastUpdateAt = time;
+            } else {
+                this.deltaMS = 0;
+            }
+            this.lastTime = time;
+        },
+    };
+    t.originalUpdate = t.update;
+    return t;
+}
+
+function setupLive2DWithPixiV7Tickers(sb) {
+    const shared = makePixiV7Ticker(sb, 'shared');
+    const system = makePixiV7Ticker(sb, 'system');
+    sb.PIXI.Ticker.shared = shared;
+    sb.PIXI.Ticker.system = system;
+    sb.PIXI.Application = class Application {
+        constructor() { this.ticker = makePixiV7Ticker(sb, 'app'); this.stage = {}; this.renderer = {}; }
+    };
+    const ctx = setupLive2D(sb);
+    [ctx.app.ticker, shared, system].forEach((t) => t.start());
+    return ctx;
+}
+
+// Advance wall time in 1ms steps: timers fire at their own due time, rAF runs at 60Hz.
+// Like Chromium, rAF callbacks get the frame's begin time (a vsync grid point), and when the
+// rAF chain restarts after an idle stretch the first callback comes promptly as a "missed"
+// frame stamped with the last vsync, which can be earlier than the timer callback's
+// performance.now() that just ran.
+function runWallClock(sb, ms, onMs) {
+    const frameMs = 1000 / 60;
+    let nextFrame = Math.ceil(sb.sandbox.performance.now() / frameMs) * frameMs;
+    let rafIdle = sb.rafQueue.length === 0;
+    const flush = (time) => {
+        const batch = sb.rafQueue.splice(0, sb.rafQueue.length);
+        batch.forEach((e) => e.fn(time));
+    };
+    for (let i = 0; i < ms; i++) {
+        sb.tick(1);
+        if (onMs) onMs();
+        const now = sb.sandbox.performance.now();
+        if (now >= nextFrame) {
+            const frameBegin = nextFrame;
+            while (nextFrame <= now) nextFrame += frameMs;
+            flush(frameBegin);
+        } else if (rafIdle && sb.rafQueue.length > 0) {
+            flush(nextFrame - frameMs);
+        }
+        rafIdle = sb.rafQueue.length === 0;
+    }
+}
+
+for (const pet of [false, true]) {
+    test(`Live2D ${pet ? 'Pet' : '非 Pet'}：频繁进出空闲定时器模式，app/shared/system 的模型时钟都不丢时间`, withMockTimers(() => {
+        const sb = createSandbox({ pet, targetFrameRate: 60 });
+        if (pet) sb.measureRefresh(60);
+        const { mgr, app, shared, system } = setupLive2DWithPixiV7Tickers(sb);
+        const startedAt = sb.sandbox.performance.now();
+        mgr.boostInteractiveFPS();
+        assert.ok(!mgr._idleTickMode, '60@60Hz 活动态走 rAF');
+        let switches = 0;
+        let sinceBoost = 0;
+        // 约每 1.5 秒来一次活动：900ms 保持期后进空闲定时器，再被下一次活动拉回 rAF。
+        // 间隔每次多错开 7ms，让切换时刻相对 33ms 定时器、16.7ms 帧的相位轮转一遍
+        // （切回时既有「上一拍之后过了一段」也有「rAF 帧时间早于上一拍」）。
+        let period = 1500;
+        runWallClock(sb, 60000, () => {
+            sinceBoost += 1;
+            if (sinceBoost >= period) {
+                sinceBoost = 0;
+                period = 1500 + ((switches * 7) % 33);
+                if (mgr._idleTickMode) switches += 1;
+                mgr.boostInteractiveFPS();
+            }
+        });
+        assert.ok(switches >= 35, `应发生多次定时器 → rAF 切换（实际 ${switches}）`);
+        for (const t of [app.ticker, shared, system]) {
+            const wall = t.lastUpdateAt - startedAt;
+            const drift = t.modelClockMs - wall;
+            assert.ok(Math.abs(drift) < 1e-6, `${t.name} 模型时钟漂移 ${drift.toFixed(3)}ms（${switches} 次切换）`);
+            assert.equal(t.update, t.originalUpdate, `${t.name}：切回 rAF 的防倒退包装在时间越过后自行撤掉，不随切换次数叠加`);
+        }
+    }));
+}
+
+test('Live2D：退出定时器模式后 lastTime 接着最后一次手动 update；外部暂停后恢复仍沿用 PIXI 的重置', withMockTimers(() => {
+    const sb = createSandbox({ pet: true, targetFrameRate: 60 });
+    sb.measureRefresh(60);
+    const { mgr, app, shared, system } = setupLive2DWithPixiV7Tickers(sb);
+    mgr.boostInteractiveFPS();
+    runWallClock(sb, 1000);
+    assert.equal(mgr._idleTickMode, true);
+    runWallClock(sb, 50);
+    const lastManual = app.ticker.lastTime;
+    assert.ok(sb.sandbox.performance.now() > lastManual, '定时器两拍之间');
+    mgr.boostInteractiveFPS();
+    for (const t of [app.ticker, shared, system]) {
+        assert.equal(t.started, true);
+        assert.equal(t.lastTime, lastManual, `${t.name}：退出定时器模式不丢上一拍之后的时间`);
+    }
+
+    // 外部暂停（pauseRendering）期间时间本就不该推进：恢复时保持 PIXI start() 的重置
+    runWallClock(sb, 1000);
+    assert.equal(mgr._idleTickMode, true);
+    mgr.pauseRendering();
+    runWallClock(sb, 5000);
+    mgr.resumeRendering();
+    const now = sb.sandbox.performance.now();
+    for (const t of [app.ticker, shared, system]) {
+        assert.equal(t.started, true);
+        assert.equal(t.lastTime, now, `${t.name}：暂停后恢复从现在起算，不把暂停时长补进模型时钟`);
+    }
+}));
+
 test('契约：Live2D 交互层在坐标变化时记录 _lastPointerMoveAt', () => {
     const src = read('static/live2d/live2d-interaction.js');
     assert.match(src, /if \(pointerMoved\) this\._lastPointerMoveAt = performance\.now\(\);/);
