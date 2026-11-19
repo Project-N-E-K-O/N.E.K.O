@@ -293,6 +293,10 @@ def generate_repo_support_files(
     # gets its missing files unless overwrite is set.
     for relative, content in agent_kit_files.items():
         path = target_dir / relative
+        if path.is_symlink():
+            # e.g. CLAUDE.md -> AGENTS.md: writing through it would replace
+            # the link target with the wrong guide.
+            continue
         path.parent.mkdir(parents=True, exist_ok=True)
         _write_support_file(path, content, created=created, overwrite=overwrite)
 

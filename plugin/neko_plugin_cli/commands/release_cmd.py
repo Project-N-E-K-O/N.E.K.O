@@ -632,10 +632,19 @@ def _print_issues(
                 print(f"    fix: {fix}", file=stream)
 
 
-def _shell_quote(value: str) -> str:
-    """Quote one argument of a command the user copies into their shell."""
-    # cmd has no single quotes; POSIX shells expand $ and ` inside double ones.
-    return f'"{value}"' if os.name == "nt" else shlex.quote(value)
+_WINDOWS_SHELL = os.name == "nt"
+
+
+def _shell_quote(value: str) -> str | None:
+    """Quote one argument of a command the user copies into their shell.
+
+    None when no quoting keeps it literal: cmd expands %VAR% even inside
+    double quotes, which could point the command at another directory.
+    """
+    if not _WINDOWS_SHELL:
+        # POSIX shells expand $ and ` inside double quotes.
+        return shlex.quote(value)
+    return None if "%" in value else f'"{value}"'
 
 
 def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> str:
@@ -687,6 +696,8 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
         # setup-repo resolves a bare id only under the plugins root; a path
         # works for every plugin. --no-* keeps the other support files.
         target = _shell_quote(str(plugin_dir)) if plugin_dir is not None else label
+        if target is None:
+            target = '"<plugin directory>"'
         refresh = (
             f"neko-plugin setup-repo {target} --overwrite "
             "--no-readme --no-tests --no-gitignore --no-vscode"

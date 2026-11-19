@@ -7,7 +7,7 @@ import shlex
 import shutil
 import subprocess
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -1896,6 +1896,40 @@ def test_check_warns_about_a_stale_agent_kit_without_changing_the_exit_code(
     target = release_cmd._shell_quote(str(plugin_dir))
     refresh = f"setup-repo {target} --overwrite --no-readme --no-tests --no-gitignore --no-vscode"
     assert (refresh in out) is warned
+
+
+def test_refresh_hint_never_prints_a_windows_path_cmd_would_expand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+
+    assert release_cmd._shell_quote(r"C:\work\demo dir") == r'"C:\work\demo dir"'
+    assert release_cmd._shell_quote(r"C:\work\%K%\demo") is None
+    fix = release_cmd._suggest_fix(
+        "agent kit snapshot is older than this neko-plugin CLI: ...",
+        plugin_id="demo",
+        plugin_dir=PureWindowsPath(r"C:\work\%K%\demo"),
+    )
+    assert 'setup-repo "<plugin directory>" --overwrite' in fix
+    assert "%K%" not in fix
+
+
+def test_setup_repo_overwrite_leaves_symlinked_guides_alone(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "linked_kit")
+    setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
+    assert neko_plugin_cli.main(setup_args) == 0
+    claude_md = plugin_dir / "CLAUDE.md"
+    claude_md.unlink()
+    try:
+        claude_md.symlink_to("AGENTS.md")
+    except OSError:
+        pytest.skip("symlinks are not available here")
+    agents_md = (plugin_dir / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+
+    assert claude_md.is_symlink()
+    assert (plugin_dir / "AGENTS.md").read_text(encoding="utf-8") == agents_md
 
 
 def test_check_ignores_an_agent_kit_it_cannot_inspect(
