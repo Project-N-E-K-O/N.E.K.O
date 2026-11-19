@@ -13,8 +13,10 @@ pytestmark = pytest.mark.plugin_unit
 _COMMANDS = {
     "command_context": "From the N.E.K.O repository root:",
     "check_command": "uv run neko-plugin check market_demo",
-    "build_command": "uv run neko-plugin build market_demo",
+    "lint_command": "uv run neko-plugin lint market_demo",
     "sync_command": "uv run neko-plugin sync market_demo --clean",
+    "precheck_command": "uv run neko-plugin precheck market_demo",
+    "build_command": "uv run neko-plugin build market_demo",
 }
 
 
@@ -53,10 +55,22 @@ def test_agents_template_substitutes_every_placeholder() -> None:
     content = agent_kit.render_agents_md("market_demo", **_COMMANDS)
 
     assert "{" not in content
-    assert "uv run neko-plugin check market_demo" in content
-    assert "uv run neko-plugin sync market_demo --clean" in content
+    for command in (value for key, value in _COMMANDS.items() if key.endswith("_command")):
+        assert command in content
     assert ".agents/skills/neko-plugin/" in content
     assert "plugin/plugins/<plugin_id>/" in content
+
+
+def test_agents_template_lists_verify_commands_in_run_order() -> None:
+    content = agent_kit.render_agents_md("market_demo", **_COMMANDS)
+
+    # Agents run the rendered lines as-is; nothing asks them to rewrite one.
+    verify_block = "\n".join(
+        _COMMANDS[key]
+        for key in ("check_command", "lint_command", "sync_command", "precheck_command")
+    )
+    assert f"```bash\n{verify_block}\n```" in content
+    assert "replace only" not in content
 
 
 def test_agents_template_does_not_resubstitute_inserted_values() -> None:
@@ -89,6 +103,52 @@ def test_agents_template_points_at_snapshotted_references() -> None:
         assert agent_kit.SKILL_TARGET_DIR / "references" / name in files
 
 
+def test_snapshot_skill_entry_is_stamped_with_the_cli_version() -> None:
+    from plugin.neko_plugin_cli import __version__
+
+    authored = (agent_kit._kit_root() / "SKILL.md").read_text(encoding="utf-8")
+    stamped = agent_kit.skill_files()[agent_kit.SKILL_TARGET_DIR / "SKILL.md"]
+
+    # Injected while rendering; the authored file stays unstamped.
+    assert agent_kit.snapshot_cli_version(authored) is None
+    assert agent_kit.snapshot_cli_version(stamped) == __version__
+    frontmatter = stamped.split("---\n")[1]
+    assert f'metadata:\n  neko-plugin-cli-version: "{__version__}"\n' in frontmatter
+    assert stamped.replace(f'metadata:\n  neko-plugin-cli-version: "{__version__}"\n', "") == authored
+
+
+@pytest.mark.parametrize(
+    "authored",
+    [
+        "# no frontmatter\n",
+        "---\nname: x\nmetadata:\n    owner: y\n---\nbody\n",
+        "---\nname: x\nmetadata: {}\n---\nbody\n",
+        "---\r\nname: x\r\n---\r\nbody\r\n",
+    ],
+)
+def test_stamp_never_edits_an_existing_metadata_map(authored: str) -> None:
+    stamped = agent_kit._stamp_skill_entry(authored)
+
+    assert agent_kit.snapshot_cli_version(stamped) == agent_kit.CLI_VERSION
+    assert stamped.count("metadata") == authored.count("metadata") + (
+        0 if "metadata" in authored or not authored.startswith("---") else 1
+    )
+
+
+def test_stamp_is_read_through_a_byte_order_mark() -> None:
+    stamped = agent_kit._stamp_skill_entry("---\nname: x\n---\nbody\n")
+
+    assert agent_kit.snapshot_cli_version("\ufeff" + stamped) == agent_kit.CLI_VERSION
+    assert agent_kit.snapshot_cli_version("\ufeff" + agent_kit._stamp_skill_entry("# x\n")) == agent_kit.CLI_VERSION
+
+
+def test_stamp_is_read_only_where_it_is_written() -> None:
+    lookalike = "---\nname: x\ndescription: >\n  neko-plugin-cli-version: 0.0.1\n---\nneko-plugin-cli-version: 0.0.1\n"
+
+    assert agent_kit.snapshot_cli_version(lookalike) is None
+    assert agent_kit.snapshot_cli_version(agent_kit._stamp_skill_entry(lookalike)) == agent_kit.CLI_VERSION
+
+
 def test_kit_root_prefers_authored_source_over_staged_copy() -> None:
     # A stale staged copy from a previous prepare must not shadow source edits.
     cli_root = Path(agent_kit.__file__).resolve().parents[1]
@@ -103,7 +163,9 @@ def test_kit_skips_caches_and_dot_files_and_reads_fresh(
     monkeypatch.setattr(agent_kit, "_kit_root", lambda: kit)
 
     assert agent_kit.skill_files() == {
-        agent_kit.SKILL_TARGET_DIR / "SKILL.md": "skill v1\n",
+        agent_kit.SKILL_TARGET_DIR / "SKILL.md": (
+            f'<!-- neko-plugin-cli-version: "{agent_kit.CLI_VERSION}" -->\nskill v1\n'
+        ),
         agent_kit.SKILL_TARGET_DIR / "references" / "topic.md": "reference v1\n",
     }
 
