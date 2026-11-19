@@ -83,8 +83,12 @@ with `id`, `name`, and `entry`.
 - `enabled = false` disables loading; `auto_start = false` only means
   manual start, and the module may still be imported for metadata. `passive =
   true` hides the plugin from agent dispatch; it does not stop it.
-- UI permissions are the minimum needed; add `config:write` only when the UI
-  writes config.
+- UI permissions: declare what a surface uses. Only `action:call`,
+  `state:read`, `config:read` (server) and `document:parse` (frontend) are
+  enforced; `config:write`, `logs:read`, `runs:read` are accepted but checked
+  nowhere. Without `state:read` the surface silently gets an empty `state`;
+  a UI writes config through an `@ui.action` entry that calls
+  `self.config.update(...)`.
 - Custom business sections are fine; do not invent platform sections.
 - Identity fields (`id`, `entry`) cannot be changed by config updates.
 
@@ -110,6 +114,9 @@ locales_dir = "i18n"    # relative to <plugin_dir>
 - Registered strings (plugin and entry names, descriptions, schema labels, UI
   action labels and confirmations): `tr("key", default="...")`.
 - Strings built at runtime: `self.i18n.t("key", default="...", **params)`.
+  It does not follow the user's language: without `locale=` it uses
+  `default_locale`, then `en`. Only `tr()` strings are resolved per user by
+  the host.
 - Hosted TSX copy: `props.t(...)` or `useI18n().t(...)` against the same
   files; no per-component dictionaries.
 
@@ -184,33 +191,89 @@ class SearchPlugin(NekoPluginBase):
 - **Timeouts**: the decorator `timeout`, the caller's timeout, and the run or
   RPC deadline all apply; the smallest wins. Details and the `<= 0` rules in
   `runtime-model.md`.
+- **Argument binding**: without `params=Model`, an unexpected or missing
+  argument raises `TypeError` unless the handler takes `**_`. With
+  `params=Model`, validation fails first and unknown keys are dropped.
+- **Registration**: methods whose name starts with `_` are never entries.
+  Entry, timer, and lifecycle ids share one namespace; a duplicate id silently
+  replaces the earlier handler.
+
+### LLM-Facing Entries
+
+How the Agent finds an entry ([selection.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/nekoclaw/host/selection.py)):
+
+- It shortlists plugins by keyword search (BM25, top 10) over the plugin id,
+  name, descriptions, and entry ids/descriptions, plus every plugin whose
+  `keywords` match the request (each keyword is a case-insensitive regular
+  expression). Write descriptions with the words users actually say.
+- It then sees the plugin `description` and, per entry, its id,
+  `description`, and up to eight arguments with types, `enum` values, and
+  `required`; argument descriptions are not shown.
+- Hidden from the Agent: plugins with `passive = true`, and entries whose
+  `metadata` sets `agent_hidden=True` (or `agent_exposed`/`llm_exposed`/
+  `agent_auto` to `False`).
+- `@llm_tool(name=...)`: the name matches `^[A-Za-z0-9_.\-]{1,64}$` (default:
+  the method name); `timeout` defaults to 30 s, at most 300 s.
 
 More: [Entries & Parameters](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/plugins/entries.md)
 (including what each caller does with the result).
 
 ## Router Contract
 
-Routers organize large plugins; they are not a default architecture. Use
-`PluginRouter` only when the main module is hard to maintain (roughly over 1k
-lines, many entries across distinct feature areas, or separate owners).
+A `PluginRouter` only splits one plugin's code into files: it is the same
+plugin, with the same permissions and consent. If a part needs its own id,
+timeout budget, or consent, make it a separate plugin. Use routers when a
+plugin has about five or more entries or its main module passes a few hundred
+lines ([router guide](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/plugins/router.md)); with one to three entries,
+keep everything in the main class.
 
-- Import from `plugin.sdk.plugin`; mount with `self.include_router(...)` from
-  the main plugin.
-- Router modules live inside `<plugin_dir>` (commonly `routers/`).
-- Router entries follow the Entry Contract; ids stay unique.
+```python
+from plugin.sdk.plugin import NekoPluginBase, PluginRouter, neko_plugin, plugin_entry, Ok
 
-## Hook Contract
 
-Hooks intercept entry execution: `before_entry`, `after_entry`,
-`around_entry`, `replace_entry`, `hook`. Use them only for a concrete need
-(validation, auditing, timing, result shaping), not to organize business
-logic.
+class SearchRouter(PluginRouter):
+    def __init__(self):
+        super().__init__(name="search")       # name defaults to the class name
 
-- Target the narrowest entry id; `target="*"` only when every entry needs it.
-- `replace_entry` changes another entry's behaviour: justify it in
-  `DESIGN.md`.
-- Hooks do not replace `@lifecycle` (startup, shutdown, reload,
-  config_change).
+    @plugin_entry(id="search")
+    async def search(self, query: str, **_):
+        await self.main_plugin.do_search(query)  # plugin-only APIs via main_plugin
+        return Ok({})
+
+
+@neko_plugin
+class MyPlugin(NekoPluginBase):
+    __routers__ = [SearchRouter]               # the host scans entries from this
+
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        for router_cls in self.__routers__:
+            self.include_router(router_cls())
+```
+
+- List every router class in `__routers__`. `include_router` alone runs the
+  entries, but the host's static scan reads `__routers__`: without it router
+  entries fall back to a 30 s timeout, are missing from the entry list, and
+  Hosted UI cannot call them.
+- Until `include_router` binds it, a router's `ctx`, `config`, and `store` are
+  `None`. A router has no `push_message`, `data_path`, or `i18n`; use
+  `self.main_plugin`.
+- `@ui.context` works only on the main class; `@ui.action` works on router
+  entries.
+- Ids: an id that does not already start with the router's `prefix` gets it.
+  Two decorated entries with one id in a router raise `EntryConflictError`;
+  across routers the later router wins, and the main class wins over all.
+  Router names are not checked for duplicates.
+- `on_mount`/`on_unmount` are never called, and entries added at runtime with
+  `add_entry` miss the static scan: do not use them.
+
+## Hooks and `@message`
+
+The hook decorators (`before_entry`, `after_entry`, `around_entry`,
+`replace_entry`, `hook`) only record metadata: nothing executes them today, so
+they have no effect. `@message` handlers are not called by the host either
+(only another plugin's explicit `call_event` reaches them). Put the logic in
+the entry, a helper it calls, or `@lifecycle`.
 
 ## Package Type and Capabilities
 
@@ -225,7 +288,6 @@ Capabilities, chosen after the type:
 - callable entry: `@plugin_entry`
 - lifecycle: `@lifecycle`; periodic work: `@timer_interval(id=..., seconds=...)`
   (both in `runtime-model.md`)
-- host message reaction: `@message(id=...)`
 - output into the conversation: `self.push_message(...)`
   (`plugin-system-surface-map.md`)
 - UI: `[plugin.ui]` plus `[[plugin.ui.panel]]`, `[[plugin.ui.guide]]`, or

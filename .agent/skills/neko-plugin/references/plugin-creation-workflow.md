@@ -86,6 +86,11 @@ Then:
 2. Check the Identity Lock against the generated files.
 3. Write `DESIGN.md`.
 4. Add i18n (`zh-CN` and `en`, `core-plugin-contract.md`).
+   If the plugin needs a panel, start from a built-in Hosted TSX panel:
+   [lifekit](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/lifekit/ui/panel.tsx),
+   [mcp_adapter](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/mcp_adapter/ui/panel.tsx),
+   [netease_music](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/plugins/netease_music/ui/panel.tsx)
+   (`hosted-ui-authoring.md`).
 5. Implement inside `<plugin_dir>`, then validate in the order of
    `plugin-cli-and-debugging.md`.
 

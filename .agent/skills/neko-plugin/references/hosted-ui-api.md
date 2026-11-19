@@ -50,11 +50,18 @@ type HostedApi = {
 ```
 
 - `call`: runs a `@ui.action` entry. Needs `action:call`, a running plugin.
+  It rejects on failure: 409 when the plugin is not running, 403 when the
+  entry is not a UI action or `action:call` is missing, 404 when the surface
+  or entry is unknown, 500 when the entry failed. The wait is the shorter of
+  `timeoutMs` (default 30 s) and the entry's own timeout. After an `await`
+  the click no longer counts as a user action; pass `userInitiated: true` for
+  a call the user started.
 - `parseDocument`: text and metadata from a user-selected PDF/DOCX
   (`ParsedHostedDocument`: `name`, `sourceType`, `mime`, `originalSize`,
   `chars`, `encoding`, `truncated`, `content`, `meta?`). Needs the
   `document:parse` permission and must be called directly from a user event
-  handler (change, click, drop); later calls are rejected.
+  handler (change, click, drop) or right after a `useConfirm()` the user
+  accepted; `userInitiated` does not apply here, later calls are rejected.
 - `refresh`: reloads `@ui.context` state and re-renders.
 - `display`: `getState()`, `requestMode("focus" | "fullscreen")`, `exit()`,
   `onStateChange(listener)` (returns an unsubscribe function). Requests
@@ -130,7 +137,7 @@ controls also `invalid?` and `error?`.
 ## Buttons and Actions
 
 - `Button({ tone?, variant?, type?, disabled?, onClick? })` (`variant` aliases `tone`), `ButtonGroup`
-- `ActionButton({ action? | actionId?, label?, tone?, values? | args?, refresh?, confirm?, onResult?, onError? })`: calls an action; confirms when `confirm` or the action's `confirm` is set; refreshes context unless `refresh === false` or the action has `refresh_context: false`.
+- `ActionButton({ action? | actionId?, label?, tone?, values? | args?, refresh?, confirm?, onResult?, onError? })`: calls an action; when `confirm` or the action's `confirm` is set it asks via `window.confirm`, which the sandbox blocks, so the click silently does nothing (ask with `useConfirm()` instead); refreshes context unless `refresh === false` or the action has `refresh_context: false`.
 - `ActionForm({ action?, submitLabel?, successMessage?, onResult?, onError? })`: a form built from `action.input_schema` (enum → `Select`, boolean → `Switch`, object/array → `Textarea`, else `Input`) with shallow required/type/enum checks.
 - `RefreshButton({ label?, tone?, onRefresh?, onError? })`: calls `api.refresh()`.
 - `AsyncBlock<T>({ load, deps?, fallback?, loadingText?, error?, errorTitle? })`: small UI-local async reads; primary state belongs in `@ui.context`.

@@ -71,6 +71,25 @@ Consequences:
   default). Long jobs should return quickly and report progress
   instead of holding the call open.
 - `Err(...)` and uncaught exceptions both reach the caller as a failed call.
+- On timeout the handler's task is cancelled. Let `CancelledError` propagate:
+  a handler that swallows it and returns makes its late result count as a
+  success. Work inside `asyncio.to_thread` cannot be cancelled and keeps
+  running after the timeout; give it its own deadline.
+- Calls to other plugins (`self.plugins.call_entry`) are capped at 60 s.
+  There is no cycle detection between plugins, only a call-depth limit (32),
+  so a plugin calling itself, or calling while holding a lock the callee
+  needs, waits until it times out.
+
+## Other Threads
+
+- Only entry calls carry `_ctx` and the current character. Timers and threads
+  you start have neither: save `_ctx["lanlan_name"]` in the entry and pass it
+  as `target_lanlan=` to `push_message` (which never fills it in itself, not
+  even inside an entry).
+- SDK async calls work from any thread that runs its own loop, for example
+  `asyncio.run(self.config.get("x"))` in your own thread; replies are routed
+  back to the calling loop. `push_message` is a plain call and works from any
+  thread.
 
 ## Timers
 
@@ -104,8 +123,8 @@ async def poll(self, **_):
   closed`); close loop-bound resources in the call that opened them. Use
   `shutdown` for plain resources: stop your own threads, close files, and
   flush state.
-- The host waits only briefly for the process to exit before forcing it, and
-  a crash or kill skips `shutdown` entirely. Never rely on it for data you
+- The host waits about 1.5 s for the process to exit, then terminates and
+  finally kills it; a crash or kill skips `shutdown` entirely. Never rely on it for data you
   cannot lose: write durable state when it changes.
 
 ## Reload, Crash, Restart

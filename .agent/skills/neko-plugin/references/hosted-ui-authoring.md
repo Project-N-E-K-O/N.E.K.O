@@ -63,7 +63,7 @@ Manifest rules:
 - Add only the permissions the surface needs. `action:call` is required for Hosted TSX action calls.
 - Entry paths are resolved inside `<plugin_dir>` (the folder holding `plugin.toml`); path traversal is rejected.
 - The entry file must exist or the surface is marked unavailable.
-- Locale-specific surface files can be placed next to the default file as `<stem>.<locale>.<ext>`; the default unsuffixed file is treated as the base source.
+- Locale-specific surface files sit next to the default file as `<stem>.<locale>.<ext>`. The unsuffixed file is the zh-CN version; ship at least `<stem>.en.<ext>` too. Other locales try their exact and primary tag, then `en`, then the unsuffixed file.
 
 ## Python Context And Actions
 
@@ -159,14 +159,23 @@ export default function Panel(props: PluginSurfaceProps<State>) {
 TSX runtime rules:
 
 - Import components, hooks, and types from `@neko/plugin-ui`.
-- Do not import npm packages or external bare modules.
+- Do not import npm packages or external bare modules; only `@neko/plugin-ui` (or `neko:ui`) and relative files.
 - Same-plugin relative imports are supported for `.tsx`, `.ts`, `.jsx`, and `.js` files.
 - Relative dependencies must stay inside the plugin root. Runtime dependency discovery limits are 32 files and 512 KiB total.
 - Dynamic `import()` is rejected.
-- The linker supports simple named exports in relative helper modules. Avoid re-exports, `export *`, export lists, enums, generators, abstract classes, destructured exports, and multi-declarator exports.
-- The iframe sandbox for Hosted TSX/Markdown is `allow-scripts`; do not rely on normal page globals outside the hosted bridge.
+- The linker supports simple named exports (`export function`, `export const`) in relative helper modules. These are rejected outright, not merely discouraged: `export let`/`export var`, namespaces, re-exports, `export *`, export lists, enums, generators, abstract classes, destructured exports, and multi-declarator exports. An installed plugin is never run through `check-hosted-tsx`, so the rejection shows up as a 400 error when the panel is opened.
+- Write `props.api.call(...)` in full. The checker rejects any bare `api.` (even `const { api } = props; api.call(...)`, or `api.` in a comment).
 - The runtime uses a lightweight React-like renderer. Use the provided hooks; do not assume React is installed.
 - `useLayoutEffect` currently uses the same timing as `useEffect`; do not depend on React pre-paint semantics.
+
+## What The Sandbox Does Not Have
+
+Hosted TSX and Markdown run in an `allow-scripts` iframe with an opaque origin:
+
+- no `localStorage`/`sessionStorage` (they throw): use `useLocalState` for UI state and Python for anything durable;
+- no `alert`/`confirm`/`prompt` or popups: `window.confirm` returns `false` without showing anything, so a `confirm` on `ActionButton`/`ActionForm` or `@ui.action(confirm=...)` silently cancels the action; use `useConfirm()` and then `props.api.call(...)`;
+- no reliable `fetch` to N.E.K.O (cross-origin from `null`) and no host page globals: everything goes through `props.api`;
+- plugin logic and secrets stay in Python; the panel only renders state and calls actions.
 
 ## Props And Bridge
 
@@ -188,7 +197,7 @@ Use Markdown only for read-only quickstarts, docs, and reference text.
 
 ## Validation
 
-`neko-plugin check` verifies the manifest and that UI entry files exist. It does not type-check Hosted TSX, render Markdown, or exercise the iframe. Without a checkout, ask the user to open the surface after Start/Reload and report the warnings it shows.
+`neko-plugin check` verifies the manifest and that UI entry files exist (it currently warns about `document:parse` by mistake). It does not type-check Hosted TSX, render Markdown, or exercise the iframe. Without a checkout, ask the user to open the surface after Start/Reload and report the warnings it shows.
 
 ### Hosted TSX checks [checkout only]
 
