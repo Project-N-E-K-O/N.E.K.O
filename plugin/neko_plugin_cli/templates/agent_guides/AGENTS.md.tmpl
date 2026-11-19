@@ -77,8 +77,9 @@ Run in this order before reporting done: `check` → `lint` → `sync --clean` �
 the word `check`; keep every other part. `precheck` reruns lint, sync, and `check -r` (tests in `tests/`, package
 build), which is what Market CI runs. Ruff is pinned and runs with
 `--ignore-noqa`, so `# noqa` does not silence it: fix the code.
-`check -r` and `precheck` stop on uncommitted changes in this repository; do
-not commit for the user unasked: report precheck as blocked, never as passed.
+Outside the checkout's built-in plugin folder, `check -r` and `precheck` fail
+on uncommitted changes in this repository. Do not commit for the user
+unasked; report the actual result.
 Build a package with `{build_command}`.
 Route B: none of these run. Review the code against the constraints above,
 then ask the user to Start/Reload and report back.

@@ -61,8 +61,9 @@ Consequences:
   `await asyncio.to_thread(blocking_fn, ...)`.
 - Each call has a timeout: `@plugin_entry(timeout=...)` or the caller's,
   otherwise the host default (10 s). `timeout=0` (or any value <= 0)
-  disables the entry timeout; only a caller's RPC deadline, if any, still
-  bounds the call. Long jobs should return quickly and report progress
+  disables the entry timeout; outer limits still apply, such as the caller's
+  RPC deadline or, for calls made as runs, the run timeout (300 s by
+  default). Long jobs should return quickly and report progress
   instead of holding the call open.
 - `Err(...)` and uncaught exceptions both reach the caller as a failed call.
 

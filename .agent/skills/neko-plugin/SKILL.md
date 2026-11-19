@@ -52,9 +52,9 @@ run: tell the user rather than guessing.
 | `build`, `analyze`, `publish` | package; bundle analysis; release |
 
 Validation order: `check` → `lint` → `sync --clean` → `precheck`.
-`check -r` and `precheck` stop on uncommitted changes in the plugin's Git
-repository. Do not commit for the user unasked: report precheck as blocked by
-uncommitted changes, never as passed.
+When the plugin has its own Git repository (outside the checkout's built-in
+plugin folder), `check -r` and `precheck` fail on uncommitted changes. Do not
+commit for the user unasked; report the actual result.
 
 ## Workflows
 
