@@ -725,27 +725,69 @@ class SpaceKeeper:
             except (SpaceError, OSError) as exc:
                 logger.warning("what a commission filed could not be moved to its project (%s)", type(exc).__name__)
         kept: list[str] = []
+        # The pending entries what it made went into, by where they are.
+        pending: list[tuple[str | None, str]] = []
         entries = data.get("entries")
+        bases = await self._space.evidence_bases(commission.workdir, project)
         for item in (entries if isinstance(entries, list) else [])[: self._entries_allowed(commission)]:
             if not isinstance(item, dict):
                 continue
             kind = str(item.get("type") or "").strip().lower()
             everywhere = str(item.get("scope") or "").strip().lower() == "global" and kind != "progress"
+            waits: list[str] = []
             try:
-                entry, _created = await self._space.file_entry(
+                # Judged like a note of a task agent: the model read an
+                # account and checked nothing, so what it made for the
+                # project takes effect when a file it gives, or one its
+                # words name, exists where the commission worked, and waits
+                # to be seen again otherwise. A global one waits whatever
+                # files it names, which are kept for reference only
+                # (``propose_entry``).
+                entry, _created = await self._space.propose_entry(
                     None if everywhere else project,
                     title=str(item.get("title") or ""),
                     content=_whole_sentences(item.get("content"), TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS),
                     kind=kind if kind in ENTRY_TYPES else "lesson",
                     description=str(item.get("description") or ""),
                     source=commission.id,
+                    observer=commission.parent_id or commission.id,
+                    bases=bases,
+                    evidence=item.get("evidence") or (),
+                    waits=waits,
                 )
             except (SpaceError, OSError) as exc:
                 logger.warning("an entry of a review could not be kept (%s)", type(exc).__name__)
                 continue
+            if entry is None:
+                pending.extend((None if everywhere else project, name) for name in waits)
+                continue
             kept.append(entry.id if everywhere else f"{project}/{entry.id}")
+        # As it stands now: a later entry of the same review may have had
+        # an earlier one take effect (the same note, with a file this time).
+        in_effect = set(kept)
+        maybe = {
+            (layer, name) for layer, name in pending if (name if layer is None else f"{layer}/{name}") not in in_effect
+        }
         await self._space.write_review(project, commission, text, entries=tuple(kept))
+        # Or it went into another entry, and is no file any more: only
+        # what still waits is counted. One by one, by its own file: one
+        # that is known to wait no longer is left out, and one that
+        # cannot be read just now is counted as it was noted. Counted
+        # once the review is written: writing it waits its turn, and a
+        # guess may take effect while it does.
+        still: set[tuple[str | None, str]] = set()
+        for layer in {layer for layer, _name in maybe}:
+            names = {name for at, name in maybe if at == layer}
+            try:
+                there = await self._space.still_pending(layer, names)
+            except (SpaceError, OSError):
+                there = names
+            still.update((layer, name) for name in there)
+        waiting = len(still)
         outcome: dict[str, Any] = {"status": "written", "project": project, "entries": kept}
+        if waiting:
+            # Made by the review and not in effect yet: pending entries, in no index and not among its entries.
+            outcome["waiting"] = waiting
         if refiled:
             outcome["refiled"] = [f"{project}/{entry_id}" for entry_id in refiled]
         return outcome
@@ -843,6 +885,9 @@ class SpaceKeeper:
                 return False
             self._last_upkeep = now
             for name, step in (
+                # First, and with no model: what is archived and reviewed
+                # after it reads indexes that no longer list what expired.
+                ("evidence", self._check_evidence),
                 ("late reviews", lambda: self._late_reviews(now, float(since))),
                 ("archiving", lambda: self._archive_idle(now)),
                 ("old sessions", lambda: self._clean_sessions(now, state)),
@@ -856,6 +901,17 @@ class SpaceKeeper:
             return True
         finally:
             self._tidying = False
+
+    async def _check_evidence(self) -> None:
+        """Have the space look whether the files its entries rest on are still there; see ``TaskAgentSpace.check_evidence``."""
+        outcome = await self._space.check_evidence()
+        if any(outcome.values()):
+            logger.info(
+                "task agent space: %d entries expired, %d are in effect again, %d pending ones were removed",
+                outcome.get("expired", 0),
+                outcome.get("restored", 0),
+                outcome.get("dropped", 0),
+            )
 
     async def _archive_messages(self, project: Project) -> list[dict[str, str]]:
         from config.nekoclaw_settings import (
@@ -925,6 +981,7 @@ class SpaceKeeper:
             SPACE_ARCHIVES_PER_UPKEEP,
             SPACE_PROJECT_DESCRIPTION_MAX_TOKENS,
             SPACE_PROJECT_IDLE_SECONDS,
+            TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS,
         )
         idle = [
             project
@@ -1001,12 +1058,21 @@ class SpaceKeeper:
                     continue
                 kind = str(item.get("type") or "").strip().lower()
                 try:
-                    await self._space.file_entry(
+                    # Judged as what a review makes is; see ``_keep_review``.
+                    # Nobody is named as having seen it: the summary is
+                    # made from what the project's own commissions did,
+                    # so it says again what one of them found and is no
+                    # second sighting of it. It is global, so it waits
+                    # whatever files it names, which are kept for
+                    # reference only (``propose_entry``).
+                    await self._space.propose_entry(
                         None,
                         title=str(item.get("title") or ""),
-                        content=str(item.get("content") or ""),
+                        content=_whole_sentences(item.get("content"), TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS),
                         kind=kind if kind in ENTRY_TYPES and kind != "progress" else "lesson",
                         description=str(item.get("description") or ""),
+                        bases=[project.workdir] if project.workdir else [],
+                        evidence=item.get("evidence") or (),
                     )
                 except (SpaceError, OSError) as exc:
                     logger.warning("an entry of a project's summary could not be kept (%s)", type(exc).__name__)

@@ -1979,7 +1979,7 @@ async def test_stopping_while_it_waits_for_an_answer(hosts, tmp_path):
 
 
 def _note(category: str, title: str, content: str, call_id: str = "n1") -> list[Any]:
-    arguments = {"title": title, "content": content, "category": category}
+    arguments = {"title": title, "content": content, "category": category, "confidence": "verified"}
     return [call("note_lesson", arguments, call_id), finish("tool_calls")]
 
 
@@ -2039,7 +2039,7 @@ async def test_lesson_sink_can_be_replaced(hosts, tmp_path):
     await wait_status(host, receipt.commission_id, "done")
 
     assert received == [
-        (receipt.commission_id, {"title": "Photo dates", "content": "Use EXIF dates", "category": "lesson", "scope": "project"})
+        (receipt.commission_id, {"title": "Photo dates", "content": "Use EXIF dates", "category": "lesson", "scope": "project", "confidence": "verified", "evidence": []})
     ]
 
 
