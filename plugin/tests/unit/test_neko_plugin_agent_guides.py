@@ -21,10 +21,11 @@ CLI_DIR = REPO_ROOT / "plugin" / "neko_plugin_cli"
 
 # Main-repository content is linked on GitHub; the link text may show the path.
 _GITHUB_LINK = re.compile(r"\[[^\]]*\]\(https?://[^)]*\)")
-# A repository path not preceded by a path or URL character. Only folders a
-# plugin project never has: tests/, docs/, and .github/ exist there too.
+# A repository path (optionally ./ or ../ relative) not preceded by a path or
+# URL character. Only folders a plugin project never has: tests/, docs/, and
+# .github/ exist there too.
 _REPO_PATH = re.compile(
-    r"(?<![\w./-])(?:plugin|frontend|scripts|utils|main_logic|main_routers|docs/plugins|tests/unit)/"
+    r"(?<![\w./-])(?:\.\.?/)*(?:plugin|frontend|scripts|utils|main_logic|main_routers|docs/plugins|tests/unit)/"
 )
 _CHECKOUT_ONLY = "[checkout only]"
 _HEADING = re.compile(r"^(#+)\s")
