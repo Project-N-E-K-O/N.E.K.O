@@ -71,11 +71,22 @@ def test_agents_template_does_not_resubstitute_inserted_values() -> None:
     assert "../../demo/neko" not in content
 
 
-def test_claude_template_points_at_agents_guide() -> None:
+def test_claude_template_imports_agents_guide() -> None:
     content = agent_kit.render_claude_md()
 
-    assert "AGENTS.md" in content
+    # Claude Code expands an "@path" line (outside code spans) into context,
+    # so the plugin keeps a single guide shared with other agents.
+    assert content.splitlines()[0] == "@AGENTS.md"
     assert ".agents/skills/neko-plugin/" in content
+
+
+def test_agents_template_points_at_snapshotted_references() -> None:
+    content = agent_kit.render_agents_md("market_demo", **_COMMANDS)
+    files = agent_kit.skill_files()
+
+    for name in ("runtime-model.md", "execution-boundary.md"):
+        assert f".agents/skills/neko-plugin/references/{name}" in content
+        assert agent_kit.SKILL_TARGET_DIR / "references" / name in files
 
 
 def test_kit_root_prefers_authored_source_over_staged_copy() -> None:
