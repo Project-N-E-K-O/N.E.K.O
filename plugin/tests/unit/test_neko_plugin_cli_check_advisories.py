@@ -149,7 +149,9 @@ def test_internal_import_reports_each_module(tmp_path: Path) -> None:
         "import plugin.core.host\n"
         "from plugin.sdk.shared.core.router import PluginRouter\n"
         "from plugin import core\n"
-        "from plugin.sdk import SDK_VERSION, shared\n",
+        "from plugin.sdk import SDK_VERSION, shared\n"
+        "from plugin import sdk, core, logging_config\n"
+        "import utils.tokenize, plugin.sdk.plugin, config\n",
     )
     assert messages == [
         "host-import: worker.py:1 utils.config_manager -> AGENTS.md #2",
@@ -157,6 +159,10 @@ def test_internal_import_reports_each_module(tmp_path: Path) -> None:
         "host-import: worker.py:3 plugin.sdk.shared.core.router -> AGENTS.md #2",
         "host-import: worker.py:4 plugin.core -> AGENTS.md #2",
         "host-import: worker.py:5 plugin.sdk.shared -> AGENTS.md #2",
+        "host-import: worker.py:6 plugin.core -> AGENTS.md #2",
+        "host-import: worker.py:6 plugin.logging_config -> AGENTS.md #2",
+        "host-import: worker.py:7 utils.tokenize -> AGENTS.md #2",
+        "host-import: worker.py:7 config -> AGENTS.md #2",
     ]
 
 
@@ -300,3 +306,25 @@ def test_generator_first_iterable_runs_on_the_loop(tmp_path: Path) -> None:
         "import requests\nasync def f(url):\n    return list(x for x in requests.get(url).json())\n",
     )
     assert messages == ["async-blocking: worker.py:3 f(): requests.get() -> AGENTS.md #7"]
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ["list(requests.get(u) for u in urls)", "sum(1 for u in urls if requests.head(u).ok)"],
+)
+def test_generator_consumed_on_the_loop_is_reported(tmp_path: Path, expression: str) -> None:
+    messages = _advisories(
+        tmp_path,
+        f"import requests\nasync def f(urls):\n    return {expression}\n",
+    )
+    assert len(messages) == 1
+    assert messages[0].startswith("async-blocking: worker.py:3 f(): requests.")
+
+
+def test_generator_handed_to_executor_is_not_reported(tmp_path: Path) -> None:
+    assert _advisories(
+        tmp_path,
+        "import asyncio, requests\n"
+        "async def f(loop, urls):\n"
+        "    await loop.run_in_executor(None, list, (requests.get(u) for u in urls))\n",
+    ) == []

@@ -1534,6 +1534,7 @@ _PUBLIC_PLUGIN_MODULE_PREFIXES = ("plugin.sdk.plugin", "plugin.sdk.adapter", "pl
 _PICKLE_LOAD_FUNCS = frozenset({"load", "loads", "Unpickler"})
 _REQUESTS_BLOCKING_FUNCS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "request"})
 _SUBPROCESS_BLOCKING_FUNCS = frozenset({"run", "call", "check_call", "check_output"})
+_THREAD_OFFLOAD_FUNCS = frozenset({"to_thread", "run_in_executor"})
 _NESTED_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
 
@@ -1582,8 +1583,7 @@ def _advisory_findings(tree: ast.Module) -> list[tuple[str, int, str]]:
             if found:
                 findings.append((found[0], node.lineno, found[1]))
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            module = _host_internal_import(node)
-            if module:
+            for module in _host_internal_imports(node):
                 findings.append(("host-import", node.lineno, module))
         elif isinstance(node, ast.AsyncFunctionDef):
             for call in _calls_in_own_scope(node):
@@ -1617,34 +1617,35 @@ def _advisory_call_rule(node: ast.Call) -> tuple[str, str] | None:
     return None
 
 
-def _host_internal_import(node: ast.Import | ast.ImportFrom) -> str:
+def _host_internal_imports(node: ast.Import | ast.ImportFrom) -> list[str]:
+    """Every host-internal module one import statement names."""
     if isinstance(node, ast.ImportFrom):
         if node.level or not node.module:
-            return ""
-        modules = [node.module]
+            return []
         # ``from plugin import core`` / ``from plugin.sdk import shared`` name
         # the internal module in the imported names. Everything ``plugin``
         # exports besides ``sdk`` and ``plugins`` is host runtime; under
         # ``plugin.sdk`` only ``shared`` is internal (SDK_VERSION etc. are public).
         if node.module == "plugin":
-            modules = [f"plugin.{alias.name}" for alias in node.names if alias.name not in {"sdk", "plugins"}]
-        elif node.module == "plugin.sdk":
-            modules = [f"plugin.sdk.{alias.name}" for alias in node.names if alias.name == "shared"]
-            return modules[0] if modules else ""
+            return [f"plugin.{alias.name}" for alias in node.names if alias.name not in {"sdk", "plugins"}]
+        if node.module == "plugin.sdk":
+            return [f"plugin.sdk.{alias.name}" for alias in node.names if alias.name == "shared"]
+        modules = [node.module]
     else:
         modules = [alias.name for alias in node.names]
-    for module in modules:
-        root = module.split(".", 1)[0]
-        if root in _HOST_INTERNAL_ROOTS:
-            return module
-        if root != "plugin" or module in {"plugin", "plugin.sdk"}:
-            continue
-        if not any(
-            module == prefix or module.startswith(prefix + ".")
-            for prefix in _PUBLIC_PLUGIN_MODULE_PREFIXES
-        ):
-            return module
-    return ""
+    return [module for module in modules if _is_host_internal_module(module)]
+
+
+def _is_host_internal_module(module: str) -> bool:
+    root = module.split(".", 1)[0]
+    if root in _HOST_INTERNAL_ROOTS:
+        return True
+    if root != "plugin" or module in {"plugin", "plugin.sdk"}:
+        return False
+    return not any(
+        module == prefix or module.startswith(prefix + ".")
+        for prefix in _PUBLIC_PLUGIN_MODULE_PREFIXES
+    )
 
 
 def _calls_in_own_scope(function: ast.AsyncFunctionDef) -> list[ast.Call]:
@@ -1656,15 +1657,20 @@ def _calls_in_own_scope(function: ast.AsyncFunctionDef) -> list[ast.Call]:
         node = pending.pop()
         if isinstance(node, _NESTED_SCOPE_NODES):
             continue
-        if isinstance(node, ast.GeneratorExp):
-            # Only the first iterable runs on creation; the rest runs lazily
-            # wherever the generator is consumed (often a worker thread).
-            pending.append(node.generators[0].iter)
-            continue
         if isinstance(node, ast.Call):
             calls.append(node)
+            if _is_thread_offload(node):
+                # A generator handed to a worker thread is consumed there:
+                # only its first iterable runs here, on creation.
+                for child in ast.iter_child_nodes(node):
+                    pending.append(child.generators[0].iter if isinstance(child, ast.GeneratorExp) else child)
+                continue
         pending.extend(ast.iter_child_nodes(node))
     return calls
+
+
+def _is_thread_offload(call: ast.Call) -> bool:
+    return isinstance(call.func, ast.Attribute) and call.func.attr in _THREAD_OFFLOAD_FUNCS
 
 
 def _blocking_call_name(call: ast.Call) -> str:
