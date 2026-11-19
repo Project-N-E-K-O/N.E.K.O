@@ -3213,7 +3213,7 @@ Live2DManager.prototype._stopClickEffectAction = function(action = this._clickEf
         motionManager.stopAllMotions();
         stopped = true;
         if (typeof this._resetActiveMotionParameters === 'function') {
-            this._resetActiveMotionParameters({ preserveExpression: true });
+            this._resetActiveMotionParameters({ preserveExpression: true, smooth: true });
         }
         if (typeof this._clearActiveMotionParamIds === 'function') {
             this._clearActiveMotionParamIds();
@@ -3358,7 +3358,16 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, dura
                     const motionFile = typeof selectedMotion === 'string'
                         ? selectedMotion
                         : (selectedMotion?.File || selectedMotion?.file);
-                    if (motionFile && typeof this._trackActiveMotionParametersFromFile === 'function') {
+                    // 教程和演出之外直接读 SDK 已加载的动作曲线，避免 fetch 比动作慢时漏记参数。
+                    const loadedParamIds = typeof this._isMotionResidueResetSuspended === 'function'
+                        && !this._isMotionResidueResetSuspended()
+                        && typeof this._getLoadedMotionParameterIds === 'function'
+                        ? this._getLoadedMotionParameterIds(motionGroup, motionIndex, motionModel)
+                        : null;
+                    if (loadedParamIds) {
+                        this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
+                        this._setActiveMotionParamIds(loadedParamIds);
+                    } else if (motionFile && typeof this._trackActiveMotionParametersFromFile === 'function') {
                         this._trackActiveMotionParametersFromFile(motionFile).catch(() => {});
                     }
                     triggerLog.motions.push({

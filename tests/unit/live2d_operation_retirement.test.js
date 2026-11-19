@@ -281,9 +281,37 @@ test('model removal cancels a pending real native load before destroying its man
     } finally { gate.resolve(); f.release(); }
 });
 
-test('normal native retirement restores the recorded baseline and preserves saved-parameter recovery', async () => {
+test('normal native retirement fades the motion residue back to the saved value', async () => {
     const f = await fixture();
     try {
+        f.apply({ ParamAngleX: 3 });
+        f.runtime.context.fetch = async () => ({ ok: true, json: async () => ({ Meta: { Duration: 2 }, Curves: [{ Target: 'Parameter', Id: 'ParamAngleX' }] }) });
+        assert.equal(await f.manager.playMotion(f.group), true);
+        const timer = f.manager.motionTimer;
+        f.core.setParameterValueById('ParamAngleX', 9);
+        f.native.stopAllMotions();
+        assert.equal(f.value('ParamAngleX'), 9, 'retirement hands the residue to the fade instead of jumping');
+        f.runtime.context.clock += 150;
+        f.model.internalModel.events.emit('afterMotionUpdate');
+        f.runtime.context.clock += 75;
+        f.model.internalModel.events.emit('afterMotionUpdate');
+        assert.ok(f.value('ParamAngleX') < 9 && f.value('ParamAngleX') > 3, 'the fade passes through intermediate values');
+        f.runtime.context.clock += 400;
+        f.model.internalModel.events.emit('afterMotionUpdate');
+        assert.equal(f.value('ParamAngleX'), 3);
+        assert.equal(f.manager._activeMotionParamIds, null);
+        assert.equal(f.manager._activeActionMotionOperation, null);
+        assert.equal(timer.id.cancelled, true);
+        f.native.update(f.core, 0);
+        f.core.update();
+        assert.equal(f.value('ParamAngleX'), 3, 'the saved-parameter layer still restores its accepted value');
+    } finally { f.release(); }
+});
+
+test('tutorial-owned native retirement keeps the recorded-baseline reset unchanged', async () => {
+    const f = await fixture();
+    try {
+        f.runtime.context.isInTutorial = true;
         f.apply({ ParamAngleX: 3 });
         f.runtime.context.fetch = async () => ({ ok: true, json: async () => ({ Meta: { Duration: 2 }, Curves: [{ Target: 'Parameter', Id: 'ParamAngleX' }] }) });
         assert.equal(await f.manager.playMotion(f.group), true);

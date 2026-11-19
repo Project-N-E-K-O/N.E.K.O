@@ -286,8 +286,8 @@ function live2dRetireMotionMetadata(operation, resetParameters = false) {
     if (resetParameters && manager.currentModel === operation.model
         && operation.model.internalModel === operation.internalModel
         && operation.internalModel.coreModel === operation.core) {
-        if (typeof manager._resetActiveMotionParameters === 'function') manager._resetActiveMotionParameters({ preserveExpression: true });
-        if (typeof manager._resetExplicitMotionParameters === 'function') manager._resetExplicitMotionParameters({ preserveExpression: true });
+        if (typeof manager._resetActiveMotionParameters === 'function') manager._resetActiveMotionParameters({ preserveExpression: true, smooth: true });
+        if (typeof manager._resetExplicitMotionParameters === 'function') manager._resetExplicitMotionParameters({ preserveExpression: true, smooth: true });
     }
     if (manager.motionTimer?.operation === operation) manager._clearMotionTimer();
     if (typeof manager._clearActiveMotionParamIds === 'function') manager._clearActiveMotionParamIds();
@@ -514,6 +514,7 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     this._lipSyncOwner = null;
     this.mouthValue = 0;
     this._mouthOverrideToken = null;
+    if (typeof this._uninstallMotionResidueFade === 'function') this._uninstallMotionResidueFade();
     this._cachedMouthIndices = null;
     this._cachedMouthIndicesModel = null;
     this._expressionAmplitudeIndexCache = null;
@@ -3010,6 +3011,12 @@ Live2DManager.prototype.installMouthOverride = function() {
     const overrideToken = {};
     this._mouthOverrideToken = overrideToken;
     this._mouthMotionManagerRef = motionManager;
+    // 动作结束后把曲线残留拉回目标值（教程和演出持有模型时不介入）。
+    if (typeof this._installMotionResidueFade === 'function') {
+        try { this._installMotionResidueFade(this.currentModel); } catch (e) {
+            console.warn('[Live2D] 安装动作残留复位失败:', e);
+        }
+    }
     // 振幅写入与保存外观保护是两种职责，不能通过删除公共列表的嘴形来合并。
     const runtimeMouthParams = window.LIPSYNC_PARAMS || ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
     const lipSyncParams = window.LIPSYNC_AMPLITUDE_PARAMS || runtimeMouthParams.filter(id => id !== 'ParamMouthForm');
