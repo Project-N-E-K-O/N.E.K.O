@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -880,10 +881,8 @@ async def test_a_background_task_whose_owner_is_unknown_yet_blocks_lifecycle_cha
 # -- _exit_flow cancellation (issue #3792) --
 
 
-def _exit_flow_stub(*, shutdown_started: bool):
+def _exit_flow_stub():
     """Bare object carrying just what ``VisitRuntime._exit_flow`` touches; the exit steps block until cancelled."""
-    from types import SimpleNamespace
-
     calls: list[str] = []
     entered = asyncio.Event()
 
@@ -900,7 +899,7 @@ def _exit_flow_stub(*, shutdown_started: bool):
     stub = SimpleNamespace(
         finalize_reason="route_end",
         visit_id="abcdef123456",
-        _shutdown_started=shutdown_started,
+        _shutdown_started=False,
         _files_done=False,
         _handback_started=False,
         handoff=None,
@@ -913,7 +912,8 @@ def _exit_flow_stub(*, shutdown_started: bool):
 
 
 async def test_cancelling_the_exit_flow_during_shutdown_propagates_and_skips_cleanup():
-    stub, calls, entered = _exit_flow_stub(shutdown_started=False)
+    stub, calls, entered = _exit_flow_stub()
+    stub.handoff = SimpleNamespace(abandon=lambda: calls.append("abandon"))
     task = asyncio.ensure_future(rtm.VisitRuntime._exit_flow(stub))
     await asyncio.wait_for(entered.wait(), 1)
     stub._shutdown_started = True                          # shutdown() sets the flag before cancelling the exit task.
@@ -925,10 +925,11 @@ async def test_cancelling_the_exit_flow_during_shutdown_propagates_and_skips_cle
 
 
 async def test_cancelling_the_exit_flow_outside_shutdown_still_runs_cleanup():
-    stub, calls, entered = _exit_flow_stub(shutdown_started=False)
+    stub, calls, entered = _exit_flow_stub()
+    stub.handoff = SimpleNamespace(abandon=lambda: calls.append("abandon"))
     task = asyncio.ensure_future(rtm.VisitRuntime._exit_flow(stub))
     await asyncio.wait_for(entered.wait(), 1)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert calls == ["finish_files", "handback", "teardown"]
+    assert calls == ["finish_files", "abandon", "handback", "teardown"]
