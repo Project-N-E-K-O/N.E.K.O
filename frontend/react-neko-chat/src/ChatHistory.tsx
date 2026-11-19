@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { i18n } from './i18n';
 import './chat-history.css';
 import HistoryResults from './HistoryResults';
@@ -38,6 +38,8 @@ export function HistoryDialog({ close }: { close: () => void }) {
   });
   const [searchRevision, setSearchRevision] = useState(0);
   const [anchor, setAnchor] = useState<number | null>(null);
+  const contextTrigger = useRef<HTMLButtonElement | null>(null);
+  const restoreContextFocus = useRef(false);
   const [page, setPage] = useState<Page | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -97,6 +99,17 @@ export function HistoryDialog({ close }: { close: () => void }) {
   useEffect(() => {
     if (anchor && page) dialog.current?.querySelector(`.history-results:not([hidden]) [data-history-id="${anchor}"]`)?.scrollIntoView?.({ block: 'center' });
   }, [page, anchor]);
+  useLayoutEffect(() => {
+    if (anchor !== null) {
+      dialog.current?.querySelector<HTMLButtonElement>('.history-back')?.focus();
+    } else if (restoreContextFocus.current) {
+      restoreContextFocus.current = false;
+      const trigger = contextTrigger.current;
+      if (trigger?.isConnected && !trigger.closest('[hidden]')) trigger.focus();
+      else dialog.current?.querySelector<HTMLElement>('form select')?.focus();
+      contextTrigger.current = null;
+    }
+  }, [anchor]);
   useEffect(() => {
     const controller = new AbortController();
     const revision = recordingRevision.current;
@@ -143,7 +156,7 @@ export function HistoryDialog({ close }: { close: () => void }) {
         <VoiceReplayIcon playing={playbackActive && playback.current?.id === entry.id} />
       </button>
     </span>}
-    {anchor === null && <button onClick={() => setAnchor(entry.id)}>{t('context')}</button>}
+    {anchor === null && <button onClick={event => { contextTrigger.current = event.currentTarget; restoreContextFocus.current = false; setAnchor(entry.id); }}>{t('context')}</button>}
   </article>;
   return <dialog ref={dialog} className="history-dialog neko-dialog-overlay" data-compact-geometry-owner="surface" data-compact-geometry-item="chatHistoryDialog" data-compact-no-drag="true" aria-labelledby="history-title" onCancel={close} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation(); }}>
     <header><div><h2 id="history-title">{t('title')}</h2><p>{t('description')}</p></div><button onClick={close} aria-label={t('close')}>×</button></header>
@@ -178,7 +191,7 @@ export function HistoryDialog({ close }: { close: () => void }) {
         <button onClick={() => setAnchor(playback.current!.id)}>{t('locatePlaying')}</button></div>}
       <span className="history-playback-note" role="status">{playback.partial ? t('voicePartial') : ''}</span>
     </section>}
-    {anchor !== null && <button className="history-back" onClick={() => setAnchor(null)}>{t('back')}</button>}
+    {anchor !== null && <button className="history-back" onClick={() => { restoreContextFocus.current = true; setAnchor(null); }}>{t('back')}</button>}
     {characterError && <div role="alert" className="history-state">{t('error')} <button onClick={() => setRetry(v => v + 1)}>{t('retry')}</button></div>}
     <HistoryResults key={params.toString() + searchRevision} entries={feed.messages} renderEntry={renderEntry}
       active={anchor === null} load={feed.load} more={feed.more} busy={feed.busy} error={feed.error}
