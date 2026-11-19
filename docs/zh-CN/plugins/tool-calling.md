@@ -70,8 +70,8 @@ helper **不**做的事：`main_server` 重启后或首启竞态后的自动重�
 - LLM 触发工具调用时，main_server **POST 到插件的 `callback_url`**
 - 插件返回 JSON 结果，main_server 把结果喂回 LLM 继续生成
 
-直接走这一层只在 SDK helper 覆盖不到的场景才必要 —— 比如插件进程之外另起一个
-HTTP server，或者从非 NekoPluginBase 上下文（如外部脚本）注册。
+这一层是宿主内部的契约，插件代码不应使用。只有宿主侧代码或运行在插件进程之外的
+集成（例如从非 NekoPluginBase 上下文注册工具的外部服务）才直接走这一层。
 
 ### 第二层 —— `@llm_tool` SDK helper（插件首选）
 
@@ -98,6 +98,13 @@ HTTP 调用；main_server 的 dispatch 也走同一套 IPC trigger 管线（与
 `@plugin_entry` 完全一致）回到插件。
 
 ## 注册接口
+
+::: warning 不供插件代码使用
+插件进程不能直接调用 `main_server`（或 localhost 上任何 N.E.K.O 服务），也不能
+自己起 HTTP server 接收回调：端口和地址随安装和开发实例而不同，这些端点是内部
+接口、可能随时变化，而且会绕过 SDK 的权限检查。插件里请用 `@llm_tool` 或
+`self.register_llm_tool(...)`。下面的端点说明供宿主侧和外部集成参考。
+:::
 
 所有端点都挂在 `MAIN_SERVER_PORT`（默认 `48911`），并强制 `verify_local_access`
 （仅允许 `127.0.0.1` / `::1` / `localhost`）。
@@ -199,10 +206,13 @@ main_server 在 LLM 触发工具调用时会向 `callback_url` 发 `POST`：
 `output` 自身可以是任意 JSON（dict / list / 字符串 / 数字）。
 `is_error: true` 时 LLM 会感知到工具调用失败，会选择跳过或换工具。
 
-`callback_url` 可以是 `127.0.0.1:<plugin_port>` 上任意 path，由插件自己
-开 HTTP server 接收。
+`callback_url` 可以是回环地址上的任意 path。使用 `@llm_tool` 时，这个路由由
+插件服务器提供（`/api/llm-tools/callback/{plugin_id}/{tool_name}`）；只有通过原始
+HTTP 注册的外部集成才需要自己起 server 接收。
 
-## 完整生命周期 pattern
+## 完整生命周期 pattern（原始 HTTP，外部集成）
+
+这个 pattern 适用于运行在插件进程之外的集成。插件用 `@llm_tool` 就能得到同样的行为。
 
 ```python
 import asyncio
@@ -248,27 +258,17 @@ async def unregister_on_shutdown():
         pass  # main_server 也死了就算了
 ```
 
-绑定到 plugin lifecycle hook：
-
-```python
-from plugin.sdk.plugin import NekoPluginBase, neko_plugin
-
-@neko_plugin
-class WeatherPlugin(NekoPluginBase):
-    async def on_start(self):
-        # plugin 进程起来后异步注册，不阻塞 plugin 启动主流程
-        asyncio.create_task(register_with_retry())
-        # 同时起一个 HTTP server 接收 callback（FastAPI / aiohttp 都行）
-        ...
-
-    async def on_shutdown(self):
-        await unregister_on_shutdown()
-```
+不要把它接到 `NekoPluginBase` 插件里。生命周期方法只有加了 `@lifecycle(id=...)`
+才会运行（普通的 `on_start` / `on_shutdown` 方法永远不会被调用）；`startup` 在独立的
+`asyncio.run` 里运行，在里面用 `asyncio.create_task` 创建的任务会在 `startup` 返回时
+被取消；插件进程也不能调用 `main_server` 或自己起 HTTP server（见「注册接口」开头的
+警告）。插件里用 `@llm_tool` 就能完成注册、回调路由和清理。
 
 ## main_server 重启会发生什么
 
 ⚠️ **重要**：`tool_registry` 是 `LLMSessionManager` 的内存属性，**main_server
-重启会全部丢失**。需要 plugin 自己应对：
+重启会全部丢失**。用 `@llm_tool` 的插件，重载插件或再次调用
+`self.register_llm_tool(...)` 即可（见 TL;DR）。原始 HTTP 集成需要自己应对：
 
 - **plugin 比 main_server 长寿**（更常见）：plugin 需要监听 main_server
   心跳/连接断开事件，重连后**重新调 register**。最简单的做法是 plugin 内
@@ -347,8 +347,13 @@ mgr.register_tool(ToolDefinition(
     parameters: dict | None = None, # JSON Schema；默认无参数
     timeout: float = 30.0,          # 单次调用超时（秒，≤ 300）
     role: str | None = None,        # None = 全局，或指定猫娘名
+    reply_tail: bool = False,       # 选择接收原回复的图片上下文（_ctx.host_reply）
 )
 ```
+
+`reply_tail=True` 会把原回复的图片上下文作为 `_ctx.host_reply` 传给处理函数，
+所以处理函数必须接受 `_ctx` 或 `**kwargs`。实时语音和旧版前端不会提供它。见
+[原回复尾图接口](/plugin-reply-tail)。
 
 被装饰的方法以 kwargs 形式接收解析后的 JSON 参数。建议在签名里用 `*` 强制
 keyword-only，万一传进位置参数会立刻报错：
@@ -374,6 +379,7 @@ self.register_llm_tool(
     handler=my_async_callable,
     timeout=30.0,
     role=None,
+    reply_tail=False,
 )
 ```
 

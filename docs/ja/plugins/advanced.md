@@ -102,6 +102,8 @@ async def async_task(self, url: str, **_):
             return Ok({"data": await response.json()})
 ```
 
+上の例のように、`aiohttp.ClientSession` などの非同期 client はそれを使う呼び出しの中で作成してください。`startup`、エントリー呼び出し、`shutdown` は別々のイベントループで動きます。`aiohttp` はサードパーティパッケージなので、プラグインの `pyproject.toml` の `[project].dependencies` で宣言し、`neko-plugin sync <plugin>` を実行してください。
+
 ---
 
 ## スレッドセーフティ

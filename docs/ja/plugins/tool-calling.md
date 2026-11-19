@@ -82,9 +82,9 @@ helper が **やらない** こと：`main_server` の再起動や初回起動�
 - プラグインが JSON 結果を返し、main_server が LLM にフィードバック
   して生成を続行
 
-この層を直接叩くのは SDK helper で済まないケースのみ — プラグインプロセス
-の外で独自の HTTP server を立てる場合や、NekoPluginBase 以外のコンテキスト
-（外部スクリプト等）から登録する場合など。
+この層はホスト内部の契約で、プラグインのコードからは使いません。直接叩くのは
+ホスト側のコードや、プラグインプロセスの外で動く連携（NekoPluginBase 以外の
+コンテキストからツールを登録する外部サービスなど）だけです。
 
 ### 第 2 層 — `@llm_tool` SDK helper（プラグインの推奨）
 
@@ -112,6 +112,15 @@ main_server からの dispatch も同じ IPC trigger 配管（`@plugin_entry`
 と完全に同じ）でプラグインへ戻ります。
 
 ## 登録エンドポイント
+
+::: warning プラグインのコード向けではない
+プラグインプロセスから `main_server`（や localhost 上の他の N.E.K.O サーバー）を
+直接呼んだり、コールバック受信用に独自の HTTP server を立てたりしないでください。
+ポートやアドレスはインストールや開発インスタンスごとに異なり、これらのエンド
+ポイントは内部用で予告なく変わり、SDK の権限チェックも迂回してしまいます。
+プラグインでは `@llm_tool` か `self.register_llm_tool(...)` を使ってください。
+以下はホスト側と外部連携のための説明です。
+:::
 
 すべてのエンドポイントは `MAIN_SERVER_PORT`（デフォルト `48911`）に
 マウントされ、`verify_local_access` が `127.0.0.1` / `::1` /
@@ -219,10 +228,15 @@ LLM がツール呼び出しを発火すると、main_server が `callback_url` 
 `is_error: true` の場合、LLM は呼び出し失敗を認識してスキップしたり
 別のツールを選んだりします。
 
-`callback_url` は `127.0.0.1:<plugin_port>` 上の任意のパスで OK。
-プラグインは自前で HTTP server を立てて受信します。
+`callback_url` はループバックアドレス上の任意のパスで OK。`@llm_tool` を使う
+場合、このルートはプラグインサーバーが提供します
+（`/api/llm-tools/callback/{plugin_id}/{tool_name}`）。自前の server が必要なのは、
+生 HTTP で登録する外部連携だけです。
 
-## 完全なライフサイクル例
+## 完全なライフサイクル例（生 HTTP、外部連携向け）
+
+このパターンはプラグインプロセスの外で動く連携向けです。プラグインでは
+`@llm_tool` で同じ動作が得られます。
 
 ```python
 import asyncio
@@ -268,27 +282,21 @@ async def unregister_on_shutdown():
         pass  # main_server も死んでいるなら諦める
 ```
 
-プラグインのライフサイクルフックにバインド：
-
-```python
-from plugin.sdk.plugin import NekoPluginBase, neko_plugin
-
-@neko_plugin
-class WeatherPlugin(NekoPluginBase):
-    async def on_start(self):
-        # 非同期で登録（プラグイン起動メインフローをブロックしない）
-        asyncio.create_task(register_with_retry())
-        # コールバック受信用の HTTP server も起動（FastAPI / aiohttp など）
-        ...
-
-    async def on_shutdown(self):
-        await unregister_on_shutdown()
-```
+これを `NekoPluginBase` プラグインに組み込まないでください。ライフサイクル
+メソッドは `@lifecycle(id=...)` を付けたときだけ実行され（普通の `on_start` /
+`on_shutdown` メソッドは呼ばれません）、`startup` は独立した `asyncio.run` で
+実行されるため、その中で `asyncio.create_task` で作成したタスクは `startup` が
+戻った時点でキャンセルされます。また、プラグインプロセスは `main_server` を呼んだり
+自前の HTTP server を立てたりしてはいけません（「登録エンドポイント」冒頭の警告を
+参照）。プラグインでは `@llm_tool` が登録、コールバックのルーティング、
+後片付けをまとめて行います。
 
 ## main_server 再起動時の挙動
 
 ⚠️ **重要**：`tool_registry` は `LLMSessionManager` のインメモリ属性
-なので、**main_server 再起動で全部失われます**。プラグイン側で対応が
+なので、**main_server 再起動で全部失われます**。`@llm_tool` を使う
+プラグインなら、プラグインを再読み込みするか `self.register_llm_tool(...)`
+を再度呼んでください（TL;DR を参照）。生 HTTP の連携は自分で対応が
 必要：
 
 - **プラグインが main_server より長生き**（より一般的）：プラグインは
@@ -374,8 +382,14 @@ wire 同期完了まで `await` したい場合は
     parameters: dict | None = None, # JSON Schema、デフォルトは引数なし
     timeout: float = 30.0,          # 1 回の呼び出しタイムアウト（秒、≤ 300）
     role: str | None = None,        # None = 全グローバル、または特定キャラ名
+    reply_tail: bool = False,       # 元の返信の画像コンテキスト（_ctx.host_reply）を受け取る
 )
 ```
+
+`reply_tail=True` にすると、元の返信の画像コンテキストが `_ctx.host_reply`
+としてハンドラーに渡されるため、ハンドラーは `_ctx` か `**kwargs` を受け取る
+必要があります。リアルタイム音声と古いフロントエンドでは提供されません。
+[元の返信の末尾画像](/plugin-reply-tail)を参照してください。
 
 デコレートされたメソッドは、解析済み JSON 引数を kwargs として受け取ります。
 シグネチャに `*` を入れて keyword-only を強制すると、誤って位置引数で
@@ -403,6 +417,7 @@ self.register_llm_tool(
     handler=my_async_callable,
     timeout=30.0,
     role=None,
+    reply_tail=False,
 )
 ```
 

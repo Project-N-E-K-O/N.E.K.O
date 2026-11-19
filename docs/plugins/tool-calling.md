@@ -84,10 +84,11 @@ There are two integration layers, stacked:
 - The plugin returns a JSON result, which main_server feeds back to the
   LLM to continue generation.
 
-This layer is documented in detail in the rest of this page. Use it
-directly only when you need behaviour the SDK helper doesn't cover —
-for example, hosting your own HTTP server outside the plugin process,
-or registering tools from a non-NekoPluginBase context.
+This layer is documented in detail in the rest of this page. It is the
+host's internal contract: plugin code should not use it. Use it directly
+only from host-side code or an integration that runs outside the plugin
+process (for example, an external service registering tools from a
+non-NekoPluginBase context).
 
 ### Layer 2 — `@llm_tool` SDK helper (recommended for plugins)
 
@@ -115,6 +116,16 @@ calls; main_server's tool dispatches come back into the plugin via the
 same IPC trigger machinery used by regular `@plugin_entry`s.
 
 ## Registration Endpoints
+
+::: warning Not for plugin code
+A plugin process must not call `main_server` (or any other N.E.K.O
+server on localhost) directly, and must not start its own HTTP server to
+receive callbacks: ports and addresses differ per installation and per dev
+instance, these endpoints are internal and can change, and they bypass the
+SDK's permission checks. In a plugin, use `@llm_tool` or
+`self.register_llm_tool(...)`. The endpoints below are documented for
+host-side and external integrations.
+:::
 
 All endpoints are mounted on `MAIN_SERVER_PORT` (default `48911`) and
 are guarded by `verify_local_access` (only `127.0.0.1` / `::1` /
@@ -222,10 +233,16 @@ side-by-side with your real result and confuse the model.
 `is_error: true` is set, the LLM sees the failure and may skip the tool
 or pick another one.
 
-The `callback_url` may be any path on `127.0.0.1:<plugin_port>`; the
-plugin runs its own HTTP server to receive it.
+The `callback_url` may be any path on a loopback address. With
+`@llm_tool` the plugin server provides this route for you
+(`/api/llm-tools/callback/{plugin_id}/{tool_name}`); only an external
+integration that registers over raw HTTP needs its own server to receive
+it.
 
-## Full Lifecycle Pattern
+## Full Lifecycle Pattern (raw HTTP, external integrations)
+
+This pattern is for an integration that runs outside a plugin process.
+Plugins get the same behaviour from `@llm_tool`.
 
 ```python
 import asyncio
@@ -272,28 +289,22 @@ async def unregister_on_shutdown():
         pass  # main_server is down too — nothing we can do
 ```
 
-Bind it to your plugin lifecycle hooks:
-
-```python
-from plugin.sdk.plugin import NekoPluginBase, neko_plugin
-
-@neko_plugin
-class WeatherPlugin(NekoPluginBase):
-    async def on_start(self):
-        # Register asynchronously so plugin startup doesn't block on it.
-        asyncio.create_task(register_with_retry())
-        # Also start an HTTP server to receive the callback (FastAPI / aiohttp etc.)
-        ...
-
-    async def on_shutdown(self):
-        await unregister_on_shutdown()
-```
+Do not wire this into a `NekoPluginBase` plugin. Lifecycle methods run
+only when decorated with `@lifecycle(id=...)` (a plain `on_start` /
+`on_shutdown` method is never called); `startup` runs in its own
+`asyncio.run`, so a task created there with `asyncio.create_task` is
+cancelled as soon as `startup` returns; and a plugin process must not
+call `main_server` or host its own HTTP server (see the warning under
+Registration Endpoints). In a plugin, `@llm_tool` covers registration,
+callback routing, and cleanup.
 
 ## What Happens When main_server Restarts
 
 ⚠️ **Important**: `tool_registry` is an in-memory attribute on
 `LLMSessionManager`, so **everything is lost when main_server
-restarts**. The plugin must handle this:
+restarts**. For an `@llm_tool` plugin, reload the plugin or call
+`self.register_llm_tool(...)` again (see TL;DR). A raw HTTP integration
+must handle this itself:
 
 - **Plugin outlives main_server** (more common): the plugin needs to
   detect the heartbeat / connection drop and **re-register** when
@@ -386,8 +397,14 @@ top-level: `from plugin.sdk.plugin import llm_tool`.
     parameters: dict | None = None, # JSON Schema; default = no args
     timeout: float = 30.0,          # per-call timeout (seconds, ≤ 300)
     role: str | None = None,        # None = global, or specific neko name
+    reply_tail: bool = False,       # opt in to original-reply image context in _ctx.host_reply
 )
 ```
+
+`reply_tail=True` passes the original reply's image context to the
+handler as `_ctx.host_reply`, so the handler must accept `_ctx` or
+`**kwargs`. Realtime voice and older frontends do not provide it. See
+[original-reply image tail](/plugin-reply-tail).
 
 The decorated method is invoked with the parsed JSON arguments as
 keyword arguments. Use `*` in the signature so accidental positional
@@ -415,6 +432,7 @@ self.register_llm_tool(
     handler=my_async_callable,
     timeout=30.0,
     role=None,
+    reply_tail=False,
 )
 ```
 
