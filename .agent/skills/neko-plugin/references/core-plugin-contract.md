@@ -193,7 +193,9 @@ class SearchPlugin(NekoPluginBase):
   `runtime-model.md`.
 - **Argument binding**: without `params=Model`, an unexpected or missing
   argument raises `TypeError` unless the handler takes `**_`. With
-  `params=Model`, validation fails first and unknown keys are dropped.
+  `params=Model`, validation fails first; keys the model does not know are
+  dropped only if the handler has no `**kwargs`. With `**kwargs` they arrive
+  unvalidated, so read input from the model, not from `kwargs`.
 - **Registration**: methods whose name starts with `_` are never entries.
   Entry, timer, and lifecycle ids share one namespace; a duplicate id silently
   replaces the earlier handler.
