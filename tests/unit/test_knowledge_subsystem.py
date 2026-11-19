@@ -907,24 +907,34 @@ async def test_cancelled_request_still_finishes_admission(tmp_path, monkeypatch)
 
 
 async def test_vector_snapshot_catches_up_with_changes_made_while_rebuilding(tmp_path):
+    import threading
+
     service = await _started(tmp_path, FakeEmbedder())
+    entered, release = threading.Event(), threading.Event()
     try:
+        # An unavailable/empty snapshot is deliberately retryable. Exercise
+        # generation catch-up against actual stored vectors instead.
+        service._tasks[1].cancel()
+        await asyncio.gather(service._tasks[1], return_exceptions=True)
+        await _import(service, _pack())
+        await service._index_round()
         loads = []
         real_load = service._store.load_vectors
 
         def slow_load(model_id):
-            import time
-
             loads.append(model_id)
-            time.sleep(0.1)
+            if len(loads) == 1:
+                entered.set()
+                assert release.wait(5)
             return real_load(model_id)
 
         service._store.load_vectors = slow_load
         service._vector_generation += 1
         service._schedule_vector_refresh()
-        await asyncio.sleep(0.02)
+        assert await asyncio.to_thread(entered.wait, 2)
         service._vector_generation += 1  # changes while the first rebuild runs
         service._schedule_vector_refresh()  # skipped: one is in flight
+        release.set()
         for _ in range(100):
             if service._vectors_built_for == (service._vector_generation, "fake-16"):
                 break
@@ -932,6 +942,7 @@ async def test_vector_snapshot_catches_up_with_changes_made_while_rebuilding(tmp
         assert service._vectors_built_for == (service._vector_generation, "fake-16")
         assert len(loads) >= 2
     finally:
+        release.set()
         await service.stop()
 
 

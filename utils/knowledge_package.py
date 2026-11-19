@@ -325,7 +325,9 @@ def validate_package(path: Path, *, expected_spec: dict | None = None,
                     if common and math.hypot(*vector[:common]) <= 0:
                         compatible = False
             return ValidatedPackage(path, manifest, pack, tuple(chunks), digest, size, compatible)
-    except (zipfile.BadZipFile, EOFError, OSError, RuntimeError, UnicodeError, struct.error, zlib.error) as exc:
+    # Filesystem failures remain operational errors for the caller to retry;
+    # they do not establish that the author's package bytes are malformed.
+    except (zipfile.BadZipFile, EOFError, RuntimeError, UnicodeError, struct.error, zlib.error) as exc:
         raise PackageError("package_invalid_archive") from exc
 
 

@@ -1206,6 +1206,8 @@ async function discardJob(job: KnowledgePackJob) {
   try {
     await knowledgeApi.discardPackJob({ job_id: job.job_id })
     jobsGate.invalidate()
+    // A discarded retry must not be merged back from its unconfirmed local row.
+    unconfirmedRetries.delete(job.job_id)
     packJobs.value = packJobs.value.filter((item) => item.job_id !== job.job_id)
     lastJobStates.delete(job.job_id)
   } catch (error) {

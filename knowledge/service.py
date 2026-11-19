@@ -2238,13 +2238,15 @@ class KnowledgeService:
         except Exception:
             return None
 
-    def _install_vectors(self, snapshot: VectorSnapshot, key: tuple[int, str]) -> None:
+    def _install_vectors(self, snapshot: VectorSnapshot | None, key: tuple[int, str]) -> None:
         """Use ``snapshot`` unless one loaded for a later generation is in place."""
         built = self._vectors_built_for
         if built is not None and built[1] == key[1] and built[0] > key[0]:
             return
         self._vectors = snapshot
-        self._vectors_built_for = key
+        # Transiently unverifiable resources are not a completed empty index.
+        # Keep the same generation eligible for the next scheduled refresh.
+        self._vectors_built_for = key if snapshot is not None else None
 
     async def _refresh_vectors_now(self) -> None:
         model_id = self._current_model_id()
@@ -2316,7 +2318,7 @@ class KnowledgeService:
                 return False
             self._install_vectors(snapshot, key)
             await self._clear_damaged_vectors(snapshot)
-            return True
+            return snapshot is not None  # Do not immediately reschedule an unavailable snapshot.
 
         def rebuilt(task: asyncio.Task[bool]) -> None:
             # A change that arrived while this rebuild ran was skipped above.

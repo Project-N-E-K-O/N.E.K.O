@@ -248,6 +248,42 @@ describe('KnowledgeManager overview', () => {
     expect(api.packJobs.mock.calls.length).toBe(afterCompletion)
   })
 
+  it.each([true, false])('keeps an unconfirmed retry row discarded only after server success (%s)', async succeeds => {
+    let freezeNextList = false
+    let finishList!: (value: unknown) => void
+    const stale = { ok: true, jobs: [job('failed')] }
+    api.packJobs.mockImplementation(() => {
+      if (!freezeNextList) return Promise.resolve(stale)
+      freezeNextList = false
+      return new Promise(resolve => { finishList = resolve })
+    })
+    api.retryPackJob.mockImplementation(async () => {
+      freezeNextList = true
+      return { ok: true, job_id: 'retry-cancelled', state: 'cancelled' }
+    })
+    if (succeeds) api.discardPackJob.mockResolvedValue({ ok: true })
+    else api.discardPackJob.mockRejectedValue(new KnowledgeApiError('knowledge_busy'))
+    const container = await mount()
+    await openTab('packs')
+    container.querySelector<HTMLButtonElement>('[data-job-id="job-1"] button')!.click()
+    await flush()
+    expect(finishList).toBeTypeOf('function')
+    const retryRow = () => container.querySelector('[data-job-id="retry-cancelled"]')
+    expect(retryRow()).not.toBeNull()
+    const discard = [...retryRow()!.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim() === enUS.knowledge.discardJob)!
+    discard.click()
+    await flush()
+    expect(api.discardPackJob).toHaveBeenCalledWith({ job_id: 'retry-cancelled' })
+    expect(Boolean(retryRow())).toBe(!succeeds)
+    // Neither the in-flight snapshot nor a later refresh may revive a successful discard.
+    finishList(stale)
+    await flush()
+    container.querySelector<HTMLButtonElement>('.page-heading button')!.click()
+    await flush()
+    expect(Boolean(retryRow())).toBe(!succeeds)
+  })
+
   it('keeps a failed retry available for another attempt', async () => {
     api.packJobs.mockResolvedValue({ ok: true, jobs: [job('failed')] })
     api.retryPackJob.mockRejectedValue(new KnowledgeApiError('knowledge_busy'))

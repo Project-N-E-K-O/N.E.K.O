@@ -249,9 +249,10 @@ def parse_document_sections(filename: str, data: bytes, *, limits: DocumentLimit
                 raise DocumentParseError("document_too_many_pages")
             text = page.extract_text() or ""
             contents = page.get_contents()
-            # Graphics state and uninvoked image resources do not make a page
-            # a scan. Inspect executed image operators, including inline images.
-            if not text.strip() and _pdf_uses_images(contents, page.get("/Resources", {}), reader):
+            # Pure state/clipping changes are blank; images and painted paths
+            # (including outlined glyphs) cannot silently disappear from a
+            # successful text import when no readable text was extracted.
+            if not text.strip() and _pdf_has_unreadable_content(contents, page.get("/Resources", {}), reader):
                 raise DocumentParseError("scan_unsupported")
             if extracted_chars + len(text) > limits.max_extracted_chars:
                 raise DocumentParseError("document_text_too_large")
@@ -266,32 +267,54 @@ def parse_document_sections(filename: str, data: bytes, *, limits: DocumentLimit
     return sections
 
 
-def _pdf_uses_images(contents, resources, reader, seen=None) -> bool:
-    """Recognize invoked image/form streams without decoding image pixels."""
+def _pdf_has_unreadable_content(contents, resources, reader) -> bool:
+    """Recognize actual painting, using a stack for arbitrarily deep Form calls."""
     if contents is None:
         return False
     from pypdf.generic import ContentStream
 
-    seen = set() if seen is None else seen
-    resources = _resolve_pdf_object(resources)
-    objects = _resolve_pdf_object(resources.get("/XObject", {})) if isinstance(resources, dict) else {}
-    stream = contents if isinstance(contents, ContentStream) else ContentStream(contents, reader)
-    for operands, operator in stream.operations:
-        if operator == b"INLINE IMAGE":
-            return True
-        if operator != b"Do" or not operands or not isinstance(objects, dict):
-            continue
-        target = _resolve_pdf_object(objects.get(operands[0]))
-        if not isinstance(target, dict):
-            continue
-        if target.get("/Subtype") == "/Image":
-            return True
-        # Only an invoked Form may contribute nested images. Memoize visited
-        # objects so cyclic/reused forms cannot cause unbounded recursion.
-        if target.get("/Subtype") == "/Form" and id(target) not in seen:
-            seen.add(id(target))
-            if _pdf_uses_images(target, target.get("/Resources", resources), reader, seen):
+    def open_frame(content, inherited):
+        resolved = _resolve_pdf_object(inherited)
+        objects = _resolve_pdf_object(resolved.get("/XObject", {})) if isinstance(resolved, dict) else {}
+        stream = content if isinstance(content, ContentStream) else ContentStream(content, reader)
+        return {"operations": iter(stream.operations), "objects": objects, "resources": resolved, "path": False}
+
+    frames = [open_frame(contents, resources)]
+    seen = set()
+    while frames:
+        frame = frames[-1]
+        for operands, operator in frame["operations"]:
+            if operator in {b"INLINE IMAGE", b"sh"}:
                 return True
+            if operator in {b"l", b"c", b"v", b"y", b"re"}:
+                frame["path"] = True
+            elif operator == b"n":
+                frame["path"] = False  # Path/clip construction alone paints nothing.
+            elif operator in {b"S", b"s", b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*"}:
+                if frame["path"]:
+                    return True
+            elif operator in {b"Tj", b"TJ", b"'", b'"'} and operands:
+                shown = operands[-1]
+                values = shown if isinstance(shown, list) else [shown]
+                if any(isinstance(value, (str, bytes)) and value for value in values):
+                    return True  # Glyph drawing without extractable Unicode is also unreadable.
+            elif operator == b"Do" and operands and isinstance(frame["objects"], dict):
+                target = _resolve_pdf_object(frame["objects"].get(operands[0]))
+                if not isinstance(target, dict):
+                    continue
+                if target.get("/Subtype") == "/Image":
+                    return True
+                if target.get("/Subtype") == "/Form":
+                    inherited = _resolve_pdf_object(target.get("/Resources", frame["resources"]))
+                    # A resource-less Form can be invoked in different resource
+                    # scopes. Keep those scopes distinct while stopping cycles.
+                    key = (id(target), id(inherited))
+                    if key not in seen:
+                        seen.add(key)
+                        frames.append(open_frame(target, inherited))
+                        break
+        else:
+            frames.pop()
     return False
 
 
