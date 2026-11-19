@@ -7,12 +7,15 @@
  * Blink run a full main-frame lifecycle at the display refresh rate, so CPU/GPU never
  * actually go down.
  *
- * This file does two things:
+ * This file does three things:
  *   1. measures the display refresh rate from rAF timestamps inside the Pet window;
  *   2. answers "should the active state switch to timer driving, and at what rate" —
  *      when the configured frame rate is clearly below the refresh rate, backends stop
  *      their rAF chain entirely and tick manually via setInterval at the configured rate
- *      (same mechanism as the existing idle low-rate tick mode, just at a different rate).
+ *      (same mechanism as the existing idle low-rate tick mode, just at a different rate);
+ *   3. answers "what cap should a rAF-driven backend enforce" — when the configured rate
+ *      is at or above the refresh rate the display already caps it, so backends drop their
+ *      own throttle instead of letting rAF jitter make it skip whole frames.
  *
  * Non-Pet pages (browser single window, model manager, character cards, ...) do not load
  * this file, `window.nekoFramePacing` does not exist there, and every backend keeps its
@@ -30,7 +33,12 @@
     // and a timer would save nothing) and only switches on 120/144Hz displays.
     const TIMER_DRIVE_REFRESH_RATIO = 0.9;
 
-    const state = { refreshHz: null, sampling: false, resamplePending: false, pendingCallbacks: [] };
+    // displayEpoch bumps on every display change; measuredEpoch is the epoch at which the
+    // last successful sample *started*. They differ while the current display is unmeasured.
+    const state = {
+        refreshHz: null, sampling: false, resamplePending: false, pendingCallbacks: [],
+        displayEpoch: 0, measuredEpoch: -1,
+    };
     let startTimer = null;
 
     function isElectronPet() {
@@ -64,6 +72,25 @@
     }
 
     /**
+     * Frame-rate cap a rAF-driven backend should actually enforce for a target rate.
+     * When the target is at or above the measured display refresh rate, the display is
+     * already the cap, so return 0 (no software throttle). This matters because frame
+     * throttles that compare against an exact 1000/fps interval (PIXI 7 Ticker truncates
+     * the elapsed time to whole ms before comparing) drop a whole frame whenever a rAF
+     * interval lands slightly short, e.g. 16.6ms vs 16.667ms on a 60Hz display.
+     * Anything else returns the target unchanged: non-Pet pages, refresh rate unknown or
+     * not yet re-measured after a display change, target below the refresh rate, or 0.
+     */
+    function rafCapFps(fpsOverride) {
+        const override = Number(fpsOverride);
+        const fps = Number.isFinite(override) && override >= 0 ? override : configuredTargetFps();
+        if (!(fps > 0)) return fps;
+        if (!isElectronPet()) return fps;
+        if (!(state.refreshHz > 0) || state.measuredEpoch !== state.displayEpoch) return fps;
+        return fps >= state.refreshHz ? 0 : fps;
+    }
+
+    /**
      * Estimate the refresh rate from the median interval of consecutive rAF timestamps.
      * The error is conservative: load-time jank only lengthens intervals (refresh rate
      * underestimated -> more likely to stay on rAF), it never overestimates it.
@@ -79,6 +106,7 @@
             return;
         }
         state.sampling = true;
+        const startEpoch = state.displayEpoch;
         const stamps = [];
         let settled = false;
         const finish = (hz) => {
@@ -89,6 +117,7 @@
             // value: after a display change the previous display's refresh rate must not keep
             // deciding the driving mode, fall back to "unknown -> conservative rAF".
             state.refreshHz = hz > 0 ? hz : null;
+            if (state.refreshHz != null) state.measuredEpoch = startEpoch;
             if (typeof onDone === 'function') {
                 try { onDone(state.refreshHz); } catch (_) {}
             }
@@ -168,6 +197,7 @@
         configuredTargetFps,
         getDisplayRefreshHz,
         activeTimerTickFps,
+        rafCapFps,
         currentTimerTickFps,
         requestPacedFrame,
         measureDisplayRefreshRate,
@@ -181,7 +211,11 @@
             window.addEventListener('load', () => scheduleMeasure(REFRESH_SAMPLE_START_DELAY_MS), { once: true });
         }
         // Refresh rate may change after moving displays / hotplug: re-measure (same event the
-        // backends already listen to)
-        window.addEventListener('electron-display-changed', () => scheduleMeasure(REFRESH_SAMPLE_START_DELAY_MS));
+        // backends already listen to). Until a sample that started after the change
+        // succeeds, rafCapFps stops trusting the old value and keeps the configured cap.
+        window.addEventListener('electron-display-changed', () => {
+            state.displayEpoch += 1;
+            scheduleMeasure(REFRESH_SAMPLE_START_DELAY_MS);
+        });
     }
 })();

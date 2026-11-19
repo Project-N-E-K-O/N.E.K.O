@@ -98,6 +98,15 @@ function createSandbox({ pet, targetFrameRate }) {
             batch.forEach((e) => e.fn(frameClock));
         }
     };
+    // 按给定时间戳逐帧推 rAF（时间戳必须单调递增；用于合成抖动的 vsync 序列）
+    const pumpAt = (stamps) => {
+        for (const t of stamps) {
+            frameClock = t;
+            const batch = rafQueue.splice(0, rafQueue.length);
+            batch.forEach((e) => e.fn(frameClock));
+        }
+    };
+    const now = () => frameClock;
     // 推进 mock 定时器的同时推进沙盒时钟，让 performance.now() 依赖的保持期判定
     // （_hasRenderActivity 的 900ms 窗口）也随时间失效
     // 按 1ms 步进，让每个定时器回调看到的 performance.now() 是它自己的到期时刻，
@@ -117,7 +126,7 @@ function createSandbox({ pet, targetFrameRate }) {
         pumpFrames(30, hz);
     };
     const load = (src, name) => vm.runInContext(src, sandbox, { filename: name });
-    return { sandbox, window, PIXI, pumpFrames, measureRefresh, tick, load, rafQueue, listeners };
+    return { sandbox, window, PIXI, pumpFrames, pumpAt, now, measureRefresh, tick, load, rafQueue, listeners };
 }
 
 function withMockTimers(fn) {
@@ -438,15 +447,16 @@ test('Live2D Pet + 配置低于刷新率：活动态也走定时器驱动，衰�
     assert.equal(app.ticker.startCalls, 0);
 }));
 
-test('Live2D Pet + 配置 = 刷新率：rAF 模式接管 shared/system 的 maxFPS，进出定时器模式正确保存/恢复', withMockTimers(() => {
+test('Live2D Pet + 配置 = 刷新率：rAF 模式接管 shared/system 的 maxFPS（显示器即上限 → 0），进出定时器模式正确保存/恢复', withMockTimers(() => {
     const sb = createSandbox({ pet: true, targetFrameRate: 60 });
     sb.measureRefresh(60);
     const { mgr, app, shared, system } = setupLive2D(sb);
     mgr.boostInteractiveFPS();
     assert.ok(!mgr._idleTickMode, '60@60Hz 留在 rAF');
-    assert.equal(app.ticker.maxFPS, 60);
-    assert.equal(shared.maxFPS, 60, 'Pet 下 shared 也被限到配置帧率');
-    assert.equal(system.maxFPS, 60);
+    assert.equal(app.ticker.maxFPS, 0, '配置 ≥ 刷新率：不再软件节流，显示器即上限');
+    assert.equal(shared.maxFPS, 0, 'Pet 下 shared 也按同一判定');
+    assert.equal(system.maxFPS, 0);
+    assert.equal(mgr._rafMaxFpsRequested, 60, '判定前的请求值仍是配置帧率');
 
     sb.tick(1000); // 衰减 → 空闲定时器
     assert.equal(mgr._idleTickMode, true);
@@ -460,9 +470,9 @@ test('Live2D Pet + 配置 = 刷新率：rAF 模式接管 shared/system 的 maxFP
     assert.equal(app.ticker.started, true);
     assert.equal(shared.started, true);
     assert.equal(system.started, true);
-    assert.equal(app.ticker.maxFPS, 60);
-    assert.equal(shared.maxFPS, 60, '退出定时器模式后恢复到配置值而不是旧的地板值');
-    assert.equal(system.maxFPS, 60);
+    assert.equal(app.ticker.maxFPS, 0);
+    assert.equal(shared.maxFPS, 0, '退出定时器模式后恢复到配置判定值而不是旧的地板值 30');
+    assert.equal(system.maxFPS, 0);
 
     sb.window.targetFrameRate = 0;
     mgr.setTargetFPS(0);
@@ -686,7 +696,7 @@ test('负数 targetFrameRate 一律归一为 60：Live2D / VRM / MMD 地板都�
     // rAF 路径也走同一解析，不再直接读 window.targetFrameRate
     const vrmSrc = read('static/vrm/vrm-manager.js');
     const loopBody = vrmSrc.slice(vrmSrc.indexOf('startAnimateLoop() {'), vrmSrc.indexOf('_resolveActiveTimerTickFps() {'));
-    assert.match(loopBody, /const targetFps = this\._resolveConfiguredTargetFps\(\);/);
+    assert.match(loopBody, /const targetFps = this\._resolveRafCapFps\(this\._resolveConfiguredTargetFps\(\)\);/);
     assert.doesNotMatch(loopBody, /typeof window\.targetFrameRate === 'number' \? window\.targetFrameRate : 60/, 'rAF 路径不允许绕过归一化直接读配置');
     sb2.window.targetFrameRate = Infinity;
     assert.equal(vrm._resolveConfiguredTargetFps(), 60, 'Infinity 也归一为 60');
@@ -1022,3 +1032,290 @@ test('契约：frame-pacing.js 只在 index.html（Pet 窗口页面）加载', (
         assert.doesNotMatch(read('templates/' + tpl), /frame-pacing\.js/, tpl + ' 不应加载帧率总闸');
     }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// rAF 帧率上限：配置帧率 ≥ 显示器刷新率时不再软件节流（frame-pacing.rafCapFps）
+// ─────────────────────────────────────────────────────────────────────────────
+const PIXI_MIN_SRC = read('static/libs/pixi.min.js');
+const PIXI_TARGET_FPMS = 0.06;
+
+// 按 PIXI 7.4.3 Ticker 的 update / maxFPS / minFPS / _requestIfNeeded 逐句复刻（下面有契约断言防漂移）。
+// 只记录每次真正 emit 的 deltaMS，用来数跳帧和双倍 delta。
+class Pixi743Ticker {
+    constructor() {
+        this._minElapsedMS = 0;
+        this._maxElapsedMS = 100; // minFPS 默认 10
+        this.minFPS = 10;
+        this.speed = 1;
+        this.lastTime = -1;
+        this._lastFrame = -1;
+        this.emitted = [];
+    }
+    get maxFPS() { return this._minElapsedMS ? Math.round(1e3 / this._minElapsedMS) : 0; }
+    set maxFPS(t) {
+        if (t === 0) this._minElapsedMS = 0;
+        else { const e = Math.max(this.minFPS, t); this._minElapsedMS = 1 / (e / 1e3); }
+    }
+    start(now) { this.lastTime = now; this._lastFrame = this.lastTime; }
+    update(t) {
+        let e;
+        if (t > this.lastTime) {
+            e = this.elapsedMS = t - this.lastTime;
+            if (e > this._maxElapsedMS) e = this._maxElapsedMS;
+            e *= this.speed;
+            if (this._minElapsedMS) {
+                const n = (t - this._lastFrame) | 0;
+                if (n < this._minElapsedMS) return;
+                this._lastFrame = t - n % this._minElapsedMS;
+            }
+            this.deltaMS = e;
+            this.deltaTime = this.deltaMS * PIXI_TARGET_FPMS;
+            this.emitted.push(e);
+        } else {
+            this.deltaTime = this.deltaMS = this.elapsedMS = 0;
+        }
+        this.lastTime = t;
+    }
+}
+
+// 可复现的伪随机（mulberry32）
+function seededRandom(seed) {
+    let a = seed >>> 0;
+    return () => {
+        a = (a + 0x6D2B79F5) >>> 0;
+        let t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+// 合成 vsync 时间戳：第 i 帧 = start + i × 1000/hz + U(-jitter, +jitter)，不累积漂移
+function syntheticVsync({ hz, jitterMs, frames, seed, start = 10000 }) {
+    const rand = seededRandom(seed);
+    const period = 1000 / hz;
+    const out = [];
+    for (let i = 1; i <= frames; i++) out.push(start + i * period + (rand() * 2 - 1) * jitterMs);
+    return out;
+}
+
+// 把时间戳喂给 PIXI 7.4.3 ticker，返回跳帧率（rAF 回调里整帧没执行的比例）和双倍 delta 帧数
+function pixiSkipStats(maxFPS, stamps, start = 10000) {
+    const ticker = new Pixi743Ticker();
+    ticker.maxFPS = maxFPS;
+    ticker.start(start);
+    stamps.forEach((t) => ticker.update(t));
+    const skipped = stamps.length - ticker.emitted.length;
+    const period = (stamps[stamps.length - 1] - start) / stamps.length;
+    const doubled = ticker.emitted.filter((d) => d > period * 1.5).length;
+    return { skipRate: skipped / stamps.length, skipped, doubled, frames: stamps.length };
+}
+
+test('契约：Pixi743Ticker 复刻与 static/libs/pixi.min.js 的 Ticker 实现一致', () => {
+    assert.ok(PIXI_MIN_SRC.includes('if(t>this.lastTime){if(e=this.elapsedMS=t-this.lastTime,e>this._maxElapsedMS&&(e=this._maxElapsedMS),e*=this.speed,this._minElapsedMS){const n=t-this._lastFrame|0;if(n<this._minElapsedMS)return;this._lastFrame=t-n%this._minElapsedMS}this.deltaMS=e,this.deltaTime=this.deltaMS*'),
+        'update：截成整数 ms 比较，跳帧时直接 return、不更新 lastTime');
+    assert.ok(PIXI_MIN_SRC.includes('else this.deltaTime=this.deltaMS=this.elapsedMS=0;this.lastTime=t}'));
+    assert.ok(PIXI_MIN_SRC.includes('set maxFPS(t){if(t===0)this._minElapsedMS=0;else{const e=Math.max(this.minFPS,t);this._minElapsedMS=1/(e/1e3)}}'));
+    assert.ok(PIXI_MIN_SRC.includes('get maxFPS(){return this._minElapsedMS?Math.round(1e3/this._minElapsedMS):0}'));
+});
+
+test('frame-pacing.rafCapFps：仅 Pet + 刷新率已测出 + 配置 ≥ 刷新率时返回 0，其余原样', withMockTimers(() => {
+    const sb = createSandbox({ pet: true, targetFrameRate: 60 });
+    const pacing = sb.window.nekoFramePacing;
+    assert.equal(pacing.rafCapFps(60), 60, '刷新率未测出：原样');
+    sb.measureRefresh(60);
+    assert.equal(pacing.getDisplayRefreshHz(), 60);
+    assert.equal(pacing.rafCapFps(60), 0, '60@60Hz → 0');
+    assert.equal(pacing.rafCapFps(), 0, '不传参数按 window.targetFrameRate');
+    assert.equal(pacing.rafCapFps(75), 0, '高于刷新率 → 0');
+    assert.equal(pacing.rafCapFps(59), 59, '低于刷新率：原样');
+    assert.equal(pacing.rafCapFps(30), 30, '地板 30：原样');
+    assert.equal(pacing.rafCapFps(0), 0, '0 = 不限帧：原样');
+    sb.window.dispatchEvent({ type: 'electron-display-changed' });
+    sb.measureRefresh(144);
+    assert.equal(pacing.rafCapFps(60), 60, '144Hz 屏上 60 低于刷新率：原样');
+    assert.equal(pacing.rafCapFps(144), 0);
+    assert.equal(pacing.rafCapFps(240), 0);
+
+    const np = createSandbox({ pet: false, targetFrameRate: 60 });
+    np.measureRefresh(60);
+    assert.equal(np.window.nekoFramePacing.rafCapFps(60), 60, '非 Pet：原样');
+    // 即使非 Pet 页面手动调了导出的测量函数、刷新率有值，也不改上限
+    np.window.nekoFramePacing.measureDisplayRefreshRate();
+    np.pumpFrames(30, 60);
+    assert.equal(np.window.nekoFramePacing.getDisplayRefreshHz(), 60);
+    assert.equal(np.window.nekoFramePacing.rafCapFps(60), 60, '非 Pet 有刷新率也原样');
+}));
+
+test('frame-pacing.rafCapFps：换屏后、新屏重测完成前不信旧刷新率；跨换屏的旧采样也不算', withMockTimers(() => {
+    const sb = createSandbox({ pet: true, targetFrameRate: 60 });
+    const pacing = sb.window.nekoFramePacing;
+    sb.measureRefresh(60);
+    assert.equal(pacing.rafCapFps(60), 0);
+    sb.window.dispatchEvent({ type: 'electron-display-changed' });
+    assert.equal(pacing.rafCapFps(60), 60, '换屏事件一到就回到配置上限（新屏可能是 144Hz）');
+    assert.equal(pacing.getDisplayRefreshHz(), 60, 'activeTimerTickFps 用的旧值本 PR 不动');
+    sb.measureRefresh(60);
+    assert.equal(pacing.rafCapFps(60), 0, '新屏重测完成后恢复');
+
+    // 一轮采样在换屏前开始、换屏后结束：时间戳混了旧屏，不能作数
+    pacing.measureDisplayRefreshRate();
+    sb.pumpFrames(5, 60);
+    sb.window.dispatchEvent({ type: 'electron-display-changed' });
+    sb.pumpFrames(30, 60); // 旧一轮采满结束
+    assert.equal(pacing.rafCapFps(60), 60, '旧一轮的结果不解除换屏后的保守态');
+    sb.measureRefresh(60); // 换屏后排的那轮
+    assert.equal(pacing.rafCapFps(60), 0);
+
+    // 换屏后重测超时：刷新率作废 → 原样
+    sb.window.dispatchEvent({ type: 'electron-display-changed' });
+    sb.tick(1500);
+    sb.tick(3000);
+    assert.equal(pacing.rafCapFps(60), 60);
+}));
+
+test('Live2D Pet：60@60Hz 的 rAF 上限交给显示器；PIXI 7.4.3 合成时间戳下跳帧率从 >0 降到 0', withMockTimers((t) => {
+    const sb = createSandbox({ pet: true, targetFrameRate: 60 });
+    sb.measureRefresh(60);
+    const { mgr, app, shared, system } = setupLive2D(sb);
+    mgr._isDraggingModel = true; // 持续活动，留在 rAF
+    mgr.boostInteractiveFPS();
+    assert.ok(!mgr._idleTickMode, '留在 rAF');
+    assert.equal(app.ticker.maxFPS, 0);
+    assert.equal(shared.maxFPS, 0);
+    assert.equal(system.maxFPS, 0);
+
+    const rows = [];
+    for (const jitterMs of [0.1, 1]) {
+        let beforeSkipped = 0, afterSkipped = 0, afterDoubled = 0, total = 0;
+        for (let seed = 1; seed <= 5; seed++) {
+            const stamps = syntheticVsync({ hz: 60, jitterMs, frames: 3600, seed });
+            const before = pixiSkipStats(60, stamps);
+            const after = pixiSkipStats(app.ticker.maxFPS, stamps);
+            beforeSkipped += before.skipped;
+            afterSkipped += after.skipped;
+            afterDoubled += after.doubled;
+            total += stamps.length;
+        }
+        rows.push(`60Hz ±${jitterMs}ms: 改前 maxFPS=60 跳帧 ${(100 * beforeSkipped / total).toFixed(2)}%，改后 maxFPS=${app.ticker.maxFPS} 跳帧 ${(100 * afterSkipped / total).toFixed(2)}%（${total} 帧）`);
+        assert.ok(beforeSkipped / total > 0.005, `复刻的 PIXI 节流在 ±${jitterMs}ms 下应能复现跳帧`);
+        assert.equal(afterSkipped, 0, `±${jitterMs}ms：改后不跳帧`);
+        assert.equal(afterDoubled, 0, `±${jitterMs}ms：改后没有双倍 delta`);
+    }
+    rows.forEach((r) => (t && t.diagnostic ? t.diagnostic(r) : console.log(r)));
+}));
+
+test('Live2D：配置低于刷新率 / 刷新率未知 / 非 Pet 时 maxFPS 照旧', withMockTimers(() => {
+    // 55 ≥ 60×0.9，留在 rAF；55 < 60，保持软件节流
+    const sb = createSandbox({ pet: true, targetFrameRate: 55 });
+    sb.measureRefresh(60);
+    const a = setupLive2D(sb);
+    a.mgr._isDraggingModel = true;
+    a.mgr.boostInteractiveFPS();
+    assert.ok(!a.mgr._idleTickMode, '留在 rAF');
+    assert.equal(a.app.ticker.maxFPS, 55);
+    assert.equal(a.shared.maxFPS, 55);
+    a.mgr._applyRafMaxFps(30);
+    assert.equal(a.app.ticker.maxFPS, 30, '地板 30 照旧');
+
+    const sb2 = createSandbox({ pet: true, targetFrameRate: 60 }); // 不测刷新率
+    const b = setupLive2D(sb2);
+    b.mgr._isDraggingModel = true;
+    b.mgr.boostInteractiveFPS();
+    assert.equal(b.app.ticker.maxFPS, 60, '刷新率未知：保持配置上限');
+    assert.equal(b.shared.maxFPS, 60);
+
+    const sb3 = createSandbox({ pet: false, targetFrameRate: 60 });
+    sb3.measureRefresh(60);
+    const c = setupLive2D(sb3);
+    c.mgr._isDraggingModel = true;
+    c.mgr.boostInteractiveFPS();
+    assert.equal(c.app.ticker.maxFPS, 60, '非 Pet：保持配置上限');
+}));
+
+test('Live2D：刷新率测出 / 换屏时，rAF 驱动中的上限由 governor 重判', withMockTimers(() => {
+    const sb = createSandbox({ pet: true, targetFrameRate: 60 });
+    const { mgr, app, shared } = setupLive2D(sb);
+    mgr._isDraggingModel = true;
+    mgr._startIdleFpsGovernor();
+    assert.ok(!mgr._idleTickMode, '留在 rAF');
+    assert.equal(app.ticker.maxFPS, 60, '刷新率测出前：保持配置上限');
+    sb.measureRefresh(60);
+    sb.tick(300);
+    assert.equal(app.ticker.maxFPS, 0, '测出 60Hz 后一个 governor 周期内改成不节流');
+    assert.equal(shared.maxFPS, 0);
+
+    // 活动刚停、还在衰减保持期（rAF 驱动、无活动）也要重判
+    mgr._isDraggingModel = false;
+    mgr.boostInteractiveFPS();
+    sb.window.dispatchEvent({ type: 'electron-display-changed' });
+    sb.tick(300);
+    assert.ok(!mgr._idleTickMode, '仍在保持期');
+    assert.equal(app.ticker.maxFPS, 60, '换屏后未重测：回到配置上限');
+    assert.equal(shared.maxFPS, 60);
+    mgr._stopIdleFpsGovernor();
+}));
+
+test('契约：initPIXI 写 maxFPS 也经过刷新率判定', () => {
+    assert.match(LIVE2D_CORE_SRC, /this\.pixi_app\.ticker\.maxFPS = this\._resolveRafCapFps\(this\._resolveConfiguredTargetFps\(\)\);/);
+});
+
+test('MMD Pet：60@60Hz rAF 路径不节流；合成抖动时间戳下改前跳帧、改后每帧都渲染', withMockTimers((t) => {
+    // MMD 节流按精确帧间隔比较并对齐时间格：是否跳帧取决于每帧抖动与起始帧相位的先后，
+    // 所以按多个种子取平均。改前 = 同一代码在没有刷新率判定时（非 Pet）的行为。
+    const rows = [];
+    for (const jitterMs of [0.1, 1]) {
+        const sum = { before: 0, after: 0, total: 0 };
+        for (let seed = 1; seed <= 5; seed++) {
+            for (const pet of [false, true]) {
+                const sb = createSandbox({ pet, targetFrameRate: 60 });
+                sb.measureRefresh(60);
+                const { core, manager } = setupMMD(sb);
+                sb.rafQueue.splice(0);
+                manager._animationFrameId = null;
+                const start = sb.now();
+                core._render();
+                if (pet) assert.equal(core.frameTime, 0, 'Pet 60@60Hz：frameTime = 0');
+                const rendersBefore = core.renders;
+                const stamps = syntheticVsync({ hz: 60, jitterMs, frames: 3600, seed, start });
+                sb.pumpAt(stamps);
+                sum[pet ? 'after' : 'before'] += stamps.length - (core.renders - rendersBefore);
+                if (pet) sum.total += stamps.length;
+            }
+        }
+        assert.ok(sum.before / sum.total > 0.005, `±${jitterMs}ms：未判定（非 Pet）时 MMD 节流也会跳帧，实际 ${sum.before}`);
+        assert.equal(sum.after, 0, `±${jitterMs}ms：改后不跳帧`);
+        rows.push(`MMD 60Hz ±${jitterMs}ms: 节流 60 跳帧 ${(100 * sum.before / sum.total).toFixed(2)}%，不节流 ${(100 * sum.after / sum.total).toFixed(2)}%（${sum.total} 帧）`);
+    }
+    rows.forEach((r) => (t && t.diagnostic ? t.diagnostic(r) : console.log(r)));
+}));
+
+test('MMD：配置低于刷新率时照旧节流；刷新率变化时 frameTime 跟着重判，targetFPS 保持配置值', withMockTimers(() => {
+    const sb = createSandbox({ pet: true, targetFrameRate: 55 });
+    sb.measureRefresh(60);
+    const { core } = setupMMD(sb);
+    core._refreshTargetFps();
+    assert.equal(core.targetFPS, 55);
+    assert.equal(core.frameTime, 1000 / 55);
+    sb.window.targetFrameRate = 60;
+    core._refreshTargetFps();
+    assert.equal(core.targetFPS, 60);
+    assert.equal(core.frameTime, 0);
+    sb.window.dispatchEvent({ type: 'electron-display-changed' });
+    core._refreshTargetFps();
+    assert.equal(core.targetFPS, 60);
+    assert.equal(core.frameTime, 1000 / 60, '换屏未重测：配置不变也要恢复节流');
+}));
+
+test('VRM：rAF 上限与 Live2D / MMD 同一判定', withMockTimers(() => {
+    const sb = createSandbox({ pet: true, targetFrameRate: 60 });
+    const mgr = setupVRM(sb);
+    assert.equal(mgr._resolveRafCapFps(60), 60, '刷新率未知：原样');
+    sb.measureRefresh(60);
+    assert.equal(mgr._resolveRafCapFps(60), 0);
+    assert.equal(mgr._resolveRafCapFps(55), 55);
+    assert.equal(mgr._resolveRafCapFps(0), 0);
+    const np = createSandbox({ pet: false, targetFrameRate: 60 });
+    np.measureRefresh(60);
+    assert.equal(setupVRM(np)._resolveRafCapFps(60), 60);
+}));
