@@ -319,11 +319,13 @@ main_server restarted, and it must not poll main_server itself.
   especially `role` and `reply_tail`: they default to `role=None`
   (visible to every character) and `reply_tail=False`.
 
-Either way, a registration only reaches characters whose session manager
-already exists when it arrives. If none matches yet (no character loaded,
-or the `role` character is not available), nothing is recorded and the
-tool does not appear later by itself: recover once the character is
-available.
+Either way, the host records a registration only if at least one
+matching character session manager exists when it arrives (any
+character for `role=None`, otherwise the `role` character). It then
+reaches those characters and is restored for matching characters created
+later. If none matches yet (no character loaded, or the `role` character
+is not available), nothing is recorded and the tool does not appear later
+by itself: recover once the character is available.
 
 A raw HTTP integration running outside the plugin process must handle
 this itself:
