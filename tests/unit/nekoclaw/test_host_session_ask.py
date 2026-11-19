@@ -536,6 +536,9 @@ async def test_an_asker_stopped_while_the_copy_is_made_has_nothing_started_for_i
     [child] = await host.ledger.select(parent_id=asker.id)
     assert (child.status, child.source) == ("cancelled", "ask")
     assert child.id not in host.task_agents._sessions and scripts[QUESTION].requests == []
+    # Nor is the copy made for it kept.
+    copy = await host.ledger.get_session(child.session_id)
+    assert copy.status == "cleared" and not Path(copy.session_dir).exists()
     release.set()
 
 
@@ -549,15 +552,16 @@ async def test_a_question_whose_asker_is_cancelled_while_it_is_filed_is_answered
     photos = await _at_rest(host, scripts)
     await host.ledger.update_session(photos.session_id, name="photos")
     asker = await _asker_at_work(host, scripts)
-    update, entered, go_on = host.ledger.update, asyncio.Event(), asyncio.Event()
+    append, entered, go_on = host.ledger.append_event, asyncio.Event(), asyncio.Event()
 
-    async def slow(commission_id: str, **changes: Any) -> Any:
-        if "session_id" in changes:
+    async def slow(commission_id: str, kind: str, payload: Any = None) -> Any:
+        if kind == "subagent_started":
             entered.set()
             await go_on.wait()
-        return await update(commission_id, **changes)
+        return await append(commission_id, kind, payload)
 
-    host.ledger.update = slow  # type: ignore[method-assign]
+    host.ledger.append_event = slow  # type: ignore[method-assign]
+    told = _steered_into(host, asker.id)
     asking = asyncio.ensure_future(_ask(host, asker))
     await asyncio.wait_for(entered.wait(), 5)
     asking.cancel()
@@ -567,7 +571,10 @@ async def test_a_question_whose_asker_is_cancelled_while_it_is_filed_is_answered
     [child] = await host.ledger.select(parent_id=asker.id)
     child = await wait_status(host, child.id, "done", "failed", "cancelled", "blocked")
     assert child.status == "done" and child.session_id
-    host.ledger.update = update  # type: ignore[method-assign]
+    host.ledger.append_event = append  # type: ignore[method-assign]
+    # And the answer reached the asker.
+    await wait_until(lambda: any("An answer." in text for text in told), what="the answer reaching the asker")
+    assert sum('[answer from "photos": completed]' in text for text in told) == 1
     release.set()
 
 
@@ -578,24 +585,48 @@ async def test_a_question_that_cannot_be_handed_over_is_ended_and_not_left_waiti
     photos = await _at_rest(host, scripts)
     await host.ledger.update_session(photos.session_id, name="photos")
     asker = await _asker_at_work(host, scripts)
-    update = host.ledger.update
+    append = host.ledger.append_event
 
-    async def failing(commission_id: str, **changes: Any) -> Any:
-        if "session_id" in changes:
+    async def failing(commission_id: str, kind: str, payload: Any = None) -> Any:
+        if kind == "subagent_started":
             raise OSError("the disk is full")
-        return await update(commission_id, **changes)
+        return await append(commission_id, kind, payload)
 
-    host.ledger.update = failing  # type: ignore[method-assign]
+    host.ledger.append_event = failing  # type: ignore[method-assign]
+    told = _steered_into(host, asker.id)
     with pytest.raises(OSError):
         await _ask(host, asker)
-    host.ledger.update = update  # type: ignore[method-assign]
+    host.ledger.append_event = append  # type: ignore[method-assign]
     [child] = await host.ledger.select(parent_id=asker.id)
     assert (child.status, child.status_reason) == (
         "failed",
         "the question could not be handed to the copy that was to answer it",
     )
     assert scripts[QUESTION].requests == []
+    # The asker is told, as of any task agent of its that ends: one that ended its turn to wait
+    # for the answer is not left waiting.
+    await wait_until(lambda: told, what="the asker being told")
+    [text] = told
+    assert text.startswith('[answer from "photos": failed]') and "could not be handed to the copy" in text
+    # Nor is the copy made for it kept: nothing will be said in it.
+    copy = await host.ledger.get_session(child.session_id)
+    assert copy.status == "cleared" and not Path(copy.session_dir).exists()
     release.set()
+
+
+def _steered_into(host: Any, commission_id: str) -> list[str]:
+    """Note what is steered into a commission's session from now on."""
+    session = host.task_agents._sessions[commission_id]
+    steer = session.runtime.steer
+    told: list[str] = []
+
+    async def steering(session_id: str, text: str, **options: Any) -> Any:
+        if session_id == session.session_id:
+            told.append(text)
+        return await steer(session_id, text, **options)
+
+    session.runtime.steer = steering
+    return told
 
 
 async def _children_of(host: Any, commission_id: str) -> bool:
@@ -672,4 +703,35 @@ async def test_no_copy_is_made_and_nothing_counted_where_no_place_is_free_for_it
     assert await host.ledger.find_sessions(kind="fork") == []
     asked = await host.ledger.run(lambda conn: conn.execute("SELECT COUNT(*) FROM messages WHERE kind = 'ask'").fetchone()[0])
     assert asked == 0
+    release.set()
+
+
+async def test_a_copy_whose_place_was_taken_while_it_was_made_is_removed(hosts, tmp_path):
+    # A place was free when the question was asked, and was taken while the copy was made: the
+    # question is not handed over, and the copy made for it is removed at once.
+    release, held = _held()
+    scripts = {QUESTION: ScriptedLLM([[say("An answer."), finish()]]), PHOTOS: _photos(), BUILD: held}
+    host = _host(hosts, tmp_path, scripts, max_task_agents=2)
+    photos = await _at_rest(host, scripts)
+    await host.ledger.update_session(photos.session_id, name="photos")
+    asker = await _asker_at_work(host, scripts)
+    manager = host.task_agents
+    fork = manager.fork_session
+
+    async def and_the_place_is_taken(session_id: str, **kwargs: Any) -> Any:
+        copy = await fork(session_id, **kwargs)
+        manager._max_concurrent = 1
+        return copy
+
+    manager.fork_session = and_the_place_is_taken
+    with pytest.raises(RuntimeError) as raised:
+        await _ask(host, asker)
+    assert str(raised.value) == words.ASK_REFUSALS["no_place"]
+    [child] = await host.ledger.select(parent_id=asker.id)
+    assert child.status == "failed"
+    copy = await host.ledger.get_session(child.session_id)
+    assert copy.status == "cleared" and not Path(copy.session_dir).exists()
+    # The session it was copied from is as it was.
+    assert (await host.ledger.get_session(photos.session_id)).status != "cleared"
+    assert scripts[QUESTION].requests == []
     release.set()

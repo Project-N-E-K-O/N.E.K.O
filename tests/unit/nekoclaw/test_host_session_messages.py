@@ -7005,7 +7005,18 @@ async def test_what_a_wake_brings_takes_nothing_up_with_nekoclaw_switched_off_an
     monkeypatch.setattr(manager, "_know_session", switched_off_meanwhile)
     assert await manager._wake_working(receipt.commission_id, _Handed("A wake you set is due.", [1]), reason="x") is False
     assert (await host.ledger.get(receipt.commission_id)).status == "working" and receipt.commission_id not in manager._queue
+    runtime = manager._runtimes.builtin()
+    prompt, prompted = runtime.prompt, []
+
+    async def noting(session_id: str, text: str, **options: Any) -> Any:
+        prompted.append((text, on[0]))
+        return await prompt(session_id, text, **options)
+
+    runtime.prompt = noting
     assert await manager._wake_working(receipt.commission_id, "the user asked again", reason="x") is True
+    # Started with the switch still off: it is held back only for what a wake brings.
+    await wait_until(lambda: any("the user asked again" in text for text, _on in prompted), what="it being taken up again")
+    assert [switch for text, switch in prompted if "the user asked again" in text] == [False]
     on[0] = True
     assert (await wait_status(host, receipt.commission_id, "done")).result_summary == "deployed"
 
@@ -7032,9 +7043,18 @@ async def test_no_commission_is_filed_for_a_note_once_nekoclaw_is_switched_off_o
         return await last(session_id)
 
     host.ledger.opened_last = switched_off_meanwhile  # type: ignore[method-assign]
+    file_for_notes, came = host.task_agents._file_for_notes, []
+
+    async def noting(*args: Any, **kwargs: Any) -> Any:
+        outcome = await file_for_notes(*args, **kwargs)
+        came.append(outcome.outcome)
+        return outcome
+
+    host.task_agents._file_for_notes = noting
     await wait_status(host, (await _dispatch(host, "deploy the site")).commission_id, "done")
-    await wait_until(lambda: bool(looked), what="the note being looked at")
-    await asyncio.sleep(0.3)
+    # Once the look at the note that waits is over, however long reading took.
+    await wait_until(lambda: came, what="the note being looked at")
+    assert came[0] == "held" and looked
     # Nothing was filed, and the note still waits.
     assert await _filed_for_notes(host) == []
     assert len(await host.ledger.wakes_pending(session_id=built.session_id)) == 1
@@ -7109,3 +7129,24 @@ async def test_a_commission_filed_for_a_note_follows_up_the_one_its_session_was_
     [filed] = await _filed_for_notes(host)
     assert (filed.continues, filed.lang) == (built.id, built.lang)
     await wait_status(host, filed.id, "done")
+
+
+async def test_a_run_that_failed_ends_its_commission_though_that_it_was_opened_cannot_be_noted(hosts, tmp_path):
+    # Its run fails before anything else shows that the session took the opening message, and
+    # noting that fails: the failure is written and its session let go all the same.
+    host = _host(hosts, tmp_path, ScriptedLLM([[RuntimeError("the provider is down")]] * 5))
+    append = host.ledger.append_event
+    tried: list[str] = []
+
+    async def failing(commission_id: str, kind: str, payload: Any = None) -> Any:
+        if kind == "opened":
+            tried.append(kind)
+            raise OSError("the disk is full")
+        return await append(commission_id, kind, payload)
+
+    host.ledger.append_event = failing  # type: ignore[method-assign]
+    receipt = await _dispatch(host, "fail at once")
+    failed = await wait_status(host, receipt.commission_id, "failed", "done", "blocked")
+    assert failed.status == "failed" and "opened" in tried
+    await wait_until(lambda: receipt.commission_id not in host.task_agents._sessions, what="its session being let go")
+    host.ledger.append_event = append  # type: ignore[method-assign]

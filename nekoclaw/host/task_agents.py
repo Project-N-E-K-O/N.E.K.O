@@ -3185,7 +3185,16 @@ class TaskAgentManager:
                 # again; nor is what the commission is, if this run took that.
                 session.carried = []
                 if event.get("error") != PROCESS_EXITED_ERROR:
-                    await self._note_opened(session)
+                    try:
+                        await self._note_opened(session)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - the run failed all the same, see below
+                        # What the run failed with is what is written and
+                        # acted on: the commission fails and its session is
+                        # let go. That it was opened is noted with a later
+                        # event, as where any event fails to note it.
+                        logger.warning("noting that a commission was opened failed; its run failed all the same", exc_info=True)
                 # (Said by the host for a runtime process that went away:
                 # nothing tells how far that got with what it was sent. What
                 # the commission is, is then said again when it is taken up;
@@ -6055,35 +6064,72 @@ class TaskAgentManager:
                     name=f"ask-{number}",
                     project=copy.project,
                     workdir=copy.workdir,
+                    # Worked on in the copy: filed with it, so that it names
+                    # the session it answers for whatever happens next.
+                    session_id=copy.id,
                     conversation_id=caller.conversation_id,
                     lang=caller.lang,
                 )
                 filed.append(child)
-                # Worked on in the copy: given it before it is handed over.
-                child = await self._ledger.update(child.id, session_id=copy.id)
                 # As for a task agent it starts (``_cb_subagent_start``):
                 # one that was stopped meanwhile starts nothing.
                 current = await self._ledger.get(caller.id)
                 if current is None or current.status not in ("working", "waiting_user"):
                     await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
+                    await self._discard_copy(copy)
                     return "over"
                 await self._ledger.append_event(
                     caller.id, "subagent_started", {"name": child.name, "commission_id": child.id, "asks": target.id}
                 )
-                # (One that finds no free place is failed by ``submit``.)
-                return "" if await self.submit(child, wait=False) else "no_place"
+                # (One that finds no free place is failed by ``submit``:
+                # its place was taken while the copy was made.)
+                if await self.submit(child, wait=False):
+                    return ""
+                await self._discard_copy(copy)
+                return "no_place"
             except BaseException:
                 if filed:
                     try:
-                        await self._ledger.transition(filed[0].id, "failed", reason=_ASK_NOT_HANDED_OVER_REASON)
+                        # Ended the way any of its task agents ends: the one
+                        # that asked is told (``_tell_parent``), so that one
+                        # that ended its turn to wait for the answer is not
+                        # left waiting for it. One that was stopped is not
+                        # woken by this.
+                        await self._end(
+                            filed[0].id,
+                            "failed",
+                            reason=_ASK_NOT_HANDED_OVER_REASON,
+                            text=_ASK_NOT_HANDED_OVER_REASON,
+                        )
                     except Exception:  # noqa: BLE001 - as much as can be done; the error is raised below
                         logger.warning("ending a question that could not be handed over failed", exc_info=True)
+                try:
+                    await self._discard_copy(copy)
+                except Exception:  # noqa: BLE001 - removed with the other session's in time; the error is raised below
+                    logger.warning("removing the copy made for a question that was not handed over failed", exc_info=True)
                 raise
 
         refusal = await asyncio.shield(self._spawn(hand_over()))
         if refusal:
             raise RuntimeError(refusals[refusal])
         return {"message": words.ASK_QUEUED.format(name=target.name)}
+
+    async def _discard_copy(self, copy: Session) -> None:
+        """Remove a copy that was made for a question that was not handed over, at once.
+
+        Nothing was said in it, and nobody will: it would only wait to be
+        removed with the session it was copied from. Its files are claimed
+        as any removal claims them (``hold_files``); one that is in use
+        after all is left to that.
+        """
+        if not self.hold_files(copy.id):
+            return
+        try:
+            await self._ledger.mark_session_cleared(copy.id)
+            if copy.session_dir:
+                await self._remove_fork_dir(copy.id, copy.session_dir)
+        finally:
+            self.release_files(copy.id)
 
     async def _asked_name(self, commission: Commission) -> str:
         """Return the name of the session a copy answers for (``_cb_session_ask``)."""
