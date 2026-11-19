@@ -4036,12 +4036,21 @@ class TaskAgentSpace:
             except _LineNotAdded as exc:
                 # In its file there, with no line yet.
                 went.append(exc.entry_id)
+                gone, spoke = exc.gone, exc.spoke
             except (SpaceError, OSError, ValueError):
                 logger.warning("a pending entry could not go with its commission to its project", exc_info=True)
                 return list(dict.fromkeys(went))
             else:
                 if taken.how != _HELD:
                     went.append(taken.entry.id)
+                gone, spoke = taken.gone, taken.spoke
+            # The next text goes with what this one found: an entry it went
+            # into is in effect by now and is not asked about its files
+            # again, so a file found gone is not brought back, and one that
+            # did not speak for it (nothing was told of it) speaks for
+            # nothing and stays on record.
+            rested = [item for item in rested if item not in gone]
+            untold = [item for item in rested if item in untold or item not in spoke]
         self._discard_as_read(path, before)
         return list(dict.fromkeys(went))
 

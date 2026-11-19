@@ -2651,6 +2651,40 @@ async def test_all_who_have_seen_a_note_are_counted_where_it_is_brought_to(space
     assert _pending(root, "Budget app") == [] and _pending(root) == []
 
 
+async def test_a_file_the_first_text_taken_along_found_gone_is_not_brought_back_by_the_second(
+    space, root, workdir, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.touch_project("Budget app")
+    # Another commission of the project filed it there; it expired.
+    await _filed_with_a_file(space, workdir, id="c0", project="Budget app")
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    assert _head(_memory(root, "Budget app") / "entry-point.md")["status"] == "expired"
+    (workdir / "src" / "app.py").write_text("print('app')\n", encoding="utf-8")
+    # Two guesses under its title wait where this commission was, resting on the file that is back.
+    for text in ("Videos may have no date.", "It reads config.toml first."):
+        reply = await space.submit(_commission(workdir), _lesson("Entry point", text, "inferred", ["src/app.py"]))
+        assert reply.startswith("not in effect yet")
+
+    def gone() -> None:
+        (workdir / "src" / "app.py").unlink()
+
+    # There as what waited is looked at; gone as the entry that expired is written with the first text.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", gone])
+
+    moved = await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # A second commission: in effect again, with both texts; the file is not on its record.
+    assert len(looks) >= 2 and moved == ["entry-point"] and _pending(root) == []
+    entry = _memory(root, "Budget app") / "entry-point.md"
+    assert "status" not in _head(entry)
+    said = entry.read_text(encoding="utf-8")
+    assert "Videos may have no date." in said and "It reads config.toml first." in said
+    assert app not in _rests_on(entry)[0]
+
+
 async def test_an_entry_that_expired_goes_with_its_commission_and_gets_no_line(space, root, workdir):
     await _filed_with_a_file(space, workdir)
     (workdir / "src" / "app.py").unlink()
