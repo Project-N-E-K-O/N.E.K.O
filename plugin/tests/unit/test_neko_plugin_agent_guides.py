@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from plugin.neko_plugin_cli.templates.agent_kit import is_ignored_skill_part
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SKILL_DIR = REPO_ROOT / ".agent" / "skills" / "neko-plugin"
 GUIDES_DIR = REPO_ROOT / "plugin" / "neko_plugin_cli" / "templates" / "agent_guides"
@@ -19,8 +21,11 @@ CLI_DIR = REPO_ROOT / "plugin" / "neko_plugin_cli"
 
 # Main-repository content is linked on GitHub; the link text may show the path.
 _GITHUB_LINK = re.compile(r"\[[^\]]*\]\(https?://[^)]*\)")
-# A repository path not preceded by a path or URL character.
-_REPO_PATH = re.compile(r"(?<![\w./-])(?:plugin|frontend|scripts)/")
+# A repository path not preceded by a path or URL character. Only folders a
+# plugin project never has: tests/, docs/, and .github/ exist there too.
+_REPO_PATH = re.compile(
+    r"(?<![\w./-])(?:plugin|frontend|scripts|utils|main_logic|main_routers|docs/plugins|tests/unit)/"
+)
 _CHECKOUT_ONLY = "[checkout only]"
 _HEADING = re.compile(r"^(#+)\s")
 _FENCE = re.compile(r"^\s*(```|~~~)")
@@ -29,7 +34,14 @@ _SUBCOMMAND = re.compile(r"(?:`|uv run )neko-plugin[ \t]+([a-z][a-z0-9-]*)")
 
 
 def _skill_files() -> list[Path]:
-    return sorted(path for path in SKILL_DIR.rglob("*") if path.is_file())
+    # Same ignore rules as the snapshot (dotfiles, caches), so stray local
+    # files such as .DS_Store are neither scanned nor decoded.
+    return sorted(
+        path
+        for path in SKILL_DIR.rglob("*")
+        if path.is_file()
+        and not any(is_ignored_skill_part(part) for part in path.relative_to(SKILL_DIR).parts)
+    )
 
 
 def _guide_files() -> list[Path]:
@@ -91,7 +103,7 @@ def test_extension_is_only_mentioned_as_removed(path: Path) -> None:
     offenders = [
         f"{number}: {line.strip()}"
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
-        if "extension" in line.lower() and "removed" not in line
+        if "extension" in line.lower() and "removed" not in line.lower()
     ]
     assert not offenders, f"the extension package type was removed: {offenders}"
 

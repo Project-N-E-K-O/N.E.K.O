@@ -44,7 +44,7 @@ and the Market workflows
 |---|---|---|
 | Plugin id | `^[a-z][a-z0-9_]*$`, at most 100 characters | `check -r` (error for both); the Market workflows reject an id not matching the pattern before anything else |
 | Version | `[plugin].version`, at most 50 characters | `check -r --market-release` (error) |
-| Release tag | `v<version>` (a leading `v`/`V` is stripped) and equal to `[plugin].version`; the generated release workflow runs only on `v*` tags | the Market workflows fail the release |
+| Release tag | `v<version>` (a leading `v`/`V` is stripped) and equal to `[plugin].version`; the generated release workflow runs only on `v*` tags | the Market workflows fail the release; `check -r --market-release` errors when `GITHUB_REF_NAME` is set and differs (warns when it is unset) |
 | GitHub repository | conventionally `n.e.k.o_plugin_<id>` | `check -r --market-release` (warning only) |
 | Release workflow | `.github/workflows/release.yml` at the repository root | `check -r --market-release` (error) |
 

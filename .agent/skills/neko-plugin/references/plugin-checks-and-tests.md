@@ -57,8 +57,9 @@ Tests live in `<plugin_dir>/tests/` (the scaffold creates
 `tests/test_smoke.py`). `check -r` and `precheck` run them with pytest in
 N.E.K.O's own environment, with `plugin.plugins.<plugin_id>` importable even
 when the plugin lives outside the checkout. Running `pytest` directly in a
-standalone plugin folder creates a fresh environment without pytest or
-N.E.K.O; use `check -r` instead.
+standalone plugin folder leaves N.E.K.O off the import path, and `uv run
+pytest` there creates a fresh environment without pytest; use `check -r`
+instead.
 
 Write tests that need no running host: keep entry logic in plain helper
 functions and test those (`from plugin.plugins.<plugin_id>.client import

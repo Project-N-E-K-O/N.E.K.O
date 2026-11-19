@@ -17,6 +17,9 @@ on:
       - 'plugin/**'
       - 'utils/process_creation.py'
       - '.github/workflows/plugin-tests.yml'
+      # The neko-plugin skill is copied into new plugin projects; its text
+      # guards live in plugin/tests (test_neko_plugin_agent_guides.py).
+      - '.agent/skills/neko-plugin/**'
       # Dependency changes alter the plugin test/runtime environment (e.g.
       # removing a dev dep plugin/tests needs) — without these a deps-only
       # PR skips the gate and the breakage surfaces on the next plugin PR.
@@ -28,6 +31,7 @@ on:
       - 'plugin/**'
       - 'utils/process_creation.py'
       - '.github/workflows/plugin-tests.yml'
+      - '.agent/skills/neko-plugin/**'
       - 'pyproject.toml'
       - 'uv.lock'
   workflow_dispatch:
