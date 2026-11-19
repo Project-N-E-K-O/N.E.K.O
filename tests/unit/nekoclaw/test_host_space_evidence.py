@@ -640,6 +640,8 @@ def test_a_path_comes_before_the_clause_it_stands_in_and_a_number_is_none():
     assert paths_named_in("Run `cat README.md` first") == ["cat README.md", "README.md"]
     # Quotes paired by mistake (an inch mark): what they enclose is no path, and what is in it still counts.
     assert paths_named_in('A 5" screen; see src/a.py, src/b.py and "lib/c.py"') == ["src/a.py", "src/b.py", "lib/c.py"]
+    # In backticks a comma may be part of a name: taken whole all the same.
+    assert paths_named_in("Open `data/Q1 report, final.csv` first") == ["data/Q1 report, final.csv", "data/Q1", "final.csv"]
     assert paths_named_in("1.2.3 and 10.0 and 2026.11 and .5.") == []
 
 

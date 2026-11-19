@@ -903,12 +903,15 @@ def paths_named_in(text: Any) -> list[str]:
         return before == run.start() or before == 0 or said[before - 1] not in "/\\"
 
     # What is in quotes and holds a space is also taken whole: a path may
-    # (``data/old report.csv``). Not when it holds the marks that end a
-    # clause: such quotes were paired by mistake (``a 5" screen; ...``).
+    # (``data/old report.csv``). Not what is in plain double quotes and
+    # holds the marks that end a clause: such quotes were paired by
+    # mistake (``a 5" screen; ...``). In backticks and Chinese quotes a
+    # comma may well be part of a name (``data/Q1 report, final.csv``).
     quoted = []
     for match in quotes:
         inside = next(group for group in match.groups() if group is not None).strip()
-        if " " in inside and not _CLAUSE_MARKS.search(inside):
+        paired_by_mistake = match.group(0).startswith('"') and _CLAUSE_MARKS.search(inside) is not None
+        if " " in inside and not paired_by_mistake:
             quoted.append((match.start(), inside))
 
     # The words as white space and punctuation set them apart, where each begins.
