@@ -1406,3 +1406,61 @@ async def test_one_merged_guess_that_cannot_be_settled_does_not_keep_another_wai
     # The one after it was seen to all the same.
     assert (None, first) not in world.space._unsettled
     assert path.exists()
+
+
+def _held_after_reading(monkeypatch: Any, held: Path, first: str) -> None:
+    """Have ``held`` not to be read once ``first`` has been: an entry beside a merged guess, held by another program."""
+    read_text = TaskAgentSpace._read_text
+    reads: list[Path] = []
+
+    def held_open(path: Path) -> Any:
+        if path == held and any(item.stem == first for item in reads):
+            return None
+        reads.append(path)
+        return read_text(path)
+
+    monkeypatch.setattr(TaskAgentSpace, "_read_text", staticmethod(held_open))
+
+
+async def test_a_merged_guess_dated_in_the_same_round_still_takes_effect_later(world, monkeypatch):
+    first = await world.pending("Make needs the root", "make failed yesterday when started in src.", by="c1")
+    await world.pending("Build only from top", "Building from a subdirectory breaks.", by="c2")
+    other = await world.active("Mirror", "The mirror is at mirror.local.")
+    _held_after_reading(monkeypatch, world.memory() / f"{other}.md", first)
+    world.answer(
+        lambda shown: [
+            {"op": "merge", "from": shown["Build only from top"], "into": shown["Make needs the root"]},
+            {"op": "date", "entry": shown["Make needs the root"], "old": "yesterday", "new": "2027-01-14"},
+        ]
+    )
+    await world.tidy()
+    monkeypatch.undo()
+    assert "2027-01-14" in (world.memory() / f"{first}.md").read_text(encoding="utf-8")
+    world.llm.answer = {"operations": []}
+
+    await world.tidy()
+
+    assert (await world.entry(first)).status == ENTRY_ACTIVE
+    assert world.space._unsettled == {}
+
+
+async def test_a_merged_guess_the_user_saved_and_tidying_dated_waits_on(world, monkeypatch):
+    first = await world.pending("Make needs the root", "make failed yesterday when started in src.", by="c1")
+    await world.pending("Build only from top", "Building from a subdirectory breaks.", by="c2")
+    other = await world.active("Mirror", "The mirror is at mirror.local.")
+    # Enough beside it to be looked over while the mirror cannot be read.
+    await world.active("Docs", "The docs are built with mkdocs.")
+    _held_after_reading(monkeypatch, world.memory() / f"{other}.md", first)
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Build only from top"], "into": shown["Make needs the root"]}])
+    await world.tidy()
+    path = world.memory() / f"{first}.md"
+    path.write_text(path.read_text(encoding="utf-8") + "\nAnd always delete the build folder first.\n", encoding="utf-8")
+    world.answer(lambda shown: [{"op": "date", "entry": shown["Make needs the root"], "old": "yesterday", "new": "2027-01-14"}])
+    await world.tidy()
+    monkeypatch.undo()
+    assert "2027-01-14" in path.read_text(encoding="utf-8")
+    world.llm.answer = {"operations": []}
+
+    await world.tidy()
+
+    assert (await world.entry(first)).status == ENTRY_PENDING

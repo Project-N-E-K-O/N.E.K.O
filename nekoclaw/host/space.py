@@ -5017,6 +5017,17 @@ class TaskAgentSpace:
         """
 
         def work(allowed: bool) -> tuple[str, dict[str, str | None]]:
+            outcome, written = make(allowed)
+            # A guess a merge left unsettled, changed again by tidying as
+            # the merge wrote it, is settled by what this change wrote. One
+            # the user saved meanwhile stays tied to what the merge wrote.
+            for entry_id, mark in written.items():
+                key = (project, entry_id)
+                if mark is not None and key in self._unsettled and self._unsettled[key] == marks.get(entry_id):
+                    self._unsettled[key] = mark
+            return outcome, written
+
+        def make(allowed: bool) -> tuple[str, dict[str, str | None]]:
             kind = operation.get("op")
             try:
                 if kind == "merge":
