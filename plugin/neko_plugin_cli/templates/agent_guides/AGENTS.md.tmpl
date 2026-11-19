@@ -9,11 +9,12 @@ that as this directory.
 
 ## Route
 
-- **A, source checkout**: the folder that contains this plugin (or one of its
-  parents) has N.E.K.O's `pyproject.toml` (`name = "N.E.K.O"`), and
-  `uv run neko-plugin --help` works there. Use the commands under Verify.
-- **B, desktop build**: no checkout. `check`, `sync`, and `precheck` cannot
-  run. Say so instead of guessing; the user tests with Start/Reload on the
+- **A, source checkout**: a N.E.K.O checkout (a folder whose `pyproject.toml`
+  says `name = "N.E.K.O"`) is reachable: the Verify commands below already
+  point at it, or this plugin sits inside it. Check with the `check` command
+  below (or `uv run neko-plugin --help` in the checkout).
+- **B, desktop build**: no checkout (the Verify commands still show
+  `<path-to-this-directory>` and no checkout exists). The CLI cannot run. Say so instead of guessing; the user tests with Start/Reload on the
   plugin page and pastes errors from its Logs tab.
 
 ## Hard Constraints
@@ -28,7 +29,7 @@ Full reasons: `.agents/skills/neko-plugin/references/execution-boundary.md`.
 6. **Do not hard-code paths**: write with `self.data_path()` / `self.cache_path()`; `self.plugin_dir` is read-only.
 7. **Do not block the event loop**: all entries share one loop; use async libraries or `await asyncio.to_thread(...)`.
 8. **Do not use `requirements.txt`**: the host reads `pyproject.toml` `[project].dependencies`, loaded only from `vendor/`.
-9. **Do not commit `vendor/`, binaries, or files over 2 MiB**: `sync` regenerates `vendor/`; the Market rejects the rest.
+9. **Do not commit `vendor/`, binaries, or files over 2 MiB**: `sync` regenerates `vendor/`; the Market rejects binaries and oversized source files.
 10. **Do not use `eval`/`exec`/`pickle`/`shell=True`/`verify=False`**: they run untrusted code or disable TLS checks.
 
 ## Code Essentials
@@ -43,8 +44,9 @@ Full reasons: `.agents/skills/neko-plugin/references/execution-boundary.md`.
   `_ctx` parameter only if you need it.
 - User-visible text (names, descriptions, UI) goes through `[plugin.i18n]`
   locale files with at least `zh-CN` and `en`.
-- Market: id matches `^[a-z][a-z0-9_]*$`; GitHub repo `n.e.k.o_plugin_<id>`;
-  release tag `v<version>`. `type = "extension"` was removed in v0.9
+- Market: id matches `^[a-z][a-z0-9_]*$` (at most 100 characters); the
+  release tag is `v<version>`; the GitHub repo is conventionally
+  `n.e.k.o_plugin_<id>`. `type = "extension"` was removed in v0.9
   ([migration](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/plugins/migration-v0.9.md));
   use `type = "plugin"`.
 
@@ -71,8 +73,8 @@ Details: `.agents/skills/neko-plugin/references/runtime-model.md`.
 ```
 
 Run in this order before reporting done: `check` → `lint` → `sync --clean` →
-`precheck`. `lint` and `precheck` take the same argument as `check`;
-`precheck` reruns lint, sync, and `check -r` (tests in `tests/`, package
+`precheck`. For `lint` and `precheck`, copy the `check` line and replace only
+the word `check`; keep every other part. `precheck` reruns lint, sync, and `check -r` (tests in `tests/`, package
 build), which is what Market CI runs. Ruff is pinned and runs with
 `--ignore-noqa`, so `# noqa` does not silence it: fix the code. Build a
 package with `{build_command}`.

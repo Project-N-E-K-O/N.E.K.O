@@ -39,9 +39,9 @@ Consequences:
 - `startup` must be `async def`. A sync one still runs, but the host then
   reports it as a startup error.
 - An exception in `startup` is logged. With the default
-  `[plugin_runtime].startup_failure = "warn"` the plugin keeps running without
-  whatever startup failed to set up; with `"fail"` the process stops and no
-  timer starts.
+  `[plugin_runtime].startup_failure = "warn"` (or `"ignore"`) the plugin keeps
+  running without whatever startup failed to set up; with `"fail"` the
+  process stops and no timer starts.
 - Timers are started only after `startup` has returned.
 
 ## Entries
