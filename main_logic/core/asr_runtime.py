@@ -92,6 +92,7 @@ from .multimodal_turn import (
     _CoreMultimodalTurnRecord,
     _IndependentVisualFrame,
     multimodal_turn_after_revocation,
+    multimodal_turn_consent_holds,
 )
 from main_logic.voice_input.activation.wiring import (
     VoiceSessionActivationFactory,
@@ -6658,8 +6659,21 @@ class AsrRuntimeMixin:
                                     # Gemini additionally awaits compression before sending,
                                     # allowing successor speech to take frame ownership there.
                                     # Same ownership criterion as offline handoff.
+                                    # Screen consent is re-checked there too:
+                                    # a revocation during that compression
+                                    # must keep live frames out.
                                     visual_still_owned=(
-                                        lambda: not visual_ownership_lost()
+                                        lambda turn=multimodal_turn: (
+                                            not visual_ownership_lost()
+                                            and multimodal_turn_consent_holds(
+                                                turn,
+                                                getattr(
+                                                    self,
+                                                    "_proactive_vision_revocation_epoch",
+                                                    0,
+                                                ),
+                                            )
+                                        )
                                     ),
                                 )
                             except ResponseAdmissionRejected:
