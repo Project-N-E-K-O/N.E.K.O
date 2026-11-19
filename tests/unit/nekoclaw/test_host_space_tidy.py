@@ -2247,3 +2247,31 @@ async def test_a_line_put_back_from_a_merge_is_the_line_as_the_user_last_worded_
     assert saved
     assert (world.memory() / f"{other}.md").exists()
     assert mine in await world.space.read_index(None)
+
+
+async def test_a_line_the_user_added_is_not_added_again_once_they_took_it_out(world, monkeypatch):
+    one = await world.active("Server down", "The staging server was down yesterday.")
+    await world.active("Mirror", "The mirror is at mirror.local.")
+    # Missing when it was to be added; the user has given it one since.
+    world.space._relines[(None, one)] = _LineToPut(missing=True)
+    path = world.memory() / f"{one}.md"
+    from nekoclaw.host import space as space_module
+
+    line_put_right = space_module._line_put_right
+    saved: list[bool] = []
+
+    def saved_meanwhile(*args: Any) -> str:
+        if not saved:
+            # Saved by the user after the host read it: left for a later round.
+            saved.append(True)
+            path.write_text(path.read_text(encoding="utf-8") + "\nSaved by hand.\n", encoding="utf-8")
+        return line_put_right(*args)
+
+    monkeypatch.setattr(space_module, "_line_put_right", saved_meanwhile)
+    await world.space.settle_tidied(None)
+    assert saved and (None, one) in world.space._relines
+    _without_line(world, one)
+
+    await world.space.settle_tidied(None)
+
+    assert f"memory/{one}.md" not in await world.space.read_index(None)

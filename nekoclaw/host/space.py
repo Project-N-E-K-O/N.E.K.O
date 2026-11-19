@@ -5423,6 +5423,9 @@ class TaskAgentSpace:
             lines = index_text.split("\n") if index_text else []
             for number, item in enumerate(lines):
                 if _points_at(item, marks):
+                    # It has a line, whoever added it: one the user takes
+                    # out from here on is not added again.
+                    put.missing = False
                     lines[number] = _line_put_right(item, target, title, described, put)
                     result = "\n".join(lines)
                     tried[result] = (lines[number] != item, False)
