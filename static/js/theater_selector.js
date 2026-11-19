@@ -1016,6 +1016,9 @@
         });
         window.addEventListener('pageshow', start);
         window.addEventListener('pagehide', stop);
+        // Background tabs throttle the interval; refresh whenever the selector is seen again.
+        document.addEventListener('visibilitychange', function () { if (timer) mark(); });
+        window.addEventListener('focus', function () { if (timer) mark(); });
         start();
     }
     document.addEventListener('DOMContentLoaded', function () {
