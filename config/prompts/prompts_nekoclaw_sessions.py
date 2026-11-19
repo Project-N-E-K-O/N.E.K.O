@@ -257,7 +257,7 @@ MESSAGE_QUEUED_NOTIFY = (
 MESSAGE_REFUSALS = {
     "same": 'Not sent: the same words were written to "{name}" a moment ago and are sent once. That note is queued or handed over; this one adds nothing.',
     "too_soon": 'Not sent: a note went to "{name}" less than {interval} seconds ago. Wait {wait} seconds, and put what you have to say in one note.',
-    "too_many": "Not sent: this session has written {limit} notes within the hour. The next can go in {wait} seconds.",
+    "too_many": "Not sent: this session has written {limit} notes and questions within the hour. The next can go in {wait} seconds.",
     "queue_full": 'Not sent: too many notes are waiting for "{name}" already.',
     "too_long": "Not sent: the note is {tokens} tokens long and {limit} is the most. Write the long part to a file in your working directory and send its path.",
     "too_deep": "Not sent: this commission was itself started by a note from another session, and so was the one that wrote that. The chain ends here; report what you have instead.",
@@ -296,7 +296,7 @@ ASK_REFUSALS = {
 }
 
 # Rendered with str.format (at, minutes).
-WAKE_SET ="A wake is set for {at} (in about {minutes} minutes). End your turn to wait for it; your commission stays open."
+WAKE_SET = "A wake is set for {at} (in about {minutes} minutes). End your turn to wait for it; your commission stays open."
 WAKE_SET_MOVED = " The delay was moved to the shortest allowed, {seconds} seconds."
 WAKE_SET_CAPPED = " The delay was cut to the longest allowed, {days} days."
 WAKE_REFUSALS = {

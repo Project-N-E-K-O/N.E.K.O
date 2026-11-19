@@ -721,7 +721,12 @@ def _hour_used(conn: sqlite3.Connection, from_session: str, kinds: tuple[str, ..
     set back by a little leaves it, in the hour after (see ``message_add``).
     """
     marks = ", ".join("?" for _ in kinds)
-    within = f"FROM messages WHERE from_session = ? AND kind IN ({marks}) AND created_at >= ? AND created_at <= ?"
+    # (A question that was not asked after all, which is void, counts for
+    # nothing; a note that was dropped was written all the same.)
+    within = (
+        f"FROM messages WHERE from_session = ? AND kind IN ({marks}) AND created_at >= ? AND created_at <= ? "
+        "AND NOT (kind = 'ask' AND status = 'void')"
+    )
     window = (from_session, *kinds, now - 3600.0, now + 3600.0)
     sent = conn.execute(f"SELECT COUNT(*) AS n {within}", window).fetchone()
     if sent is None or sent["n"] < limit:
@@ -2093,6 +2098,14 @@ class Ledger:
             return message, "", 0.0
 
         return await self.run(work)
+
+    async def message_void(self, message_id: int, reason: str) -> None:
+        """Put on record that a message comes to nothing (a question that was not asked after all)."""
+        await self.run(
+            lambda conn: conn.execute(
+                "UPDATE messages SET status = 'void', status_reason = ? WHERE id = ?", (str(reason), int(message_id))
+            )
+        )
 
     async def message_get(self, message_id: int) -> Message | None:
         return await self.run(

@@ -396,7 +396,7 @@ async def test_a_session_asks_no_more_than_so_many_questions_an_hour_counted_wit
         BUILD: held,
         "paint the fence": ScriptedLLM([[say("Painting."), *_rests()]]),
     }
-    host = _host(hosts, tmp_path, scripts)
+    host = _host(hosts, tmp_path, scripts, max_task_agents=6)
     photos = await _at_rest(host, scripts)
     await host.ledger.update_session(photos.session_id, name="photos")
     fence = (await _dispatch(host, "paint the fence")).commission_id
@@ -405,25 +405,30 @@ async def test_a_session_asks_no_more_than_so_many_questions_an_hour_counted_wit
     asker = await _asker_at_work(host, scripts)
 
     forks: list[str] = []
+    fork = host.task_agents.fork_session
 
-    async def fork(session_id: str, **kwargs: Any) -> Any:
+    async def counted(session_id: str, **kwargs: Any) -> Any:
         forks.append(session_id)
-        raise ForkRefused("not made in this test")
+        if len(forks) == 1:
+            raise ForkRefused("not made in this test")
+        return await fork(session_id, **kwargs)
 
-    monkeypatch.setattr(host.task_agents, "fork_session", fork)
-    for _ in range(2):
-        with pytest.raises(RuntimeError, match="no copy"):
-            await _ask(host, asker)
+    monkeypatch.setattr(host.task_agents, "fork_session", counted)
+    # One that is not asked after all (no copy could be made) counts for nothing.
+    with pytest.raises(RuntimeError, match="no copy"):
+        await _ask(host, asker)
+    assert (await _ask(host, asker))["message"].startswith('Asked "photos"')
+    assert (await _ask(host, asker, "fence"))["message"].startswith('Asked "fence"')
     # Two questions within the hour: the third is not asked, and no copy is made for it.
     with pytest.raises(RuntimeError) as raised:
         await _ask(host, asker, "fence")
     assert str(raised.value).startswith("Not asked: this session has asked 2 questions within the hour.")
-    assert len(forks) == 2
+    assert len(forks) == 3
     # The questions count with the notes: one note more, and the hour's three are used up.
     await host.task_agents._cb_session_send(asker.session_id, {"to": "fence", "message": "the build is green"})
     with pytest.raises(RuntimeError) as raised:
         await host.task_agents._cb_session_send(asker.session_id, {"to": "fence", "message": "and deployed"})
-    assert str(raised.value).startswith("Not sent: this session has written 3 notes within the hour.")
+    assert str(raised.value).startswith("Not sent: this session has written 3 notes and questions within the hour.")
     release.set()
 
 
@@ -504,6 +509,17 @@ async def test_what_a_session_may_ask_is_counted_by_the_hour_with_its_notes(ledg
     # Once the first is more than an hour old, it may ask again.
     ledger.clock.now += 3001
     assert (await _asking(ledger, asker, target))[1] == ""
+
+
+async def test_a_question_that_was_not_asked_after_all_counts_for_nothing(ledger):
+    asker, target = await _at_work(ledger, "asker"), await _at_work(ledger, "target")
+    first, _refusal, _wait = await _asking(ledger, asker, target)
+    await ledger.message_void(first.id, "not asked after all")
+    # Two may be asked in the hour: the one that was not asked leaves both.
+    assert (await _asking(ledger, asker, target))[1] == ""
+    assert (await _asking(ledger, asker, target))[1] == ""
+    assert (await _asking(ledger, asker, target))[1] == "too_many_asks"
+    assert (await ledger.message_get(first.id)).status == "void"
 
 
 async def test_a_commission_that_is_over_asks_nothing(ledger):
@@ -724,9 +740,18 @@ async def test_a_copy_whose_place_was_taken_while_it_was_made_is_removed(hosts, 
         return copy
 
     manager.fork_session = and_the_place_is_taken
+    told = _steered_into(host, asker.id)
     with pytest.raises(RuntimeError) as raised:
         await _ask(host, asker)
     assert str(raised.value) == words.ASK_REFUSALS["no_place"]
+    # Told so by the call alone: no answer of a copy comes besides.
+    await asyncio.sleep(0.1)
+    assert told == []
+    # Nor does it count against what may be asked.
+    asked = await host.ledger.run(
+        lambda conn: [tuple(row) for row in conn.execute("SELECT kind, status FROM messages WHERE kind = 'ask'")]
+    )
+    assert asked == [("ask", "void")]
     [child] = await host.ledger.select(parent_id=asker.id)
     assert child.status == "failed"
     copy = await host.ledger.get_session(child.session_id)
@@ -787,4 +812,34 @@ async def test_what_a_task_agent_hands_back_is_not_steered_into_an_asker_that_wa
     assert asker.id in host.task_agents._sessions
     await host.task_agents._tell_parent(child, "failed", "it went wrong again")
     assert len(told) == 1
+    release.set()
+
+
+async def test_a_question_whose_asker_is_cancelled_while_the_copy_is_made_is_answered_all_the_same(hosts, tmp_path):
+    release, held = _held()
+    scripts = {QUESTION: ScriptedLLM([[say("An answer."), finish()]]), PHOTOS: _photos(), BUILD: held}
+    host = _host(hosts, tmp_path, scripts)
+    photos = await _at_rest(host, scripts)
+    await host.ledger.update_session(photos.session_id, name="photos")
+    asker = await _asker_at_work(host, scripts)
+    manager = host.task_agents
+    fork, entered, go_on = manager.fork_session, asyncio.Event(), asyncio.Event()
+
+    async def slow(session_id: str, **kwargs: Any) -> Any:
+        entered.set()
+        await go_on.wait()
+        return await fork(session_id, **kwargs)
+
+    manager.fork_session = slow
+    told = _steered_into(host, asker.id)
+    asking = asyncio.ensure_future(_ask(host, asker))
+    await asyncio.wait_for(entered.wait(), 5)
+    asking.cancel()
+    await asyncio.gather(asking, return_exceptions=True)
+    go_on.set()
+    await wait_until(lambda: _children_of(host, asker.id), what="the question being filed")
+    [child] = await host.ledger.select(parent_id=asker.id)
+    child = await wait_status(host, child.id, "done", "failed", "cancelled", "blocked")
+    assert child.status == "done"
+    await wait_until(lambda: any("An answer." in text for text in told), what="the answer reaching the asker")
     release.set()
