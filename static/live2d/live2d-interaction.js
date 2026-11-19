@@ -2246,8 +2246,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                     window.live2dManager.touchSetHitEventLock = false;
                 }
                 // 第 2 下起表情由连点写死（happy/surprised/angry），生气后 30 秒内点击完全不给反馈：
-                // 这些情况都不再播点击动作/表情
-                if (clickCombo && clickCombo.allowTouchSet === false) return;
+                // 这些情况都不再播点击动作/表情。等待的这 300ms 里若已连上下一下，首击也不再播
+                if (clickCombo && !window.NekoAvatarClickShake.stillAllowsTouchSet(clickCombo)) return;
                 const customAreaId = this._lastPointerDownCustomTouchAreaId ||
                     (typeof this._getCustomTouchAreaIdAtPoint === 'function'
                         ? this._getCustomTouchAreaIdAtPoint(clickStartX, clickStartY)
@@ -4869,3 +4869,42 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
         this._isHandlingTouchInteraction = false;
     }
 };
+
+/**
+ * 连点写死表情前的抢占（static/avatar/avatar-click-shake.js 派发 neko:avatar-click-combo-emotion）。
+ * setEmotion 在"情绪切换中"或"有动作在播"时会直接拒绝新请求，而连点的 happy/surprised/angry
+ * 间隔只有几百毫秒、首击的点击动作也可能刚开始播：先撤掉这些，写死的表情才能接管。
+ * 有演出锁（剧场/教程等）时什么都不动。
+ */
+Live2DManager.prototype.preemptForClickComboEmotion = function() {
+    if (!this.currentModel) return false;
+    if (typeof this.isAvatarPerformanceCapabilityLocked === 'function'
+            && (this.isAvatarPerformanceCapabilityLocked('expression')
+                || this.isAvatarPerformanceCapabilityLocked('motion'))) {
+        return false;
+    }
+    try {
+        if (typeof this._cancelTouchSetExpressionRestore === 'function') this._cancelTouchSetExpressionRestore();
+        if (typeof this._stopClickEffectAction === 'function') this._stopClickEffectAction();
+        // 中止进行中的情绪切换 / 点击动作 / 临时表情（abort 会同步复位 isEmotionChanging 并停掉 SDK 动作）
+        if (typeof this._cancelAvatarOperations === 'function') this._cancelAvatarOperations();
+        // 简单情绪动作只靠定时器维持，不在 operation 里，单独清
+        if (typeof this.clearEmotionEffects === 'function') this.clearEmotionEffects();
+    } catch (error) {
+        console.warn('[ClickCombo] 抢占点击动作失败:', error);
+        return false;
+    }
+    return true;
+};
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function'
+        && !window.__nekoLive2DClickComboEmotionBound) {
+    window.__nekoLive2DClickComboEmotionBound = true;
+    window.addEventListener('neko:avatar-click-combo-emotion', (event) => {
+        const manager = window.live2dManager;
+        const element = event && event.detail && event.detail.element;
+        // 只处理点在 Live2D 画布上的连点
+        if (!manager || !element || manager.pixi_app?.view !== element) return;
+        if (typeof manager.preemptForClickComboEmotion === 'function') manager.preemptForClickComboEmotion();
+    });
+}

@@ -15,6 +15,7 @@ function dom() {
             this.listeners.get(type).add(fn);
         }
         removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn); }
+        dispatchEvent(event) { this.fire(event.type, event); return true; }
         fire(type, event = {}) {
             event.type = type;
             event.preventDefault ||= () => {};
@@ -23,6 +24,9 @@ function dom() {
         }
     }
     const window = new Target();
+    window.CustomEvent = class CustomEvent {
+        constructor(type, init = {}) { this.type = type; this.detail = init.detail; }
+    };
     const document = new Target();
     const canvas = new Target();
     const shakes = [];
@@ -353,7 +357,7 @@ test('for 30 seconds after the angry tap, clicks give no feedback at all', () =>
 
     h.clock.advance(h.gap + 1);
     const fresh = h.shake.tap(h.canvas);
-    assert.deepEqual({ ...fresh }, { count: 1, angry: false, allowTouchSet: true });
+    assert.deepEqual([fresh.count, fresh.angry, fresh.allowTouchSet], [1, false, true]);
     assert.equal(peak(h.shakes.at(-1)).x, 4);
 });
 
@@ -449,7 +453,30 @@ test('theater keeps the shake but suppresses combo voice and expressions', () =>
     assert.equal(peak(h.shakes[3]).y, 10);
 });
 
-test('Live2D plays the touch motion only on the first tap of a combo and never during the angry cooldown', async () => {
+test('Live2D plays the delayed touch motion for a lone tap, but not once the next tap joins the combo', async () => {
+    const h = live2d();
+    let touchChecks = 0;
+    h.manager._canTriggerTouchSetArea = () => { touchChecks += 1; return false; };
+    h.window.applyEmotion = () => {};
+    h.canvas.fire('pointerdown', pointer(30, 200));
+    h.document.fire('pointerup', pointer(30, 200));
+    await new Promise(resolve => setTimeout(resolve, 360));
+    assert.equal(touchChecks, 1, 'a single tap keeps the configured touch motion');
+
+    // 第 2 下落在首击的 300ms 等待期里：首击的点击动作也不能再播，否则会盖掉 happy
+    const h2 = live2d();
+    let touchChecks2 = 0;
+    h2.manager._canTriggerTouchSetArea = () => { touchChecks2 += 1; return false; };
+    h2.window.applyEmotion = () => {};
+    for (let i = 0; i < 2; i++) {
+        h2.canvas.fire('pointerdown', pointer(40 + i, 200));
+        h2.document.fire('pointerup', pointer(40 + i, 200));
+    }
+    await new Promise(resolve => setTimeout(resolve, 360));
+    assert.equal(touchChecks2, 0);
+});
+
+test('Live2D never plays touch motions during the angry cooldown', async () => {
     const h = live2d();
     let touchChecks = 0;
     h.manager._canTriggerTouchSetArea = () => { touchChecks += 1; return false; };
@@ -461,5 +488,67 @@ test('Live2D plays the touch motion only on the first tap of a combo and never d
     assert.equal(h.shakes.length, 4, 'taps 5 and 6 fall in the cooldown and do not shake');
     assert.equal(peak(h.shakes[3]).y, 10);
     await new Promise(resolve => setTimeout(resolve, 360));
-    assert.equal(touchChecks, 1);
+    assert.equal(touchChecks, 0);
+});
+
+test('Live2D clears running click motions and emotion changes before each hard-coded combo expression', () => {
+    const h = live2d();
+    const calls = [];
+    Object.assign(h.manager, {
+        _cancelTouchSetExpressionRestore: () => calls.push('cancelRestore'),
+        _stopClickEffectAction: () => calls.push('stopClickEffect'),
+        _cancelAvatarOperations: () => calls.push('cancelOperations'),
+        clearEmotionEffects: () => calls.push('clearEffects'),
+        isAvatarPerformanceCapabilityLocked: () => false
+    });
+    h.window.applyEmotion = emotion => calls.push(`emotion:${emotion}`);
+    for (let i = 0; i < 2; i++) {
+        h.canvas.fire('pointerdown', pointer(50 + i, 200));
+        h.document.fire('pointerup', pointer(50 + i, 200));
+    }
+    assert.deepEqual(calls, ['cancelRestore', 'stopClickEffect', 'cancelOperations', 'clearEffects', 'emotion:happy']);
+
+    // 演出锁住表情/动作时不抢占
+    calls.length = 0;
+    h.manager.isAvatarPerformanceCapabilityLocked = () => true;
+    h.canvas.fire('pointerdown', pointer(52, 200));
+    h.document.fire('pointerup', pointer(52, 200));
+    assert.deepEqual(calls, ['emotion:surprised']);
+
+    // 点在别的画布上（VRM/MMD）不碰 Live2D
+    calls.length = 0;
+    h.manager.isAvatarPerformanceCapabilityLocked = () => false;
+    h.window.dispatchEvent(new h.window.CustomEvent('neko:avatar-click-combo-emotion', {
+        detail: { element: {}, count: 2, emotion: 'happy' }
+    }));
+    assert.deepEqual(calls, []);
+});
+
+test('pending combo lines stay with the clicked character', () => {
+    const switched = comboHelper({ lanlan_config: { lanlan_name: 'A' } });
+    switched.shake.tap(switched.canvas);
+    switched.clock.advance(switched.gap);
+    switched.shake.tap(switched.canvas);
+    switched.window.lanlan_config.lanlan_name = 'B';
+    switched.clock.advance(switched.shake.COMBO_WINDOW_MS);
+    assert.equal(switched.sent.length, 0, 'B must not answer a click on A');
+
+    const switching = comboHelper({ lanlan_config: { lanlan_name: 'A' }, appState: { isSwitchingCatgirl: false } });
+    switching.shake.tap(switching.canvas);
+    switching.clock.advance(switching.gap);
+    switching.shake.tap(switching.canvas);
+    switching.window.appState.isSwitchingCatgirl = true;
+    switching.clock.advance(switching.shake.COMBO_WINDOW_MS);
+    assert.equal(switching.sent.length, 0, 'nothing is sent while a switch is in progress');
+
+    // A 生气的冷却不算到 B 头上；换角色后连点从头算
+    const cooled = comboHelper({ lanlan_config: { lanlan_name: 'A' } });
+    for (let i = 0; i < 4; i++) {
+        cooled.shake.tap(cooled.canvas);
+        cooled.clock.advance(cooled.gap);
+    }
+    cooled.window.lanlan_config.lanlan_name = 'B';
+    const first = cooled.shake.tap(cooled.canvas);
+    assert.equal(first.count, 1);
+    assert.equal(first.allowTouchSet, true);
 });

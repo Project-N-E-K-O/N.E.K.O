@@ -32,8 +32,12 @@
     const COMBO_VOICE_INTENSITY = Object.freeze({ 2: 'normal', 3: 'rapid', 4: 'angry' });
 
     const running = new WeakMap();
+    const COMBO_EMOTION_EVENT = 'neko:avatar-click-combo-emotion';
+
     let combo = null;
+    let comboSeq = 0;
     let angryUntil = 0;
+    let angryCharacter = '';
     let avatarToolActive = false;
     let tapSeq = 0;
 
@@ -121,6 +125,15 @@
         return global.isInTutorial !== true && !avatarToolActive;
     }
 
+    function currentCharacter() {
+        const config = global.lanlan_config;
+        return config && typeof config.lanlan_name === 'string' ? config.lanlan_name : '';
+    }
+
+    function isSwitchingCharacter() {
+        return !!(global.appState && global.appState.isSwitchingCatgirl === true);
+    }
+
     function cancelPendingVoice(state) {
         if (state && state.voiceTimer) {
             clearTimeout(state.voiceTimer);
@@ -128,8 +141,10 @@
         }
     }
 
-    function sendVoice(intensity) {
+    // character：点击发生时的角色。切换中或已经换了角色就不发，免得新角色替旧角色回应
+    function sendVoice(intensity, character) {
         if (!canEscalate() || isTheaterBlockingChat()) return false;
+        if (isSwitchingCharacter() || currentCharacter() !== character) return false;
         const buttons = global.appButtons;
         if (!buttons || typeof buttons.sendAvatarInteractionPayload !== 'function') return false;
         tapSeq += 1;
@@ -153,12 +168,22 @@
         cancelPendingVoice(state);
         state.voiceTimer = setTimeout(() => {
             state.voiceTimer = 0;
-            if (combo === state) sendVoice(intensity);
+            if (combo === state) sendVoice(intensity, state.character);
         }, COMBO_WINDOW_MS);
     }
 
-    function applyComboEmotion(emotion) {
+    function applyComboEmotion(element, count) {
+        const emotion = COMBO_EMOTIONS[count];
         if (!emotion || isTheaterBlockingChat()) return;
+        // 先让模型撤掉还在进行的点击动作/表情、情绪切换（Live2D 在 live2d-interaction.js 里接），
+        // 否则写死的表情会被"正在切换/正在播动作"挡掉，或被首击 300ms 后的点击动作盖掉
+        try {
+            if (typeof global.dispatchEvent === 'function' && typeof global.CustomEvent === 'function') {
+                global.dispatchEvent(new global.CustomEvent(COMBO_EMOTION_EVENT, {
+                    detail: { element, count, emotion }
+                }));
+            }
+        } catch (_) {}
         try {
             if (typeof global.applyEmotion === 'function') global.applyEmotion(emotion);
         } catch (_) {}
@@ -170,43 +195,56 @@
     }
 
     // 一次确认过的点击（不是拖拽）：按连点规则晃动、切表情、出声。
-    // 返回 { count, angry, allowTouchSet }：allowTouchSet=false 时调用方不得再播点击动作/表情
+    // 返回 { count, angry, allowTouchSet, comboId }：allowTouchSet=false 时调用方不得再播点击动作/表情
     // （第 2 下起表情归连点管；生气后的冷却期里点击完全不给反馈）。
+    // 点击动作若要延后执行，执行前须再用 stillAllowsTouchSet(result) 确认这期间没有连上下一下。
     function tap(element) {
-        if (!element) return { count: 0, angry: false, allowTouchSet: true };
+        if (!element) return { count: 0, angry: false, allowTouchSet: true, comboId: 0 };
         if (!canEscalate()) {
             resetCombo();
             play(element);
-            return { count: 1, angry: false, allowTouchSet: true };
+            return { count: 1, angry: false, allowTouchSet: true, comboId: 0 };
         }
         const now = Date.now();
-        if (now < angryUntil) {
+        const character = currentCharacter();
+        if (now < angryUntil && angryCharacter === character) {
             // 气还没消：这一下当作没点
-            return { count: 0, angry: true, allowTouchSet: false };
+            return { count: 0, angry: true, allowTouchSet: false, comboId: 0 };
         }
-        if (!combo || combo.element !== element || now - combo.lastAt > COMBO_WINDOW_MS) {
+        if (!combo || combo.element !== element || combo.character !== character
+                || now - combo.lastAt > COMBO_WINDOW_MS) {
             resetCombo();
-            combo = { element, count: 0, lastAt: 0, voiceTimer: 0 };
+            comboSeq += 1;
+            combo = { id: comboSeq, element, character, count: 0, lastAt: 0, voiceTimer: 0 };
         }
         const state = combo;
         state.count += 1;
         state.lastAt = now;
         const count = state.count;
 
-        applyComboEmotion(COMBO_EMOTIONS[count]);
+        applyComboEmotion(element, count);
 
         if (count >= COMBO_ANGRY_COUNT) {
             play(element, { axis: 'y', scale: COMBO_MAX_SCALE });
             cancelPendingVoice(state);
-            sendVoice(COMBO_VOICE_INTENSITY[COMBO_ANGRY_COUNT]);
+            sendVoice(COMBO_VOICE_INTENSITY[COMBO_ANGRY_COUNT], character);
             combo = null;
             angryUntil = now + ANGRY_COOLDOWN_MS;
-            return { count, angry: true, allowTouchSet: false };
+            angryCharacter = character;
+            return { count, angry: true, allowTouchSet: false, comboId: state.id };
         }
 
         play(element, { scale: shakeScaleFor(count) });
         if (COMBO_VOICE_INTENSITY[count]) scheduleVoice(state, COMBO_VOICE_INTENSITY[count]);
-        return { count, angry: false, allowTouchSet: count < 2 };
+        return { count, angry: false, allowTouchSet: count < 2, comboId: state.id };
+    }
+
+    // 延后执行的点击动作在真正播放前再问一次：这期间连上了下一下、或已经被惹烦，都不再播
+    function stillAllowsTouchSet(result) {
+        if (!result || result.allowTouchSet === false) return false;
+        if (!result.comboId) return true;
+        if (Date.now() < angryUntil && angryCharacter === currentCharacter()) return false;
+        return !(combo && combo.id === result.comboId && combo.count > result.count);
     }
 
     if (typeof global.addEventListener === 'function') {
@@ -220,7 +258,7 @@
     }
 
     global.NekoAvatarClickShake = Object.freeze({
-        isEnabled, tapStart, isTap, play, tap,
-        COMBO_WINDOW_MS, COMBO_ANGRY_COUNT, ANGRY_COOLDOWN_MS
+        isEnabled, tapStart, isTap, play, tap, stillAllowsTouchSet,
+        COMBO_WINDOW_MS, COMBO_ANGRY_COUNT, ANGRY_COOLDOWN_MS, COMBO_EMOTION_EVENT
     });
 })(window);
