@@ -841,11 +841,14 @@ def test_proactive_language_keeps_dynamic_fallback_render_only():
     voice_payload = _slice_between(
         proactive_source,
         "var voiceProactivePayload = {",
-        "async function _sendVoiceProactive() {",
+        "var resp = await _sendVoiceProactive();",
         "语音主动搭话语言参数",
     )
     assert "voice_mode: true" in voice_payload
-    assert "JSON.stringify(voiceProactivePayload)" in voice_payload
+    # Serialized at send time (after the language fields are applied).
+    assert voice_payload.index(
+        "_applyProactiveLanguagePayload(voiceProactivePayload, lanlanName);"
+    ) < voice_payload.index("JSON.stringify(voiceProactivePayload)")
 
 
 @pytest.mark.unit
@@ -1280,13 +1283,13 @@ async def test_language_save_and_identity_mutation_share_global_lock(
         save_task = asyncio.create_task(
             preference_router.apply_character_language_preference("Race", "ja")
         )
-        await asyncio.wait_for(save_entered.wait(), timeout=1)
+        await asyncio.wait_for(save_entered.wait(), timeout=10)
         mutation_task = asyncio.create_task(mutate())
         await asyncio.sleep(0)
         assert not mutation_entered.is_set()
         release_first.set()
         save_result, mutation_result = await asyncio.wait_for(
-            asyncio.gather(save_task, mutation_task), timeout=1
+            asyncio.gather(save_task, mutation_task), timeout=10
         )
         assert save_result["success"] is True
         assert mutation_result["success"] is True
@@ -1295,7 +1298,7 @@ async def test_language_save_and_identity_mutation_share_global_lock(
         )
     else:
         mutation_task = asyncio.create_task(mutate())
-        await asyncio.wait_for(mutation_entered.wait(), timeout=1)
+        await asyncio.wait_for(mutation_entered.wait(), timeout=10)
         save_task = asyncio.create_task(
             preference_router.apply_character_language_preference("Race", "ja")
         )

@@ -53,6 +53,18 @@ DEFAULT_PROJECT = "_daily"
 # looks whether it is there, and a test keeps the two names the same.
 TRANSCRIPT_NAME = "transcript.jsonl"
 
+# The system prompt and tool definitions a session was opened with, in its
+# directory. The runtime writes it and names it
+# (``nekoclaw.runtime.snapshot.SYSTEM_FILE``); the host removes it with what
+# was said, and a test keeps the two names the same.
+SYSTEM_SNAPSHOT_NAME = "system.json"
+
+# In the directory of a session that ran in dsh: which of dsh's sessions is
+# this one's. dsh keeps what was said itself; the dsh driver writes this note
+# and names it (``nekoclaw.dsh.profile.SESSION_FILE``). The host only looks
+# whether it is there, and a test keeps the two names the same.
+DSH_SESSION_NAME = "dsh-session.json"
+
 # Separators, drive and stream colons, characters Windows forbids in a name,
 # and control characters.
 _UNSAFE_CHARACTERS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -110,13 +122,17 @@ class SpacePaths:
         task_agent_space/
         ├─ AGENTS.md             rules for every task agent, written by the user
         ├─ MEMORY.md             the index: one line per entry
-        ├─ memory/*.md           entries that hold for every project
+        ├─ memory/*.md           entries that hold for every project; the ones
+        │                        not in effect yet (pending) are files here
+        │                        too, in no index
+        ├─ notes.json            what the user removed (so it is not kept again)
         ├─ state.json            when the space was last tidied
         ├─ projects/<project>/
         │   ├─ project.json      name, description, working directory, dates
         │   ├─ AGENTS.md         the project's own rules, written by the user
         │   ├─ MEMORY.md         the project's index
         │   ├─ memory/*.md       the project's entries
+        │   ├─ notes.json        as above, for the project
         │   └─ reviews/<commission id>.md
         └─ archive/<year>/<project>/
                                  a project nothing was commissioned for in a
@@ -132,6 +148,7 @@ class SpacePaths:
     REVIEWS_DIR = "reviews"
     PROJECT_FILE = "project.json"
     SUMMARY_NAME = "SUMMARY.md"
+    NOTES_FILE = "notes.json"
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
@@ -163,6 +180,10 @@ class SpacePaths:
 
     def memory_dir(self, project: str | None = None) -> Path:
         return self.scope_dir(project) / self.MEMORY_DIR
+
+    def notes_file(self, project: str | None = None) -> Path:
+        """Return where it is remembered which entries the user removed. Pending entries are files in ``memory_dir``."""
+        return self.scope_dir(project) / self.NOTES_FILE
 
     def reviews_dir(self, project: str) -> Path:
         return self.project_dir(project) / self.REVIEWS_DIR
@@ -197,6 +218,15 @@ class HostPaths:
 
     def model_capabilities_json(self) -> Path:
         return self.root() / "model_capabilities.json"
+
+    def dsh(self) -> Path:
+        """Return where dsh is installed, for a user who downloaded it (``nekoclaw.dsh.install``).
+
+        Its program, its own home and what the user added to it. Not part
+        of what moves when the storage location is changed: the program is
+        downloaded again, and what was said in dsh's sessions stays behind.
+        """
+        return self.root() / "dsh"
 
     def space(self) -> SpacePaths:
         """Return the paths of the task agent space."""

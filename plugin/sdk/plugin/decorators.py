@@ -102,6 +102,8 @@ def plugin_entry(
     fields: type | None = None,
     metadata: dict[str, object] | None = None,
     quick_action: bool = False,
+    output_schema: dict[str, object] | None = None,
+    strict_output: bool = False,
     _localns: dict[str, object] | None = None,
 ) -> Callable[[F], F]:
     return _plugin_entry(
@@ -120,6 +122,8 @@ def plugin_entry(
         fields=fields,
         metadata=metadata,
         quick_action=quick_action,
+        output_schema=output_schema,
+        strict_output=strict_output,
         _localns=_localns if _localns is not None else _capture_declaration_locals(),
     )
 
@@ -270,6 +274,8 @@ class _PluginDecorators:
         fields: type | None = None,
         metadata: dict[str, object] | None = None,
         quick_action: bool = False,
+        output_schema: dict[str, object] | None = None,
+        strict_output: bool = False,
     ) -> Callable[[F], F]:
         declaration_locals = _capture_declaration_locals()
         return plugin_entry(
@@ -288,6 +294,8 @@ class _PluginDecorators:
             fields=fields,
             metadata=metadata,
             quick_action=quick_action,
+            output_schema=output_schema,
+            strict_output=strict_output,
             _localns=declaration_locals,
         )
 

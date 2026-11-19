@@ -18,7 +18,9 @@
 work: no file is opened, no thread or process is started, nothing listens and
 nothing is fetched. The ledger file is opened by the first dispatch or query,
 the runtime and the gateway are started by the first task agent, and the task
-agent space is first read when a task agent starts.
+agent space is first read when a task agent starts. Whether the user
+installed dsh, the optional second runtime (``nekoclaw.dsh``), is looked at
+when a task agent starts, too.
 
 Whoever embeds the host supplies what it cannot know by itself, all optional:
 
@@ -44,8 +46,9 @@ Whoever embeds the host supplies what it cannot know by itself, all optional:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +68,7 @@ from nekoclaw.host.ledger import ENDED_STATUSES, Commission, Ledger, Listener
 from nekoclaw.host.model_capabilities import ModelCapabilityStore
 from nekoclaw.host.outbox import OutboxSender, SendReport
 from nekoclaw.host.paths import HostPaths
+from nekoclaw.host.runtimes import RUNTIME_DSH
 from nekoclaw.host.permissions import PermissionGate, PermissionStore
 from nekoclaw.host.plugin_runs import ClientFactory, PluginCatalog, PluginRunner
 from nekoclaw.host.preferences import PreferenceStore
@@ -73,6 +77,7 @@ from nekoclaw.host.short_descriptions import ShortDescriptions
 from nekoclaw.host.space import TaskAgentSpace
 from nekoclaw.host.space_keeper import SpaceKeeper
 from nekoclaw.host.task_brain import ProgressListener, QueryAnswer, Receipt, TaskBrain, TurnCheck
+from nekoclaw.host.wakes import SessionWakes
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +125,30 @@ class NekoClawHost:
         task_agent_meter: UsageMeter | None = None,
         on_commission: Listener | None = None,
         on_builtin_activity: ActivityListener | None = None,
+        dsh: Any = None,
+        dsh_runtime_factory: Any = None,
+        conversation: Any = None,
     ) -> None:
         self.paths = HostPaths(root)
+        # What she and the user said lately, from which a commission that
+        # opens a new session is handed an excerpt. This process's own
+        # (``conversation.py``), which the agent server feeds, unless
+        # another is given.
+        if conversation is None:
+            from nekoclaw.host.conversation import recent_conversation
+
+            conversation = recent_conversation()
+        self.conversation = conversation
+        self._task_agent_model = task_agent_model
+        # Where dsh is, for a user who downloaded it; a page about the
+        # runtimes reads and changes it through the methods further down.
+        # Only the module that knows where dsh would be is imported here;
+        # dsh's driver is imported when a commission first runs in dsh.
+        if dsh is None:
+            from nekoclaw.dsh.install import DshInstallation
+
+            dsh = DshInstallation(self.paths.dsh)
+        self.dsh = dsh
         self.ledger = Ledger(self.paths.ledger_db, reconcile_report=self._restart_report)
         self.preferences = PreferenceStore(self.ledger)
         self.permission_store = PermissionStore(self.paths.permissions_json)
@@ -153,7 +180,7 @@ class NekoClawHost:
         self.model_capabilities = ModelCapabilityStore(self.paths.model_capabilities_json)
         # What task agents keep for later commissions. The console reads and
         # edits it through this object.
-        self.space = TaskAgentSpace(self.paths.space, ledger=self.ledger)
+        self.space = TaskAgentSpace(self.paths.space, ledger=self.ledger, outside_readable=self._outside_readable)
         self.gateway = CapabilityGateway(
             registry=self.registry,
             runner=self.runner,
@@ -179,7 +206,19 @@ class NekoClawHost:
             leases=self.leases,
             model_capabilities=self.model_capabilities,
             space=self.space,
+            dsh=self.dsh,
+            dsh_runtime_factory=dsh_runtime_factory,
+            conversation=self.conversation,
+            switched_on=enabled,
         )
+        # Hands sessions what waits for them: a note another session wrote,
+        # a time a task agent set for itself. Started by the first call that
+        # does work, never at startup.
+        self.wakes = SessionWakes(self.ledger, self.task_agents)
+        self.task_agents.set_waker(self.wakes)
+        # A note that is on record is handed over whether or not whoever
+        # wrote it is still there to say that it wrote one.
+        self.ledger.subscribe_notes(self.wakes.kick)
         # Reviews of finished commissions and the tidying of the space, in
         # the background; started by a commission ending, never at startup.
         self.space_keeper = SpaceKeeper(
@@ -189,6 +228,9 @@ class NekoClawHost:
             session_dir_of=self.task_agents.session_dir_of,
             hold_session=self.task_agents.hold_session,
             release_session=self.task_agents.release_session,
+            hold_files=self.task_agents.hold_files,
+            release_files=self.task_agents.release_files,
+            forget_dsh_session=self.dsh.forget_session,
         )
         self.ledger.subscribe(self.space_keeper.watch)
         # A plugin's request for confirmation is put to the user by the
@@ -255,6 +297,14 @@ class NekoClawHost:
         if commission.status in ENDED_STATUSES or commission.status == "waiting_user":
             self.leases.release(commission.id)
 
+    async def _outside_readable(self) -> bool:
+        """Whether the user set reading outside the working directory to be allowed without asking.
+
+        Only then does the task agent space look at a file out there that
+        a note names as what it rests on.
+        """
+        return await self.permission_store.mode("outside_read") == "allow"
+
     async def _root_of(self, commission_id: str) -> str:
         """Return the commission a team is named after: the one no task agent started."""
         current = commission_id
@@ -273,11 +323,17 @@ class NekoClawHost:
         Building the host does no work, so a sender given to the constructor
         is only started here, by the first call that does work. Reports
         written later start it themselves.
+
+        Likewise what an earlier run left to be handed to sessions: the
+        times task agents set for themselves that have not come, and the
+        notes that were not handed over. Looked for here, in the
+        background, and not at startup.
         """
         if self._used or self._shut_down:
             return
         self._used = True
         self.outbox.kick()
+        self.wakes.kick()
 
     # -- what the main dialogue uses --------------------------------------
 
@@ -319,13 +375,161 @@ class NekoClawHost:
         self._first_use()
         return await self.brain.tell(commission_id, text)
 
-    async def answer(self, commission_id: str, text: str, *, choice: str | None = None) -> bool:
+    async def answer(
+        self, commission_id: str, text: str, *, choice: str | None = None, question_id: str | None = None
+    ) -> bool:
         self._first_use()
-        return await self.brain.answer(commission_id, text, choice=choice)
+        return await self.brain.answer(commission_id, text, choice=choice, question_id=question_id)
 
     async def complete_deferred(self, commission_id: str) -> bool:
         self._first_use()
         return await self.brain.complete_deferred(commission_id)
+
+    async def stop_waiting(self) -> int:
+        """Drop what waits to be handed to sessions; returns how many. Part of a stop of everything.
+
+        The notes sessions wrote to one another that were not handed over:
+        after a stop none of them starts a turn. What a commission set for
+        itself (a time to be woken at) goes with that commission as the
+        stop ends it. See ``SessionWakes.stop_all``.
+        """
+        return await self.wakes.stop_all()
+
+    @contextlib.asynccontextmanager
+    async def stopping_everything(self) -> AsyncIterator[None]:
+        """Keep sessions from being handed anything while everything is stopped. For the body that stops the commissions.
+
+        What waits is dropped as this is entered. While the commissions
+        are being stopped nothing is handed over, and what one of them
+        wrote meanwhile (its call was on its way when the stop came) is
+        dropped as this is left: none of it starts work after the stop.
+        A failure to drop is logged and made up for before anything is
+        handed over again (``SessionWakes.stop_all``).
+        """
+        self.wakes.hold()
+        try:
+            try:
+                await self.wakes.stop_all()
+            except Exception as exc:  # noqa: BLE001 - the commissions are stopped all the same
+                logger.warning("dropping the notes that waited for sessions failed, to be made up for: %s", exc)
+            yield
+        finally:
+            try:
+                await self.wakes.stop_all()
+            except Exception as exc:  # noqa: BLE001 - made up for before anything is handed over
+                logger.warning("dropping the notes written during the stop failed, to be made up for: %s", exc)
+            finally:
+                self.wakes.release()
+
+    # -- sessions ---------------------------------------------------------
+    #
+    # For whoever works with sessions as such (a screen that shows what a
+    # commission used; one session asking another something): nothing in
+    # this build calls these yet.
+
+    async def usage(self, commission_id: str) -> dict[str, Any] | None:
+        """Return what a commission has used, what it may, and what its model's sessions are managed for.
+
+        ``TaskAgentManager.usage_of``, with ``window``: what
+        ``ModelCapabilityStore.describe_window`` says of the task agent
+        model as it is configured now (its window, where a conversation is
+        summed up, what was learned of it). None for an unknown commission.
+        """
+        self._first_use()
+        usage = await self.task_agents.usage_of(commission_id)
+        if usage is None:
+            return None
+        window = None
+        try:
+            config = await self._task_agent_model()
+            if config and config.get("model"):
+                window = await self.model_capabilities.describe_window(config.get("base_url"), config.get("model"))
+        except Exception:  # noqa: BLE001 - what was used is told all the same
+            logger.warning("reading the window of the task agent model failed", exc_info=True)
+        return {**usage, "window": window}
+
+    async def fork_session(self, session_id: str, *, name: str | None = None, upto: str | None = None) -> Any:
+        """Make a session from another by copying what was said in it; see ``TaskAgentManager.fork_session``."""
+        self._first_use()
+        return await self.task_agents.fork_session(session_id, name=name, upto=upto)
+
+    async def discard_fork(self, session_id: str) -> bool:
+        """Remove what was said in a session that is a copy of another, now. Returns whether it is gone.
+
+        For a copy that was made to ask something and has answered. Only
+        a session of kind ``fork``; False while a commission is at work
+        in it. Its working directory is the other session's and is not
+        touched.
+        """
+        self._first_use()
+        session = await self.ledger.get_session(session_id)
+        if session is None or session.kind != "fork":
+            return False
+        return await self.space_keeper.clear_session(session_id)
+
+    # -- dsh --------------------------------------------------------------
+    #
+    # For a page about the runtimes (there is none yet, and no route leads
+    # here): what it shows and what its buttons do.
+
+    async def dsh_status(self) -> dict[str, Any]:
+        """Return what there is to show of dsh.
+
+        ``DshInstallation.status`` (whether it is installed, which version,
+        whether a download is under way, which runtime the user wants), and
+        of this host: ``sessions``, how many commissions are in dsh right
+        now, and ``fallback_reason``, why the last commission that was to
+        run in dsh ran in the built-in runtime instead, if one did.
+        """
+        status = await asyncio.to_thread(self.dsh.status)
+        status["sessions"] = len(self.task_agents.sessions_in(RUNTIME_DSH))
+        status["fallback_reason"] = self.task_agents.dsh_error
+        return status
+
+    async def install_dsh(self, on_progress: Any = None) -> dict[str, Any]:
+        """Download dsh and install it; returns ``dsh_status``. Raises ``DshUnavailable`` with the reason.
+
+        ``on_progress`` is called with the bytes fetched so far and the size
+        of the file. With the version in use installed already nothing is
+        done. Otherwise dsh is ended first (another version of it may be
+        running, from before the version in use changed), which a commission
+        that is in dsh right now forbids: its program cannot be replaced
+        while it runs.
+        """
+        if not await asyncio.to_thread(self.dsh.installed):
+            await self._with_dsh_stopped(lambda: self.dsh.install(on_progress))
+        return await self.dsh_status()
+
+    async def uninstall_dsh(self, *, purge: bool = False) -> dict[str, Any]:
+        """Remove dsh; returns ``dsh_status``. Raises ``DshUnavailable`` while a commission is in dsh.
+
+        Its program goes. What dsh kept (what was said in its sessions, the
+        plugins the user added) stays unless ``purge`` is set: installed
+        again, commissions that began in dsh go on there. Without dsh they
+        start over in the built-in runtime when they are taken up again.
+        """
+        await self._with_dsh_stopped(lambda: self.dsh.uninstall(purge=purge))
+        return await self.dsh_status()
+
+    async def set_dsh_preference(self, preference: str) -> dict[str, Any]:
+        """Set which runtime new commissions run in: ``auto`` (dsh when installed) or ``builtin``.
+
+        Returns ``dsh_status``; raises ValueError for anything else.
+        Commissions that are under way stay where they are.
+        """
+        await asyncio.to_thread(self.dsh.set_preference, preference)
+        return await self.dsh_status()
+
+    async def dsh_plugins(self) -> list[dict[str, Any]]:
+        """Return the plugins the user added to dsh; see ``DshInstallation.plugins``."""
+        return await asyncio.to_thread(self.dsh.plugins)
+
+    async def _with_dsh_stopped(self, work: Any) -> None:
+        """End dsh and await ``work()``; no commission starts dsh before it is done."""
+        if not await self.task_agents.stop_dsh(work):
+            from nekoclaw.dsh import DshUnavailable
+
+            raise DshUnavailable("dsh is in use: a commission is running in it")
 
     # -- upkeep -----------------------------------------------------------
 
@@ -365,6 +569,12 @@ class NekoClawHost:
             # Before the task agents are stopped: every commission that ends
             # by that would start work for the space that is then cut off.
             ("task agent space, no new work", self.space_keeper.stand_down),
+            # Before everything that takes a while: nothing is woken, and no
+            # commission filed for a note, in a host that is shutting down
+            # (the task brain waits for the stops under way to finish, and
+            # what was handed over meanwhile would be ended with the rest).
+            # What waits stays on record for the next run.
+            ("wakes", self.wakes.close),
             ("task brain", self.brain.close),
             ("task_agents", self.task_agents.shutdown),
             ("built-in tools", self._release_builtins),
@@ -389,3 +599,11 @@ class NekoClawHost:
             await self.ledger.close()
         except Exception:  # noqa: BLE001 - nothing more can be done for it
             logger.exception("closing the ledger failed")
+        # Copies whose record was still being written: with the ledger
+        # closed that fails, and what was written of them is removed by
+        # tasks of their own. Waited for, for no longer than they try: a
+        # process that ends right after this would cut them off.
+        try:
+            await self.task_agents.forks_settled()
+        except Exception:  # noqa: BLE001 - what is left is left; the host is shut down all the same
+            logger.exception("waiting for the copies that were being put on record failed")

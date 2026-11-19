@@ -300,7 +300,11 @@ def _read_packaged_isolated_metadata(
     (codex). An artifact written under an older schema is refused by the reader
     and takes the worker path; ``start_plugin`` then rewrites it from that scan
     (``_refresh_scanned_packaged_metadata``), so the cost is one import, not one
-    per start. Schema 3 never shipped in a release, so no in-memory migration.
+    per start, wherever that rewrite is possible (a read-only package or one
+    whose entries the effective configuration overrides keeps scanning).
+    Schema 3 never shipped in a release, so no in-memory migration. Schema 4
+    did, but a v4 file cannot say whether its handlers cover ``__routers__``
+    entries (#3066), so every v4 file takes this one rescan.
 
     Returns ``None`` when there is no usable metadata at all.
     """

@@ -1,6 +1,7 @@
 import { pluginConsentMessages } from '../plugin-consent'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
+import { marketFeedbackMessages } from '../market-feedback'
 import { authoringMessages } from '../authoring'
 
 /**
@@ -9,6 +10,7 @@ import { authoringMessages } from '../authoring'
 export default {
   pluginConsent: pluginConsentMessages['ja'],
   authoring: authoringMessages['ja'],
+  marketFeedback: marketFeedbackMessages['ja'],
   modelApi: modelApiMessages['ja'],
   modelBindings: modelBindingsMessages['ja'],
   common: {

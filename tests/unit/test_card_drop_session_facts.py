@@ -1843,6 +1843,90 @@ def test_social_session_init_rejects_a_session_replaced_during_the_bind_retry(
     assert C._sync_ticket_is_valid(ticket)
 
 
+def test_social_session_init_stale_bind_success_keeps_a_newer_device_hold(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A late success for the old account must not release a conflict recorded since."""
+    from main_routers import community_oauth
+    from utils import community_device_hold as hold
+
+    newer_account = "33333333-3333-4333-8333-333333333333"
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    snapshots = [_delegate_session()]
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshots[-1])
+
+    async def account_switch_mid_bind(_social_base, _access_token):
+        # Another account signs in and learns the device belongs elsewhere.
+        snapshots.append({**_delegate_session(), "access_token": "newer-token"})
+        hold.record_bind_outcome(
+            tmp_path, {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT}, newer_account,
+        )
+        return {"bound": True, "error": None}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", account_switch_mid_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert hold.device_held(tmp_path, newer_account)
+
+
+def test_social_session_init_rechecks_the_session_after_waiting_for_the_device_lock(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A login that lands while the retry waits for the lock must stop the old token's bind."""
+    from contextlib import asynccontextmanager
+
+    from main_routers import community_oauth
+    from utils import community_device_hold as hold
+
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    snapshots = [_delegate_session()]
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshots[-1])
+
+    @asynccontextmanager
+    async def lock_released_after_another_login():
+        # Another account's callback held the lock and saved its session.
+        snapshots.append({**_delegate_session(), "access_token": "newer-account-token"})
+        yield
+
+    async def unexpected_bind(*_args, **_kwargs):
+        raise AssertionError("the replaced session's token must not bind the device")
+
+    monkeypatch.setattr(hold, "ownership_lock", lock_released_after_another_login())
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", unexpected_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "desktop_login_required"}
+    assert C._sync_ticket_is_valid(ticket)
+
+
 def test_social_session_init_refuses_to_consume_when_logout_wins_the_lock(
     client,
     monkeypatch,
@@ -3010,30 +3094,27 @@ def _existing_session_files(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_bind_ownership_conflict_never_publishes_new_token(tmp_path, monkeypatch):
-    auth, session, old_auth, old_session = _existing_session_files(tmp_path, monkeypatch)
+async def test_bind_ownership_conflict_still_saves_the_new_login(tmp_path, monkeypatch):
+    """A device bound to another account must not block switching accounts."""
+    auth, session, _old_auth, _old_session = _existing_session_files(tmp_path, monkeypatch)
     _cloud_client(monkeypatch)
-    writes: list[tuple[Path, dict]] = []
-    original_write = C._write_private_json
 
-    def track_write(path, data):
-        writes.append((path, data))
-        original_write(path, data)
+    bind = await C._store_session(
+        "https://community.example",
+        "new-account-token",
+        "new-account-refresh",
+        {"id": USER_A_ID, "display_name": "New User", "email": "new@example.com"},
+    )
 
-    monkeypatch.setattr(C, "_write_private_json", track_write)
-
-    with pytest.raises(C._ClientBindingConflict) as exc_info:
-        await C._store_session(
-            "https://community.example",
-            "wrong-new-token",
-            "wrong-new-refresh",
-            {"id": USER_A_ID, "display_name": "New User", "email": "new@example.com"},
-        )
-
-    assert exc_info.value.detail == "client_already_bound_to_other_user"
-    assert writes == []  # Electron cannot observe even a transient wrong social_session token.
-    assert json.loads(auth.read_text(encoding="utf-8")) == old_auth
-    assert json.loads(session.read_text(encoding="utf-8")) == old_session
+    conflict = {"bound": False, "error": "client_already_bound_to_other_user"}
+    assert bind == conflict
+    saved_auth = json.loads(auth.read_text(encoding="utf-8"))
+    assert saved_auth["access_token"] == "new-account-token"
+    assert saved_auth["local_user_id"] == USER_A_ID
+    assert saved_auth["bind"] == conflict
+    saved_session = json.loads(session.read_text(encoding="utf-8"))
+    assert saved_session["token"] == "new-account-token"
+    assert not hasattr(C, "_ClientBindingConflict")
 
 
 def test_sync_session_skips_legacy_client_binding_and_replaces_session(
@@ -3079,6 +3160,74 @@ def test_sync_session_skips_legacy_client_binding_and_replaces_session(
     assert saved_auth["bind"]["skipped"] == "native_session_sync"
     assert saved_session["token"] == "wrong-new-token"
     assert saved_session["refresh_token"] == "wrong-new-refresh"
+
+
+def test_sync_session_waits_for_a_handoff_bind_retry_and_keeps_its_hold(
+    client, tmp_path, monkeypatch,
+):
+    """A's retry records its owner first; B's later session switch then holds uploads.
+
+    Without the shared device-bind lock, B could switch in between and A's
+    recorded success would wipe the conflict B noted, even after B logs out.
+    """
+    import asyncio as _asyncio
+    import threading
+
+    from utils import community_device_hold as hold
+
+    _existing_session_files(tmp_path, monkeypatch)
+    _cloud_client(monkeypatch)
+    hold._set_unrecorded_hold(False)
+    monkeypatch.setattr(hold, "ownership_lock", _asyncio.Lock())
+    ticket = _issue_sync_ticket(client)
+    order: list[str] = []
+    release_retry = threading.Event()
+
+    async def handoff_retry_for_owner():
+        # Stands in for social-session-init's bind retry for the previous
+        # account, which records that account as the owner under the lock.
+        await hold.ownership_lock.acquire()
+        try:
+            await _asyncio.to_thread(release_retry.wait, 5)
+            await _asyncio.to_thread(
+                C._record_device_hold, {"bound": True, "error": None}, USER_B_ID,
+            )
+            order.append("owner-retry-recorded")
+        finally:
+            hold.ownership_lock.release()
+
+    retry = client.portal.start_task_soon(handoff_retry_for_owner)
+    client.portal.call(_asyncio.sleep, 0.05)
+    assert hold.ownership_lock.locked()
+    results: dict = {}
+
+    def sync_other_account():
+        results["response"] = client.post(
+            "/api/card-drop/sync-session",
+            headers={"Origin": "https://community.example"},
+            json={
+                "base_url": "https://community.example",
+                "access_token": "other-legacy-token",
+                "refresh_token": "other-legacy-refresh",
+                "sync_ticket": ticket,
+            },
+        )
+        order.append("session-switched")
+
+    worker = threading.Thread(target=sync_other_account)
+    worker.start()
+    worker.join(0.3)
+    assert worker.is_alive(), "sync-session must wait for the device-bind lock"
+    release_retry.set()
+    retry.result(5)
+    worker.join(5)
+
+    assert results["response"].status_code == 200
+    assert order == ["owner-retry-recorded", "session-switched"]
+    # USER_A_ID signed in through sync-session; USER_B_ID is the recorded owner.
+    assert hold.device_held(tmp_path, USER_A_ID)
+    assert C._clear_auth()
+    assert hold.device_held(tmp_path, None)
 
 
 def test_legacy_local_login_returns_410(client, tmp_path, monkeypatch):
@@ -3159,7 +3308,13 @@ async def test_store_session_persists_the_shared_masked_profile(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_store_session_offloads_local_credential_io(monkeypatch):
+async def test_store_session_offloads_local_credential_io(tmp_path, monkeypatch):
+    # Keep the credential directory private to this test. _store_session also
+    # writes the device record beside community_auth.json; left on the
+    # process-wide ConfigManager root, that record closes the facts-sync upload
+    # gate for every later test in the same worker.
+    monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social_session.json")
     event_loop_thread = threading.get_ident()
     worker_threads: dict[str, int] = {}
 

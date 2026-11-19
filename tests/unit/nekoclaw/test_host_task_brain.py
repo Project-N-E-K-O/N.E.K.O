@@ -576,6 +576,39 @@ async def test_accepted_but_a_repeat_after_all_is_withdrawn_and_corrected(server
     await wait_status(host, first.commission_id, "done")
 
 
+async def test_a_repeat_is_withdrawn_as_a_repeat_though_nekoclaw_was_switched_off_while_the_model_chose(
+    server, hosts, tmp_path
+):
+    release = asyncio.Event()
+
+    async def slow(args: dict[str, Any]) -> dict[str, Any]:
+        await release.wait()
+        return finish({"reply": "sunny"})
+
+    _weather(server, slow)
+    llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today"), {"route": "duplicate", "duplicate_of": 1}])
+    on = [True]
+    host = _host(hosts, tmp_path, server, llm, enabled=lambda: on[0])
+    first = await _dispatch(host, "查一下上海的天气")
+    await wait_status(host, first.commission_id, "working")
+    llm.gate = asyncio.Event()
+
+    second = await _dispatch(host, "看看魔都今天气象如何")
+    assert second.kind == "accepted"
+    await wait_until(lambda: llm.count("fine") == 2, what="the second selection being asked")
+    on[0] = False
+    llm.gate.set()
+
+    # It begins nothing, switched off or not: what she is told is that it is being done already.
+    withdrawn = await wait_status(host, second.commission_id, "cancelled")
+    assert first.commission_id in withdrawn.status_reason
+    (correction,) = await outbox(host, "correction")
+    assert (correction.payload["reason"], correction.payload["detail"]) == ("duplicate", first.commission_id)
+    assert len(server.calls) == 1
+    release.set()
+    await wait_status(host, first.commission_id, "done")
+
+
 async def test_a_plugin_that_asked_for_confirmation_runs_again_when_asked_again(server, hosts, tmp_path):
     answers = [
         finish({"needs_confirmation": True, "reply": "确认定明早7点的闹钟吗？"}),
@@ -716,6 +749,111 @@ async def test_plugins_forbidden_while_the_model_chooses_are_not_called(server, 
     assert server.calls == []
     (correction,) = await outbox(host, "correction")
     assert correction.payload["reason"] == "no_capability"
+
+
+async def test_nekoclaw_switched_off_while_the_model_chooses_calls_no_plugin_and_writes_nothing_down(
+    server, hosts, tmp_path
+):
+    _weather(server)
+    llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today", {"city": "Shanghai"}, preference="查天气默认查上海")])
+    llm.gate = asyncio.Event()
+    on = [True]
+    host = _host(hosts, tmp_path, server, llm, enabled=lambda: on[0])
+
+    receipt = await _dispatch(host, "查天气，他说以后默认都查上海")
+    assert receipt.kind == "accepted"
+    await wait_until(lambda: _asked(llm), what="the fine selection being asked")
+    # Switched off while it is chosen who does it (the last capability switch went off, say).
+    on[0] = False
+    llm.gate.set()
+    await host.brain.settle()
+
+    # Nothing new is begun while it is off, by a plugin no more than by a task agent...
+    failed = await host.ledger.get(receipt.commission_id)
+    assert failed.status == "failed" and "switched off" in failed.status_reason
+    assert server.calls == []
+    (correction,) = await outbox(host, "correction")
+    assert (correction.payload["reason"], correction.payload["detail"]) == ("no_capability", "disabled")
+    # ...and nothing of what was chosen is written down: not who would have done it, nor what
+    # the sentence states for good.
+    assert [event.type for event in await host.ledger.events(receipt.commission_id) if event.type == "decision"] == []
+    assert await host.preferences.list() == []
+
+
+async def test_nekoclaw_switched_off_after_a_plugin_was_chosen_and_before_it_is_called_calls_nothing(
+    server, hosts, tmp_path
+):
+    _weather(server)
+    llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today", {"city": "Shanghai"})])
+    on = [True]
+    host = _host(hosts, tmp_path, server, llm, enabled=lambda: on[0])
+    runner = host.brain._runner
+    create_run, call_plugin = runner._create_run, host.brain._call_plugin
+    calling: list[bool] = []
+
+    async def chosen(*args: Any, **kwargs: Any) -> None:
+        # It was on when the plugin was chosen, and what was chosen is written down.
+        calling.append(True)
+        await call_plugin(*args, **kwargs)
+
+    async def while_nekoclaw_goes_off(*args: Any, **kwargs: Any) -> Any:
+        if calling:
+            # As the task that sends the request for the run begins: after everything that is
+            # waited for, and the moment between that task being made and its start.
+            on[0] = False
+        return await create_run(*args, **kwargs)
+
+    host.brain._call_plugin, runner._create_run = chosen, while_nekoclaw_goes_off
+    try:
+        receipt = await _dispatch(host, "查一下上海的天气")
+        assert receipt.kind == "accepted"
+        await host.brain.settle()
+    finally:
+        host.brain._call_plugin, runner._create_run = call_plugin, create_run
+
+    # No request for a run is sent, and the commission is put down as not started because
+    # NekoClaw is off: not as a call that failed.
+    assert calling == [True] and server.calls == [] and server.run_requests == []
+    failed = await host.ledger.get(receipt.commission_id)
+    assert failed.status == "failed" and "switched off" in failed.status_reason
+    (correction,) = await outbox(host, "correction")
+    assert (correction.payload["reason"], correction.payload["detail"]) == ("no_capability", "disabled")
+    assert await outbox(host, "task_result") == []
+
+
+async def test_a_call_nobody_wants_any_more_is_told_as_that_though_the_client_could_not_be_made(
+    server, hosts, tmp_path
+):
+    _weather(server)
+    llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today", {"city": "Shanghai"})])
+    llm.gate = asyncio.Event()
+    on = [True]
+    host = _host(hosts, tmp_path, server, llm, enabled=lambda: on[0])
+    runner = host.brain._runner
+    client, create_run = runner._client, runner._create_run
+
+    def cannot_be_made() -> Any:
+        raise RuntimeError("the certificate cannot be read")
+
+    async def while_nekoclaw_goes_off(*args: Any, **kwargs: Any) -> Any:
+        on[0] = False
+        return await create_run(*args, **kwargs)
+
+    runner._client, runner._create_run = cannot_be_made, while_nekoclaw_goes_off
+    try:
+        receipt = await _dispatch(host, "查一下上海的天气")
+        llm.gate.set()
+        await host.brain.settle()
+    finally:
+        runner._client, runner._create_run = client, create_run
+
+    # Asked before the client is made: it is put down as not started because NekoClaw is off,
+    # and not as a call that failed.
+    failed = await host.ledger.get(receipt.commission_id)
+    assert failed.status == "failed" and "switched off" in failed.status_reason
+    (correction,) = await outbox(host, "correction")
+    assert (correction.payload["reason"], correction.payload["detail"]) == ("no_capability", "disabled")
+    assert await outbox(host, "task_result") == [] and server.run_requests == []
 
 
 async def _asked(llm: FakeDecisionLLM) -> bool:
@@ -1312,11 +1450,21 @@ async def test_query_lists_only_her_own_commissions(server, hosts, tmp_path):
     assert other.text == "没有任务记录。"
 
 
-async def test_query_view_has_at_most_eight_rows_and_400_tokens(server, hosts, tmp_path):
-    from config.nekoclaw_settings import QUERY_LEDGER_ROWS, QUERY_RESULT_MAX_TOKENS, QUERY_ROW_MAX_TOKENS
+async def test_query_view_has_at_most_eight_rows_and_520_tokens(server, hosts, tmp_path):
+    from config.nekoclaw_settings import (
+        QUERY_LEDGER_ROWS,
+        QUERY_PERMISSION_ROW_MAX_TOKENS,
+        QUERY_RESULT_MAX_TOKENS,
+        QUERY_ROW_MAX_TOKENS,
+        QUERY_USAGE_MAX_TOKENS,
+    )
     from utils.tokenize import count_tokens
 
-    assert (QUERY_LEDGER_ROWS, QUERY_RESULT_MAX_TOKENS) == (8, 400)
+    assert (QUERY_LEDGER_ROWS, QUERY_RESULT_MAX_TOKENS) == (8, 520)
+    # A line was given the room for what its commission used when that was added to it (80 and 120
+    # before), and the whole answer the room for that in every line.
+    assert (QUERY_ROW_MAX_TOKENS, QUERY_PERMISSION_ROW_MAX_TOKENS, QUERY_USAGE_MAX_TOKENS) == (100, 140, 16)
+    assert QUERY_RESULT_MAX_TOKENS - 400 <= QUERY_LEDGER_ROWS * QUERY_USAGE_MAX_TOKENS
     host = _host(hosts, tmp_path, server, FakeDecisionLLM())
     long = "很长很长的结果 " * 300
     for number in range(20):

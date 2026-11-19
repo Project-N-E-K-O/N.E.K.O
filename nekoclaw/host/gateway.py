@@ -57,13 +57,31 @@ What the gateway serves:
   (``leases.py``), and a result may carry pictures (screenshots) next to its
   text. A tool that hands back pictures is offered only to a task agent
   whose model can see them;
-* two tools of its own, ``capability_search`` and ``capability_call``. Only
-  the entries the task brain picked as candidates are listed up front, within
-  ``GATEWAY_TOOL_LIST_MAX_TOKENS``; the rest are found and called through
-  these two, so a long plugin list does not fill every request.
+* two tools of its own, ``capability_search`` and ``capability_call``, and
+  no others: they are all a task agent is offered of the gateway as tools,
+  whichever commission it works on, so the tool definitions of a session
+  stay the same from one commission to the next. A session takes several
+  commissions, and what the task brain picked for one is not what it picked
+  for the next. The entries it picked as candidates for a commission are
+  told to the task agent in the message that opens that commission
+  (``candidate_definitions``, within ``GATEWAY_TOOL_LIST_MAX_TOKENS``), and
+  called by name through ``capability_call`` like everything else. A
+  ``tools/call`` that names a capability directly is carried out all the
+  same: a client that lists none of them may still know their names.
+
+What was handed over in the answer to a call (a group of built-in tools) is
+only in hand while it is in the task agent's conversation. A runtime that
+sums a conversation up says so with every call
+(``GATEWAY_COMPACTIONS_META_KEY``): when the number has changed, the groups
+count as not handed over, and each is handed over anew when one of its
+tools is next called.
 
 Permissions are decided here, at the gateway's entry, by the same
-``PermissionGate`` the built-in tools use.
+``PermissionGate`` the built-in tools use. A runtime whose client gives a
+call little time (dsh ends a call after a minute, and a person asked for an
+approval may take longer) has the gateway decide before it makes the call
+(``clear_call``): whoever has to be asked is asked then, and the call that
+follows finds the answer and asks nobody a second time.
 
 A plugin entry that answers ``needs_confirmation`` did not carry the call out:
 it wants the user to confirm first. The task agent must not answer for the user,
@@ -81,6 +99,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import hmac
 import json
 import logging
@@ -118,10 +137,11 @@ _SEARCH_TOOL_DEFINITION = {
         "by what they do. Returns their names, descriptions and argument schemas. Call one with "
         f"{CALL_TOOL}."
     ),
+    # Nothing is required: a group of built-in tools is loaded with
+    # ``group`` alone (``_search_tool_definition``).
     "inputSchema": {
         "type": "object",
         "properties": {"query": {"type": "string", "description": "What the capability should do."}},
-        "required": ["query"],
     },
 }
 
@@ -160,15 +180,40 @@ class JsonRpcError(Exception):
 
 
 @dataclass(slots=True)
+class _Cleared:
+    """What was found out about a call before it was made; see ``CapabilityGateway.clear_call``."""
+
+    # What the call is answered with instead of being carried out, or None.
+    refusal: dict[str, Any] | None = None
+    # The user's agreement to this call opening a browser they closed, if one was needed.
+    agreement: Any = None
+    # Drops it when it has waited for its call long enough.
+    expiry: asyncio.TimerHandle | None = None
+
+
+def _call_key(capability_id: str, arguments: dict[str, Any]) -> tuple[str, str]:
+    """Return what tells one call from another: the capability, and a digest of what it is called with."""
+    try:
+        text = json.dumps(arguments, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        text = repr(arguments)
+    return capability_id, hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+@dataclass(slots=True)
 class Grant:
     """What one commission's token gives access to."""
 
     commission_id: str
     token: str
-    # Plugins whose entries are listed up front.
+    # Plugins whose entries the commission's opening message tells of.
     candidate_plugin_ids: tuple[str, ...] = ()
     # Whether the model of this commission's task agent can see pictures.
     supports_images: bool = False
+    # The token of a session that only reads and answers (a copy of another
+    # session, in that one's working directory): capabilities are found
+    # with it, and none is called or handed over.
+    reads_only: bool = False
     # The groups of built-in tools that were handed over through this token:
     # how they are used and their tools' definitions. A new token starts
     # without any, as the session it is for may no longer hold them.
@@ -177,8 +222,21 @@ class Grant:
     # client names its replies (``GATEWAY_REPLY_META_KEY``); nothing for a
     # group handed to a client that names none.
     handed_in: dict[str, int | str] = field(default_factory=dict)
+    # How often the client's conversation had been summed up as of its last
+    # call (``GATEWAY_COMPACTIONS_META_KEY``); None for a client that says nothing of it.
+    compactions: int | None = None
     calls: int = 0
     in_flight: set[asyncio.Task[Any]] = field(default_factory=set)
+    # Calls ruled on before they were made, by capability and arguments
+    # (``_call_key``); each is taken by the call it was ruled on for.
+    cleared: dict[tuple[str, str], _Cleared] = field(default_factory=dict)
+
+
+_READS_ONLY_TEXT = (
+    "Nothing can be called from this session: it is a copy of another session and only reads and answers, "
+    "while the other may be at work in the same place. Answer from what you have, or report what would "
+    "have to be done."
+)
 
 
 def _text(text: str, *, error: bool = False) -> dict[str, Any]:
@@ -194,6 +252,33 @@ def _reply_of(params: dict[str, Any]) -> int | str | None:
     if isinstance(reply, bool) or not isinstance(reply, (int, str)):
         return None
     return reply
+
+
+def _compactions_of(params: dict[str, Any]) -> int | None:
+    """Return how often a ``tools/call`` says its conversation has been summed up, if it says."""
+    from config.nekoclaw_settings import GATEWAY_COMPACTIONS_META_KEY
+
+    meta = params.get("_meta")
+    count = meta.get(GATEWAY_COMPACTIONS_META_KEY) if isinstance(meta, dict) else None
+    if isinstance(count, bool) or not isinstance(count, int):
+        return None
+    return count
+
+
+def _note_compactions(grant: Grant, compactions: int | None) -> None:
+    """Take what was handed over as gone when the client's conversation was summed up since.
+
+    The groups of built-in tools were handed over as text in the
+    conversation; a summary does not keep that text. Each group is then
+    handed over anew by the call that next needs it. A client that says
+    nothing of summaries is taken to hold what it was handed.
+    """
+    if compactions is None:
+        return
+    if grant.compactions is not None and compactions != grant.compactions:
+        grant.loaded_groups.clear()
+        grant.handed_in.clear()
+    grant.compactions = compactions
 
 
 def _in_hand(grant: Grant, group: str, reply: int | str | None) -> bool:
@@ -253,20 +338,30 @@ def _first_call(group: str, capabilities: list[Capability]) -> tuple[Capability,
 def _search_tool_definition(capabilities: list[Capability]) -> dict[str, Any]:
     """Return the search tool as offered to a task agent that can call ``capabilities``.
 
-    Without a built-in tool among them it is the plain search tool, word
-    for word. With some, its description ends in one line about each of
-    their groups, with the group's first call, which is all a request
-    carries of a group that was not loaded, and it takes ``group``.
+    With a built-in tool among them, its description ends in one line
+    about each of their groups, with the group's first call, which is all a
+    request carries of a group that was not loaded. Without one it says
+    nothing of groups, and still takes ``group``.
+
+    ``group`` is any string, never one of a list: a session keeps the
+    definition it was opened with, a group that is switched on while it
+    lasts is named by a search result (``TOOL_GROUP_POINTER``), and
+    loading it with ``group`` alone has to be a call the definition
+    allows. Whether there is such a group is told when it is asked for.
     """
-    groups = _groups_of(capabilities)
-    if not groups:
-        return _SEARCH_TOOL_DEFINITION
     from config.prompts.prompts_nekoclaw_builtin import (
         BUILTIN_GROUP_SUMMARIES,
         TOOL_GROUP_ARGUMENT,
+        TOOL_GROUP_ARGUMENT_UNNAMED,
         TOOL_GROUP_FIRST_CALL,
         TOOL_GROUPS_INTRO,
     )
+
+    groups = _groups_of(capabilities)
+    if not groups:
+        schema = _SEARCH_TOOL_DEFINITION["inputSchema"]
+        properties = {**schema["properties"], "group": {"type": "string", "description": TOOL_GROUP_ARGUMENT_UNNAMED}}
+        return {**_SEARCH_TOOL_DEFINITION, "inputSchema": {**schema, "properties": properties}}
 
     lines = [str(_SEARCH_TOOL_DEFINITION["description"]), TOOL_GROUPS_INTRO.format(call_tool=CALL_TOOL)]
     for group in groups:
@@ -281,11 +376,7 @@ def _search_tool_definition(capabilities: list[Capability]) -> dict[str, Any]:
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "What the capability should do."},
-                "group": {
-                    "type": "string",
-                    "enum": [_group_name(group) for group in groups],
-                    "description": TOOL_GROUP_ARGUMENT,
-                },
+                "group": {"type": "string", "description": TOOL_GROUP_ARGUMENT},
             },
         },
     }
@@ -376,11 +467,20 @@ class CapabilityGateway:
 
     # -- tokens -----------------------------------------------------------
 
-    def issue(self, commission_id: str, *, candidate_plugin_ids: Any = (), supports_images: bool = False) -> str:
+    def issue(
+        self,
+        commission_id: str,
+        *,
+        candidate_plugin_ids: Any = (),
+        supports_images: bool = False,
+        reads_only: bool = False,
+    ) -> str:
         """Return a new token for a commission, replacing any earlier one.
 
         ``supports_images`` says whether the model of the commission's task
         agent can see pictures; tools that need that are offered only then.
+        With ``reads_only`` the token finds capabilities and calls none:
+        for a session that is not to change anything (``Grant.reads_only``).
         """
         self.revoke(commission_id)
         grant = Grant(
@@ -388,6 +488,7 @@ class CapabilityGateway:
             token=secrets.token_urlsafe(32),
             candidate_plugin_ids=tuple(str(item) for item in candidate_plugin_ids),
             supports_images=bool(supports_images),
+            reads_only=bool(reads_only),
         )
         self._grants[grant.token] = grant
         self._by_commission[commission_id] = grant
@@ -411,6 +512,8 @@ class CapabilityGateway:
         self._grants.pop(grant.token, None)
         for task in list(grant.in_flight):
             task.cancel()
+        for key in list(grant.cleared):
+            self._drop_cleared(grant, key)
 
     def _grant(self, token: str | None) -> Grant | None:
         if not token:
@@ -633,31 +736,52 @@ class CapabilityGateway:
                 raise JsonRpcError(-32602, "tools/call needs a tool name")
             arguments = params.get("arguments")
             return await self.call_tool(
-                grant, name, arguments if isinstance(arguments, dict) else {}, reply=_reply_of(params)
+                grant,
+                name,
+                arguments if isinstance(arguments, dict) else {},
+                reply=_reply_of(params),
+                compactions=_compactions_of(params),
             )
         raise JsonRpcError(-32601, f"unknown method {method}")
 
     # -- tools ------------------------------------------------------------
 
     async def tool_definitions(self, grant: Grant) -> list[dict[str, Any]]:
-        """Return the tools one commission is offered up front.
+        """Return the tools a task agent is offered: the search and the call tool, always.
 
-        The entries of its candidate plugins as far as their budget reaches,
-        and the search and call tools when anything is left that was not
-        listed. The built-in tools are never listed: the search tool's
-        description tells of their groups, and a group is handed over when
-        it is first used.
+        The same for every commission, and whether or not anything can be
+        called right now. A session keeps the tools it was opened with for
+        as long as it lasts, and what can be called changes meanwhile (a
+        plugin is installed, the browser is switched on): offered only
+        while there is something to call, the two would be missing from a
+        session opened before that, which could then reach none of it.
+        Nothing else is listed: what was picked for a commission is told
+        with the commission (``candidate_definitions``); the built-in tools
+        are told of in the search tool's description, a group at a time,
+        and a group is handed over when it is first used.
+        """
+        callable_now = self._offered(grant, await self._registry.callable_by_task_agents())
+        return [_search_tool_definition(callable_now), _CALL_TOOL_DEFINITION]
+
+    async def candidate_definitions(self, commission_id: str) -> list[dict[str, Any]]:
+        """Return the entries picked for a commission, as its opening message tells of them.
+
+        The entries of the candidate plugins its token was issued with, as
+        far as their budget reaches (``GATEWAY_TOOL_LIST_MAX_TOKENS``), each
+        with its name, what it does and its arguments. They are called by
+        name through the call tool. Empty for a commission without a token
+        or without candidates.
         """
         from config.nekoclaw_settings import GATEWAY_TOOL_LIST_MAX_TOKENS
         from utils.tokenize import count_tokens
 
-        callable_now = self._offered(grant, await self._registry.callable_by_task_agents())
-        if not callable_now:
+        grant = self._by_commission.get(commission_id)
+        if grant is None or not grant.candidate_plugin_ids:
             return []
         candidates = set(grant.candidate_plugin_ids)
         listed: list[dict[str, Any]] = []
         used = 0
-        for capability in callable_now:
+        for capability in self._offered(grant, await self._registry.callable_by_task_agents()):
             # Plugin entries, and MCP tools when the adapter was among the
             # candidates. (A built-in tool belongs to no plugin, so it is
             # never one of them.)
@@ -669,8 +793,6 @@ class CapabilityGateway:
                 continue
             listed.append(definition)
             used += cost
-        if len(listed) < len(callable_now):
-            listed.extend([_search_tool_definition(callable_now), _CALL_TOOL_DEFINITION])
         return listed
 
     @staticmethod
@@ -681,20 +803,36 @@ class CapabilityGateway:
         return [item for item in capabilities if not item.needs_images]
 
     async def call_tool(
-        self, grant: Grant, name: str, arguments: dict[str, Any], *, reply: int | str | None = None
+        self,
+        grant: Grant,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        reply: int | str | None = None,
+        compactions: int | None = None,
     ) -> dict[str, Any]:
         """Carry out one ``tools/call`` and return its MCP result.
 
         ``reply`` is the model reply the call was written in, as the client
         names it (``GATEWAY_REPLY_META_KEY``), ``None`` for a client that
-        names none.
+        names none. ``compactions`` is how often the client's conversation
+        has been summed up (``GATEWAY_COMPACTIONS_META_KEY``), likewise.
         """
         grant.calls += 1
+        _note_compactions(grant, compactions)
         if name == SEARCH_TOOL:
             group = arguments.get("group")
             if isinstance(group, str) and group.strip():
+                if grant.reads_only:
+                    # What a group hands over is how to call its tools.
+                    return _text(_READS_ONLY_TEXT, error=True)
                 return await self._load_group(grant, group.strip(), reply)
             return _text(await self._search(grant, str(arguments.get("query") or "")))
+        if grant.reads_only:
+            # Whatever is named, through the call tool or by itself: here,
+            # where every call comes by, and not by the tools a session is
+            # opened with alone.
+            return _text(_READS_ONLY_TEXT, error=True)
         if name == CALL_TOOL:
             target = arguments.get("name")
             if not isinstance(target, str) or not target:
@@ -810,7 +948,13 @@ class CapabilityGateway:
 
         capabilities = self._offered(grant, await self._registry.callable_by_task_agents())
         if not capabilities:
-            return "No capabilities are available."
+            # The two tools are there whether or not anything can be called,
+            # and the session goes on after this answer: what it says holds
+            # for now only.
+            return (
+                "No capabilities are available right now. That can change while you work (a plugin gets "
+                "installed, the browser gets switched on): search again when a later commission needs one."
+            )
         # A built-in tool is not found on its own: its definition is of no
         # use without how its group is used, and the rest of the group is
         # needed with it. A group is searched as one thing, by all its tools
@@ -837,15 +981,91 @@ class CapabilityGateway:
         ]
         return truncate_to_tokens("\n".join(blocks), GATEWAY_RESULT_MAX_TOKENS)
 
-    async def _call_capability(
-        self,
-        commission: Commission,
-        capability: Capability,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
-        from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS
-        from utils.tokenize import truncate_to_tokens
+    async def clear_call(self, commission_id: str, name: str, arguments: dict[str, Any]) -> None:
+        """Rule on a call before it is made, asking whoever has to be asked.
 
+        ``name`` and ``arguments`` are those of the ``tools/call`` that is
+        about to come. The permission the call needs is decided now, and for
+        a browser the user closed they are asked now whether it may be
+        opened again; the commission waits for the user meanwhile, for as
+        long as it takes. What came of it waits for the call
+        (``GATEWAY_CLEARED_CALL_SECONDS``), which then neither decides nor
+        asks again: carried out, or answered with the refusal, in the words
+        a call refused at the entry is answered with.
+
+        It is for that one call: the same capability with the same
+        arguments. A call with other arguments does not take it and is ruled
+        on at the entry, so an approval "for this once" never covers a call
+        the user was not asked about. When its time is up it is dropped, and
+        an agreement to open the browser with it, whether or not a call
+        comes by. (dsh, the one runtime that asks ahead, asks about a call
+        and carries it out before it asks about the next: it runs the tools
+        of a service one at a time. Should the same call be ruled on twice
+        before it comes, the later ruling replaces the earlier.)
+
+        Nothing is ruled on for a call that will carry nothing out: the
+        search tool, an unknown capability, a tool of a group that the call
+        will hand over instead.
+        """
+        from config.nekoclaw_settings import GATEWAY_CLEARED_CALL_SECONDS
+
+        grant = self._by_commission.get(commission_id)
+        if grant is None or grant.reads_only or name == SEARCH_TOOL:
+            return
+        if name == CALL_TOOL:
+            target = arguments.get("name")
+            if not isinstance(target, str) or not target:
+                return
+            inner = arguments.get("arguments")
+            name, arguments = target, inner if isinstance(inner, dict) else {}
+        callable_now = await self._registry.callable_by_task_agents()
+        capability = next((item for item in self._offered(grant, callable_now) if item.tool_name == name), None)
+        if capability is None:
+            return
+        commission = await self._ledger.get(commission_id)
+        if commission is None or not commission.active:
+            return
+        group = capability.group
+        if group and group not in grant.loaded_groups and not _is_first_call(capability, arguments):
+            return
+        key = _call_key(capability.id, arguments)
+        cleared = await self._permit(commission, capability)
+        if self._by_commission.get(commission_id) is not grant:
+            # The token was taken back while the user was asked: no call will come for it.
+            if cleared.agreement is not None:
+                self._registry.browser_reopen_agreement_over(cleared.agreement)
+            return
+        # One ruled on for this very call that never came is over.
+        self._drop_cleared(grant, key)
+        cleared.expiry = asyncio.get_running_loop().call_later(
+            GATEWAY_CLEARED_CALL_SECONDS, self._drop_cleared, grant, key
+        )
+        grant.cleared[key] = cleared
+
+    def _drop_cleared(self, grant: Grant, key: tuple[str, str]) -> None:
+        """Forget what was ruled on for a call that did not come."""
+        cleared = grant.cleared.pop(key, None)
+        if cleared is None:
+            return
+        if cleared.expiry is not None:
+            # Its time is not to run out on whatever is ruled on for the same call next.
+            cleared.expiry.cancel()
+        if cleared.agreement is not None:
+            # The agreement was for that call and goes with it.
+            self._registry.browser_reopen_agreement_over(cleared.agreement)
+
+    def _take_cleared(self, commission_id: str, capability_id: str, arguments: dict[str, Any]) -> _Cleared | None:
+        """Return what was ruled on ahead for this very call, once."""
+        grant = self._by_commission.get(commission_id)
+        if grant is None:
+            return None
+        cleared = grant.cleared.pop(_call_key(capability_id, arguments), None)
+        if cleared is not None and cleared.expiry is not None:
+            cleared.expiry.cancel()
+        return cleared
+
+    async def _permit(self, commission: Commission, capability: Capability) -> _Cleared:
+        """Decide whether a call may be carried out, asking the user where the settings say so."""
         decision = await self._permissions.check(
             commission.id,
             capability.permission,
@@ -856,28 +1076,55 @@ class CapabilityGateway:
             await self._ledger.append_event(
                 commission.id, "capability_denied", {"capability": capability.id, "reason": decision.reason}
             )
-            return _text(decision.reason or "permission denied", error=True)
+            return _Cleared(refusal=_text(decision.reason or "permission denied", error=True))
+        if capability.kind == KIND_BUILTIN and capability.group == BUILTIN_GROUP_BROWSER:
+            refusal, agreement = await self._ask_before_reopening(commission, capability, just_asked=decision.asked)
+            return _Cleared(refusal=refusal, agreement=agreement)
+        return _Cleared()
+
+    async def _call_capability(
+        self,
+        commission: Commission,
+        capability: Capability,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS
+        from utils.tokenize import truncate_to_tokens
+
+        # Ruled on before the call was made (``clear_call``), or now.
+        permitted = self._take_cleared(commission.id, capability.id, arguments)
+        if (
+            permitted is not None
+            and permitted.refusal is None
+            and await self._permissions.forbidden(capability.permission, capability.permission_key)
+        ):
+            # Allowed a moment ago, forbidden by the settings since: a deny
+            # set meanwhile wins, as it does over an answer. Nobody is asked again.
+            if permitted.agreement is not None:
+                self._registry.browser_reopen_agreement_over(permitted.agreement)
+            await self._ledger.append_event(
+                commission.id, "capability_denied", {"capability": capability.id, "reason": DENIED_BY_SETTINGS}
+            )
+            return _text(DENIED_BY_SETTINGS, error=True)
+        if permitted is None:
+            permitted = await self._permit(commission, capability)
+        if permitted.refusal is not None:
+            return permitted.refusal
 
         if capability.kind == KIND_BUILTIN:
-            if capability.group == BUILTIN_GROUP_BROWSER:
-                refusal, agreement = await self._ask_before_reopening(
-                    commission, capability, just_asked=decision.asked
-                )
-                if refusal is not None:
-                    return refusal
-                if agreement is not None:
-                    try:
-                        # What the user agreed to is this call opening the
-                        # browser: the agreement goes with it, and no other
-                        # call opens the browser on the strength of it.
-                        return await self._call_builtin(
-                            commission, capability, arguments, reopen_agreement=agreement
-                        )
-                    finally:
-                        # Should it have ended before it got to the browser
-                        # (stopped, or the browser stayed in use by another
-                        # task): the agreement ends with it.
-                        self._registry.browser_reopen_agreement_over(agreement)
+            if permitted.agreement is not None:
+                try:
+                    # What the user agreed to is this call opening the
+                    # browser: the agreement goes with it, and no other
+                    # call opens the browser on the strength of it.
+                    return await self._call_builtin(
+                        commission, capability, arguments, reopen_agreement=permitted.agreement
+                    )
+                finally:
+                    # Should it have ended before it got to the browser
+                    # (stopped, or the browser stayed in use by another
+                    # task): the agreement ends with it.
+                    self._registry.browser_reopen_agreement_over(permitted.agreement)
             return await self._call_builtin(commission, capability, arguments)
 
         async def run_created(run_id: str) -> None:

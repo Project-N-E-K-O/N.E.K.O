@@ -145,6 +145,135 @@ async def test_steer_reaches_the_model_before_its_next_request(tmp_path: Path) -
         assert _roles(second)[-3:] == ["assistant", "tool", "user"]
         assert second[-1]["content"] == "Also check the tests."
         assert len(llm.requests) == 2
+        # Each text it was given is told of once, by its number, when it is in the
+        # conversation and on the disk: the steered one after what the request under way put out.
+        kinds = [(event["type"], event.get("inputs")) for event in events.events if event["type"] in ("taken", "tool_start")]
+        assert [kind for kind in kinds if kind[0] == "taken"] == [("taken", 1), ("taken", 2)]
+        assert kinds.index(("tool_start", None)) < kinds.index(("taken", 2))
+        # Both before the run is said to be over.
+        order = [event["type"] for event in events.events]
+        assert order.index("ended") > max(index for index, kind in enumerate(order) if kind == "taken")
+    finally:
+        await session.close()
+
+
+async def test_a_text_that_is_dropped_before_it_is_in_the_conversation_is_never_told_of_as_taken(
+    tmp_path: Path,
+) -> None:
+    holder: dict[str, object] = {}
+    steered, gate = asyncio.Event(), asyncio.Event()
+
+    async def steer_and_wait() -> None:
+        holder["session"].steer("Also check the tests.")  # type: ignore[union-attr]
+        steered.set()
+        await gate.wait()
+
+    llm = ScriptedLLM([[steer_and_wait, say("ok"), finish()], [say("again"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm)
+    holder["session"] = session
+    try:
+        session.prompt("Start.")
+        try:
+            await asyncio.wait_for(steered.wait(), 10.0)
+        except asyncio.TimeoutError:
+            pytest.fail(f"the text was never steered in; the session said: {events.events}")
+        # Stopped while the steered text waits for the next request: it is dropped.
+        assert session.abort() is True
+        ended = await events.wait_ended()
+        assert ended["reason"] == "aborted" and ended["inputs"] == 2
+        assert [event["inputs"] for event in events.of("taken")] == [1]
+        # What is given next is told of by its own number.
+        mark = len(events.events)
+        session.prompt("Go on.")
+        await events.wait_ended(start=mark)
+        assert [event["inputs"] for event in events.of("taken")] == [1, 3]
+        # And what was dropped is not kept to be looked for.
+        assert session._given == [] and session._not_human == []
+    finally:
+        gate.set()
+        await session.close()
+
+
+async def test_a_text_is_told_of_as_taken_once_it_is_on_the_disk_and_not_before(tmp_path: Path) -> None:
+    loop = asyncio.get_running_loop()
+    writing, asked = asyncio.Event(), asyncio.Event()
+
+    async def reached() -> None:
+        asked.set()
+
+    llm = ScriptedLLM([[reached, say("ok"), finish()], [say("again"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm)
+    append = session._recorder._append_blocking
+    written = __import__("threading").Event()
+    held: list[str] = []
+
+    def waiting(entry: object) -> None:
+        # The disk is slow: nothing is written until it lets go.
+        held.append(type(entry).__name__)
+        loop.call_soon_threadsafe(writing.set)
+        written.wait(10.0)
+        append(entry)
+
+    session._recorder._append_blocking = waiting  # type: ignore[method-assign]
+    try:
+        session.prompt("Start.")
+        # Until the write is being made, and the model was asked with the text in front of it.
+        await asyncio.wait_for(writing.wait(), 5.0)
+        await asyncio.wait_for(asked.wait(), 5.0)
+        # In the conversation, and not on the disk: not told of.
+        assert held and events.of("taken") == []
+        written.set()
+        await events.wait_ended()
+        assert [event["inputs"] for event in events.of("taken")] == [1]
+    finally:
+        written.set()
+        await session.close()
+
+
+async def test_a_text_whose_record_could_not_be_written_is_not_told_of_as_taken(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(session_module, "APPEND_RETRY_DELAYS", ())
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm)
+
+    def failing(entry: object) -> None:
+        raise OSError("the disk is full")
+
+    session._recorder._append_blocking = failing  # type: ignore[method-assign]
+    session._recorder._is_saved_blocking = lambda entry: False  # type: ignore[method-assign]
+    try:
+        session.prompt("Start.")
+        ended = await events.wait_ended()
+        # The run went on (a failed write does not stop it); whoever sent the text is not told it is kept.
+        assert ended["reason"] == "completed" and events.of("taken") == []
+    finally:
+        await session.close()
+
+
+async def test_a_text_no_person_wrote_does_not_make_the_run_one_the_user_spoke_in(tmp_path: Path) -> None:
+    holder: dict[str, Any] = {}
+    seen: list[bool] = []
+
+    async def look() -> None:
+        seen.append(holder["session"].in_direct_human_turn())
+
+    llm = ScriptedLLM([[look, say("ok"), finish()], [look, say("ok"), finish()], [look, say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm)
+    holder["session"] = session
+    try:
+        # A note from another session, or a time that has come: text in the conversation, and nobody's word.
+        mark = len(events.events)
+        session.steer("A note from another task agent session.", human=False)
+        await events.wait_ended(start=mark)
+        mark = len(events.events)
+        session.prompt("A wake you set is due.", human=False)
+        await events.wait_ended(start=mark)
+        # What the user says is.
+        mark = len(events.events)
+        session.prompt("Go on.")
+        await events.wait_ended(start=mark)
+        assert seen == [False, False, True]
     finally:
         await session.close()
 
@@ -724,6 +853,7 @@ def test_what_a_session_learned_about_its_model_is_an_event_of_the_protocol() ->
         "session_id": "s1",
         "seq": 7,
         "supports_images": False,
+        "context_window": None,
         "reason": "",
         "lasting": True,
     }
@@ -732,6 +862,10 @@ def test_what_a_session_learned_about_its_model_is_an_event_of_the_protocol() ->
     )
     assert protocol.parse_event(protocol.dump(told)) == told
     assert protocol.parse_event(dumped) == event
+    # A window the provider stated is told the same way, and says nothing about pictures.
+    window = protocol.ModelCapabilityEvent(session_id="s1", context_window=32_768, reason="maximum context length")
+    assert protocol.dump(window)["supports_images"] is None
+    assert protocol.parse_event(protocol.dump(window)) == window
     # It says what was learned, or it is not this event.
     with pytest.raises(ValidationError):
         protocol.parse_event({"type": "model_capability", "session_id": "s1", "seq": 7})
@@ -791,5 +925,68 @@ async def test_pictures_refused_for_what_they_were_are_reported_as_this_sessions
         # Said of these pictures, not of the model: the host is told so, with what the provider said, shortened.
         assert (learned["supports_images"], learned["lasting"]) == (False, False)
         assert learned["reason"] == said[:300]
+    finally:
+        await session.close()
+
+
+@pytest.mark.parametrize("sync_failures, told", [(1, ["saved"]), (9, [])])
+async def test_an_entry_that_is_whole_in_the_file_is_said_to_be_saved_once_it_is_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sync_failures: int, told: list[str]
+) -> None:
+    monkeypatch.setattr(session_module, "APPEND_RETRY_DELAYS", (0.01, 0.01))
+    path = tmp_path / "transcript.jsonl"
+    recorder = SessionRecorder(path)
+    assert await recorder.read_all() == []
+    append, sync = recorder._storage.append, recorder._storage.sync
+    troubles = {"written and not synced": 1, "sync": sync_failures}
+    synced: list[str] = []
+
+    async def synced_late(entry: CustomEntry) -> None:
+        await append(entry)
+        if troubles["written and not synced"]:
+            troubles["written and not synced"] -= 1
+            raise OSError("could not sync")
+
+    def failing_for_a_while() -> None:
+        if troubles["sync"]:
+            troubles["sync"] -= 1
+            raise OSError("could not sync")
+        sync()
+        synced.append("synced")
+
+    monkeypatch.setattr(recorder._storage, "append", synced_late)
+    monkeypatch.setattr(recorder._storage, "sync", failing_for_a_while)
+    said: list[str] = []
+    recorder.link(CustomEntry(namespace="test", data={"label": "a"}), saved=lambda: said.append("saved"))
+    await recorder.close()
+
+    # Whole in the file since the first attempt. Whoever is told that it is saved takes it to
+    # be on the disk: told once the sync that failed is made up for, and not at all when it
+    # never is. Either way it is in the file once.
+    assert said == told and synced == (["synced"] if told else [])
+    assert [entry.data["label"] for entry in await SessionRecorder(path).read_all()] == ["a"]
+
+
+async def test_a_text_no_person_wrote_does_not_end_a_wait_as_the_users_words_do(tmp_path: Path) -> None:
+    holder: dict[str, Any] = {}
+    seen: list[bool] = []
+
+    async def steered_meanwhile() -> None:
+        session = holder["session"]
+        # A note from another session arrives while the run is under way; then the user speaks.
+        session.steer("A note from another task agent session.", human=False)
+        seen.append(session.has_pending_user_steer())
+        session.steer("And mind the tests.")
+        seen.append(session.has_pending_user_steer())
+
+    llm = ScriptedLLM([[steered_meanwhile, say("ok"), finish()], [say("ok"), finish()], [say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm)
+    holder["session"] = session
+    try:
+        session.prompt("Start.")
+        await events.wait_ended()
+        # Both wait their turn in the queue; only the user's words end a wait for a job.
+        assert seen == [False, True]
+        assert "A note from another task agent session." in str(llm.requests[-1])
     finally:
         await session.close()

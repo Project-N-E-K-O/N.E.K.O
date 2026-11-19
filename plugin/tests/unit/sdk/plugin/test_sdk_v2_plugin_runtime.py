@@ -77,6 +77,9 @@ def test_runtime_typed_structures_and_dataclasses() -> None:
         "quick_action_config",
         "extra",
         "metadata",
+        "output_schema",
+        "output_model",
+        "strict_output",
     ]
 
 

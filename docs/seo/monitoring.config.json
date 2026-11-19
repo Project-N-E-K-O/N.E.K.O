@@ -28,6 +28,10 @@
       "gsc": {
         "siteUrlEnv": "GSC_CN_SITE_URL",
         "defaultSiteUrl": "sc-domain:project-neko.cn",
+        "trackedHomepageQueries": {
+          "page": "https://project-neko.cn/",
+          "queries": ["数字生命", "AI 数字生命"]
+        },
         "categoryQueryRegex": "(?:喵可智能|AI\\s*桌面助手|人工智能桌面助手|开源\\s*AI\\s*助手|AI\\s*虚拟伴侣|本地\\s*AI\\s*助手|Live2D\\s*AI\\s*助手|长期记忆\\s*AI\\s*助手)",
         "lowCtrThreshold": 0.03,
         "lowCtrMinImpressions": 10

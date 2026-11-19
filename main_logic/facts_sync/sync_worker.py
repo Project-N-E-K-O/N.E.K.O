@@ -24,6 +24,8 @@ from typing import Any
 import httpx
 
 from main_logic import client_registration
+from services.chat_sync import host as _chat_sync_host
+from utils import community_device_hold
 from utils.config_manager import get_config_manager
 
 logger = logging.getLogger("neko.facts_sync")
@@ -97,6 +99,88 @@ def _get_client_credentials() -> tuple[str, str] | None:
 def _get_client_id() -> str | None:
     credentials = _get_client_credentials()
     return credentials[0] if credentials else None
+
+
+def _signed_in_account() -> str | None:
+    """The community account signed in here, or None when nobody is signed in.
+
+    Read through the credential owner's hook. Never None for a login whose
+    account cannot be told, so a failed read does not pass for a logout:
+    ``UNREADABLE_ACCOUNT`` when credentials cannot be read, ``LEGACY_ACCOUNT``
+    for a pre-v2 session that has a token but no account id.
+    """
+    try:
+        state, account = _chat_sync_host.signed_in_account_state()
+    except _chat_sync_host.CapabilityNotInstalled:
+        # Main has not installed the credential store; no login can exist yet.
+        return None
+    if state == "signed_out":
+        return None
+    if state == "signed_in":
+        return account or community_device_hold.LEGACY_ACCOUNT
+    return community_device_hold.UNREADABLE_ACCOUNT
+
+
+_AUTH_UNREADABLE = object()
+
+
+def _saved_auth(directory: Path) -> Any:
+    """The auth mirror, ``{}`` when absent, or ``_AUTH_UNREADABLE``."""
+    path = directory / "community_auth.json"
+    try:
+        if not path.exists():
+            return {}
+        auth = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _AUTH_UNREADABLE
+    return auth if isinstance(auth, dict) else _AUTH_UNREADABLE
+
+
+def _saved_bind_for(auth: Any, signed_in: str | None) -> Any:
+    """The signed-in login's bind outcome, or ``UNKNOWN_BIND`` if it cannot be trusted.
+
+    A missing ``bind`` field (or a missing mirror, for sessions the desktop
+    host wrote on its own) is a session from before bind outcomes were
+    recorded and counts as bound, matching /auth-status. A mirror naming
+    another account belongs to another login and says nothing about this one.
+    An unreadable mirror never reaches here; it holds outright.
+    """
+    current = community_device_hold.normalize_account(signed_in)
+    mirror_user = community_device_hold.normalize_account(auth.get("local_user_id"))
+    if current and mirror_user and mirror_user != current:
+        return community_device_hold.UNKNOWN_BIND
+    return auth.get("bind")
+
+
+def _device_bound_to_other_account() -> bool:
+    """Whether uploads must wait because another account owns this device.
+
+    Pushes carry only ``X-Client-Id``, which the cloud routes to the device's
+    bound account. After switching to account B on a device still bound to A,
+    that would write B's local memories into A. The owner and any refused bind
+    are recorded per device (see ``utils.community_device_hold``), so logout,
+    transient bind failures and browser session syncs cannot release the
+    hold; facts stay pending locally until a bind confirms the signed-in
+    account owns the device.
+    """
+    directory = community_device_hold.default_directory()
+    if directory is None:
+        return True
+    try:
+        signed_in = _signed_in_account()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("facts_sync: cannot read the signed-in community account: %s", exc)
+        return True
+    auth = _saved_auth(directory)
+    if auth is _AUTH_UNREADABLE:
+        return True
+    if auth.get(community_device_hold.DEVICE_HOLD_PENDING):
+        # A logout could not write the device record and left this marker
+        # instead; it holds until a later login replaces the mirror.
+        return True
+    return community_device_hold.device_held(
+        directory, signed_in, saved_bind=_saved_bind_for(auth, signed_in)
+    )
 
 
 def _enumerate_lanlan_dirs(memory_dir: Path) -> list[Path]:
@@ -253,7 +337,13 @@ async def _sync_one_lanlan(
     # Split into batches.
     for i in range(0, len(candidates), BATCH_SIZE):
         batch = candidates[i : i + BATCH_SIZE]
-        ok, _resp = await _post_facts_batch(base_url, client_id, lanlan_name, batch)
+        # A bind may have finished while this batch waited. Check the current
+        # owner under the same lock and keep it until the upload returns.
+        async with community_device_hold.ownership_lock:
+            if await asyncio.to_thread(_device_bound_to_other_account):
+                logger.info("facts_sync: device bound to another account; holding remaining facts")
+                break
+            ok, _resp = await _post_facts_batch(base_url, client_id, lanlan_name, batch)
         if ok:
             for f in batch:
                 synced_set.add(f["fact_hash"])
@@ -299,6 +389,15 @@ async def _sweep_once() -> None:
         logger.warning("facts_sync: no client credentials available, skipping sweep")
         return
     client_id, client_proof = credentials
+    # A check that never got a definite answer holds uploads until the
+    # signed-in login asks the cloud again.
+    await community_device_hold.resolve_pending_check()
+    if await asyncio.to_thread(_device_bound_to_other_account):
+        logger.info(
+            "facts_sync: this device is bound to another community account; "
+            "holding facts until it is rebound"
+        )
+        return
 
     # M2-i fix: bootstrap registration before pushing; skip this cycle on failure and retry next time.
     if not await _ensure_client_registered(base_url, client_id, client_proof):

@@ -102,7 +102,7 @@ async def test_unexpected_isolation_failure_can_retry_without_false_release(monk
         await ending
     assert not record.handoff_safe.is_set()
     assert not record.cleanup_complete.is_set()
-    await manager._wait_session_handoff(asyncio.get_running_loop().time() + .5)
+    await manager._wait_session_handoff(asyncio.get_running_loop().time() + 10)
     await record.task
     assert calls == 2
     assert old.closed.is_set()

@@ -60,6 +60,14 @@ CATEGORIES: tuple[str, ...] = (
     "other",
 )
 
+# Not one of the categories above, which are those of this runtime's tools:
+# what the dsh runtime asks the host before a call of a tool of the host's
+# gateway (``decide_permission`` in ``nekoclaw.runtime.host``).
+GATEWAY_CALL_CATEGORY = "gateway"
+# Nor is this: what the dsh runtime asks before a call of one of the host's
+# own tools that the host may have to ask the user about (a web search).
+HOST_TOOL_CALL_CATEGORY = "host_tool"
+
 _READ_TOOLS = {"read": "file_path", "read_image": "file_path", "glob": "path", "grep": "path"}
 _WRITE_TOOLS = {"write": "file_path", "edit": "file_path"}
 _COMMAND_TOOLS = frozenset({"pwsh", "bash"})
@@ -174,8 +182,16 @@ def make_permission_hook(
     session_id: str,
     is_cancelled: Callable[[], bool],
     readable: tuple[Path, ...] = (),
+    withheld: frozenset[str] = frozenset(),
 ) -> BeforeToolCall:
-    """Build the loop's before-tool hook. It returns ``(blocked, reason)``."""
+    """Build the loop's before-tool hook. It returns ``(blocked, reason)``.
+
+    A call of a tool in ``withheld`` is let through without asking
+    anybody: the session was opened without that tool, and what answers
+    the call stands in for it and carries nothing out (it says the tool
+    is not available). Asked about, it would be refused, or put to the
+    user, for something that is not going to be done.
+    """
 
     async def consult(payload: dict[str, Any]) -> dict[str, Any] | None:
         task = asyncio.ensure_future(host.call(session_id, "decide_permission", payload))
@@ -192,6 +208,8 @@ def make_permission_hook(
                 await asyncio.gather(task, return_exceptions=True)
 
     async def before_tool_call(call: ToolCall) -> tuple[bool, str | None]:
+        if call.name in withheld:
+            return False, None
         request = classify(call.name, call.arguments, workdir, readable=readable)
         if request.category == "other":
             return False, None

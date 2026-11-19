@@ -11,7 +11,7 @@
 | Bus の `where_*` とリスト集合演算 | 削除済み | `get()`、`filter()` / `where()`、`sort()`、`limit()`、`watch()` を合成 |
 | `get_message_plane_all` | 削除済み | bounded な `await self.bus.messages.get(...)` を使用 |
 | Bus の incremental/local fast path | 削除済み | 標準の bounded/replayable read/watch パイプライン |
-| 高レベル `self.memory` / SDK `MemoryClient` | 削除済み | `self.bus.memory.get(...)` は最近のメモリ上の user-context record の読み取りにのみ使用。永続メモリの semantic recall に対応する plugin SDK API はありません |
+| 高レベル `self.memory` / 旧 SDK `MemoryClient` facade | 削除済み | `self.bus.memory.get(...)` は最近のメモリ上の user-context record の読み取りにのみ使用。永続メモリの recall には `ctx.query_memory(...)`（レンダリング済みテキスト）または `plugin.sdk.plugin` の新しい `MemoryClient(self.ctx).search(...)`（構造化ヒット）を使用 |
 | Extension package type、`[plugin.host]`、`plugin.sdk.extension` | 削除済み、互換レイヤーなし | Router を所有する通常 Plugin に統合するか、独立した Plugin に変換 |
 | `push_message` v1 フィールド | deprecated だが current source では変換される | `parts`、`visibility`、`ai_behavior` を使い、正確な removal release に依存しない |
 
@@ -91,7 +91,7 @@ callable の `filter(predicate)`、`where(predicate)`、`sort(key=callable)` は
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-これらは件数制限付きでメモリ上にのみ保持されるユーザー発話イベントで、TTL は 1 時間です。キャラクターの永続的な facts、reflections、persona ではありません。`self.bus.memory` による record の読み取りと型付き record は残ります。削除されたのは高レベルの `self.memory` property と SDK/runtime の `MemoryClient` facade です。`ctx.query_memory(...)` は互換性のため残っていますが、非推奨の placeholder endpoint を呼ぶだけで semantic recall は行いません。現在、公開 plugin SDK に構造化された永続メモリ recall API はありません。
+これらは件数制限付きでメモリ上にのみ保持されるユーザー発話イベントで、TTL は 1 時間です。キャラクターの永続的な facts、reflections、persona ではありません。`self.bus.memory` による record の読み取りと型付き record は残ります。削除されたのは高レベルの `self.memory` property と旧 SDK/runtime の `MemoryClient` facade です（現在 `plugin.sdk.plugin` からエクスポートされている `MemoryClient` は別の新しい検索クライアントです）。`ctx.query_memory(...)` は組み込みの `recall_memory` ツールと同じハイブリッド recall を実行し、ヒットをレンダリング済みテキストとして返します（該当なしの場合は空文字列）。構造化ヒットが必要な場合は `MemoryClient(self.ctx).search(target=MemoryTarget.private(...), query=...)` を使用します。戻り値は `Ok` / `Err` です。
 
 ## `push_message` v2
 

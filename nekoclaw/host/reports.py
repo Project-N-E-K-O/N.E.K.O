@@ -129,7 +129,20 @@ def _permission_subject(question: dict[str, Any], lang: str, max_tokens: int) ->
         # here, so the beginning and the end get the same.
         kept = max(max_tokens - mark_tokens, 0)
         specific = truncate_head_tail_tokens(specific, kept - kept // 2 + mark_tokens, kept // 2, separator=mark)
-    return categories.get(category, categories["other"]).format(detail=specific).strip()
+    # What a question about usage states: how much was used, and how much more is asked for.
+    amounts = {name: str(detail.get(name) or "") for name in ("used", "more")}
+    return categories.get(category, categories["other"]).format(detail=specific, **amounts).strip()
+
+
+def tokens_text(tokens: int) -> str:
+    """Return a number of tokens in a few characters, the same in every language: ``950``, ``12k``, ``1.3M``."""
+    tokens = max(0, int(tokens))
+    if tokens >= 999_500:
+        text = f"{tokens / 1_000_000:.1f}"
+        return (text[:-2] if text.endswith(".0") else text) + "M"
+    if tokens >= 1_000:
+        return f"{round(tokens / 1_000)}k"
+    return str(tokens)
 
 
 def render_question(title: str, question: dict[str, Any], lang: str) -> str:
@@ -184,6 +197,7 @@ class Reporter:
         success: bool,
         summary: str,
         status: str,
+        shown: str | None = None,
         detail: str = "",
         error_message: str = "",
         source_kind: str = "",
@@ -191,11 +205,15 @@ class Reporter:
         delivery_mode: str = "proactive",
         result_kind: str = "task_result",
         expires_in_s: float | None = None,
+        visibility: list[str] | None = None,
     ) -> tuple[str, dict[str, Any]] | None:
         """Build the ``(kind, payload)`` row that reports how a commission ended.
 
         Stores nothing. Returns None for a silent commission and for one
         started by another task agent, which are not reported to her.
+        ``shown`` is what the HUD shows, when that is not ``summary``.
+        ``visibility``, when given, says where it is shown as it is written
+        (``[]``: nowhere); without it the main server shows it on the HUD.
         """
         if commission.parent_id is not None or delivery_mode == "silent":
             return None
@@ -209,7 +227,9 @@ class Reporter:
             "channel": channel,
             "status": status,
             "success": success,
-            "text": summary,
+            # Never empty where the summary is not: the main server hands her
+            # nothing of a report without text.
+            "text": truncate_to_tokens(shown, TASK_SUMMARY_MAX_TOKENS) if shown else summary,
             "summary": summary,
             "detail": truncate_to_tokens(detail, TASK_LARGE_DETAIL_MAX_TOKENS) if detail else "",
             "error_message": truncate_to_tokens(error_message, TASK_ERROR_MAX_TOKENS) if error_message else "",
@@ -221,6 +241,8 @@ class Reporter:
             "expires_in_s": expires_in_s,
             "title": commission.title,
         }
+        if visibility is not None:
+            payload["visibility"] = list(visibility)
         return KIND_TASK_RESULT, payload
 
     async def task_result(
@@ -231,6 +253,7 @@ class Reporter:
         success: bool,
         summary: str,
         status: str,
+        shown: str | None = None,
         detail: str = "",
         error_message: str = "",
         source_kind: str = "",
@@ -238,6 +261,7 @@ class Reporter:
         delivery_mode: str = "proactive",
         result_kind: str = "task_result",
         expires_in_s: float | None = None,
+        visibility: list[str] | None = None,
     ) -> int | None:
         """Report how a commission ended. Nothing is stored for a silent one.
 
@@ -250,6 +274,7 @@ class Reporter:
             success=success,
             summary=summary,
             status=status,
+            shown=shown,
             detail=detail,
             error_message=error_message,
             source_kind=source_kind,
@@ -257,6 +282,7 @@ class Reporter:
             delivery_mode=delivery_mode,
             result_kind=result_kind,
             expires_in_s=expires_in_s,
+            visibility=visibility,
         )
         if report is None:
             return None
@@ -337,6 +363,31 @@ class Reporter:
             "receipt": kind,
             "text": text,
             "delivery_mode": "passive" if kind in QUIET_RECEIPTS else "proactive",
+        }
+        return await self._add(commission, KIND_RECEIPT, payload)
+
+    async def note(self, lanlan_name: str, *, about: str, text: str, commission: Commission | None = None) -> int:
+        """Show the user something of the host itself, as it is written: on the HUD, and to no model.
+
+        For what is about how NekoClaw is set (the context length a model
+        is counted with, say), which the user is to know and no model has
+        any use for: she is not told, so it is in nobody's context, costs
+        no model call and no token, and is not worded anew. ``text`` is
+        written for the user to read as it stands.
+
+        Not tied to a commission in what is sent: it is about the host.
+        Shown once, where a front end is connected then; what it says is
+        on record wherever the host keeps it, for a screen to show later.
+        """
+        payload = {
+            "lanlan_name": lanlan_name,
+            "task_id": None,
+            "receipt": about,
+            "text": text,
+            # Not into her context, and shown on the HUD (``send_report``
+            # of the agent server reads both).
+            "delivery_mode": "silent",
+            "visibility": ["hud"],
         }
         return await self._add(commission, KIND_RECEIPT, payload)
 

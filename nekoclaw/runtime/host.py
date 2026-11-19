@@ -46,6 +46,24 @@ Callbacks, their payload and their result:
     the default decision applies and ``ask`` is refused, since nobody can be
     asked.
 
+    The dsh runtime (``nekoclaw.dsh``) makes three more kinds of request, for
+    tools the built-in runtime never asks about. All carry
+    ``{"tool": str, "category": ..., "arguments": dict, "workdir": str,
+    "default": "allow"}``:
+
+    * ``category`` ``"gateway"`` (``permissions.GATEWAY_CALL_CATEGORY``): a
+      tool of the host's gateway is about to
+      be called (``tool`` is its name there, ``arguments`` what it is called
+      with). dsh ends such a call after a minute, so a host that has to ask
+      the user for it asks now, before the call, and does not ask again
+      when the call arrives.
+    * ``category`` ``"host_tool"`` (``permissions.HOST_TOOL_CALL_CATEGORY``):
+      one of the host's own tools is about to be called (``tool`` is its
+      name, ``web_search``), for the same reason: what the host would ask
+      the user in that tool's callback it asks now, and not again there.
+    * ``category`` ``"other"``: a tool this runtime does not know, which a
+      dsh plugin brought.
+
 ``ask_user``  (tool ``ask_user_question``)
     Payload: ``{"questions": [{"id", "question", "header"?, "options"?,
     "multi_select"?}, ...]}`` exactly as the model wrote them. Result:
@@ -61,7 +79,11 @@ Callbacks, their payload and their result:
 ``note_lesson``  (tool ``note_lesson``)
     Payload: ``{"title": str, "content": str, "category": "feedback" |
     "lesson" | "reflection" | "reference" | "progress", "scope": "project" |
-    "global"}``. Result: ``None`` or ``{"message": str}``.
+    "global", "confidence": "verified" | "observed" | "inferred",
+    "evidence": [str, ...]}`` (paths as the model wrote them, possibly
+    none; the host looks for the files). Result: ``None`` or ``{"message":
+    str}``, which says what became of the lesson: kept, already there, not
+    in effect yet, or refused.
 
 ``web_search``  (tool ``web_search``)
     Payload: ``{"queries": [str, ...]}`` (1 to 10, already de-duplicated).
@@ -88,6 +110,46 @@ Callbacks, their payload and their result:
 
 The four ``subagent_*`` callbacks are offered together or not at all;
 ``wait_agent`` needs no callback and appears with them.
+
+``session_list``  (tool ``list_sessions``)
+    Payload: ``{"query": str | None, "project": str | None, "page": int}``.
+    Result: ``{"text": str}``, the rows as the model reads them. The host
+    looks through its own record of sessions; no model is asked.
+
+``session_read``  (tool ``read_session``)
+    Payload: ``{"session": str, "what": "results" | "search" | "read",
+    "query": str | None, "at": int | None}``. Result: ``{"text": str}``:
+    what that session left, within the host's caps and framed by it as
+    another session's record.
+
+``session_send``  (tool ``message_session``)
+    Payload: ``{"to": str, "message": str, "notify_when_done": bool}``.
+    Result: ``{"message": str}``, what the model is told: that the note is
+    queued. The host hands it over later, framed. A note that is not sent
+    (no such session, too many, too long) raises with the reason.
+
+``wake_schedule``  (tool ``schedule_wake``)
+    Payload: ``{"delay_seconds": int, "note": str}``. Result: ``{"message":
+    str}``: when the session is woken. The host starts it again then.
+
+``session_ask``  (tool ``ask_session``)
+    Payload: ``{"session": str, "question": str}``. Result: ``{"message":
+    str}``: that the question is asked. A copy of the other session's
+    conversation answers it, and the answer comes back later, framed by
+    the host, as a message. A question that is not asked raises with the
+    reason.
+
+Each of these five is offered when its callback is there.
+
+``budget``  (no tool)
+    Asked before every model request of a run, between two steps: whether
+    what the session works on may use more. Payload: ``{}``. Result:
+    ``{}`` to go on; ``{"notice": str}`` to go on with that text said to the
+    model in front of the request; ``{"stop": true}`` to end the run without
+    the request. The host answers at once while there is room. When there is
+    none it may ask the user first, and the request waits for as long as
+    that takes. Without this callback nothing is asked. A callback that
+    fails does not hold the request up.
 """
 
 from __future__ import annotations
@@ -105,6 +167,15 @@ SUBAGENT_CALLS: tuple[str, ...] = (
     "subagent_interrupt",
 )
 
+# Reaching other sessions, and being woken; each has a tool of its own.
+SESSION_CALLS: tuple[str, ...] = (
+    "session_list",
+    "session_read",
+    "session_send",
+    "wake_schedule",
+    "session_ask",
+)
+
 HOST_CALLS: tuple[str, ...] = (
     "decide_permission",
     "ask_user",
@@ -112,6 +183,8 @@ HOST_CALLS: tuple[str, ...] = (
     "note_lesson",
     "web_search",
     *SUBAGENT_CALLS,
+    *SESSION_CALLS,
+    "budget",
 )
 
 
@@ -143,6 +216,12 @@ class HostCallbacks:
     subagent_list: HostCallback | None = None
     subagent_send: HostCallback | None = None
     subagent_interrupt: HostCallback | None = None
+    session_list: HostCallback | None = None
+    session_read: HostCallback | None = None
+    session_send: HostCallback | None = None
+    wake_schedule: HostCallback | None = None
+    session_ask: HostCallback | None = None
+    budget: HostCallback | None = None
 
     @property
     def capabilities(self) -> frozenset[str]:

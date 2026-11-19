@@ -161,6 +161,11 @@ def _tracked_reply_call(method):
         try:
             return await method(self, *args, **kwargs)
         finally:
+            # The user message this call put in history is no longer heading
+            # to the provider (see _strip_answered_live_frames).
+            in_flight = getattr(self, "_in_flight_user_messages", None)
+            if in_flight:
+                in_flight.pop(asyncio.current_task(), None)
             self._reply_calls_in_flight = max(0, self._reply_calls_in_flight - 1)
             if not self._reply_calls_in_flight:
                 self._notify_idle()
@@ -887,6 +892,12 @@ class _LifecycleMixin:
         # go stale.
         if self._declines_over_another_reply(completion_mode):
             return False
+        # Same rule as stream_text: live frames of earlier turns keep receipts
+        # only. Only once this reply may start: a declined callback must not
+        # touch a turn that is still replying. Edited in place, so the request
+        # view built above sees it too. A user turn whose stream_text is still
+        # running (e.g. parked on its transcript callback) keeps its frames.
+        self._strip_answered_live_frames(skip_in_flight=True)
 
         # Retry policy mirrors stream_text: max_retries=3, delays [1,2] seconds.
         # Proactive semantics differ: users await no reply, so **silently swallow** exhausted retries,
@@ -1225,9 +1236,7 @@ class _LifecycleMixin:
             # ephemeral choke point (Codex P2) only after visible text actually appears;
             # aborted/textless attempts retain valid staged screens.
             if content_committed:
-                self._proactive_image_to_inject = None
-                self._proactive_image_staged_at = 0.0
-                self._proactive_image_history_len = 0
+                self.set_proactive_screenshot(None)
             # Empty-completion diagnostics mirror stream_text's fallback warning.
             # Proactive failures silently abandon without status_message, but one INFO
             # finish_reason line permits diagnosis. Previous incidents could not distinguish
@@ -1603,9 +1612,7 @@ class _LifecycleMixin:
         self._cancel_response_generation()
         self._conversation_history = []
         self._pending_images.clear()
-        self._proactive_image_to_inject = None
-        self._proactive_image_staged_at = 0.0
-        self._proactive_image_history_len = 0
+        self.set_proactive_screenshot(None)
         if self.llm:
             try:
                 await self.llm.aclose()

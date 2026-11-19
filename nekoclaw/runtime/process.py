@@ -305,6 +305,9 @@ class SubprocessRuntime:
         self._sessions: set[str] = set()
         # Session id -> start commands the child has not answered yet.
         self._pending_starts: dict[str, int] = {}
+        # Sessions whose record the child was asked to make from another's
+        # and has not said of yet whether it did.
+        self._pending_forks: set[str] = set()
         self._host_tasks: dict[str, asyncio.Task[None]] = {}
 
     # -- process --------------------------------------------------------------
@@ -423,6 +426,8 @@ class SubprocessRuntime:
             self._start_answered(str(message.get("session_id")))
         elif kind == "error" and message.get("command") == "start":
             self._start_answered(str(message.get("session_id")))
+        elif kind == "forked" or (kind == "error" and message.get("command") == "fork"):
+            self._pending_forks.discard(str(message.get("session_id")))
         elif kind == "ended" and message.get("reason") == "closed":
             self._sessions.discard(str(message.get("session_id")))
         self._deliver(message)
@@ -490,6 +495,17 @@ class SubprocessRuntime:
                     )
                 )
             )
+        unmade, self._pending_forks = sorted(self._pending_forks), set()
+        for session_id in unmade:
+            self._deliver(
+                protocol.dump(
+                    protocol.ErrorEvent(
+                        session_id=session_id,
+                        command="fork",
+                        message="the runtime process exited before the session was copied",
+                    )
+                )
+            )
         if not self._exit_announced:
             self._deliver(
                 protocol.dump(
@@ -552,6 +568,8 @@ class SubprocessRuntime:
                         "the runtime process is not running or is shutting down; "
                         "start the session again"
                     ),
+                    # Of a text: the number it was sent under.
+                    serial=getattr(command, "serial", None),
                 )
             )
         )
@@ -589,20 +607,60 @@ class SubprocessRuntime:
         if self._send_or_reject(spec.session_id, protocol.StartCommand(spec=spec)):
             self._pending_starts[spec.session_id] = self._pending_starts.get(spec.session_id, 0) + 1
 
-    async def prompt(self, session_id: str, text: str) -> None:
-        self._send_or_reject(session_id, protocol.PromptCommand(session_id=session_id, text=text))
+    async def prompt(
+        self, session_id: str, text: str, *, opening: bool = False, human: bool = True, serial: int | None = None
+    ) -> None:
+        self._send_or_reject(
+            session_id,
+            protocol.PromptCommand(session_id=session_id, text=text, opening=opening, human=human, serial=serial),
+        )
 
-    async def steer(self, session_id: str, text: str) -> None:
-        self._send_or_reject(session_id, protocol.SteerCommand(session_id=session_id, text=text))
+    async def steer(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
+        self._send_or_reject(
+            session_id, protocol.SteerCommand(session_id=session_id, text=text, human=human, serial=serial)
+        )
 
-    async def follow_up(self, session_id: str, text: str) -> None:
-        self._send_or_reject(session_id, protocol.FollowUpCommand(session_id=session_id, text=text))
+    async def follow_up(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
+        self._send_or_reject(
+            session_id, protocol.FollowUpCommand(session_id=session_id, text=text, human=human, serial=serial)
+        )
 
     async def abort(self, session_id: str) -> None:
         self._send_or_reject(session_id, protocol.AbortCommand(session_id=session_id))
 
     async def close(self, session_id: str) -> None:
         self._send_or_reject(session_id, protocol.CloseCommand(session_id=session_id))
+
+    async def fork(
+        self, session_id: str, *, session_dir: str, source_session_id: str, source_dir: str, upto: str | None = None
+    ) -> None:
+        """Have the child make the record of a new session from another's; a child is brought up for it if none runs.
+
+        In the child, because a session that is open there has what it
+        said so far written out before it is copied.
+        """
+        command = protocol.ForkCommand(
+            session_id=session_id,
+            session_dir=session_dir,
+            source_session_id=source_session_id,
+            source_dir=source_dir,
+            upto=upto,
+        )
+        refusal = "the runtime is shutting down" if self._shutdowns else None
+        if refusal is None:
+            try:
+                await self._ensure_process()
+            except Exception as exc:  # noqa: BLE001 - reported as a rejected command
+                logger.exception("could not start the runtime process")
+                refusal = f"the runtime process could not be started: {exc}"
+        if refusal is not None:
+            self._deliver(protocol.dump(protocol.ErrorEvent(session_id=session_id, command="fork", message=refusal)))
+            return
+        if self._send_or_reject(session_id, command):
+            self._pending_forks.add(session_id)
+
+    async def compact(self, session_id: str) -> None:
+        self._send_or_reject(session_id, protocol.CompactCommand(session_id=session_id))
 
     async def shutdown(self) -> None:
         """Ask the child to close its sessions and exit; kill it if it does not.

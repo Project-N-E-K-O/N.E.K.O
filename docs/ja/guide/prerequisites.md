@@ -5,7 +5,7 @@
 | Python | exactly 3.11.x | `pyproject.toml` |
 | uv | current compatible release | `uv.lock` / workflows |
 | Git | maintained release | repository operations |
-| Node.js + npm | plugin manager: `^20.19.0 || >=22.12.0` | package.json |
+| Node.js + npm | plugin manager: `>=22.12.0` | package.json |
 
 Python dependencies は `uv sync`。手動 `pip install -r requirements.txt` を project install flow にしないでください。Frontend/docs は lockfile と `npm ci` を使います。
 

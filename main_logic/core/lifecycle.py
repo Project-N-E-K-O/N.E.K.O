@@ -76,6 +76,10 @@ from .callback_render import (
 # facade patch would no longer reach this module's methods.
 from main_logic import core as _core_facade
 from .session_records import start_phase
+from .multimodal_turn import (
+    multimodal_turn_after_revocation,
+    multimodal_turn_attachment_kwargs,
+)
 
 class LifecycleMixin:
     """Session lifecycle methods (see module docstring)."""
@@ -1870,7 +1874,14 @@ class LifecycleMixin:
                         or self.session is not current
                     ):
                         return False
-                    if visual_still_owned is not None and not visual_still_owned():
+                    # Screen consent revoked since the freeze: only the user's
+                    # own screenshots may go (None: none left, send as text).
+                    sendable_turn = multimodal_turn_after_revocation(
+                        turn, getattr(self, '_screen_consent_revocation_epoch', 0)
+                    )
+                    if sendable_turn is None or (
+                        visual_still_owned is not None and not visual_still_owned()
+                    ):
                         # Apply the same criterion as the slow path below: this fast path also crosses
                         # prepare_external_voice_turn / handle_interruption /
                         # several awaits in handle_new_message / ensure_tts_pipeline_alive,
@@ -1886,9 +1897,11 @@ class LifecycleMixin:
                             # unlike the slow path's exception; preserve that behavior.
                             return False
                         logger.info(
-                            '[%s] Offline submit lost frame ownership mid-flight; '
+                            '[%s] Offline submit %s mid-flight; '
                             'submitting turn %s without its frames',
                             self.lanlan_name,
+                            'saw screen consent revoked' if sendable_turn is None
+                            else 'lost frame ownership',
                             turn.turn_id,
                         )
                         delivered = await submit_text(
@@ -1899,11 +1912,14 @@ class LifecycleMixin:
                         return delivered is not False
                     delivered = await submit(
                         turn.transcript,
-                        turn.images,
+                        sendable_turn.images,
                         turn_id=turn.turn_id,
                         # Capture channel frozen alongside these frames. Without it, offline handling labels
                         # both screen and camera frames as user.
                         source=turn.source,
+                        # Which sampled frames are screenshots the user attached
+                        # (only passed when there is one).
+                        **multimodal_turn_attachment_kwargs(sendable_turn),
                         # Turn-attached context: the offline session handles this turn on the fast path,
                         # so retrieval excludes its own resident knowledge.
                         **context_kwargs,
@@ -2201,7 +2217,14 @@ class LifecycleMixin:
                     or self.session is not candidate
                 ):
                     return False
-                if visual_still_owned is not None and not visual_still_owned():
+                # Screen consent revoked since the freeze: only the user's
+                # own screenshots may go (none left: send as text).
+                sendable_turn = multimodal_turn_after_revocation(
+                    turn, getattr(self, '_screen_consent_revocation_epoch', 0)
+                )
+                if sendable_turn is None or (
+                    visual_still_owned is not None and not visual_still_owned()
+                ):
                     # Ownership was lost during the long sequence of candidate connection / promotion / TTS pipeline startup / tool synchronization
                     # awaits, the longest window in this chain;
                     # operation_is_current covers route identity only, not frame ownership.
@@ -2210,9 +2233,11 @@ class LifecycleMixin:
                     # offline, sending this turn as text only. Returning False would make callers report
                     # ASR_MULTIMODAL_TURN_FAILED and lose the user's entire utterance.
                     logger.info(
-                        '[%s] Offline VLM handoff lost frame ownership mid-flight; '
+                        '[%s] Offline VLM handoff %s mid-flight; '
                         'submitting turn %s without its frames',
                         self.lanlan_name,
+                        'saw screen consent revoked' if sendable_turn is None
+                        else 'lost frame ownership',
                         turn.turn_id,
                     )
                     submit_text = getattr(
@@ -2232,10 +2257,11 @@ class LifecycleMixin:
                     raise RuntimeError('OFFLINE_MULTIMODAL_SUBMIT_UNAVAILABLE')
                 delivered = await submit(
                     turn.transcript,
-                    turn.images,
+                    sendable_turn.images,
                     turn_id=turn.turn_id,
                     # As above: frame-bus channel labels travel with frames.
                     source=turn.source,
+                    **multimodal_turn_attachment_kwargs(sendable_turn),
                 )
                 return delivered is not False
             finally:

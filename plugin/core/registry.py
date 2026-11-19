@@ -38,7 +38,13 @@ except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
 from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
-from plugin._types.entry_metadata import entry_contract_fields
+from plugin._types.entry_metadata import (
+    ENTRY_CONTRACT_BOOL_FIELDS,
+    ENTRY_CONTRACT_MAPPING_FIELDS,
+    ENTRY_PROJECTION_SHAPED_FIELDS,
+    entry_contract_fields,
+    unhandled_entry_contract_fields,
+)
 from plugin._types.version import SDK_VERSION
 from plugin.server.infrastructure.config_resolver import read_plugin_config_from_path, resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import (
@@ -209,8 +215,6 @@ def _find_missing_python_requirements(
             e,
         )
         return []
-
-
 
 
 def get_plugins() -> List[Dict[str, Any]]:
@@ -844,14 +848,20 @@ def _set_declared_result_fields(preview: Dict[str, Any], declared: Any) -> None:
         preview["llm_result_fields"] = _entry_string_list(declared)
 
 
-def _router_entry_preview(pid: str, eid: str, event_meta: Any) -> Dict[str, Any]:
-    """Build the static preview dict for one router-declared entry.
+def _entry_preview(pid: str, eid: str, event_meta: Any) -> Dict[str, Any]:
+    """Build the static preview dict for one entry.
 
-    Match branch 1 by reading event_meta.return_message, preserving router preview fields, meow.
+    One builder for decorator entries, router entries and the skeleton of a
+    config-only entry (``event_meta=None``), so the three previews cannot
+    drift apart when the entry contract grows.
     """
-    name_obj = getattr(event_meta, "name", None) or ""
-    description_obj = getattr(event_meta, "description", None) or ""
+    name_obj = getattr(event_meta, "name", None)
+    description_obj = getattr(event_meta, "description", None)
     return_message_obj = getattr(event_meta, "return_message", None)
+    if name_obj is None:
+        name_obj = ""
+    if description_obj is None:
+        description_obj = ""
     if return_message_obj is None:
         return_message_obj = ""
     preview: Dict[str, Any] = {
@@ -861,7 +871,7 @@ def _router_entry_preview(pid: str, eid: str, event_meta: Any) -> Dict[str, Any]
         "event_key": f"{pid}.{eid}",
         "input_schema": _entry_mapping(getattr(event_meta, "input_schema", {}) or {}),
         "return_message": return_message_obj if isinstance(return_message_obj, (str, dict)) else str(return_message_obj),
-        "event_type": "plugin_entry",
+        "event_type": str(getattr(event_meta, "event_type", "plugin_entry") or "plugin_entry"),
         "kind": str(getattr(event_meta, "kind", "action") or "action"),
         "auto_start": bool(getattr(event_meta, "auto_start", False)),
         "timeout": getattr(event_meta, "timeout", None),
@@ -873,6 +883,8 @@ def _router_entry_preview(pid: str, eid: str, event_meta: Any) -> Dict[str, Any]
     meta_dict = getattr(event_meta, "metadata", None)
     if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
         preview["llm_result_fields"] = meta_dict["llm_result_fields"]
+    for name, value in unhandled_entry_contract_fields(event_meta, ENTRY_PROJECTION_SHAPED_FIELDS).items():
+        preview[name] = _entry_mapping(value) if name in ENTRY_CONTRACT_MAPPING_FIELDS else value
     return preview
 
 
@@ -892,10 +904,8 @@ def _effective_entries(conf: dict, pdata: dict) -> Any:
 
 
 _ENTRY_DISPLAY_FIELDS = ("name", "description", "input_schema")
-_ENTRY_BOOL_FIELDS = ("auto_start", "enabled", "dynamic", "model_validate", "quick_action")
-_ENTRY_MAPPING_FIELDS = (
-    "input_schema", "llm_result_schema", "metadata", "extra", "quick_action_config",
-)
+_ENTRY_BOOL_FIELDS = ENTRY_CONTRACT_BOOL_FIELDS
+_ENTRY_MAPPING_FIELDS = ("input_schema", *ENTRY_CONTRACT_MAPPING_FIELDS)
 _ENTRY_TEXT_FIELDS = ("name", "description", "return_message")
 
 
@@ -910,6 +920,11 @@ def _normalized_entry_declaration(declaration: Dict[str, Any]) -> Dict[str, Any]
     records never alias the mutable configuration tables.
     """
     fields = entry_contract_fields(declaration)
+    # The output contract runs in the plugin process from the decorator; a
+    # manifest override would be published but never enforced, so it is not
+    # taken (neko-plugin validate warns about it).
+    for name in ("output_schema", "strict_output"):
+        fields.pop(name, None)
     for name in _ENTRY_DISPLAY_FIELDS:
         if name in declaration:
             fields[name] = declaration[name]
@@ -995,37 +1010,7 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
                 continue
             seen.add(eid)
 
-            input_schema = _entry_mapping(getattr(event_meta, "input_schema", {}) or {})
-            name_obj = getattr(event_meta, "name", None)
-            description_obj = getattr(event_meta, "description", None)
-            return_message_obj = getattr(event_meta, "return_message", None)
-            if name_obj is None:
-                name_obj = ""
-            if description_obj is None:
-                description_obj = ""
-            if return_message_obj is None:
-                return_message_obj = ""
-            entry_preview: Dict[str, Any] = {
-                    "id": eid,
-                    "name": name_obj if isinstance(name_obj, (str, dict)) else str(name_obj),
-                    "description": description_obj if isinstance(description_obj, (str, dict)) else str(description_obj),
-                    "event_key": f"{pid}.{eid}",
-                    "input_schema": input_schema,
-                    "return_message": return_message_obj if isinstance(return_message_obj, (str, dict)) else str(return_message_obj),
-                    "event_type": str(getattr(event_meta, "event_type", "plugin_entry") or "plugin_entry"),
-                    "kind": str(getattr(event_meta, "kind", "action") or "action"),
-                    "auto_start": bool(getattr(event_meta, "auto_start", False)),
-                    "timeout": getattr(event_meta, "timeout", None),
-                    "model_validate": bool(getattr(event_meta, "model_validate", True)),
-                    "llm_result_schema": _entry_mapping(getattr(event_meta, "llm_result_schema", {}) or {}),
-                    "metadata": _entry_mapping(getattr(event_meta, "metadata", {}) or {}),
-                }
-            _set_declared_result_fields(
-                entry_preview, getattr(event_meta, "llm_result_fields", None)
-            )
-            meta_dict = getattr(event_meta, "metadata", None)
-            if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
-                entry_preview["llm_result_fields"] = meta_dict["llm_result_fields"]
+            entry_preview = _entry_preview(pid, eid, event_meta)
             results.append(entry_preview)
     except Exception:
         # Best-effort: preview must never break plugin listing.
@@ -1044,7 +1029,7 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
             if eid in seen:
                 continue
             seen.add(eid)
-            results.append(_router_entry_preview(pid, eid, event_meta))
+            results.append(_entry_preview(pid, eid, event_meta))
     except Exception:
         pass
 
@@ -1056,23 +1041,7 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
         if not eid or eid in seen:
             continue
         seen.add(eid)
-        results.append(
-            {
-                "id": eid,
-                "name": "",
-                "description": "",
-                "event_key": f"{pid}.{eid}",
-                "input_schema": {},
-                "return_message": "",
-                "event_type": "plugin_entry",
-                "kind": "action",
-                "auto_start": False,
-                "timeout": None,
-                "model_validate": True,
-                "llm_result_schema": {},
-                "metadata": {},
-            }
-        )
+        results.append(_entry_preview(pid, eid, None))
 
     return _overlay_entry_declaration(results, conf, pdata)
 

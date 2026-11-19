@@ -991,7 +991,9 @@ def test_model_cat_transition_contract_is_present():
     assert "const commitReturn = () => {" in avatar_source
     assert "if (_guardNekoVisitCatReturn(commitReturn)) return true;" in avatar_source
     assert "returnButtonContainer.setAttribute('data-neko-model-cat-transitioning', 'cat-to-model');" not in avatar_source
-    assert "nekoModelCatRevealPlaybackToken = 0" in source
+    # Reveal restarts alternate two URLs so they stay in the HTTP cache.
+    assert "nekoModelCatRevealPlaybackToken" not in source
+    assert "function nextNekoModelCatRevealPlaybackUrl(src)" in source
     assert "function buildNekoModelCatRevealPlaybackUrl(src, playbackToken)" in source
     assert "url.searchParams.set('reveal'" in source
     assert "function restartNekoModelCatRevealArt(container)" in source
@@ -2424,7 +2426,10 @@ def test_return_button_hover_click_animation_finishes_before_restore():
     assert '_clearNekoIdleHoverPlayback' in source
     assert '__nekoIdleHoverToken' in source
     assert '__nekoIdleHoverTimer' in source
-    assert 'art.__nekoIdleHoverSrc === clickSrc' in source
+    # #3762 gates the repeat-hover branch on a completed CAT1 hover cycle, so the
+    # previous source is read from the tier-scoped snapshot instead of `art` directly.
+    assert "const previousHoverSrc = art.__nekoIdleHoverTier === normalizedTier ? art.__nekoIdleHoverSrc : '';" in source
+    assert '!hoverCycleEnded && previousHoverSrc === clickSrc' in source
     assert 'Math.max(0, durationMs - elapsedMs)' in source
     assert 'keepHoverPlayback' in source
 
@@ -2439,8 +2444,11 @@ def test_cat1_walk_hover_invalidates_pending_playback_rate_source():
 
     assert '_clearNekoIdleGifPlaybackSource(art)' in play_hover_block
     assert play_hover_block.index('_clearNekoIdleGifPlaybackSource(art)') < play_hover_block.index('art.src = clickSrc')
+    # #3762 replaced the unconditional `art.__nekoIdleHoverSrc === clickSrc` repeat
+    # branch with a cycle-gated one; the repeat path must still discard the pending
+    # GIF playback rate source before reusing the click source.
     repeat_hover_block = play_hover_block[
-        play_hover_block.index('if (art.__nekoIdleHoverSrc === clickSrc)'):
+        play_hover_block.index('if (!hoverCycleEnded && previousHoverSrc === clickSrc)'):
         play_hover_block.index('_clearNekoIdleHoverPlayback(art)')
     ]
     assert '_clearNekoIdleGifPlaybackSource(art)' in repeat_hover_block

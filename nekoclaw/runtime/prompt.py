@@ -18,9 +18,22 @@ The prompt is built once per session and never changes afterwards, so a
 provider can cache it. Anything that changes while the session runs (the time,
 running jobs, the todo list) is appended to the conversation instead.
 
-Layout: our identity paragraphs, the environment, one paragraph per offered
-tool in dsh's order, our paragraphs for ``report`` and ``note_lesson``, the
-reply-language sentence, and finally the host's own instructions.
+Layout: our identity paragraphs, one paragraph per offered tool in dsh's
+order, our paragraphs for ``report`` and ``note_lesson``, the paragraph on
+the user's language, the host's own instructions, and finally the
+environment.
+
+The order is from what every session is told alike to what only this one
+is. The working directory is a session's own (each has one, unless a
+project names a directory); everything in front of it is the same for two
+sessions that are offered the same tools and given the same instructions
+by the host (the same character, the same project and its rules: where
+those differ, the head ends there). A provider may keep the head of a
+request it has seen and charge less for reading it again, which is up to
+the provider: with what differs at the end, the request of a session that
+was just opened shares its head with those of the sessions before it, up
+to there. (With the environment second, as it was, they shared the
+identity paragraphs.)
 """
 
 from __future__ import annotations
@@ -53,7 +66,6 @@ def build_system_prompt(
     tool_names: Collection[str],
     workdir: str,
     platform: str,
-    reply_language: str | None = None,
     instructions: str | None = None,
 ) -> str:
     """Return the system prompt for a session offering ``tool_names``."""
@@ -64,7 +76,7 @@ def build_system_prompt(
         .replace("<<PLATFORM>>", _PLATFORM_NAMES.get(platform, platform))
         .replace("<<SHELL>>", shell)
     )
-    parts = [texts.TASK_AGENT_IDENTITY, environment]
+    parts = [texts.TASK_AGENT_IDENTITY]
     for name, triggers, text in texts.TOOL_GUIDANCE_SECTIONS:
         if any(trigger in offered for trigger in triggers):
             parts.append(_tool_paragraph(name, text, offered))
@@ -72,10 +84,11 @@ def build_system_prompt(
         parts.append(texts.REPORT_GUIDANCE)
     if "note_lesson" in offered:
         parts.append(texts.NOTE_LESSON_GUIDANCE)
-    if reply_language and reply_language.strip():
-        parts.append(
-            texts.REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", reply_language.strip())
-        )
+    if "report" in offered or "ask_user_question" in offered:
+        # Which language that is, is said with each commission.
+        parts.append(texts.USER_LANGUAGE_GUIDANCE)
     if instructions and instructions.strip():
         parts.append(instructions.strip())
+    # What is this session's own comes last; see the module docstring.
+    parts.append(environment)
     return "\n\n".join(parts)
