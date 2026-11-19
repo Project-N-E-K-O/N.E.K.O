@@ -66,6 +66,20 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-17-chatgpt-independent-settings",
+        "2026-11-16-chatgpt-subscription-toggle",
+        "2026-11-15-nekoclaw-browser-custom-tts-merge",
+        "2026-11-13-chatgpt-review-main-merge",
+        "2026-11-10-chatgpt-subscription",
+        "2026-11-10-provider-cat-visit-merge",
+        "2026-11-11-atlascloud-assist-provider-main-merge",
+        "2026-11-10-cat-visit-sync-main-merge",
+
+        "2026-11-11-air-basketball-main-merge",
+        "2026-11-02-atlascloud-assist-provider-main-merge",
+        "2026-11-10-air-basketball-shared-court",
+        "2026-11-11-sync-evidence-notices",
+
         "2026-11-15-nekoclaw-browser-deepseek-tts-merge",
         "2026-11-15-custom-tts-voice-fallback-hint",
         "2026-11-14-nekoclaw-browser-theater-market-merge",
@@ -90,6 +104,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-02-atlascloud-assist-provider-main-merge",
         "2026-11-10-air-basketball-shared-court",
         "2026-11-10-cat-visit-sync-main-merge",
+
         "2026-11-09-sync-recent-file-unreadable",
         "2026-11-05-cat-visit-exit-confirmation",
         "2026-11-05-cat-visit-opper-main-merge",
@@ -580,7 +595,9 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "b693d242a7b686710faa8f614770c916fcccf3d033bc69fee33168b8c4d2db34"
+LOCALE_KEY_SIGNATURE = "3721bf171d2ea71b84ff79e2624ff8730b5b69e5d9065faee0582dcb94f33e2f"
+
+
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

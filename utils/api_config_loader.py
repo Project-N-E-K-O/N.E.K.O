@@ -308,6 +308,8 @@ def get_assist_api_providers_for_frontend(force_reload: bool = False) -> list:
     
     result = []
     for key, profile in assist_providers.items():
+        if profile.get('model_slot_only'):
+            continue
         result.append({
             'key': profile.get('key', key),
             'name': profile.get('name', key),

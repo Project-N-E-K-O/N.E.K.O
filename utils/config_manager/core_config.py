@@ -1287,8 +1287,13 @@ class CoreConfigMixin:
             config['AGENT_MODEL_API_KEY'] = config.get('OPENROUTER_API_KEY', '')
 
         # Map custom API configuration using uppercase underscore internal keys, retaining existing defaults for omitted fields.
-        enable_custom_api = core_cfg.get('enableCustomApi', False)
+        from utils.chatgpt_subscription import runtime_custom_api
+        enable_custom_api, subscription_slots = runtime_custom_api(core_cfg)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
+        config['SUBSCRIPTION_MODEL_SLOTS'] = [
+            {'gameMain': 'game_main', 'gameSummary': 'game_summary'}.get(slot, slot)
+            for slot in subscription_slots
+        ]
 
         # GPT-SoVITS enablement uses ttsModelProvider as the single source of truth (see
         # docs/design/tts-voice-source-unification.md §3/§4). Derive it at this choke point;
@@ -1363,7 +1368,7 @@ class CoreConfigMixin:
             config['TTS_MODEL_URL'] = normalize_gsv_api_url(core_cfg.get('ttsModelUrl'))
 
         # Allow model-field overrides only when custom API is enabled.
-        if enable_custom_api:
+        if enable_custom_api or subscription_slots:
             assist_model_defaults = {
                 key: config.get(key, '') for key in self._SLOT_PROFILE_MODEL_KEYS.values()
             }
@@ -1463,6 +1468,8 @@ class CoreConfigMixin:
                 ('tts',          'TTS_MODEL',           'TTS_MODEL_URL',          'TTS_MODEL_API_KEY'),
             ]
             for prefix, model_key, url_key, apikey_key in _custom_api_fields:
+                if not enable_custom_api and prefix not in subscription_slots:
+                    continue
                 # Read normalized snapshot values above rather than raw core_cfg: when omni selects a provider
                 # without realtime support, the snapshot already falls back to follow_core. URL/model/key
                 # overrides must follow that same path, avoiding leftover autofilled values.
@@ -1666,7 +1673,7 @@ class CoreConfigMixin:
                         config[apikey_key] = cfg_key
 
             # TTS Voice ID serves as fallback for character voice_id.
-            if core_cfg.get('ttsVoiceId') is not None:
+            if enable_custom_api and core_cfg.get('ttsVoiceId') is not None:
                 config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
 
         if config['GPTSOVITS_ENABLED'] and core_cfg.get('ttsVoiceId') is not None:
@@ -1769,7 +1776,8 @@ class CoreConfigMixin:
         from utils.config_manager import get_assist_api_profiles, get_core_api_profiles
 
         core_config = self.get_core_config() if _core_config is None else _core_config
-        enable_custom_api = core_config.get('ENABLE_CUSTOM_API', False)
+        enable_custom_api = (core_config.get('ENABLE_CUSTOM_API', False)
+                             or model_type in core_config.get('SUBSCRIPTION_MODEL_SLOTS', []))
         if model_type == "image":
             from utils.image_generation.config import resolve_image_config
             image = resolve_image_config(
@@ -1885,7 +1893,7 @@ class CoreConfigMixin:
 
         def _normalize_provider_type_value(value: object) -> str:
             provider_type = str(value or 'openai_compatible').strip().lower()
-            if provider_type not in ('openai_compatible', 'anthropic', 'websocket'):
+            if provider_type not in ('openai_compatible', 'anthropic', 'websocket', 'chatgpt'):
                 return 'openai_compatible'
             return provider_type
 
@@ -2156,10 +2164,11 @@ class CoreConfigMixin:
     def is_agent_api_ready(self) -> tuple[bool, list[str]]:
         """
         Agent mode readiness check:
-        - a usable AGENT_MODEL (model/url/api_key) is required
+        - AGENT_MODEL and URL are required; API-key providers also need a key.
+          ChatGPT resolves OAuth credentials at request time, including session validation.
         - whether it is free (quota counting / frontend hints) is decided separately by
           is_agent_free() and is unrelated to this check: readiness only cares whether the
-          model/url/key trio is filled in and a request can be made. free-access is a valid
+          provider configuration is filled in. free-access is a valid
           placeholder token for the truly free agent and should pass the gate; dirty configs
           (placeholder key against a self-paid endpoint) are caught downstream by 401, not here.
         """
@@ -2170,7 +2179,7 @@ class CoreConfigMixin:
         if not (agent_api.get('base_url') or '').strip():
             reasons.append("Agent API URL 未配置")
         api_key = (agent_api.get('api_key') or '').strip()
-        if not api_key:
+        if not api_key and agent_api.get('provider_type') != 'chatgpt':
             reasons.append("Agent API Key 未配置或不可用")
         return len(reasons) == 0, reasons
 

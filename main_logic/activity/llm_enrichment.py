@@ -468,7 +468,7 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
     model = cfg.get('model')
     api_key = cfg.get('api_key')
     base_url = cfg.get('base_url')
-    if not model or not api_key:
+    if not model or (not api_key and cfg.get('provider_type') != 'chatgpt'):
         _report_failure(label, 'emotion_model_or_api_key_missing')
         return None
 
@@ -521,7 +521,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
     model = cfg.get('model')
     api_key = cfg.get('api_key')
     base_url = cfg.get('base_url')
-    if not model or not api_key:
+    if not model or (not api_key and cfg.get('provider_type') != 'chatgpt'):
         _report_failure(label, 'summary_model_or_api_key_missing')
         return None
 

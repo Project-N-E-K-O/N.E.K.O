@@ -243,6 +243,7 @@ async def get_core_config_api():
             """Fall back to coreApiKey only when the provider matches the user-selected coreApi/assistApi."""
             return fallback_key if provider in _fallback_providers else ''
 
+        from utils.chatgpt_subscription import restricted_slots
         response = {
             "api_key": api_key,
             "coreApi": _core_api_provider,
@@ -288,6 +289,7 @@ async def get_core_config_api():
             "openclawTimeout": core_cfg.get('openclawTimeout'),
             "openclawDefaultSenderId": core_cfg.get('openclawDefaultSenderId'),
             "enableCustomApi": core_cfg.get('enableCustomApi', False),
+            "chatgptIndependentSlots": restricted_slots(core_cfg, CORE_CONFIG_MODEL_TYPES),
             "resolvedProviderUrls": core_cfg.get('resolvedProviderUrls', {}) if isinstance(core_cfg.get('resolvedProviderUrls'), dict) else {},
             # Custom API fields: Provider / Url / Id / ApiKey per model type
             **{
@@ -402,6 +404,42 @@ async def update_core_config(request: Request):
                 "error": "core_config.json 读取失败（文件可能已损坏），为避免覆盖现有配置，本次未保存",
             }
         core_cfg = deepcopy(existing_core_cfg)
+
+        # A stale tab must not undo managed providers while leaving the switch on.
+        # Model IDs remain editable. Secret sentinels mean "keep existing".
+        subscription = existing_core_cfg.get('chatgptSubscription')
+        if subscription and any(
+            key in data and not key.endswith('ModelId')
+            and not (key.endswith('ApiKey') and is_core_config_secret_placeholder(data[key]))
+            and not json_values_equal(data[key], existing_core_cfg.get(key, ''))
+            for key in subscription['fields']
+        ):
+            return {'success': False, 'error': 'Turn off ChatGPT subscription before changing managed providers.',
+                    'error_code': 'chatgptManagedSettings'}
+
+        from utils.chatgpt_subscription import restricted_slots
+        for slot in restricted_slots(existing_core_cfg, CORE_CONFIG_MODEL_TYPES):
+            for suffix in ('Provider', 'Url', 'Id', 'ApiKey'):
+                key = f'{slot}Model{suffix}'
+                if key not in data:
+                    continue
+                incoming = data[key]
+                stored = existing_core_cfg.get(key, '')
+                if suffix == 'ApiKey' and is_core_config_secret_placeholder(incoming):
+                    continue
+                if suffix == 'Provider':
+                    default = 'disabled' if slot == 'image' else 'follow_core' if slot == 'omni' else 'follow_assist'
+                    if slot != 'image' and (existing_core_cfg.get(f'{slot}ModelUrl')
+                                           or existing_core_cfg.get(f'{slot}ModelApiKey')):
+                        default = 'custom'
+                    incoming, stored = incoming or default, stored or default
+                if not json_values_equal(incoming, stored):
+                    return {'success': False,
+                            'error': 'Turn off ChatGPT subscription and enable custom API before changing independent model settings.',
+                            'error_code': 'chatgptIndependentSettings'}
+            # Preserve dormant values, including absent defaults, during ordinary saves.
+            for suffix in ('Provider', 'Url', 'Id', 'ApiKey'):
+                data.pop(f'{slot}Model{suffix}', None)
 
         def _incoming_provider(field, error_message):
             if field not in data:
@@ -698,6 +736,15 @@ async def update_core_config(request: Request):
                         apply_core_config_secret_update(core_cfg, data, field)
                     else:
                         core_cfg[field] = data[field]
+        # OAuth is a per-model choice with an account-specific model catalog.
+        for mt in CORE_CONFIG_MODEL_TYPES:
+            if core_cfg.get(f'{mt}ModelProvider') == 'chatgpt':
+                if mt not in ('conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion', 'vision', 'agent'):
+                    return {"success": False, "error": "ChatGPT plan usage supports text and vision slots only"}
+                if not str(core_cfg.get(f'{mt}ModelId') or '').strip():
+                    return {"success": False, "error": "Select an available ChatGPT model before saving"}
+                core_cfg[f'{mt}ModelUrl'] = 'https://api.openai.com/v1'
+                core_cfg[f'{mt}ModelApiKey'] = ''
         # Lazy migration after retiring gptsovitsEnabled, at the save boundary, symmetric with #1842 voice_id:
         # ttsModelProvider=='gptsovits' is the sole GSV-enabled truth; old gptsovitsEnabled remains only
         # pre-#1830 compatibility fallback. Frontend loading pins enabled GSV dropdowns to 'gptsovits', so any submitted
@@ -755,94 +802,7 @@ async def update_core_config(request: Request):
 
         await ensure_default_yui_voice_for_free_api(config_manager, core_cfg)
 
-        # After API updates, notify every client first, then close sessions, then reload configuration
-        logger.info("API配置已更新，准备通知客户端并重置所有session...")
-        
-        # 1. Notify connected clients of upcoming refresh concurrently while WebSockets remain connected
-        # Capture (name, mgr, session) triples so notification and end_session operate on the same managers
-        # **and** the same sessions:
-        # - Manager identity prevents killing new managers introduced before phase two
-        # - Session identity prevents killing newly rotated sessions on existing managers between phases
-        #   (frontend reload reconnects immediately and starts a new session that phase two must preserve)
-        # end_session already has expected_session stale guards (core.py:3013/3026);
-        # pass the captured session to activate them.
-        session_manager = get_session_manager()
-        mgr_snapshot = [
-            (name, mgr, getattr(mgr, "session", None))
-            for name, mgr in session_manager.items()
-        ]
-        reload_payload = json.dumps({
-            "type": "reload_page",
-            "message": "API配置已更新，页面即将刷新"
-        })
-
-        async def _notify(lanlan_name, mgr):
-            if not (mgr.is_active and mgr.websocket):
-                return False
-            try:
-                await mgr.websocket.send_text(reload_payload)
-                logger.info(f"已通知 {lanlan_name} 的前端刷新页面")
-                return True
-            except Exception as e:
-                logger.warning(f"通知 {lanlan_name} 的WebSocket失败: {e}")
-                return False
-
-        _notify_results = await asyncio.gather(
-            *(_notify(n, m) for n, m, _session in mgr_snapshot),
-            return_exceptions=True,
-        )
-        notification_count = sum(1 for r in _notify_results if r is True)
-        logger.info(f"已通知 {notification_count} 个客户端")
-
-        # 2. Close all active sessions concurrently: end_session takes ~1s each, N seconds serially versus ~1s with gather
-        # Reuse the preceding (mgr, session) snapshot, preserving newly reconnected managers
-        # and new sessions rotated on existing managers meanwhile.
-        async def _end(lanlan_name, mgr, expected_session):
-            if not mgr.is_active or expected_session is None:
-                return None
-            try:
-                await mgr.end_session(by_server=True, expected_session=expected_session)
-                logger.info(f"{lanlan_name} 的session已结束")
-                return lanlan_name
-            except Exception as e:
-                logger.error(f"结束 {lanlan_name} 的session时出错: {e}")
-                return None
-
-        _end_results = await asyncio.gather(
-            *(_end(n, m, s) for n, m, s in mgr_snapshot),
-            return_exceptions=True,
-        )
-        sessions_ended = [r for r in _end_results if isinstance(r, str)]
-        
-        # 3. Reload configuration and rebuild session managers
-        logger.info("正在重新加载配置...")
-        try:
-            initialize_character_data = get_initialize_character_data()
-            await initialize_character_data()
-            logger.info("配置重新加载完成，新的API配置已生效")
-        except Exception as reload_error:
-            logger.error(f"重新加载配置失败: {reload_error}")
-            return {"success": False, "error": f"配置已保存但重新加载失败: {str(reload_error)}"}
-        
-        # 4. Notify agent_server to rebuild CUA adapter with fresh config
-        # per-call AsyncClient: cold path triggered only when users save API keys
-        try:
-            import httpx
-            from config import TOOL_SERVER_PORT
-            async with httpx.AsyncClient(timeout=5, proxy=None, trust_env=False) as client:
-                await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
-            logger.info("已通知 agent_server 刷新 CUA 适配器")
-        except Exception as notify_err:
-            logger.warning(f"通知 agent_server 刷新 CUA 失败 (非致命): {notify_err}")
-
-        logger.info(f"已通知 {notification_count} 个连接的客户端API配置已更新")
-        return {
-            "success": True,
-            "message": "API Key已保存并重新加载配置",
-            "sessions_ended": len(sessions_ended),
-            "connectivity": save_connectivity,
-            "resolvedProviderUrls": core_cfg.get('resolvedProviderUrls', {}),
-        }
+        return await reload_api_configuration(core_cfg, save_connectivity)
     except MaintenanceModeError:
         raise
     except Exception as e:
@@ -850,6 +810,98 @@ async def update_core_config(request: Request):
     finally:
         if save_lock_held:
             _core_api_save_lock.release()
+
+
+async def reload_api_configuration(core_cfg, save_connectivity=None):
+    """Apply a persisted API configuration to connected sessions and agents."""
+    # After API updates, notify every client first, then close sessions, then reload configuration
+    logger.info("API配置已更新，准备通知客户端并重置所有session...")
+
+    # 1. Notify connected clients of upcoming refresh concurrently while WebSockets remain connected
+    # Capture (name, mgr, session) triples so notification and end_session operate on the same managers
+    # **and** the same sessions:
+    # - Manager identity prevents killing new managers introduced before phase two
+    # - Session identity prevents killing newly rotated sessions on existing managers between phases
+    #   (frontend reload reconnects immediately and starts a new session that phase two must preserve)
+    # end_session already has expected_session stale guards (core.py:3013/3026);
+    # pass the captured session to activate them.
+    session_manager = get_session_manager()
+    mgr_snapshot = [
+        (name, mgr, getattr(mgr, "session", None))
+        for name, mgr in session_manager.items()
+    ]
+    reload_payload = json.dumps({
+        "type": "reload_page",
+        "message": "API配置已更新，页面即将刷新"
+    })
+
+    async def _notify(lanlan_name, mgr):
+        if not (mgr.is_active and mgr.websocket):
+            return False
+        try:
+            await mgr.websocket.send_text(reload_payload)
+            logger.info(f"已通知 {lanlan_name} 的前端刷新页面")
+            return True
+        except Exception as e:
+            logger.warning(f"通知 {lanlan_name} 的WebSocket失败: {e}")
+            return False
+
+    _notify_results = await asyncio.gather(
+        *(_notify(n, m) for n, m, _session in mgr_snapshot),
+        return_exceptions=True,
+    )
+    notification_count = sum(1 for r in _notify_results if r is True)
+    logger.info(f"已通知 {notification_count} 个客户端")
+
+    # 2. Close all active sessions concurrently: end_session takes ~1s each, N seconds serially versus ~1s with gather
+    # Reuse the preceding (mgr, session) snapshot, preserving newly reconnected managers
+    # and new sessions rotated on existing managers meanwhile.
+    async def _end(lanlan_name, mgr, expected_session):
+        if not mgr.is_active or expected_session is None:
+            return None
+        try:
+            await mgr.end_session(by_server=True, expected_session=expected_session)
+            logger.info(f"{lanlan_name} 的session已结束")
+            return lanlan_name
+        except Exception as e:
+            logger.error(f"结束 {lanlan_name} 的session时出错: {e}")
+            return None
+
+    _end_results = await asyncio.gather(
+        *(_end(n, m, s) for n, m, s in mgr_snapshot),
+        return_exceptions=True,
+    )
+    sessions_ended = [r for r in _end_results if isinstance(r, str)]
+
+    # 3. Reload configuration and rebuild session managers
+    logger.info("正在重新加载配置...")
+    try:
+        initialize_character_data = get_initialize_character_data()
+        await initialize_character_data()
+        logger.info("配置重新加载完成，新的API配置已生效")
+    except Exception as reload_error:
+        logger.error(f"重新加载配置失败: {reload_error}")
+        return {"success": False, "error": f"配置已保存但重新加载失败: {str(reload_error)}"}
+
+    # 4. Notify agent_server to rebuild CUA adapter with fresh config
+    # per-call AsyncClient: cold path triggered only when users save API keys
+    try:
+        import httpx
+        from config import TOOL_SERVER_PORT
+        async with httpx.AsyncClient(timeout=5, proxy=None, trust_env=False) as client:
+            await client.post(f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed")
+        logger.info("已通知 agent_server 刷新 CUA 适配器")
+    except Exception as notify_err:
+        logger.warning(f"通知 agent_server 刷新 CUA 失败 (非致命): {notify_err}")
+
+    logger.info(f"已通知 {notification_count} 个连接的客户端API配置已更新")
+    return {
+        "success": True,
+        "message": "API Key已保存并重新加载配置",
+        "sessions_ended": len(sessions_ended),
+        "connectivity": save_connectivity,
+        "resolvedProviderUrls": core_cfg.get('resolvedProviderUrls', {}),
+    }
 
 
 @router.get("/api_providers")

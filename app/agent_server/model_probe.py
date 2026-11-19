@@ -82,6 +82,11 @@ def classify_connectivity_exception(exc: Optional[Exception]) -> str:
     """
     if exc is None:
         return "AGENT_LLM_UNREACHABLE"
+    status = getattr(exc, "status_code", None)
+    if status in (401, 403):
+        return "AGENT_API_KEY_INVALID"
+    if status == 429:
+        return "AGENT_QUOTA_EXCEEDED"
     msg = str(exc).lower()
     if any(tok in msg for tok in _PERMANENT_AUTH_TOKENS):
         return "AGENT_API_KEY_INVALID"
@@ -114,7 +119,7 @@ class AgentModelProbe:
         One probe stays well under the gap the restore loop leaves between
         its tries, so tries never overlap.
         """
-        from config import LLM_PING_MAX_TOKENS, get_agent_extra_body
+        from config import LLM_PING_MAX_TOKENS, OPENAI_CONNECTIVITY_TEST_MAX_TOKENS, get_agent_extra_body
         from utils.llm_client import create_chat_llm
         from utils.token_tracker import set_call_type
 
@@ -148,7 +153,10 @@ class AgentModelProbe:
                 # passes, whatever it says; some answer with an empty message.
                 self._client.invoke_raw(
                     [{"role": "user", "content": "ok"}],
-                    max_completion_tokens=LLM_PING_MAX_TOKENS,
+                    max_completion_tokens=(
+                        OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
+                        if provider_type == "chatgpt" else LLM_PING_MAX_TOKENS
+                    ),
                     extra_body=extra or None,
                     timeout=timeout_s,
                 )
@@ -158,6 +166,13 @@ class AgentModelProbe:
                 return True, ""
             except Exception as e:
                 last_exc = e
+                from utils.llm_client.chatgpt_client import ChatGPTOutputLimitError
+                if isinstance(e, ChatGPTOutputLimitError):
+                    self.init_ok = True
+                    self.last_error = None
+                    return True, ""
+                if classify_connectivity_exception(e) in PERMANENT_CONNECTIVITY_REASONS:
+                    break
                 if attempt < _retries:
                     delay = 3 * (attempt + 1)
                     logger.info(

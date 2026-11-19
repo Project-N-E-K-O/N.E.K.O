@@ -311,7 +311,19 @@ async def test_call_topic_candidates_uses_localized_prompt_for_supported_languag
 
 
 @pytest.mark.asyncio
-async def test_invoke_emotion_tier_uses_project_message_classes(monkeypatch):
+@pytest.mark.parametrize("tier,method", [
+    ("emotion", "_invoke_emotion_tier"),
+    ("summary", "_invoke_capable_tier"),
+])
+@pytest.mark.parametrize("provider_type,api_key,model,expected_call", [
+    ("openai_compatible", "fake-key", "fake-model", True),
+    ("openai_compatible", "", "fake-model", False),
+    ("chatgpt", "", "fake-model", True),
+    ("chatgpt", "", "", False),
+])
+async def test_enrichment_auth_and_project_message_classes(
+    monkeypatch, tier, method, provider_type, api_key, model, expected_call,
+):
     from main_logic.activity import llm_enrichment
     from utils.llm_client import HumanMessage
 
@@ -322,11 +334,12 @@ async def test_invoke_emotion_tier_uses_project_message_classes(monkeypatch):
             return self.get_model_api_config(name)
 
         def get_model_api_config(self, name):
-            assert name == "emotion"
+            assert name == tier
             return {
-                "model": "fake-emotion-model",
-                "api_key": "fake-key",
+                "model": model,
+                "api_key": api_key,
                 "base_url": "https://example.invalid/v1",
+                "provider_type": provider_type,
             }
 
     class FakeResponse:
@@ -344,6 +357,8 @@ async def test_invoke_emotion_tier_uses_project_message_classes(monkeypatch):
             return FakeResponse()
 
     def fake_create_chat_llm(*args, **kwargs):
+        captured["provider_type"] = kwargs["provider_type"]
+        captured["api_key"] = args[2]
         return FakeLLM()
 
     monkeypatch.setattr(
@@ -353,13 +368,19 @@ async def test_invoke_emotion_tier_uses_project_message_classes(monkeypatch):
     monkeypatch.setattr("utils.llm_client.create_chat_llm", fake_create_chat_llm)
     monkeypatch.setattr("utils.token_tracker.set_call_type", lambda value: None)
 
-    raw = await llm_enrichment._invoke_emotion_tier(
+    raw = await getattr(llm_enrichment, method)(
         "提炼一个深话题",
         timeout=1.0,
         label="topic_candidates",
     )
 
+    if not expected_call:
+        assert raw is None
+        assert not captured
+        return
     assert raw == '{"topics":[]}'
+    assert captured["provider_type"] == provider_type
+    assert captured["api_key"] == api_key
     assert isinstance(captured["messages"][0], HumanMessage)
     assert captured["messages"][0].content == "提炼一个深话题"
 
