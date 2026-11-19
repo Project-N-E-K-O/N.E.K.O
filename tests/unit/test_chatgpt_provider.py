@@ -119,6 +119,71 @@ def test_refresh_failure_keeps_credentials_and_redacts(store, monkeypatch, statu
     assert store._read() == data
 
 
+def test_invalid_grant_disconnects_without_losing_registration(store, monkeypatch):
+    data = store._read()
+    data['accounts']['issued-1']['expires_at'] = 0
+    store._write(data)
+    registration = {key: data['accounts']['issued-1'][key]
+                    for key in ('client_id', 'subject', 'email', 'issuer')}
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(400, json={
+            'error': 'invalid_grant', 'error_description': 'test-refresh private detail',
+        })
+
+    monkeypatch.setattr(auth, 'http_client', lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(ChatGPTAuthError) as error:
+        store.access_token()
+    assert error.value.code == 'invalid_grant'
+    assert 'test-refresh' not in str(error.value)
+    after = store._read()
+    assert after['host_id'] == data['host_id']
+    assert after['accounts']['issued-1'] == registration
+    assert store.status()['accounts'][0]['connected'] is False
+    with pytest.raises(ChatGPTAuthError):
+        store.select('issued-1')
+    with pytest.raises(ChatGPTAuthError):
+        store.access_token()
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('status, payload', [
+    (400, {'error': 'invalid_client'}), (401, {'error': 'temporarily_unavailable'}),
+    (400, {'error': 'private-test-refresh'}), (400, {'error': {'code': 'invalid_grant'}}),
+    (400, ['invalid_grant']), (500, {'error': 'invalid_grant'}),
+])
+def test_other_oauth_failures_keep_saved_credentials(store, monkeypatch, status, payload):
+    data = store._read()
+    data['accounts']['issued-1']['expires_at'] = 0
+    store._write(data)
+    monkeypatch.setattr(auth, 'http_client', lambda: httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(status, json=payload),
+    )))
+    with pytest.raises(ChatGPTAuthError) as error:
+        store.access_token()
+    assert 'private-test-refresh' not in str(error.value)
+    assert getattr(error.value, 'code', None) != 'invalid_grant'
+    assert store._read() == data
+    assert store.status()['accounts'][0]['connected'] is True
+
+
+def test_refresh_network_failure_keeps_saved_credentials(store, monkeypatch):
+    data = store._read()
+    data['accounts']['issued-1']['expires_at'] = 0
+    store._write(data)
+
+    def handler(request):
+        raise httpx.ReadTimeout('fixture timeout', request=request)
+
+    monkeypatch.setattr(auth, 'http_client', lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(httpx.ReadTimeout):
+        store.access_token()
+    assert store._read() == data
+    assert store.status()['accounts'][0]['connected'] is True
+
+
 def test_logout_retains_registration_and_clears_all_tokens(store, monkeypatch):
     def handler(req):
         if req.method == "GET":
@@ -387,6 +452,33 @@ def test_factory_preserves_chatgpt_reasoning_settings(store, monkeypatch):
         client.close()
 
 
+@pytest.mark.parametrize('automatic', [{'reasoning_effort': 'none'}, {'reasoning': {'effort': 'none'}}])
+@pytest.mark.parametrize('explicit', [{'reasoning_effort': 'minimal'}, {'reasoning': {'effort': 'minimal'}}])
+def test_factory_explicit_model_kwargs_reasoning_wins_over_automatic(store, monkeypatch, automatic, explicit):
+    from utils.llm_client import create_chat_llm
+    from config import providers
+
+    monkeypatch.setattr(providers, 'get_extra_body', lambda model, base_url: automatic)
+    kwargs = {'extra_body': explicit}
+    client = create_chat_llm('gpt-5-nano', auth.RESOURCE, None,
+                            provider_type='chatgpt', credential_store=store, model_kwargs=kwargs)
+    try:
+        assert client._response_params('hello')['reasoning'] == {'effort': 'minimal'}
+        assert kwargs == {'extra_body': explicit}
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize('explicit', [{'reasoning_effort': 'low'}, {'reasoning': {'effort': 'low'}}])
+def test_explicit_extra_body_reasoning_wins_over_model_kwargs(store, explicit):
+    client = ChatChatGPT(model='test', credential_store=store, extra_body=explicit,
+                        model_kwargs={'extra_body': {'reasoning_effort': 'minimal'}})
+    try:
+        assert client._response_params('hello')['reasoning'] == {'effort': 'low'}
+    finally:
+        client.close()
+
+
 @pytest.mark.asyncio
 async def test_sdk_sse_stream_and_raw_calls_close_and_never_use_chat_completions(store):
     from openai import AsyncOpenAI
@@ -420,7 +512,7 @@ async def test_sdk_sse_stream_and_raw_calls_close_and_never_use_chat_completions
         assert raw.choices[0].message.content == "Hello"
         assert requests[0].url.path == "/v1/responses"
         assert requests[0].headers["authorization"] == "Bearer test-access"
-        assert json.loads(requests[0].content)["max_output_tokens"] == 1000
+        assert "max_output_tokens" not in json.loads(requests[0].content)
         payloads.pop()
         with pytest.raises(ChatGPTResponseError, match="before completion"):
             await client.ainvoke("hi")
@@ -632,7 +724,7 @@ def test_logout_retries_transient_revocation_and_always_clears_tokens(store, mon
     assert 'refresh_token' not in store.registration('issued-1')[1]
 
 
-def test_response_params_preserve_tools_formats_and_per_call_budget(store):
+def test_response_params_preserve_tools_formats_without_unsupported_budget(store):
     tool = {'type': 'function', 'function': {'name': 'lookup', 'parameters': {'type': 'object', 'properties': {}}}}
     client = ChatChatGPT(model='test', credential_store=store, tools=[tool], max_completion_tokens=512)
     try:
@@ -642,9 +734,9 @@ def test_response_params_preserve_tools_formats_and_per_call_budget(store):
         assert params['tools'] == [{'type': 'function', 'strict': False, **tool['function']}]
         assert params['tool_choice'] == {'type': 'function', 'name': 'lookup'}
         assert params['text']['format']['type'] == 'json_schema'
-        assert params['max_output_tokens'] == 64
+        assert 'max_output_tokens' not in params
         next_params = client._response_params('Reply with JSON', tools=[], response_format={'type': 'json_object'})
-        assert next_params['max_output_tokens'] == 512
+        assert 'max_output_tokens' not in next_params
         assert 'tools' not in next_params and 'tool_choice' not in next_params
         assert next_params['text'] == {'format': {'type': 'json_object'}}
     finally:

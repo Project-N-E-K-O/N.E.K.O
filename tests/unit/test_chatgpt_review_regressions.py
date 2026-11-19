@@ -87,11 +87,12 @@ async def test_output_limit_sdk_paths_record_usage_once(entry, credential_store,
         assert len(requests) == 1
         assert requests[0].headers['authorization'] == 'Bearer fixture-token'
         assert requests[0].url.path == '/v1/responses'
+        assert 'max_output_tokens' not in json.loads(requests[0].content)
     finally:
         await client.aclose()
 
 
-def test_focus_and_parallel_tool_parameters_preserve_budget(credential_store):
+def test_focus_and_parallel_tool_parameters_omit_unsupported_budget(credential_store):
     client = ChatChatGPT(model='gpt-5-nano', credential_store=credential_store,
                         max_completion_tokens=128, timeout=5, extra_body={'reasoning_effort': 'minimal'})
     try:
@@ -101,7 +102,7 @@ def test_focus_and_parallel_tool_parameters_preserve_budget(credential_store):
                                        parallel_tool_calls=False, max_completion_tokens=1024)
         assert body['reasoning'] == {'effort': 'low'}
         assert body['parallel_tool_calls'] is False
-        assert body['max_output_tokens'] == 1024
+        assert 'max_output_tokens' not in body
         assert body['store'] is False and body['model'] == 'gpt-5-nano'
     finally:
         client.close()
@@ -155,7 +156,7 @@ def test_agent_probe_does_not_retry_terminal_or_budget_response(error, expected,
     assert client.invoke_raw.call_args.kwargs["max_completion_tokens"] == OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
 
 
-@pytest.mark.parametrize('outcome', ['complete', 'truncated', 'auth', 'quota'])
+@pytest.mark.parametrize('outcome', ['complete', 'truncated', 'auth', 'quota', 'failed'])
 @pytest.mark.asyncio
 async def test_nekoclaw_responses_tools_and_terminal_errors(outcome, credential_store, monkeypatch):
     """Exercise the current task-agent path through the real Responses parser."""
@@ -174,6 +175,10 @@ async def test_nekoclaw_responses_tools_and_terminal_errors(outcome, credential_
             event['type'] = 'response.completed'
             event['response']['status'] = 'completed'
             event['response'].pop('incomplete_details')
+        elif outcome == 'failed':
+            event = {'type': 'response.failed', 'response': {
+                'id': 'test', 'status': 'failed', 'error': {'code': 'server_error'},
+            }}
         return httpx.Response(200, headers={'content-type': 'text/event-stream'},
                               text='data: ' + json.dumps(event) + '\n\n')
 
@@ -192,7 +197,8 @@ async def test_nekoclaw_responses_tools_and_terminal_errors(outcome, credential_
         assert len(requests) == 1
         assert requests[0].headers['authorization'] == 'Bearer fixture-token'
         assert requests[0].url.path == '/v1/responses'
-        if outcome in ('auth', 'quota'):
+        assert 'max_output_tokens' not in json.loads(requests[0].content)
+        if outcome in ('auth', 'quota', 'failed'):
             assert isinstance(events[-1], AssistantErrorEvent)
         else:
             assert isinstance(events[-1], AssistantDoneEvent)

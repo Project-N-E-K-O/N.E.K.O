@@ -70,7 +70,12 @@ def create_chat_llm(
         from .chatgpt_client import ChatChatGPT
 
         if extra_body is _SENTINEL:
-            extra_body = get_extra_body(model, base_url) or None
+            explicit = (model_kwargs or {}).get("extra_body")
+            # User-supplied reasoning wins over the inferred model default.
+            extra_body = (
+                explicit if ChatChatGPT._reasoning_params(explicit)
+                else get_extra_body(model, base_url) or None
+            )
         return ChatChatGPT(
             model=model, base_url=base_url, streaming=streaming,
             max_completion_tokens=max_completion_tokens, max_tokens=max_tokens,

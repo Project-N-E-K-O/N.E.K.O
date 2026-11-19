@@ -3548,7 +3548,7 @@ function buildKeyBookSecretPayload(allBookKeys, registry) {
 async function save_button_down(e) {
 
     if (e && e.preventDefault) e.preventDefault();
-    if (_apiSaveInProgress) return;
+    if (_apiSaveInProgress || window.isChatGPTSettingsBusy?.()) return;
 
     const apiKeyInput = document.getElementById('apiKeyInput');
 
@@ -3978,8 +3978,12 @@ function prepareChatGPTIndependentSettingsForSave(params) {
     return payload;
 }
 
+function isApiSettingsSaveBusy() {
+    return _apiSaveInProgress || document.getElementById('warning-modal')?.style.display === 'flex';
+}
+
 async function saveApiKey(params) {
-    if (_apiSaveInProgress) return;
+    if (_apiSaveInProgress || window.isChatGPTSettingsBusy?.()) return;
     params = prepareChatGPTIndependentSettingsForSave(params);
     if (!params) {
         showStatus(window.t ? window.t('api.chatgpt.independentSettings')
@@ -4819,6 +4823,33 @@ const ConnectivityManager = {
 
     /** 用于取消正在进行的测试请求 */
     _abortControllers: {},
+    _chatgptAccountGeneration: 0,
+
+    isCurrentTestAccount(params, generation) {
+        return (params.provider_key !== 'chatgpt' && params.provider_type !== 'chatgpt')
+            || generation === this._chatgptAccountGeneration;
+    },
+
+    invalidateChatGPTAccount() {
+        ++this._chatgptAccountGeneration;
+        const keys = new Set([
+            ...Object.keys(this.keyStatusMap), ...Object.keys(this.keyErrorMap),
+            ...Object.keys(this.keyLightsMap), ...Object.keys(this.keyErrorDisplayMap),
+            ...Object.keys(this._abortControllers),
+        ]);
+        for (const key of keys) {
+            if (!/^(core|assist)\|chatgpt\|/.test(key)) continue;
+            const request = this._abortControllers[key];
+            if (request) {
+                request.cancelledByNewerTest = true;
+                request.controller.abort();
+            }
+            this.keyStatusMap[key] = LightStatus.UNTESTED;
+            this.keyErrorMap[key] = null;
+            this.syncLightsForKey(key);
+            this.syncErrorDisplaysForKey(key);
+        }
+    },
 
     /**
      * 解析某个 API 配置的实际 Key。
@@ -5129,6 +5160,9 @@ const ConnectivityManager = {
      */
     async testKey(params) {
         const { provider_key, provider_scope, url, api_key: apiKey, model, voice_id: voiceId, provider_type: providerType, sub_type: subType, is_free: isFree, cache_id: cacheId } = params;
+        const accountGeneration = this._chatgptAccountGeneration;
+        const accountChanged = () => (provider_key === 'chatgpt' || providerType === 'chatgpt')
+            && accountGeneration !== this._chatgptAccountGeneration;
         if (isMaskedSecretValue(apiKey)) {
             return {
                 success: false,
@@ -5254,6 +5288,7 @@ const ConnectivityManager = {
 
             const result = await sendRequest(url);
             cleanupRequest();
+            if (accountChanged()) return {success: false, cancelled: true};
             if (result.success && result.resolved_url && provider_key && provider_scope) {
                 rememberResolvedProviderUrl(provider_scope, provider_key, result.resolved_url);
             }
@@ -5263,6 +5298,8 @@ const ConnectivityManager = {
             if (cacheId && this._abortControllers[cacheId] === controllerState) {
                 delete this._abortControllers[cacheId];
             }
+
+            if (accountChanged()) return {success: false, cancelled: true};
 
             if (err.name === 'AbortError') {
                 if (controllerState.cancelledByNewerTest) {
@@ -5365,8 +5402,9 @@ const ConnectivityManager = {
 
         // 并发测试所有唯一配置
         const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
+            const accountGeneration = this._chatgptAccountGeneration;
             const result = await this.testKey({ ...config, cache_id: cacheId });
-            if (result.cancelled) {
+            if (result.cancelled || !this.isCurrentTestAccount(config, accountGeneration)) {
                 return {
                     cacheId,
                     cancelled: true,
@@ -5509,8 +5547,9 @@ const ConnectivityManager = {
 
         // 并发测试
         const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
+            const accountGeneration = this._chatgptAccountGeneration;
             const result = await this.testKey({ ...config, cache_id: cacheId });
-            if (result.cancelled) {
+            if (result.cancelled || !this.isCurrentTestAccount(config, accountGeneration)) {
                 return;
             }
             if (result.success) {
@@ -5680,6 +5719,7 @@ function initConnectivityLights() {
                 ConnectivityManager.keyErrorMap[resolved.cacheId] = null;
                 ConnectivityManager.syncLightsForKey(resolved.cacheId);
                 ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
+                const accountGeneration = ConnectivityManager._chatgptAccountGeneration;
                 const result = await ConnectivityManager.testKey({
                     provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
                     url: resolved.url, api_key: resolved.key,
@@ -5690,7 +5730,8 @@ function initConnectivityLights() {
                     is_free: isFree,
                     cache_id: resolved.cacheId
                 });
-                if (result.cancelled) {
+                if (result.cancelled || !ConnectivityManager.isCurrentTestAccount({provider_key: resolved.providerKey,
+                    provider_type: resolved.providerType}, accountGeneration)) {
                     coreTestBtn.classList.remove('testing');
                     coreTestBtn.disabled = false;
                     return;
@@ -5742,6 +5783,7 @@ function initConnectivityLights() {
                 ConnectivityManager.keyErrorMap[resolved.cacheId] = null;
                 ConnectivityManager.syncLightsForKey(resolved.cacheId);
                 ConnectivityManager.syncErrorDisplaysForKey(resolved.cacheId);
+                const accountGeneration = ConnectivityManager._chatgptAccountGeneration;
                 const result = await ConnectivityManager.testKey({
                     provider_key: resolved.providerKey, provider_scope: resolved.providerScope,
                     url: resolved.url, api_key: resolved.key,
@@ -5752,7 +5794,8 @@ function initConnectivityLights() {
                     is_free: isFree,
                     cache_id: resolved.cacheId
                 });
-                if (result.cancelled) {
+                if (result.cancelled || !ConnectivityManager.isCurrentTestAccount({provider_key: resolved.providerKey,
+                    provider_type: resolved.providerType}, accountGeneration)) {
                     assistTestBtn.classList.remove('testing');
                     assistTestBtn.disabled = false;
                     return;

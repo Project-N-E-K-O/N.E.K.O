@@ -1301,6 +1301,8 @@
     },
     "api": {
     "chatgpt": {
+      "title": "Assinatura do ChatGPT",
+      "usageLimit": "O limite de uso do ChatGPT foi atingido ou seu plano não está disponível. Consulte a página de uso antes de tentar novamente.",
       "description": "Use seu plano do ChatGPT para conversas de texto e compreensão de imagens. O reconhecimento e a síntese de voz mantêm seus próprios provedores.",
       "account": "Conta do ChatGPT",
       "login": "Continue with ChatGPT",

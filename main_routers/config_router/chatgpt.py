@@ -119,6 +119,7 @@ async def chatgpt_logout(body: AccountRequest):
     from utils.chatgpt_subscription import disable
     restored = False
     config = None
+    sign_out_error = None
     async with _core_api_save_lock:
         if _attempt and not _attempt.done.is_set():
             raise HTTPException(400, 'Complete the pending ChatGPT sign-in before changing accounts.')
@@ -133,8 +134,15 @@ async def chatgpt_logout(body: AccountRequest):
                 restored = disable(value)
                 return deepcopy(value)
             config = await get_config_manager().aupdate_json_config('core_config.json', restore)
-        confirmed = await _safe_call(_change_account, "sign_out", body.account_id)
+        try:
+            confirmed = await _safe_call(_change_account, "sign_out", body.account_id)
+        except HTTPException as exc:
+            # The restored configuration is already committed. Reload it even
+            # when credential cleanup fails, after releasing the save lock.
+            sign_out_error = exc
     result = await reload_api_configuration(config) if restored else {'success': True}
+    if sign_out_error is not None:
+        raise sign_out_error
     return {**result, "revocation_confirmed": confirmed, "subscription_restored": restored}
 
 
@@ -168,7 +176,7 @@ async def chatgpt_subscription_update(body: SubscriptionRequest):
     from utils.config_manager import get_config_manager
     from utils.chatgpt_subscription import enable, disable, preview, supported_slots
     from .core_config import _core_api_save_lock, reload_api_configuration
-    from utils.llm_client.chatgpt_client import ChatChatGPT
+    from utils.llm_client.chatgpt_client import ChatChatGPT, ChatGPTResponseError
     from copy import deepcopy
 
     manager = get_config_manager()
@@ -186,6 +194,9 @@ async def chatgpt_subscription_update(body: SubscriptionRequest):
                 models = await client.alist_models()
             except ChatGPTAuthError:
                 raise HTTPException(400, 'signInRequired') from None
+            except ChatGPTResponseError as exc:
+                detail = 'usageLimit' if exc.status_code == 429 else 'failed'
+                raise HTTPException(exc.status_code or 502, detail) from None
             except httpx.HTTPError:
                 raise HTTPException(503, 'failed') from None
             finally:

@@ -5,18 +5,21 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 function surface(initial, respond = () => ({}), browser = false) {
-    const nodes = Object.fromEntries(['account', 'status', 'login', 'add', 'logout', 'authorization', 'enabled', 'toggle-btn', 'options'].map(id => [id, {
+    const nodes = Object.fromEntries(['account', 'status', 'login', 'add', 'logout', 'authorization', 'enabled', 'toggle-btn', 'options', 'confirm-modal', 'confirm-message', 'confirm-cancel', 'confirm-accept'].map(id => [id, {
         value: '', options: [], disabled: false, textContent: '', listeners: {},
-        hidden: true, checked: false, classList: {toggle() {}},
+        hidden: true, checked: false, style: {display: 'none'}, classList: {toggle() {}},
         setAttribute(name, value) { this[name] = value; }, removeAttribute(name) { delete this[name]; },
         replaceChildren() { this.options = []; },
         appendChild(option) { this.options.push(option); },
-        addEventListener(event, fn) { this.listeners[event] = fn; }
+        addEventListener(event, fn) { this.listeners[event] = fn; },
+        focus() { context.document.activeElement = this; }
     }]));
     let state = initial;
     let subscription = { enabled: false, slots: ['conversation'], overwritten: ['conversation'], revision: 'fixture' };
     let reloads = 0;
+    let reloadWork;
     let invalidations = 0;
+    let connectivityInvalidations = 0;
     let opened = '';
     let timer;
     const calls = [];
@@ -27,7 +30,8 @@ function surface(initial, respond = () => ({}), browser = false) {
     };
     if (browser) delete window.electronShell;
     const context = {
-        window, URL, loadCurrentApiKey: async () => { reloads++; },
+        window, URL, _apiSaveInProgress: false, loadCurrentApiKey: async () => { reloads++; await reloadWork?.(); },
+        ConnectivityManager: {invalidateChatGPTAccount() { connectivityInvalidations++; }},
         document: {
             getElementById: id => nodes[id.replace('chatgpt-', '')],
             createElement: () => ({value: '', textContent: ''})
@@ -44,18 +48,32 @@ function surface(initial, respond = () => ({}), browser = false) {
             if (url.split('?')[0].endsWith('/subscription') && options.method === 'GET') {
                 return {ok: true, json: async () => subscription};
             }
-            const data = respond(url, JSON.parse(options.body));
+            const data = await respond(url, JSON.parse(options.body));
+            if (data.rawResponse) return data.rawResponse;
             return {ok: !data.detail, json: async () => data};
         }
     };
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../static/js/chatgpt_settings.js'), 'utf8'), context);
     return {nodes, calls, window, setState: value => { state = value; },
         setSubscription: value => { subscription = {...subscription, ...value}; }, get reloads() { return reloads; },
+        setSaveBusy: value => { context._apiSaveInProgress = value; },
+        setReloadWork: value => { reloadWork = value; },
+        get activeElement() { return context.document.activeElement; },
+        get connectivityInvalidations() { return connectivityInvalidations; },
         get opened() { return opened; }, get timer() { return timer; },
         get invalidations() { return invalidations; }};
 }
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const signedIn = {accounts: [{id: 'account-12345678', email: 'demo@example.test'}], active: 'account-12345678', login_status: 'idle', error: ''};
+
+async function toggle(ui, requested, accept = true) {
+    ui.nodes.enabled.checked = requested;
+    const action = ui.nodes.enabled.listeners.change();
+    await flush();
+    assert.equal(ui.nodes['confirm-modal'].style.display, 'flex');
+    ui.nodes[accept ? 'confirm-accept' : 'confirm-cancel'].listeners.click();
+    await action;
+}
 
 test('active account labels use text content and status requests are local/no-store', async () => {
     const ui = surface({...signedIn, accounts: [{id: signedIn.active, email: '<img src=x onerror=alert(1)>'}]});
@@ -101,6 +119,7 @@ test('unchanged subscription polls preserve model pickers and authorization chan
     ui.setState({...signedIn, accounts: [...signedIn.accounts, {id: 'second', connected: true}], active: 'second'});
     await ui.timer();
     assert.equal(ui.invalidations, 4);
+    assert.equal(ui.connectivityInvalidations, 4);
     await ui.timer();
     assert.equal(ui.invalidations, 4);
 });
@@ -215,6 +234,64 @@ test('named subscription probes carry the model and separate model results', asy
     assert.equal('model' in calls[2], false);
 });
 
+test('account invalidation clears only subscription lights and rejects even successful late tests', async () => {
+    const source = fs.readFileSync(path.join(__dirname, '../../static/js/api_key_settings.js'), 'utf8');
+    const snippet = source.slice(source.indexOf('function buildConnectivityCacheId('), source.indexOf('function showMaskedSecretConnectivityNotice('));
+    const nodes = {
+        enableCustomApi: {checked: true}, conversationModelProvider: {value: 'chatgpt'},
+        conversationModelId: {value: 'fixture-model'},
+    };
+    let complete;
+    let signal;
+    const context = {
+        AbortController, setTimeout, clearTimeout, console: {log() {}},
+        document: {getElementById: id => nodes[id] || null},
+        _assistApiProviders: {}, _coreApiProviders: {}, CONNECTIVITY_TESTABLE_TYPES: ['conversation'],
+        getEffectiveAssistKey: () => '', getEffectiveAssistUrl: () => 'https://api.openai.com/v1',
+        getProviderInfo: () => ({}), getProviderType: () => 'chatgpt',
+        isMaskedSecretValue: () => false, rememberResolvedProviderUrl() {},
+        LightStatus: {UNTESTED: 'untested', CONNECTED: 'connected', TESTING: 'testing', FAILED: 'failed'},
+        updateLightStatus: (light, status) => { light.status = status; },
+        updateErrorMessage: (display, code, message) => { display.code = code; display.message = message; },
+        fetch: async (_, init) => {
+            signal = init.signal;
+            return new Promise(resolve => { complete = () => resolve({ok: true, json: async () => ({success: true})}); });
+        },
+    };
+    vm.runInNewContext(snippet + '\nglobalThis.manager = ConnectivityManager;', context);
+    const manager = context.manager;
+    const key = manager.resolveEffectiveKey({type: 'custom', modelType: 'conversation'}).cacheId;
+    const unrelated = 'assist|openai|fixture';
+    const light = {};
+    const error = {};
+    manager.keyLightsMap[key] = [light];
+    manager.keyErrorDisplayMap[key] = [error];
+    manager.keyStatusMap[key] = manager.keyStatusMap[unrelated] = 'connected';
+    manager.keyErrorMap[key] = {error_code: 'old-account', error: 'old error'};
+    manager.invalidateChatGPTAccount();
+    assert.equal(light.status, 'untested');
+    assert.equal(error.code, null);
+    assert.equal(manager.keyStatusMap[unrelated], 'connected');
+    const pending = manager.testCustomOnly();
+    await flush();
+    assert.equal(light.status, 'testing');
+    manager.invalidateChatGPTAccount();
+    assert.equal(signal.aborted, true);
+    complete(); // Simulate a transport that resolves despite cancellation.
+    await pending;
+    assert.equal(manager.keyStatusMap[key], 'untested');
+    assert.equal(manager.keyErrorMap[key], null);
+    assert.equal(light.status, 'untested');
+    assert.equal(manager.resolveEffectiveKey({type: 'custom', modelType: 'conversation'}).cacheId, key);
+    manager.testKey = async () => {
+        // Account changes after testKey resolves, before its caller writes state.
+        queueMicrotask(() => manager.invalidateChatGPTAccount());
+        return {success: true};
+    };
+    await manager.testCustomOnly();
+    assert.equal(manager.keyStatusMap[key], 'untested');
+});
+
 
 test('disclosure starts collapsed and exposes its expanded state', async () => {
     const ui = surface(signedIn);
@@ -235,9 +312,7 @@ test('subscription requires login; cancellation never saves', async () => {
     ui.window.listeners.pageshow();
     await flush();
     assert.equal(ui.nodes.enabled.disabled, false);
-    ui.window.confirm = () => false;
-    ui.nodes.enabled.checked = true;
-    await ui.nodes.enabled.listeners.change();
+    await toggle(ui, true, false);
     assert.equal(ui.nodes.enabled.checked, false);
     assert.equal(ui.calls.filter(c => c.options.method === 'POST').length, 0);
 });
@@ -250,17 +325,13 @@ test('toggle confirms affected slots, saves once, reloads and reflects persisted
         ui.setSubscription({enabled: body.enabled, model: 'available-model'});
         return {success: true};
     });
-    let message;
-    ui.window.confirm = text => { message = text; return true; };
     await flush();
-    ui.nodes.enabled.checked = true;
-    await ui.nodes.enabled.listeners.change();
-    assert.match(message, /conversation/);
+    await toggle(ui, true);
+    assert.match(ui.nodes['confirm-message'].textContent, /conversation/);
     assert.equal(ui.nodes.enabled.checked, true);
     assert.match(ui.nodes.status.textContent, /available-model/);
     assert.equal(ui.reloads, 1);
-    ui.nodes.enabled.checked = false;
-    await ui.nodes.enabled.listeners.change();
+    await toggle(ui, false);
     assert.equal(ui.nodes.enabled.checked, false);
     assert.equal(ui.reloads, 2);
 });
@@ -268,8 +339,7 @@ test('toggle confirms affected slots, saves once, reloads and reflects persisted
 test('failed toggle reconciles persisted state and authorization warning keeps off available', async () => {
     const ui = surface(signedIn, () => ({detail: 'save failed'}));
     await flush();
-    ui.nodes.enabled.checked = true;
-    await ui.nodes.enabled.listeners.change();
+    await toggle(ui, true);
     assert.equal(ui.nodes.enabled.checked, false);
     assert.match(ui.nodes.status.textContent, /save failed/);
     ui.setState({...signedIn, active: null, accounts: []});
@@ -278,6 +348,86 @@ test('failed toggle reconciles persisted state and authorization warning keeps o
     await flush();
     assert.equal(ui.nodes.enabled.disabled, false);
     assert.match(ui.nodes.status.textContent, /restore/);
+});
+
+test('uncertain login response rechecks server state even before local pending was observed', async () => {
+    const ui = surface(signedIn, () => { throw new Error('response lost'); });
+    await flush();
+    ui.setState({...signedIn, login_status: 'pending'});
+    await ui.nodes.login.listeners.click();
+    assert.equal(typeof ui.timer, 'function');
+    await ui.timer();
+    assert.equal(ui.nodes.login.disabled, true);
+    ui.setState({...signedIn, login_status: 'connected'});
+    await ui.timer();
+    assert.equal(ui.nodes.login.disabled, false);
+});
+
+test('non-JSON errors show a friendly failure and structured usage limits retain their message', async () => {
+    for (const response of [
+        {rawResponse: {ok: false, json: async () => { throw new SyntaxError('Unexpected token I'); }}},
+        {detail: 'usageLimit'},
+    ]) {
+        const ui = surface(signedIn, () => response);
+        await flush();
+        await toggle(ui, true);
+        assert.match(ui.nodes.status.textContent, response.detail ? /usageLimit/ : /connection failed/);
+        assert.doesNotMatch(ui.nodes.status.textContent, /Unexpected token/);
+        assert.equal(ui.reloads, 1, 'reload even after errors because the response may be lost after persistence');
+    }
+});
+
+test('subscription controls reject mutations while ordinary save is in flight', async () => {
+    const ui = surface(signedIn);
+    await flush();
+    const before = ui.calls.length;
+    ui.setSaveBusy(true);
+    for (const action of [
+        () => ui.nodes.logout.listeners.click(),
+        () => ui.nodes.login.listeners.click(),
+        () => ui.nodes.account.listeners.change(),
+        () => { ui.nodes.enabled.checked = true; return ui.nodes.enabled.listeners.change(); },
+    ]) await action();
+    assert.equal(ui.calls.length, before);
+    assert.equal(ui.nodes.enabled.checked, false);
+});
+
+test('confirmation is cancel-safe, focus-managed and keeps the mutation lock until completion', async () => {
+    for (const cancel of ['escape', 'backdrop', 'pagehide']) {
+        const ui = surface(signedIn);
+        await flush();
+        ui.nodes.enabled.checked = true;
+        const action = ui.nodes.enabled.listeners.change();
+        await flush();
+        assert.equal(ui.window.isChatGPTSettingsBusy(), true);
+        assert.equal(ui.nodes['confirm-modal'].style.display, 'flex');
+        assert.equal(ui.activeElement, ui.nodes['confirm-cancel']);
+        let prevented = false;
+        ui.nodes['confirm-modal'].listeners.keydown({key: 'Tab', preventDefault() {}});
+        assert.equal(ui.activeElement, ui.nodes['confirm-accept']);
+        ui.nodes['confirm-modal'].listeners.keydown({key: 'Tab', shiftKey: true, preventDefault() {}});
+        assert.equal(ui.activeElement, ui.nodes['confirm-cancel']);
+        if (cancel === 'escape') ui.nodes['confirm-modal'].listeners.keydown({key: 'Escape', preventDefault() { prevented = true; }});
+        if (cancel === 'backdrop') ui.nodes['confirm-modal'].listeners.click({target: ui.nodes['confirm-modal']});
+        if (cancel === 'pagehide') ui.window.listeners.pagehide();
+        await action;
+        assert.equal(ui.calls.filter(c => c.options.method === 'POST').length, 0);
+        assert.equal(ui.nodes['confirm-modal'].style.display, 'none');
+        assert.equal(ui.window.isChatGPTSettingsBusy(), false);
+        assert.equal(ui.nodes.enabled.checked, false);
+        if (cancel !== 'pagehide') assert.equal(ui.activeElement, ui.nodes.enabled);
+        if (cancel === 'escape') assert.equal(prevented, true);
+    }
+});
+
+test('uncertain logout reconciles persisted configuration before releasing the mutation lock', async () => {
+    const ui = surface(signedIn, () => { throw new Error('logout response lost'); });
+    await flush();
+    ui.setState({...signedIn, active: null, accounts: []});
+    await ui.nodes.logout.listeners.click();
+    assert.equal(ui.reloads, 1);
+    assert.equal(ui.nodes.account.value, '');
+    assert.match(ui.nodes.status.textContent, /logout response lost/);
 });
 
 function independentSettingsSurface(values = {}) {
@@ -313,6 +463,59 @@ function independentSettingsSurface(values = {}) {
         source.indexOf('\nfunction showWarningModal(')), context);
     return {context, nodes, calls, messages};
 }
+
+test('ordinary save cannot race an in-flight subscription mutation or confirmation', async () => {
+    const ui = independentSettingsSurface();
+    ui.context.window.isChatGPTSettingsBusy = () => true;
+    await ui.context.saveApiKey({enableCustomApi: true, coreApi: 'qwen', apiKey: 'fixture'});
+    assert.equal(ui.calls.length, 0);
+    assert.equal(ui.context._apiSaveInProgress, false);
+});
+
+test('ordinary save stays blocked through subscription persistence and settings reconciliation', async () => {
+    let finishPost;
+    let finishReload;
+    const ui = surface(signedIn, () => new Promise(resolve => { finishPost = resolve; }));
+    await flush();
+    ui.setReloadWork(() => new Promise(resolve => { finishReload = resolve; }));
+    const ordinary = independentSettingsSurface();
+    ordinary.context.window.isChatGPTSettingsBusy = ui.window.isChatGPTSettingsBusy;
+    const params = {enableCustomApi: true, coreApi: 'qwen', apiKey: 'fixture'};
+    ui.nodes.enabled.checked = true;
+    const action = ui.nodes.enabled.listeners.change();
+    await flush();
+    await ordinary.context.saveApiKey(params);
+    assert.equal(ordinary.calls.length, 0, 'confirmation owns the mutation lock');
+    ui.nodes['confirm-accept'].listeners.click();
+    await flush();
+    await ordinary.context.saveApiKey(params);
+    assert.equal(ordinary.calls.length, 0, 'POST owns the mutation lock');
+    finishPost({success: true});
+    await flush();
+    await ordinary.context.saveApiKey(params);
+    assert.equal(ordinary.calls.length, 0, 'settings reload still owns the mutation lock');
+    finishReload();
+    await action;
+    await ordinary.context.saveApiKey(params);
+    assert.equal(ordinary.calls.length, 1);
+});
+
+test('subscription presentation reuses page styles and all locales provide title and usage-limit text', () => {
+    const root = path.join(__dirname, '../..');
+    const html = fs.readFileSync(path.join(root, 'templates/api_key_settings.html'), 'utf8');
+    const css = fs.readFileSync(path.join(root, 'static/css/api_key_settings.css'), 'utf8');
+    assert.match(html, /id="chatgpt-settings" class="section"/);
+    assert.match(html, /id="chatgpt-confirm-modal" class="modal-overlay"/);
+    assert.match(html, /role="dialog" aria-modal="true" aria-labelledby="chatgpt-confirm-title"/);
+    assert.match(html, /class="gsv-tutorial-link" href="https:\/\/chatgpt.com\/settings\/usage"/);
+    assert.doesNotMatch(html, /ChatGPT \/ Codex/);
+    assert.doesNotMatch(css, /#chatgpt-settings\s*\{[^}]*margin-bottom:/);
+    for (const locale of ['en', 'zh-CN', 'zh-TW', 'ja', 'ko', 'es', 'pt', 'ru']) {
+        const messages = JSON.parse(fs.readFileSync(path.join(root, `static/locales/${locale}.json`), 'utf8')).api.chatgpt;
+        assert.match(messages.title, /ChatGPT/);
+        assert.ok(messages.usageLimit.length > 15);
+    }
+});
 
 test('ordinary full-form saves omit unchanged dormant slots including inherited display values', async () => {
     const values = {

@@ -1301,6 +1301,8 @@
     },
     "api": {
     "chatgpt": {
+      "title": "ChatGPT 구독",
+      "usageLimit": "ChatGPT 사용량 한도에 도달했거나 현재 요금제를 사용할 수 없습니다. 사용량 페이지를 확인한 후 다시 시도하세요.",
       "description": "ChatGPT 요금제로 텍스트 대화와 이미지 이해를 이용합니다. 음성 인식과 합성은 각각의 제공업체를 사용합니다.",
       "account": "ChatGPT 계정",
       "login": "Continue with ChatGPT",

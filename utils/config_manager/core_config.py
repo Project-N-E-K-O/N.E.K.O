@@ -1673,7 +1673,7 @@ class CoreConfigMixin:
                         config[apikey_key] = cfg_key
 
             # TTS Voice ID serves as fallback for character voice_id.
-            if core_cfg.get('ttsVoiceId') is not None:
+            if enable_custom_api and core_cfg.get('ttsVoiceId') is not None:
                 config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
 
         if config['GPTSOVITS_ENABLED'] and core_cfg.get('ttsVoiceId') is not None:

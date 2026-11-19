@@ -237,8 +237,9 @@ class ChatChatGPT(ChatOpenAI):
                 "ChatGPT plan credentials can only be used at https://api.openai.com/v1."
             )
         self.credential_store = credential_store or get_store()
-        self._reasoning_defaults = self._reasoning_params(
-            {**((kwargs.get("model_kwargs") or {}).get("extra_body") or {}), **(kwargs.get("extra_body") or {})}
+        self._reasoning_defaults = (
+            self._reasoning_params(kwargs.get("extra_body"))
+            or self._reasoning_params((kwargs.get("model_kwargs") or {}).get("extra_body"))
         )
         for key in (
             "api_key",
@@ -274,9 +275,8 @@ class ChatChatGPT(ChatOpenAI):
         effort = p.get("reasoning_effort") or reasoning or self._reasoning_defaults
         if effort:
             body["reasoning"] = {"effort": effort}
-        limit = p.get("max_completion_tokens") or p.get("max_tokens")
-        if limit:
-            body["max_output_tokens"] = limit
+        # The ChatGPT plan endpoint does not support max_output_tokens; do not
+        # forward the output budgets accepted by the shared client interface.
         if p.get("tools"):
             if any(tool.get("type") != "function" for tool in p["tools"]):
                 raise ValueError(

@@ -23,9 +23,10 @@ PLAN_SCOPE = "chatgpt.tokens.use.direct"
 class ChatGPTAuthError(RuntimeError):
     """Safe, actionable error text (never includes a token response)."""
 
-    def __init__(self, message, *, status_code=401):
+    def __init__(self, message, *, status_code=401, code=None):
         super().__init__(message)
         self.status_code = status_code
+        self.code = code
 
 
 def http_client():
@@ -43,8 +44,22 @@ def http_client():
 def token_request(client, data):
     response = client.post(TOKEN_URL, data={**data, "resource": RESOURCE})
     if response.status_code in (400, 401, 403):
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        code = payload.get("error") if isinstance(payload, dict) else None
+        # Keep only standard OAuth error codes; never expose descriptions or
+        # arbitrary upstream content that may contain credentials.
+        if not isinstance(code, str) or code not in {
+            "invalid_request", "invalid_client", "invalid_grant",
+            "unauthorized_client", "unsupported_grant_type", "invalid_scope",
+            "temporarily_unavailable", "server_error",
+        }:
+            code = None
         raise ChatGPTAuthError(
-            "ChatGPT authorization expired or was denied. Continue with ChatGPT again."
+            "ChatGPT authorization expired or was denied. Continue with ChatGPT again.",
+            code=code,
         )
     if response.status_code != 200:
         raise ChatGPTAuthError(
@@ -196,15 +211,27 @@ class CredentialStore:
                     "ChatGPT plan usage is not authorized. Sign in again."
                 )
             if account.get("expires_at", 0) <= time.time() + 60:
-                with http_client() as client:
-                    tokens = token_request(
-                        client,
-                        {
-                            "grant_type": "refresh_token",
-                            "client_id": account["client_id"],
-                            "refresh_token": account["refresh_token"],
-                        },
-                    )
+                try:
+                    with http_client() as client:
+                        tokens = token_request(
+                            client,
+                            {
+                                "grant_type": "refresh_token",
+                                "client_id": account["client_id"],
+                                "refresh_token": account["refresh_token"],
+                            },
+                        )
+                except ChatGPTAuthError as exc:
+                    if exc.code == "invalid_grant":
+                        # This session is permanently invalid. Retain the host
+                        # and client registration for an explicit sign-in, but
+                        # do not keep retrying the rejected refresh token.
+                        for key in (
+                            "access_token", "refresh_token", "id_token", "expires_at", "scopes",
+                        ):
+                            account.pop(key, None)
+                        self._write(value)
+                    raise
                 account = merge_tokens(tokens, account)
                 value["accounts"][value["active"]] = account
                 self._write(value)

@@ -11,6 +11,10 @@
     const enabled = document.getElementById('chatgpt-enabled');
     const disclosure = document.getElementById('chatgpt-toggle-btn');
     const panel = document.getElementById('chatgpt-options');
+    const confirmModal = document.getElementById('chatgpt-confirm-modal');
+    const confirmMessage = document.getElementById('chatgpt-confirm-message');
+    const confirmCancel = document.getElementById('chatgpt-confirm-cancel');
+    const confirmAccept = document.getElementById('chatgpt-confirm-accept');
     let subscription = { enabled: false };
     let connected = false;
     disclosure.addEventListener('click', () => {
@@ -24,6 +28,9 @@
     let busy = false;
     let pending = false;
     let modelAccountState;
+    let finishConfirmation;
+    let confirmationFocus;
+    window.isChatGPTSettingsBusy = () => busy;
     const t = (key, fallback) => {
         const translated = window.t ? window.t(`api.chatgpt.${key}`) : '';
         return translated && translated !== `api.chatgpt.${key}` ? translated : fallback;
@@ -34,13 +41,47 @@
             headers: { 'Content-Type': 'application/json', 'X-Neko-ChatGPT': '1' },
             ...(body === undefined ? {} : { body: JSON.stringify(body) })
         });
-        const data = await response.json();
+        let data;
+        try { data = await response.json(); }
+        catch { throw new Error(t('failed', 'ChatGPT connection failed.')); }
         if (!response.ok) throw new Error(typeof data.detail === 'string' ? t(data.detail, data.detail) : t('failed', 'ChatGPT connection failed.'));
         return data;
     };
     const invalidate = () => {
         if (typeof invalidateModelLists === 'function') invalidateModelLists();
+        if (typeof ConnectivityManager !== 'undefined' && typeof ConnectivityManager.invalidateChatGPTAccount === 'function') {
+            ConnectivityManager.invalidateChatGPTAccount();
+        }
     };
+    const confirmChange = message => new Promise(resolve => {
+        if (suspended) { resolve(false); return; }
+        confirmationFocus = enabled;
+        confirmMessage.textContent = message;
+        confirmModal.style.display = 'flex';
+        confirmModal.setAttribute('aria-hidden', 'false');
+        finishConfirmation = accepted => {
+            finishConfirmation = undefined;
+            confirmModal.style.display = 'none';
+            confirmModal.setAttribute('aria-hidden', 'true');
+            resolve(accepted);
+        };
+        confirmCancel.focus();
+    });
+    confirmCancel.addEventListener('click', () => finishConfirmation?.(false));
+    confirmAccept.addEventListener('click', () => finishConfirmation?.(true));
+    confirmModal.addEventListener('click', event => {
+        if (event.target === confirmModal) finishConfirmation?.(false);
+    });
+    confirmModal.addEventListener('keydown', event => {
+        if (!finishConfirmation) return;
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            finishConfirmation(false);
+        } else if (event.key === 'Tab') {
+            event.preventDefault();
+            (document.activeElement === confirmCancel ? confirmAccept : confirmCancel).focus();
+        }
+    });
     async function refresh() {
         clearTimeout(timer);
         if (suspended) return;
@@ -109,8 +150,12 @@
     }
     function report(error) { status.textContent = error.message; }
     async function run(action) {
-        if (busy) return;
+        const saving = typeof isApiSettingsSaveBusy === 'function'
+            ? isApiSettingsSaveBusy() : typeof _apiSaveInProgress !== 'undefined' && _apiSaveInProgress;
+        if (busy || saving) return;
         busy = true;
+        ++refreshGeneration;
+        clearTimeout(timer);
         login.disabled = add.disabled = logout.disabled = account.disabled = enabled.disabled = true;
         try { await action(); }
         catch (error) { report(error); }
@@ -119,6 +164,10 @@
             login.disabled = add.disabled = account.disabled = pending;
             logout.disabled = pending || !account.value;
             enabled.disabled = pending || (!connected && !subscription.enabled);
+            if (confirmationFocus && !suspended) {
+                (confirmationFocus.disabled ? disclosure : confirmationFocus).focus();
+            }
+            confirmationFocus = undefined;
         }
     }
     const reloadSettings = async () => {
@@ -128,6 +177,7 @@
         const requested = enabled.checked;
         enabled.checked = subscription.enabled;
         return run(async () => {
+            let attempted = false;
             try {
                 const current = await api('subscription');
                 const slots = current.overwritten.map(slot => {
@@ -138,20 +188,19 @@
                 const message = requested
                     ? t('confirmEnable', 'Enable ChatGPT subscription and save? Existing slots to replace: {{slots}}. Unsaved edits on this page will be discarded.').replace('{{slots}}', slots || t('none', 'None'))
                     : t('confirmDisable', 'Restore the configuration saved before enabling the subscription? Unsaved edits on this page will be discarded.');
-                if (!window.confirm(message)) return;
+                if (!await confirmChange(message)) return;
+                attempted = true;
                 const result = await api('subscription', { enabled: requested, revision: current.revision });
-                await reloadSettings();
                 if (!result.success) throw new Error(result.error || t('failed', 'ChatGPT connection failed.'));
             } finally {
                 // Reconcile after a timeout too: persistence may already have completed.
-                await refresh();
+                try { if (attempted) await reloadSettings(); }
+                finally { await refresh(); }
             }
         });
     });
     const signIn = accountId => run(async () => {
         if (pending) return;
-        ++refreshGeneration;
-        clearTimeout(timer);
         // Open synchronously on the click so popup blockers do not reject OAuth.
         const external = window.electronShell && window.electronShell.openExternal;
         const popup = external ? null : window.open('about:blank', '_blank');
@@ -170,27 +219,34 @@
             await refresh();
         } catch (error) {
             if (popup) popup.close();
-            if (pending && !suspended) timer = setTimeout(refresh, 1500);
+            if (!suspended) timer = setTimeout(refresh, 1500);
             throw error;
         }
     });
     login.addEventListener('click', () => signIn(account.value));
     add.addEventListener('click', () => signIn(null));
     account.addEventListener('change', () => run(async () => {
-        await api('select', { account_id: account.value });
         invalidate();
-        await refresh();
+        try { await api('select', { account_id: account.value }); }
+        finally { await refresh(); }
     }));
     logout.addEventListener('click', () => run(async () => {
-        const result = await api('logout', { account_id: account.value });
         invalidate();
-        if (result.subscription_restored) await reloadSettings();
-        await refresh();
+        let result;
+        let failure;
+        try { result = await api('logout', { account_id: account.value }); }
+        catch (error) { failure = error; }
+        try {
+            // A lost/error response may follow successful local restoration.
+            if (failure || result.subscription_restored) await reloadSettings();
+        } finally { await refresh(); }
+        if (failure) throw failure;
         if (!result.revocation_confirmed) status.textContent = t('revocationUnconfirmed', 'Signed out locally. Disconnect the app in ChatGPT Settings to confirm remote revocation.');
     }));
     window.addEventListener('localechange', () => refresh().catch(report));
     window.addEventListener('pagehide', () => {
         suspended = true;
+        finishConfirmation?.(false);
         ++refreshGeneration;
         clearTimeout(timer);
     });

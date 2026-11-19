@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from utils.chatgpt_subscription import (
     enable, disable, preview, restricted_slots, revision, runtime_custom_api, supported_slots,
 )
+from utils.llm_client.chatgpt_client import ChatChatGPT, ChatGPTResponseError
 
 
 @pytest.fixture
@@ -154,6 +155,30 @@ def test_exact_restore_and_speech_runtime_isolation(manager, custom, monkeypatch
     assert not disable(config)
 
 
+@pytest.mark.parametrize('custom', [False, True])
+@pytest.mark.parametrize('gptsovits', [False, True])
+def test_subscription_preserves_effective_tts_voice_fallback(manager, custom, gptsovits):
+    config = {'coreApi': 'qwen', 'assistApi': 'openai', 'coreApiKey': 'fixture-key',
+              'assistApiKeyOpenai': 'fixture-key', 'enableCustomApi': custom,
+              'ttsProvider': 'deepseek', 'ttsModelProvider': 'gptsovits' if gptsovits else 'custom',
+              'ttsModelUrl': 'http://127.0.0.1:9880', 'ttsVoiceId': 'saved-voice'}
+    original = deepcopy(config)
+    manager.save_json_config('core_config.json', config)
+    before = manager.get_core_config().get('TTS_VOICE_ID')
+    if custom or gptsovits:
+        assert before == 'saved-voice'
+    else:
+        assert before != 'saved-voice'
+    slots = supported_slots()
+    enable(config, slots, 'model', revision(config, slots))
+    manager.save_json_config('core_config.json', config)
+    assert manager.get_core_config().get('TTS_VOICE_ID') == before
+    assert disable(config)
+    assert config == original
+    manager.save_json_config('core_config.json', config)
+    assert manager.get_core_config().get('TTS_VOICE_ID') == before
+
+
 def test_stale_preview_and_repeated_enable_keep_original_snapshot():
     config = {'conversationModelApiKey': 'private'}
     slots = supported_slots()
@@ -216,6 +241,61 @@ async def test_enable_failure_never_changes_configuration(manager, routes, failu
 
 
 @pytest.mark.asyncio
+async def test_catalog_http_429_returns_structured_error_without_saving(manager, routes, monkeypatch):
+    import httpx
+    from fastapi import FastAPI
+    from utils.chatgpt_auth import store as auth
+
+    route, core, store, _ = routes
+    original = {'enableCustomApi': False, 'conversationModelProvider': 'custom'}
+    manager.save_json_config('core_config.json', original)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(429, json={'error': {'message': 'fixture quota'}})
+
+    client = ChatChatGPT(credential_store=store, timeout=5)
+    monkeypatch.setattr(auth, 'http_client', lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr('utils.llm_client.chatgpt_client.ChatChatGPT', lambda **kw: client)
+    monkeypatch.setattr(route, '_attempt', None)
+    app = FastAPI()
+    app.include_router(route.router)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, client=('127.0.0.1', 123), raise_app_exceptions=False),
+            base_url='http://127.0.0.1:48999',
+        ) as api:
+            response = await api.post('/api/config/chatgpt/subscription',
+                                      headers={'x-neko-chatgpt': '1'},
+                                      json={'enabled': True, 'revision': revision(original, supported_slots())})
+        assert response.status_code == 429
+        assert response.json() == {'detail': 'usageLimit'}
+        assert len(requests) == 1 and requests[0].url.path == '/v1/models'
+        assert manager.load_json_config('core_config.json') == original
+        core.reload_api_configuration.assert_not_awaited()
+        assert client._client.is_closed() and client._aclient.is_closed()
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status, expected_status', [(None, 502), (502, 502)])
+async def test_catalog_response_error_preserves_safe_status(manager, routes, status, expected_status):
+    route, core, store, client = routes
+    original = {'enableCustomApi': False}
+    manager.save_json_config('core_config.json', original)
+    client.alist_models.side_effect = ChatGPTResponseError('fixture response failure', status_code=status)
+    with pytest.raises(HTTPException) as error:
+        await route.chatgpt_subscription_update(route.SubscriptionRequest(
+            enabled=True, revision=revision(original, supported_slots())))
+    assert error.value.status_code == expected_status and error.value.detail == 'failed'
+    assert manager.load_json_config('core_config.json') == original
+    client.aclose.assert_awaited_once()
+    core.reload_api_configuration.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_last_account_logout_restores_before_revoking(manager, routes, monkeypatch):
     route, core, store, client = routes
     original = {'enableCustomApi': True, 'conversationModelProvider': 'custom', 'conversationModelApiKey': 'secret'}
@@ -229,6 +309,38 @@ async def test_last_account_logout_restores_before_revoking(manager, routes, mon
     monkeypatch.setattr(route, '_change_account', change)
     result = await route.chatgpt_logout(route.AccountRequest(account_id='fixture-account'))
     assert result['subscription_restored'] and not result['revocation_confirmed']
+    core.reload_api_configuration.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['write', 'authorization'])
+async def test_logout_failure_still_reloads_restored_configuration(manager, routes, monkeypatch, failure):
+    from utils.chatgpt_auth import ChatGPTAuthError
+
+    route, core, store, _ = routes
+    original = {'enableCustomApi': False, 'conversationModelProvider': 'custom'}
+    config = deepcopy(original)
+    slots = supported_slots()
+    enable(config, slots, 'model', revision(config, slots))
+    manager.save_json_config('core_config.json', config)
+
+    def fail_sign_out(action, account_id):
+        assert manager.load_json_config('core_config.json') == original
+        if failure == 'write':
+            raise OSError('fixture credential write failure')
+        raise ChatGPTAuthError('fixture sign-out authorization failure')
+
+    async def reload_restored(value):
+        assert not core._core_api_save_lock.locked()
+        assert value == original
+        return {'success': True}
+
+    monkeypatch.setattr(route, '_change_account', fail_sign_out)
+    core.reload_api_configuration.side_effect = reload_restored
+    with pytest.raises(HTTPException) as error:
+        await route.chatgpt_logout(route.AccountRequest(account_id='fixture-account'))
+    assert error.value.status_code == (503 if failure == 'write' else 400)
+    assert manager.load_json_config('core_config.json') == original
     core.reload_api_configuration.assert_awaited_once()
 
 

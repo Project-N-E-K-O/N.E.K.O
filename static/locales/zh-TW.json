@@ -1301,6 +1301,8 @@
     },
     "api": {
     "chatgpt": {
+      "title": "ChatGPT 訂閱",
+      "usageLimit": "ChatGPT 用量已達上限或目前方案無法使用，請查看用量頁面後再試。",
       "description": "使用 ChatGPT 訂閱額度進行文字對話和圖像理解。語音辨識與語音合成繼續使用各自的服務商。",
       "account": "ChatGPT 帳號",
       "login": "Continue with ChatGPT",

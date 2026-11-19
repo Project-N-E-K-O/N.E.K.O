@@ -1301,6 +1301,8 @@
     },
     "api": {
     "chatgpt": {
+      "title": "ChatGPT subscription",
+      "usageLimit": "ChatGPT usage is exhausted or your plan is unavailable. Check the usage page before trying again.",
       "description": "Use your ChatGPT plan for text conversations and image understanding. Speech recognition and synthesis keep their own providers.",
       "account": "ChatGPT account",
       "login": "Continue with ChatGPT",

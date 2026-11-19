@@ -261,10 +261,10 @@
                         </div>
                     </div>
 
-                    <section id="chatgpt-settings" aria-labelledby="chatgpt-toggle-btn">
+                    <section id="chatgpt-settings" class="section" aria-labelledby="chatgpt-toggle-btn">
                         <button type="button" id="chatgpt-toggle-btn" aria-expanded="false" aria-controls="chatgpt-options">
                             <img src="/static/icons/dropdown_arrow.png" alt="" class="dropdown-icon">
-                            <span>ChatGPT / Codex</span>
+                            <span data-i18n="api.chatgpt.title">ChatGPT 订阅</span>
                         </button>
                         <div id="chatgpt-options" hidden>
                             <p data-i18n="api.chatgpt.description">使用 ChatGPT 订阅额度进行文字对话和图像理解。语音识别与语音合成继续使用各自的服务商。</p>
@@ -285,7 +285,7 @@
                             <p id="chatgpt-status" role="status" aria-live="polite"></p>
                             <a id="chatgpt-authorization" hidden target="_blank" rel="noopener noreferrer" data-i18n="api.chatgpt.login">Continue with ChatGPT</a>
                             <p id="chatgpt-instructions" data-i18n="api.chatgpt.instructions">开启后自动配置支持的文字与视觉模型并保存；关闭后恢复开启前的配置。核心 API、TTS 和 ASR 保持原样。</p>
-                            <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer" data-i18n="api.chatgpt.usage">查看 ChatGPT 用量与权限</a>
+                            <a class="gsv-tutorial-link" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer" data-i18n="api.chatgpt.usage">查看 ChatGPT 用量与权限</a>
                         </div>
                     </section>
 
@@ -891,6 +891,17 @@
                 <div class="modal-buttons">
                     <button type="button" class="btn" onclick="closeAliyunUsApiWarningModal()"
                         data-i18n="api.wsWarning.confirm">我知道了</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="chatgpt-confirm-modal" class="modal-overlay" aria-hidden="true">
+            <div class="modal-warning" role="dialog" aria-modal="true" aria-labelledby="chatgpt-confirm-title" aria-describedby="chatgpt-confirm-message">
+                <h3 id="chatgpt-confirm-title" data-i18n="api.chatgpt.title">ChatGPT 订阅</h3>
+                <p id="chatgpt-confirm-message"></p>
+                <div class="modal-buttons">
+                    <button type="button" id="chatgpt-confirm-cancel" class="btn secondary" data-i18n="common.cancel">取消</button>
+                    <button type="button" id="chatgpt-confirm-accept" class="btn" data-i18n="common.confirm">确认</button>
                 </div>
             </div>
         </div>

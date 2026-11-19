@@ -2186,7 +2186,7 @@ font-size: 0.8em;
     }
 }
 
-#chatgpt-settings { margin-top: 0; margin-bottom: 16px; }
+#chatgpt-settings { margin-top: 0; }
 #chatgpt-options { padding: 16px; background: #f0f9ff; border: 1px solid #d0e8ff; border-radius: 12px; }
 .chatgpt-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 #chatgpt-options .gsv-tutorial-link { cursor: pointer; white-space: normal; }

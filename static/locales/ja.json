@@ -1301,6 +1301,8 @@
     },
     "api": {
     "chatgpt": {
+      "title": "ChatGPT サブスクリプション",
+      "usageLimit": "ChatGPT の利用上限に達したか、現在のプランは利用できません。利用状況ページを確認してから再試行してください。",
       "description": "ChatGPT プランでテキスト会話と画像理解を利用します。音声認識と音声合成はそれぞれのプロバイダーを使用します。",
       "account": "ChatGPT アカウント",
       "login": "Continue with ChatGPT",
