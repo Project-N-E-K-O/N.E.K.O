@@ -39,10 +39,12 @@ format in `references/execution-boundary.md`.
 
 From a N.E.K.O source checkout, `uv run neko-plugin <command> <plugin>`, where
 `<plugin>` is an id under the checkout's plugin root or a path. Confirm
-arguments with `--help`. Without a checkout (desktop build) the CLI does not
-run: tell the user rather than guessing. The user can still Start/Reload the
-plugin and build a package in the Plugin studio; only `precheck` and
-publishing need a checkout.
+arguments with `--help`. A checkout (Route A) is the recommended way to
+develop. Without one (desktop build, Route B) no `neko-plugin` command runs:
+tell the user rather than guessing. App buttons (Start/Reload, Logs, Build
+package in the Plugin studio) still work; they are not the CLI. To run checks,
+ask the user whether to set up a checkout ("Setting Up Route A" in
+`references/plugin-cli-and-debugging.md`) and wait for their consent.
 
 | Command | Use |
 |---|---|
@@ -65,8 +67,7 @@ commit for the user unasked; report the actual result.
 If the current folder already has a `plugin.toml`, skip to Modify.
 
 1. Read `references/plugin-creation-workflow.md`. Offer only `plugin` and
-   `adapter` as package types; ignore its `extension` and host-plugin
-   questions (removed).
+   `adapter` as package types.
 2. Ask only the unresolved minimum: name, purpose, package type, first-version
    scope, out of scope. Show the Identity Lock and a short design brief.
 3. After confirmation, scaffold with `neko-plugin init`; never hand-write the
@@ -112,8 +113,11 @@ If the goal needs a host change, stop and follow the escalation section of
   allowed imports; escalation.
 - `references/core-plugin-contract.md`: identity, `plugin.toml`, entries,
   routers, hooks, i18n, UI modes.
-- `references/plugin-system-surface-map.md`: SDK capability index; check it
-  before inventing abstractions.
+- `references/plugin-system-surface-map.md`: SDK capability index (paths,
+  `push_message`, config, cross-plugin calls); check it before inventing
+  abstractions.
+- `references/dependencies-and-market.md`: `vendor/`, third-party packages,
+  Market id/tag/size rules, what local checks do not prove.
 - `references/plugin-creation-workflow.md`: questions, design brief, scaffold.
 - `references/plugin-cli-and-debugging.md`, `references/plugin-checks-and-tests.md`:
   CLI, debugging order, checks and tests.
