@@ -1966,9 +1966,13 @@ class TaskAgentSpace:
         self._evidence_unanswered: set[tuple[str | None, str, tuple[str, ...]]] = set()
         # Pending entries tidying merged two guesses into and could not tell
         # then whether they take effect, each with the mark of what the
-        # merge wrote (``confirm_seen``). Kept while the host runs: after a
+        # merge wrote (``settle_tidied``). Kept while the host runs: after a
         # restart such an entry waits like any other.
         self._unsettled: dict[tuple[str | None, str], str] = {}
+        # Lines of an index that tidying changed an entry for and could not
+        # write, each as the line it was then (None: there was none) and the
+        # line it is to be; put right by a later round (``settle_tidied``).
+        self._relines: dict[tuple[str | None, str], tuple[str | None, str]] = {}
 
     # -- plumbing ---------------------------------------------------------
 
@@ -2380,16 +2384,19 @@ class TaskAgentSpace:
         if not self._edit_text(index, change):
             self._index_add(index, line, target)
 
-    def _index_retitle(self, index: Path, target: str, title: str, description: str) -> None:
-        """Have the line of an index that points at ``target`` call it ``title``; the rest of the line stays.
+    def _index_retitle(self, index: Path, target: str, title: str, description: str) -> tuple[str, str] | None:
+        """Have the line of an index that points at ``target`` call it ``title``; the rest stays. Returns it as it was and is.
 
         What follows the link may have been reworded by the user, and is
-        theirs. Without such a line, one is added like any other.
+        theirs. Without such a line none is added (the user may have taken
+        it out), and None is returned.
         """
         marks = _index_marks(target)
         plain = _one_line(title).replace("[", "(").replace("]", ")")
+        swapped: list[tuple[str, str]] = []
 
         def change(text: str) -> str:
+            swapped.clear()
             lines = text.split("\n") if text else []
             for number, item in enumerate(lines):
                 if _points_at(item, marks):
@@ -2399,11 +2406,21 @@ class TaskAgentSpace:
                         lines[number] = _index_line(title, target, description)
                     else:
                         lines[number] = item[: opening + 1] + plain + item[link:]
+                    swapped.append((item, lines[number]))
                     return "\n".join(lines)
             return text
 
-        if not self._edit_text(index, change):
-            self._index_add(index, _index_line(title, target, description), target)
+        self._edit_text(index, change)
+        return swapped[0] if swapped else None
+
+    def _index_reline(self, index: Path, was: str, now: str) -> None:
+        """Put ``now`` in the place of a line of an index that is ``was`` to the letter; one that says anything else stays."""
+
+        def change(text: str) -> str:
+            lines = text.split("\n") if text else []
+            return "\n".join(now if item == was else item for item in lines)
+
+        self._edit_text(index, change)
 
     @staticmethod
     def _index_line_in(text: str, target: str) -> str | None:
@@ -5171,17 +5188,28 @@ class TaskAgentSpace:
             except _LineNotAdded as exc:
                 into = exc.entry
                 logger.warning("an entry tidying merged into could not be given its line in the index")
+                self._relines[(project, target.id)] = (
+                    None,
+                    _index_line(into.title, f"{SpacePaths.MEMORY_DIR}/{target.id}.md", into.description),
+                )
         # Its texts are in the other entry: it goes, unless the user saved it
         # since it was read. Its line first: should the file stay (held by
         # another program), it is an entry whose texts are in the other one,
         # which a later round merges again; a line that points at nothing
         # would stay for good.
         source_path = paths.memory_dir(project) / f"{source.id}.md"
-        merged = self._read_text(paths.memory_dir(project) / f"{target.id}.md")
-        if merged is None or _text_mark(merged) != as_marked[0]:
-            # The entry it went into was saved meanwhile, perhaps without
-            # what was put into it: this one stays, and a later round merges
-            # the two again (a text there already is not added twice).
+        target_path = paths.memory_dir(project) / f"{target.id}.md"
+
+        def as_merged() -> str | None:
+            # The entry it went into, while it says what the merge wrote.
+            # Saved meanwhile, perhaps without what was put into it, it is
+            # None: this one stays, and a later round merges the two again
+            # (a text there already is not added twice).
+            text = self._read_text(target_path)
+            return text if text is not None and _text_mark(text) == as_marked[0] else None
+
+        merged = as_merged()
+        if merged is None:
             raise _NotMade(f"{target.id} was saved as {source.id} was merged into it; {source.id} stays")
         if self._signature(source_path) == before:
             index, line_of = paths.index(project), f"{paths.MEMORY_DIR}/{source.id}.md"
@@ -5190,32 +5218,55 @@ class TaskAgentSpace:
                 # As the user may have worded it, to be put back as it was.
                 line = self._index_line_in(self._read_text(index) or "", line_of)
                 self._index_remove(index, line_of)
+            if as_merged() is None:
+                # Saved as the line was taken out: looked at again right
+                # before what holds the texts goes, and it stays with its line.
+                if source.status == ENTRY_ACTIVE:
+                    self._index_add(index, line or _index_line(source.title, line_of, source.description), line_of)
+                raise _NotMade(f"{target.id} was saved as {source.id} was merged into it; {source.id} stays")
             if not self._discard_as_read(source_path, before) and source.status == ENTRY_ACTIVE:
                 # Saved by the user as its line was taken out: it stays, as
                 # what they saved, and in effect it has its line.
                 self._index_add(index, line or _index_line(source.title, line_of, source.description), line_of)
         else:
             logger.warning("an entry tidying merged into another was saved meanwhile; it stays as it is")
-        if pending and not self._tidy_confirm(project, into, allowed, as_marked):
-            # Whether it takes effect could not be told just now: a later
-            # round tries again, as long as it says what the merge wrote
-            # (``confirm_seen``).
+        if pending:
+            # What it is by what the merge wrote, not by a reading back
+            # that may have failed and left it as it was before.
+            into = self._entry_of(_parse_document(merged), target.id, project, self._clock(), with_content=False)
+            # Kept until it is settled: should it not be told now whether it
+            # takes effect (an entry beside it cannot be read, or a file
+            # cannot be written), a later round tries again, as long as it
+            # says what the merge wrote (``settle_tidied``).
             self._unsettled[(project, target.id)] = as_marked[0]
+            if self._tidy_confirm(project, into, allowed, as_marked):
+                del self._unsettled[(project, target.id)]
         return "made", {source.id: None, target.id: as_marked[0]}
 
-    async def confirm_seen(self, project: str | None) -> int:
-        """Have the pending entries of a layer that a merge left unsettled take effect, if they do. Returns how many did.
+    async def settle_tidied(self, project: str | None) -> int:
+        """Finish in a layer what tidying could not: lines of its index, and merged guesses. Returns how many took effect.
 
-        When tidying merged two guesses into one and could not tell then
-        whether it takes effect (an entry beside it could not be read),
-        it is tried again here, by every round of tidying, with no model:
-        as ``_tidy_confirm``, and only while the entry says just what the
-        merge wrote. One the user saved since is not what was merged, and
-        waits like any other guess.
+        By every round of tidying, with no model. A line of the index that
+        could not be written when tidying changed an entry is written now,
+        where the index still says what it said then (one the user changed
+        since is theirs). When tidying merged two guesses into one and could
+        not tell then whether it takes effect (an entry beside it could not
+        be read), it is tried again: as ``_tidy_confirm``, and only while
+        the entry says just what the merge wrote. One the user saved since
+        is not what was merged, and waits like any other guess.
         """
 
         def work(allowed: bool) -> int:
             directory = self._paths().memory_dir(project)
+            for (layer, entry_id), (was, now) in list(self._relines.items()):
+                if layer != project:
+                    continue
+                try:
+                    self._put_line_right(project, entry_id, was, now)
+                except OSError:
+                    logger.warning("a line of the index tidying changed could not be written just now", exc_info=True)
+                    continue
+                del self._relines[(layer, entry_id)]
             took = 0
             for (layer, entry_id), mark in list(self._unsettled.items()):
                 if layer != project:
@@ -5244,6 +5295,27 @@ class TaskAgentSpace:
             return took
 
         return await self._write_judged(work)
+
+    def _put_line_right(self, project: str | None, entry_id: str, was: str | None, now: str) -> None:
+        """Write a line of an index that tidying could not; see ``settle_tidied``. Raises OSError when it cannot be yet.
+
+        A line that was there is replaced where it is still what it was. A
+        missing one is added while the entry is in effect and none points
+        at it.
+        """
+        paths = self._paths()
+        index = paths.index(project)
+        if was is not None:
+            self._index_reline(index, was, now)
+            return
+        path = paths.memory_dir(project) / f"{entry_id}.md"
+        text = self._read_text(path)
+        if text is None:
+            if _gone_for_good(path):
+                return
+            raise OSError(f"{entry_id} cannot be read just now")
+        if _status_of(_parse_document(text)) == ENTRY_ACTIVE:
+            self._index_add(index, now, f"{paths.MEMORY_DIR}/{entry_id}.md")
 
     def _tidy_confirm(self, project: str | None, entry: Entry, allowed: bool, as_marked: list[str]) -> bool:
         """Have a pending entry take effect where it is when enough commissions have seen it by now, or it was verified.
@@ -5282,9 +5354,13 @@ class TaskAgentSpace:
                 # be in effect.
                 logger.info("a guess merged by tidying waits on: another entry has its title")
                 return True
-        _entry, unlisted = self._confirm(project, entry, _Known(confidence=INFERRED), allowed, as_marked=as_marked)
+        confirmed, unlisted = self._confirm(project, entry, _Known(confidence=INFERRED), allowed, as_marked=as_marked)
         if unlisted is not None:
             logger.warning("an entry that took effect by tidying could not be given its line in the index")
+            self._relines[(project, entry.id)] = (
+                None,
+                _index_line(confirmed.title, f"{SpacePaths.MEMORY_DIR}/{entry.id}.md", confirmed.description),
+            )
         return True
 
     def _tidy_count_in(
@@ -5435,20 +5511,21 @@ class TaskAgentSpace:
             document.set("name", name)
 
         index, target = paths.index(project), f"{paths.MEMORY_DIR}/{entry.id}.md"
-        listed = entry.status == ENTRY_ACTIVE
         # The line first: should it not be written, nothing is. Should the
         # entry then not be (saved meanwhile, held by another program), the
-        # line is called what it was again, so the two never part.
-        if listed:
-            self._index_retitle(index, target, name, entry.description)
+        # line is put back as it was, so the two never part. One the user
+        # took out is not put in.
+        swapped = self._index_retitle(index, target, name, entry.description) if entry.status == ENTRY_ACTIVE else None
         try:
             written = self._edit_as_shown(directory / f"{entry.id}.md", marks[entry_id], change)
         except (_NotMade, OSError):
-            if listed:
+            if swapped is not None:
+                was, now = swapped
                 try:
-                    self._index_retitle(index, target, entry.title, entry.description)
+                    self._index_reline(index, now, was)
                 except OSError:
                     logger.warning("the line of an entry that kept its title could not be put back", exc_info=True)
+                    self._relines[(project, entry.id)] = (now, was)
             raise
         return "made", {entry.id: written}
 
@@ -5462,6 +5539,8 @@ class TaskAgentSpace:
         pending notes, which anyone's page may have written, and a change
         of a date changes when, and nothing else.
         """
+        from config.nekoclaw_settings import SPACE_ENTRY_DESCRIPTION_MAX_TOKENS
+
         said, put = _plain_lines(str(old or "")).strip(), str(new or "").strip()
         if not _a_relative_time(said):
             raise _NotMade("the words to replace are none that say a relative time")
@@ -5481,6 +5560,8 @@ class TaskAgentSpace:
         kept = _listed(document, "texts")
         texts = _texts_of(document.body, kept)
         marked: list[str] | None = None
+        # The text the words stand in, before and after.
+        made_from: tuple[str, str] | None = None
         if texts is not None:
             at = [number for number, text in enumerate(texts) if alone.search(text)]
             if len(at) != 1:
@@ -5491,6 +5572,8 @@ class TaskAgentSpace:
             marked[at[0]] = _digest(changed[at[0]])
             if _texts_of(body, marked) != changed:
                 marked = None
+            else:
+                made_from = texts[at[0]], changed[at[0]]
         if marked is None:
             # Its texts cannot be told apart (rewritten in an editor): as
             # when the user gives it a new text (``edit_entry``).
@@ -5499,11 +5582,14 @@ class TaskAgentSpace:
             if _digest(body) not in marked:
                 marked.append(_digest(body))
 
-        # A description made from the text says the same "yesterday": it is
-        # put the same way, and so is the line of the index, where it still
-        # is what the host wrote (one the user reworded is theirs).
+        # A description the host made from that very text says the same
+        # "yesterday": it is made again from the text as it is now, and so
+        # is the line of the index, where it still is what the host wrote.
+        # One the user wrote or reworded is theirs, and may mean another day.
         described = document.get("description")
-        redescribed = alone.sub(lambda _found: put, described, count=1) if len(alone.findall(described)) == 1 else described
+        redescribed = described
+        if made_from is not None and described == _cut(_one_line(made_from[0]), SPACE_ENTRY_DESCRIPTION_MAX_TOKENS):
+            redescribed = _cut(_one_line(made_from[1]), SPACE_ENTRY_DESCRIPTION_MAX_TOKENS)
 
         def change(replaced: _Document) -> None:
             replaced.body = body
@@ -5516,15 +5602,11 @@ class TaskAgentSpace:
         if redescribed != described and entry.status == ENTRY_ACTIVE:
             target = f"{paths.MEMORY_DIR}/{entry.id}.md"
             was, now = _index_line(entry.title, target, described), _index_line(entry.title, target, redescribed)
-
-            def reline(text: str) -> str:
-                lines = text.split("\n") if text else []
-                return "\n".join(now if item == was else item for item in lines)
-
             try:
-                self._edit_text(paths.index(project), reline)
+                self._index_reline(paths.index(project), was, now)
             except OSError:
                 logger.warning("the line of an entry whose date was put could not be changed", exc_info=True)
+                self._relines[(project, entry.id)] = (was, now)
         return "made", {entry.id: written}
 
     # -- for the console: rules and indexes -------------------------------
