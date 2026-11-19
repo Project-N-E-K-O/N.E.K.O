@@ -339,6 +339,18 @@
       "vision_model": "google/gemini-3.1-flash-lite",
       "agent_model": "google/gemini-3-flash-preview"
     },
+    "standardcompute": {
+      "key": "standardcompute",
+      "name": "Standard Compute",
+      "description": "模型路由网关，OpenAI 兼容接口，默认按偏好自动选择模型，国内版不支持",
+      "openrouter_url": "https://api.stdcmpt.com/v1",
+      "conversation_model": "StandardCompute",
+      "summary_model": "StandardCompute",
+      "correction_model": "StandardCompute",
+      "emotion_model": "StandardCompute",
+      "vision_model": "StandardCompute",
+      "agent_model": "StandardCompute"
+    },
     "vllm_omni": {
       "key": "vllm_omni",
       "name": "vLLM-Omni (TTS)",
@@ -407,7 +419,8 @@
     "orcarouter": "ASSIST_API_KEY_ORCAROUTER",
     "requesty": "ASSIST_API_KEY_REQUESTY",
     "opper": "ASSIST_API_KEY_OPPER",
-    "atlascloud": "ASSIST_API_KEY_ATLASCLOUD"
+    "atlascloud": "ASSIST_API_KEY_ATLASCLOUD",
+    "standardcompute": "ASSIST_API_KEY_STANDARDCOMPUTE"
   },
   "api_key_registry": {
     "qwen": {
@@ -496,6 +509,10 @@
     },
     "atlascloud": {
       "config_field": "assistApiKeyAtlascloud",
+      "restricted": true
+    },
+    "standardcompute": {
+      "config_field": "assistApiKeyStandardcompute",
       "restricted": true
     },
     "vllm_omni": {

@@ -63,6 +63,7 @@ class TestKeybookSaveLoad:
         'assistApiKeyRequesty': 'ASSIST_API_KEY_REQUESTY',
         'assistApiKeyOpper': 'ASSIST_API_KEY_OPPER',
         'assistApiKeyAtlascloud': 'ASSIST_API_KEY_ATLASCLOUD',
+        'assistApiKeyStandardcompute': 'ASSIST_API_KEY_STANDARDCOMPUTE',
     }
 
     @pytest.mark.unit
@@ -110,6 +111,7 @@ class TestKeybookSaveLoad:
                        'ASSIST_API_KEY_REQUESTY',
                        'ASSIST_API_KEY_OPPER',
                        'ASSIST_API_KEY_ATLASCLOUD',
+                       'ASSIST_API_KEY_STANDARDCOMPUTE',
                        'ASSIST_API_KEY_QWEN_INTL',
                        'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
                        'ASSIST_API_KEY_MIMO']:
@@ -480,12 +482,39 @@ class TestAtlasCloudResolution:
             assert resolved['provider_type'] == 'openai_compatible', task
 
 
+class TestStandardComputeResolution:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+    @pytest.mark.parametrize('sc_key', ['', 'sk-sc-dedicated'])
+    def test_selected_provider_credentials_and_models(
+        self, config_manager, core_provider, sc_key,
+    ):
+        """Resolve each Standard Compute task without borrowing another provider's key."""
+        core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+        _write_core_config(config_manager, {
+            'coreApi': core_provider,
+            'coreApiKey': core_key,
+            'assistApi': 'standardcompute',
+            'assistApiKeyStandardcompute': sc_key,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['ASSIST_API_KEY_STANDARDCOMPUTE'] == sc_key
+        assert cfg['OPENROUTER_API_KEY'] == sc_key
+        assert cfg['AGENT_MODEL_API_KEY'] == sc_key
+        for task in ('conversation', 'summary', 'correction', 'emotion', 'vision', 'agent'):
+            resolved = config_manager.get_model_api_config(task)
+            assert resolved['api_key'] == sc_key, task
+            assert resolved['base_url'] == 'https://api.stdcmpt.com/v1', task
+            assert resolved['model'] == 'StandardCompute', task
+            assert resolved['provider_type'] == 'openai_compatible', task
+
+
 class TestAssistOnlyKeyIsolation:
     """coreApiKey always belongs to another vendor when the assist provider is assist-only."""
 
     @pytest.mark.unit
     def test_catalog_has_assist_only_providers(self):
-        assert {'deepseek', 'orcarouter', 'requesty', 'opper', 'atlascloud'} <= set(_ASSIST_ONLY_PROVIDERS)
+        assert {'deepseek', 'orcarouter', 'requesty', 'opper', 'atlascloud', 'standardcompute'} <= set(_ASSIST_ONLY_PROVIDERS)
         assert not {'qwen', 'openai', 'free'} & set(_ASSIST_ONLY_PROVIDERS)
 
     @pytest.mark.unit
@@ -1121,6 +1150,7 @@ class TestProviderExclusion:
             'requesty',
             'opper',
             'atlascloud',
+            'standardcompute',
             'elevenlabs',
             'qwen_intl',
             'minimax_intl',

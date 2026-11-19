@@ -19,6 +19,7 @@ _ASSIST_API_KEY_FIELDS = (
     'assistApiKeyRequesty',
     'assistApiKeyOpper',
     'assistApiKeyAtlascloud',
+    'assistApiKeyStandardcompute',
 )
 
 _MODEL_TYPES = (

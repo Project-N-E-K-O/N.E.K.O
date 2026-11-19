@@ -1421,6 +1421,7 @@
             "requesty": "Requesty (enrutador de modelos)",
             "opper": "Opper (pasarela de IA en la UE)",
             "atlascloud": "Atlas Cloud (agregador de modelos)",
+            "standardcompute": "Standard Compute (enrutador de modelos)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (autoalojado)"
         },
@@ -1499,6 +1500,7 @@
             "requesty": "Requesty (enrutador de modelos)",
             "opper": "Opper (pasarela de IA en la UE)",
             "atlascloud": "Atlas Cloud (agregador de modelos)",
+            "standardcompute": "Standard Compute (enrutador de modelos)",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "La versión gratuita no requiere clave API",

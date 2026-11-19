@@ -1421,6 +1421,7 @@
             "requesty": "Requesty（モデルルーター）",
             "opper": "Opper（EU の AI ゲートウェイ）",
             "atlascloud": "Atlas Cloud（モデルアグリゲーター）",
+            "standardcompute": "Standard Compute（モデルルーター）",
             "vllm_omni": "vLLM-Omni（TTS）",
             "gptsovits": "GPT-SoVITS（セルフホスト）"
         },
@@ -1499,6 +1500,7 @@
             "requesty": "Requesty",
             "opper": "Opper",
             "atlascloud": "Atlas Cloud",
+            "standardcompute": "Standard Compute",
             "vllm_omni": "vLLM-Omni（TTS）"
         },
         "freeVersionNoApiKey": "無料版はAPIキー不要です",

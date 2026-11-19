@@ -236,6 +236,10 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "google/gemini-3.7-flash": EXTRA_BODY_OPENROUTER_LOW,
     "google/gemini-3.8-flash": EXTRA_BODY_OPENROUTER_LOW,
     "qwen/qwen3.5-9b": EXTRA_BODY_OPENROUTER,
+    # Standard Compute's routed id (only exists on api.stdcmpt.com). The gateway takes the
+    # OpenRouter reasoning dialect; measured 2026-11-11 (PR #3664): effort none gave 0
+    # reasoning tokens, while thinking:{type:disabled} was ignored.
+    "StandardCompute": EXTRA_BODY_OPENROUTER,
 }
 
 
