@@ -995,12 +995,17 @@
         function focusSelf(data) {
             if (!data || data.windowName !== name || data.type !== 'neko:named-window-focus') return;
             var api = window.nekoWindowControl;
-            if (api && typeof api.restore === 'function') Promise.resolve(api.restore()).catch(function () {});
-            try { window.focus(); } catch (_) {}
-            // Let a market window know a live selector took over before it closes itself.
-            if (data.requestId && channel) {
-                try { channel.postMessage({type: 'neko:named-window-focus-ack', windowName: name, requestId: data.requestId}); } catch (_) {}
-            }
+            var restored = api && typeof api.restore === 'function'
+                ? Promise.resolve().then(function () { return api.restore(); }).catch(function () {})
+                : Promise.resolve();
+            restored.then(function () {
+                try { window.focus(); } catch (_) {}
+                // The ack means "a live selector took over", so the market window may close.
+                // A failed restore still leaves this selector open, so it is acknowledged too.
+                if (data.requestId && channel) {
+                    try { channel.postMessage({type: 'neko:named-window-focus-ack', windowName: name, requestId: data.requestId}); } catch (_) {}
+                }
+            });
         }
         function start() {
             mark();

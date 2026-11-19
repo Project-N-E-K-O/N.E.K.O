@@ -13,6 +13,8 @@
     var NAMED_WINDOW_FOCUS_ACK = 'neko:named-window-focus-ack';
     var NAMED_WINDOW_ACK_TIMEOUT_MS = 800;
     var connecting = false;
+    // Set once the user chose to go back; a late connection result must not navigate away.
+    var returning = false;
     var channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('neko_page_channel') : null;
     function label(key) { return window.t ? window.t('theater.' + key) : key; }
     function post(data) {
@@ -35,7 +37,7 @@
     }
     async function redirectSelector() {
         var query = new URLSearchParams(window.location.search);
-        if (!query.has('market') || connecting) return;
+        if (!query.has('market') || connecting || returning) return;
         var status = document.getElementById('theater-selector-status');
         var retry = document.getElementById('theater-market-retry-btn');
         var connection = document.getElementById('theater-market-connection');
@@ -61,6 +63,7 @@
                 body.file_sha256 = query.get('file_sha256');
             }
             var result = await transport.requestJson(base, {method: 'POST', body: body});
+            if (returning) return;
             if (!result.ok) throw new Error(result.reason);
             post({action: 'theater:market-opened', request_id: result.request_id});
             window.location.replace(result.url);
@@ -161,20 +164,20 @@
             if (!(result && result.ok)) window.close();
         }, function () { window.close(); });
     }
-    var returning = false;
     function returnToSelector(event) {
         if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-        if (window.name !== MARKET_WINDOW_NAME) return;
         if (returning) { event.preventDefault(); return; }
+        returning = true;
+        // Only a standalone market window hands back to an existing selector; otherwise
+        // the link navigates this window to /theater in place.
+        if (window.name !== MARKET_WINDOW_NAME) return;
         if (focusExistingSelector()) {
             event.preventDefault();
-            returning = true;
             closeMarketWindow();
             return;
         }
         if (!isRegisteredSelectorFresh()) return;
         event.preventDefault();
-        returning = true;
         requestRegisteredSelectorFocus().then(function (acknowledged) {
             if (acknowledged) closeMarketWindow();
             else window.location.assign('/theater');

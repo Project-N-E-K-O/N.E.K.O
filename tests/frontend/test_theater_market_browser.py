@@ -476,3 +476,54 @@ def test_market_window_back_ignores_stale_registry_without_selector(page, runnin
     expect(market).to_have_url(running_server + '/theater')
     expect(market.locator('[data-theater-selector-app]')).to_be_visible()
     assert len(page.context.pages) == 2
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('stale_registry', [True, False])
+def test_market_back_ignores_a_connection_that_succeeds_afterwards(page, running_server, stale_registry):
+    """Back wins over a pending launch, whether waiting for a selector ack or navigating in place."""
+    _selector_api_stubs(page.context)
+    pending = []
+    page.context.route('**/api/theater-market/launch', lambda route: pending.append(route))
+    page.context.route('**/__market_success', lambda route: route.fulfill(body='<h1>Market connected</h1>'))
+    _host_with_window_registry(page, running_server)
+    if stale_registry:
+        page.evaluate("""() => localStorage.setItem('neko:named-window:neko_theater',
+            JSON.stringify({url: location.origin + '/theater', timestamp: Date.now() + 60000}))""")
+    with page.expect_popup() as opened_market:
+        page.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    market.wait_for_function('() => document.readyState === "complete"')
+    expect(market.locator('#theater-market-connection')).to_have_attribute('aria-busy', 'true')
+    assert len(pending) == 1
+    market.get_by_role('link', name='返回选择剧本').click()
+    pending[0].fulfill(json={'ok': True, 'request_id': 'late-success', 'url': running_server + '/__market_success'})
+    expect(market).to_have_url(running_server + '/theater')
+    expect(market.locator('[data-theater-selector-app]')).to_be_visible()
+
+
+@pytest.mark.frontend
+def test_registered_selector_acknowledges_only_after_restore_settles(page, running_server):
+    _selector_api_stubs(page.context)
+    page.add_init_script("""
+        window.nekoWindowControl = {restore: () => new Promise(resolve => setTimeout(() => {
+            window.__restoredAt = performance.now();
+            resolve({ok: true});
+        }, 300))};
+        const recordFocus = window.focus;
+        window.focus = () => { window.__focusAt = performance.now(); return recordFocus(); };
+    """)
+    page.goto(running_server + '/theater')
+    page.evaluate("window.name = 'neko_theater'")
+    page.reload()
+    expect(page.locator('[data-theater-selector-app]')).to_be_visible()
+    page.wait_for_function("() => !!localStorage.getItem('neko:named-window:neko_theater')")
+    other = page.context.new_page()
+    _host_with_window_registry(other, running_server)
+    with other.expect_popup() as opened_market:
+        other.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    _click_and_expect_close(market, '#theater-market-back-link')
+    page.wait_for_function('() => window.__focusAt !== undefined')
+    assert page.evaluate('window.__focusAt >= window.__restoredAt')
