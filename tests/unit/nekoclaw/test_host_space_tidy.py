@@ -1675,11 +1675,43 @@ async def test_a_merged_guess_whose_first_settling_failed_is_settled_by_a_later_
 
 async def test_a_line_left_to_be_added_is_added_only_for_an_entry_in_effect(world):
     waiting = await world.pending("Make needs the root", "make fails when started in src.", by="c1")
-    world.space._relines[(None, waiting)] = (None, f"- [Make needs the root](memory/{waiting}.md) — make fails.")
-    world.space._relines[(None, "gone")] = (None, "- [Gone](memory/gone.md) — gone.")
+    world.space._relines[(None, waiting)] = None
+    world.space._relines[(None, "gone")] = None
 
     await world.space.settle_tidied(None)
 
     index = await world.space.read_index(None)
     assert f"memory/{waiting}.md" not in index and "memory/gone.md" not in index
     assert world.space._relines == {}
+
+
+async def test_a_line_added_later_has_the_title_tidying_gave_meanwhile(world, monkeypatch):
+    first = await world.pending("Make needs the root", "make fails when started in src.", by="c1")
+    await world.pending("Build only from top", "Building from a subdirectory breaks.", by="c2")
+    await world.active("Mirror", "The mirror is at mirror.local.")
+    index_add = TaskAgentSpace._index_add
+    failed: list[bool] = []
+
+    def fails_once(self: Any, index: Path, line: str, target: str) -> None:
+        if target == f"memory/{first}.md" and not failed:
+            failed.append(True)
+            raise OSError("held by another program")
+        index_add(self, index, line, target)
+
+    monkeypatch.setattr(TaskAgentSpace, "_index_add", fails_once)
+    world.answer(
+        lambda shown: [
+            {"op": "merge", "from": shown["Build only from top"], "into": shown["Make needs the root"]},
+            {"op": "retitle", "entry": shown["Make needs the root"], "apart_from": shown["Mirror"], "title": "Make needs the root in src"},
+        ]
+    )
+    await world.tidy()
+    assert failed
+    assert (await world.entry(first)).title == "Make needs the root in src"
+    world.llm.answer = {"operations": []}
+
+    await world.tidy()
+
+    index = await world.space.read_index(None)
+    assert f"[Make needs the root in src](memory/{first}.md)" in index
+    assert f"[Make needs the root](memory/{first}.md)" not in index

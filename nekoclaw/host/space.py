@@ -1970,9 +1970,10 @@ class TaskAgentSpace:
         # restart such an entry waits like any other.
         self._unsettled: dict[tuple[str | None, str], str] = {}
         # Lines of an index that tidying changed an entry for and could not
-        # write, each as the line it was then (None: there was none) and the
-        # line it is to be; put right by a later round (``settle_tidied``).
-        self._relines: dict[tuple[str | None, str], tuple[str | None, str]] = {}
+        # write, each as the line it was then and the line it is to be, or
+        # None for a missing one, made from the entry as it is when it is
+        # written; put right by a later round (``settle_tidied``).
+        self._relines: dict[tuple[str | None, str], tuple[str, str] | None] = {}
 
     # -- plumbing ---------------------------------------------------------
 
@@ -5188,10 +5189,7 @@ class TaskAgentSpace:
             except _LineNotAdded as exc:
                 into = exc.entry
                 logger.warning("an entry tidying merged into could not be given its line in the index")
-                self._relines[(project, target.id)] = (
-                    None,
-                    _index_line(into.title, f"{SpacePaths.MEMORY_DIR}/{target.id}.md", into.description),
-                )
+                self._relines[(project, target.id)] = None
         # Its texts are in the other entry: it goes, unless the user saved it
         # since it was read. Its line first: should the file stay (held by
         # another program), it is an entry whose texts are in the other one,
@@ -5258,11 +5256,11 @@ class TaskAgentSpace:
 
         def work(allowed: bool) -> int:
             directory = self._paths().memory_dir(project)
-            for (layer, entry_id), (was, now) in list(self._relines.items()):
+            for (layer, entry_id), swap in list(self._relines.items()):
                 if layer != project:
                     continue
                 try:
-                    self._put_line_right(project, entry_id, was, now)
+                    self._put_line_right(project, entry_id, swap)
                 except OSError:
                     logger.warning("a line of the index tidying changed could not be written just now", exc_info=True)
                     continue
@@ -5296,17 +5294,18 @@ class TaskAgentSpace:
 
         return await self._write_judged(work)
 
-    def _put_line_right(self, project: str | None, entry_id: str, was: str | None, now: str) -> None:
+    def _put_line_right(self, project: str | None, entry_id: str, swap: tuple[str, str] | None) -> None:
         """Write a line of an index that tidying could not; see ``settle_tidied``. Raises OSError when it cannot be yet.
 
         A line that was there is replaced where it is still what it was. A
         missing one is added while the entry is in effect and none points
-        at it.
+        at it, by what the entry is called and says now: tidying may have
+        given it another title since.
         """
         paths = self._paths()
         index = paths.index(project)
-        if was is not None:
-            self._index_reline(index, was, now)
+        if swap is not None:
+            self._index_reline(index, *swap)
             return
         path = paths.memory_dir(project) / f"{entry_id}.md"
         text = self._read_text(path)
@@ -5314,8 +5313,10 @@ class TaskAgentSpace:
             if _gone_for_good(path):
                 return
             raise OSError(f"{entry_id} cannot be read just now")
-        if _status_of(_parse_document(text)) == ENTRY_ACTIVE:
-            self._index_add(index, now, f"{paths.MEMORY_DIR}/{entry_id}.md")
+        document = _parse_document(text)
+        if _status_of(document) == ENTRY_ACTIVE:
+            target = f"{paths.MEMORY_DIR}/{entry_id}.md"
+            self._index_add(index, _index_line(document.get("name") or entry_id, target, document.get("description")), target)
 
     def _tidy_confirm(self, project: str | None, entry: Entry, allowed: bool, as_marked: list[str]) -> bool:
         """Have a pending entry take effect where it is when enough commissions have seen it by now, or it was verified.
@@ -5354,13 +5355,10 @@ class TaskAgentSpace:
                 # be in effect.
                 logger.info("a guess merged by tidying waits on: another entry has its title")
                 return True
-        confirmed, unlisted = self._confirm(project, entry, _Known(confidence=INFERRED), allowed, as_marked=as_marked)
+        _entry, unlisted = self._confirm(project, entry, _Known(confidence=INFERRED), allowed, as_marked=as_marked)
         if unlisted is not None:
             logger.warning("an entry that took effect by tidying could not be given its line in the index")
-            self._relines[(project, entry.id)] = (
-                None,
-                _index_line(confirmed.title, f"{SpacePaths.MEMORY_DIR}/{entry.id}.md", confirmed.description),
-            )
+            self._relines[(project, entry.id)] = None
         return True
 
     def _tidy_count_in(
