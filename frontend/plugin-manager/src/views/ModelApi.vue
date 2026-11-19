@@ -130,15 +130,15 @@ const pluginFilter = ref(typeof route.query.plugin_id === 'string' ? route.query
 const slotFilter = ref(typeof route.query.slot_id === 'string' ? route.query.slot_id : '')
 const editorOpen = ref(false)
 const editingSlot = ref<ModelSlot | null>(null)
-const form = reactive(modelSlotForm())
+const form = ref(modelSlotForm())
 const saving = ref(false)
 const formError = ref('')
 const testingId = ref('')
 const unbindingId = ref('')
 const testResults = reactive<Record<string, { ok: boolean; message: string }>>({})
 const capabilities: ModelCapability[] = ['text', 'image_input', 'tool_calling', 'streaming']
-const keyUpdateRequired = computed(() => needsModelKeyUpdate(form, editingSlot.value))
-const fallbackSlots = computed(() => slots.value.filter(slot => slot.id !== editingSlot.value?.id && form.capabilities.every(capability => slot.capabilities.includes(capability))))
+const keyUpdateRequired = computed(() => needsModelKeyUpdate(form.value, editingSlot.value))
+const fallbackSlots = computed(() => slots.value.filter(slot => slot.id !== editingSlot.value?.id && form.value.capabilities.every(capability => slot.capabilities.includes(capability))))
 const knownTokens = computed(() => {
   const summary = usage.value?.summary
   // A partial snapshot may contain only input tokens; an absent total is not zero.
@@ -170,34 +170,34 @@ async function loadUsage() {
 }
 function editSlot(slot?: ModelSlot) {
   editingSlot.value = slot ?? null
-  Object.assign(form, modelSlotForm(slot))
+  Object.assign(form.value, modelSlotForm(slot))
   formError.value = ''
   editorOpen.value = true
 }
 function clearEditor() {
   // Drop the replacement key from component state as soon as the editor closes.
-  Object.assign(form, modelSlotForm())
+  Object.assign(form.value, modelSlotForm())
   editingSlot.value = null
   formError.value = ''
 }
 function selectMaskedKey(event: FocusEvent) {
-  if (form.api_key && !form.key_edited) (event.target as HTMLInputElement).select()
+  if (form.value.api_key && !form.value.key_edited) (event.target as HTMLInputElement).select()
 }
 function copyMaskedKey(event: ClipboardEvent) {
   event.preventDefault()
-  event.clipboardData?.setData('text/plain', form.key_edited ? maskedKeyCopy(form.api_key) : form.initial_api_key)
+  event.clipboardData?.setData('text/plain', form.value.key_edited ? maskedKeyCopy(form.value.api_key) : form.value.initial_api_key)
 }
 async function saveSlot() {
   if (saving.value || keyUpdateRequired.value) return
-  if (!form.name.trim() || !form.model.trim() || !form.base_url.trim()) { formError.value = t('modelApi.requiredFields'); return }
+  if (!form.value.name.trim() || !form.value.model.trim() || !form.value.base_url.trim()) { formError.value = t('modelApi.requiredFields'); return }
   saving.value = true
   formError.value = ''
   try {
-    const payload = modelSlotPayload(form)
+    const payload = modelSlotPayload(form.value)
     const saved = editingSlot.value ? await updateModelSlot(editingSlot.value.id, payload) : await createModelSlot(payload)
     delete testResults[saved.id]
     editorOpen.value = false
-    form.api_key = ''
+    form.value.api_key = ''
     await loadSlots()
   } catch (error) { formError.value = errorMessage(error) }
   finally { saving.value = false }
