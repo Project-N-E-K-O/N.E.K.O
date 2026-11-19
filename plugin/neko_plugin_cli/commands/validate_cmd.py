@@ -1370,7 +1370,6 @@ def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None
     issues.append(("error", f"plugin source must not contain symbolic links: {shown}{suffix}"))
 
 
-
 # --- Advisory checks -------------------------------------------------------
 #
 # ``neko-plugin check`` (without --release) reports these as "advisory"
@@ -1436,9 +1435,9 @@ _ADVISORY_RULES: dict[str, tuple[int, dict[str, str]]] = {
             "비동기 라이브러리나 await asyncio.to_thread(...)를 사용하세요.",
             "ru": "Блокирующий вызов внутри async def останавливает все точки входа плагина: у них общий цикл событий. "
             "Используйте асинхронную библиотеку или await asyncio.to_thread(...).",
-            "es": "Una llamada bloqueante dentro de async def detiene todas las entradas del plugin, porque comparten "
+            "es": "Una llamada bloqueante dentro de async def detiene todos los puntos de entrada del plugin, porque comparten "
             "un mismo bucle de eventos. Usa una biblioteca asíncrona o await asyncio.to_thread(...).",
-            "pt": "Uma chamada bloqueante dentro de async def trava todas as entradas do plugin, pois elas compartilham "
+            "pt": "Uma chamada bloqueante dentro de async def trava todos os pontos de entrada do plugin, pois eles compartilham "
             "o mesmo loop de eventos. Use uma biblioteca assíncrona ou await asyncio.to_thread(...).",
         },
     ),
@@ -1451,7 +1450,7 @@ _ADVISORY_RULES: dict[str, tuple[int, dict[str, str]]] = {
             "或用显式的函数映射表来分派。",
             "zh-TW": "eval() 與 exec() 會執行任意程式碼。請改為解析輸入（例如 json.loads 或 ast.literal_eval），"
             "或透過明確的函式對照表來分派。",
-            "ja": "eval() と exec() は任意のコードを実行します。入力は解析して扱うか（json.loads や ast.literal_eval など）、"
+            "ja": "eval() と exec() は任意のコードを実行します。入力は json.loads や ast.literal_eval などで解析するか、"
             "明示的な関数テーブルで振り分けてください。",
             "ko": "eval()과 exec()는 임의의 코드를 실행합니다. 입력을 파싱하거나(json.loads, ast.literal_eval 등) "
             "명시적인 함수 테이블로 분기하세요.",
@@ -1466,19 +1465,19 @@ _ADVISORY_RULES: dict[str, tuple[int, dict[str, str]]] = {
     "pickle": (
         10,
         {
-            "en": "Unpickling can run code embedded in the data. Store data as JSON, or use self.store / self.db.",
-            "zh-CN": "pickle 反序列化可能执行数据里夹带的代码。请用 JSON 保存数据，或使用 self.store / self.db。",
-            "zh-TW": "pickle 反序列化可能執行資料中夾帶的程式碼。請改用 JSON 儲存資料，或使用 self.store / self.db。",
-            "ja": "pickle の復元は、データに埋め込まれたコードを実行することがあります。"
-            "データは JSON で保存するか、self.store / self.db を使ってください。",
+            "en": "Unpickling can run code embedded in the data. Store the data as JSON instead.",
+            "zh-CN": "pickle 反序列化可能执行数据里夹带的代码。请改用 JSON 保存数据。",
+            "zh-TW": "pickle 反序列化可能執行資料中夾帶的程式碼。請改用 JSON 儲存資料。",
+            "ja": "pickle のデシリアライズは、データに埋め込まれたコードを実行することがあります。"
+            "データは JSON で保存してください。",
             "ko": "pickle 역직렬화는 데이터에 숨은 코드를 실행할 수 있습니다. "
-            "데이터는 JSON으로 저장하거나 self.store / self.db를 사용하세요.",
-            "ru": "При распаковке pickle может выполниться код, встроенный в данные. "
-            "Храните данные в JSON или используйте self.store / self.db.",
+            "데이터는 JSON으로 저장하세요.",
+            "ru": "При десериализации pickle может выполниться код, встроенный в данные. "
+            "Храните данные в JSON.",
             "es": "Deserializar con pickle puede ejecutar código incrustado en los datos. "
-            "Guarda los datos en JSON o usa self.store / self.db.",
+            "Guarda los datos en JSON.",
             "pt": "Desserializar com pickle pode executar código embutido nos dados. "
-            "Guarde os dados em JSON ou use self.store / self.db.",
+            "Guarde os dados em JSON.",
         },
     ),
     "shell-true": (
@@ -1497,7 +1496,7 @@ _ADVISORY_RULES: dict[str, tuple[int, dict[str, str]]] = {
             "ru": "При shell=True вся командная строка уходит в оболочку, и попавший в неё внешний текст может "
             "внедрить команды. Передавайте аргументы списком и уберите shell=True.",
             "es": "Con shell=True toda la línea de comandos pasa por un shell, así que cualquier texto externo que "
-            "contenga puede inyectar órdenes. Pasa los argumentos como lista y quita shell=True.",
+            "contenga puede inyectar comandos. Pasa los argumentos como lista y quita shell=True.",
             "pt": "Com shell=True a linha de comando inteira passa por um shell, e qualquer texto externo nela pode "
             "injetar comandos. Passe os argumentos como lista e remova shell=True.",
         },
@@ -1508,19 +1507,19 @@ _ADVISORY_RULES: dict[str, tuple[int, dict[str, str]]] = {
             "en": "verify=False turns off TLS certificate checks, so the connection can be intercepted. "
             'Remove it; for a private CA, pass verify="path/to/ca.pem".',
             "zh-CN": "verify=False 会关闭 TLS 证书校验，连接可能被中间人截获。"
-            '请去掉它；需要信任私有 CA 时，传 verify="CA 证书路径"。',
+            '请去掉它；需要信任私有 CA 时，传入该 CA 证书的路径，例如 verify="path/to/ca.pem"。',
             "zh-TW": "verify=False 會關閉 TLS 憑證驗證，連線可能遭到中間人攔截。"
-            '請移除它；需要信任私有 CA 時，請傳入 verify="CA 憑證路徑"。',
+            '請移除它；需要信任私有 CA 時，請傳入該 CA 憑證的路徑，例如 verify="path/to/ca.pem"。',
             "ja": "verify=False は TLS 証明書の検証を無効にするため、通信を傍受されるおそれがあります。"
-            '削除してください。独自の CA を使う場合は verify="CA 証明書のパス" を渡してください。',
+            '削除してください。独自の CA を使う場合は、その CA 証明書のパスを verify="path/to/ca.pem" のように渡してください。',
             "ko": "verify=False는 TLS 인증서 검증을 꺼 버려서 제3자가 연결을 가로챌 수 있습니다. "
-            '제거하세요. 사설 CA를 신뢰해야 한다면 verify="CA 인증서 경로"를 넘기세요.',
+            '제거하세요. 사설 CA를 신뢰해야 한다면 verify="path/to/ca.pem"처럼 CA 인증서 경로를 넘기세요.',
             "ru": "verify=False отключает проверку TLS-сертификатов, и соединение могут перехватить. "
-            'Уберите его; для собственного центра сертификации передайте verify="путь/к/ca.pem".',
+            'Уберите его; для собственного центра сертификации передайте verify="path/to/ca.pem".',
             "es": "verify=False desactiva la verificación de certificados TLS, así que la conexión puede ser "
-            'interceptada. Quítalo; para una CA privada, pasa verify="ruta/al/ca.pem".',
+            'interceptada. Quítalo; para una CA privada, pasa verify="path/to/ca.pem".',
             "pt": "verify=False desativa a verificação de certificados TLS, e a conexão pode ser interceptada. "
-            'Remova-o; para uma CA privada, passe verify="caminho/para/ca.pem".',
+            'Remova-o; para uma CA privada, passe verify="path/to/ca.pem".',
         },
     ),
 }
@@ -1551,7 +1550,7 @@ def collect_advisory_issues(plugin_dir: Path) -> list[tuple[str, str]]:
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        except (SyntaxError, UnicodeDecodeError, ValueError):
+        except (OSError, SyntaxError, UnicodeDecodeError, ValueError):
             continue
         for code, lineno, detail in sorted(_advisory_findings(tree), key=lambda item: item[1]):
             hits[code].append(f"{relative}:{lineno}" + (f" {detail}" if detail else ""))
