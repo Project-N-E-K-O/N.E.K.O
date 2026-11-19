@@ -190,7 +190,6 @@ def test_session_ended_by_server_stops_assistant_text_output():
     )
 
 
-
 def test_new_socket_open_clears_session_end_suppression():
     """A fresh socket must not inherit the ended session's suppression latch.
 
@@ -212,7 +211,10 @@ def test_new_socket_open_clears_session_end_suppression():
     assert onopen_block.index(stale_guard) < onopen_block.index(reset)
 
     # The old socket's late frames are still dropped by onmessage's own guard.
-    onmessage_head = source.split("S.socket.onmessage = function (event) {", 1)[1][:200]
+    onmessage_head = source.split("S.socket.onmessage = function (event) {", 1)[1].split(
+        "stale onmessage skipped",
+        1,
+    )[0]
     assert "if (S.socket !== _thisSocket) {" in onmessage_head
 
 
@@ -237,6 +239,7 @@ def test_session_end_suppression_reset_runtime():
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
+
 
 def test_only_server_identified_visit_homecoming_messages_bypass_session_end_suppression():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
