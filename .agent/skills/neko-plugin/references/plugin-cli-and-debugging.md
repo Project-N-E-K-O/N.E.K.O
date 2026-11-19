@@ -33,7 +33,7 @@ a package in the Plugin studio.
 | `build <plugin>` | build a `.neko-plugin` package into the CLI's own `target/` folder |
 | `analyze <plugin> <plugin>...` | bundle candidates: ids, SDK versions, shared dependencies |
 | `publish <plugin>` | push the release tag, wait for the GitHub Release, notify the Market |
-| `install` | prints guidance only: packages are installed through the Plugin Manager's import |
+| `install <package>` | installs nothing: prints that packages are imported through the Plugin Center and exits with code 2 |
 
 Validation order before reporting done: `check` → `lint` → `sync --clean` →
 `precheck`. Outside the checkout's built-in plugin folder, `check -r` and

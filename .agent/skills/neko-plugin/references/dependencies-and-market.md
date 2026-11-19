@@ -76,9 +76,11 @@ Large assets belong outside the repository (download them at runtime into
   or apply release rules. `check -r` adds tests, the package build, and the
   hash check; `precheck` runs lint, `sync --clean`, and `check -r` the way
   Market CI does.
-- Even `precheck` only applies the size and binary limits above when the
-  environment variable `NEKO_PLUGIN_MARKET_SECURITY_CHECKS=1` is set; by
-  default they are skipped locally.
+- The size and binary limits above are skipped locally unless the
+  environment variable `NEKO_PLUGIN_MARKET_SECURITY_CHECKS=1` is set. Even
+  then `precheck` scans only the built package; the committed repository
+  (including files outside `<plugin_dir>`) is scanned only by
+  `check -r --market-release`.
 - The Market runs its own review on the published release, which the CLI does
   not reproduce. Report "local checks passed", never "the Market will accept
   it".
