@@ -4,6 +4,7 @@
     var transport = window.nekoTheaterTransport;
     if (!transport) return;
     var base = '/api/theater-market/launch';
+    var connecting = false;
     var channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('neko_page_channel') : null;
     function label(key) { return window.t ? window.t('theater.' + key) : key; }
     function post(data) {
@@ -26,8 +27,13 @@
     }
     async function redirectSelector() {
         var query = new URLSearchParams(window.location.search);
-        if (!query.has('market')) return;
+        if (!query.has('market') || connecting) return;
         var status = document.getElementById('theater-selector-status');
+        var retry = document.getElementById('theater-market-retry-btn');
+        var connection = document.getElementById('theater-market-connection');
+        connecting = true;
+        if (retry) retry.disabled = true;
+        if (connection) connection.setAttribute('aria-busy', 'true');
         try {
             if (['127.0.0.1', 'localhost', '[::1]'].indexOf(window.location.hostname) < 0) {
                 if (status) {
@@ -55,7 +61,16 @@
                 status.setAttribute('data-i18n', 'theater.marketConnectError');
                 status.textContent = label('marketConnectError');
             }
+            if (retry) retry.hidden = false;
+        } finally {
+            connecting = false;
+            if (retry) retry.disabled = false;
+            if (connection) connection.setAttribute('aria-busy', 'false');
         }
     }
+    document.addEventListener('DOMContentLoaded', function () {
+        var retry = document.getElementById('theater-market-retry-btn');
+        if (retry) retry.addEventListener('click', redirectSelector);
+    });
     window.nekoTheaterMarket = Object.freeze({open: openSelector, browse: openMarket, redirectSelector: redirectSelector});
 })();

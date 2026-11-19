@@ -3689,7 +3689,10 @@
     "moreStories": "More scripts",
     "marketEnter": "Enter",
     "marketPreparing": "Connecting to the script market…",
-    "marketConnectError": "Cannot connect to the script market. Keep NEKO open and try again.",
+    "marketConnectError": "The script market is temporarily unavailable. Please try again.",
+    "marketTitle": "Script market",
+    "marketRetry": "Reconnect",
+    "marketBackToSelector": "Back to script selection",
     "marketLocalOnly": "Open the script market on the computer running NEKO. LAN and remote addresses are not supported for importing scripts."
   },
     "voiceIdentity": {

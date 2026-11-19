@@ -3689,7 +3689,10 @@
     "moreStories": "Más guiones",
     "marketEnter": "Entrar",
     "marketPreparing": "Conectando al mercado de guiones…",
-    "marketConnectError": "No se pudo conectar. Mantén NEKO abierto e inténtalo de nuevo.",
+    "marketConnectError": "No se puede conectar al mercado de guiones en este momento. Inténtalo de nuevo.",
+    "marketTitle": "Mercado de guiones",
+    "marketRetry": "Volver a conectar",
+    "marketBackToSelector": "Volver a elegir un guion",
     "marketLocalOnly": "Abre el mercado de guiones en el equipo donde se ejecuta NEKO. No se admite importar guiones desde direcciones LAN o remotas."
   },
     "voiceIdentity": {
