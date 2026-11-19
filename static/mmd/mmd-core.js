@@ -993,12 +993,27 @@ class MMDCore {
         return this.performanceMode === 'low' ? 30 : (this.performanceMode === 'medium' ? 45 : 60);
     }
 
-    // 同步 targetFPS/frameTime 到当前配置；rAF 路径每帧调用，配置变更立即生效。
+    // rAF 驱动下实际执行的帧率上限：配置帧率 ≥ 实测刷新率×0.9（即总闸让它留在 rAF）时放宽到 max(配置, 刷新率×1.5)，
+    // 显示器本身就是上限——下面 _render 的节流按精确帧间隔比较，60Hz 屏上 rAF 稍早一点
+    // （16.6ms < 16.667ms）就整帧跳过。与 live2d-core.js / vrm-manager.js 的同名方法对称，
+    // 判定在 frame-pacing.js；非 Pet / 刷新率未测出 / 换屏后未重测 / 配置明显低于刷新率：原样返回。
+    _resolveRafCapFps(fps) {
+        const requested = Number(fps);
+        const pacing = window.nekoFramePacing;
+        if (!pacing || typeof pacing.rafCapFps !== 'function') return requested;
+        const capped = Number(pacing.rafCapFps(requested));
+        return Number.isFinite(capped) && capped >= 0 ? capped : requested;
+    }
+
+    // 同步 targetFPS/frameTime 到当前配置；rAF 路径每帧调用，配置变更、刷新率重测立即生效。
+    // targetFPS 保持配置值；frameTime 按 rAF 上限算（0 = 不节流）。
     _refreshTargetFps() {
         const fps = this._resolveConfiguredTargetFps();
-        if (fps === this.targetFPS) return;
+        const capFps = this._resolveRafCapFps(fps);
+        if (fps === this.targetFPS && capFps === this._rafCapFps) return;
         this.targetFPS = fps;
-        this.frameTime = fps > 0 ? 1000 / fps : 0;
+        this._rafCapFps = capFps;
+        this.frameTime = capFps > 0 ? 1000 / capFps : 0;
     }
 
     // 静止地板帧率：不超过用户配置；配置为 0（不限帧）时仍压到地板省 CPU。
