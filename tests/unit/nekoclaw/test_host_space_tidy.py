@@ -726,14 +726,14 @@ async def test_two_changes_of_one_entry_are_both_made(world):
     world.answer(
         lambda shown: [
             {"op": "date", "entry": shown["Server"], "old": "yesterday", "new": "2027-01-14"},
-            {"op": "retitle", "entry": shown["Server"], "apart_from": shown["Server status"], "title": "Staging server"},
+            {"op": "retitle", "entry": shown["Server"], "apart_from": shown["Server status"], "title": "Staging Server"},
         ]
     )
 
     await world.tidy()
 
     entry = await world.entry(one)
-    assert entry.title == "Staging server" and "2027-01-14" in entry.content
+    assert entry.title == "Staging Server" and "2027-01-14" in entry.content
 
 
 async def test_a_date_in_the_second_text_of_an_entry_keeps_the_texts_apart(world):
@@ -1071,6 +1071,31 @@ async def test_guesses_that_take_effect_as_one_wait_on_while_an_entry_beside_the
     kept = await world.entry(first)
     assert set(kept.seen_by) == {"c1", "c2"} and kept.status == ENTRY_PENDING
 
+    # Readable again: the next round settles it, with no model.
+    monkeypatch.undo()
+    calls = len(world.llm.calls)
+    world.llm.answer = {"operations": []}
+    await world.tidy()
+
+    assert (await world.entry(first)).status == ENTRY_ACTIVE
+    assert f"memory/{first}.md" in await world.space.read_index(None)
+    assert len(world.llm.calls) - calls <= 1
+
+
+async def test_a_time_that_counts_is_left(world):
+    one = await world.active("Outage", "The mirror went down 3 days ago.")
+    await world.active("Mirror", "The mirror is at mirror.local.")
+    world.answer(
+        lambda shown: [
+            {"op": "date", "entry": shown["Outage"], "old": "3 days ago", "new": "2027-01-12"},
+            {"op": "date", "entry": shown["Outage"], "old": "days ago", "new": "2027-01-12"},
+        ]
+    )
+
+    await world.tidy()
+
+    assert (await world.entry(one)).content == "The mirror went down 3 days ago."
+
 
 async def test_a_relative_time_inside_a_name_is_left(world):
     one = await world.active("Report", "Use todayTotal for the report, as of today.")
@@ -1222,3 +1247,35 @@ async def test_an_entry_is_not_told_apart_from_one_that_went_out_of_date_this_ro
     await world.tidy()
 
     assert (await world.entry(one)).title == "Tests"
+
+
+async def test_a_new_title_keeps_what_the_user_wrote_in_the_line_of_the_index(world):
+    one = await world.active("Tests", "Run them in parallel: pytest with -n 4.")
+    await world.active("Testing", "Tests need DISPLAY set.")
+    index = world.memory().parent / "MEMORY.md"
+    text = index.read_text(encoding="utf-8")
+    line = next(item for item in text.split("\n") if f"memory/{one}.md" in item)
+    index.write_text(text.replace(line, f"- [Tests](memory/{one}.md) — never against production"), encoding="utf-8")
+    world.answer(
+        lambda shown: [{"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Testing"], "title": "Tests in parallel"}]
+    )
+
+    await world.tidy()
+
+    assert (await world.entry(one)).title == "Tests in parallel"
+    assert f"- [Tests in parallel](memory/{one}.md) — never against production" in await world.space.read_index(None)
+
+
+async def test_a_new_title_keeps_the_old_one_as_it_is_written(world):
+    one = await world.active("Set MODE=SAFE", "Run this locally before a release.")
+    await world.active("Release checklist", "Tag, build, upload.")
+    world.answer(
+        lambda shown: [
+            {"op": "retitle", "entry": shown["Set MODE=SAFE"], "apart_from": shown["Release checklist"], "title": "Set MODE=safe locally"}
+        ]
+    )
+
+    await world.tidy()
+
+    assert len(world.llm.calls) == 1
+    assert (await world.entry(one)).title == "Set MODE=SAFE"

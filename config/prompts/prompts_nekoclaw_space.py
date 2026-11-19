@@ -260,31 +260,33 @@ SPACE_CONSOLIDATE_USER_TEMPLATE = (
 # her commissions come in (``space_keeper._LANGUAGES``). A ``date`` change
 # replaces such words, and nothing else, with a date: what a model asks for
 # is not taken on its word, since a pending note it was shown may have told
-# it what to ask for. Matched without regard to case.
+# it what to ask for. Matched without regard to case, each as a whole: ones
+# that count ("three days ago") are not among them, as the count is a word
+# of its own that a date would have to take the place of as well.
 SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS: tuple[str, ...] = (
     # English
     "yesterday", "today", "tomorrow", "tonight", "this morning", "this afternoon", "this evening",
     "last night", "last week", "last month", "last year", "this week", "this month", "this year",
-    "next week", "next month", "next year", "days ago", "weeks ago", "months ago", "the other day",
+    "next week", "next month", "next year", "the other day",
     # Chinese, simplified and traditional
     "昨天", "前天", "今天", "明天", "后天", "後天", "今早", "今晚", "昨晚", "上周", "上週", "上星期",
     "上个月", "上個月", "上月", "去年", "本周", "本週", "这周", "這週", "这个月", "這個月", "本月", "今年",
-    "下周", "下週", "下个月", "下個月", "明年", "天前", "周前", "週前", "个月前", "個月前",
+    "下周", "下週", "下个月", "下個月", "明年",
     # Japanese
     "昨日", "一昨日", "今日", "明日", "今朝", "今夜", "昨夜", "先週", "先月", "今週", "今月", "来週", "来月",
-    "来年", "日前", "週間前", "か月前", "ヶ月前",
+    "来年",
     # Korean
     "어제", "그저께", "오늘", "내일", "모레", "지난주", "지난달", "작년", "이번 주", "이번 달", "올해",
-    "다음 주", "다음 달", "내년", "일 전", "주 전", "달 전",
+    "다음 주", "다음 달", "내년",
     # Russian
     "вчера", "позавчера", "сегодня", "завтра", "на прошлой неделе", "в прошлом месяце",
-    "в прошлом году", "на этой неделе", "в этом месяце", "в этом году", "на следующей неделе", "назад",
+    "в прошлом году", "на этой неделе", "в этом месяце", "в этом году", "на следующей неделе",
     # Spanish
     "ayer", "anteayer", "hoy", "mañana", "la semana pasada", "el mes pasado", "el año pasado",
-    "esta semana", "este mes", "este año", "la próxima semana", "hace",
+    "esta semana", "este mes", "este año", "la próxima semana",
     # Portuguese
     "ontem", "anteontem", "hoje", "amanhã", "semana passada", "mês passado", "ano passado",
-    "este mês", "próxima semana", "atrás",
+    "este mês", "próxima semana",
 )
 
 SPACE_CONSOLIDATE_LAYER_GLOBAL = "all projects"

@@ -1876,25 +1876,24 @@ def _said_mark(document: _Document) -> str:
     return _text_mark("\n".join((document.get("name"), document.get("description"), document.body.strip())))
 
 
-# A date as entries are written with: what a time "yesterday" is replaced with must have one.
-_A_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-
 
 def _added_to(name: str, title: str, own: str) -> bool:
     """Whether ``name`` is ``title`` with words of ``own`` added before or after it, and nothing else.
 
     For a title tidying gives an entry. The model that asks for it was
     shown pending notes, which a page may have written: the title an
-    entry had stays in it whole (a "never" it began with is not lost),
-    and what is added is one run of the entry's own words, as they stand
-    in its text. Compared as ``_normal`` leaves texts.
+    entry had stays in it whole and as it is written, case and all (a
+    "never" it began with is not lost, nor is "MODE=SAFE" made
+    "MODE=safe"), and what is added is one run of the entry's own words,
+    as they stand in its text (compared as ``_normal`` leaves texts).
     """
-    new, old = _normal(name), _normal(title)
-    if not old or new == old or old not in new:
+    old = title.strip()
+    if not _normal(old) or old not in name:
         return False
-    at = new.find(old)
-    before, after = new[:at], new[at + len(old) :]
-    if before and after:
+    at = name.find(old)
+    before, after = _normal(name[:at]), _normal(name[at + len(old) :])
+    if bool(before) == bool(after):
+        # Nothing added, or added on both sides.
         return False
     return (before or after) in _normal(own)
 
@@ -2375,6 +2374,31 @@ class TaskAgentSpace:
 
         if not self._edit_text(index, change):
             self._index_add(index, line, target)
+
+    def _index_retitle(self, index: Path, target: str, title: str, description: str) -> None:
+        """Have the line of an index that points at ``target`` call it ``title``; the rest of the line stays.
+
+        What follows the link may have been reworded by the user, and is
+        theirs. Without such a line, one is added like any other.
+        """
+        marks = _index_marks(target)
+        plain = _one_line(title).replace("[", "(").replace("]", ")")
+
+        def change(text: str) -> str:
+            lines = text.split("\n") if text else []
+            for number, item in enumerate(lines):
+                if _points_at(item, marks):
+                    link = item.find("](")
+                    opening = item.rfind("[", 0, link)
+                    if opening < 0:
+                        lines[number] = _index_line(title, target, description)
+                    else:
+                        lines[number] = item[: opening + 1] + plain + item[link:]
+                    return "\n".join(lines)
+            return text
+
+        if not self._edit_text(index, change):
+            self._index_add(index, _index_line(title, target, description), target)
 
     @staticmethod
     def _index_line_in(text: str, target: str) -> str | None:
@@ -5151,27 +5175,56 @@ class TaskAgentSpace:
         else:
             logger.warning("an entry tidying merged into another was saved meanwhile; it stays as it is")
         if pending:
+            # Should whether it takes effect not be told just now, a later
+            # round tries again (``confirm_seen``).
             self._tidy_confirm(project, into, allowed, as_marked)
         return "made", {source.id: None, target.id: as_marked[0]}
 
-    def _tidy_confirm(self, project: str | None, entry: Entry, allowed: bool, as_marked: list[str]) -> None:
+    async def confirm_seen(self, project: str | None) -> int:
+        """Have the pending entries of a layer that enough commissions have seen take effect. Returns how many did.
+
+        Such an entry comes only of tidying, which merges two guesses into
+        one: one filed by a task agent takes effect as soon as it is seen
+        enough. When that merge could not tell whether it takes effect
+        (an entry beside it could not be read), it is tried again here, by
+        every round of tidying, with no model. As ``_tidy_confirm``.
+        """
+        def work(allowed: bool) -> int:
+            directory = self._paths().memory_dir(project)
+            took = 0
+            for entry in self._entries(directory, project):
+                if entry.status != ENTRY_PENDING:
+                    continue
+                # Whether it was seen enough is told by ``_tidy_confirm``.
+                text = self._read_text(directory / f"{entry.id}.md")
+                if text is None:
+                    continue
+                as_marked = [_text_mark(text)]
+                self._tidy_confirm(project, entry, allowed, as_marked)
+                took += as_marked[0] != _text_mark(text)
+            return took
+
+        return await self._write_judged(work)
+
+    def _tidy_confirm(self, project: str | None, entry: Entry, allowed: bool, as_marked: list[str]) -> bool:
         """Have a pending entry take effect where it is when enough commissions have seen it by now, or it was verified.
 
         Only while it says all the merge wrote into it (``as_marked``, as
         for ``_confirm``): saved by the user since, it is not what was
-        merged, and waits on.
+        merged, and waits on. Returns False when whether it takes effect
+        cannot be told just now (an entry beside it cannot be read).
         """
         from config.nekoclaw_settings import SPACE_SEEN_TO_TAKE_EFFECT
 
         if entry.status != ENTRY_PENDING:
-            return
+            return True
         if entry.seen < SPACE_SEEN_TO_TAKE_EFFECT and entry.confidence != VERIFIED:
-            return
+            return True
         directory = self._paths().memory_dir(project)
         try:
             files = sorted(item for item in directory.iterdir() if item.suffix == ".md" and item.is_file())
         except OSError:
-            return
+            return False
         for path in files:
             if path.stem == entry.id:
                 continue
@@ -5179,7 +5232,7 @@ class TaskAgentSpace:
             if text is None:
                 # It may be of the same title: that cannot be told just now.
                 logger.info("a guess merged by tidying waits on: an entry beside it cannot be read")
-                return
+                return False
             other = _parse_document(text)
             if _status_of(other) != ENTRY_PENDING and _normal(other.get("name") or path.stem) == _normal(entry.title):
                 # One title is one entry, and a third entry, which the change
@@ -5189,10 +5242,11 @@ class TaskAgentSpace:
                 # again, it comes back, and two entries of one title would
                 # be in effect.
                 logger.info("a guess merged by tidying waits on: another entry has its title")
-                return
+                return True
         _entry, unlisted = self._confirm(project, entry, _Known(confidence=INFERRED), allowed, as_marked=as_marked)
         if unlisted is not None:
             logger.warning("an entry that took effect by tidying could not be given its line in the index")
+        return True
 
     def _tidy_count_in(
         self, project: str | None, pending: Entry, into: Entry, marks: dict[str, str]
@@ -5343,8 +5397,7 @@ class TaskAgentSpace:
 
         written = self._edit_as_shown(directory / f"{entry.id}.md", marks[entry_id], change)
         if entry.status == ENTRY_ACTIVE:
-            target = f"{paths.MEMORY_DIR}/{entry.id}.md"
-            self._index_set(paths.index(project), _index_line(name, target, entry.description), target)
+            self._index_retitle(paths.index(project), f"{paths.MEMORY_DIR}/{entry.id}.md", name, entry.description)
         return "made", {entry.id: written}
 
     def _tidy_date(

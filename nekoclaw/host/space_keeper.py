@@ -1319,6 +1319,11 @@ class SpaceKeeper:
         }
         due: list[tuple[float, int, Layer, list[str], dict[str, str]]] = []
         for layer in layers:
+            try:
+                # With no model: what an earlier merge could not settle.
+                await self._space.confirm_seen(layer)
+            except (SpaceError, OSError, ValueError) as exc:
+                logger.warning("pending entries seen enough could not be confirmed (%s)", type(exc).__name__)
             look = await self._layer_or_none(layer)
             if look is None:
                 continue
