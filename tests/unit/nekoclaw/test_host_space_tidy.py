@@ -2138,3 +2138,77 @@ async def test_a_line_added_as_the_entry_was_saved_is_not_added_again_once_the_u
 
     assert f"memory/{first}.md" not in await world.space.read_index(None)
 
+
+async def test_a_description_the_user_put_into_the_line_is_not_taken_for_the_hosts(world, monkeypatch):
+    one = await world.active("Server down", "The staging server was down yesterday.")
+    await world.active("Mirror", "The mirror is at mirror.local.")
+    path = world.memory() / f"{one}.md"
+    index = world.memory().parent / "MEMORY.md"
+    # The user reworded both the entry and its line, the same way.
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "description: The staging server was down yesterday.", "description: Down, use the mirror."
+        ),
+        encoding="utf-8",
+    )
+    text = index.read_text(encoding="utf-8")
+    line = next(item for item in text.split("\n") if f"memory/{one}.md" in item)
+    mine = f"- [Server down](memory/{one}.md) — Down, use the mirror."
+    index.write_text(text.replace(line, mine), encoding="utf-8")
+    world.space._relines[(None, one)] = _LineToPut(described={"The staging server was down yesterday."})
+    from nekoclaw.host import space as space_module
+
+    line_put_right = space_module._line_put_right
+    saved: list[bool] = []
+
+    def saved_meanwhile(*args: Any) -> str:
+        if not saved:
+            # Saved again by the user, after the host read it.
+            saved.append(True)
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("description: Down, use the mirror.", "description: Back up."),
+                encoding="utf-8",
+            )
+        return line_put_right(*args)
+
+    monkeypatch.setattr(space_module, "_line_put_right", saved_meanwhile)
+    await world.space.settle_tidied(None)
+    assert saved
+
+    await world.space.settle_tidied(None)
+
+    assert mine in await world.space.read_index(None)
+
+
+async def test_a_line_added_before_a_try_after_it_failed_is_not_added_again(world, monkeypatch):
+    one = await world.active("Server down", "The staging server was down yesterday.")
+    await world.active("Mirror", "The mirror is at mirror.local.")
+    _without_line(world, one)
+    world.space._relines[(None, one)] = _LineToPut(missing=True)
+    put_text, text_to_change = TaskAgentSpace._put_text, TaskAgentSpace._text_to_change
+    writes: list[str] = []
+
+    def saved_right_after(path: Path, text: str) -> bool:
+        seen = put_text(path, text)
+        if path.name == "MEMORY.md" and not writes:
+            # Written, and something else saved it right after: it is tried again.
+            writes.append(text)
+            raise _NotAsWritten("saved right after")
+        return seen
+
+    def held_then(path: Path) -> str:
+        if path.name == "MEMORY.md" and writes:
+            raise OSError("held by another program")
+        return text_to_change(path)
+
+    monkeypatch.setattr(TaskAgentSpace, "_put_text", staticmethod(saved_right_after))
+    monkeypatch.setattr(TaskAgentSpace, "_text_to_change", staticmethod(held_then))
+    await world.space.settle_tidied(None)
+    monkeypatch.undo()
+    assert writes and f"memory/{one}.md" in await world.space.read_index(None)
+    # The user takes the line it added out.
+    _without_line(world, one)
+
+    await world.space.settle_tidied(None)
+
+    assert f"memory/{one}.md" not in await world.space.read_index(None)

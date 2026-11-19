@@ -5397,23 +5397,37 @@ class TaskAgentSpace:
         target = f"{paths.MEMORY_DIR}/{entry_id}.md"
         marks = _index_marks(target)
 
+        # Of each text a try made: whether it changed the line, and whether
+        # it added it.
+        tried: dict[str, tuple[bool, bool]] = {}
+
         def change(index_text: str) -> str:
             lines = index_text.split("\n") if index_text else []
             for number, item in enumerate(lines):
                 if _points_at(item, marks):
                     lines[number] = _line_put_right(item, target, title, described, put)
-                    return "\n".join(lines)
+                    result = "\n".join(lines)
+                    tried[result] = (lines[number] != item, False)
+                    return result
             if put.missing:
-                return _lines_as_text(_with_line_first(lines, _index_line(title, target, described)))
+                result = _lines_as_text(_with_line_first(lines, _index_line(title, target, described)))
+                tried[result] = (True, True)
+                return result
             return index_text
 
-        self._edit_text(paths.index(project), change)
-        if self._read_text(path) == text:
-            return True
-        # A line it wrote now says this, and one it added is there.
-        put.described.add(described)
-        put.missing = False
-        return False
+        def wrote(index_text: str) -> None:
+            # Told as it is written, whatever becomes of the tries after it:
+            # what the host put into the line is the host's from here on.
+            changed, added = tried[index_text]
+            if changed:
+                put.described.add(described)
+            if added:
+                put.missing = False
+
+        self._edit_text(paths.index(project), change, wrote=wrote)
+        # Saved meanwhile, the entry says something else: what it says now
+        # is put into the line by a later round.
+        return self._read_text(path) == text
 
     def _tidy_confirm(self, project: str | None, entry: Entry, allowed: bool, as_marked: list[str]) -> bool:
         """Have a pending entry take effect where it is when enough commissions have seen it by now, or it was verified.
