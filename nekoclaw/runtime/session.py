@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 import json
 import logging
 import os
@@ -269,6 +270,14 @@ class TranscriptStorage(JsonlSessionStorage):
         entry_id = payload.get("id") if isinstance(payload, dict) else None
         return entry_id if isinstance(entry_id, str) else None
 
+    def sync(self) -> None:
+        """Have what the file holds written to the disk."""
+        with self._locked(exclusive=True):
+            # Opened for writing: where a file is flushed through its handle,
+            # one that only reads cannot be.
+            with self.path.open("ab") as file:
+                os.fsync(file.fileno())
+
 
 class SessionRecorder:
     """Appends entries to the JSONL transcript in order, off the event loop.
@@ -289,6 +298,8 @@ class SessionRecorder:
         self._lost: dict[str, str | None] = {}
         # True after an entry was given up on, until a write succeeds again.
         self._failing = False
+        # What to call once an entry is in the file: id -> the call.
+        self._saved: dict[str, Callable[[], None]] = {}
         self.last_id: str | None = None
 
     def _read_blocking(self) -> list[SessionEntry]:
@@ -302,11 +313,15 @@ class SessionRecorder:
 
         A fragment at the end is removed. The entry counts as saved when it is
         the last complete line: its write reached the file whole and only a
-        later step (syncing it to disk) failed.
+        later step (syncing it to disk) failed. That step is made up for
+        here, before the entry is said to be saved: whoever is told so
+        (``link``'s ``saved``) takes it to be on the disk.
         """
         self._storage.drop_torn_tail()
         saved = self._storage.last_entry_id() == entry.id
-        # Cleared only now: had either step failed, the next attempt must look
+        if saved:
+            self._storage.sync()
+        # Cleared only now: had any step failed, the next attempt must look
         # again instead of writing the entry a second time unseen.
         self._check_tail = False
         return saved
@@ -326,10 +341,16 @@ class SessionRecorder:
     async def read_all(self) -> list[SessionEntry]:
         return await asyncio.to_thread(self._read_blocking)
 
-    def link(self, entry: SessionEntry) -> SessionEntry:
-        """Chain ``entry`` behind the previous one and queue it for writing."""
+    def link(self, entry: SessionEntry, *, saved: Callable[[], None] | None = None) -> SessionEntry:
+        """Chain ``entry`` behind the previous one and queue it for writing.
+
+        ``saved`` is called once the entry is in the file, and not at all
+        when it had to be given up on.
+        """
         entry.parent_id = self.last_id
         self.last_id = entry.id
+        if saved is not None:
+            self._saved[entry.id] = saved
         self._queue.put_nowait(entry)
         if self._writer is None or self._writer.done():
             self._writer = asyncio.ensure_future(self._write())
@@ -340,6 +361,12 @@ class SessionRecorder:
             entry = await self._queue.get()
             try:
                 await self._append(entry)
+                saved = self._saved.pop(entry.id, None)
+                if saved is not None and entry.id not in self._lost:
+                    try:
+                        saved()
+                    except Exception:  # noqa: BLE001 - what is told of a write must not stop the writing
+                        logger.exception("telling that a transcript entry is saved failed")
             finally:
                 self._queue.task_done()
 
@@ -448,6 +475,12 @@ class TaskAgentSession(SessionInbox):
         self._seq = 0
         # Texts taken through prompt, steer and follow_up; see EndedEvent.inputs.
         self._inputs = 0
+        # Those of them that are not in the conversation yet, each with its
+        # number; see TakenEvent.
+        self._given: list[tuple[int, AgentMessage]] = []
+        # Those of them no person wrote (``human`` False), until they are in
+        # the conversation.
+        self._not_human: list[AgentMessage] = []
         self._closing = False
         self._abort_requested = False
         # True while what runs is the summing up asked for by ``compact``.
@@ -648,6 +681,12 @@ class TaskAgentSession(SessionInbox):
                     # Reading back a result kept there is not reading
                     # outside the working directory.
                     readable=tuple(readable),
+                    # Called, these are answered by what stands in for
+                    # them, which does nothing: nobody is asked about them.
+                    # Those the session was opened without, and any other
+                    # the model is told of that is not there now. (Never
+                    # one that is there after all.)
+                    withheld=(frozenset(spec.disabled_tools) | {tool.name for tool in self._tools}) - there,
                 ),
                 after_tool_call=self._after_tool_call,
                 finish_turn=self._finish_turn,
@@ -714,7 +753,6 @@ class TaskAgentSession(SessionInbox):
             tool_names=[tool.name for tool in self._executors],
             workdir=str(self._workdir),
             platform=self._platform,
-            reply_language=spec.reply_language,
             instructions=spec.instructions,
         )
         self._wire_tools = list(self._executors)
@@ -804,8 +842,8 @@ class TaskAgentSession(SessionInbox):
     def _save_goal(self) -> None:
         self._recorder.link(CustomEntry(namespace=GOAL_NAMESPACE, data=self.goals.to_json()))
 
-    def _record(self, message: AgentMessage) -> None:
-        """Append one message to the transcript and register it."""
+    def _record(self, message: AgentMessage, *, saved: Callable[[], None] | None = None) -> None:
+        """Append one message to the transcript and register it; ``saved`` is called once it is in the file."""
         entry: SessionEntry
         if isinstance(message, CustomMessage):
             entry = CustomMessageEntry(
@@ -818,7 +856,7 @@ class TaskAgentSession(SessionInbox):
         else:
             entry = MessageEntry(message=message)
             kind = kind_of(message)
-        self._recorder.link(entry)
+        self._recorder.link(entry, saved=saved)
         self.transcript.register(message, entry.id, kind)
         if message is self._opening_message:
             # Noted in the transcript, so that a session opened later knows
@@ -870,12 +908,35 @@ class TaskAgentSession(SessionInbox):
             self._on_message(event.message)
 
     def _on_message(self, message: AgentMessage) -> None:
+        taken: Callable[[], None] | None = None
+        for index, (number, given) in enumerate(self._given):
+            if given is message:
+                # One of the texts the session was given is in its
+                # conversation from here on. That is told once it is in the
+                # record too, where a session opened again finds it: told
+                # before, a process that ends meanwhile would leave a text
+                # that is nowhere and that nobody sends again.
+                del self._given[index]
+                taken = functools.partial(
+                    self._emit, protocol.TakenEvent(session_id=self.session_id, inputs=number)
+                )
+                break
         if not self.transcript.is_registered(message):
-            self._record(message)
+            self._record(message, saved=taken)
+        elif taken is not None:
+            taken()
         if isinstance(message, UserMessage):
-            # Text from the user: it authorizes goal management for this run and
-            # makes an earlier run of identical tool calls irrelevant.
-            self._human_in_run = True
+            written_by_nobody = any(message is other for other in self._not_human)
+            if written_by_nobody:
+                # What another session wrote, or what the host says of a
+                # time that has come: it is in the conversation like any
+                # text, and is no word of the user's. The run is not one
+                # the user spoke in on its account.
+                self._not_human = [other for other in self._not_human if other is not message]
+            else:
+                # Text from the user: it authorizes goal management for this run.
+                self._human_in_run = True
+            # Either makes an earlier run of identical tool calls irrelevant.
             self._repeat.reset()
         elif isinstance(message, AssistantMessage):
             self._last_assistant = message
@@ -1394,8 +1455,12 @@ class TaskAgentSession(SessionInbox):
         return self.harness.has_queued_messages()
 
     def has_pending_user_steer(self) -> bool:
+        # Not what another session wrote, or the host says of a time that has
+        # come: that waits its turn in the queue, and ends no wait as the
+        # user's own words do.
         return any(
-            isinstance(message, UserMessage) for message in self.harness.queued_messages.steering
+            isinstance(message, UserMessage) and not any(message is other for other in self._not_human)
+            for message in self.harness.queued_messages.steering
         )
 
     async def wait_for_input(self, timeout_seconds: float) -> bool:
@@ -1446,20 +1511,23 @@ class TaskAgentSession(SessionInbox):
         """True while a run is in progress or a background job is still running."""
         return self.running or bool(self.jobs.running())
 
-    def prompt(self, text: str, *, opening: bool = False) -> None:
+    def prompt(self, text: str, *, opening: bool = False, human: bool = True) -> None:
         """Hand the session work. ``opening`` marks the text that opens a commission.
 
         A session takes several commissions, one after the other. The text
         that opens the one under way stays in the conversation word for
         word when the rest is summed up: what the commission is, what was
         said of it and what was picked for it is all in that text.
+
+        ``human`` False says that no person wrote the text (another
+        session did, or the host): the run it starts is not one the user
+        spoke in, for what only the user's own words allow.
         """
         if self._closing:
             raise SessionError("the session is closed")
         if self.running:
             raise SessionError("a run is in progress; use steer or follow_up to add to it")
-        self._inputs += 1
-        message = UserMessage(content=text)
+        message = self._give(text, human)
         if opening:
             # Its entry is known once the run has taken it (``_record``).
             self._opening_message = message
@@ -1487,28 +1555,37 @@ class TaskAgentSession(SessionInbox):
         self._goal_of_this_start = False
         self._goal_given = True
 
-    def steer(self, text: str) -> None:
+    def _give(self, text: str, human: bool) -> UserMessage:
+        """Count a text the session is given and return the message it becomes."""
+        self._inputs += 1
+        message = UserMessage(content=text)
+        self._given.append((self._inputs, message))
+        if not human:
+            self._not_human.append(message)
+        return message
+
+    def steer(self, text: str, *, human: bool = True) -> None:
         if self._closing:
             raise SessionError("the session is closed")
         if self._compacting:
             # Not a run that would take it: it would be counted as taken and never read.
             raise SessionError("the conversation is being summed up; nothing can be added to it now")
-        self._inputs += 1
+        message = self._give(text, human)
         if self.running:
-            self.harness.steer_message(UserMessage(content=text))
+            self.harness.steer_message(message)
         else:
-            self._begin_run(UserMessage(content=text))
+            self._begin_run(message)
 
-    def follow_up(self, text: str) -> None:
+    def follow_up(self, text: str, *, human: bool = True) -> None:
         if self._closing:
             raise SessionError("the session is closed")
         if self._compacting:
             raise SessionError("the conversation is being summed up; nothing can be added to it now")
-        self._inputs += 1
+        message = self._give(text, human)
         if self.running:
-            self.harness.follow_up_message(UserMessage(content=text))
+            self.harness.follow_up_message(message)
         else:
-            self._begin_run(UserMessage(content=text))
+            self._begin_run(message)
 
     def abort(self) -> bool:
         """Stop the current run and the session's background jobs.
@@ -1808,6 +1885,10 @@ class TaskAgentSession(SessionInbox):
             await self._recorder.flush()
         if reason == "aborted":
             self.harness.clear_queues()
+            # What was given and never got into the conversation went with
+            # the queues: it is not kept to be looked for.
+            self._given.clear()
+            self._not_human.clear()
         self._goal_round = None
         self._human_in_run = False
         self._run_task = None
@@ -1820,5 +1901,7 @@ class TaskAgentSession(SessionInbox):
                 text=last.text if last is not None else "",
                 error=error,
                 inputs=self._inputs,
+                jobs=len(self.jobs.running()),
+                waking_jobs=len(self.jobs.waking()),
             )
         )

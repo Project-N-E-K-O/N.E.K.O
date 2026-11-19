@@ -32,6 +32,7 @@ import pytest
 
 import config.nekoclaw_settings as settings
 from config.prompts import prompts_nekoclaw_brain as brain_texts
+from config.prompts.prompts_nekoclaw import REPLY_LANGUAGE_SENTENCE
 from nekoclaw.host.conversation import ROLE_CHARACTER, ROLE_USER, RecentConversation, Turn, excerpt_lines
 from nekoclaw.host.reports import tokens_text
 from nekoclaw.host.task_agents import ForkRefused
@@ -170,6 +171,7 @@ async def test_a_session_is_copied_into_one_that_answers_from_what_the_other_kno
                     call("write", {"file_path": "notes.txt", "content": "x"}, "call-w"),
                     call("capability_call", {"name": "computer", "arguments": {"action": "type"}}, "call-c", index=1),
                     call("note_lesson", {"title": "photos", "body": "sorted by year"}, "call-n", index=2),
+                    call("schedule_wake", {"delay_seconds": 600, "note": "look again"}, "call-s", index=3),
                     _used(1_200, 30),
                     finish("tool_calls"),
                 ],
@@ -223,7 +225,8 @@ async def test_a_session_is_copied_into_one_that_answers_from_what_the_other_kno
     # The tools that write, run commands and call capabilities are told of as before, and are not to be had.
     assert {"write", "capability_call", "capability_search"} <= set(_tool_names(scripts["where does the sorting stand"].overrides[0]))
     ended = {event.payload["tool_name"]: event.payload for event in await _events(host, asked.id, "tool_end")}
-    for withheld in ("write", "capability_call", "note_lesson"):
+    # (Nor does it set itself a wake, which would keep its commission under way.)
+    for withheld in ("write", "capability_call", "note_lesson", "schedule_wake"):
         assert ended[withheld]["is_error"] and f"{withheld} is not available right now" in ended[withheld]["text"]
     assert not (Path(copy.workdir) / "notes.txt").exists()
     # Nor does the gateway carry anything out for it, whatever a session is opened with.
@@ -822,7 +825,8 @@ async def test_a_commission_that_opens_a_new_session_is_handed_what_was_said_jus
     assert opening.startswith(
         f"Commission {first.id}\nadd a CSV export to the budget app\nWhat the user said: can it export that table\n\n{excerpt}"
     )
-    assert opening.endswith("in English.") and "what is for dinner" not in opening
+    assert opening.endswith(REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "English"))
+    assert "what is for dinner" not in opening
     # It is what opens the commission, so a summary leaves it as it is; and it is in the session's record.
     assert excerpt in (Path((await host.ledger.get_session(first.id)).session_dir) / "transcript.jsonl").read_text(
         encoding="utf-8"

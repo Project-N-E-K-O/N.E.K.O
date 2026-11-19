@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from config.prompts.prompts_nekoclaw import REPLY_LANGUAGE_SENTENCE
 from nekoclaw.host.paths import DEFAULT_PROJECT
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish
 from tests.unit.nekoclaw.host_fakes import (
@@ -107,14 +108,17 @@ async def test_an_empty_space_adds_nothing_to_a_task_agents_instructions(hosts, 
     assert SPACE_NOTE not in system and "task_agent_space" not in system
     # What the host adds is how the gateway is used and whom the task agent works for, word
     # for word, and says nothing of the commission, which is the message that opens it. What
-    # is the session's own (where it works, the language it answers in) comes after it.
+    # is the session's own (where it works) comes after it, and ends it: the language it
+    # answers in is named in the message that opens the commission.
     own = TASK_AGENT_BRIEF_GATEWAY_NOTE + "\n\n" + TASK_AGENT_SESSION_FRAME.format(lanlan_name="Lan")
     assert own + "\n\nWorking directory: " in system
-    assert system.endswith("in English.")
-    assert "sort the photos" not in system
-    assert llm.requests[0][-1]["content"].startswith(
+    assert system.rsplit("\n\n", 1)[-1].startswith("Working directory: ")
+    assert "sort the photos" not in system and "in English" not in system
+    opening = llm.requests[0][-1]["content"]
+    assert opening.startswith(
         f"Commission {receipt.commission_id}\nsort the photos\nWhat the user said: can you sort my photos"
     )
+    assert opening.endswith(REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "English"))
 
 
 async def test_what_was_kept_is_handed_to_the_next_task_agent(hosts, tmp_path):
@@ -222,7 +226,7 @@ async def test_the_space_and_the_commission_each_keep_within_a_cap_of_their_own(
     opening = llm.requests[0][-1]["content"]
     said, language = opening.rsplit("\n\n", 1)
     assert said.startswith(f"Commission {receipt.commission_id}\nsort the photos")
-    assert count_tokens(said) <= TASK_AGENT_BRIEF_MAX_TOKENS + 2 and language.endswith("in English.")
+    assert count_tokens(said) <= TASK_AGENT_BRIEF_MAX_TOKENS + 2 and language == REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "English")
     assert "Index of project _daily:\n- [Daily 149 d149]" in kept
 
 

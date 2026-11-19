@@ -46,8 +46,9 @@ Whoever embeds the host supplies what it cannot know by itself, all optional:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,7 @@ from nekoclaw.host.short_descriptions import ShortDescriptions
 from nekoclaw.host.space import TaskAgentSpace
 from nekoclaw.host.space_keeper import SpaceKeeper
 from nekoclaw.host.task_brain import ProgressListener, QueryAnswer, Receipt, TaskBrain, TurnCheck
+from nekoclaw.host.wakes import SessionWakes
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +211,14 @@ class NekoClawHost:
             conversation=self.conversation,
             switched_on=enabled,
         )
+        # Hands sessions what waits for them: a note another session wrote,
+        # a time a task agent set for itself. Started by the first call that
+        # does work, never at startup.
+        self.wakes = SessionWakes(self.ledger, self.task_agents)
+        self.task_agents.set_waker(self.wakes)
+        # A note that is on record is handed over whether or not whoever
+        # wrote it is still there to say that it wrote one.
+        self.ledger.subscribe_notes(self.wakes.kick)
         # Reviews of finished commissions and the tidying of the space, in
         # the background; started by a commission ending, never at startup.
         self.space_keeper = SpaceKeeper(
@@ -313,11 +323,17 @@ class NekoClawHost:
         Building the host does no work, so a sender given to the constructor
         is only started here, by the first call that does work. Reports
         written later start it themselves.
+
+        Likewise what an earlier run left to be handed to sessions: the
+        times task agents set for themselves that have not come, and the
+        notes that were not handed over. Looked for here, in the
+        background, and not at startup.
         """
         if self._used or self._shut_down:
             return
         self._used = True
         self.outbox.kick()
+        self.wakes.kick()
 
     # -- what the main dialogue uses --------------------------------------
 
@@ -368,6 +384,42 @@ class NekoClawHost:
     async def complete_deferred(self, commission_id: str) -> bool:
         self._first_use()
         return await self.brain.complete_deferred(commission_id)
+
+    async def stop_waiting(self) -> int:
+        """Drop what waits to be handed to sessions; returns how many. Part of a stop of everything.
+
+        The notes sessions wrote to one another that were not handed over:
+        after a stop none of them starts a turn. What a commission set for
+        itself (a time to be woken at) goes with that commission as the
+        stop ends it. See ``SessionWakes.stop_all``.
+        """
+        return await self.wakes.stop_all()
+
+    @contextlib.asynccontextmanager
+    async def stopping_everything(self) -> AsyncIterator[None]:
+        """Keep sessions from being handed anything while everything is stopped. For the body that stops the commissions.
+
+        What waits is dropped as this is entered. While the commissions
+        are being stopped nothing is handed over, and what one of them
+        wrote meanwhile (its call was on its way when the stop came) is
+        dropped as this is left: none of it starts work after the stop.
+        A failure to drop is logged and made up for before anything is
+        handed over again (``SessionWakes.stop_all``).
+        """
+        self.wakes.hold()
+        try:
+            try:
+                await self.wakes.stop_all()
+            except Exception as exc:  # noqa: BLE001 - the commissions are stopped all the same
+                logger.warning("dropping the notes that waited for sessions failed, to be made up for: %s", exc)
+            yield
+        finally:
+            try:
+                await self.wakes.stop_all()
+            except Exception as exc:  # noqa: BLE001 - made up for before anything is handed over
+                logger.warning("dropping the notes written during the stop failed, to be made up for: %s", exc)
+            finally:
+                self.wakes.release()
 
     # -- sessions ---------------------------------------------------------
     #
@@ -517,6 +569,12 @@ class NekoClawHost:
             # Before the task agents are stopped: every commission that ends
             # by that would start work for the space that is then cut off.
             ("task agent space, no new work", self.space_keeper.stand_down),
+            # Before everything that takes a while: nothing is woken, and no
+            # commission filed for a note, in a host that is shutting down
+            # (the task brain waits for the stops under way to finish, and
+            # what was handed over meanwhile would be ended with the rest).
+            # What waits stays on record for the next run.
+            ("wakes", self.wakes.close),
             ("task brain", self.brain.close),
             ("task_agents", self.task_agents.shutdown),
             ("built-in tools", self._release_builtins),

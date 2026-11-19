@@ -17,9 +17,11 @@
 
 dsh assembles its own system prompt, one paragraph per tool, and lets a
 deployment put a paragraph in front of them and one behind. Both are the
-same for every session of a dsh process, so what belongs to one commission
-(the host's instructions, the language to answer in) goes into the first
-message of its session instead.
+same for every session of a dsh process, so what belongs to one session
+(the host's instructions, and the sentence that says the language to write
+to the user in is named by each commission) goes into the first message of
+the session instead. The language itself is named in the message that opens
+each commission.
 
 The tools the host carries out reach dsh as tools of a service it is handed,
 which dsh names ``mcp__<service>__<tool>``; the text here says them by those

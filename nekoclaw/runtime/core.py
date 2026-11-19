@@ -54,16 +54,20 @@ class AgentRuntime(Protocol):
     async def start(self, spec: protocol.TaskAgentSpec) -> None:
         """Create a session, continuing its transcript if one exists."""
 
-    async def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
+    async def prompt(
+        self, session_id: str, text: str, *, opening: bool = False, human: bool = True, serial: int | None = None
+    ) -> None:
         """Hand the session work; rejected while a run is in progress.
 
-        ``opening`` marks the text that opens a commission; see ``protocol.PromptCommand``.
+        ``opening`` marks the text that opens a commission, ``human``
+        says whether a person wrote the text, and ``serial`` is said again
+        where the text is refused; see ``protocol.PromptCommand``.
         """
 
-    async def steer(self, session_id: str, text: str) -> None:
+    async def steer(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
         """Deliver text before the next model request of the current run."""
 
-    async def follow_up(self, session_id: str, text: str) -> None:
+    async def follow_up(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
         """Deliver text once the current run has nothing left to do."""
 
     async def abort(self, session_id: str) -> None:
@@ -142,17 +146,17 @@ class RuntimeCore:
             return False
         return not any(session.busy for session in self._sessions.values())
 
-    def _reject(self, session_id: str, command: str, message: str) -> None:
+    def _reject(self, session_id: str, command: str, message: str, serial: int | None = None) -> None:
         self._emit(
             protocol.dump(
-                protocol.ErrorEvent(session_id=session_id, command=command, message=message)
+                protocol.ErrorEvent(session_id=session_id, command=command, message=message, serial=serial)
             )
         )
 
-    def _session(self, session_id: str, command: str) -> TaskAgentSession | None:
+    def _session(self, session_id: str, command: str, serial: int | None = None) -> TaskAgentSession | None:
         session = self._sessions.get(session_id)
         if session is None:
-            self._reject(session_id, command, f'unknown session "{session_id}"')
+            self._reject(session_id, command, f'unknown session "{session_id}"', serial)
         return session
 
     # -- commands -------------------------------------------------------------
@@ -176,11 +180,13 @@ class RuntimeCore:
         if opening is not None:
             await asyncio.shield(opening)
         if isinstance(command, protocol.PromptCommand):
-            self.prompt(command.session_id, command.text, opening=command.opening)
+            self.prompt(
+                command.session_id, command.text, opening=command.opening, human=command.human, serial=command.serial
+            )
         elif isinstance(command, protocol.SteerCommand):
-            self.steer(command.session_id, command.text)
+            self.steer(command.session_id, command.text, human=command.human, serial=command.serial)
         elif isinstance(command, protocol.FollowUpCommand):
-            self.follow_up(command.session_id, command.text)
+            self.follow_up(command.session_id, command.text, human=command.human, serial=command.serial)
         elif isinstance(command, protocol.AbortCommand):
             self.abort(command.session_id)
         elif isinstance(command, protocol.CloseCommand):
@@ -338,27 +344,31 @@ class RuntimeCore:
             del self._starting[session_id]
             opening.set_result(None)
 
-    def _text_command(self, session_id: str, command: str, text: str, **options: Any) -> None:
+    def _text_command(self, session_id: str, command: str, text: str, serial: int | None, **options: Any) -> None:
+        # ``serial`` is the sender's number for this text: said with the
+        # refusal, so the sender knows which of its texts was refused.
         if self._shutdowns:
             # New work would begin behind the back of the shutdown.
-            self._reject(session_id, command, "the runtime is shutting down")
+            self._reject(session_id, command, "the runtime is shutting down", serial)
             return
-        session = self._session(session_id, command)
+        session = self._session(session_id, command, serial)
         if session is None:
             return
         try:
             getattr(session, command)(text, **options)
         except SessionError as exc:
-            self._reject(session_id, command, str(exc))
+            self._reject(session_id, command, str(exc), serial)
 
-    def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
-        self._text_command(session_id, "prompt", text, opening=opening)
+    def prompt(
+        self, session_id: str, text: str, *, opening: bool = False, human: bool = True, serial: int | None = None
+    ) -> None:
+        self._text_command(session_id, "prompt", text, serial, opening=opening, human=human)
 
-    def steer(self, session_id: str, text: str) -> None:
-        self._text_command(session_id, "steer", text)
+    def steer(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
+        self._text_command(session_id, "steer", text, serial, human=human)
 
-    def follow_up(self, session_id: str, text: str) -> None:
-        self._text_command(session_id, "follow_up", text)
+    def follow_up(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
+        self._text_command(session_id, "follow_up", text, serial, human=human)
 
     def abort(self, session_id: str) -> None:
         session = self._session(session_id, "abort")
@@ -484,14 +494,22 @@ class InProcessRuntime:
     async def start(self, spec: protocol.TaskAgentSpec) -> None:
         await self._core.handle(protocol.StartCommand(spec=spec))
 
-    async def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
-        await self._core.handle(protocol.PromptCommand(session_id=session_id, text=text, opening=opening))
+    async def prompt(
+        self, session_id: str, text: str, *, opening: bool = False, human: bool = True, serial: int | None = None
+    ) -> None:
+        await self._core.handle(
+            protocol.PromptCommand(session_id=session_id, text=text, opening=opening, human=human, serial=serial)
+        )
 
-    async def steer(self, session_id: str, text: str) -> None:
-        await self._core.handle(protocol.SteerCommand(session_id=session_id, text=text))
+    async def steer(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
+        await self._core.handle(
+            protocol.SteerCommand(session_id=session_id, text=text, human=human, serial=serial)
+        )
 
-    async def follow_up(self, session_id: str, text: str) -> None:
-        await self._core.handle(protocol.FollowUpCommand(session_id=session_id, text=text))
+    async def follow_up(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
+        await self._core.handle(
+            protocol.FollowUpCommand(session_id=session_id, text=text, human=human, serial=serial)
+        )
 
     async def abort(self, session_id: str) -> None:
         await self._core.handle(protocol.AbortCommand(session_id=session_id))

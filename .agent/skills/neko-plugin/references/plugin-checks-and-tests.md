@@ -35,7 +35,7 @@ What `check` validates:
 - best-effort `@plugin_entry` AST checks:
   - entry id from literal `id` or the function name; invalid characters warn, empty ids error.
   - duplicate `@plugin_entry` ids warn across scanned plugin files.
-  - literal `input_schema` gets shallow shape checks.
+  - literal `input_schema` and `output_schema` get shallow shape checks (`output_schema` is not required to be `type: object`); an explicit `output_schema` also gets a warning that it is published only, not validated at runtime.
   - mutually exclusive keyword groups are checked by keyword presence: `input_schema`/`params`, and `llm_result_fields`/`llm_result_model`/`fields`.
 - UI surface entries exist when declared.
 - UI permission strings are recognized.
@@ -83,11 +83,8 @@ Notes:
 - `check -r` performs package inspection and payload-hash verification as part
   of the supported release-readiness flow.
 
-Use `install` only with explicit temporary roots unless the user asked to install:
-
-```bash
-uv run neko-plugin install <package.neko-plugin> --plugins-root /tmp/plugins --profiles-root /tmp/profiles --on-conflict fail
-```
+Installing a built package goes through the Plugin Manager's Import (Plugin
+Center); the CLI does not install packages.
 
 ### Bundle analysis
 
@@ -187,7 +184,6 @@ Search before editing platform code:
 These are not the first-line plugin-authoring checks, but they may catch plugin code issues when paths are passed explicitly:
 
 ```bash
-uv run ruff check plugin/plugins/<plugin_id>
 uv run python scripts/check_async_blocking.py plugin/plugins/<plugin_id>
 ```
 
@@ -198,8 +194,10 @@ Many repository convention scripts intentionally exclude `plugin/plugins` by def
 Plugin-facing by default:
 
 - `uv run neko-plugin check <plugin_id|plugin_path>`
-- `uv run neko-plugin check <plugin_id|plugin_path> --release`
+- `uv run neko-plugin lint <plugin_id|plugin_path>` (the pinned ruff check Market CI runs)
 - `uv run neko-plugin sync <plugin_id> --clean`
+- `uv run neko-plugin check <plugin_id|plugin_path> --release`
+- `uv run neko-plugin precheck <plugin_id|plugin_path>` (lint + sync + `check --release`, the Market CI gates)
 - `uv run neko-plugin build <plugin_id>`
 - plugin-local tests under `plugin/plugins/<plugin_id>/tests`
 - targeted hosted TSX checks for `plugin/plugins/<plugin_id>`

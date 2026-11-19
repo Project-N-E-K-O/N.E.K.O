@@ -74,7 +74,6 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "workdir": "C:\\work\\project",
         "capabilities": frozenset(HOST_CALLS),
         "images": True,
-        "reply_language": "Simplified Chinese",
         "instructions": "Project notes supplied by the host go here.",
     },
     # Elsewhere, a text-only model and no host at all.
@@ -130,6 +129,7 @@ def test_offered_tools_depend_on_platform_images_and_host() -> None:
     assert set(full_names) - set(minimal_names) == {
         "pwsh", "read_image", "ask_user_question", "report", "note_lesson", "web_search",
         "subagent", "list_agents", "send_message", "interrupt_agent", "wait_agent",
+        "list_sessions", "read_session", "message_session", "schedule_wake", "ask_session",
     }
     assert "bash" not in full_names
     # Only read-only tools may run side by side.
@@ -224,32 +224,33 @@ def test_dsh_paragraph_variants_follow_the_offered_tools() -> None:
 
 def test_what_differs_from_one_session_to_the_next_comes_last() -> None:
     # Two sessions offered the same tools by the same host differ in their
-    # working directory and, it may be, in the language they answer in.
-    # Everything in front of those is the same text for both, so a provider
-    # that kept the head of one session's requests has it for the other's.
-    def prompt(workdir: str, language: str) -> str:
+    # working directory. (The language they answer in is not in the system
+    # prompt: it is named with each commission.) Everything in front of the
+    # working directory is the same text for both, so a provider that kept
+    # the head of one session's requests has it for the other's.
+    def prompt(workdir: str) -> str:
         return build_system_prompt(
             tool_names=("read", "grep", "report"),
             workdir=workdir,
             platform="win32",
-            reply_language=language,
             instructions="You work for Lan.\n\nWhat the space holds.",
         )
 
-    one, other = prompt("C:\\sessions\\a\\work", "Simplified Chinese"), prompt("D:\\photos", "English")
+    one, other = prompt("C:\\sessions\\a\\work"), prompt("D:\\photos")
     shared = len(os.path.commonprefix([one, other]))
     assert one[:shared].endswith("What the space holds.\n\nWorking directory: ")
-    # In order: identity, the tools, the host's own, the environment, the language.
+    # In order: identity, the tools, the user's language, the host's own, the environment.
+    environment = "Working directory: C:\\sessions\\a\\work\nPlatform: Windows\nShell tool: (none)"
     marks = [
         texts.TASK_AGENT_IDENTITY,
         "Use the read tool",
         texts.REPORT_GUIDANCE,
+        texts.USER_LANGUAGE_GUIDANCE,
         "You work for Lan.",
-        "Working directory: C:\\sessions\\a\\work\nPlatform: Windows\nShell tool: (none)",
-        "in Simplified Chinese.",
+        environment,
     ]
     places = [one.index(mark) for mark in marks]
-    assert places == sorted(places) and one.endswith("in Simplified Chinese.")
-    # Without a language, the environment is the end of it.
+    assert places == sorted(places) and one.endswith(environment)
+    # Without the host's tools, too, the environment is the end of it.
     plain = build_system_prompt(tool_names=("read",), workdir="/w", platform="linux", instructions="Yours.")
     assert plain.endswith("Yours.\n\nWorking directory: /w\nPlatform: Linux\nShell tool: (none)")

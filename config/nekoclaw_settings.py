@@ -412,14 +412,19 @@ TASK_AGENT_FORK_SECONDS = 60.0
 (``TaskAgentManager.fork_session``): a record is a file of a few megabytes at
 the most, and the time is mostly a runtime process coming up."""
 
-TASK_AGENT_FORK_WITHHELD_TOOLS = ("write", "edit", "bash", "pwsh", "subagent", "capability_call", "note_lesson")
+TASK_AGENT_FORK_WITHHELD_TOOLS = (
+    "write", "edit", "bash", "pwsh", "subagent", "capability_call", "note_lesson",
+    "message_session", "schedule_wake", "ask_session",
+)
 """The tools a session that is a copy of another is opened without. It has
 the working directory of the session it was copied from, which may be at
 work there: one working directory is written by one session at a time. A
 copy reads, searches and answers. ``capability_call`` is among them: what
 it reaches (plugin entries, the keyboard and mouse, the browser) can write
 as well, and the gateway refuses a copy's calls besides; ``note_lesson``
-writes into the task agents' space, which later commissions go by. The tools stay in
+writes into the task agents' space, which later commissions go by. Nor does
+it write to other sessions or set itself a wake: a copy answers and is done
+with, and a wake would keep a commission in it under way. The tools stay in
 what the model is told of (as in the session they were copied from, so a
 provider's cache of that is used) and answer that they are not available."""
 
@@ -459,6 +464,169 @@ the session."""
 
 DEFERRED_COMMISSION_SECONDS = 3600.0
 """How long a deferred plugin result may stay open before the commission fails."""
+
+# ---------------------------------------------------------------------------
+# Sessions writing to one another, and being woken
+# ---------------------------------------------------------------------------
+
+SESSION_MESSAGE_MAX_TOKENS = 1500
+"""Cap on one note a task agent writes to another session. A longer one is
+refused, not cut: what does not fit is written to a file and its path sent."""
+
+SESSION_MESSAGE_MAX_DEPTH = 2
+"""How far notes may carry work away from what the user asked for. A
+commission she dispatched is at depth 0 and writes notes of depth 1; a
+commission that is filed for a note has that note's depth and writes one
+deeper. A note deeper than this is refused: a commission filed for a note
+may itself have one filed, and that one writes to nobody."""
+
+SESSION_MESSAGE_TARGET_INTERVAL_SECONDS = 60.0
+"""Shortest time between two notes of one session to the same other session."""
+
+SESSION_MESSAGES_PER_HOUR = 20
+"""Notes one session may write within an hour, to whomever. A question it asks
+another session (``ask_session``) counts as one too."""
+
+SESSION_ASKS_PER_HOUR = 6
+"""Questions one session may ask other sessions within an hour (``ask_session``).
+Each one has a copy of the other session's conversation answer it, and every
+request of that copy carries the whole of that conversation."""
+
+SESSION_ASK_MAX_REQUESTS = 8
+"""Model requests the copy that answers such a question may make; with them
+used up its run ends, and the asker is told what came of it. A question is
+cut to ``SESSION_MESSAGE_MAX_TOKENS`` like a note."""
+
+SESSION_MESSAGE_QUEUE_MAX = 50
+"""Notes that may wait to be handed to one session at a time; with that many
+waiting, a further one is refused."""
+
+SESSION_MESSAGE_DEDUP_SECONDS = 600.0
+"""Within this time the same words from one session to the same other one are
+sent once; the second time the sender is told they went out already."""
+
+SESSION_NOTICE_WAIT_SECONDS = 12 * 3600.0
+"""How long the sender of a note that asked to be told when it was dealt with
+waits for that word. After it, the sender is told it waited in vain."""
+
+SESSION_NOTICE_TEXT_MAX_TOKENS = 300
+"""Cap on what the sender of a note is told of how the turn it began ended:
+the last words of that turn."""
+
+SESSION_WAKE_BATCH_ROWS = 10
+"""How many waiting things (notes, times that came) are handed to a session
+in one go. What is left over follows with the next."""
+
+SESSION_LIST_ROWS = 10
+"""Sessions on one page of ``list_sessions``."""
+
+SESSION_LIST_ROW_MAX_TOKENS = 80
+"""Cap on one row of ``list_sessions``: name, character, project, where it
+stands, its latest commission, when it was last in use."""
+
+SESSION_LIST_LOOKED_AT = 300
+"""How many sessions, the ones last in use, ``list_sessions`` looks through
+for the words it is given."""
+
+SESSION_LIST_COMMISSIONS = 3
+"""How many of a session's latest commissions are looked through for those
+words, by their titles."""
+
+SESSION_RESULTS_MAX_TOKENS = 3000
+"""Cap on what ``read_session`` hands back of a session's results and
+reviews; each of them is short already (``TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS``,
+``TASK_AGENT_REVIEW_TEXT_MAX_TOKENS``)."""
+
+SESSION_RESULTS_COMMISSIONS = 8
+"""How many of a session's latest commissions ``read_session`` tells the
+results of."""
+
+SESSION_SEARCH_HITS = 20
+"""Places ``read_session`` names for one search of a session's record."""
+
+SESSION_SEARCH_EXCERPT_MAX_TOKENS = 50
+"""Cap on the one line shown of each such place."""
+
+SESSION_READ_SEGMENT_MAX_TOKENS = 2000
+"""Cap on one stretch of a session's record handed back by ``read_session``.
+More is read by asking for the stretch that follows."""
+
+SESSION_READ_ENTRY_MAX_TOKENS = 600
+"""Cap on one entry within such a stretch (one message, one tool result): its
+beginning and its end are kept, so one long tool result does not take the
+whole stretch."""
+
+SESSION_RECORD_MAX_BYTES = 64 * 1024 * 1024
+"""A session's record larger than this is not read by ``read_session``; the
+task agent is told so and reads the results instead."""
+
+SESSION_RECORD_ALIAS_SCAN_ENTRIES = 100000
+"""How many entries of a directory are looked at, before it is searched, for a
+second name (a hard link) of another session's record. Looked for only where
+such a record has a second name at all; a directory with more entries than
+this is then not searched, as it cannot be told that the record is not in it.
+What a version control system keeps of itself (``.git``) is not counted: a
+search does not read it."""
+
+WAKE_MIN_DELAY_SECONDS = 600.0
+"""Shortest time a task agent may ask to be woken after. A shorter one is
+moved to this, and the task agent is told."""
+
+WAKE_MAX_DELAY_SECONDS = 30 * 24 * 3600.0
+"""Longest such time."""
+
+WAKE_PENDING_MAX = 10
+"""How many times a session may have set for itself and not yet come to."""
+
+WAKE_DAILY_MAX = 300
+"""How often within a day a session may be woken at its own asking."""
+
+WAKE_NOTE_MAX_TOKENS = 200
+"""Cap on what a task agent notes for itself with a time it sets."""
+
+WAKE_COALESCE_SECONDS = 2.0
+"""How long what is due for a session waits for more of the same, so that
+several things that come together start one turn, not one each."""
+
+WAKE_COALESCE_MAX_SECONDS = 10.0
+"""The longest that waiting gets when more keeps coming."""
+
+WAKE_HELD_RETRY_SECONDS = 300.0
+"""After how long something that could not be handed over is tried again:
+NekoClaw was switched off, or the session's commission waits for the user."""
+
+WAKE_DUE_PAGE_ROWS = 1000
+"""How many wake requests that are due are read from the ledger at a time. All
+that are due are read, a page after the other."""
+
+WAKES_CLOSE_WAIT_SECONDS = 1.0
+"""How long shutting down waits for what is being handed to a session this
+moment to be handed over, before it is cut off."""
+
+WAKE_FAILED_RETRY_MAX_SECONDS = 3600.0
+"""The longest pause between two tries to hand over something that failed
+for a reason of the host's own (it doubles from ``OUTBOX_RETRY_BASE_SECONDS``)."""
+
+REST_LOOK_RETRY_DELAYS: tuple[float, ...] = (0.2, 1.0)
+"""The pauses before the ledger is asked again, after it could not be read,
+for what the end of a run means: how its commission stands, whether task
+agents it started are still at work, whether it has asked to be woken. Only
+once these are used up is the end given up on, or does the commission end
+as one that asked for nothing: ended on the first failure, a time it had
+set would be dropped with it. Short, since the events of every other
+session wait meanwhile."""
+
+DSH_ANSWER_SETTLE_SECONDS = 2.0
+"""How long the end of a turn of a dsh session waits to learn whether the
+answers of its ``wait_agent`` calls reached dsh, where one is still on its
+way as the turn ends. Whoever serves the call says so a moment after the
+answer is written; a text whose answer is not known to have got there by
+then is not told of as taken."""
+
+TURNS_OWED_CLOSE_WAIT_SECONDS = 1.0
+"""How long shutting down gives what turns that are over still owe (word to
+the senders of the notes they took, and that those notes were taken) to be
+written, where the ledger could not be written when they ended."""
 
 # ---------------------------------------------------------------------------
 # Task agent space (design section 12.1; ``nekoclaw/host/space.py``)

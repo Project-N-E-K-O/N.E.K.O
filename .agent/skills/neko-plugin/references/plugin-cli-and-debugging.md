@@ -47,11 +47,14 @@ Public command modules include:
 - `analyze_cmd.py`
 - `deps_cmd.py`
 - `build_cmd.py`
-- `install_cmd.py`
+- `lint_cmd.py`
+- `precheck_cmd.py`
 - `publish_cmd.py`
 
-Registered command families include `init`, `setup-repo`, `check`, `sync`,
-`build`, `install`, `analyze`, and `publish`.
+Registered command families include `init`, `setup-repo`, `create-repo`,
+`check` (and `check -r`), `lint`, `sync`, `precheck`, `build`, `analyze`, and
+`publish`. `install` only prints import guidance; packages are installed
+through the Plugin Manager.
 
 Internal implementation helpers include `release_cmd.py` and `validate_cmd.py`. They are imported by public commands such as `check` and `publish`, but they are not registered as direct CLI command families.
 

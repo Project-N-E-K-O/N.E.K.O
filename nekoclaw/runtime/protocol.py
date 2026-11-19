@@ -58,6 +58,18 @@ per-session ``seq`` that increases by one:
   was started with, which the session is managed for from then on.
 * ``compacted``   - the conversation was summed up. The session's system
   prompt and tool definitions were put together anew after it.
+* ``taken``       - one of the texts the session was given (``prompt``,
+  ``steer``, ``follow_up``) is in its conversation for good: where the
+  session keeps a record of its own, the text is written to it, so that a
+  session opened again finds it. ``inputs`` says which, counted from 1 in
+  the order they were given. A text that was given and is dropped before
+  that (an ``abort``, a ``close``, a record that could not be written) is
+  never told of: a driver that needs to know whether what it sent stays
+  in the conversation waits for this, not for the next thing the session
+  puts out. It says that much and no more: not that a model request was
+  made with the text (a run that comes to its limit of requests as it
+  takes the text ends without one), only that the text is there for the
+  next request the session makes.
 * ``ended``       - a run finished and the session is idle (``completed``,
   ``aborted``, ``error``), or the session is gone (``closed``). A finished
   run states ``inputs``: how many texts (``prompt``, ``steer``,
@@ -165,8 +177,6 @@ class TaskAgentSpec(_Strict):
     model: ModelConfig
     # Host-supplied text appended to the built-in system prompt.
     instructions: str | None = None
-    # Language for text meant for the user, e.g. "Simplified Chinese".
-    reply_language: str | None = None
     # False for a task agent started by another task agent: such a session cannot
     # manage goals on the strength of the messages it receives.
     top_level: bool = True
@@ -202,18 +212,36 @@ class PromptCommand(_Strict):
     # True for the text that opens a commission: what the session works on
     # from here. A summary of the conversation leaves it as it is.
     opening: bool = False
+    # False for text no person wrote for this session: what another session
+    # sent it, or what the host tells it of a time that has come. It stands
+    # in the conversation like any text, and entitles the run to nothing
+    # that only the user's own words entitle it to.
+    human: bool = True
+    # A number of the sender's own for this text, or None. Said again by
+    # the ``error`` event of a text that is refused: texts are sent without
+    # waiting for the one before, so "the last one sent" need not be the
+    # one a refusal is about.
+    serial: int | None = None
 
 
 class SteerCommand(_Strict):
     type: Literal["steer"] = "steer"
     session_id: str
     text: str = Field(min_length=1)
+    # See ``PromptCommand.human``.
+    human: bool = True
+    # See ``PromptCommand.serial``.
+    serial: int | None = None
 
 
 class FollowUpCommand(_Strict):
     type: Literal["follow_up"] = "follow_up"
     session_id: str
     text: str = Field(min_length=1)
+    # See ``PromptCommand.human``.
+    human: bool = True
+    # See ``PromptCommand.serial``.
+    serial: int | None = None
 
 
 class AbortCommand(_Strict):
@@ -418,6 +446,22 @@ class CompactedEvent(_SessionEvent):
 PROCESS_EXITED_ERROR = "the runtime process exited"
 
 
+class TakenEvent(_SessionEvent):
+    type: Literal["taken"] = "taken"
+    # Which of the texts the session was given is in its conversation now,
+    # counted from 1 in the order they were given.
+    inputs: int
+    # True where this is said after the run that took the text has ended:
+    # it was not known until then that the text had got into the
+    # conversation. What is told of the text is then what that run came to,
+    # and not what the next one does.
+    late: bool = False
+    # With ``late``: which run took the text, by the number its ``ended``
+    # event gave it (``EndedEvent.run``). A text may have gone to more than
+    # one run before it got into the conversation; this says which.
+    run: int | None = None
+
+
 class EndedEvent(_SessionEvent):
     type: Literal["ended"] = "ended"
     reason: EndReason
@@ -426,14 +470,39 @@ class EndedEvent(_SessionEvent):
     # Text of the last model response of the run.
     text: str = ""
     error: str | None = None
-    # Texts the session had taken when the run finished; None for ``closed``.
+    # Up to which of the texts the session was given this run is accounted
+    # for: the number of the last one it was handed when it finished. An
+    # upper bound, for telling the run's texts from those of the next. That
+    # a given text is in the conversation is said by its ``taken`` event and
+    # by nothing else: one whose answer never got there counts here, and is
+    # given again. None for ``closed``.
     inputs: int | None = None
+    # A number for this run among the session's runs, where the runtime
+    # counts them: what a ``taken`` event that comes late names (its ``run``).
+    run: int | None = None
+    # Of the texts this run was handed, those of which it is not known, as
+    # the run ends, whether they got into the conversation. A ``taken`` that
+    # comes late and names this run is of one of them, and of no other: a
+    # runtime that may say so late lists the text here. (One that knows of
+    # every text as its run ends, like the built-in one, lists none.)
+    open_inputs: list[int] = Field(default_factory=list)
+    # Background jobs of the session not yet gone when the run finished.
+    jobs: int = 0
+    # Those of them that tell the session when they finish, which starts its
+    # next run. Closing the session ends them, so a driver that would close
+    # an idle session to let it rest leaves one with such jobs open. (One
+    # that is being stopped is not among them: whoever stopped it knows,
+    # and nothing follows its end.)
+    waking_jobs: int = 0
 
 
 class ErrorEvent(_SessionEvent):
     type: Literal["error"] = "error"
     command: str
     message: str
+    # Of a text that was refused: the number it was sent under
+    # (``PromptCommand.serial``), where it had one.
+    serial: int | None = None
 
 
 class HostRequestEvent(_Strict):
@@ -482,6 +551,7 @@ SessionEvent = Union[
     UsageEvent,
     ModelCapabilityEvent,
     CompactedEvent,
+    TakenEvent,
     ForkedEvent,
     EndedEvent,
     ErrorEvent,
@@ -498,6 +568,7 @@ RuntimeEvent = Annotated[
         UsageEvent,
         ModelCapabilityEvent,
         CompactedEvent,
+        TakenEvent,
         ForkedEvent,
         EndedEvent,
         ErrorEvent,
