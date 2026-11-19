@@ -23,7 +23,10 @@ it('searches literal text, locates context and returns to the same result page',
   await screen.findByText('context');
   expect(document.querySelector('mark')?.textContent).toBe('音乐');
   expect(document.querySelector('script')).toBeNull();
-  fireEvent.click(screen.getByText('context'));
+  const contextButton = screen.getByText('context');
+  contextButton.focus();
+  fireEvent.click(contextButton);
+  await waitFor(() => expect(screen.getByText('back')).toHaveFocus());
   await waitFor(() => expect(fetch).toHaveBeenLastCalledWith(expect.stringContaining('anchor=5'), expect.anything()));
   await waitFor(() => expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled());
   const targets = vi.mocked(HTMLElement.prototype.scrollIntoView).mock.instances;
@@ -31,6 +34,7 @@ it('searches literal text, locates context and returns to the same result page',
   expect(target.closest('[hidden]')).toBeNull();
   expect(target.dataset.historyId).toBe('5');
   fireEvent.click(screen.getByText('back'));
+  await waitFor(() => expect(contextButton).toHaveFocus());
   await screen.findByText('context');
   expect(document.querySelector('.history-results:not([hidden]) [data-history-id="5"]')).not.toBeNull();
 });
