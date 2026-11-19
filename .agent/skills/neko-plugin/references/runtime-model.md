@@ -25,8 +25,10 @@ Consequences:
   cancels every task still pending when `startup` returns.
 - Do not create loop-bound objects in `startup` (or a timer tick) and use them
   later: async HTTP clients/sessions, `asyncio.Queue`/`Event`/`Lock`, streams.
-  They belong to a loop that is already closed. Create them lazily in the
-  phase that uses them, or create them per call.
+  They belong to a loop that is already closed. Prefer one per call
+  (`async with httpx.AsyncClient() as client:` inside the handler); a client
+  cached across calls cannot be closed cleanly later, because no later phase
+  runs on its loop.
 - Timers run in other threads, concurrently with entries. Share state between
   a timer and entries with `threading.Lock` or plain atomic values, never with
   `asyncio` primitives or a shared async client.
@@ -52,12 +54,15 @@ Consequences:
 - A synchronous blocking call inside an `async def` (`requests.get`,
   `time.sleep`, `subprocess.run`, heavy CPU work, sync file/DB I/O on large
   data) freezes the whole loop: every other entry, UI panel, and the stop
-  request wait for it. A stall over 5 s is logged afterwards as `Plugin
-  event-loop stall`. The entry timeout cannot interrupt it either, because
+  request wait for it. A long stall is often, but not always, logged
+  afterward as `Plugin event-loop stall`; a missing log line does not prove
+  the loop never blocked. The entry timeout cannot interrupt it either, because
   timeouts fire only when the loop gets control back. Use an async library, or
   `await asyncio.to_thread(blocking_fn, ...)`.
 - Each call has a timeout: `@plugin_entry(timeout=...)` or the caller's,
-  otherwise the host default (10 s). Long jobs should return quickly and report progress
+  otherwise the host default (10 s). `timeout=0` (or any value <= 0)
+  disables the entry timeout; only a caller's RPC deadline, if any, still
+  bounds the call. Long jobs should return quickly and report progress
   instead of holding the call open.
 - `Err(...)` and uncaught exceptions both reach the caller as a failed call.
 
@@ -87,8 +92,12 @@ async def poll(self, **_):
 
 ## shutdown
 
-- Runs after the command loop ends, in its own `asyncio.run`. Close what you
-  opened and flush state.
+- Runs after the command loop ends, in its own `asyncio.run`. The entry loop
+  is already closed, so do not `await client.aclose()` on async clients or
+  sessions created in entries there (it can fail with `Event loop is
+  closed`); close loop-bound resources in the call that opened them. Use
+  `shutdown` for plain resources: stop your own threads, close files, and
+  flush state.
 - The host waits only briefly for the process to exit before forcing it, and
   a crash or kill skips `shutdown` entirely. Never rely on it for data you
   cannot lose: write durable state when it changes.

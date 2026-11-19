@@ -52,6 +52,9 @@ run: tell the user rather than guessing.
 | `build`, `analyze`, `publish` | package; bundle analysis; release |
 
 Validation order: `check` → `lint` → `sync --clean` → `precheck`.
+`check -r` and `precheck` stop on uncommitted changes in the plugin's Git
+repository. Do not commit for the user unasked: report precheck as blocked by
+uncommitted changes, never as passed.
 
 ## Workflows
 
@@ -59,7 +62,9 @@ Validation order: `check` → `lint` → `sync --clean` → `precheck`.
 
 If the current folder already has a `plugin.toml`, skip to Modify.
 
-1. Read `references/plugin-creation-workflow.md`.
+1. Read `references/plugin-creation-workflow.md`. Offer only `plugin` and
+   `adapter` as package types; ignore its `extension` and host-plugin
+   questions (removed in v0.9).
 2. Ask only the unresolved minimum: name, purpose, package type, first-version
    scope, out of scope. Show the Identity Lock and a short design brief.
 3. After confirmation, scaffold with `neko-plugin init`; never hand-write the

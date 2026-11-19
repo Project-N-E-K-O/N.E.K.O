@@ -8,7 +8,9 @@ carry the one-line version of each rule; this page has the full reasons.
 Write only inside the plugin directory: the folder holding `plugin.toml`. In a
 N.E.K.O source checkout that is usually `plugin/plugins/<plugin_id>/`; a
 project created elsewhere (Plugin studio, `init --output`) is the folder you
-are in. Reading anything else for context is fine and encouraged.
+are in. Reading anything else for context is fine and encouraged. Outputs the
+CLI itself produces (packages under the checkout's `target/` from `build`,
+`check -r`, or `precheck`; `vendor/` from `sync`) are expected and fine.
 
 ## Hard Constraints
 
@@ -98,7 +100,7 @@ Resolve every path through the SDK:
 |---|---|---|
 | Persistent files | `self.data_path("name.json")` | yes |
 | Disposable cache | `self.cache_path(...)` | yes |
-| Runtime config | `self.config.get/set/update(...)` (file: `self.runtime_config_path`) | yes |
+| Runtime config | `await self.config.get/set/update(...)` (async; file: `self.runtime_config_path`) | yes |
 | Files shipped with the plugin | `self.plugin_dir / "assets" / ...` | **no** |
 
 `plugin_dir` is the installed payload: an upgrade replaces it, and in a
