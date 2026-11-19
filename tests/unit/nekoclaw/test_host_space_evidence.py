@@ -613,6 +613,10 @@ def test_a_path_comes_before_the_clause_it_stands_in_and_a_number_is_none():
         "data/新/app.py",
     ]
     assert paths_named_in("先读report.csv再改") == ["report.csv"]
+    # A path with the letter of its drive is taken whole, and not what follows the colon by itself.
+    assert paths_named_in("Check C:/repo/app.py") == ["C:/repo/app.py"]
+    assert paths_named_in("检查D:\\work\\app.py再改") == ["D:\\work\\app.py", "检查D:\\work\\app.py再改"]
+    assert paths_named_in("see abcC:/repo/app.py") == ["abcC:/repo/app.py"]
     assert paths_named_in("1.2.3 and 10.0 and 2026.11 and .5.") == []
 
 

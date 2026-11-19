@@ -835,8 +835,10 @@ def evidence_of(
 # space, quotation marks, brackets, and the punctuation of Chinese.
 _WORD_BREAKS = re.compile(r"[\s`'\"“”‘’<>()\[\]{}，。；：、！？（）「」『』《》]+")
 # A run of what a path is written with in ASCII, wherever it stands: text
-# in Chinese or Japanese puts no space around a path.
-_PLAIN_PATH = re.compile(r"[A-Za-z0-9_.~\-/\\]+")
+# in Chinese or Japanese puts no space around a path. With the letter of
+# its drive, where it has one (``C:/repo/app.py``): without it the rest
+# would be read against the working directory, on another drive.
+_PLAIN_PATH = re.compile(r"(?:(?<![A-Za-z0-9])[A-Za-z]:(?=[/\\]))?[A-Za-z0-9_.~\-/\\]+")
 _WEB_ADDRESS = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://\S+")
 _HAS_EXTENSION = re.compile(r"[^./\\]\.[A-Za-z0-9_]{1,8}$")
 # The number of a version, which is written like a file with an extension.
@@ -866,7 +868,10 @@ def paths_named_in(text: Any) -> list[str]:
         # (``notes/旧report.csv``): what follows the last separator before
         # it is not a file of its own name. That path is a word as white
         # space and punctuation set it apart, and is looked at as such.
-        # It is when the words right before it follow a separator.
+        # It is when the words right before it follow a separator. Nor the
+        # rest of one after the colon of a drive that was not taken with it.
+        if run.start() > 0 and said[run.start() - 1] == ":" and run.group(0)[0] in "/\\":
+            return False
         before = run.start()
         while before > 0 and not said[before - 1].isascii() and not _WORD_BREAKS.match(said[before - 1]):
             before -= 1
