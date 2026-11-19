@@ -191,11 +191,12 @@ class SearchPlugin(NekoPluginBase):
 - **Timeouts**: the decorator `timeout`, the caller's timeout, and the run or
   RPC deadline all apply; the smallest wins. Details and the `<= 0` rules in
   `runtime-model.md`.
-- **Argument binding**: without `params=Model`, an unexpected or missing
-  argument raises `TypeError` unless the handler takes `**_`. With
-  `params=Model`, validation fails first; keys the model does not know are
-  dropped only if the handler has no `**kwargs`. With `**kwargs` they arrive
-  unvalidated, so read input from the model, not from `kwargs`.
+- **Argument binding**: without `params=Model`, a missing required argument
+  raises `TypeError`, and so does an unexpected one unless the handler takes
+  `**_` (which only absorbs extras; give optional arguments defaults). With
+  `params=Model`, the model validates first. Keys outside the model are
+  dropped unless the model keeps extras (`extra="allow"`) or the handler takes
+  `**kwargs`, which receives them unvalidated: read input from the model.
 - **Registration**: methods whose name starts with `_` are never entries.
   Entry, timer, and lifecycle ids share one namespace; a duplicate id silently
   replaces the earlier handler.
@@ -264,8 +265,10 @@ class MyPlugin(NekoPluginBase):
 - `@ui.context` works only on the main class; `@ui.action` works on router
   entries.
 - Ids: an id that does not already start with the router's `prefix` gets it.
-  Two decorated entries with one id in a router raise `EntryConflictError`;
-  across routers the later router wins, and the main class wins over all.
+  Two decorated entries with one id in a router raise `EntryConflictError`.
+  Across the class and routers, a `@plugin_entry` wins over a timer or
+  lifecycle handler with the same id; among the same kind the main class wins,
+  then the later router.
   Router names are not checked for duplicates.
 - `on_mount`/`on_unmount` are never called, and entries added at runtime with
   `add_entry` miss the static scan: do not use them.

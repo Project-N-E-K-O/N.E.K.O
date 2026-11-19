@@ -63,7 +63,7 @@ Manifest rules:
 - Add only the permissions the surface needs. `action:call` is required for Hosted TSX action calls.
 - Entry paths are resolved inside `<plugin_dir>` (the folder holding `plugin.toml`); path traversal is rejected.
 - The entry file must exist or the surface is marked unavailable.
-- Locale-specific surface files sit next to the default file as `<stem>.<locale>.<ext>`. The unsuffixed file is the zh-CN version; ship at least `<stem>.en.<ext>` too. Other locales try their exact and primary tag, then `en`, then the unsuffixed file.
+- Locale-specific surface files sit next to the default file as `<stem>.<locale>.<ext>`. The unsuffixed file is the zh-CN version; ship at least `<stem>.en.<ext>` too. Other locales try their exact and primary tag, then (for other `zh-*` variants such as `zh-TW`) `zh-CN`, then `en`, then the unsuffixed file.
 
 ## Python Context And Actions
 
@@ -173,7 +173,7 @@ TSX runtime rules:
 Hosted TSX and Markdown run in an `allow-scripts` iframe with an opaque origin:
 
 - no `localStorage`/`sessionStorage` (they throw): use `useLocalState` for UI state and Python for anything durable;
-- no `alert`/`confirm`/`prompt` or popups: `window.confirm` returns `false` without showing anything, so a `confirm` on `ActionButton`/`ActionForm` or `@ui.action(confirm=...)` silently cancels the action; use `useConfirm()` and then `props.api.call(...)`;
+- no `alert`/`confirm`/`prompt` or popups: `window.confirm` returns `false` without showing anything, so a `confirm` on `ActionButton`/`ActionForm` or `@ui.action(confirm=...)` silently cancels the action; use `useConfirm()` and then `props.api.call(...)`, followed by `props.api.refresh()` if the action changes `@ui.context` state (only `ActionButton`/`ActionForm` refresh on their own);
 - no reliable `fetch` to N.E.K.O (cross-origin from `null`) and no host page globals: everything goes through `props.api`;
 - plugin logic and secrets stay in Python; the panel only renders state and calls actions.
 

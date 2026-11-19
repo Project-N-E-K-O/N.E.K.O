@@ -52,9 +52,11 @@ Avoid as far as possible: top-level host packages such as `utils.*`,
   pushes messages. That analysis follows SDK references imported from
   `plugin.`; the same data reached through a host-internal module is not
   disclosed, so the user's consent prompt would be wrong. Three capabilities
-  are analysed: `conversations.read`, `memory.read`, `messages.push`. A plugin
-  update that adds one asks the user again before it starts, and so does a
-  plugin whose analysis is incomplete or failed and was never approved.
+  are analysed: `conversations.read`, `memory.read`, `messages.push`. A
+  capability the user has not approved yet (new in an update, or analysis
+  incomplete or failed) is asked for when the user starts the plugin from the
+  Plugin Manager; automatic start skips only plugins the user denied, so such
+  a plugin can run before the prompt appears.
 - **No compatibility promise.** Only the public facades are kept stable. Host
   internals are renamed and refactored without notice; a plugin importing
   them breaks on an ordinary update.
