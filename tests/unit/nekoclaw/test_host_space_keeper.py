@@ -741,7 +741,7 @@ def test_the_review_asks_for_no_more_output_than_was_agreed():
 
     assert TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS <= 1500
     assert SPACE_ARCHIVE_OUTPUT_MAX_TOKENS <= 1800
-    assert SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS <= 1100
+    assert SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS <= 750
 
 
 def test_the_calls_of_the_space_are_metered_under_their_own_names(monkeypatch):
@@ -771,7 +771,7 @@ def test_the_calls_of_the_space_are_metered_under_their_own_names(monkeypatch):
     asyncio.run(run())
 
     assert named == ["task_agent_review", "task_agent_archive", "task_agent_consolidate", "agent"]
-    assert seen[:3] == [(TIER_REVIEW, 1500), (TIER_ARCHIVE, 1800), (TIER_CONSOLIDATE, 1100)]
+    assert seen[:3] == [(TIER_REVIEW, 1500), (TIER_ARCHIVE, 1800), (TIER_CONSOLIDATE, 750)]
     # All run on the summary model, like the fine selection.
     assert {TIER_REVIEW, TIER_ARCHIVE, TIER_CONSOLIDATE, decision.TIER_FINE} == decision._SUMMARY_TIERS
 

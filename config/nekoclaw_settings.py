@@ -942,25 +942,15 @@ SPACE_CONSOLIDATE_MAX_OPERATIONS = 8
 SPACE_CONSOLIDATE_REASON_MAX_TOKENS = 40
 """Cap on why an entry is out of date, as it is kept in the entry."""
 
-SPACE_CONSOLIDATE_DATE_MAX_TOKENS = 16
-"""Cap on the words of a text that say a time relative to when it was written
-("yesterday"), and on what they are replaced with; longer ones are not
-replaced."""
-
-SPACE_CONSOLIDATE_DATE_SPARE_TOKENS = 3
-"""Most a date that replaces words saying a relative time may bring besides
-the date: a word like "on" to fit it into the sentence. The rest of those
-words must stand as they were."""
-
 SPACE_CONSOLIDATE_MERGED_MAX_TOKENS = 1500
 """Most an entry may say once the texts of another were put into it by
 tidying; a merge that would make it longer is not made. Two or three texts
 of ``SPACE_ENTRY_CONTENT_MAX_TOKENS``."""
 
-SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS = 1100
+SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS = 750
 """``max_completion_tokens`` of looking over one layer. What may be kept of an
 answer (``SPACE_CONSOLIDATE_MAX_OPERATIONS`` changes of the longest kind)
-comes to some 850 tokens with the JSON around it; a test keeps it within
+comes to some 600 tokens with the JSON around it; a test keeps it within
 the cap. The rest is for the provider counting otherwise than this code
 does; see ``TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS``. An answer that is cut off
 all the same keeps the changes that are complete."""

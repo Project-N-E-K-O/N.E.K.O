@@ -1880,64 +1880,43 @@ def _said_mark(document: _Document) -> str:
 _A_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
-def _words_of(text: str) -> tuple[set[str], set[str]]:
-    """Return the words of a text, as tidying compares them: the runs of letters and digits, and the wide characters.
+def _added_to(name: str, title: str, own: str) -> bool:
+    """Whether ``name`` is ``title`` with words of ``own`` added before or after it, and nothing else.
 
-    Case and the width of characters are evened out. Chinese and
-    Japanese put no spaces between words: each character is told apart.
+    For a title tidying gives an entry. The model that asks for it was
+    shown pending notes, which a page may have written: the title an
+    entry had stays in it whole (a "never" it began with is not lost),
+    and what is added is one run of the entry's own words, as they stand
+    in its text. Compared as ``_normal`` leaves texts.
     """
-    words: set[str] = set()
-    wide: set[str] = set()
-    run: list[str] = []
-    for char in unicodedata.normalize("NFKC", text).casefold():
-        if _wide(char):
-            if char.isalnum():
-                wide.add(char)
-        elif char.isalnum():
-            run.append(char)
-            continue
-        if run:
-            words.add("".join(run))
-            run = []
-    if run:
-        words.add("".join(run))
-    return words, wide
-
-
-def _made_of(text: str, source: str) -> bool:
-    """Whether every word of ``text`` is one ``source`` has (``_words_of``): nothing it says is new."""
-    words, wide = _words_of(text)
-    have_words, have_wide = _words_of(source)
-    return words <= have_words and wide <= have_wide
-
-
-def _only_a_date(old: str, new: str) -> bool:
-    """Whether ``new`` is ``old`` with the words that say a relative time (``SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS``) put as a date.
-
-    The rest of ``old`` stands in ``new`` as it was, and ``new`` has
-    besides its dates no more than ``SPACE_CONSOLIDATE_DATE_SPARE_TOKENS``
-    (a word like "on" to fit a date into a sentence). So no change of a
-    date makes an entry say anything else than when.
-    """
-    from config.nekoclaw_settings import SPACE_CONSOLIDATE_DATE_SPARE_TOKENS
-    from config.prompts.prompts_nekoclaw_space import SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS
-    from utils.tokenize import count_tokens
-
-    lowered = old.casefold()
-    found = [word for word in SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS if word.casefold() in lowered]
-    if not found:
+    new, old = _normal(name), _normal(title)
+    if not old or new == old or old not in new:
         return False
-    said = re.compile("|".join(re.escape(word) for word in sorted(found, key=len, reverse=True)), re.IGNORECASE)
-    rest = new
-    for piece in said.split(old):
-        piece = piece.strip()
-        if not piece:
-            continue
-        at = rest.find(piece)
-        if at < 0:
-            return False
-        rest = f"{rest[:at]} {rest[at + len(piece):]}"
-    return count_tokens(_A_DATE.sub(" ", rest).strip()) <= SPACE_CONSOLIDATE_DATE_SPARE_TOKENS
+    at = new.find(old)
+    before, after = new[:at], new[at + len(old) :]
+    if before and after:
+        return False
+    return (before or after) in _normal(own)
+
+
+def _as_words(words: str) -> re.Pattern[str]:
+    """Return a pattern that finds ``words`` where they stand as words of their own.
+
+    Not inside a longer run of Latin letters and digits ("today" in
+    "todayTotal"). Text that puts no spaces between words (Chinese,
+    Japanese) is matched where it stands.
+    """
+    before = r"(?<![A-Za-z0-9_])" if words[:1].isascii() and words[:1].isalnum() else ""
+    after = r"(?![A-Za-z0-9_])" if words[-1:].isascii() and words[-1:].isalnum() else ""
+    return re.compile(before + re.escape(words) + after)
+
+
+def _a_relative_time(words: str) -> bool:
+    """Whether ``words`` are, as a whole, ones that say a time relative to when they were written (``SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS``)."""
+    from config.prompts.prompts_nekoclaw_space import SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS
+
+    said = " ".join(words.split()).casefold()
+    return any(said == item.casefold() for item in SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS)
 
 
 # ---------------------------------------------------------------------------
@@ -4990,11 +4969,12 @@ class TaskAgentSpace:
           expired, for good: it does not come back when the files it rests
           on are there, only when it is filed again. ``b`` is an entry in
           effect, written no earlier than ``a``.
-        * ``{"op": "retitle", "entry": a, "apart_from": b, "title": ..., "description": ...}``:
-          ``a`` is called otherwise, by a title no other entry of the
-          layer has.
+        * ``{"op": "retitle", "entry": a, "apart_from": b, "title": ...}``:
+          ``a`` is called otherwise, by its title with words of its own
+          added, which no other entry of the layer is called.
         * ``{"op": "date", "entry": a, "old": ..., "new": ...}``: words
-          that stand in ``a`` once are replaced by ones with a date.
+          that say a relative time and stand in ``a`` once are replaced
+          by a date.
 
         Every change is checked first, under the lock on the space's
         writes: the entries it names are there, still say all they said
@@ -5018,12 +4998,7 @@ class TaskAgentSpace:
                     )
                 if kind == "retitle":
                     return self._tidy_retitle(
-                        project,
-                        str(operation["entry"]),
-                        str(operation["apart_from"]),
-                        operation.get("title"),
-                        operation.get("description"),
-                        marks,
+                        project, str(operation["entry"]), str(operation["apart_from"]), operation.get("title"), marks
                     )
                 if kind == "date":
                     return self._tidy_date(project, str(operation["entry"]), operation.get("old"), operation.get("new"), marks)
@@ -5101,12 +5076,9 @@ class TaskAgentSpace:
         if source_read[2].status == ENTRY_ACTIVE and target_read[2].status == ENTRY_PENDING:
             # A guess goes into what is in effect, whichever way round they were named.
             source_read, target_read = target_read, source_read
-        elif (
-            source_read[2].status == target_read[2].status == ENTRY_PENDING
-            and source_read[2].created < target_read[2].created
-        ):
-            # Two guesses: the later goes into the older, which keeps the day
-            # it was made on (the one its first text is read by), however
+        elif source_read[2].status == target_read[2].status and source_read[2].created < target_read[2].created:
+            # Two of a state: the later goes into the older, which keeps the
+            # day it was made on (the one its first text is read by), however
             # they were named. The other way round that day would move back,
             # and "yesterday" in its text would mean another day.
             source_read, target_read = target_read, source_read
@@ -5166,9 +5138,16 @@ class TaskAgentSpace:
         # would stay for good.
         source_path = paths.memory_dir(project) / f"{source.id}.md"
         if self._signature(source_path) == before:
+            index, line_of = paths.index(project), f"{paths.MEMORY_DIR}/{source.id}.md"
+            line = None
             if source.status == ENTRY_ACTIVE:
-                self._index_remove(paths.index(project), f"{paths.MEMORY_DIR}/{source.id}.md")
-            self._discard_as_read(source_path, before)
+                # As the user may have worded it, to be put back as it was.
+                line = self._index_line_in(self._read_text(index) or "", line_of)
+                self._index_remove(index, line_of)
+            if not self._discard_as_read(source_path, before) and source.status == ENTRY_ACTIVE:
+                # Saved by the user as its line was taken out: it stays, as
+                # what they saved, and in effect it has its line.
+                self._index_add(index, line or _index_line(source.title, line_of, source.description), line_of)
         else:
             logger.warning("an entry tidying merged into another was saved meanwhile; it stays as it is")
         if pending:
@@ -5189,17 +5168,28 @@ class TaskAgentSpace:
         if entry.seen < SPACE_SEEN_TO_TAKE_EFFECT and entry.confidence != VERIFIED:
             return
         directory = self._paths().memory_dir(project)
-        if any(
-            other.id != entry.id and other.status != ENTRY_PENDING and _normal(other.title) == _normal(entry.title)
-            for other in self._entries(directory, project)
-        ):
-            # One title is one entry, and a third entry, which the change did
-            # not name, is not changed by it: the guess goes on waiting, and
-            # takes effect when a note of its title is filed (``_judged``).
-            # One that expired as well: filed again, it comes back, and two
-            # entries of one title would be in effect.
-            logger.info("a guess merged by tidying waits on: another entry has its title")
+        try:
+            files = sorted(item for item in directory.iterdir() if item.suffix == ".md" and item.is_file())
+        except OSError:
             return
+        for path in files:
+            if path.stem == entry.id:
+                continue
+            text = self._read_text(path)
+            if text is None:
+                # It may be of the same title: that cannot be told just now.
+                logger.info("a guess merged by tidying waits on: an entry beside it cannot be read")
+                return
+            other = _parse_document(text)
+            if _status_of(other) != ENTRY_PENDING and _normal(other.get("name") or path.stem) == _normal(entry.title):
+                # One title is one entry, and a third entry, which the change
+                # did not name, is not changed by it: the guess goes on
+                # waiting, and takes effect when a note of its title is
+                # filed (``_judged``). One that expired as well: filed
+                # again, it comes back, and two entries of one title would
+                # be in effect.
+                logger.info("a guess merged by tidying waits on: another entry has its title")
+                return
         _entry, unlisted = self._confirm(project, entry, _Known(confidence=INFERRED), allowed, as_marked=as_marked)
         if unlisted is not None:
             logger.warning("an entry that took effect by tidying could not be given its line in the index")
@@ -5236,10 +5226,13 @@ class TaskAgentSpace:
             document.set(_OUTDATED, _cut(_one_line(f"the same as {into.title}"), SPACE_CONSOLIDATE_REASON_MAX_TOKENS))
             document.set(_SUPERSEDED_BY, into.id)
 
-        # The guess first: should the entry not be written then, it has not
-        # counted a sighting the guess still waits for.
-        guess_mark = self._edit_as_shown(directory / f"{pending.id}.md", marks[pending.id], expire)
+        # The entry first: a commission is counted once however often it is
+        # counted, so one that is counted and whose guess could not be
+        # written then is done again by a later round; a guess that expired
+        # first, and whose sighting could not be counted then, would be in
+        # no round again.
         entry_mark = self._edit_as_shown(directory / f"{into.id}.md", marks[into.id], count)
+        guess_mark = self._edit_as_shown(directory / f"{pending.id}.md", marks[pending.id], expire)
         return {pending.id: guess_mark, into.id: entry_mark}
 
     @staticmethod
@@ -5310,11 +5303,14 @@ class TaskAgentSpace:
         entry_id: str,
         apart_id: str,
         title: Any,
-        description: Any,
         marks: dict[str, str],
     ) -> tuple[str, dict[str, str | None]]:
-        """Give an entry a title and a description that tell it from another; see ``tidy_entries``."""
-        from config.nekoclaw_settings import SPACE_ENTRY_DESCRIPTION_MAX_TOKENS, SPACE_ENTRY_TITLE_MAX_TOKENS
+        """Give an entry a title that tells it from another; see ``tidy_entries``.
+
+        Its title with a run of its own words added (``_added_to``); what
+        else its line in the index says stays.
+        """
+        from config.nekoclaw_settings import SPACE_ENTRY_TITLE_MAX_TOKENS
 
         if entry_id == apart_id:
             raise _NotMade("an entry is not told apart from itself")
@@ -5324,78 +5320,68 @@ class TaskAgentSpace:
         if entry.status == ENTRY_EXPIRED:
             raise _NotMade(f"{entry.id} has expired")
         # The one it is told apart from, as the model was shown it too.
-        self._tidy_read(project, apart_id, marks)
+        if self._tidy_read(project, apart_id, marks)[2].status == ENTRY_EXPIRED:
+            # Out of date, by an earlier change of this round, say: there is
+            # nothing in effect it could be taken for.
+            raise _NotMade(f"{apart_id}, which it is to be told apart from, has expired")
         name = _cut(_one_line(redact(str(title or ""))), SPACE_ENTRY_TITLE_MAX_TOKENS)
-        line = _cut(_one_line(redact(str(description or ""))), SPACE_ENTRY_DESCRIPTION_MAX_TOKENS)
-        if not _normal(name):
-            raise _NotMade("no title was given")
-        # Of the entry's own words: the model was shown pending notes, which
-        # anyone's page may have written, and a title and a description go
-        # into an index that task agents are handed.
-        if not _made_of(f"{name} {line}", f"{entry.title} {entry.description} {entry.content}"):
-            raise _NotMade(f"the new title or description says what {entry.id} does not")
-        renamed = _normal(name) != _normal(entry.title)
-        if not renamed and (not line or line == entry.description):
-            raise _NotMade("nothing would change")
-        if renamed:
-            # One title is one entry; and a note of a title the user
-            # removed is not kept, which this one would be called by now.
-            if any(_normal(other.title) == _normal(name) for other in self._entries(directory, project) if other.id != entry.id):
-                raise _NotMade("another entry is called that")
-            if _normal(name) in self._removed_of(paths.notes_file(project))[0]:
-                raise _NotMade("the user removed an entry of that title")
+        # The model was shown pending notes, which anyone's page may have
+        # written, and a title goes into an index that task agents are
+        # handed: it adds to the title words the entry has, and changes
+        # nothing it said.
+        if not _added_to(name, entry.title, f"{entry.description} {entry.content}"):
+            raise _NotMade(f"the new title is not the title of {entry.id} with words of its own added")
+        # One title is one entry; and a note of a title the user removed is
+        # not kept, which this one would be called by now.
+        if any(_normal(other.title) == _normal(name) for other in self._entries(directory, project) if other.id != entry.id):
+            raise _NotMade("another entry is called that")
+        if _normal(name) in self._removed_of(paths.notes_file(project))[0]:
+            raise _NotMade("the user removed an entry of that title")
 
         def change(document: _Document) -> None:
             document.set("name", name)
-            if line:
-                document.set("description", line)
 
         written = self._edit_as_shown(directory / f"{entry.id}.md", marks[entry_id], change)
         if entry.status == ENTRY_ACTIVE:
             target = f"{paths.MEMORY_DIR}/{entry.id}.md"
-            self._index_set(paths.index(project), _index_line(name, target, line or entry.description), target)
+            self._index_set(paths.index(project), _index_line(name, target, entry.description), target)
         return "made", {entry.id: written}
 
     def _tidy_date(
         self, project: str | None, entry_id: str, old: Any, new: Any, marks: dict[str, str]
     ) -> tuple[str, dict[str, str | None]]:
-        """Replace words that say a time relative to when they were written by a date; see ``tidy_entries``."""
-        from config.nekoclaw_settings import SPACE_CONSOLIDATE_DATE_MAX_TOKENS
-        from utils.tokenize import count_tokens
+        """Replace words that say a time relative to when they were written by a date; see ``tidy_entries``.
 
-        said, put = _plain_lines(str(old or "")).strip(), _one_line(redact(str(new or "")))
-        if not said or "\n" in said or not put or said == put:
-            raise _NotMade("no words to replace, or nothing to replace them with")
-        if max(count_tokens(said), count_tokens(put)) > SPACE_CONSOLIDATE_DATE_MAX_TOKENS:
-            raise _NotMade("the words, or what replaces them, are too long")
-        dates = _A_DATE.findall(put)
-        if not dates:
-            raise _NotMade("what replaces the words has no date")
-        for day in dates:
-            try:
-                datetime.strptime(day, "%Y-%m-%d")
-            except ValueError:
-                raise _NotMade(f"{day} is no day of the calendar") from None
-        if not _only_a_date(said, put):
-            # The model was shown pending notes, which anyone's page may
-            # have written: it changes what an entry says of when, and
-            # nothing else.
-            raise _NotMade("what replaces the words is more than a date for a relative time")
+        The words are ones of ``SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS`` as a
+        whole, and the date is nothing but a date: the model was shown
+        pending notes, which anyone's page may have written, and a change
+        of a date changes when, and nothing else.
+        """
+        said, put = _plain_lines(str(old or "")).strip(), str(new or "").strip()
+        if not _a_relative_time(said):
+            raise _NotMade("the words to replace are none that say a relative time")
+        try:
+            # The whole of it: a day of the calendar, and nothing else.
+            datetime.strptime(put, "%Y-%m-%d")
+        except ValueError:
+            raise _NotMade(f"{put} is not a day of the calendar alone") from None
         _before, document, entry = self._tidy_read(project, entry_id, marks)
         if entry.status == ENTRY_EXPIRED:
             raise _NotMade(f"{entry.id} has expired")
-        if document.body.count(said) != 1:
+        # As words of their own: "today" in "todayTotal" is part of a name.
+        alone = _as_words(said)
+        if len(alone.findall(document.body)) != 1:
             raise _NotMade(f"the words do not stand in {entry.id} once")
-        body = document.body.replace(said, put, 1)
+        body = alone.sub(lambda _found: put, document.body, count=1)
         kept = _listed(document, "texts")
         texts = _texts_of(document.body, kept)
         marked: list[str] | None = None
         if texts is not None:
-            at = [number for number, text in enumerate(texts) if said in text]
+            at = [number for number, text in enumerate(texts) if alone.search(text)]
             if len(at) != 1:
                 raise _NotMade(f"the words do not stand in one text of {entry.id}")
             changed = [*texts]
-            changed[at[0]] = texts[at[0]].replace(said, put, 1)
+            changed[at[0]] = alone.sub(lambda _found: put, texts[at[0]], count=1)
             marked = [*kept]
             marked[at[0]] = _digest(changed[at[0]])
             if _texts_of(body, marked) != changed:

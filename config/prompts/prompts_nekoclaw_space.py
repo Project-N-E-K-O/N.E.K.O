@@ -232,17 +232,16 @@ SPACE_CONSOLIDATE_SYSTEM_PROMPT = (
     '{{"operations": [\n'
     '{{"op": "merge", "from": "n3", "into": "n1"}},\n'
     '{{"op": "outdated", "entry": "n2", "by": "n5", "why": "..."}},\n'
-    '{{"op": "retitle", "entry": "n4", "apart_from": "n6", "title": "...", "description": "..."}},\n'
-    '{{"op": "date", "entry": "n7", "old": "...", "new": "..."}}\n'
+    '{{"op": "retitle", "entry": "n4", "apart_from": "n6", "title": "..."}},\n'
+    '{{"op": "date", "entry": "n7", "old": "...", "new": "YYYY-MM-DD"}}\n'
     "]}}\n"
     "Use the ids of the list (n1, n2, ...). merge: the text of from is added to into and from goes; "
     "into should be the note in effect, or the older one. outdated: by is the newer note in effect "
-    "that says otherwise; why is one short sentence. retitle: a new title of a few words and a new "
-    "one-line description for entry, so it is not taken for apart_from, made only of words that entry "
-    "already has in its title, description or text. date: old is the exact words of the text, as they "
-    "stand, that say the relative time (yesterday, last week), and new is the date that replaces them, "
-    "as YYYY-MM-DD, with at most a word to fit it into the sentence, in the language of the text. Notes "
-    "written by the user are listed for you to know them; name none of them "
+    "that says otherwise; why is one short sentence. retitle: the present title of entry with a few "
+    "words added before or after it, taken as they stand from its own description or text, so it is "
+    "not taken for apart_from. date: old is the word or words for the relative time alone, exactly as "
+    "they stand in the text (yesterday, last week), and new is only the date they mean, YYYY-MM-DD. "
+    "Notes written by the user are listed for you to know them; name none of them "
     "in an operation.\n"
     "At most {max_operations} operations, and only where you are sure. When the notes are in order, "
     'return {{"operations": []}}. Write titles and descriptions in the language the notes are written in.'

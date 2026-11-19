@@ -186,9 +186,9 @@ async def test_what_changed_while_the_model_looked_is_news_to_the_next_round(wor
 async def test_what_tidying_changed_itself_is_no_news_to_the_next_round(world):
     one = await world.active("Server down", "The staging server was down yesterday.")
     await world.active("Mirror", "The mirror is at mirror.local.")
-    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "on 2027-01-14"}])
+    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-14"}])
     await world.tidy()
-    assert (await world.entry(one)).content == "The staging server was down on 2027-01-14."
+    assert (await world.entry(one)).content == "The staging server was down 2027-01-14."
 
     await world.tidy()
 
@@ -554,7 +554,7 @@ async def test_a_date_is_not_put_into_an_entry_saved_just_before_it_is_written(w
         return texts_of(*args, **kwargs)
 
     monkeypatch.setattr(space_module, "_texts_of", saved_meanwhile)
-    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "on 2027-01-14"}])
+    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-14"}])
 
     await world.tidy()
 
@@ -652,23 +652,25 @@ async def test_an_entry_easily_taken_for_another_is_given_a_title_that_tells_it_
     await world.active("Testing", "Tests need DISPLAY set.")
     world.answer(
         lambda shown: [
-            {"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Testing"], "title": "Run pytest in parallel", "description": "pytest with -n 4"}
+            {"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Testing"], "title": "Tests in parallel"}
         ]
     )
 
     await world.tidy()
 
     renamed = await world.entry(one)
-    assert (renamed.title, renamed.description) == ("Run pytest in parallel", "pytest with -n 4")
-    assert f"- [Run pytest in parallel](memory/{one}.md) — pytest with -n 4" in await world.space.read_index(None)
+    assert (renamed.title, renamed.description) == ("Tests in parallel", "Run pytest with -n 4, in parallel.")
+    assert f"- [Tests in parallel](memory/{one}.md) — Run pytest with -n 4, in parallel." in await world.space.read_index(None)
 
 
 async def test_no_entry_is_given_the_title_of_another(world):
-    # Its own words make the other's title.
-    one = await world.active("Tests", "Testing: run pytest with -n 4.")
-    await world.active("Testing", "Tests need DISPLAY set.")
+    # Its title with words of its own makes the other's title.
+    one = await world.active("Tests", "Run them in parallel: pytest with -n 4.")
+    await world.active("Tests in parallel", "Tests need DISPLAY set.")
     world.answer(
-        lambda shown: [{"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Testing"], "title": "testing"}]
+        lambda shown: [
+            {"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Tests in parallel"], "title": "Tests in parallel"}
+        ]
     )
 
     await world.tidy()
@@ -705,12 +707,12 @@ async def test_an_entry_is_not_retitled_apart_from_one_that_changed_meanwhile(wo
 
 
 async def test_no_entry_is_given_a_title_the_user_removed(world):
-    one = await world.active("Tests", "Run pytest with -n 4.")
+    one = await world.active("Tests", "Run them in parallel: pytest with -n 4.")
     await world.active("Testing", "Tests need DISPLAY set.")
-    gone = await world.active("Run pytest with", "Old advice.")
+    gone = await world.active("Tests in parallel", "Old advice.")
     assert await world.space.delete_entry(gone)
     world.answer(
-        lambda shown: [{"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Testing"], "title": "Run pytest with"}]
+        lambda shown: [{"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Testing"], "title": "Tests in parallel"}]
     )
 
     await world.tidy()
@@ -723,7 +725,7 @@ async def test_two_changes_of_one_entry_are_both_made(world):
     await world.active("Server status", "Look at status.local first.")
     world.answer(
         lambda shown: [
-            {"op": "date", "entry": shown["Server"], "old": "yesterday", "new": "on 2027-01-14"},
+            {"op": "date", "entry": shown["Server"], "old": "yesterday", "new": "2027-01-14"},
             {"op": "retitle", "entry": shown["Server"], "apart_from": shown["Server status"], "title": "Staging server"},
         ]
     )
@@ -731,7 +733,7 @@ async def test_two_changes_of_one_entry_are_both_made(world):
     await world.tidy()
 
     entry = await world.entry(one)
-    assert entry.title == "Staging server" and "on 2027-01-14" in entry.content
+    assert entry.title == "Staging server" and "2027-01-14" in entry.content
 
 
 async def test_a_date_in_the_second_text_of_an_entry_keeps_the_texts_apart(world):
@@ -741,13 +743,13 @@ async def test_a_date_in_the_second_text_of_an_entry_keeps_the_texts_apart(world
     world.clock.now += DAY
     await world.space.file_entry(None, title="Server down", content="It was down yesterday; use the mirror.")
     await world.active("Mirror", "The mirror is at mirror.local.")
-    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "on 2027-01-15"}])
+    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-15"}])
 
     await world.tidy()
 
     document = _parse_document((world.memory() / f"{one}.md").read_text(encoding="utf-8"))
     texts = _texts_of(document.body, _listed(document, "texts"))
-    assert texts == ["The staging server is flaky.", "It was down on 2027-01-15; use the mirror."]
+    assert texts == ["The staging server is flaky.", "It was down 2027-01-15; use the mirror."]
     assert _listed(document, "texts") == [_digest(text) for text in texts]
 
 
@@ -755,16 +757,16 @@ async def test_yesterday_is_replaced_by_its_date_and_the_text_is_still_known(wor
     one = await world.active("Server down", "The staging server was down yesterday; use the mirror.")
     await world.active("Mirror", "The mirror is at mirror.local.")
     world.answer(
-        lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "on 2027-01-14"}]
+        lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-14"}]
     )
 
     await world.tidy()
 
     entry = await world.entry(one)
-    assert entry.content == "The staging server was down on 2027-01-14; use the mirror."
+    assert entry.content == "The staging server was down 2027-01-14; use the mirror."
     # The same text filed again is there already, not a second section.
     again, created = await world.space.file_entry(
-        None, title="Server down", content="The staging server was down on 2027-01-14; use the mirror."
+        None, title="Server down", content="The staging server was down 2027-01-14; use the mirror."
     )
     assert not created and again.content == entry.content
 
@@ -774,7 +776,7 @@ async def test_words_that_stand_twice_or_a_replacement_with_no_date_are_left(wor
     await world.active("Mirror", "The mirror is at mirror.local.")
     world.answer(
         lambda shown: [
-            {"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "on 2027-01-14"},
+            {"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-14"},
             {"op": "date", "entry": shown["Server down"], "old": "Down yesterday", "new": "Down the day before"},
             {"op": "date", "entry": shown["Server down"], "old": "Down yesterday", "new": "Down on 2027-02-30"},
         ]
@@ -797,7 +799,7 @@ async def test_an_entry_the_user_saved_while_the_model_looked_is_left_as_they_sa
 
     async def meanwhile(messages: list[dict[str, Any]]) -> dict[str, Any]:
         path.write_text(path.read_text(encoding="utf-8") + "\nSaved by hand.\n", encoding="utf-8")
-        return {"operations": [{"op": "date", "entry": handles(messages)["Server down"], "old": "yesterday", "new": "on 2027-01-14"}]}
+        return {"operations": [{"op": "date", "entry": handles(messages)["Server down"], "old": "yesterday", "new": "2027-01-14"}]}
 
     world.llm.answer = meanwhile
 
@@ -815,7 +817,7 @@ async def test_an_entry_the_user_wrote_is_never_changed(world):
     layer = await world.space.read_layer(None)
 
     outcome, changed = await world.space.tidy_entries(
-        None, {"op": "date", "entry": "mine", "old": "yesterday", "new": "on 2027-01-14"}, layer.marks
+        None, {"op": "date", "entry": "mine", "old": "yesterday", "new": "2027-01-14"}, layer.marks
     )
 
     assert "written by the user" in outcome and changed == {}
@@ -839,14 +841,14 @@ async def test_no_more_changes_are_made_than_may_be(world, monkeypatch):
     two = await world.active("Mirror down", "The mirror was down yesterday.")
     world.answer(
         lambda shown: [
-            {"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "on 2027-01-14"},
-            {"op": "date", "entry": shown["Mirror down"], "old": "yesterday", "new": "on 2027-01-14"},
+            {"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-14"},
+            {"op": "date", "entry": shown["Mirror down"], "old": "yesterday", "new": "2027-01-14"},
         ]
     )
 
     await world.tidy()
 
-    assert (await world.entry(one)).content == "Down on 2027-01-14."
+    assert (await world.entry(one)).content == "Down 2027-01-14."
     assert (await world.entry(two)).content == "The mirror was down yesterday."
 
 
@@ -857,7 +859,7 @@ async def test_of_an_answer_cut_off_the_whole_changes_are_made(world):
     async def cut(messages: list[dict[str, Any]]) -> str:
         shown = handles(messages)
         return (
-            '{"operations": [{"op": "date", "entry": "%s", "old": "yesterday", "new": "on 2027-01-14"}, '
+            '{"operations": [{"op": "date", "entry": "%s", "old": "yesterday", "new": "2027-01-14"}, '
             '{"op": "date", "entry": "%s", "old": "yester' % (shown["Server down"], shown["Mirror down"])
         )
 
@@ -865,7 +867,7 @@ async def test_of_an_answer_cut_off_the_whole_changes_are_made(world):
 
     await world.tidy()
 
-    assert (await world.entry(one)).content == "Down on 2027-01-14."
+    assert (await world.entry(one)).content == "Down 2027-01-14."
     assert (await world.entry(two)).content == "The mirror was down yesterday."
 
 
@@ -916,24 +918,24 @@ def test_the_longest_answer_that_may_be_kept_fits_the_cap_on_output():
     from config import nekoclaw_settings as settings
     from utils.tokenize import count_tokens
 
-    title = "标题" * 40
-    description = "说明" * 60
-    one = {
-        "op": "retitle",
-        "entry": "n12",
-        "apart_from": "n13",
-        "title": title,
-        "description": description,
-    }
-    while count_tokens(one["title"]) > settings.SPACE_ENTRY_TITLE_MAX_TOKENS:
-        one["title"] = one["title"][:-1]
-    while count_tokens(one["description"]) > settings.SPACE_ENTRY_DESCRIPTION_MAX_TOKENS:
-        one["description"] = one["description"][:-1]
+    def within(text: str, cap: int) -> str:
+        while count_tokens(text) > cap:
+            text = text[:-1]
+        return text
+
+    # The longest of each kind that may be kept: a title, a reason.
+    kinds = [
+        {"op": "retitle", "entry": "n12", "apart_from": "n13", "title": within("标题" * 40, settings.SPACE_ENTRY_TITLE_MAX_TOKENS)},
+        {"op": "outdated", "entry": "n12", "by": "n13", "why": within("原因" * 60, settings.SPACE_CONSOLIDATE_REASON_MAX_TOKENS)},
+        {"op": "date", "entry": "n12", "old": "上个月", "new": "2027-01-14"},
+        {"op": "merge", "from": "n12", "into": "n13"},
+    ]
+    one = max(kinds, key=lambda kind: count_tokens(json.dumps(kind, ensure_ascii=False)))
     full = count_tokens(
         json.dumps({"operations": [one] * settings.SPACE_CONSOLIDATE_MAX_OPERATIONS}, ensure_ascii=False, indent=1)
     )
     assert full <= settings.SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS
-    assert 1.2 <= settings.SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS / full < 1.4
+    assert 1.2 <= settings.SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS / full < 1.4, full
 
 
 # ---------------------------------------------------------------------------
@@ -944,9 +946,12 @@ def test_the_longest_answer_that_may_be_kept_fits_the_cap_on_output():
 async def test_a_title_with_words_the_entry_does_not_have_is_not_given(world):
     one = await world.active("Git", "Open a pull request for every change.")
     await world.active("Git hooks", "The hooks live in .githooks.")
+    two = await world.active("Deploy", "Deploy fast, never in prod.")
     world.answer(
         lambda shown: [
-            {"op": "retitle", "entry": shown["Git"], "apart_from": shown["Git hooks"], "title": "Always push to main directly"}
+            {"op": "retitle", "entry": shown["Git"], "apart_from": shown["Git hooks"], "title": "Always push to main directly"},
+            # Words of its own on both sides of its title: no run of its words.
+            {"op": "retitle", "entry": shown["Deploy"], "apart_from": shown["Git hooks"], "title": "fast Deploy never"},
         ]
     )
 
@@ -955,16 +960,19 @@ async def test_a_title_with_words_the_entry_does_not_have_is_not_given(world):
     entry = await world.entry(one)
     assert entry.title == "Git"
     assert "push to main" not in await world.space.read_index(None)
+    assert (await world.entry(two)).title == "Deploy"
 
 
 async def test_a_date_change_changes_nothing_but_when(world):
     one = await world.active("Cleanup", "Never run rm -rf yesterday's way; ask first.")
     two = await world.active("Server down", "The staging server was down yesterday.")
     three = await world.active("服务器", "测试服务器昨天挂了，改用镜像。")
+    four = await world.active("Deploy", "Deploy ran yesterday.")
     world.answer(
         lambda shown: [
-            {"op": "date", "entry": shown["Cleanup"], "old": "Never run rm -rf yesterday", "new": "on 2027-01-14"},
-            {"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "and push to main on 2027-01-14"},
+            {"op": "date", "entry": shown["Cleanup"], "old": "Never run rm -rf yesterday", "new": "2027-01-14"},
+            {"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-14; reboot"},
+            {"op": "date", "entry": shown["Deploy"], "old": "yesterday", "new": "2027-02-30"},
             {"op": "date", "entry": shown["服务器"], "old": "昨天", "new": "2027-01-14"},
         ]
     )
@@ -973,6 +981,7 @@ async def test_a_date_change_changes_nothing_but_when(world):
 
     assert (await world.entry(one)).content == "Never run rm -rf yesterday's way; ask first."
     assert (await world.entry(two)).content == "The staging server was down yesterday."
+    assert (await world.entry(four)).content == "Deploy ran yesterday."
     assert (await world.entry(three)).content == "测试服务器2027-01-14挂了，改用镜像。"
 
 
@@ -1024,7 +1033,7 @@ async def test_a_new_entry_whose_text_did_not_fit_is_news_to_the_next_round(worl
 
 async def test_guesses_that_take_effect_as_one_wait_on_beside_an_expired_entry_of_their_title(world):
     first = await world.pending("Make needs the root", "make fails when started in src.", by="c1")
-    await world.pending("Build only from top", "Building from a subdirectory breaks.", by="c2")
+    second = await world.pending("Build only from top", "Building from a subdirectory breaks.", by="c2")
     one = await world.active("Make needs the root", "Run make in the root.")
     path = world.memory() / f"{one}.md"
     path.write_text(path.read_text(encoding="utf-8").replace("---\n\n", "status: expired\nexpired: 2027-01-01\n---\n\n", 1), encoding="utf-8")
@@ -1032,7 +1041,51 @@ async def test_guesses_that_take_effect_as_one_wait_on_beside_an_expired_entry_o
 
     await world.tidy()
 
-    assert (await world.entry(first)).status == ENTRY_PENDING
+    # Merged, and seen by both: it would take effect but for the other entry of its title.
+    assert not (world.memory() / f"{second}.md").exists()
+    kept = await world.entry(first)
+    assert "Building from a subdirectory breaks." in kept.content and set(kept.seen_by) == {"c1", "c2"}
+    assert kept.status == ENTRY_PENDING
+
+
+async def test_guesses_that_take_effect_as_one_wait_on_while_an_entry_beside_them_cannot_be_read(world, monkeypatch):
+    first = await world.pending("Make needs the root", "make fails when started in src.", by="c1")
+    await world.pending("Build only from top", "Building from a subdirectory breaks.", by="c2")
+    other = await world.active("Mirror", "The mirror is at mirror.local.")
+    held = world.memory() / f"{other}.md"
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Build only from top"], "into": shown["Make needs the root"]}])
+    read_text = TaskAgentSpace._read_text
+    reads: list[Path] = []
+
+    def held_open(path: Path) -> Any:
+        # Held by another program once the merge is written: it may be of the same title.
+        if path == held and any(item.stem == first for item in reads):
+            return None
+        reads.append(path)
+        return read_text(path)
+
+    monkeypatch.setattr(TaskAgentSpace, "_read_text", staticmethod(held_open))
+
+    await world.tidy()
+
+    kept = await world.entry(first)
+    assert set(kept.seen_by) == {"c1", "c2"} and kept.status == ENTRY_PENDING
+
+
+async def test_a_relative_time_inside_a_name_is_left(world):
+    one = await world.active("Report", "Use todayTotal for the report, as of today.")
+    two = await world.active("Totals", "Use todayTotal for the report.")
+    world.answer(
+        lambda shown: [
+            {"op": "date", "entry": shown["Totals"], "old": "today", "new": "2027-01-15"},
+            {"op": "date", "entry": shown["Report"], "old": "today", "new": "2027-01-15"},
+        ]
+    )
+
+    await world.tidy()
+
+    assert (await world.entry(two)).content == "Use todayTotal for the report."
+    assert (await world.entry(one)).content == "Use todayTotal for the report, as of 2027-01-15."
 
 
 async def test_two_entries_in_effect_merged_keep_their_days(world):
@@ -1091,7 +1144,7 @@ async def test_a_layer_that_cannot_be_read_does_not_keep_the_others_from_being_l
 async def test_the_entries_of_a_change_that_failed_half_way_are_news_to_the_next_round(world, monkeypatch):
     one = await world.active("Server down", "The staging server was down yesterday.")
     await world.active("Mirror", "The mirror is at mirror.local.")
-    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "on 2027-01-14"}])
+    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-14"}])
     tidy_entries = TaskAgentSpace.tidy_entries
 
     async def failed(self: Any, *args: Any) -> Any:
@@ -1104,7 +1157,7 @@ async def test_the_entries_of_a_change_that_failed_half_way_are_news_to_the_next
     await world.tidy()
 
     assert len(world.llm.calls) == 2
-    assert (await world.entry(one)).content == "The staging server was down on 2027-01-14."
+    assert (await world.entry(one)).content == "The staging server was down 2027-01-14."
 
 
 async def test_an_entry_is_not_out_of_date_by_one_saved_as_it_is_written(world, monkeypatch):
@@ -1131,3 +1184,41 @@ async def test_an_entry_is_not_out_of_date_by_one_saved_as_it_is_written(world, 
 
     assert saved
     assert (await world.entry(old)).status == ENTRY_ACTIVE
+
+
+async def test_an_entry_saved_as_its_line_is_taken_out_keeps_its_line(world, monkeypatch):
+    one = await world.active("Build with make", "Run make in the root, not in src.")
+    other = await world.active("Make from the root", "make only works from the repository root.")
+    other_path = world.memory() / f"{other}.md"
+    index_remove = TaskAgentSpace._index_remove
+
+    def saved_meanwhile(self: Any, index: Path, target: str) -> None:
+        index_remove(self, index, target)
+        if other in target:
+            other_path.write_text(other_path.read_text(encoding="utf-8") + "\nSaved by hand.\n", encoding="utf-8")
+
+    monkeypatch.setattr(TaskAgentSpace, "_index_remove", saved_meanwhile)
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Make from the root"], "into": shown["Build with make"]}])
+
+    await world.tidy()
+
+    assert "Saved by hand." in other_path.read_text(encoding="utf-8")
+    assert f"memory/{other}.md" in await world.space.read_index(None)
+    assert f"memory/{one}.md" in await world.space.read_index(None)
+
+
+async def test_an_entry_is_not_told_apart_from_one_that_went_out_of_date_this_round(world):
+    one = await world.active("Tests", "Testing: run pytest with -n 4, in parallel.")
+    await world.active("Testing", "Tests need DISPLAY set.")
+    world.clock.now += DAY
+    await world.active("Testing now", "Tests run headless now; DISPLAY is not needed.")
+    world.answer(
+        lambda shown: [
+            {"op": "outdated", "entry": shown["Testing"], "by": shown["Testing now"], "why": "headless now"},
+            {"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Testing"], "title": "Tests in parallel"},
+        ]
+    )
+
+    await world.tidy()
+
+    assert (await world.entry(one)).title == "Tests"
