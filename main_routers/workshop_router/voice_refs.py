@@ -21,6 +21,7 @@ Split out of the former monolithic ``main_routers/workshop_router.py``.
 from ._shared import logger, router
 from .config_files import _assert_under_base
 from .content_gate import ContentFolderBusy, claim_reference_pair
+from .publish import _resolve_workshop_export_child
 from .ugc import _find_subscribed_item_by_id
 from .voice_manifest import (
     WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES,
@@ -194,9 +195,17 @@ async def upload_reference_audio(request: Request):
                 "error": "缺少内容目录",
             }, status_code=400)
 
-        try:
-            content_folder = _assert_under_base(content_folder, workshop_export_dir)
-        except PermissionError:
+        # Only a direct child of WorkshopExport (any name; in practice the
+        # item_xxx folder created by prepare-upload) may hold a reference
+        # pair -- never the root itself or anything nested deeper.
+        # This check never calls commonpath, so paths on another Windows drive
+        # are rejected with 403 instead of escaping as a 500 ValueError.
+        content_folder, workshop_export_dir, allowed = _resolve_workshop_export_child(
+            content_folder, workshop_export_dir
+        )
+        if not allowed:
+            # Keep server paths out of the response; the log has the details.
+            logger.warning(f"拒绝向不在允许范围内的目录上传参考语音: {content_folder}（允许: {workshop_export_dir} 下的子目录）")
             return JSONResponse({
                 "success": False,
                 "error": "参考语音只能上传到工坊临时目录",
@@ -280,9 +289,10 @@ async def upload_reference_audio(request: Request):
         }, status_code=409)
     except Exception as e:
         logger.error(f"上传参考语音失败: {e}")
+        # OSError messages carry server paths; keep them in the log only.
         return JSONResponse({
             "success": False,
-            "error": str(e),
+            "error": "参考语音上传失败",
         }, status_code=500)
 
 
@@ -301,9 +311,14 @@ async def remove_reference_audio(request: Request):
                 "error": "缺少内容目录",
             }, status_code=400)
 
-        try:
-            content_folder = _assert_under_base(content_folder, workshop_export_dir)
-        except PermissionError:
+        # Same rule as upload: only a direct child of WorkshopExport, so the
+        # root's manifest and audio can never be deleted through this route.
+        content_folder, workshop_export_dir, allowed = _resolve_workshop_export_child(
+            content_folder, workshop_export_dir
+        )
+        if not allowed:
+            # Keep server paths out of the response; the log has the details.
+            logger.warning(f"拒绝清理不在允许范围内的目录中的参考语音: {content_folder}（允许: {workshop_export_dir} 下的子目录）")
             return JSONResponse({
                 "success": False,
                 "error": "内容目录不在允许范围内",
@@ -326,9 +341,10 @@ async def remove_reference_audio(request: Request):
         }, status_code=409)
     except Exception as e:
         logger.error(f"删除参考语音失败: {e}")
+        # OSError messages carry server paths; keep them in the log only.
         return JSONResponse({
             "success": False,
-            "error": str(e),
+            "error": "参考语音清理失败",
         }, status_code=500)
 
 
