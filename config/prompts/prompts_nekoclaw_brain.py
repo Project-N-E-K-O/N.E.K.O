@@ -1299,8 +1299,6 @@ TASK_AGENT_COMMISSION_CANDIDATES_HEADER = (
     "its arguments. Call one with capability_call, giving its name and arguments that match its schema:"
 )
 
-TASK_AGENT_CHILD_RESULT_TEMPLATE = "[child task agent {name} finished: {status}]\n{text}"
-
 # The excerpt of the main dialogue in the message that opens a commission in
 # a session that holds nothing yet: what she and the user said just before,
 # word for word, one line for each message. The two lines around it are

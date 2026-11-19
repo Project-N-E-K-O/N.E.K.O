@@ -182,8 +182,16 @@ def make_permission_hook(
     session_id: str,
     is_cancelled: Callable[[], bool],
     readable: tuple[Path, ...] = (),
+    withheld: frozenset[str] = frozenset(),
 ) -> BeforeToolCall:
-    """Build the loop's before-tool hook. It returns ``(blocked, reason)``."""
+    """Build the loop's before-tool hook. It returns ``(blocked, reason)``.
+
+    A call of a tool in ``withheld`` is let through without asking
+    anybody: the session was opened without that tool, and what answers
+    the call stands in for it and carries nothing out (it says the tool
+    is not available). Asked about, it would be refused, or put to the
+    user, for something that is not going to be done.
+    """
 
     async def consult(payload: dict[str, Any]) -> dict[str, Any] | None:
         task = asyncio.ensure_future(host.call(session_id, "decide_permission", payload))
@@ -200,6 +208,8 @@ def make_permission_hook(
                 await asyncio.gather(task, return_exceptions=True)
 
     async def before_tool_call(call: ToolCall) -> tuple[bool, str | None]:
+        if call.name in withheld:
+            return False, None
         request = classify(call.name, call.arguments, workdir, readable=readable)
         if request.category == "other":
             return False, None
