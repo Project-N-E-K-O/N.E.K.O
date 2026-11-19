@@ -148,7 +148,11 @@ async def test_symlink_back_to_root_is_rejected(export_root, tmp_path, call):
 
 @_ROUTES
 async def test_other_drive_is_403_not_500(export_root, tmp_path, monkeypatch, call):
-    """On Windows ``commonpath`` raises ValueError across drives; that must stay a 403."""
+    """On Windows ``commonpath`` raises ValueError across drives; that must stay a 403.
+
+    This is a simulation (CI runs this on Linux): it proves the routes no
+    longer depend on ``commonpath``, not real Windows drive handling.
+    """
     def _cross_drive(_paths):
         raise ValueError("Paths don't have the same drive")
 
