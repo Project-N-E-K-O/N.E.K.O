@@ -331,16 +331,14 @@ async def test_query_memory_maps_other_errors_to_upstream_error(
     assert exc_info.value.details == {"upstream_status": 422}
 
 
-@pytest.mark.plugin_unit
-@pytest.mark.asyncio
-async def test_query_memory_whole_call_shares_one_deadline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A step that never answers is ended by the call's own deadline.
+def _install_stalling_transport(
+    monkeypatch: pytest.MonkeyPatch, *, stall_prefix: str,
+) -> list[str]:
+    """Answer normally, except requests under ``stall_prefix`` never answer.
 
-    The locale lookup is held on an Event nobody sets, and MockTransport
-    applies no per-request timeout, so the shared deadline is the only way
-    the wait can end. Asserts state and order, never elapsed time.
+    The stalled request waits on an Event nobody sets, and MockTransport
+    applies no per-request timeout, so only the service's own limits can end
+    the wait. Tests built on this assert state and order, never elapsed time.
     """
     httpx_module = load_httpx()
     real_client = httpx_module.AsyncClient
@@ -349,10 +347,11 @@ async def test_query_memory_whole_call_shares_one_deadline(
 
     async def handler(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
+        if request.url.path.startswith(stall_prefix):
+            await never.wait()
         if request.url.path.startswith("/query_memory/"):
             return httpx.Response(200, json={"results": [_hit("Likes green tea")]})
-        await never.wait()
-        return httpx.Response(200, json={"effective_language": "en"})
+        return httpx.Response(200, json={"effective_language": "zh"})
 
     def _client(**kwargs):
         kwargs.pop("proxy", None)
@@ -360,6 +359,37 @@ async def test_query_memory_whole_call_shares_one_deadline(
         return real_client(transport=httpx_module.MockTransport(handler), **kwargs)
 
     monkeypatch.setattr(httpx_module, "AsyncClient", _client)
+    return paths
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_keeps_hits_when_locale_lookup_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled locale lookup ends on its own limit, inside the deadline.
+
+    The hits already recalled are rendered in the default locale instead of
+    the whole call running into the deadline and returning nothing.
+    """
+    paths = _install_stalling_transport(monkeypatch, stall_prefix="/prompt-locale/")
+
+    result = await module.MemoryQueryService().query_memory(
+        lanlan_name="Neko", query="tea", timeout=0.5
+    )
+
+    assert paths == ["/query_memory/Neko", "/prompt-locale/Neko"]
+    assert "Likes green tea" in result["result"]
+    # Default locale, not the "zh" the stalled lookup would have returned.
+    assert result["result"].startswith("Found 1 relevant memories:")
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_stalled_recall_is_ended_by_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _install_stalling_transport(monkeypatch, stall_prefix="/query_memory/")
 
     with pytest.raises(ServerDomainError) as exc_info:
         await module.MemoryQueryService().query_memory(
@@ -368,7 +398,13 @@ async def test_query_memory_whole_call_shares_one_deadline(
 
     assert exc_info.value.code == "MEMORY_QUERY_TIMEOUT"
     assert exc_info.value.status_code == 504
-    assert paths == ["/query_memory/Neko", "/prompt-locale/Neko"]
+    assert paths == ["/query_memory/Neko"]
+
+
+@pytest.mark.plugin_unit
+def test_locale_lookup_keeps_time_for_rendering() -> None:
+    assert module._locale_lookup_seconds(2.0) == pytest.approx(1.0)
+    assert module._locale_lookup_seconds(-1.0) == 0.0
 
 
 @pytest.mark.plugin_unit

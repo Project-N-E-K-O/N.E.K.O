@@ -14,6 +14,7 @@ logger = get_logger("server.application.messages.memory_query")
 DEFAULT_TIMEOUT_SECONDS = 5.0
 MAX_TIMEOUT_SECONDS = 60.0
 DEADLINE_REPLY_MARGIN_SECONDS = 0.25
+LOCALE_LOOKUP_SHARE = 0.5
 
 
 def _coerce_timeout(value: object) -> float:
@@ -147,19 +148,36 @@ def _deadline_seconds(timeout: float) -> float:
     return timeout - min(DEADLINE_REPLY_MARGIN_SECONDS, timeout * 0.1)
 
 
-async def _fetch_render_language(client, httpx, *, lanlan_name: str) -> object:
+def _locale_lookup_seconds(remaining: float) -> float:
+    """Time the locale lookup may take out of what is left of the deadline.
+
+    The lookup gets its own, shorter limit so a stalled lookup ends while
+    there is still time to render the hits already in hand; the rest of the
+    remaining time is kept for rendering and the reply.
+    """
+    return max(0.0, remaining * LOCALE_LOOKUP_SHARE)
+
+
+async def _fetch_render_language(
+    client, httpx, *, lanlan_name: str, timeout: float,
+) -> object:
     """Read the memory server's resolved locale for rendering, failing soft.
 
-    The recall has already succeeded when this runs. A locale lookup failure
-    must not throw those hits away, mirroring the memory server's own resolver,
-    which degrades instead of failing on an unreadable locale sidecar. ``None``
-    renders with the memory-prompt default locale.
+    The recall has already succeeded when this runs. A locale lookup failure,
+    including running out of its own ``timeout``, must not throw those hits
+    away, mirroring the memory server's own resolver, which degrades instead
+    of failing on an unreadable locale sidecar. ``None`` renders with the
+    memory-prompt default locale.
     """
     try:
-        response = await client.get(_build_prompt_locale_url(lanlan_name=lanlan_name))
+        # Only this inner limit is turned into a fallback. If the caller's
+        # overall deadline fires instead, the task is cancelled and that
+        # surfaces as the call's own timeout, not as a locale fallback.
+        async with asyncio.timeout(timeout):
+            response = await client.get(_build_prompt_locale_url(lanlan_name=lanlan_name))
         response.raise_for_status()
         payload = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
+    except (httpx.HTTPError, ValueError, TimeoutError) as exc:
         logger.warning(
             "query_memory locale lookup failed, rendering with default locale: lanlan_name={}, err_type={}",
             lanlan_name,
@@ -207,7 +225,8 @@ class MemoryQueryService:
             # their sum can outlive the caller's timeout, and the work keeps
             # running after the plugin has already given up on it.
             deadline = _deadline_seconds(normalized_timeout)
-            async with asyncio.timeout(deadline):
+            loop = asyncio.get_running_loop()
+            async with asyncio.timeout(deadline) as call_scope:
                 # Recall is expensive on the memory server (query embedding
                 # plus a full candidate scan). Share the cap MemoryClient.search
                 # uses, so this entry point is not an unthrottled bypass of it;
@@ -223,8 +242,12 @@ class MemoryQueryService:
                         results = _extract_results(_decode_upstream_json(response))
                         if not results:
                             return {"result": ""}
+                        remaining = call_scope.when() - loop.time()
                         lang = await _fetch_render_language(
-                            client, httpx, lanlan_name=normalized_lanlan_name,
+                            client,
+                            httpx,
+                            lanlan_name=normalized_lanlan_name,
+                            timeout=_locale_lookup_seconds(remaining),
                         )
                 text = await asyncio.to_thread(_render_results, results, lang)
             return {"result": text}
