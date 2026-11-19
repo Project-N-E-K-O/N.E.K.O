@@ -53,7 +53,16 @@ def _read_uss_mb(ps_process: object) -> float | None:
     """
     try:
         full_info = ps_process.memory_full_info()
-    except (psutil.NoSuchProcess, psutil.AccessDenied, AttributeError, NotImplementedError):
+    except (
+        psutil.NoSuchProcess,
+        psutil.AccessDenied,
+        AttributeError,
+        NotImplementedError,
+        # procfs entries can vanish mid-read, and psutil may let the raw
+        # FileNotFoundError escape instead of translating it. Catching OSError
+        # keeps that case from voiding the whole sample as well.
+        OSError,
+    ):
         return None
     uss = getattr(full_info, "uss", None)
     if uss is None:

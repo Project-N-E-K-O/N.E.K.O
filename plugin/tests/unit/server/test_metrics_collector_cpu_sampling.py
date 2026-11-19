@@ -192,7 +192,9 @@ def test_uss_missing_from_full_info_is_none(
 
 
 @pytest.mark.plugin_unit
-@pytest.mark.parametrize("error_kind", ["no_such_process", "not_implemented", "missing_attribute"])
+@pytest.mark.parametrize(
+    "error_kind", ["no_such_process", "not_implemented", "missing_attribute", "file_not_found"]
+)
 def test_uss_read_errors_degrade_to_none(
     fake_psutil: type[_FakePsProcess], monkeypatch: pytest.MonkeyPatch, error_kind: str
 ) -> None:
@@ -202,11 +204,17 @@ def test_uss_read_errors_degrade_to_none(
     def _unsupported(self: _FakePsProcess) -> SimpleNamespace:
         raise NotImplementedError
 
+    def _vanished(self: _FakePsProcess) -> SimpleNamespace:
+        # procfs files can disappear between the open and the read.
+        raise FileNotFoundError("/proc/1001/smaps")
+
     if error_kind == "missing_attribute":
         # Older/limited platforms may not expose memory_full_info at all.
         monkeypatch.delattr(_FakePsProcess, "memory_full_info")
     elif error_kind == "not_implemented":
         monkeypatch.setattr(_FakePsProcess, "memory_full_info", _unsupported)
+    elif error_kind == "file_not_found":
+        monkeypatch.setattr(_FakePsProcess, "memory_full_info", _vanished)
     else:
         monkeypatch.setattr(_FakePsProcess, "memory_full_info", _gone)
     collector = module.MetricsCollector()
