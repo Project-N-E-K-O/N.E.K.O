@@ -29,6 +29,7 @@ from plugin.core.registry import (
     _check_plugin_dependency,
     _find_missing_python_requirements,
     _effective_entries,
+    _manifest_only_entry_ids,
     _overlay_entry_declaration,
     _parse_plugin_dependencies,
     _resolve_plugin_id_conflict,
@@ -340,14 +341,13 @@ def _read_packaged_isolated_metadata(
     # Artifacts built before router entries were registered on the host list
     # those entries without handlers; reusing one would bring that gap back
     # (#3066). The digest gate above already pinned the effective entries
-    # table to the packaged one, so manifest-only ids are the only legitimate
-    # handler-less entries.
+    # table to the packaged one, so an entry a manifest row alone produced is
+    # the only legitimate handler-less entry. A manifest row overriding a
+    # router entry does not exempt it.
     unbacked = packaged_entries_without_handlers(
         packaged,
-        (
-            str(entry.get("id") or "") if isinstance(entry, Mapping) else str(entry)
-            for entry in _effective_entries(conf_dict, pdata_dict)
-        ),
+        plugin_id,
+        _manifest_only_entry_ids(plugin_id, packaged.entries, conf_dict, pdata_dict),
     )
     if unbacked:
         logger.info(

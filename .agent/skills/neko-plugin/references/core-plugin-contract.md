@@ -262,7 +262,10 @@ class MyPlugin(NekoPluginBase):
   not apply a router `prefix`, so routers listed this way should not use
   `prefix`: write the namespace into the entry ids instead.
 - Router entries listed in `__routers__` get host handlers like main-class
-  entries, so `[[entries]]` overrides in `plugin.toml` apply to them too. A
+  entries, so `[[entries]]` overrides in `plugin.toml` apply to them too.
+  A `timeout` override is fully honored only when it shortens the decorator's:
+  the plugin process still enforces the decorator `timeout` as an upper bound,
+  so raising 30 s to 60 s in the manifest does not let the call run 60 s. A
   package built by an older `neko-plugin build` may list router entries
   without handlers; the host then rescans the plugin on every start. Rebuild
   it with `neko-plugin build`.

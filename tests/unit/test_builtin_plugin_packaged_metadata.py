@@ -193,6 +193,7 @@ def test_builtin_plugin_packaged_metadata_backs_every_entry_with_a_handler():
 
     To fix a failure, rebuild the plugin as described in the module docstring.
     """
+    from plugin.core.registry import _manifest_only_entry_ids
     from plugin.server.infrastructure.packaged_metadata import (
         PackagedPluginMetadata,
         packaged_entries_without_handlers,
@@ -205,13 +206,13 @@ def test_builtin_plugin_packaged_metadata_backs_every_entry_with_a_handler():
             continue
         raw = json.loads(meta_path.read_text(encoding="utf-8"))
         manifest = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
-        configured = [
-            str(entry.get("id") or "") if isinstance(entry, dict) else str(entry)
-            for entry in manifest.get("entries") or []
-        ]
+        pdata = manifest.get("plugin") if isinstance(manifest.get("plugin"), dict) else {}
+        plugin_id = str(pdata.get("id") or plugin_dir.name)
+        # Same entry-table selection and exemption the start path applies.
         missing = packaged_entries_without_handlers(
             PackagedPluginMetadata(entries=raw["entries"], handlers=raw["handlers"]),
-            configured,
+            plugin_id,
+            _manifest_only_entry_ids(plugin_id, raw["entries"], manifest, pdata),
         )
         if missing:
             unbacked[plugin_dir.name] = missing

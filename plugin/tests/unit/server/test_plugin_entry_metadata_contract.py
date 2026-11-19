@@ -1049,6 +1049,57 @@ def test_packaged_metadata_without_router_handlers_is_not_reused(
     assert load() is None
 
 
+@pytest.mark.parametrize("row", ['timeout=100', 'name="Slow"\ntimeout=100'])
+@pytest.mark.parametrize("in_plugin_table", [False, True])
+def test_a_manifest_override_does_not_exempt_a_router_entry_missing_its_handler(
+    tmp_path: Path, isolated_registry, in_plugin_table, row
+):
+    """Overriding ``slow`` in ``[[entries]]`` does not make it manifest-only: a stale artifact still rescans."""
+    from plugin.server.application.plugins.lifecycle_service import (
+        _read_packaged_isolated_metadata,
+    )
+    from plugin.server.infrastructure import packaged_metadata
+
+    table = "[[plugin.entries]]" if in_plugin_table else "[[entries]]"
+    plugin_dir = tmp_path / "contract"
+    payload = _write_router_package(plugin_dir, f'{table}\nid="slow"\n{row}\n')
+    assert payload["handlers"]["contract.slow"]["timeout"] == 100
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    config = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
+
+    def load():
+        return _read_packaged_isolated_metadata(
+            plugin_dir / "plugin.toml", "contract", conf=config, pdata=config["plugin"]
+        )
+
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load() is not None
+    stale = copy.deepcopy(payload)
+    for key in ("contract.slow", "contract:plugin_entry:slow"):
+        del stale["handlers"][key]
+    meta_path.write_text(json.dumps(stale), encoding="utf-8")
+    assert load() is None
+
+
+def test_only_keys_runs_looks_up_count_as_entry_handlers():
+    """A plugin-entry record under another event key is not what ``/runs`` finds."""
+    from plugin.server.infrastructure.packaged_metadata import (
+        PackagedPluginMetadata,
+        packaged_entries_without_handlers,
+    )
+
+    entries = [{"id": "slow", "event_type": "plugin_entry"}]
+    record = {"event_type": "plugin_entry", "id": "slow"}
+    for key, expected in (
+        ("contract.slow", []),
+        ("contract:plugin_entry:slow", []),
+        ("contract:message:slow", ["slow"]),
+        ("other.slow", ["slow"]),
+    ):
+        packaged = PackagedPluginMetadata(entries=entries, handlers={key: record})
+        assert packaged_entries_without_handlers(packaged, "contract") == expected, key
+
+
 def test_manifest_only_entries_do_not_refuse_packaged_metadata(tmp_path: Path, isolated_registry):
     """A manifest entry with no decorator behind it never gets a handler; that alone is not staleness."""
     from plugin.server.application.plugins.lifecycle_service import (
