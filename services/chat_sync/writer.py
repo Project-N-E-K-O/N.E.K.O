@@ -60,6 +60,8 @@ def _reset_file_locks_after_fork():
             _FORK_RESET_FAILURES.append((type(exc).__name__, message))
 
 
+# Only locks are rebuilt, not module state: fork children that may inherit it mid-update (plugin
+# processes) never import this module, as tests/unit/test_plugin_does_not_import_fork_unsafe_state.py checks.
 if hasattr(os, 'register_at_fork'):
     os.register_at_fork(after_in_child=_reset_file_locks_after_fork)
 
