@@ -2076,7 +2076,7 @@ async def test_a_line_put_right_as_the_entry_was_saved_is_put_right_again(world,
     line_put_right = space_module._line_put_right
     saved: list[bool] = []
 
-    def saved_meanwhile(*args: Any) -> str:
+    def saved_meanwhile(*args: Any) -> Any:
         if not saved:
             # Saved by the user after the host read it, before the line is written.
             saved.append(True)
@@ -2164,7 +2164,7 @@ async def test_a_description_the_user_put_into_the_line_is_not_taken_for_the_hos
     line_put_right = space_module._line_put_right
     saved: list[bool] = []
 
-    def saved_meanwhile(*args: Any) -> str:
+    def saved_meanwhile(*args: Any) -> Any:
         if not saved:
             # Saved again by the user, after the host read it.
             saved.append(True)
@@ -2260,7 +2260,7 @@ async def test_a_line_the_user_added_is_not_added_again_once_they_took_it_out(wo
     line_put_right = space_module._line_put_right
     saved: list[bool] = []
 
-    def saved_meanwhile(*args: Any) -> str:
+    def saved_meanwhile(*args: Any) -> Any:
         if not saved:
             # Saved by the user after the host read it: left for a later round.
             saved.append(True)
@@ -2275,3 +2275,42 @@ async def test_a_line_the_user_added_is_not_added_again_once_they_took_it_out(wo
     await world.space.settle_tidied(None)
 
     assert f"memory/{one}.md" not in await world.space.read_index(None)
+
+
+async def test_a_title_taken_back_leaves_the_users_description_theirs(world, monkeypatch):
+    one = await world.active("Tests", "Run them in parallel: pytest with -n 4.")
+    await world.active("Testing", "Tests need DISPLAY set.")
+    path = world.memory() / f"{one}.md"
+    index = world.memory().parent / "MEMORY.md"
+    # The user wrote the entry's description and its line the same way; a
+    # title tidying put into the line was not taken out.
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "description: Run them in parallel: pytest with -n 4.", "description: mine: -n 4"
+        ),
+        encoding="utf-8",
+    )
+    text = index.read_text(encoding="utf-8")
+    line = next(item for item in text.split("\n") if f"memory/{one}.md" in item)
+    index.write_text(text.replace(line, f"- [Tests in parallel](memory/{one}.md) — mine: -n 4"), encoding="utf-8")
+    world.space._relines[(None, one)] = _LineToPut(titled={"Tests in parallel": ("Tests", "Tests")})
+    from nekoclaw.host import space as space_module
+
+    line_put_right = space_module._line_put_right
+    saved: list[bool] = []
+
+    def saved_meanwhile(*args: Any) -> Any:
+        if not saved:
+            # Saved by the user after the host read it: left for a later round.
+            saved.append(True)
+            path.write_text(path.read_text(encoding="utf-8").replace("description: mine: -n 4", "description: Back to -n 2."), encoding="utf-8")
+        return line_put_right(*args)
+
+    monkeypatch.setattr(space_module, "_line_put_right", saved_meanwhile)
+    await world.space.settle_tidied(None)
+    assert saved
+    assert f"- [Tests](memory/{one}.md) — mine: -n 4" in await world.space.read_index(None)
+
+    await world.space.settle_tidied(None)
+
+    assert f"- [Tests](memory/{one}.md) — mine: -n 4" in await world.space.read_index(None)

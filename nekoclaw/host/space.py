@@ -1949,16 +1949,17 @@ def _link_title(line: str) -> str | None:
     return line[opening + 1 : link] if link >= 0 and opening >= 0 else None
 
 
-def _line_put_right(line: str, target: str, title: str, described: str, put: _LineToPut) -> str:
+def _line_put_right(line: str, target: str, title: str, described: str, put: _LineToPut) -> tuple[str, bool]:
     """Return a line of an index that links ``target`` as it is to be by ``put``, for an entry of ``title`` and ``described``.
 
-    Only what the host wrote is changed: a description the user wrote, or a
-    title the user gave, stays.
+    And whether the description in it is the host's: one the user wrote,
+    or a title the user gave, stays as it is.
     """
     shown = _link_title(line)
     if shown is None:
-        return line
-    if any(line == _index_line(shown, target, item) for item in put.described):
+        return line, False
+    hosts = any(line == _index_line(shown, target, item) for item in put.described)
+    if hosts:
         line = _index_line(shown, target, described)
     called = shown
     # Put in by tidying, while the entry is still called what it was; one
@@ -1971,7 +1972,7 @@ def _line_put_right(line: str, target: str, title: str, described: str, put: _Li
     if called != shown:
         link = line.find("](")
         line = line[: line.rfind("[", 0, link) + 1] + called + line[link:]
-    return line
+    return line, hosts
 
 
 def _a_relative_time(words: str) -> bool:
@@ -5415,8 +5416,8 @@ class TaskAgentSpace:
         target = f"{paths.MEMORY_DIR}/{entry_id}.md"
         marks = _index_marks(target)
 
-        # Of each text a try made: whether it changed the line, and whether
-        # it added it.
+        # Of each text a try made: whether it put the description into the
+        # line, and whether it added it.
         tried: dict[str, tuple[bool, bool]] = {}
 
         def change(index_text: str) -> str:
@@ -5426,9 +5427,11 @@ class TaskAgentSpace:
                     # It has a line, whoever added it: one the user takes
                     # out from here on is not added again.
                     put.missing = False
-                    lines[number] = _line_put_right(item, target, title, described, put)
+                    lines[number], hosts = _line_put_right(item, target, title, described, put)
                     result = "\n".join(lines)
-                    tried[result] = (lines[number] != item, False)
+                    # Only a description it put: a title taken back leaves
+                    # the user's description theirs.
+                    tried[result] = (hosts, False)
                     return result
             if put.missing:
                 result = _lines_as_text(_with_line_first(lines, _index_line(title, target, described)))
@@ -5439,8 +5442,8 @@ class TaskAgentSpace:
         def wrote(index_text: str) -> None:
             # Told as it is written, whatever becomes of the tries after it:
             # what the host put into the line is the host's from here on.
-            changed, added = tried[index_text]
-            if changed:
+            put_description, added = tried[index_text]
+            if put_description:
                 put.described.add(described)
             if added:
                 put.missing = False
