@@ -38,7 +38,7 @@ export function HistoryDialog({ close }: { close: () => void }) {
   });
   const [searchRevision, setSearchRevision] = useState(0);
   const [anchor, setAnchor] = useState<number | null>(null);
-  const contextTrigger = useRef<HTMLButtonElement | null>(null);
+  const contextTargetId = useRef<number | null>(null);
   const restoreContextFocus = useRef(false);
   const [page, setPage] = useState<Page | null>(null);
   const [busy, setBusy] = useState(false);
@@ -104,10 +104,12 @@ export function HistoryDialog({ close }: { close: () => void }) {
       dialog.current?.querySelector<HTMLButtonElement>('.history-back')?.focus();
     } else if (restoreContextFocus.current) {
       restoreContextFocus.current = false;
-      const trigger = contextTrigger.current;
-      if (trigger?.isConnected && !trigger.closest('[hidden]')) trigger.focus();
+      const target = contextTargetId.current === null ? null : dialog.current?.querySelector<HTMLButtonElement>(
+        `.history-results:not([hidden]) [data-history-id="${contextTargetId.current}"] .history-context-button`
+      );
+      if (target) target.focus();
       else dialog.current?.querySelector<HTMLElement>('form select')?.focus();
-      contextTrigger.current = null;
+      contextTargetId.current = null;
     }
   }, [anchor]);
   useEffect(() => {
@@ -156,7 +158,7 @@ export function HistoryDialog({ close }: { close: () => void }) {
         <VoiceReplayIcon playing={playbackActive && playback.current?.id === entry.id} />
       </button>
     </span>}
-    {anchor === null && <button onClick={event => { contextTrigger.current = event.currentTarget; restoreContextFocus.current = false; setAnchor(entry.id); }}>{t('context')}</button>}
+    {anchor === null && <button className="history-context-button" onClick={() => { contextTargetId.current = entry.id; restoreContextFocus.current = false; setAnchor(entry.id); }}>{t('context')}</button>}
   </article>;
   return <dialog ref={dialog} className="history-dialog neko-dialog-overlay" data-compact-geometry-owner="surface" data-compact-geometry-item="chatHistoryDialog" data-compact-no-drag="true" aria-labelledby="history-title" onCancel={close} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation(); }}>
     <header><div><h2 id="history-title">{t('title')}</h2><p>{t('description')}</p></div><button onClick={close} aria-label={t('close')}>×</button></header>
