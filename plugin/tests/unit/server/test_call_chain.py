@@ -238,7 +238,8 @@ def test_audit_close_is_bounded_when_the_disk_is_stuck(gate, monkeypatch):
 def test_a_close_issued_before_a_restart_leaves_the_new_run_open(gate):
     stale = call_audit.generation()
     call_audit.reopen()  # restart wins the race against the old shutdown's close
-    assert call_audit.close(0.1, stale) is True
+    closed = call_audit.close(0.1, stale)
+    assert closed is True
     call_audit.record({"kind": "forward", "n": "after"})
     assert call_audit._listener is not None and not call_audit._closed
 
