@@ -2030,6 +2030,37 @@ def test_check_leaves_a_linked_skill_snapshot_to_its_owner(
     assert "agent kit snapshot" not in captured.out
 
 
+def test_agent_kit_guards_treat_a_windows_junction_as_a_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "junction_kit")
+    # A junction is a real directory to is_symlink() on Python 3.11; only
+    # readlink reveals it, so fake readlink for this one directory.
+    junction = plugin_dir / ".agents" / "skills"
+    (junction / "neko-plugin").mkdir(parents=True)
+    shared_skill = junction / "neko-plugin" / "SKILL.md"
+    shared_skill.write_text("# unstamped shared skill\n", encoding="utf-8")
+    real_readlink = os.readlink
+
+    def readlink(path, *args, **kwargs):
+        if Path(path) == junction:
+            return str(tmp_path / "shared-skills")
+        return real_readlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "readlink", readlink)
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
+
+    setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+    assert shared_skill.read_text(encoding="utf-8") == "# unstamped shared skill\n"
+    assert sorted(path.name for path in (junction / "neko-plugin").iterdir()) == ["SKILL.md"]
+    assert (plugin_dir / "AGENTS.md").is_file()
+
+
 def test_check_ignores_an_agent_kit_it_cannot_inspect(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

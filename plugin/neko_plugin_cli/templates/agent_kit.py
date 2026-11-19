@@ -19,6 +19,7 @@ stay self-contained without a second maintained skills directory.
 
 from __future__ import annotations
 
+import os
 import re
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -155,12 +156,27 @@ def snapshot_cli_version(skill_entry: str) -> str | None:
     return comment.group(1) if comment else None
 
 
+def _is_link(path: Path) -> bool:
+    """Symlink, or a Windows junction (which is_symlink() misses on 3.11).
+
+    Same check as commands/deps_cmd._is_link; templates do not import commands.
+    """
+    if path.is_symlink():
+        return True
+    try:
+        os.readlink(path)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def passes_through_symlink(root: Path, relative: Path) -> bool:
-    """Whether root/relative, or any directory between root and it, is a link."""
+    """Whether root/relative, or any directory between root and it, is a link
+    (symlink or Windows junction)."""
     current = root
     for part in relative.parts:
         current = current / part
-        if current.is_symlink():
+        if _is_link(current):
             return True
     return False
 
