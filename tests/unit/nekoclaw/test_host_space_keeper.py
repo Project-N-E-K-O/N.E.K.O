@@ -3119,6 +3119,40 @@ async def test_a_global_entry_of_a_review_waits_whatever_file_it_gives(world, tm
     assert "(memory/use-argparse.md)" in await world.space.read_index()
 
 
+async def test_a_global_entry_of_a_review_does_not_take_effect_by_files_with_what_a_pending_entry_says(
+    world, tmp_path, judged
+):
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {
+            "review": "It sorted the photos.",
+            "entries": [
+                {"title": "Use argparse", "scope": "global", "content": "Give scripts their options with argparse.", "evidence": ["src/dates.py"]}
+            ],
+        }
+    ]
+    commission = await world.file(workdir=str(folder))
+    await world.work(commission.id)
+    # The task agent saw it, and gave no file: it waits.
+    lesson = {
+        "title": "Use argparse",
+        "content": "Give scripts their options with argparse.",
+        "category": "lesson",
+        "scope": "global",
+        "confidence": "observed",
+    }
+    assert (await world.space.submit(await world.ledger.get(commission.id), lesson)).startswith("not in effect yet")
+
+    await world.end(commission.id)
+
+    # The review of the same commission gives a file of the project. Seen as the task agent says, it
+    # is still a file of one project: the entry waits, with the file on record.
+    (held,) = await world.space.list_entries()
+    assert (held.id, held.status, held.seen_by) == ("use-argparse", "pending", (commission.id,))
+    assert held.evidence == ((folder / "src" / "dates.py").as_posix(),)
+    assert "use-argparse" not in await world.space.read_index()
+
+
 async def test_an_entry_of_a_summary_for_the_archive_is_cut_and_rests_on_the_files_it_gives(world, tmp_path, judged):
     from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS, TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS
     from utils.tokenize import count_tokens

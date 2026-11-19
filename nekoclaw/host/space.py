@@ -332,6 +332,13 @@ class _Note:
     # the day it was first filed and the day it was last filed. It has
     # waited that long, not since it was brought along.
     waited: tuple[str, str] | None = None
+    # Whether files may have it take effect. Not for a global entry a
+    # review or a summary made: the files of one project do not show
+    # that it holds for every project. Told apart from how it is known,
+    # which a pending entry of its text adds to (``_stronger``): seen by
+    # the task agent, with a file from the review, it is still the files
+    # of one project.
+    files_vouch: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -3104,7 +3111,9 @@ class TaskAgentSpace:
         settled = same is not None and has_text and same.status == ENTRY_ACTIVE
         # In effect by what it says of itself, whoever files it.
         vouched = known.confidence == VERIFIED or (
-            known.confidence == OBSERVED and any(path not in known.untold for path in known.evidence)
+            note.files_vouch
+            and known.confidence == OBSERVED
+            and any(path not in known.untold for path in known.evidence)
         )
 
         # Whether it is in effect by its files and nothing else. Asked
@@ -3674,6 +3683,7 @@ class TaskAgentSpace:
                     untold=tuple(untold),
                     observer=observer,
                 ),
+                files_vouch=project is not None,
             )
             return self._take_note(project, note, allowed=allowed)
 
