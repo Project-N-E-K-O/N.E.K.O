@@ -65,7 +65,8 @@
         {% if model_workshop_enabled | default(false) %}
         <!-- Main renders this local-only panel together with the N3 router and body guard. -->
         <details id="model-workshop-panel" class="model-workshop-panel">
-            <summary data-i18n="modelWorkshop.title"></summary>
+            <!-- Keep the native disclosure while reusing the manager's existing import artwork. -->
+            <summary><img src="/static/icons/import_model_button_icon.png?v=1" alt="" aria-hidden="true" draggable="false"><span data-i18n="modelWorkshop.title"></span></summary>
             <p data-i18n="modelWorkshop.help"></p>
             <label for="model-workshop-file" data-i18n="modelWorkshop.fileLabel"></label>
             <input id="model-workshop-file" data-workshop="file" type="file" accept=".neko-model.zip">
