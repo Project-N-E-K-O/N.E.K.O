@@ -1001,6 +1001,10 @@ class TaskAgentManager:
         # (``hold_files``), or it would be made of a record that is going,
         # and kept when the session it came from starts over.
         self._copying_from: dict[str, int] = {}
+        # Held from when the name of the commission a question is filed as
+        # is chosen until it is filed (``_cb_session_ask``): two questions
+        # asked at once are not given the same name.
+        self._naming_questions = asyncio.Lock()
         # Copies whose making was given up (the runtime took too long,
         # whoever asked for it left, the host shuts down), each with the
         # directory it was to be written into.
@@ -3231,14 +3235,14 @@ class TaskAgentManager:
         await self._close_session(session)
 
     @staticmethod
-    async def _looked(look: Callable[[], Awaitable[Any]]) -> Any:
+    async def _looked(look: Callable[[], Awaitable[Any]], *, what: str = "at the end of a run") -> Any:
         """Read the ledger for what the end of a run means, asking again after a failure before giving up.
 
         The end of a run comes once. Given up on at the first failure to
         read, its commission would stay at work with nobody at it; the
         ledger is asked a few more times, a short while apart
         (``REST_LOOK_RETRY_DELAYS``), and only the last failure is the
-        caller's.
+        caller's. ``what`` says in the log what the ledger was read for.
         """
         from config.nekoclaw_settings import REST_LOOK_RETRY_DELAYS
 
@@ -3250,7 +3254,7 @@ class TaskAgentManager:
             except Exception:  # noqa: BLE001 - asked again; the last failure is the caller's
                 if delay is None:
                     raise
-                logger.warning("reading the ledger at the end of a run failed; it is asked again", exc_info=True)
+                logger.warning("reading the ledger %s failed; it is asked again", what, exc_info=True)
                 await asyncio.sleep(delay)
 
     async def _rests(self, session: _Session, commission: Commission, event: dict[str, Any]) -> bool:
@@ -4124,19 +4128,23 @@ class TaskAgentManager:
             )
         try:
             # Asked again a few times where it cannot be read this moment.
-            stands = await self._looked(lambda: self._ledger.get(parent_id))
+            stands = await self._looked(
+                lambda: self._ledger.get(parent_id), what="for whether the parent of a task agent is over"
+            )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - handed on as ever where it cannot be told
-            # Not known to be stopped: handed on. Held back, the result of
-            # one that is at work would be lost, which is worse than a turn
-            # of one that was stopped, which the stop's close cuts short.
+            # Not known to be over: handed on. Held back, the result of one
+            # that is at work would be lost, which is worse than a turn of
+            # one that is over, which the close of its session cuts short.
             stands = None
-        if stands is not None and stands.status == "cancelled":
-            # Stopped: its session is about to be closed, if it is not yet,
-            # and nothing waits for the result any more. Steered in, it would
-            # start a turn of a commission that was stopped. (Nothing is
-            # awaited from here to where it would be handed on.)
+        if stands is not None and stands.status in ENDED_STATUSES:
+            # Over (stopped, or its run ended done, failed or blocked): its
+            # session is about to be closed, if it is not yet, the task
+            # agents it started are stopped, and nothing waits for the
+            # result any more. Steered in, it would start a turn of a
+            # commission that is over. (Nothing is awaited from here to
+            # where it would be handed on.)
             return
         parent = self._sessions.get(parent_id)
         if parent is None:
@@ -6082,28 +6090,33 @@ class TaskAgentManager:
                     await not_asked()
                     return refusals["no_copy"].format(name=target.name, reason=str(exc))
                 copies.append(copy)
-                _lead, members = await self._team(caller.id)
-                taken = {member.name for member in members}
-                number = 1
-                while f"ask-{number}" in taken:
-                    number += 1
-                child, _created = await self._ledger.create(
-                    lanlan_name=caller.lanlan_name,
-                    title=_texts(words.SESSION_ASK_TITLE, caller.lang).format(name=target.name),
-                    dispatch_text=question,
-                    user_text="",
-                    source="ask",
-                    route="task_agent",
-                    parent_id=caller.id,
-                    name=f"ask-{number}",
-                    project=copy.project,
-                    workdir=copy.workdir,
-                    # Worked on in the copy: filed with it, so that it names
-                    # the session it answers for whatever happens next.
-                    session_id=copy.id,
-                    conversation_id=caller.conversation_id,
-                    lang=caller.lang,
-                )
+                async with self._naming_questions:
+                    # Read and filed with no other question named between:
+                    # one asked at once would read the names before this
+                    # one is filed, and take the same.
+                    _lead, members = await self._team(caller.id)
+                    taken = {member.name for member in members}
+                    number = 1
+                    while f"ask-{number}" in taken:
+                        number += 1
+                    child, _created = await self._ledger.create(
+                        lanlan_name=caller.lanlan_name,
+                        title=_texts(words.SESSION_ASK_TITLE, caller.lang).format(name=target.name),
+                        dispatch_text=question,
+                        user_text="",
+                        source="ask",
+                        route="task_agent",
+                        parent_id=caller.id,
+                        name=f"ask-{number}",
+                        project=copy.project,
+                        workdir=copy.workdir,
+                        # Worked on in the copy: filed with it, so that it
+                        # names the session it answers for whatever happens
+                        # next.
+                        session_id=copy.id,
+                        conversation_id=caller.conversation_id,
+                        lang=caller.lang,
+                    )
                 filed.append(child)
                 # As for a task agent it starts (``_cb_subagent_start``):
                 # one that was stopped meanwhile starts nothing.
@@ -6116,14 +6129,21 @@ class TaskAgentManager:
                 await self._ledger.append_event(
                     caller.id, "subagent_started", {"name": child.name, "commission_id": child.id, "asks": target.id}
                 )
-                # (One that finds no free place is failed by ``submit``:
-                # its place was taken while the copy was made. Whoever asked
-                # is told so by this call alone: ``submit`` tells nobody.)
                 if await self.submit(child, wait=False):
                     return ""
+                # Not started, and failed by ``submit``: no place was free
+                # (it was taken while the copy was made), the host is
+                # shutting down, or the copy could not be given to it. Whoever
+                # asked is told why by this call. Of the last it is told by
+                # ``submit`` as well (``_fail``, the way it is told of a
+                # question that fails later on), in the same words.
+                ended = await self._ledger.get(child.id)
                 await self._discard_copy(copy)
                 await not_asked()
-                return refusals["no_place"].format(name=target.name)
+                why = ended.status_reason if ended is not None else ""
+                if not why or why == _NO_PLACE_REASON:
+                    return refusals["no_place"].format(name=target.name)
+                return refusals["not_started"].format(name=target.name, reason=why)
             except BaseException:
                 if filed:
                     try:

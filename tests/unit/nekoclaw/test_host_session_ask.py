@@ -791,6 +791,76 @@ async def test_a_copy_whose_files_cannot_be_removed_is_not_put_on_record_as_clea
     release.set()
 
 
+async def test_a_copy_that_cannot_be_started_is_said_so_and_removed(hosts, tmp_path):
+    # Not for want of a place: the call says why, in the words the asker is told by the answer
+    # ``submit`` hands back, and the copy goes.
+    release, held = _held()
+    scripts = {QUESTION: ScriptedLLM([[say("An answer."), finish()]]), PHOTOS: _photos(), BUILD: held}
+    host = _host(hosts, tmp_path, scripts)
+    photos = await _at_rest(host, scripts)
+    await host.ledger.update_session(photos.session_id, name="photos")
+    asker = await _asker_at_work(host, scripts)
+    manager = host.task_agents
+    give = manager._give_session
+
+    async def cannot_be_given(commission: Any) -> Any:
+        if commission.source == "ask":
+            raise OSError("the runtime is gone")
+        return await give(commission)
+
+    manager._give_session = cannot_be_given
+    told = _steered_into(host, asker.id)
+    with pytest.raises(RuntimeError) as raised:
+        await _ask(host, asker)
+    said = str(raised.value)
+    assert said.startswith('Not asked: the copy of "photos" could not be started') and "the runtime is gone" in said
+    await wait_until(lambda: told, what="the asker being told")
+    [text] = told
+    assert text.startswith('[answer from "photos": failed]') and "the runtime is gone" in text
+    asked = await host.ledger.run(
+        lambda conn: [tuple(row) for row in conn.execute("SELECT kind, status FROM messages WHERE kind = 'ask'")]
+    )
+    assert asked == [("ask", "void")]
+    [child] = await host.ledger.select(parent_id=asker.id)
+    copy = await host.ledger.get_session(child.session_id)
+    assert copy.status == "cleared" and not Path(copy.session_dir).exists()
+    release.set()
+
+
+async def test_two_questions_asked_at_once_are_not_named_alike(hosts, tmp_path):
+    release, held = _held()
+    answers = [[say("An answer."), finish()], [say("Another answer."), finish()]]
+    scripts = {QUESTION: ScriptedLLM(answers), PHOTOS: _photos(), BUILD: held}
+    host = _host(hosts, tmp_path, scripts, max_task_agents=4)
+    photos = await _at_rest(host, scripts)
+    await host.ledger.update_session(photos.session_id, name="photos")
+    asker = await _asker_at_work(host, scripts)
+    manager = host.task_agents
+    fork, team, made, both = manager.fork_session, manager._team, [], asyncio.Event()
+
+    async def made_together(session_id: str, **kwargs: Any) -> Any:
+        # Both copies are made before either question goes on, so that both are named at once.
+        copy = await fork(session_id, **kwargs)
+        made.append(copy)
+        if len(made) == 2:
+            both.set()
+        await asyncio.wait_for(both.wait(), 10)
+        return copy
+
+    async def read_a_while_ago(commission_id: str) -> Any:
+        # What was read is a while old by the time a name is chosen from it.
+        found = await team(commission_id)
+        await asyncio.sleep(0.2)
+        return found
+
+    manager.fork_session = made_together
+    manager._team = read_a_while_ago
+    await asyncio.gather(_ask(host, asker), _ask(host, asker))
+    children = await host.ledger.select(parent_id=asker.id)
+    assert sorted(child.name for child in children) == ["ask-1", "ask-2"]
+    release.set()
+
+
 async def test_what_a_task_agent_hands_back_is_not_steered_into_an_asker_that_was_stopped(hosts, tmp_path):
     # The asker was stopped, and its session is not closed yet: what one of its task agents
     # hands back (a question that failed, say) starts no turn there.
@@ -812,6 +882,27 @@ async def test_what_a_task_agent_hands_back_is_not_steered_into_an_asker_that_wa
     assert asker.id in host.task_agents._sessions
     await host.task_agents._tell_parent(child, "failed", "it went wrong again")
     assert len(told) == 1
+    release.set()
+
+
+@pytest.mark.parametrize("ended", ["done", "failed", "blocked"])
+async def test_what_a_task_agent_hands_back_is_not_steered_into_an_asker_whose_run_is_over(hosts, tmp_path, ended):
+    # Its run ended, and its session is not closed yet: the task agents it started are being
+    # stopped, and what one of them hands back starts no turn there either.
+    release, held = _held()
+    scripts = {PHOTOS: _photos(), BUILD: held}
+    host = _host(hosts, tmp_path, scripts)
+    await _at_rest(host, scripts)
+    asker = await _asker_at_work(host, scripts)
+    child, _created = await host.ledger.create(
+        lanlan_name="Lan", title="part", dispatch_text="part", source="task_agent", route="task_agent",
+        parent_id=asker.id, name="part",
+    )
+    told = _steered_into(host, asker.id)
+    await host.ledger.transition(asker.id, ended, reason="its run ended")
+    assert asker.id in host.task_agents._sessions
+    await host.task_agents._tell_parent(child, "completed", "it is done")
+    assert told == []
     release.set()
 
 

@@ -291,6 +291,7 @@ ASK_REFUSALS = {
     "from_child": "Not asked: you were started by another task agent for one part of its work. Tell that task agent what you need to know (send_message to lead); it asks other sessions.",
     "cleared": 'Not asked: the record of "{name}" was removed, being old. Its results can still be read.',
     "no_place": "Not asked: no task agent place is free for the copy to answer in. Try again later, or use read_session.",
+    "not_started": 'Not asked: the copy of "{name}" could not be started ({reason}). read_session reads what it left.',
     "switched_off": "Not asked: task agents are switched off.",
     "over": "Not asked: this commission is not under way any more.",
 }
