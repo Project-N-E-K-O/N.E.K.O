@@ -191,14 +191,11 @@ class SearchPlugin(NekoPluginBase):
 - **Timeouts**: the decorator `timeout`, the caller's timeout, and the run or
   RPC deadline all apply; the smallest wins. Details and the `<= 0` rules in
   `runtime-model.md`.
-- **Argument binding**: without a params model (`params=Model`, or a single
-  parameter annotated with a Pydantic model, which is inferred as one), a
-  missing required argument raises `TypeError`, and so does an unexpected one
-  unless the handler takes `**_` (which only absorbs extras; give optional
-  arguments defaults). With a params model, the model validates first and
-  ignores unknown keys by default (`extra="allow"` keeps them). The handler
-  still receives raw, unvalidated values for any other parameter it names, and
-  all of them with `**kwargs`: read input from the model.
+- **Argument binding**: give optional arguments defaults and take `**_` so
+  an unexpected argument does not fail the call (a missing required one still
+  does). For validated input use `params=Model` and read values only from the
+  model: anything else the handler receives is raw caller input. Exact
+  binding rules: [Entries & Parameters](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/plugins/entries.md).
 - **Registration**: methods whose name starts with `_` are never entries.
   Entry, timer, and lifecycle ids share one namespace; a duplicate id silently
   replaces the earlier handler.

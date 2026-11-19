@@ -55,9 +55,10 @@ Avoid as far as possible: top-level host packages such as `utils.*`,
   are analysed: `conversations.read`, `memory.read`, `messages.push`. The
   Plugin Manager asks before a manual start when a detected capability is not
   approved yet (for example new in an update), or when the analysis is
-  incomplete or failed for a plugin that was never approved. An approved
-  plugin whose new analysis fails is not asked again, and automatic start skips
-  only plugins the user denied, so a plugin can run before any prompt.
+  incomplete or failed for a plugin that was never approved. For an approved
+  plugin, only a newly detected capability triggers the question: a failed
+  analysis detects none and is not asked again. Automatic start skips only
+  plugins the user denied, so a plugin can run before any prompt.
 - **No compatibility promise.** Only the public facades are kept stable. Host
   internals are renamed and refactored without notice; a plugin importing
   them breaks on an ordinary update.
