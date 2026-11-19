@@ -1,5 +1,8 @@
 # AGENTS.md — {plugin_id}
 
+**This plugin** (author: replace this line): what it does, where its logic
+lives, and what to read before a change (this file, `DESIGN.md`, the module).
+
 This directory is one N.E.K.O plugin: its own Git repository and its editable
 source. `plugin.toml` holds the identity (`[plugin].id`, `[plugin].entry`; never
 rename them). The plugin already exists: do not run `neko-plugin init` again.
@@ -37,6 +40,10 @@ Full reasons: `.agents/skills/neko-plugin/references/execution-boundary.md`.
 
 ## Code Essentials
 
+- Reuse before adding; merge logic once it appears a third time; a
+  replacement deletes the old code (no `_v2`/`_old` copies or switches).
+- A new dependency needs a stated reason, an exact `==` pin, and preferably a
+  release at least 7 days old. Stop and ask before going well past the request.
 - Entries: `@plugin_entry` on `async def`, return `Ok(data)` or `Err(SdkError("..."))`
   (`Err` reaches the caller as a failed call). Validated input:
   `params=Model` (Pydantic). `llm_result_fields=[...]` picks what the
@@ -77,13 +84,15 @@ Details: `.agents/skills/neko-plugin/references/runtime-model.md`.
 {precheck_command}
 ```
 
-Run them in this order before reporting done. `precheck` reruns lint, sync,
-and `check -r` (tests in `tests/`, package build), which is what Market CI
-runs. Ruff is pinned and runs with `--ignore-noqa`, so `# noqa` does not
-silence it: fix the code.
-Outside the checkout's built-in plugin folder, `check -r` and `precheck` fail
-on uncommitted changes in this repository. Do not commit for the user
-unasked; report the actual result.
+While iterating, run `check`; `check -r` adds `tests/` and a package build.
+Before reporting done, run the four lines in order; `precheck` is the Market CI
+gate (lint, `sync --clean`, `check -r`). Outside the checkout's built-in plugin
+folder, `check -r` and `precheck` stop on uncommitted changes before any test
+runs, so they pass only after a commit; inside it they skip Git checks.
+Commit only in this plugin's own repository, never in an enclosing N.E.K.O
+checkout, and never unasked; otherwise report what is still unverified.
+Ruff is pinned and runs with `--ignore-noqa`, so `# noqa` does not silence it:
+fix the code.
 Build a package with `{build_command}`.
 Route B: none of these `neko-plugin` commands run. If `README.md` shows a
 pinned `uvx ruff==...` line, run it: that lint needs only `uv` (its version
