@@ -2543,7 +2543,9 @@
                 try {
                     var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
                         && window.isNekoHomeTutorialProactiveSuppressed() === true;
-                    if (S.proactiveVisionEnabled && !tutorialHoldsVision) {
+                    var speechVisionAllowed = typeof window.canProactiveVisionRunDuringSpeech === 'function'
+                        && window.canProactiveVisionRunDuringSpeech() === true;
+                    if (speechVisionAllowed && !tutorialHoldsVision) {
                         if (typeof window.acquireProactiveVisionStream === 'function') {
                             await window.acquireProactiveVisionStream();
                         }
