@@ -134,9 +134,10 @@ anything itself; `neko-plugin sync <plugin> --clean` fills `vendor/` from
 workflow) and is ignored by Git. The Market rejects repositories and packages
 containing binary files (`.so`, `.pyd`, `.dll`, `.exe`, archives, wheels, ...)
 or files over 2 MiB; common media, font, and model assets (images, audio,
-`.onnx`, ...) are exempt from the size limit only. Prefer pure-Python dependencies; a dependency
-that ships compiled modules cannot be published through the Market
-(`dependencies-and-market.md`).
+`.onnx`, ...) are exempt from the size limit only. Prefer pure-Python dependencies: the release
+workflow builds `vendor/` on Linux, so compiled modules would not load on
+Windows or macOS, and binaries are on the Market's reject list (its scan is
+paused today but can resume; `dependencies-and-market.md`).
 
 ### 10. Do not use `eval`/`exec`/`pickle`/`shell=True`/`verify=False`
 

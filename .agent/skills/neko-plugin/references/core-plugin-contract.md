@@ -164,7 +164,8 @@ class SearchPlugin(NekoPluginBase):
 - **`async def`**: the host rejects a sync handler when it is called.
 - **`params=Model`**: the host validates input with the model and passes the
   instance as `params` (or as the single parameter annotated with the model).
-  Invalid input fails the call before your code runs. `params` and
+  Invalid input fails the call before your code runs (unless the entry sets
+  `model_validate=False`, which passes raw arguments). `params` and
   `input_schema` are mutually exclusive; a bare `input_schema` mapping is only
   published, not validated.
 - **`_ctx`**: the host injects call context (`lanlan_name`, `run_id`,
@@ -192,8 +193,8 @@ class SearchPlugin(NekoPluginBase):
   RPC deadline all apply; the smallest wins. Details and the `<= 0` rules in
   `runtime-model.md`.
 - **Argument binding**: give optional arguments defaults and take `**_` so
-  an unexpected argument does not fail the call (a missing required one still
-  does). For validated input use `params=Model` and read values only from the
+  the handler tolerates unexpected arguments (a missing required one still
+  fails the call). For validated input use `params=Model` and read values only from the
   model: anything else the handler receives is raw caller input. Exact
   binding rules: [Entries & Parameters](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/plugins/entries.md).
 - **Registration**: methods whose name starts with `_` are never entries.
