@@ -112,6 +112,8 @@ class LifeKitPlugin(NekoPluginBase):
 
 `self.include_router()` 绑定 router，并把其中的入口点注册到当前插件下，使它们可以运行。`__routers__` 类属性同样必须写：宿主不实例化插件就从插件类读取入口元数据，而且只扫描 `__routers__` 里列出的 router 类。只传给 `include_router()` 的 router 仍然能运行，但它的入口不在这次静态扫描里：插件管理面板和 Agent 的入口列表里都看不到它们（`include_router()` 不会把它们报给宿主），入口的 `timeout` 不会生效（改用宿主默认值），Hosted UI 动作也可能找不到它们。对列在 `__routers__` 里的 router 入口，`plugin.toml` 中 `[[plugin.entries]]` 的配置覆盖和主类上的入口一样生效。
 
+用旧版 `neko-plugin build` 打包的插件（打包元数据 schema 4 及更早）里，router 入口可能缺少宿主侧的 handler。宿主无法区分，所以这类插件包第一次启动时都会重新扫描一次入口，并重写打包元数据；之后照常启动，用户不用做什么。如果元数据无法重写（例如插件包目录只读），每次启动都会重新扫描。用当前的 `neko-plugin build` 重新打包可以省掉这次扫描。
+
 ---
 
 ## Router 里能访问什么
