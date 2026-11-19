@@ -298,10 +298,11 @@ def generate_repo_support_files(
     # gets its missing files unless overwrite is set.
     for relative, content in agent_kit_files.items():
         path = target_dir / relative
-        if path.is_symlink():
-            # e.g. CLAUDE.md -> AGENTS.md: writing through it would replace the
-            # link target with the wrong guide. Deliberate, so not reported:
-            # --overwrite keeps it too.
+        if _passes_through_symlink(target_dir, relative):
+            # e.g. CLAUDE.md -> AGENTS.md, or .agents -> a shared folder:
+            # writing through it would change the link target (another guide,
+            # another project's skill). Deliberate, so not reported: --overwrite
+            # keeps it too.
             continue
         if path.exists() and not overwrite:
             if skipped_agent_kit is not None:
@@ -949,6 +950,16 @@ def _escape(value: str) -> str:
 
 def _market_repo_name(plugin_id: str) -> str:
     return f"{_MARKET_REPO_PREFIX}{plugin_id}"
+
+
+def _passes_through_symlink(target_dir: Path, relative: Path) -> bool:
+    """Whether the target or any directory between it and target_dir is a link."""
+    current = target_dir
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
 
 
 def _write_support_file(path: Path, content: str, *, created: list[Path], overwrite: bool) -> None:

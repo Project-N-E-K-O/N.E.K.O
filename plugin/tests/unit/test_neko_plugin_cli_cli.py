@@ -1979,6 +1979,29 @@ def test_setup_repo_overwrite_leaves_symlinked_guides_alone(
     assert (plugin_dir / "AGENTS.md").read_text(encoding="utf-8") == agents_md
 
 
+def test_setup_repo_overwrite_never_writes_through_a_linked_skill_folder(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "shared_kit")
+    shared = tmp_path / "shared-skills"
+    (shared / "neko-plugin").mkdir(parents=True)
+    (shared / "neko-plugin" / "SKILL.md").write_text("# shared skill\n", encoding="utf-8")
+    (plugin_dir / ".agents").mkdir()
+    try:
+        (plugin_dir / ".agents" / "skills").symlink_to(shared, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available here")
+    setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
+
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+
+    assert (shared / "neko-plugin" / "SKILL.md").read_text(encoding="utf-8") == "# shared skill\n"
+    assert sorted(path.name for path in (shared / "neko-plugin").iterdir()) == ["SKILL.md"]
+    assert (plugin_dir / "AGENTS.md").is_file()
+    assert ".agents/skills" not in capsys.readouterr().out
+
+
 def test_check_ignores_an_agent_kit_it_cannot_inspect(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
