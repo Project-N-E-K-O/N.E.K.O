@@ -1636,3 +1636,20 @@ test('frame-pacing：采样超时后按退避重试（每块屏最多 2 次）�
     for (let i = 0; i < 3; i++) { sb.tick(3000); sb.tick(5000); }
     assert.equal(sb.rafQueue.length, 3, '新屏同样首测 + 2 次重试');
 }));
+
+test('frame-pacing：换屏前开始的采样在换屏后超时，不占新屏重试额度、不推迟新屏 1.5s 后的重测', withMockTimers(() => {
+    const sb = createSandbox({ pet: true, targetFrameRate: 60 });
+    const pacing = sb.window.nekoFramePacing;
+    sb.measureRefresh(60);
+    pacing.measureDisplayRefreshRate(); // 旧屏一轮（rAF 不再来）
+    sb.tick(2000);
+    sb.rafQueue.splice(0);
+    sb.window.dispatchEvent({ type: 'electron-display-changed' }); // 新屏重测排在 1.5s 后
+    sb.tick(1000); // 旧一轮 3s 超时
+    assert.equal(pacing.getDisplayRefreshHz(), null);
+    assert.equal(sb.rafQueue.length, 0);
+    sb.tick(500);
+    assert.equal(sb.rafQueue.length, 1, '新屏重测按 1.5s 照常开始，没被旧一轮的重试推到 5s');
+    sb.pumpFrames(30, 60);
+    assert.equal(pacing.rafCapFps(60), 90);
+}));

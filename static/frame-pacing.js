@@ -152,7 +152,10 @@
                 measureDisplayRefreshRate(queued.length === 0 ? undefined : (hz) => {
                     queued.forEach((cb) => { try { cb(hz); } catch (_) {} });
                 });
-            } else if (state.refreshHz == null && state.timeoutRetries < REFRESH_SAMPLE_MAX_RETRIES) {
+            } else if (state.refreshHz == null && startEpoch === state.displayEpoch &&
+                state.timeoutRetries < REFRESH_SAMPLE_MAX_RETRIES) {
+                // A stale round (started before a display change) must not spend the new
+                // display's retry budget or push back its already scheduled re-measure.
                 state.timeoutRetries += 1;
                 scheduleMeasure(REFRESH_SAMPLE_RETRY_DELAY_MS);
             }
