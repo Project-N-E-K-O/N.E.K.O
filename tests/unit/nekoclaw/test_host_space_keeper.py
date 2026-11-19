@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from nekoclaw.host.decision import TIER_ARCHIVE, TIER_REVIEW
+from nekoclaw.host.decision import TIER_ARCHIVE, TIER_CONSOLIDATE, TIER_REVIEW
 from nekoclaw.host.ledger import Ledger, LedgerEvent
 from nekoclaw.host.paths import DEFAULT_PROJECT, HostPaths
 from nekoclaw.host.space import TaskAgentSpace
@@ -733,13 +733,18 @@ def test_the_parts_of_a_review_fit_its_cap_so_that_none_is_cut_off_at_the_end():
 
 
 def test_the_review_asks_for_no_more_output_than_was_agreed():
-    from config.nekoclaw_settings import SPACE_ARCHIVE_OUTPUT_MAX_TOKENS, TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS
+    from config.nekoclaw_settings import (
+        SPACE_ARCHIVE_OUTPUT_MAX_TOKENS,
+        SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS,
+        TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS,
+    )
 
     assert TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS <= 1500
     assert SPACE_ARCHIVE_OUTPUT_MAX_TOKENS <= 1800
+    assert SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS <= 750
 
 
-def test_the_two_calls_of_the_space_are_metered_under_their_own_names(monkeypatch):
+def test_the_calls_of_the_space_are_metered_under_their_own_names(monkeypatch):
     import utils.token_tracker as tracker
     from nekoclaw.host import decision
 
@@ -760,15 +765,15 @@ def test_the_two_calls_of_the_space_are_metered_under_their_own_names(monkeypatc
     monkeypatch.setattr(llm, "_client", client)
 
     async def run() -> None:
-        for tier in (TIER_REVIEW, TIER_ARCHIVE, decision.TIER_COARSE):
+        for tier in (TIER_REVIEW, TIER_ARCHIVE, TIER_CONSOLIDATE, decision.TIER_COARSE):
             await llm.complete(tier, [])
 
     asyncio.run(run())
 
-    assert named == ["task_agent_review", "task_agent_archive", "agent"]
-    assert seen[0] == (TIER_REVIEW, 1500) and seen[1] == (TIER_ARCHIVE, 1800)
-    # Both run on the summary model, like the fine selection.
-    assert {TIER_REVIEW, TIER_ARCHIVE, decision.TIER_FINE} == decision._SUMMARY_TIERS
+    assert named == ["task_agent_review", "task_agent_archive", "task_agent_consolidate", "agent"]
+    assert seen[:3] == [(TIER_REVIEW, 1500), (TIER_ARCHIVE, 1800), (TIER_CONSOLIDATE, 750)]
+    # All run on the summary model, like the fine selection.
+    assert {TIER_REVIEW, TIER_ARCHIVE, TIER_CONSOLIDATE, decision.TIER_FINE} == decision._SUMMARY_TIERS
 
 
 # ---------------------------------------------------------------------------

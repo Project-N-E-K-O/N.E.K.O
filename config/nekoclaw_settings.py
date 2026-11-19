@@ -898,6 +898,63 @@ with the JSON around it; a test keeps it within the cap. The rest is for
 the provider counting otherwise than this code does; see
 ``TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS``."""
 
+SPACE_CONSOLIDATE_ENABLED = True
+"""Whether a round of tidying has a model look over the entries of a layer
+(the space as a whole, or one project in use) for ones that say the same
+thing, have gone out of date, are easily confused, or say "yesterday".
+With False that model call is never made; nothing else changes."""
+
+SPACE_CONSOLIDATE_MODEL_SLOT = "summary"
+"""Which of the user's configured models does that; see
+``TASK_AGENT_REVIEW_MODEL_SLOT``."""
+
+SPACE_CONSOLIDATE_LAYERS_PER_UPKEEP = 2
+"""Most layers one round of tidying has looked over; each costs one model
+call. A layer is looked over only when an entry of it was added or changed
+since it was last looked over, and only when it has
+``SPACE_CONSOLIDATE_MIN_ENTRIES`` entries the host made. The layers looked
+over longest ago go first; the rest wait for the next round."""
+
+SPACE_CONSOLIDATE_MIN_ENTRIES = 2
+"""Least number of entries the host made (in effect or pending) a layer must
+have to be looked over: with one there is nothing to compare."""
+
+SPACE_CONSOLIDATE_INPUT_MAX_TOKENS = 7000
+"""Cap on everything sent to the model to look over one layer, the
+instructions included. The two parts below have caps of their own (5400
+together); a test keeps the whole within the cap with both at theirs."""
+
+SPACE_CONSOLIDATE_LIST_MAX_TOKENS = 2400
+"""Cap on the list of the layer's entries, one line each (title, description,
+how it is known, its state): the entries in effect, the pending ones, and
+the ones the user wrote. A line is some 40 tokens, 90 at most."""
+
+SPACE_CONSOLIDATE_TEXTS_MAX_TOKENS = 3000
+"""Cap on the full texts within that input: of the entries that are new or
+changed since the layer was last looked over, then of the pending ones."""
+
+SPACE_CONSOLIDATE_TEXT_MAX_TOKENS = 400
+"""Cap on the text of one entry within those."""
+
+SPACE_CONSOLIDATE_MAX_OPERATIONS = 8
+"""Most changes the model may ask for in one layer; more are not made."""
+
+SPACE_CONSOLIDATE_REASON_MAX_TOKENS = 40
+"""Cap on why an entry is out of date, as it is kept in the entry."""
+
+SPACE_CONSOLIDATE_MERGED_MAX_TOKENS = 1500
+"""Most an entry may say once the texts of another were put into it by
+tidying; a merge that would make it longer is not made. Two or three texts
+of ``SPACE_ENTRY_CONTENT_MAX_TOKENS``."""
+
+SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS = 750
+"""``max_completion_tokens`` of looking over one layer. What may be kept of an
+answer (``SPACE_CONSOLIDATE_MAX_OPERATIONS`` changes of the longest kind)
+comes to some 600 tokens with the JSON around it; a test keeps it within
+the cap. The rest is for the provider counting otherwise than this code
+does; see ``TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS``. An answer that is cut off
+all the same keeps the changes that are complete."""
+
 # ---------------------------------------------------------------------------
 # Capability gateway
 # ---------------------------------------------------------------------------
