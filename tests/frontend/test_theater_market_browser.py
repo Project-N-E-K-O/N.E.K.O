@@ -68,6 +68,12 @@ def test_market_entry_is_independent_of_toggle_for_pointer_and_keyboard(mock_pag
     assert mock_page.evaluate("window.__marketSaved") == 1
 
 
+def _click_and_expect_close(target, selector):
+    """Click from a page task so Playwright never awaits an action on a closing page."""
+    with target.expect_event('close'):
+        target.evaluate("selector => setTimeout(() => document.querySelector(selector).click(), 0)", selector)
+
+
 def _market_host(page, running_server):
     """Real transport/adapter, with an isolated host and no model or user data."""
     page.route('**/__market_test_host', lambda route: route.fulfill(content_type='text/html', body='''
@@ -112,8 +118,7 @@ def test_market_bootstrap_never_initializes_or_displays_local_selector(page, run
     expect(popup.locator('#theater-start-btn')).to_have_count(0)
     assert not requests
     assert len(page.context.pages) == 2  # host plus exactly one entry window
-    with popup.expect_event('close'):
-        popup.locator('[data-neko-window-control="close"]').click()
+    _click_and_expect_close(popup, '[data-neko-window-control="close"]')
     assert not page.is_closed()
 
 
@@ -332,3 +337,91 @@ def test_theater_invitation_keeps_an_existing_market_window_on_non_accept_outcom
     assert not existing_window.is_closed()
     assert 'Loading' not in existing_window.title()
     assert existing_window.url.startswith(running_server)
+
+
+def _selector_api_stubs(context):
+    """Keep selector pages offline: empty library, no active session."""
+    context.route('**/api/theater-numeric/stories', lambda route: route.fulfill(json={'ok': True, 'stories': []}))
+    context.route('**/api/theater-numeric/memory/stories', lambda route: route.fulfill(json={'ok': True, 'stories': []}))
+    context.route('**/api/theater-numeric/session/active**', lambda route: route.fulfill(
+        status=404, json={'ok': False, 'reason': 'numeric_session_not_found'}))
+    context.route('**/api/theater-market/launch', lambda route: route.fulfill(status=502, json={'ok': False}))
+
+
+def _host_with_window_registry(page, running_server):
+    """Host page that opens windows through the real openOrFocusWindow registry."""
+    page.route('**/__market_registry_host', lambda route: route.fulfill(content_type='text/html', body='''
+        <button onclick="nekoTheaterMarket.browse()">Market</button>
+        <button onclick="nekoTheaterMarket.open()">Theater</button>
+        <script src="/static/common_dialogs.js"></script>
+        <script src="/static/js/theater_transport.js"></script>
+        <script src="/static/js/theater_market.js"></script>'''))
+    page.goto(running_server + '/__market_registry_host')
+    page.wait_for_function("() => typeof window.openOrFocusWindow === 'function' && window.nekoTheaterMarket")
+
+
+@pytest.mark.frontend
+def test_market_window_back_focuses_existing_selector_and_closes_itself(page, running_server):
+    _selector_api_stubs(page.context)
+    _host_with_window_registry(page, running_server)
+    with page.expect_popup() as opened_selector:
+        page.get_by_role('button', name='Theater', exact=True).click()
+    selector = opened_selector.value
+    expect(selector.locator('[data-theater-selector-app]')).to_be_visible()
+    with page.expect_popup() as opened_market:
+        page.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    assert market.evaluate('window.name') == 'neko_theater_market'
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    expect(market.get_by_role('link', name='返回选择剧本')).to_be_visible()
+    _click_and_expect_close(market, '#theater-market-back-link')
+    assert not selector.is_closed()
+    assert selector.url == running_server + '/theater'
+    assert len(page.context.pages) == 2  # host plus the one selector
+
+
+@pytest.mark.frontend
+def test_market_window_back_prefers_a_selector_opener(page, running_server):
+    _selector_api_stubs(page.context)
+    page.goto(running_server + '/theater')
+    expect(page.locator('[data-theater-selector-app]')).to_be_visible()
+    with page.expect_popup() as opened_market:
+        page.evaluate("void window.open('/theater?market=browse', 'neko_theater_market')")
+    market = opened_market.value
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    expect(market.get_by_role('link', name='返回选择剧本')).to_be_visible()
+    _click_and_expect_close(market, '#theater-market-back-link')
+    assert page.url == running_server + '/theater'
+    assert len(page.context.pages) == 1
+
+
+@pytest.mark.frontend
+def test_market_window_back_without_selector_falls_back_to_in_place_selector(page, running_server):
+    _selector_api_stubs(page.context)
+    _host_with_window_registry(page, running_server)
+    with page.expect_popup() as opened_market:
+        page.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    market.get_by_role('link', name='返回选择剧本').click()
+    expect(market).to_have_url(running_server + '/theater')
+    expect(market.locator('[data-theater-selector-app]')).to_be_visible()
+    assert len(page.context.pages) == 2  # host plus the market window, now a selector
+
+
+@pytest.mark.frontend
+def test_market_opened_inside_selector_window_returns_in_place(page, running_server):
+    _selector_api_stubs(page.context)
+    _host_with_window_registry(page, running_server)
+    with page.expect_popup() as opened_selector:
+        page.get_by_role('button', name='Theater', exact=True).click()
+    selector = opened_selector.value
+    expect(selector.locator('#theater-market-btn')).to_be_enabled()
+    selector.locator('#theater-market-btn').click()
+    expect(selector).to_have_url(running_server + '/theater?market=browse')
+    expect(selector.locator('#theater-market-retry-btn')).to_be_visible()
+    assert selector.evaluate('window.name') == 'neko_theater'
+    selector.get_by_role('link', name='返回选择剧本').click()
+    expect(selector).to_have_url(running_server + '/theater')
+    expect(selector.locator('[data-theater-selector-app]')).to_be_visible()
+    assert len(page.context.pages) == 2

@@ -4,6 +4,8 @@
     var transport = window.nekoTheaterTransport;
     if (!transport) return;
     var base = '/api/theater-market/launch';
+    var MARKET_WINDOW_NAME = 'neko_theater_market';
+    var SELECTOR_WINDOW_NAME = 'neko_theater';
     var connecting = false;
     var channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('neko_page_channel') : null;
     function label(key) { return window.t ? window.t('theater.' + key) : key; }
@@ -14,14 +16,14 @@
         if (window.opener && !window.opener.closed) window.opener.postMessage(message, window.location.origin);
     }
     function openMarket() {
-        var popup = window.open('/theater?market=browse', 'neko_theater_market');
+        var popup = window.open('/theater?market=browse', MARKET_WINDOW_NAME);
         if (!popup && typeof window.showStatusToast === 'function') window.showStatusToast(label('marketConnectError'), 5000);
         return !!popup;
     }
     function openSelector() {
         var popup = typeof window.openOrFocusWindow === 'function'
-            ? window.openOrFocusWindow('/theater', 'neko_theater', 'width=1100,height=760,menubar=no,toolbar=no,location=no,status=no')
-            : window.open('/theater', 'neko_theater');
+            ? window.openOrFocusWindow('/theater', SELECTOR_WINDOW_NAME, 'width=1100,height=760,menubar=no,toolbar=no,location=no,status=no')
+            : window.open('/theater', SELECTOR_WINDOW_NAME);
         if (!popup && typeof window.showStatusToast === 'function') window.showStatusToast(label('storyListFailed'), 5000);
         return !!popup;
     }
@@ -68,9 +70,58 @@
             if (connection) connection.setAttribute('aria-busy', 'false');
         }
     }
+    // A market page in its own named window must not turn into a second selector;
+    // one opened in place from the selector keeps the plain link navigation.
+    function isLiveSelector(target) {
+        try {
+            return !!(target && !target.closed && target.document.querySelector('[data-theater-selector-app]'));
+        } catch (_) {
+            return false;
+        }
+    }
+    function focusExistingSelector() {
+        var opener = window.opener && !window.opener.closed ? window.opener : null;
+        if (!opener) return false;
+        try {
+            if (isLiveSelector(opener)) {
+                opener.postMessage({type: 'neko:restore-window'}, window.location.origin);
+                opener.focus();
+                return true;
+            }
+            // The host app keeps handles for the windows it opened through openOrFocusWindow.
+            var handle = opener._openedWindows && opener._openedWindows[SELECTOR_WINDOW_NAME];
+            if (!isLiveSelector(handle)) return false;
+            if (typeof opener.openOrFocusWindow === 'function') {
+                opener.openOrFocusWindow('/theater', SELECTOR_WINDOW_NAME, undefined, {preserveGeometryOnReuse: true});
+            } else {
+                handle.postMessage({type: 'neko:restore-window'}, window.location.origin);
+                handle.focus();
+            }
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+    function closeMarketWindow() {
+        var host = window.nekoHost;
+        if (!host || typeof host.closeWindow !== 'function') {
+            window.close();
+            return;
+        }
+        Promise.resolve().then(function () { return host.closeWindow(); }).then(function (result) {
+            if (!(result && result.ok)) window.close();
+        }, function () { window.close(); });
+    }
+    function returnToSelector(event) {
+        if (window.name !== MARKET_WINDOW_NAME || !focusExistingSelector()) return;
+        event.preventDefault();
+        closeMarketWindow();
+    }
     document.addEventListener('DOMContentLoaded', function () {
         var retry = document.getElementById('theater-market-retry-btn');
         if (retry) retry.addEventListener('click', redirectSelector);
+        var back = document.getElementById('theater-market-back-link');
+        if (back) back.addEventListener('click', returnToSelector);
     });
     window.nekoTheaterMarket = Object.freeze({open: openSelector, browse: openMarket, redirectSelector: redirectSelector});
 })();
