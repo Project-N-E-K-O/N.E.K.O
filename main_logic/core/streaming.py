@@ -1161,6 +1161,9 @@ class StreamingMixin:
                                 source=input_type,
                                 request_id=message.get("request_id"),
                                 captured_at=captured_at,
+                                consent_epoch=message.get(
+                                    "_visual_input_consent_epoch"
+                                ),
                             )
                             # Keep the active Realtime adapter's provider-neutral
                             # latest-frame cache warm for proactive observation,

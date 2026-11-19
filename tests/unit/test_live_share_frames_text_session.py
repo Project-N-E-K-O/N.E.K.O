@@ -417,3 +417,18 @@ def test_superseded_recorder_stop_notice_does_not_close_its_socket():
         "await websocket.close()"
     )
     assert 'if action == "screen_share_stopped":' in router_source
+
+
+def test_router_stamps_screen_consent_before_dispatching_the_frame():
+    """The consent epoch is read at arrival, before the validation task starts."""
+    from pathlib import Path
+
+    router_source = (
+        Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
+    ).read_text(encoding="utf-8")
+    stamp = router_source.index('"_visual_input_consent_epoch": getattr(')
+    dispatch = router_source.index("_fire_task(stream_mgr.stream_data(message))")
+    ingress = router_source.index("message = _stamp_user_input_ingress(message)")
+    # Stamped with the ingress time, before the frame's validation task.
+    assert ingress < stamp < dispatch
+    assert stamp - ingress < 1000

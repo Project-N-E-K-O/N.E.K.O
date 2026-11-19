@@ -1931,6 +1931,7 @@ async def test_independent_asr_live_vision_stays_out_of_provider_queues(
         source=input_type,
         request_id="req-independent-vision",
         captured_at=ANY,
+        consent_epoch=ANY,
     )
     session.stream_image.assert_not_awaited()
     assert session._pending_images == ["existing-user-attachment"]

@@ -1342,6 +1342,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # its task started later.
                 message = _stamp_user_input_ingress(message)
                 stream_mgr = session_manager[lanlan_name]
+                if input_type in {"screen", "camera"}:
+                    # Screen consent at arrival, before validation awaits: a
+                    # revocation meanwhile must still reach this frame.
+                    # Server-owned, like the ingress time above.
+                    message = {
+                        **message,
+                        "_visual_input_consent_epoch": getattr(
+                            stream_mgr, "_proactive_vision_revocation_epoch", 0
+                        ),
+                    }
                 _record_stream_engagement_ingress(
                     stream_mgr,
                     message,

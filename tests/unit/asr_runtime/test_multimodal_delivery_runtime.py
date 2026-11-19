@@ -607,6 +607,44 @@ async def test_revocation_while_the_provider_compresses_drops_live_frames(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "request_id,expect_frames", [(None, False), ("req-1", True)],
+)
+async def test_frame_that_arrived_before_a_revocation_stays_out(
+    request_id, expect_frames,
+) -> None:
+    """Revoked while the frame was still being validated: staged under the arrival epoch."""
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_route_mode = "independent"
+    runtime._proactive_vision_revocation_epoch = 1  # revoked after arrival
+    runtime.session.get_multimodal_turn_delivery = MagicMock(
+        return_value="direct_atomic"
+    )
+    runtime.session.submit_multimodal_turn = AsyncMock()
+    runtime.session.submit_external_voice_turn = AsyncMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    record = runtime._core_multimodal_turns[turn_id]
+    assert runtime._stage_independent_visual_frame(
+        "frame", source="screen", request_id=request_id,
+        captured_at=record.started_at, consent_epoch=0,
+    )
+
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(turn_token=token, provider="openai", text="look here")
+    )
+
+    if expect_frames:
+        runtime.session.submit_multimodal_turn.assert_awaited_once()
+        runtime.session.submit_external_voice_turn.assert_not_awaited()
+    else:
+        runtime.session.submit_multimodal_turn.assert_not_awaited()
+        runtime.session.submit_external_voice_turn.assert_awaited_once()
+
+
+@pytest.mark.unit
 async def test_final_superseded_after_freeze_submits_text_without_frames() -> None:
     """Freezing the frames is not the last word; the submit is.
 

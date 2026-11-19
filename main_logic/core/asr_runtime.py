@@ -668,8 +668,13 @@ class AsrRuntimeMixin:
         source: str,
         request_id: str | None,
         captured_at: float,
+        consent_epoch: int | None = None,
     ) -> bool:
-        """Stage one validated live frame without sending it to any model."""
+        """Stage one validated live frame without sending it to any model.
+
+        ``consent_epoch`` is the screen-consent revocation epoch at the
+        frame's arrival (before validation); None: the current one.
+        """
 
         self._ensure_asr_runtime_state()
         if (
@@ -703,7 +708,11 @@ class AsrRuntimeMixin:
             captured_at=stable_captured_at,
             source=str(source or "unknown"),
             request_id=(str(request_id) if request_id is not None else None),
-            consent_epoch=getattr(self, "_proactive_vision_revocation_epoch", 0),
+            consent_epoch=(
+                consent_epoch
+                if isinstance(consent_epoch, int)
+                else getattr(self, "_proactive_vision_revocation_epoch", 0)
+            ),
         )
         if supersedes_latest_cache:
             self._latest_independent_visual_frame = frame
