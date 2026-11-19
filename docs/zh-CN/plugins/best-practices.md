@@ -98,12 +98,23 @@ async def batch_job(self, items: list, **_):
 
 ## 输入验证
 
-使用 `input_schema` 进行自动 JSON Schema 验证，或使用 `params` 配合 Pydantic 模型：
+需要校验输入时，用 `params=` 传 Pydantic 模型：宿主在调用处理函数前用模型校验参数，不合法的输入直接拒绝。单独的 `input_schema` 映射只会发布给调用方（UI、Agent、其他插件），运行时**不会**校验。`params` 与 `input_schema` 互斥，同时传会抛出 `ValueError`。
 
 ```python
-# 方式 A：JSON Schema
+# 方式 A：Pydantic 模型（调用时校验，schema 由模型生成）
+from pydantic import BaseModel, Field
+
+class UserInput(BaseModel):
+    email: str = Field(..., description="User email")
+    age: int = Field(..., ge=0, le=150)
+
+@plugin_entry(id="validated", params=UserInput)
+async def validated(self, email: str, age: int, **_):
+    return Ok({"email": email, "age": age})
+
+# 方式 B：JSON Schema（只发布、不校验：自己检查参数）
 @plugin_entry(
-    id="validated",
+    id="described",
     input_schema={
         "type": "object",
         "properties": {
@@ -113,18 +124,9 @@ async def batch_job(self, items: list, **_):
         "required": ["email", "age"]
     }
 )
-async def validated(self, email: str, age: int, **_):
-    return Ok({"email": email, "age": age})
-
-# 方式 B：Pydantic 模型（自动生成 schema）
-from pydantic import BaseModel, Field
-
-class UserInput(BaseModel):
-    email: str = Field(..., description="User email")
-    age: int = Field(..., ge=0, le=150)
-
-@plugin_entry(id="validated_v2", params=UserInput)
-async def validated_v2(self, email: str, age: int, **_):
+async def described(self, email: str = "", age: int = -1, **_):
+    if not email or not 0 <= age <= 150:
+        return Err(SdkError("email and a valid age are required"))
     return Ok({"email": email, "age": age})
 ```
 
@@ -170,9 +172,11 @@ async def orchestrate(self, **_):
 ```python
 @lifecycle(id="shutdown")
 async def on_shutdown(self, **_):
-    # 关闭网络连接
-    if self.session:
-        await self.session.close()
+    # 停止自己启动的线程（例如它们监听的 threading.Event）。
+    # 不要在这里关闭异步 HTTP client/session：shutdown 运行在独立的事件循环里，
+    # 应在入口内按次创建。
+    if self._worker_stop is not None:
+        self._worker_stop.set()
 
     # 无需刷新 self.store：每次 set() 都会同步提交。
     # 如果是你自己打开的 store，可在此关闭（可选）：
@@ -222,7 +226,7 @@ await fetch('/runs', {
 
 - [ ] 所有入口点返回 `Ok`/`Err`（而非原始字典或异常）
 - [ ] 只在确实需要初始化或清理资源时添加生命周期钩子
-- [ ] 入口参数按需使用自动推导 schema、显式 `input_schema` 或 Pydantic `params` 模型
+- [ ] 需要校验输入的入口使用 Pydantic `params` 模型（显式 `input_schema` 只发布、不校验）
 - [ ] 处理器签名只声明实际消费的字段；只有有意接收额外字段时才使用 `**_`
 - [ ] 普通元数据使用 Logger；原始隐私敏感内容绝不写 Logger
 - [ ] 如果使用了定时器，共享状态已用锁保护

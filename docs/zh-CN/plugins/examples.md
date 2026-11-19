@@ -13,7 +13,6 @@ from plugin.sdk.plugin import (
 class GreeterPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
         self.greet_count = 0
 
     @lifecycle(id="startup")
@@ -25,6 +24,7 @@ class GreeterPlugin(NekoPluginBase):
         id="greet",
         name="Greet",
         description="Greet someone by name",
+        # 只发布给调用方，运行时不校验。
         input_schema={
             "type": "object",
             "properties": {
@@ -46,50 +46,35 @@ class GreeterPlugin(NekoPluginBase):
 ## 带跨插件调用的异步 API 客户端
 
 ```python
+from typing import Any, Literal
+
 import aiohttp
-from typing import Any, Optional
+from pydantic import BaseModel
 from plugin.sdk.plugin import (
-    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    NekoPluginBase, neko_plugin, plugin_entry,
     Ok, Err, SdkError, unwrap_or,
 )
+
+class FetchParams(BaseModel):
+    endpoint: str
+    method: Literal["GET", "POST"] = "GET"
 
 @neko_plugin
 class APIClientPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
-        self.session: Optional[aiohttp.ClientSession] = None
         self.base_url = "https://api.example.com"
 
-    @lifecycle(id="startup")
-    async def startup(self, **_):
-        self.session = aiohttp.ClientSession()
-        return Ok({"status": "ready"})
-
-    @lifecycle(id="shutdown")
-    async def shutdown(self, **_):
-        if self.session:
-            await self.session.close()
-        return Ok({"status": "stopped"})
-
-    @plugin_entry(
-        id="fetch",
-        name="Fetch Data",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "endpoint": {"type": "string"},
-                "method": {"type": "string", "enum": ["GET", "POST"], "default": "GET"}
-            },
-            "required": ["endpoint"]
-        }
-    )
+    @plugin_entry(id="fetch", name="Fetch Data", params=FetchParams)
     async def fetch(self, endpoint: str, method: str = "GET", **_):
         try:
             url = f"{self.base_url}/{endpoint.lstrip('/')}"
-            async with self.session.request(method, url) as response:
-                data = await response.json()
-                return Ok({"status": response.status, "data": data})
+            # 每次调用新建 session：startup、入口调用和 shutdown 运行在不同的事件循环里，
+            # startup 里创建的 session 不能在这里使用，也无法在 shutdown 里干净地关闭。
+            async with aiohttp.ClientSession() as session:
+                async with session.request(method, url) as response:
+                    data = await response.json()
+                    return Ok({"status": response.status, "data": data})
         except Exception as e:
             return Err(SdkError(f"Request failed: {e}"))
 
@@ -114,14 +99,19 @@ class APIClientPlugin(NekoPluginBase):
         return result
 ```
 
-## 带钩子和定时器的插件
+`aiohttp` 是第三方包：请在插件的 `pyproject.toml` 的 `[project].dependencies` 中声明，并运行 `neko-plugin sync <plugin>`，不要依赖宿主环境碰巧装了它。
+
+## 带调用计数和定时器的插件
+
+钩子装饰器（`@before_entry`、`@after_entry` 等）只登记元数据，目前不会执行（见[装饰器](./decorators)的「钩子装饰器」一节），所以要在入口内自行计数：
 
 ```python
+import threading
 import time
 from typing import Any
 from plugin.sdk.plugin import (
     NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
-    timer_interval, before_entry, after_entry,
+    timer_interval,
     Ok, Err, SdkError,
 )
 
@@ -129,75 +119,72 @@ from plugin.sdk.plugin import (
 class MonitoredPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
         self.call_stats: dict[str, int] = {}
+        self._stats_lock = threading.Lock()  # 定时器在另一个线程里运行
 
     @lifecycle(id="startup")
     async def on_startup(self, **_):
         return Ok({"status": "ready"})
 
-    # --- 钩子 ---
-
-    @before_entry(target="*")
-    def count_calls(self, *, entry_id, **_):
-        """统计每个入口点的调用次数。"""
-        self.call_stats[entry_id] = self.call_stats.get(entry_id, 0) + 1
-
-    @after_entry(target="*")
-    def log_results(self, *, entry_id, result, **_):
-        """记录每个入口点的返回结果。"""
-        # 不要把可能含用户内容的原始结果写进持久日志。
-        self.logger.info(f"[{entry_id}] completed result_type={type(result).__name__}")
+    def _count(self, entry_id: str) -> None:
+        with self._stats_lock:
+            self.call_stats[entry_id] = self.call_stats.get(entry_id, 0) + 1
 
     # --- 入口点 ---
 
     @plugin_entry(id="process", description="Process some data")
     async def process(self, data: str, **_):
+        self._count("process")
         return Ok({"processed": data.upper()})
 
     @plugin_entry(id="stats", description="Get call statistics")
     async def stats(self, **_):
-        return Ok({"stats": dict(self.call_stats)})
+        self._count("stats")
+        with self._stats_lock:
+            return Ok({"stats": dict(self.call_stats)})
 
     # --- 定时器 ---
 
     @timer_interval(id="health_check", seconds=300, auto_start=True)
     async def health_check(self, **_):
+        with self._stats_lock:
+            total_calls = sum(self.call_stats.values())
         self.report_status({
             "status": "healthy",
             "uptime": time.time(),
-            "total_calls": sum(self.call_stats.values()),
+            "total_calls": total_calls,
         })
         return Ok({"healthy": True})
 ```
 
 ## 带持久化存储的插件
 
+`self.store` 默认关闭，需要在 `plugin.toml` 中开启；关闭时 `set()` 不会保存任何内容，`get()` 返回默认值：
+
+```toml
+[plugin.store]
+enabled = true
+```
+
 ```python
 from typing import Any
+from pydantic import BaseModel
 from plugin.sdk.plugin import (
-    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    NekoPluginBase, neko_plugin, plugin_entry,
     Ok, Err, SdkError,
 )
+
+class NoteInput(BaseModel):
+    title: str
+    content: str
 
 @neko_plugin
 class NotesPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
         # self.store 已由 NekoPluginBase 构造好，直接使用即可。
 
-    @plugin_entry(
-        id="save_note",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "content": {"type": "string"}
-            },
-            "required": ["title", "content"]
-        }
-    )
+    @plugin_entry(id="save_note", params=NoteInput)
     async def save_note(self, title: str, content: str, **_):
         saved = await self.store.set(f"note:{title}", {
             "title": title,
@@ -231,11 +218,10 @@ from plugin.sdk.plugin import (
 class DynamicPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
 
     @lifecycle(id="startup")
     async def on_startup(self, **_):
-        # 根据配置在运行时注册入口点
+        # 根据配置在运行时注册入口
         commands = self.metadata.get("commands", {})
         for cmd_id, cmd_config in commands.items():
             self.register_dynamic_entry(

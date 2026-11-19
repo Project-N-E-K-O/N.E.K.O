@@ -98,12 +98,23 @@ async def batch_job(self, items: list, **_):
 
 ## 入力バリデーション
 
-自動 JSON Schema バリデーションのために `input_schema` を使用するか、Pydantic モデルのために `params` を使用してください：
+入力を検証する必要がある場合は、`params=` に Pydantic モデルを渡してください。ホストはハンドラーを呼ぶ前にモデルで引数を検証し、不正な入力を拒否します。`input_schema` マッピング単体は呼び出し側（UI、Agent、他のプラグイン）に公開されるだけで、実行時には**検証されません**。`params` と `input_schema` は排他的で、両方を渡すと `ValueError` になります。
 
 ```python
-# オプション A: JSON Schema
+# オプション A: Pydantic モデル（呼び出し時に検証、スキーマはモデルから生成）
+from pydantic import BaseModel, Field
+
+class UserInput(BaseModel):
+    email: str = Field(..., description="User email")
+    age: int = Field(..., ge=0, le=150)
+
+@plugin_entry(id="validated", params=UserInput)
+async def validated(self, email: str, age: int, **_):
+    return Ok({"email": email, "age": age})
+
+# オプション B: JSON Schema（公開のみで検証されない：値は自分で確認する）
 @plugin_entry(
-    id="validated",
+    id="described",
     input_schema={
         "type": "object",
         "properties": {
@@ -113,18 +124,9 @@ async def batch_job(self, items: list, **_):
         "required": ["email", "age"]
     }
 )
-async def validated(self, email: str, age: int, **_):
-    return Ok({"email": email, "age": age})
-
-# オプション B: Pydantic モデル（スキーマを自動生成）
-from pydantic import BaseModel, Field
-
-class UserInput(BaseModel):
-    email: str = Field(..., description="User email")
-    age: int = Field(..., ge=0, le=150)
-
-@plugin_entry(id="validated_v2", params=UserInput)
-async def validated_v2(self, email: str, age: int, **_):
+async def described(self, email: str = "", age: int = -1, **_):
+    if not email or not 0 <= age <= 150:
+        return Err(SdkError("email and a valid age are required"))
     return Ok({"email": email, "age": age})
 ```
 
@@ -169,9 +171,11 @@ shutdown ライフサイクルでリソースをクリーンアップしてく�
 ```python
 @lifecycle(id="shutdown")
 async def on_shutdown(self, **_):
-    # ネットワーク接続を閉じる
-    if self.session:
-        await self.session.close()
+    # 自分で起動したスレッドを止める（例：スレッドが監視する threading.Event）。
+    # 非同期 HTTP client/session はここで閉じない：shutdown は独自のイベントループで
+    # 動くため、エントリー内で呼び出しごとに作成する。
+    if self._worker_stop is not None:
+        self._worker_stop.set()
 
     # self.store のフラッシュは不要です：各 set() は同期的にコミットされます。
     # 自分で store を開いた場合は、ここで閉じてください（任意）：
@@ -221,7 +225,7 @@ await fetch('/runs', {
 
 - [ ] すべてのエントリーポイントが `Ok`/`Err` を返している（生の dict や例外ではなく）
 - [ ] setup/cleanup が本当に必要な resource にだけ lifecycle hook を追加している
-- [ ] entry parameter に inferred schema、explicit `input_schema`、または Pydantic `params` model を適切に使っている
+- [ ] 入力の検証が必要な entry は Pydantic `params` モデルを使っている（明示的な `input_schema` は公開のみで検証されない）
 - [ ] handler signature は消費する field だけを宣言し、追加 field を意図する場合だけ `**_` を使う
 - [ ] 通常 metadata は logger、raw privacy-sensitive content は logger に書かない
 - [ ] タイマーを使用する場合、共有状態がロックで保護されている

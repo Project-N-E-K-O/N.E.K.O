@@ -30,15 +30,15 @@ Defines an externally callable entry point.
     id="process",                # Entry point ID (auto-generated from method name if omitted)
     name="Process Data",         # Display name
     description="Process data",  # Description
-    input_schema={...},          # JSON Schema for validation
-    params=MyParamsModel,        # Alternative: Pydantic model for input (auto-generates schema)
+    params=MyParamsModel,        # Pydantic model: input is validated at call time (schema generated)
+    # input_schema={...},        # Alternative: JSON Schema, published only (not validated); cannot be combined with params
     kind="action",               # "action" | "service" | "hook" | "custom"
     auto_start=False,            # Metadata flag; ordinary entries are not invoked at load
     persist=False,               # Override post-call state snapshot policy
-    model_validate=True,         # Enable Pydantic validation
+    model_validate=True,         # Validate input with the params model (False passes raw arguments)
     timeout=30.0,                # Execution timeout in seconds
     llm_result_fields=["text"],  # Fields to extract for LLM consumption
-    llm_result_model=MyResult,   # Pydantic model for result schema
+    # llm_result_model=MyResult, # Alternative: Pydantic model for the result schema (mutually exclusive with llm_result_fields)
     output_schema={...},         # JSON Schema of the return value (output contract)
     strict_output=False,         # True: a return value that violates the contract fails the call
     metadata={"category": "data"}  # Additional metadata
@@ -54,16 +54,16 @@ async def process(self, data: str, **_):
 | `id` | `str` | method name | Unique entry point identifier |
 | `name` | `str` | `None` | Display name |
 | `description` | `str` | `""` | Description |
-| `input_schema` | `dict` | `None` | JSON Schema for input validation |
-| `params` | `type` | `None` | Pydantic model (auto-generates `input_schema`) |
+| `input_schema` | `dict` | `None` | JSON Schema published to callers. **Not validated at runtime**; mutually exclusive with `params` |
+| `params` | `type` | `None` | Pydantic model. Input is validated with it before the handler runs, and its schema is published as `input_schema` |
 | `kind` | `str` | `"action"` | Entry type |
 | `auto_start` | `bool` | `False` | Metadata flag; ordinary `plugin_entry` handlers are not invoked automatically at load |
 | `persist` | `bool` | `None` | Override whether configured freezable state is saved after this entry runs |
-| `model_validate` | `bool` | `True` | Enable Pydantic validation |
+| `model_validate` | `bool` | `True` | Validate input with the `params` model; `False` passes the raw arguments |
 | `timeout` | `float` | `None` | Execution timeout (seconds) |
 | `llm_result_fields` | `list[str]` | `None` | Fields for LLM result extraction |
 | `llm_result_model` | `type` | `None` | Pydantic model for result schema |
-| `fields` | `type` | `None` | Alias for `params` |
+| `fields` | `type` | `None` | Alias for `llm_result_model` |
 | `metadata` | `dict` | `None` | Additional metadata |
 | `output_schema` | `dict` | `None` | JSON Schema of the return value. Inferred from a Pydantic return annotation when omitted. See [Output contract](./entries#output-contract) |
 | `strict_output` | `bool` | `False` | When the return value violates the output contract, also fail the call (`PLUGIN_OUTPUT_SCHEMA_VIOLATION`). The default only logs a warning; strict mode logs the warning too. Only contracts inferred from a Pydantic return annotation are checked, so it has no effect on an explicit `output_schema` |
@@ -93,9 +93,9 @@ async def on_startup(self, **_):
 
 @lifecycle(id="shutdown")
 async def on_shutdown(self, **_):
-    session = getattr(self, "session", None)
-    if session:
-        await session.close()
+    stop = getattr(self, "_worker_stop", None)  # threading.Event of a worker thread you started
+    if stop:
+        stop.set()
     return Ok({"status": "stopped"})
 
 @lifecycle(id="config_change")
@@ -106,8 +106,8 @@ async def on_config_change(self, old_config, new_config, mode):
 
 | Lifecycle ID or action | When it happens | Typical use |
 | --- | --- | --- |
-| `startup` | Plugin process starts | Load config, open connections, prepare resources |
-| `shutdown` | Plugin process stops | Close connections, save state, release resources |
+| `startup` | Plugin process starts | Load and validate config, prepare plain resources |
+| `shutdown` | Plugin process stops | Stop your own threads, save state, release plain resources |
 | Plugin Manager Reload | User clicks Reload | Runs `shutdown`, then starts the process and runs `startup` |
 | `config_change` | Config is changed externally | Apply new settings without a restart |
 | `freeze` / `unfreeze` | Plugin is suspended or resumed | Pause or resume work |
@@ -117,6 +117,8 @@ Manager Reload button restarts the process instead of dispatching it. Updating
 configuration through `await self.ctx.update_own_config(...)` or
 `await self.config.update(...)` also does not dispatch `config_change` back to
 the same process; refresh derived state after the call.
+
+`startup`, entry calls, and `shutdown` each run in their own event loop (`asyncio.run`). A task created with `asyncio.create_task` in `startup` is cancelled when `startup` returns, and an async client or session created in one phase cannot be used or closed in another. Create async clients inside the call that uses them (`async with ...`).
 
 ## @timer_interval
 
@@ -140,7 +142,11 @@ Timer tasks must use `async def`. Each timer runs in a separate thread with its 
 
 ## @message
 
-Defines a handler for messages from the host system.
+Registers a message handler.
+
+::: warning Not dispatched by the host
+The host does not currently deliver host or chat messages to `@message` handlers. A handler only runs when another plugin calls it explicitly with `self.plugins.call_event("<plugin_id>:message:<id>", ...)`. Do not build features on it.
+:::
 
 ```python
 @message(
@@ -197,11 +203,13 @@ Larger `priority` values appear earlier. This decorator changes display metadata
 
 ## Hook Decorators (AOP)
 
-Hook decorators provide Aspect-Oriented Programming capabilities. They intercept entry point execution.
+::: warning Metadata only, not executed today
+These decorators only record hook metadata on the method. Nothing in the current host or SDK runs them (`HookExecutorMixin` is a contract stub that raises `NotImplementedError`), so they do **not** intercept, modify, abort, or replace any entry call. Put such logic in the entry itself or in a helper it calls. The descriptions below are the intended semantics.
+:::
 
 ### @before_entry
 
-Runs before the target entry point. Can modify arguments or abort execution.
+Intended to run before the target entry point and modify arguments or abort execution (not executed today).
 
 ```python
 @before_entry(target="process", priority=0)
@@ -213,7 +221,7 @@ def validate_input(self, *, args, entry_id, **_):
 
 ### @after_entry
 
-Runs after the target entry point. Can modify or replace the result.
+Intended to run after the target entry point and modify or replace the result (not executed today).
 
 ```python
 @after_entry(target="process", priority=0)
@@ -224,7 +232,7 @@ def log_result(self, *, result, entry_id, **_):
 
 ### @around_entry
 
-Wraps the target entry point. Full control over execution.
+Intended to wrap the target entry point with full control over execution (not executed today).
 
 ```python
 @around_entry(target="process", priority=0)
@@ -239,7 +247,7 @@ async def timing_wrapper(self, *, proceed, args, **_):
 
 ### @replace_entry
 
-Completely replaces the target entry point.
+Intended to replace the target entry point completely (not executed today).
 
 ```python
 @replace_entry(target="old_entry", priority=0)
@@ -272,7 +280,7 @@ async def greet(self, name: str = "World", **_):
 async def on_startup(self, **_):
     return Ok({"status": "ready"})
 
-@plugin.hook(target="greet", timing="before")
+@plugin.hook(target="greet", timing="before")  # metadata only, not executed today
 def validate(self, *, args, **_):
     pass
 
@@ -280,7 +288,7 @@ def validate(self, *, args, **_):
 async def heartbeat(self, **_):
     return Ok({"alive": True})
 
-@plugin.message(id="on_chat", source="chat")
+@plugin.message(id="on_chat", source="chat")  # not dispatched by the host, see @message
 async def on_chat(self, text: str, **_):
     return Ok({"handled": True})
 ```

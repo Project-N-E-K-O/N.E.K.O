@@ -30,15 +30,15 @@ class MyPlugin(NekoPluginBase):
     id="process",                # 入口点 ID（如果省略则从方法名自动生成）
     name="Process Data",         # 显示名称
     description="Process data",  # 描述
-    input_schema={...},          # 用于验证的 JSON Schema
-    params=MyParamsModel,        # 替代方式：用于输入的 Pydantic 模型（自动生成 schema）
+    params=MyParamsModel,        # Pydantic 模型：调用时校验输入（自动生成 schema）
+    # input_schema={...},        # 替代方式：JSON Schema，只发布、不校验；不能与 params 同时使用
     kind="action",               # "action" | "service" | "hook" | "custom"
     auto_start=False,            # 元数据标志；普通入口不会在加载时自动执行
     persist=False,               # 覆盖调用后的状态快照策略
-    model_validate=True,         # 启用 Pydantic 验证
+    model_validate=True,         # 用 params 模型校验输入（False 时传原始参数）
     timeout=30.0,                # 执行超时时间（秒）
     llm_result_fields=["text"],  # 为 LLM 消费提取的字段
-    llm_result_model=MyResult,   # 用于结果 schema 的 Pydantic 模型
+    # llm_result_model=MyResult, # 替代方式：用于结果 schema 的 Pydantic 模型（与 llm_result_fields 互斥）
     output_schema={...},         # 返回值的 JSON Schema（输出契约）
     strict_output=False,         # True：返回值不符合契约时本次调用失败
     metadata={"category": "data"}  # 附加元数据
@@ -54,16 +54,16 @@ async def process(self, data: str, **_):
 | `id` | `str` | 方法名 | 唯一入口点标识符 |
 | `name` | `str` | `None` | 显示名称 |
 | `description` | `str` | `""` | 描述 |
-| `input_schema` | `dict` | `None` | 用于输入验证的 JSON Schema |
-| `params` | `type` | `None` | Pydantic 模型（自动生成 `input_schema`） |
+| `input_schema` | `dict` | `None` | 发布给调用方的 JSON Schema。**运行时不校验**；与 `params` 互斥 |
+| `params` | `type` | `None` | Pydantic 模型。处理器运行前用它校验输入，其 schema 作为 `input_schema` 发布 |
 | `kind` | `str` | `"action"` | 入口类型 |
 | `auto_start` | `bool` | `False` | 元数据标志；普通 `plugin_entry` 不会在加载时自动执行 |
 | `persist` | `bool` | `None` | 覆盖该入口执行后是否保存已配置的可冻结状态 |
-| `model_validate` | `bool` | `True` | 启用 Pydantic 验证 |
+| `model_validate` | `bool` | `True` | 用 `params` 模型校验输入；`False` 时传原始参数 |
 | `timeout` | `float` | `None` | 执行超时时间（秒） |
 | `llm_result_fields` | `list[str]` | `None` | 用于 LLM 结果提取的字段 |
 | `llm_result_model` | `type` | `None` | 用于结果 schema 的 Pydantic 模型 |
-| `fields` | `type` | `None` | `params` 的别名 |
+| `fields` | `type` | `None` | `llm_result_model` 的别名 |
 | `metadata` | `dict` | `None` | 附加元数据 |
 | `output_schema` | `dict` | `None` | 返回值的 JSON Schema。不写时，返回注解是 Pydantic 模型就自动推导。见[入口与参数](./entries)的「输出契约」一节 |
 | `strict_output` | `bool` | `False` | 返回值不符合输出契约时，除了记告警日志，还让本次调用失败（`PLUGIN_OUTPUT_SCHEMA_VIOLATION`）。默认只记告警。只有从 Pydantic 返回注解推导的契约会被检查，所以对显式的 `output_schema` 不起作用 |
@@ -92,9 +92,9 @@ async def on_startup(self, **_):
 
 @lifecycle(id="shutdown")
 async def on_shutdown(self, **_):
-    session = getattr(self, "session", None)
-    if session:
-        await session.close()
+    stop = getattr(self, "_worker_stop", None)  # 你自己启动的工作线程的 threading.Event
+    if stop:
+        stop.set()
     return Ok({"status": "stopped"})
 
 @lifecycle(id="config_change")
@@ -105,13 +105,15 @@ async def on_config_change(self, old_config, new_config, mode):
 
 | 生命周期 ID 或操作 | 发生时机 | 常见用途 |
 | --- | --- | --- |
-| `startup` | 插件进程启动 | 读取配置、建立连接、准备资源 |
-| `shutdown` | 插件进程停止 | 关闭连接、保存状态、释放资源 |
+| `startup` | 插件进程启动 | 读取并校验配置、准备普通资源 |
+| `shutdown` | 插件进程停止 | 停止自己启动的线程、保存状态、释放普通资源 |
 | 插件管理器“重载” | 用户点击重载 | 先执行 `shutdown`，再启动进程并执行 `startup` |
 | `config_change` | 配置由外部修改 | 不重启地应用新设置 |
 | `freeze` / `unfreeze` | 插件被挂起或恢复 | 暂停或恢复工作 |
 
 SDK 仍兼容 `reload` 生命周期 ID，但插件管理器的重载按钮会重启进程，不会分派该事件。通过 `await self.ctx.update_own_config(...)` 或 `await self.config.update(...)` 更新配置时，也不会向同一进程回派 `config_change`；调用后应主动刷新派生状态。
+
+`startup`、入口调用和 `shutdown` 各自运行在独立的事件循环里（`asyncio.run`）。在 `startup` 里用 `asyncio.create_task` 创建的任务会在 `startup` 返回时被取消；在一个阶段创建的异步 client 或 session 不能在另一个阶段使用或关闭。异步 client 应在使用它的那次调用里创建（`async with ...`）。
 
 ## @timer_interval
 
@@ -135,7 +137,11 @@ async def cleanup(self, **_):
 
 ## @message
 
-定义处理来自宿主系统消息的处理器。
+注册一个消息处理器。
+
+::: warning 宿主不会分发
+宿主目前不会把宿主消息或聊天消息投递给 `@message` 处理器。只有其他插件用 `self.plugins.call_event("<plugin_id>:message:<id>", ...)` 显式调用时，它才会运行。不要基于它构建功能。
+:::
 
 ```python
 @message(
@@ -192,11 +198,13 @@ async def get_weather(self, city: str = ""):
 
 ## 钩子装饰器（AOP）
 
-钩子装饰器提供面向切面编程（AOP）能力，用于拦截入口点的执行。
+::: warning 目前只登记元数据、不会执行
+这些装饰器只在方法上记录钩子元数据。当前的宿主和 SDK 都不会执行它们（`HookExecutorMixin` 只是一个会抛出 `NotImplementedError` 的契约占位），所以它们**不会**拦截、修改、中止或替换任何入口调用。这类逻辑请写在入口本身或它调用的辅助函数里。下文描述的是设计中的语义。
+:::
 
 ### @before_entry
 
-在目标入口点之前运行。可以修改参数或中止执行。
+设计上在目标入口点之前运行，可以修改参数或中止执行（目前不会执行）。
 
 ```python
 @before_entry(target="process", priority=0)
@@ -208,7 +216,7 @@ def validate_input(self, *, args, entry_id, **_):
 
 ### @after_entry
 
-在目标入口点之后运行。可以修改或替换结果。
+设计上在目标入口点之后运行，可以修改或替换结果（目前不会执行）。
 
 ```python
 @after_entry(target="process", priority=0)
@@ -219,7 +227,7 @@ def log_result(self, *, result, entry_id, **_):
 
 ### @around_entry
 
-包装目标入口点。完全控制执行流程。
+设计上包装目标入口点，完全控制执行流程（目前不会执行）。
 
 ```python
 @around_entry(target="process", priority=0)
@@ -234,7 +242,7 @@ async def timing_wrapper(self, *, proceed, args, **_):
 
 ### @replace_entry
 
-完全替换目标入口点。
+设计上完全替换目标入口点（目前不会执行）。
 
 ```python
 @replace_entry(target="old_entry", priority=0)
@@ -267,7 +275,7 @@ async def greet(self, name: str = "World", **_):
 async def on_startup(self, **_):
     return Ok({"status": "ready"})
 
-@plugin.hook(target="greet", timing="before")
+@plugin.hook(target="greet", timing="before")  # 只登记元数据，目前不会执行
 def validate(self, *, args, **_):
     pass
 
@@ -275,7 +283,7 @@ def validate(self, *, args, **_):
 async def heartbeat(self, **_):
     return Ok({"alive": True})
 
-@plugin.message(id="on_chat", source="chat")
+@plugin.message(id="on_chat", source="chat")  # 宿主不会分发，见 @message
 async def on_chat(self, text: str, **_):
     return Ok({"handled": True})
 ```

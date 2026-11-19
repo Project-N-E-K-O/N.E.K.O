@@ -13,7 +13,6 @@ from plugin.sdk.plugin import (
 class GreeterPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
         self.greet_count = 0
 
     @lifecycle(id="startup")
@@ -25,6 +24,7 @@ class GreeterPlugin(NekoPluginBase):
         id="greet",
         name="Greet",
         description="Greet someone by name",
+        # 呼び出し側に公開されるだけで、実行時には検証されない。
         input_schema={
             "type": "object",
             "properties": {
@@ -46,50 +46,36 @@ class GreeterPlugin(NekoPluginBase):
 ## プラグイン間呼び出しを伴う非同期 API クライアント
 
 ```python
+from typing import Any, Literal
+
 import aiohttp
-from typing import Any, Optional
+from pydantic import BaseModel
 from plugin.sdk.plugin import (
-    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    NekoPluginBase, neko_plugin, plugin_entry,
     Ok, Err, SdkError, unwrap_or,
 )
+
+class FetchParams(BaseModel):
+    endpoint: str
+    method: Literal["GET", "POST"] = "GET"
 
 @neko_plugin
 class APIClientPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
-        self.session: Optional[aiohttp.ClientSession] = None
         self.base_url = "https://api.example.com"
 
-    @lifecycle(id="startup")
-    async def startup(self, **_):
-        self.session = aiohttp.ClientSession()
-        return Ok({"status": "ready"})
-
-    @lifecycle(id="shutdown")
-    async def shutdown(self, **_):
-        if self.session:
-            await self.session.close()
-        return Ok({"status": "stopped"})
-
-    @plugin_entry(
-        id="fetch",
-        name="Fetch Data",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "endpoint": {"type": "string"},
-                "method": {"type": "string", "enum": ["GET", "POST"], "default": "GET"}
-            },
-            "required": ["endpoint"]
-        }
-    )
+    @plugin_entry(id="fetch", name="Fetch Data", params=FetchParams)
     async def fetch(self, endpoint: str, method: str = "GET", **_):
         try:
             url = f"{self.base_url}/{endpoint.lstrip('/')}"
-            async with self.session.request(method, url) as response:
-                data = await response.json()
-                return Ok({"status": response.status, "data": data})
+            # 呼び出しごとに session を作る：startup、エントリー呼び出し、shutdown は
+            # 別々のイベントループで動くため、startup で作った session はここでは使えず、
+            # shutdown できれいに閉じることもできない。
+            async with aiohttp.ClientSession() as session:
+                async with session.request(method, url) as response:
+                    data = await response.json()
+                    return Ok({"status": response.status, "data": data})
         except Exception as e:
             return Err(SdkError(f"Request failed: {e}"))
 
@@ -114,14 +100,19 @@ class APIClientPlugin(NekoPluginBase):
         return result
 ```
 
-## フックとタイマーを使ったプラグイン
+`aiohttp` はサードパーティパッケージです。ホスト環境にたまたま入っていることに頼らず、プラグインの `pyproject.toml` の `[project].dependencies` で宣言し、`neko-plugin sync <plugin>` を実行してください。
+
+## 呼び出しカウントとタイマーを使ったプラグイン
+
+フックデコレーター（`@before_entry`、`@after_entry` など）はメタデータを記録するだけで、現在は実行されません（[デコレーター](./decorators)の「フックデコレーター」を参照）。そのため、呼び出しはエントリー内で自分でカウントします：
 
 ```python
+import threading
 import time
 from typing import Any
 from plugin.sdk.plugin import (
     NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
-    timer_interval, before_entry, after_entry,
+    timer_interval,
     Ok, Err, SdkError,
 )
 
@@ -129,75 +120,72 @@ from plugin.sdk.plugin import (
 class MonitoredPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
         self.call_stats: dict[str, int] = {}
+        self._stats_lock = threading.Lock()  # タイマーは別スレッドで動く
 
     @lifecycle(id="startup")
     async def on_startup(self, **_):
         return Ok({"status": "ready"})
 
-    # --- フック ---
-
-    @before_entry(target="*")
-    def count_calls(self, *, entry_id, **_):
-        """すべてのエントリーポイント呼び出しをカウントする。"""
-        self.call_stats[entry_id] = self.call_stats.get(entry_id, 0) + 1
-
-    @after_entry(target="*")
-    def log_results(self, *, entry_id, result, **_):
-        """すべてのエントリーポイントの結果をログに記録する。"""
-        # user content を含み得る raw result を persistent log に書かない。
-        self.logger.info(f"[{entry_id}] completed result_type={type(result).__name__}")
+    def _count(self, entry_id: str) -> None:
+        with self._stats_lock:
+            self.call_stats[entry_id] = self.call_stats.get(entry_id, 0) + 1
 
     # --- エントリーポイント ---
 
     @plugin_entry(id="process", description="Process some data")
     async def process(self, data: str, **_):
+        self._count("process")
         return Ok({"processed": data.upper()})
 
     @plugin_entry(id="stats", description="Get call statistics")
     async def stats(self, **_):
-        return Ok({"stats": dict(self.call_stats)})
+        self._count("stats")
+        with self._stats_lock:
+            return Ok({"stats": dict(self.call_stats)})
 
     # --- タイマー ---
 
     @timer_interval(id="health_check", seconds=300, auto_start=True)
     async def health_check(self, **_):
+        with self._stats_lock:
+            total_calls = sum(self.call_stats.values())
         self.report_status({
             "status": "healthy",
             "uptime": time.time(),
-            "total_calls": sum(self.call_stats.values()),
+            "total_calls": total_calls,
         })
         return Ok({"healthy": True})
 ```
 
 ## 永続ストレージを使ったプラグイン
 
+`self.store` は `plugin.toml` で有効にしない限り無効です。無効の間、`set()` は何も保存せず、`get()` はデフォルト値を返します：
+
+```toml
+[plugin.store]
+enabled = true
+```
+
 ```python
 from typing import Any
+from pydantic import BaseModel
 from plugin.sdk.plugin import (
-    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    NekoPluginBase, neko_plugin, plugin_entry,
     Ok, Err, SdkError,
 )
+
+class NoteInput(BaseModel):
+    title: str
+    content: str
 
 @neko_plugin
 class NotesPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
         # self.store は NekoPluginBase が既に構築済みなので、そのまま利用できます。
 
-    @plugin_entry(
-        id="save_note",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "content": {"type": "string"}
-            },
-            "required": ["title", "content"]
-        }
-    )
+    @plugin_entry(id="save_note", params=NoteInput)
     async def save_note(self, title: str, content: str, **_):
         saved = await self.store.set(f"note:{title}", {
             "title": title,
@@ -231,7 +219,6 @@ from plugin.sdk.plugin import (
 class DynamicPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
 
     @lifecycle(id="startup")
     async def on_startup(self, **_):
