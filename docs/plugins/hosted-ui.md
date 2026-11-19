@@ -286,7 +286,7 @@ tr("actions.refresh.label", default="Refresh")
 self.i18n.t("messages.done", default="Done")
 ```
 
-`self.i18n.t(...)` does not follow the viewer's language: without `locale=` it uses the plugin `default_locale`, then `en`, then the `default` argument or key name. Text that must appear in each user's language belongs in `tr(...)` declarations (resolved by the host per user) or in TSX `props.t(...)`.
+`self.i18n.t(...)` does not follow the viewer's language: without `locale=` it uses the plugin `default_locale`, then its base language (for example `fr` for `fr-CA`), then `en`, then the `default` argument or key name. Text that must appear in each user's language belongs in `tr(...)` declarations (resolved by the host per user) or in TSX `props.t(...)`.
 
 ```tsx
 // TSX runtime: use props.t(...) for visible UI text.

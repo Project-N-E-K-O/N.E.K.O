@@ -100,7 +100,7 @@ message = self.i18n.t("greeting", name="Alice")
 ```
 
 `self.i18n.t(...)` does not follow the user's language: without `locale=` it
-looks up the plugin's `default_locale`, then `en`, then falls back to the
+looks up the plugin's `default_locale`, then its base language (for example `fr` for `fr-CA`), then `en`, then falls back to the
 `default` argument or the key. For user-facing strings that the host
 registers (plugin and entry names, descriptions, schema labels, UI action
 labels), use `tr("key", default="...")`, which the host resolves for each

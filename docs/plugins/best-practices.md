@@ -125,8 +125,10 @@ async def validated(self, email: str, age: int, **_):
     }
 )
 async def described(self, email: str = "", age: int = -1, **_):
-    if not email or not 0 <= age <= 150:
-        return Err(SdkError("email and a valid age are required"))
+    if not isinstance(email, str) or "@" not in email:
+        return Err(SdkError("a valid email is required"))
+    if not isinstance(age, int) or isinstance(age, bool) or not 0 <= age <= 150:
+        return Err(SdkError("age must be an integer from 0 to 150"))
     return Ok({"email": email, "age": age})
 ```
 

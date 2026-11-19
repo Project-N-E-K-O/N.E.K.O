@@ -337,4 +337,4 @@ check
 
 このチュートリアルでは、プラグインディレクトリ自体に `.git/` があり、標準の `verify.yml` と `release.yml` があることを前提にしています。現在のクイックスタートにある `neko-plugin init` で作成したプラグインは、すでにこの条件を満たしています。
 
-既存のプラグインが外側の N.E.K.O リポジトリだけで管理され、プラグインディレクトリ自身に `.git/` がない場合、現在の `publish` は停止します。このディレクトリは `neko-plugin setup-repo <plugin> --git --github-actions` で変換できます（`--remote <url>` を付けると `origin` も設定します）。プラグイン専用の Git リポジトリと標準ワークフローが作成されます。`neko-plugin create-repo <plugin>` を使うと `gh` で GitHub リポジトリを作成できます。ディレクトリのコピー、パッケージの import、シンボリックリンクで公開フローを代用しないでください。
+既存のプラグインが外側の N.E.K.O リポジトリだけで管理され、プラグインディレクトリ自身に `.git/` がない場合、現在の `publish` は停止します。このディレクトリは `neko-plugin setup-repo <plugin> --git --github-actions` で変換できます（`--remote <url>` を付けると `origin` も設定します）。プラグイン専用の Git リポジトリと標準ワークフローが作成されます。既存の `.github/workflows/release.yml` はそのまま残ります。その後 `publish` がリリースワークフローが最新でないと報告した場合は、`neko-plugin setup-repo <plugin> --upgrade-github-actions --dry-run` で確認してから、`--dry-run` を外して実行してください。`neko-plugin create-repo <plugin>` を使うと `gh` で GitHub リポジトリを作成できます。ディレクトリのコピー、パッケージの import、シンボリックリンクで公開フローを代用しないでください。

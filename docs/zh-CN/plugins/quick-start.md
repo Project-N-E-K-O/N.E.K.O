@@ -158,7 +158,7 @@ uv run neko-plugin check hello_world
 [OK] hello_world: check found 0 error(s), ... warning(s)
 ```
 
-这一步的警告都和 Git 有关（例如还没有配置 `origin` remote，或插件仓库里有尚未提交的文件）。它们只影响后续发布，不会阻止插件运行。以后出现 `[FAIL]` 或 error 时，才需要先停下来，按照命令给出的提示修复。
+这一步的警告都和 Git 有关（例如还没有配置 `origin` remote，或插件仓库里有尚未提交的文件）。它们只影响后续发布，不会阻止插件运行。出现 `[FAIL]` 或 error 时，先停下来，按照命令给出的提示修复。以后的检查也请逐条看 warning：结果是 `[OK]` 时，warning 也可能意味着某项设置被忽略了。
 
 ## CLI 已经为你准备了什么
 

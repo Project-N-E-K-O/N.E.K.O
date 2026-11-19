@@ -107,7 +107,7 @@ async with unwrap(await self.db.session()) as session:
 message = self.i18n.t("greeting", name="Alice")
 ```
 
-`self.i18n.t(...)` 不跟随用户语言：不传 `locale=` 时，依次查插件的 `default_locale`、`en`，最后退回 `default` 参数或键名。宿主登记的面向用户的字符串（插件和入口名称、描述、schema 标签、UI 动作标签）请用 `tr("key", default="...")`，由宿主按每个用户的语言解析。
+`self.i18n.t(...)` 不跟随用户语言：不传 `locale=` 时，依次查插件的 `default_locale`、它的基础语言（例如 `fr-CA` 的 `fr`）、`en`，最后退回 `default` 参数或键名。宿主登记的面向用户的字符串（插件和入口名称、描述、schema 标签、UI 动作标签）请用 `tr("key", default="...")`，由宿主按每个用户的语言解析。
 
 ### 方法
 

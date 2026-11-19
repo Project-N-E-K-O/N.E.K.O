@@ -285,7 +285,7 @@ tr("actions.refresh.label", default="Refresh")
 self.i18n.t("messages.done", default="Done")
 ```
 
-`self.i18n.t(...)` 不跟随查看者的语言：不传 `locale=` 时使用插件的 `default_locale`，然后是 `en`，最后是 `default` 参数或键名。需要按每个用户语言显示的文本，请放在 `tr(...)` 声明里（由宿主按用户解析），或用 TSX 的 `props.t(...)`。
+`self.i18n.t(...)` 不跟随查看者的语言：不传 `locale=` 时使用插件的 `default_locale`，然后是它的基础语言（例如 `fr-CA` 的 `fr`），再然后是 `en`，最后是 `default` 参数或键名。需要按每个用户语言显示的文本，请放在 `tr(...)` 声明里（由宿主按用户解析），或用 TSX 的 `props.t(...)`。
 
 ```tsx
 // TSX 运行时：所有可见 UI 文本优先用 props.t(...)。

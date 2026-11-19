@@ -55,8 +55,10 @@ on a best-effort basis.
 What the helper *doesn't* do: auto-recover after a `main_server` restart
 or first-boot race. Registration is fired once at plugin startup; if
 `main_server` was unreachable then, the tool stays invisible to the
-model until the plugin reloads or `register_llm_tool` is invoked
-imperatively. The "What Happens When main_server Restarts" section near
+model until the plugin reloads, or until the tool is removed with
+`unregister_llm_tool(name)` and registered again with `register_llm_tool`
+(registering a name that is still registered locally raises
+`EntryConflictError` before the host is notified). The "What Happens When main_server Restarts" section near
 the end of this page covers the resilience pattern in detail.
 
 The rest of this document explains the underlying HTTP contract and
@@ -242,7 +244,9 @@ it.
 ## Full Lifecycle Pattern (raw HTTP, external integrations)
 
 This pattern is for an integration that runs outside a plugin process.
-Plugins get the same behaviour from `@llm_tool`.
+The retry loop is part of this example: `@llm_tool` gives plugins
+registration, callback routing, and cleanup, but registers only once and
+does not retry.
 
 ```python
 import asyncio
@@ -302,8 +306,9 @@ callback routing, and cleanup.
 
 ⚠️ **Important**: `tool_registry` is an in-memory attribute on
 `LLMSessionManager`, so **everything is lost when main_server
-restarts**. For an `@llm_tool` plugin, reload the plugin or call
-`self.register_llm_tool(...)` again (see TL;DR). A raw HTTP integration
+restarts**. For an `@llm_tool` plugin, reload the plugin, or call
+`self.unregister_llm_tool(name)` and then `self.register_llm_tool(...)`
+(see TL;DR). A raw HTTP integration
 must handle this itself:
 
 - **Plugin outlives main_server** (more common): the plugin needs to
@@ -464,8 +469,8 @@ plugin doesn't crash — only that one tool call fails.
 - The IPC notification (`LLM_TOOL_REGISTER`) is buffered on the
   plugin's host queue. If `main_server` is not yet up when the
   notification arrives, the registration call fails and the host
-  logs a warning — re-register later via the imperative API or by
-  reloading the plugin once `main_server` is healthy.
+  logs a warning — once `main_server` is healthy, reload the plugin, or
+  call `unregister_llm_tool(name)` and then `register_llm_tool(...)`.
 - On plugin stop, `lifecycle_service.stop_plugin` calls
   `plugin/server/messaging/llm_tool_registry.py::clear_plugin_tools`,
   which POSTs `/api/tools/clear` with body

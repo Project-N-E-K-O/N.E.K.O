@@ -53,8 +53,9 @@ class WeatherPlugin(NekoPluginBase):
 helper が **やらない** こと：`main_server` の再起動や初回起動レースからの
 自動復旧。登録はプラグインスタートアップ時に一度だけ発火し、その瞬間
 `main_server` が到達不能ならツールはモデルから不可視のままです —
-プラグインを reload するか、命令的に `register_llm_tool` を呼び直すまで
-復活しません。本ページ末尾の "What Happens When main_server Restarts"
+プラグインを reload するか、`unregister_llm_tool(name)` で外してから
+`register_llm_tool` で登録し直すまで復活しません（ローカルに同名ツールが
+残ったまま登録すると、ホストへ通知する前に `EntryConflictError` になります）。本ページ末尾の "What Happens When main_server Restarts"
 セクションが resilience パターンを詳述しています。
 
 このドキュメントの残りは下層の HTTP コントラクトと、それを直接叩く必要が
@@ -235,8 +236,9 @@ LLM がツール呼び出しを発火すると、main_server が `callback_url` 
 
 ## 完全なライフサイクル例（生 HTTP、外部連携向け）
 
-このパターンはプラグインプロセスの外で動く連携向けです。プラグインでは
-`@llm_tool` で同じ動作が得られます。
+このパターンはプラグインプロセスの外で動く連携向けです。リトライループは
+この例自身の実装です。`@llm_tool` はプラグインに登録、コールバックの
+ルーティング、後片付けを提供しますが、登録は一度だけでリトライはしません。
 
 ```python
 import asyncio
@@ -295,8 +297,8 @@ async def unregister_on_shutdown():
 
 ⚠️ **重要**：`tool_registry` は `LLMSessionManager` のインメモリ属性
 なので、**main_server 再起動で全部失われます**。`@llm_tool` を使う
-プラグインなら、プラグインを再読み込みするか `self.register_llm_tool(...)`
-を再度呼んでください（TL;DR を参照）。生 HTTP の連携は自分で対応が
+プラグインなら、プラグインを再読み込みするか、`self.unregister_llm_tool(name)`
+の後に `self.register_llm_tool(...)` を呼んでください（TL;DR を参照）。生 HTTP の連携は自分で対応が
 必要：
 
 - **プラグインが main_server より長生き**（より一般的）：プラグインは
@@ -448,7 +450,8 @@ handler 内で `raise` した場合も LLM にエラーが返されます（例�
 - IPC 通知（`LLM_TOOL_REGISTER`）はプラグインホストキューに buffer
   されます。通知到着時 `main_server` がまだ起動していない場合、登録呼び
   出しは失敗してホスト側で warning ログが出ます — `main_server` が
-  起動した後にプラグイン reload か命令的 API で登録し直してください。
+  起動した後にプラグインを reload するか、`unregister_llm_tool(name)` の後に
+  `register_llm_tool(...)` を呼んでください。
 - プラグイン停止時、`lifecycle_service.stop_plugin` が
   `plugin/server/messaging/llm_tool_registry.py::clear_plugin_tools` を
   呼び、`POST /api/tools/clear` をボディ

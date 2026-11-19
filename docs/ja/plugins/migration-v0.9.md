@@ -93,7 +93,7 @@ records = await self.bus.memory.get(bucket_id="default", limit=20)
 
 これらは件数制限付きでメモリ上にのみ保持されるユーザー発話イベントで、TTL は 1 時間です。キャラクターの永続的な facts、reflections、persona ではありません。`self.bus.memory` による record の読み取りと型付き record は残ります。削除されたのは高レベルの `self.memory` property です。`ctx.query_memory(...)` は互換性のため残っていますが、非推奨の placeholder endpoint を呼ぶだけで semantic recall は行いません。
 
-永続メモリへの読み取り専用アクセスは、`plugin.sdk.plugin` の `MemoryClient` で行えます。`MemoryClient(self.ctx)` を作り、`await client.search(target=..., query=...)` と `await client.get_persona(target=...)` を呼びます。どちらも `Result` を返します。`target` は `MemoryTarget`（これも `plugin.sdk.plugin` から import）で、例えば `MemoryTarget(kind="private", character=...)` です。`get_persona` は `private` ターゲットだけに対応し、それ以外では `CAPABILITY_UNAVAILABLE` を返します。ホストはこれらの呼び出しを `memory.read` capability の使用として記録します。メモリの内容はユーザーのプライベートなデータなので、ログに出さないでください。
+永続メモリへの読み取り専用アクセスは、`plugin.sdk.plugin` の `MemoryClient` で行えます。`MemoryClient(self.ctx)` を作り、`await client.search(target=..., query=...)` と `await client.get_persona(target=...)` を呼びます。どちらも `Result` を返します。`target` は `MemoryTarget`（これも `plugin.sdk.plugin` から import）で、例えば `MemoryTarget(kind="private", character=...)` です。`get_persona` は `private` ターゲットだけに対応し、それ以外では `CAPABILITY_UNAVAILABLE` を返します。capability policy が有効な間（`NEKO_PLUGIN_CAPABILITY_POLICY` が `off` でない場合）、ホストに届いた呼び出しは `memory.read` capability の使用として記録されます。この監査記録は完全なアクセスログではありません。メモリの内容はユーザーのプライベートなデータなので、ログに出さないでください。
 
 ## `push_message` v2
 

@@ -141,7 +141,7 @@ uv run neko-plugin check hello_world
 [OK] hello_world: check found 0 error(s), ... warning(s)
 ```
 
-この段階の warning はどれも Git に関するものです（例：`origin` remote が設定されていない、plugin のリポジトリに未 commit のファイルがある）。公開時にだけ影響し、plugin の実行は妨げません。`[FAIL]` または error が表示された場合は停止し、コマンドの修正案に従ってください。
+この段階の warning はどれも Git に関するものです（例：`origin` remote が設定されていない、plugin のリポジトリに未 commit のファイルがある）。公開時にだけ影響し、plugin の実行は妨げません。`[FAIL]` または error が表示された場合は停止し、コマンドの修正案に従ってください。以降のチェックでも warning は 1 件ずつ確認してください。結果が `[OK]` でも、warning は設定が無視されていることを示す場合があります。
 
 ## CLI が作成したもの
 

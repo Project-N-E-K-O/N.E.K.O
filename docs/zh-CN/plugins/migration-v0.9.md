@@ -93,7 +93,7 @@ records = await self.bus.memory.get(bucket_id="default", limit=20)
 
 这些记录是有容量上限、只驻留内存且 TTL 为一小时的用户话语事件，并不是角色持久化的事实、反思或人格。通过 `self.bus.memory` 读取记录和使用其类型化记录的能力仍然保留；删除的是高层 `self.memory` 属性。`ctx.query_memory(...)` 仍为兼容而存在，但它访问的是已弃用的占位端点，不提供语义召回。
 
-只读的持久记忆可以通过 `plugin.sdk.plugin` 中的 `MemoryClient` 访问：`MemoryClient(self.ctx)`，然后 `await client.search(target=..., query=...)` 和 `await client.get_persona(target=...)`，两者都返回 `Result`。`target` 是 `MemoryTarget`（同样从 `plugin.sdk.plugin` 导入），例如 `MemoryTarget(kind="private", character=...)`；`get_persona` 只支持 `private` 目标，其他目标返回 `CAPABILITY_UNAVAILABLE`。宿主会把这些调用记录为对 `memory.read` 能力的使用。记忆内容是用户的隐私数据，不要写进日志。
+只读的持久记忆可以通过 `plugin.sdk.plugin` 中的 `MemoryClient` 访问：`MemoryClient(self.ctx)`，然后 `await client.search(target=..., query=...)` 和 `await client.get_persona(target=...)`，两者都返回 `Result`。`target` 是 `MemoryTarget`（同样从 `plugin.sdk.plugin` 导入），例如 `MemoryTarget(kind="private", character=...)`；`get_persona` 只支持 `private` 目标，其他目标返回 `CAPABILITY_UNAVAILABLE`。能力策略开启时（`NEKO_PLUGIN_CAPABILITY_POLICY` 不是 `off`），宿主会把到达宿主的这些调用记录为对 `memory.read` 能力的使用；这份审计记录不是完整的访问记录。记忆内容是用户的隐私数据，不要写进日志。
 
 ## `push_message` v2
 

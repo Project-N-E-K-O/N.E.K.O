@@ -46,7 +46,8 @@ class WeatherPlugin(NekoPluginBase):
 
 helper **不**做的事：`main_server` 重启后或首启竞态后的自动重注册。注册仅在
 插件启动时触发一次；如果当时 `main_server` 不可达，工具会对模型不可见，需要
-插件 reload 或 imperative 调用 `register_llm_tool` 来恢复。本页末尾的
+插件 reload，或先用 `unregister_llm_tool(name)` 移除、再用 `register_llm_tool` 重新注册
+来恢复（本地仍登记着同名工具时直接注册会先抛 `EntryConflictError`，不会通知宿主）。本页末尾的
 "What Happens When main_server Restarts" 段落讲了 resilience 模式。
 
 下文讲底层 HTTP 协议本身，以及什么时候你需要直接走它。
@@ -212,7 +213,8 @@ HTTP 注册的外部集成才需要自己起 server 接收。
 
 ## 完整生命周期 pattern（原始 HTTP，外部集成）
 
-这个 pattern 适用于运行在插件进程之外的集成。插件用 `@llm_tool` 就能得到同样的行为。
+这个 pattern 适用于运行在插件进程之外的集成。重试循环是这个示例自己实现的：`@llm_tool`
+为插件提供注册、回调路由和清理，但只注册一次，不会重试。
 
 ```python
 import asyncio
@@ -267,8 +269,8 @@ async def unregister_on_shutdown():
 ## main_server 重启会发生什么
 
 ⚠️ **重要**：`tool_registry` 是 `LLMSessionManager` 的内存属性，**main_server
-重启会全部丢失**。用 `@llm_tool` 的插件，重载插件或再次调用
-`self.register_llm_tool(...)` 即可（见 TL;DR）。原始 HTTP 集成需要自己应对：
+重启会全部丢失**。用 `@llm_tool` 的插件，重载插件，或先调用
+`self.unregister_llm_tool(name)` 再调用 `self.register_llm_tool(...)`（见 TL;DR）。原始 HTTP 集成需要自己应对：
 
 - **plugin 比 main_server 长寿**（更常见）：plugin 需要监听 main_server
   心跳/连接断开事件，重连后**重新调 register**。最简单的做法是 plugin 内
@@ -406,7 +408,8 @@ error），插件本身不会崩溃 —— 只有那一次工具调用算失败�
   字典、service client 等都在 handler 第一次被调用前已经就位）。
 - IPC 通知（`LLM_TOOL_REGISTER`）会缓存在插件 host 的 message queue 上。
   如果通知到达时 `main_server` 还没起来，注册调用会失败、host 会打 warning
-  —— 等 `main_server` 起来后通过 reload 插件或 imperative API 再注册一次。
+  —— 等 `main_server` 起来后 reload 插件，或先 `unregister_llm_tool(name)` 再
+  `register_llm_tool(...)`。
 - 插件停止时，`lifecycle_service.stop_plugin` 会调
   `plugin/server/messaging/llm_tool_registry.py::clear_plugin_tools`，发
   `POST /api/tools/clear`，body 为

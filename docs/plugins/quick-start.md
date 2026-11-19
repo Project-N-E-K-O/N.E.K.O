@@ -141,7 +141,7 @@ A new project should report:
 [OK] hello_world: check found 0 error(s), ... warning(s)
 ```
 
-The warnings at this stage are about Git (for example no configured `origin` remote, or uncommitted files in the plugin's repository). They only affect publishing and do not prevent the plugin from running. Stop and follow the suggested fix when the command reports `[FAIL]` or an error.
+The warnings at this stage are about Git (for example no configured `origin` remote, or uncommitted files in the plugin's repository). They only affect publishing and do not prevent the plugin from running. Stop and follow the suggested fix when the command reports `[FAIL]` or an error. In later checks, read each warning too: a warning can mean that a setting is ignored even though the result is `[OK]`.
 
 ## What the CLI created
 
