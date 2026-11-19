@@ -39,10 +39,12 @@ format in `references/execution-boundary.md`.
 
 From a N.E.K.O source checkout, `uv run neko-plugin <command> <plugin>`, where
 `<plugin>` is an id under the checkout's plugin root or a path. Confirm
-arguments with `--help`. Without a checkout (desktop build) the CLI does not
-run: tell the user rather than guessing. The user can still Start/Reload the
-plugin and build a package in the Plugin studio; only `precheck` and
-publishing need a checkout.
+arguments with `--help`. A checkout (Route A) is the recommended way to
+develop. Without one (desktop build, Route B) no `neko-plugin` command runs:
+tell the user rather than guessing. App buttons (Start/Reload, Logs, Build
+package in the Plugin studio) still work; they are not the CLI. To run checks,
+ask the user whether to set up a checkout ("Setting Up Route A" in
+`references/plugin-cli-and-debugging.md`) and wait for their consent.
 
 | Command | Use |
 |---|---|

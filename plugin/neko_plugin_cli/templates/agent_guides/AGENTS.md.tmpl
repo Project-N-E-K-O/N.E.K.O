@@ -9,16 +9,23 @@ this directory `<plugin_dir>`; inside a N.E.K.O checkout it lives at
 
 ## Route
 
-- **A, source checkout**: a N.E.K.O checkout (a folder whose `pyproject.toml`
-  says `name = "N.E.K.O"`) is reachable: the Verify commands below already
-  point at it, or this plugin sits inside it. Check with the `check` command
-  below (or `uv run neko-plugin --help` in the checkout).
-- **B, desktop build**: no checkout (the Verify commands still show
-  `<path-to-this-directory>` and no checkout exists). The CLI does not run;
-  say so instead of guessing. The user tests with Start/Reload on the plugin
-  page, pastes errors from its Logs tab, and builds a package with Build
-  package in the Plugin studio (插件制作工作台). Only `precheck` and
-  publishing need a checkout.
+- **A, source checkout (recommended for plugin development)**: a N.E.K.O
+  checkout (a folder whose `pyproject.toml` says `name = "N.E.K.O"`) is
+  reachable: the Verify commands below already point at it, or this plugin
+  sits inside it. Check with the `check` command below (or
+  `uv run neko-plugin --help` in the checkout). Every check runs here.
+- **B, desktop build (fallback)**: no checkout (the Verify commands still show
+  `<path-to-this-directory>` and no checkout exists). The desktop app is for
+  using N.E.K.O; developing here works, but verification is limited: no
+  `neko-plugin` command runs (check, lint, sync, precheck, build), so say so
+  instead of guessing. App buttons still work (they are not the CLI):
+  Start/Reload on the plugin page, its Logs tab, and Build package in the
+  Plugin studio (插件制作工作台).
+- **Moving to A**: when Route B blocks a check, ask the user whether to set up
+  a N.E.K.O source checkout, and change nothing until they agree. It needs
+  git and uv (plus Node.js to run N.E.K.O from source), and the desktop app
+  must be fully quit before the source version starts. Steps: "Setting Up
+  Route A" in `.agents/skills/neko-plugin/references/plugin-cli-and-debugging.md`.
 
 ## Hard Constraints
 

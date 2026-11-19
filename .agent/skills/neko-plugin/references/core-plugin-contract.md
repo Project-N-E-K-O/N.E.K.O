@@ -169,10 +169,11 @@ class SearchPlugin(NekoPluginBase):
   call with that message, so keep the message short and free of secrets.
 - **`llm_result_fields`** decides what the AI reads: only those fields of the
   result. Without it, a Pydantic return annotation (`-> Model`) or
-  `llm_result_model` sets the fields instead (the model's required fields).
-  Only with none of these does the AI get one sentence (`data.reply` or the
-  run message), and a task agent also the full `data` as JSON. Put bulky raw
-  data outside these fields. `llm_result_fields`, `llm_result_model`, and
+  `llm_result_model` sets the fields instead: the model's required fields,
+  or all of its fields when every field has a default. To control exactly
+  what the AI reads, set `llm_result_fields`. Only with none of these does
+  the AI get one sentence (`data.reply` or the run message), and a task agent
+  also the full `data` as JSON. Put bulky raw data outside these fields. `llm_result_fields`, `llm_result_model`, and
   `fields` are mutually exclusive.
 - **Output contract**: a Pydantic return annotation (`-> Model` /
   `-> Model | None`) is checked at runtime against the value in `Ok`; a
