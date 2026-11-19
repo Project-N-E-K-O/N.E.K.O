@@ -342,3 +342,15 @@ def test_generator_handed_to_executor_is_not_reported(tmp_path: Path) -> None:
         "async def f(loop, urls):\n"
         "    await loop.run_in_executor(None, list, (requests.get(u) for u in urls))\n",
     ) == []
+
+
+@pytest.mark.parametrize(
+    "keywords",
+    ["shell=True, verify=False", "verify=False, shell=True"],
+)
+def test_one_call_reports_every_matching_rule(tmp_path: Path, keywords: str) -> None:
+    messages = _advisories(tmp_path, f"def f(cmd):\n    run_task(cmd, {keywords})\n")
+    assert sorted(messages) == [
+        "shell-true: worker.py:2 -> AGENTS.md #10",
+        "verify-false: worker.py:2 -> AGENTS.md #10",
+    ]

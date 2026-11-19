@@ -1593,9 +1593,8 @@ def _advisory_findings(tree: ast.Module) -> list[tuple[str, int, str]]:
     findings: list[tuple[str, int, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            found = _advisory_call_rule(node)
-            if found:
-                findings.append((found[0], node.lineno, found[1]))
+            for code, detail in _advisory_call_rules(node):
+                findings.append((code, node.lineno, detail))
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             for module in _host_internal_imports(node):
                 findings.append(("host-import", node.lineno, module))
@@ -1607,28 +1606,30 @@ def _advisory_findings(tree: ast.Module) -> list[tuple[str, int, str]]:
     return findings
 
 
-def _advisory_call_rule(node: ast.Call) -> tuple[str, str] | None:
+def _advisory_call_rules(node: ast.Call) -> list[tuple[str, str]]:
+    """Every (rule code, detail) one call matches."""
+    rules: list[tuple[str, str]] = []
     func = node.func
     if isinstance(func, ast.Name):
         if func.id == "print":
-            return "print", ""
-        if func.id in {"eval", "exec"}:
-            return "eval-exec", f"{func.id}()"
-    if (
+            rules.append(("print", ""))
+        elif func.id in {"eval", "exec"}:
+            rules.append(("eval-exec", f"{func.id}()"))
+    elif (
         isinstance(func, ast.Attribute)
         and isinstance(func.value, ast.Name)
         and func.value.id == "pickle"
         and func.attr in _PICKLE_LOAD_FUNCS
     ):
-        return "pickle", f"pickle.{func.attr}"
+        rules.append(("pickle", f"pickle.{func.attr}"))
     for keyword in node.keywords:
         if not isinstance(keyword.value, ast.Constant):
             continue
         if keyword.arg == "shell" and keyword.value.value is True:
-            return "shell-true", ""
-        if keyword.arg == "verify" and keyword.value.value is False:
-            return "verify-false", ""
-    return None
+            rules.append(("shell-true", ""))
+        elif keyword.arg == "verify" and keyword.value.value is False:
+            rules.append(("verify-false", ""))
+    return rules
 
 
 def _host_internal_imports(node: ast.Import | ast.ImportFrom) -> list[str]:
