@@ -3028,6 +3028,23 @@ async def test_tidying_goes_on_when_the_files_of_the_entries_cannot_be_looked_at
     assert [item.status for item in await world.space.list_projects() if item.name == "Budget app"] == ["archived"]
 
 
+def test_a_review_keeps_what_the_files_do_not_show_and_not_what_was_done():
+    from config.prompts import prompts_nekoclaw_space as texts
+
+    prompt = texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
+    # The text: one sentence of what was asked and how it ended, the rest on what cost time.
+    assert "One sentence on what was asked and how it ended; the rest on what went wrong" in prompt
+    assert "not on steps that went as planned" in prompt
+    # The entries: by the same measure as what a task agent submits itself.
+    assert "Keep only what a later commission could not tell from the files and would work differently for knowing" in prompt
+    assert "a way that worked where the obvious one did not" in prompt
+    assert (
+        "Leave out what the files, the repository's own documents or their history show, a fix that is in the "
+        "files now, and what this commission did or left half done; when unsure it holds beyond this "
+        "commission, leave it out."
+    ) in prompt
+
+
 def test_the_two_prompts_ask_for_the_file_an_entry_is_about():
     from config.prompts import prompts_nekoclaw_space as texts
 
