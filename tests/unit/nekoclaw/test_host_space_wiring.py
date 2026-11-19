@@ -106,15 +106,19 @@ async def test_an_empty_space_adds_nothing_to_a_task_agents_instructions(hosts, 
 
     system = _system(llm)
     assert SPACE_NOTE not in system and "task_agent_space" not in system
-    # What the host adds is whom the task agent works for and how the gateway is used, word
-    # for word, and says nothing of the commission, which is the message that opens it.
-    assert system.endswith(
-        TASK_AGENT_SESSION_FRAME.format(lanlan_name="Lan") + "\n\n" + TASK_AGENT_BRIEF_GATEWAY_NOTE
-    )
-    assert "sort the photos" not in system
-    assert llm.requests[0][-1]["content"].startswith(
+    # What the host adds is how the gateway is used and whom the task agent works for, word
+    # for word, and says nothing of the commission, which is the message that opens it. What
+    # is the session's own (where it works) comes after it, and ends it: the language it
+    # answers in is named in the message that opens the commission.
+    own = TASK_AGENT_BRIEF_GATEWAY_NOTE + "\n\n" + TASK_AGENT_SESSION_FRAME.format(lanlan_name="Lan")
+    assert own + "\n\nWorking directory: " in system
+    assert system.rsplit("\n\n", 1)[-1].startswith("Working directory: ")
+    assert "sort the photos" not in system and "in English" not in system
+    opening = llm.requests[0][-1]["content"]
+    assert opening.startswith(
         f"Commission {receipt.commission_id}\nsort the photos\nWhat the user said: can you sort my photos"
     )
+    assert opening.endswith(REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "English"))
 
 
 async def test_what_was_kept_is_handed_to_the_next_task_agent(hosts, tmp_path):

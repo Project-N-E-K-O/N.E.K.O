@@ -31,6 +31,12 @@ Commands (``type`` field):
 * ``abort``      - stop the current run. Queued steer / follow-up text is dropped.
 * ``close``      - stop the run, kill the session's background jobs and forget
   the session.
+* ``fork``       - make the record of a new session from that of another, by
+  copying what was said in it up to one entry (``fork.py``). The new session
+  is not opened: a ``start`` for it then goes on from the copy, with the
+  system prompt and the tool definitions the other was opened with.
+* ``compact``    - sum the conversation of an idle session up now, whatever
+  its length. Rejected while a run is in progress.
 
 Events (``type`` field). Every session event carries ``session_id`` and a
 per-session ``seq`` that increases by one:
@@ -41,6 +47,10 @@ per-session ``seq`` that increases by one:
   arrive while the tool is still running.
 * ``report``      - a structured report made through the ``report`` tool.
 * ``usage``       - token usage of one model request and the context size.
+  ``summary`` marks the request that summed the conversation up, which is
+  none of the run's own.
+* ``forked``      - the record of a new session was made from another's
+  (``fork``); ``upto`` is the entry of the other the copy ends with.
 * ``model_capability`` - something the session learned about its model: the
   provider refused a request for the pictures in it, so the session goes on
   without pictures (once per session at most); or it refused a request as
@@ -214,6 +224,36 @@ class CloseCommand(_Strict):
     session_id: str
 
 
+class ForkCommand(_Strict):
+    """Make the record of a new session from that of another; see ``nekoclaw.runtime.fork``.
+
+    The copy is made of the other's record as it is on the disk. What a
+    session that is open said and could not write there (the disk
+    refused it, after the retries) is not part of the record: a
+    session opened from it later does not have it, and neither does
+    the copy. That is not an error of the copying.
+    """
+
+    type: Literal["fork"] = "fork"
+    # The session that is made. It must have no record yet.
+    session_id: str = Field(pattern=SESSION_ID_PATTERN)
+    # Where its record is to be kept (``TaskAgentSpec.session_dir`` of its start).
+    session_dir: str = Field(min_length=1)
+    # The session that is copied, and where its record is kept. One that is
+    # open in this runtime has what it said so far written out first.
+    source_session_id: str
+    source_dir: str = Field(min_length=1)
+    # The entry of the other's record the copy is to end with; None for all
+    # of it. The copy ends at the last place at or before it where no tool
+    # call is left without its result.
+    upto: str | None = None
+
+
+class CompactCommand(_Strict):
+    type: Literal["compact"] = "compact"
+    session_id: str
+
+
 class HostResponseCommand(_Strict):
     """Answer to a ``host_request`` event (subprocess shell only)."""
 
@@ -240,6 +280,8 @@ Command = Annotated[
         FollowUpCommand,
         AbortCommand,
         CloseCommand,
+        ForkCommand,
+        CompactCommand,
         HostResponseCommand,
         ShutdownCommand,
     ],
@@ -318,6 +360,21 @@ class UsageEvent(_SessionEvent):
     # Size of the conversation as of this request, and the model's window.
     context_tokens: int = 0
     context_window: int = 0
+    # True for the request that summed the conversation up: it is counted
+    # with what the session used, and says nothing of how long the
+    # conversation is (``context_tokens`` is 0).
+    summary: bool = False
+
+
+class ForkedEvent(_SessionEvent):
+    """The record of a new session (``session_id``) was made from another's."""
+
+    type: Literal["forked"] = "forked"
+    source_session_id: str
+    # The entry of the other's record the copy ends with.
+    upto: str
+    # How many entries were copied.
+    entries: int = 0
 
 
 class ModelCapabilityEvent(_SessionEvent):
@@ -423,6 +480,7 @@ SessionEvent = Union[
     UsageEvent,
     ModelCapabilityEvent,
     CompactedEvent,
+    ForkedEvent,
     EndedEvent,
     ErrorEvent,
 ]
@@ -438,6 +496,7 @@ RuntimeEvent = Annotated[
         UsageEvent,
         ModelCapabilityEvent,
         CompactedEvent,
+        ForkedEvent,
         EndedEvent,
         ErrorEvent,
         HostRequestEvent,

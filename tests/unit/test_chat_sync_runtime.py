@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import sqlite3
+import socket
 import ssl
 import subprocess
 import sys
@@ -580,7 +581,7 @@ async def test_changed_notification_coalesces_only_its_channel_without_http_or_a
 
 
 @pytest.mark.asyncio
-async def test_notification_production_transport_uses_verified_wss_and_closes(tmp_path, local_tls_files):
+async def test_notification_production_transport_uses_verified_wss_and_closes(tmp_path, local_tls_files, localhost_is_ipv4):
     """Exercise the real WSS connector against a disposable TLS socket, not Auth."""
     from websockets.asyncio.server import serve
     ca_path, _, cert_path, key_path = local_tls_files
@@ -612,7 +613,7 @@ async def test_notification_production_transport_uses_verified_wss_and_closes(tm
 
 
 @pytest.mark.asyncio
-async def test_established_silent_wss_wakes_pull_after_approved_heartbeat_deadline(tmp_path, local_tls_files):
+async def test_established_silent_wss_wakes_pull_after_approved_heartbeat_deadline(tmp_path, local_tls_files, localhost_is_ipv4):
     """Use production keepalive against a TLS peer that silently stops reading."""
     from websockets.asyncio.server import serve
     ca_path, _, cert_path, key_path = local_tls_files
@@ -1202,6 +1203,28 @@ def test_redirect_does_not_forward_bearer_even_with_redirecting_injected_client(
 
 
 @pytest.fixture
+async def localhost_is_ipv4(monkeypatch):
+    """Resolve ``localhost`` to 127.0.0.1 only, where the test peers listen.
+
+    The leaf certificate names ``localhost``, so the client has to dial that
+    name. Windows resolves it to ``::1`` first, and a refused connect there is
+    retried for about two seconds before 127.0.0.1 is tried, which eats most of
+    the production connector's 3 s ``open_timeout`` and fails the first
+    subscription on a busy runner. Only this test loop's resolver changes; the
+    production connector, TLS chain and hostname checks run as shipped.
+    """
+    loop = asyncio.get_running_loop()
+    resolve = loop.getaddrinfo
+
+    async def getaddrinfo(host, port, *, family=0, **kwargs):
+        if host == "localhost":
+            family = socket.AF_INET
+        return await resolve(host, port, family=family, **kwargs)
+
+    monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
+
+
+@pytest.fixture
 def local_tls_files(tmp_path):
     """Issue a disposable localhost leaf from a test CA using an existing dependency."""
     from cryptography import x509
@@ -1454,16 +1477,31 @@ def test_shutdown_does_not_register_or_start_late_runtime_construction(tmp_path,
     async def scenario():
         from services.chat_sync import runtime as module
         entered, release, completed = threading.Event(), threading.Event(), threading.Event()
-        created = []
+        # Liveness bounds only; each wait returns as soon as its event is set.
+        # entered covers construct()'s first-use memory imports and adapter
+        # setup, which run before this stand-in is called. After release the
+        # real DesktopChatSyncRuntime still opens six SQLite files and the
+        # writer witness in a worker thread. That measured ~0.12 s on Linux but
+        # overran a 1 s bound on a loaded Windows runner (random-order run,
+        # seed 884835068), so give both waits real headroom.
+        wait_s = 10
+        created, errors = [], []
         original = module.DesktopChatSyncRuntime
 
         def blocked(*args, **kwargs):
             """Block only disposable construction, never application or real data."""
             entered.set()
-            assert release.wait(2)
-            runtime = original(*args, **kwargs)
-            created.append(runtime)
-            completed.set()
+            try:
+                assert release.wait(wait_s)
+                runtime = original(*args, **kwargs)
+                created.append(runtime)
+            except BaseException as exc:
+                # With bootstrap=True nobody awaits this thread any more, so an
+                # exception here would otherwise read as a plain timeout below.
+                errors.append(exc)
+                raise
+            finally:
+                completed.set()
             return runtime
 
         monkeypatch.setattr(module, "DesktopChatSyncRuntime", blocked)
@@ -1473,13 +1511,18 @@ def test_shutdown_does_not_register_or_start_late_runtime_construction(tmp_path,
             request = None
         else:
             request = asyncio.create_task(module.get_desktop_chat_sync_runtime(manager))
-        assert await asyncio.to_thread(entered.wait, 1)
-        await module.close_desktop_chat_sync_runtimes()
-        release.set()
+        try:
+            assert await asyncio.to_thread(entered.wait, wait_s)
+            await module.close_desktop_chat_sync_runtimes()
+        finally:
+            # Never leave the worker thread parked on release if the scenario
+            # fails early; that would only add a second, misleading error.
+            release.set()
         if request is not None:
             with pytest.raises(ValueError, match="chat_sync_closing"):
                 await request
-        assert await asyncio.to_thread(completed.wait, 1)
+        assert await asyncio.to_thread(completed.wait, wait_s)
+        assert errors == []
         assert len(created) == 1 and created[0].http is None and created[0]._scheduler_task is None
         assert not created[0]._background
         assert module._runtimes == {}
