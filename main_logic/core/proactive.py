@@ -51,7 +51,6 @@ from main_logic.proactive_delivery import (
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language_full
 from utils.desktop_capture import capture_desktop_screenshot
-from utils.deployment import is_remote_backend_deployment
 from utils.loopback import is_direct_loopback_peer
 import main_logic.core as _core_facade
 from uuid import uuid4
@@ -404,6 +403,9 @@ class ProactiveMixin:
         try:
             ws = self.websocket
             if ws and hasattr(ws, 'client') and ws.client:
+                # Same entry point as the screenshot route; imported lazily like
+                # manager.py does, since main_logic.activity's package init is heavy.
+                from main_logic.activity.system_signals import is_remote_backend_deployment
                 # Same policy as the backend screenshot route: a direct loopback
                 # peer (dual-stack ::ffff:127.0.0.1 included), no proxy-forwarded
                 # connection in proxy mode, and never in remote deployments.
