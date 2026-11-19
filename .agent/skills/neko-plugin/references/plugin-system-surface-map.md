@@ -209,7 +209,7 @@ Source: [base.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/sd
 ### Routers: `PluginRouter`
 
 - A `PluginRouter(prefix="", tags=None, name=None)`: Groups entries for large plugins. Use when the main plugin module is too large or feature ownership is split.
-- B `prefix` property, `set_prefix(prefix)`: Controls id prefixing for router entries. Prefer a stable prefix chosen at design time.
+- B `prefix` property, `set_prefix(prefix)`: Controls id prefixing for router entries. Routers listed in `__routers__` should not use it: the host's static scan ignores the prefix (Router Contract in `core-plugin-contract.md`).
 - B `tags` property: Returns router tags. Use for diagnostics or future grouping; do not rely on it for dispatch.
 - B `is_bound()`: Reports whether the router is mounted to a plugin. Use for diagnostics.
 - B `entry_ids()`: Lists resolved entry ids. Use in tests or UI diagnostics.
