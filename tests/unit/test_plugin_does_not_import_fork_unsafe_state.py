@@ -30,7 +30,11 @@ def _import_function_names(tree: ast.AST) -> set[str]:
     names = {'__import__'}  # a builtin; import_module counts only when bound from importlib
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == 'importlib':
-            names.update(alias.asname or alias.name for alias in node.names if alias.name == 'import_module')
+            for alias in node.names:
+                if alias.name == '*':  # importlib.__all__ exports import_module
+                    names.add('import_module')
+                elif alias.name == 'import_module':
+                    names.add(alias.asname or alias.name)
     return names
 
 
@@ -81,6 +85,11 @@ def test_plugin_code_does_not_import_recent_file_or_chat_sync():
         'inherited half-updated. Make that state fork-safe before using it from plugins.\n'
         + '\n'.join(violations)
     )
+
+
+def test_scanner_catches_import_module_from_a_star_import():
+    tree = ast.parse('from importlib import *\nimport_module("utils.recent_file")\n')
+    assert [module for _, module in _imported_modules(tree) if _forbidden(module)] == ['utils.recent_file']
 
 
 def test_scanner_ignores_an_unbound_import_module_name():
