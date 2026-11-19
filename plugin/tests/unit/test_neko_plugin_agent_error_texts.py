@@ -31,6 +31,8 @@ CITED_ERROR_TEXTS = (
     (SKILL_DIR / "references" / "runtime-model.md", "Entry must be 'async def'"),
     (SKILL_DIR / "references" / "runtime-model.md", "Plugin event-loop stall"),
     (SKILL_DIR / "references" / "core-plugin-contract.md", "PLUGIN_OUTPUT_SCHEMA_VIOLATION"),
+    (SKILL_DIR / "references" / "core-plugin-contract.md", "EntryConflictError"),
+    (SKILL_DIR / "references" / "dependencies-and-market.md", "MissingPythonDependencies"),
 )
 
 
