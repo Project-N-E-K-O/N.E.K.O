@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
-from utils.chatgpt_subscription import enable, disable, preview, revision, supported_slots
+from utils.chatgpt_subscription import (
+    enable, disable, preview, restricted_slots, revision, runtime_custom_api, supported_slots,
+)
 
 
 @pytest.fixture
@@ -15,6 +17,108 @@ def manager(clean_user_data_dir):
     result = get_config_manager('N.E.K.O')
     result.config_dir.mkdir(parents=True, exist_ok=True)
     return result
+
+
+@pytest.mark.parametrize('raw_value, expected', [
+    (False, False), (True, True), ('false', False), ('true', True),
+    (' OFF ', False), (' On ', True), ('0', False), ('1', True),
+    (0, False), (1, True), (None, False),
+])
+def test_legacy_boolean_flags_preserve_subscription_scope_and_exact_restore(raw_value, expected):
+    config = {'enableCustomApi': raw_value}
+    original = deepcopy(config)
+    slots = ['conversation']
+    available_slots = ['conversation', 'omni', 'tts', 'image']
+
+    enabled, active_slots = runtime_custom_api(config)
+    assert enabled is expected
+    assert active_slots == []
+    assert restricted_slots(config, available_slots) == []
+
+    enable(config, slots, 'model', revision(config, slots))
+    # Saved snapshots from older versions retain the original JSON value.
+    config = json.loads(json.dumps(config))
+    enabled, active_slots = runtime_custom_api(config)
+    assert enabled is expected
+    assert active_slots == ([] if expected else slots)
+    assert restricted_slots(config, available_slots) == ([] if expected else ['omni', 'tts', 'image'])
+    assert config['chatgptSubscription']['before'] == original
+
+    assert disable(config)
+    assert config == original
+    enabled, active_slots = runtime_custom_api(config)
+    assert enabled is expected
+    assert active_slots == []
+
+
+def test_missing_custom_api_flag_preserves_scope_and_field_absence():
+    config = {}
+    slots = ['conversation']
+    assert runtime_custom_api(config) == (False, [])
+    enable(config, slots, 'model', revision(config, slots))
+    assert runtime_custom_api(config) == (False, slots)
+    assert restricted_slots(config, ['conversation', 'tts']) == ['tts']
+    assert disable(config)
+    assert config == {}
+    assert runtime_custom_api(config) == (False, [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('custom', [False, 'false', ' OFF ', True, 'true'])
+async def test_save_connectivity_targets_follow_effective_subscription_scope(custom, monkeypatch):
+    from main_routers.config_router import connectivity
+    from utils.config_manager._shared import _as_bool
+
+    # Each dormant provider has two endpoints so an accidental target would
+    # trigger region probing when ordinary settings are saved.
+    profiles = {
+        name: {'openrouter_urls': [f'https://first.{name}.test/v1', f'https://second.{name}.test/v1'],
+               'is_free_version': True}
+        for name in ('text-provider', 'speech-provider')
+    }
+    api_config = {
+        'assist_api_providers': profiles,
+        'core_api_providers': {
+            'realtime-provider': {
+                'core_urls': ['wss://first.test/v1', 'wss://second.test/v1'],
+                'is_free_version': True,
+            },
+        },
+    }
+    config = {'enableCustomApi': custom, 'coreApi': 'core', 'assistApi': 'assist',
+              'conversationModelProvider': 'text-provider',
+              'ttsModelProvider': 'speech-provider', 'omniModelProvider': 'realtime-provider'}
+    http_probe = AsyncMock(return_value={'success': True})
+    websocket_probe = AsyncMock(return_value={'success': True})
+    monkeypatch.setattr('utils.api_config_loader.get_config', lambda: api_config)
+    monkeypatch.setattr(connectivity, '_test_openai_compatible', http_probe)
+    monkeypatch.setattr(connectivity, '_test_websocket', websocket_probe)
+
+    async def assert_probe_targets(expected):
+        http_probe.reset_mock()
+        websocket_probe.reset_mock()
+        targets = connectivity._build_save_connectivity_targets(config, api_config)
+        assert set(targets) == expected
+        result = await connectivity._auto_resolve_provider_urls_for_save(config)
+        assert result['success'] == len(expected)
+        assert result['failed'] == 0
+        assert set(result['results']) == expected
+        calls = http_probe.await_args_list + websocket_probe.await_args_list
+        assert {call.args[0] for call in calls} == {
+            url for target in targets.values() for url in target['urls']
+        }
+
+    expected = ({'assist:text-provider', 'assist:speech-provider', 'core:realtime-provider'}
+                if _as_bool(custom) else set())
+    await assert_probe_targets(expected)
+
+    slots = ['conversation']
+    enable(config, slots, 'model', revision(config, slots))
+    # A subscribed slot may subsequently select another built-in provider.
+    config['conversationModelProvider'] = 'text-provider'
+    await assert_probe_targets(expected if _as_bool(custom) else {'assist:text-provider'})
+    assert disable(config)
+    await assert_probe_targets(expected)
 
 
 @pytest.mark.parametrize('custom', [False, True])

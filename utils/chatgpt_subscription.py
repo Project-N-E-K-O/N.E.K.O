@@ -26,9 +26,9 @@ def fields(slots):
 
 def restricted_slots(config, available_slots):
     """List independent slots that stayed dormant when the subscription started."""
-    state = config.get(STATE_KEY) or {}
-    if state and not state['before'].get('enableCustomApi', False):
-        return [slot for slot in available_slots if slot not in state['slots']]
+    custom_api_enabled, slots = runtime_custom_api(config)
+    if config.get(STATE_KEY) and not custom_api_enabled:
+        return [slot for slot in available_slots if slot not in slots]
     return []
 
 
@@ -76,7 +76,11 @@ def disable(config):
 
 def runtime_custom_api(config):
     """Enabling text slots must not activate dormant custom speech/image settings."""
+    from utils.config_manager._shared import _as_bool
+
     state = config.get(STATE_KEY) or {}
-    if state and not state['before'].get('enableCustomApi', False):
+    # Normalize on read, including legacy snapshots, so disable can still
+    # restore the original value and field presence exactly.
+    if state and not _as_bool(state['before'].get('enableCustomApi', False)):
         return False, state['slots']
-    return config.get('enableCustomApi', False), []
+    return _as_bool(config.get('enableCustomApi', False)), []

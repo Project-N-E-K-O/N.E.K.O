@@ -321,9 +321,16 @@ def test_get_tts_worker_vllm_omni_clone_uses_stored_base_url(monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("custom_api_before", [None, False, True], ids=["missing", "disabled", "enabled"])
+@pytest.mark.parametrize("custom_api_before, custom_api_enabled", [
+    (None, False), (False, False), (True, True),
+    ("false", False), ("true", True), ("0", False), ("1", True),
+    (" OFF ", False), (" On ", True),
+], ids=["missing", "disabled", "enabled", "string-false", "string-true",
+        "string-zero", "string-one", "string-off", "string-on"])
 @pytest.mark.parametrize("configured_url", ["ws://127.0.0.1:8091/v1", ""], ids=["configured-url", "default-url"])
-def test_vllm_omni_clone_endpoint_survives_subscription_toggle(monkeypatch, custom_api_before, configured_url):
+def test_vllm_omni_clone_endpoint_survives_subscription_toggle(
+    monkeypatch, custom_api_before, custom_api_enabled, configured_url,
+):
     """Text-only subscription toggles must preserve the effective clone endpoint."""
     from utils.chatgpt_subscription import disable, enable, revision
 
@@ -336,10 +343,10 @@ def test_vllm_omni_clone_endpoint_survives_subscription_toggle(monkeypatch, cust
     cm = _CMBase(
         {"vllm-omni-clone-s": _vllm_clone_meta(sample, vllm_omni_base_url=stored_url)},
         raw_json=raw,
-        core_config={"ENABLE_CUSTOM_API": bool(custom_api_before), "ttsModelProvider": "vllm_omni"},
+        core_config={"ENABLE_CUSTOM_API": custom_api_enabled, "ttsModelProvider": "vllm_omni"},
     )
     monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
-    expected_url = (configured_url or "ws://localhost:8091/v1") if custom_api_before else stored_url
+    expected_url = (configured_url or "ws://localhost:8091/v1") if custom_api_enabled else stored_url
 
     def assert_clone_endpoint():
         worker, api_key, provider_key = tts_client.get_tts_worker(
