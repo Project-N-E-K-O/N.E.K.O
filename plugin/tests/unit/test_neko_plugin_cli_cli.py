@@ -2061,6 +2061,19 @@ def test_agent_kit_guards_treat_a_windows_junction_as_a_link(
     assert (plugin_dir / "AGENTS.md").is_file()
 
 
+def test_check_ignores_an_agent_kit_snapshot_it_cannot_read(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "unreadable_kit")
+    skill_entry = plugin_dir / agent_kit.SKILL_TARGET_DIR / "SKILL.md"
+    skill_entry.parent.mkdir(parents=True)
+    skill_entry.write_bytes(b"\xff\xfe not utf-8 \x80")
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
+
+
 def test_check_ignores_an_agent_kit_it_cannot_inspect(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

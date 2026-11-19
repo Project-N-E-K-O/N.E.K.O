@@ -264,7 +264,9 @@ def _diagnose_agent_kit(plugin_dir: Path) -> list[Issue]:
     try:
         stamp = agent_kit.snapshot_cli_version(entry.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError):
-        stamp = None
+        # Unreadable: as when it cannot be inspected, an advisory check
+        # stays silent rather than suggest rewriting a file it cannot read.
+        return []
     current = agent_kit.CLI_VERSION
     if stamp is not None:
         try:
