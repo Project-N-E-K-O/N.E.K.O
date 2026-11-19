@@ -81,7 +81,7 @@ version = "0.1.0"
 n.e.k.o_plugin_hello_world
 ```
 
-命名规则是 `n.e.k.o_plugin_<插件 ID>`。创建仓库时不要让 GitHub 自动添加 README、`.gitignore` 或 License，因为插件目录中已经有需要提交的文件。
+推荐的命名规则是 `n.e.k.o_plugin_<插件 ID>`；名称不一致时，`neko-plugin check -r --market-release` 只给出警告。创建仓库时不要让 GitHub 自动添加 README、`.gitignore` 或 License，因为插件目录中已经有需要提交的文件。
 
 然后进入插件目录，提交并推送源码：
 
@@ -337,4 +337,4 @@ check
 
 这篇教程假定插件目录本身包含 `.git/`，并且有标准 `verify.yml` 和 `release.yml`。使用当前快速开始中的 `neko-plugin init` 创建的插件已经满足这些条件。
 
-如果现有插件只由外层 N.E.K.O 仓库跟踪，插件目录自身没有 `.git/`，当前 `publish` 会停止；CLI 目前没有把这种目录自动转换成可发布插件仓库的命令。不要用复制目录、安装包导入或符号链接伪装成发布流程。
+如果现有插件只由外层 N.E.K.O 仓库跟踪，插件目录自身没有 `.git/`，当前 `publish` 会停止。可以用 `neko-plugin setup-repo <plugin> --git --github-actions` 转换这个目录（加 `--remote <url>` 设置 `origin`），它会为插件建立自己的 Git 仓库和标准工作流；`neko-plugin create-repo <plugin>` 可以用 `gh` 创建 GitHub 仓库。不要用复制目录、安装包导入或符号链接伪装成发布流程。

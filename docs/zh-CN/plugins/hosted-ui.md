@@ -285,6 +285,8 @@ tr("actions.refresh.label", default="Refresh")
 self.i18n.t("messages.done", default="Done")
 ```
 
+`self.i18n.t(...)` 不跟随查看者的语言：不传 `locale=` 时使用插件的 `default_locale`，然后是 `en`，最后是 `default` 参数或键名。需要按每个用户语言显示的文本，请放在 `tr(...)` 声明里（由宿主按用户解析），或用 TSX 的 `props.t(...)`。
+
 ```tsx
 // TSX 运行时：所有可见 UI 文本优先用 props.t(...)。
 props.t("panel.subtitle")
@@ -372,6 +374,8 @@ type HostedApi = {
   ```toml
   permissions = ["state:read", "document:parse"]
   ```
+
+  `neko-plugin check` 目前仍会警告 `document:parse` 不是可识别的 UI 权限（[#3809](https://github.com/Project-N-E-K-O/N.E.K.O/issues/3809)）。运行时接受这个权限；该警告不会让检查失败，可以忽略。
 
   请在真实用户操作的事件处理器中直接调用，例如文件输入框的 `onChange`、点击或拖放。Hosted UI 运行时会把这些处理器内的同步调用标记为用户发起；先执行无关异步工作、再调用会被拒绝。
 - `api.refresh()` 重新拉取 context 并重新渲染。

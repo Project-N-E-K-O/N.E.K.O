@@ -138,17 +138,10 @@ uv run neko-plugin check hello_world
 新しいプロジェクトでは次のように表示されます：
 
 ```text
-[OK] hello_world: check found 0 error(s), 4 warning(s)
+[OK] hello_world: check found 0 error(s), ... warning(s)
 ```
 
-4 件の warning は次のとおりです：
-
-- `startup` lifecycle hook がない
-- `shutdown` lifecycle hook がない
-- Git remote が設定されていない
-- Git worktree に未 commit のファイルがある
-
-この Hello World plugin には startup と shutdown hook は不要です。Git remote と commit の warning は公開時にだけ影響します。どの warning も plugin の実行を妨げません。`[FAIL]` または error が表示された場合は停止し、コマンドの修正案に従ってください。
+この段階の warning はどれも Git に関するものです（例：`origin` remote が設定されていない、plugin のリポジトリに未 commit のファイルがある）。公開時にだけ影響し、plugin の実行は妨げません。`[FAIL]` または error が表示された場合は停止し、コマンドの修正案に従ってください。
 
 ## CLI が作成したもの
 
@@ -157,6 +150,9 @@ plugin/plugins/hello_world/
 ├── .git/
 ├── .gitignore
 ├── .vscode/
+├── .agents/skills/neko-plugin/   ← コーディングエージェント向けガイド
+├── AGENTS.md
+├── CLAUDE.md
 ├── plugin.toml
 ├── config.example.toml
 ├── __init__.py

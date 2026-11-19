@@ -81,7 +81,7 @@ Create a public, empty GitHub repository named:
 n.e.k.o_plugin_hello_world
 ```
 
-The required naming pattern is `n.e.k.o_plugin_<plugin ID>`. Do not ask GitHub to add a README, `.gitignore`, or license when creating the repository, because the plugin directory already contains the files you need to commit.
+The recommended naming pattern is `n.e.k.o_plugin_<plugin ID>`; `neko-plugin check -r --market-release` only warns when the repository name differs. Do not ask GitHub to add a README, `.gitignore`, or license when creating the repository, because the plugin directory already contains the files you need to commit.
 
 Then enter the plugin directory, commit the source, and push it:
 
@@ -337,4 +337,4 @@ Edit the source
 
 This guide assumes that the plugin directory itself contains `.git/` and the standard `verify.yml` and `release.yml`. A plugin created with the current `neko-plugin init` command from the quick start already meets these requirements.
 
-If an existing plugin is tracked only by the outer N.E.K.O repository and has no `.git/` directory of its own, the current `publish` command stops. The CLI does not currently provide a command that converts such a directory into a publishable plugin repository. Do not use directory copies, package imports, or symbolic links to imitate the publication workflow.
+If an existing plugin is tracked only by the outer N.E.K.O repository and has no `.git/` directory of its own, the current `publish` command stops. Convert the directory with `neko-plugin setup-repo <plugin> --git --github-actions` (add `--remote <url>` to set `origin`), which creates the plugin's own Git repository and the standard workflows; `neko-plugin create-repo <plugin>` can create the GitHub repository with `gh`. Do not use directory copies, package imports, or symbolic links to imitate the publication workflow.

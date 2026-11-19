@@ -86,7 +86,7 @@ class SearchParams(BaseModel):
 
 @plugin_entry(id="search", name="Search", description="Search for content")
 async def search(self, params: SearchParams):
-    self.logger.info("Searching: {} (max {})", params.query, params.max_results)
+    self.logger.info("Searching (max %d)", params.max_results)  # do not log the raw query
     results = await self._do_search(params.query, params.max_results)
     return Ok({"results": results, "count": len(results)})
 ```
@@ -193,7 +193,7 @@ An explicit `output_schema` wins over the annotation. An entry with neither has 
 
 **Return the model, not a serialized dict.** The check builds the model from the returned data, with the model's input rules. Data that the model has already serialized may not read back: `finish(data=model)` emits field names (a field with an alias is then reported missing), and `@field_serializer`, `exclude=True` or differing validation and serialization aliases change the shape too. For such models, return the model instance itself, or turn `strict_output` off.
 
-The contract is listed as `output_schema` (and `strict_output`) in the plugin's entries. `register_dynamic_entry()` and a router's `add_entry()` accept an explicit `output_schema` too (published only); the runtime check comes from a Pydantic return annotation on `@plugin_entry`. `output_schema`/`strict_output` in a `[[plugin.entries]]` table are ignored (`neko-plugin validate` warns). The task agent's capability gateway does not publish it.
+The contract is listed as `output_schema` (and `strict_output`) in the plugin's entries. `register_dynamic_entry()` and a router's `add_entry()` accept an explicit `output_schema` too (published only); the runtime check comes from a Pydantic return annotation on `@plugin_entry`. `output_schema`/`strict_output` in a `[[plugin.entries]]` table are ignored (`neko-plugin check` warns). The task agent's capability gateway does not publish it.
 
 ---
 
@@ -244,7 +244,7 @@ async def on_startup(self):
             }),
         )
 
-    self.logger.info("Registered {} dynamic entries", len(commands))
+    self.logger.info("Registered %d dynamic entries", len(commands))
     return Ok({"status": "ready"})
 
 def _make_handler(self, cmd_info):

@@ -286,6 +286,8 @@ tr("actions.refresh.label", default="Refresh")
 self.i18n.t("messages.done", default="Done")
 ```
 
+`self.i18n.t(...)` does not follow the viewer's language: without `locale=` it uses the plugin `default_locale`, then `en`, then the `default` argument or key name. Text that must appear in each user's language belongs in `tr(...)` declarations (resolved by the host per user) or in TSX `props.t(...)`.
+
 ```tsx
 // TSX runtime: use props.t(...) for visible UI text.
 props.t("panel.subtitle")
@@ -373,6 +375,8 @@ type HostedApi = {
   ```toml
   permissions = ["state:read", "document:parse"]
   ```
+
+  `neko-plugin check` currently still warns that `document:parse` is not a recognized UI permission ([#3809](https://github.com/Project-N-E-K-O/N.E.K.O/issues/3809)). The runtime accepts it; this warning does not fail the check and can be ignored.
 
   Call it directly from a real user event handler, such as a file input's `onChange`, a click, or a drop. The Hosted UI runtime marks synchronous calls from those handlers as user initiated; a call made after unrelated asynchronous work is rejected.
 - `api.refresh()` fetches the latest context and re-renders the surface.

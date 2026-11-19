@@ -86,7 +86,7 @@ class SearchParams(BaseModel):
 
 @plugin_entry(id="search", name="搜索", description="搜索内容")
 async def search(self, params: SearchParams):
-    self.logger.info("搜索: {} (最多{}条)", params.query, params.max_results)
+    self.logger.info("搜索（最多 %d 条）", params.max_results)  # 不要记录原始查询内容
     results = await self._do_search(params.query, params.max_results)
     return Ok({"results": results, "count": len(results)})
 ```
@@ -193,7 +193,7 @@ async def search(self, query: str):
 
 **请返回 model 本身，不要返回序列化后的字典。** 检查是用返回的数据、按 model 的输入规则构造 model。model 已经序列化过的数据不一定能还原：`finish(data=model)` 输出的是字段名（字段设了别名时会被报成缺失），`@field_serializer`、`exclude=True`、校验别名和序列化别名不同，也都会改变形状。这类 model 请直接返回实例，或者不开 `strict_output`。
 
-插件的入口列表里会带上 `output_schema`（和 `strict_output`）。`register_dynamic_entry()` 和 Router 的 `add_entry()` 也能声明显式的 `output_schema`（只发布）；运行时检查只来自 `@plugin_entry` 上的 Pydantic 返回注解。写在 `[[plugin.entries]]` 表里的 `output_schema`/`strict_output` 会被忽略（`neko-plugin validate` 会提示）。任务 Agent 的能力网关不对外发布它。
+插件的入口列表里会带上 `output_schema`（和 `strict_output`）。`register_dynamic_entry()` 和 Router 的 `add_entry()` 也能声明显式的 `output_schema`（只发布）；运行时检查只来自 `@plugin_entry` 上的 Pydantic 返回注解。写在 `[[plugin.entries]]` 表里的 `output_schema`/`strict_output` 会被忽略（`neko-plugin check` 会提示）。任务 Agent 的能力网关不对外发布它。
 
 ---
 
@@ -244,7 +244,7 @@ async def on_startup(self):
             }),
         )
 
-    self.logger.info("注册了 {} 个动态入口", len(commands))
+    self.logger.info("注册了 %d 个动态入口", len(commands))
     return Ok({"status": "ready"})
 
 def _make_handler(self, cmd_info):

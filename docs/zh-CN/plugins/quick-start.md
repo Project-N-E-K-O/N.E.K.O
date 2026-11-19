@@ -155,17 +155,10 @@ uv run neko-plugin check hello_world
 新项目会显示：
 
 ```text
-[OK] hello_world: check found 0 error(s), 4 warning(s)
+[OK] hello_world: check found 0 error(s), ... warning(s)
 ```
 
-四条警告分别是：
-
-- 还没有 `startup` 生命周期钩子
-- 还没有 `shutdown` 生命周期钩子
-- 还没有配置 Git remote
-- Git 工作区中有尚未提交的文件
-
-这个 Hello World 插件不需要启动和关闭钩子；Git remote 和提交也只影响后续发布。四条警告都不会阻止它运行。以后出现 `[FAIL]` 或 error 时，才需要先停下来，按照命令给出的提示修复。
+这一步的警告都和 Git 有关（例如还没有配置 `origin` remote，或插件仓库里有尚未提交的文件）。它们只影响后续发布，不会阻止插件运行。以后出现 `[FAIL]` 或 error 时，才需要先停下来，按照命令给出的提示修复。
 
 ## CLI 已经为你准备了什么
 
@@ -174,6 +167,9 @@ plugin/plugins/hello_world/
 ├── .git/
 ├── .gitignore
 ├── .vscode/
+├── .agents/skills/neko-plugin/   ← 给编码 Agent 的指南
+├── AGENTS.md
+├── CLAUDE.md
 ├── plugin.toml
 ├── config.example.toml
 ├── __init__.py

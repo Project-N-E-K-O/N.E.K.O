@@ -87,7 +87,7 @@ class SearchParams(BaseModel):
 
 @plugin_entry(id="search", name="Search", description="Search for content")
 async def search(self, params: SearchParams):
-    self.logger.info("Searching: {} (max {})", params.query, params.max_results)
+    self.logger.info("Searching (max %d)", params.max_results)  # 生の検索語はログに残さない
     results = await self._do_search(params.query, params.max_results)
     return Ok({"results": results, "count": len(results)})
 ```
@@ -195,7 +195,7 @@ async def search(self, query: str):
 
 **シリアライズした dict ではなく、モデルそのものを返してください。** 検査は返したデータからモデルの入力ルールでモデルを構築します。すでにシリアライズされたデータは元に戻せないことがあります。`finish(data=model)` はフィールド名を出力するため（エイリアスのあるフィールドは欠落と報告されます）、また `@field_serializer`、`exclude=True`、検証用とシリアライズ用で異なるエイリアスも形を変えます。そのようなモデルはインスタンスをそのまま返すか、`strict_output` を使わないでください。
 
-プラグインのエントリー一覧には `output_schema`（と `strict_output`）が含まれます。`register_dynamic_entry()` と Router の `add_entry()` でも明示的な `output_schema` を宣言できます（公開のみ）。実行時の検査は `@plugin_entry` の Pydantic 戻り値型注釈からだけ行われます。`[[plugin.entries]]` テーブルに書いた `output_schema`/`strict_output` は無視されます（`neko-plugin validate` が警告します）。タスク Agent の capability gateway はこれを公開しません。
+プラグインのエントリー一覧には `output_schema`（と `strict_output`）が含まれます。`register_dynamic_entry()` と Router の `add_entry()` でも明示的な `output_schema` を宣言できます（公開のみ）。実行時の検査は `@plugin_entry` の Pydantic 戻り値型注釈からだけ行われます。`[[plugin.entries]]` テーブルに書いた `output_schema`/`strict_output` は無視されます（`neko-plugin check` が警告します）。タスク Agent の capability gateway はこれを公開しません。
 
 ---
 
@@ -246,7 +246,7 @@ async def on_startup(self):
             }),
         )
 
-    self.logger.info("Registered {} dynamic entries", len(commands))
+    self.logger.info("Registered %d dynamic entries", len(commands))
     return Ok({"status": "ready"})
 
 def _make_handler(self, cmd_info):
