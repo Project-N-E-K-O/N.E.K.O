@@ -55,9 +55,9 @@ class RawScorerMustNotRun:
         raise AssertionError("raw mixed PCM must not decide candidate delivery")
 
 
-def make_selector(backend):
-    scheduler = ControlledScoringScheduler(backend, window_plan=ScoringWindowPlan((1600,)), max_outstanding_jobs=2, max_buffered_pcm_bytes=6400, deadline_seconds=1, close_timeout_seconds=.1)
-    return CandidateIdentitySelector(bound(), scheduler=scheduler, classifier=CandidateClassifier(), deadline_seconds=1, max_buffered_pcm_bytes=6400)
+def make_selector(backend, *, deadline_seconds=1):
+    scheduler = ControlledScoringScheduler(backend, window_plan=ScoringWindowPlan((1600,)), max_outstanding_jobs=2, max_buffered_pcm_bytes=6400, deadline_seconds=deadline_seconds, close_timeout_seconds=.1)
+    return CandidateIdentitySelector(bound(), scheduler=scheduler, classifier=CandidateClassifier(), deadline_seconds=deadline_seconds, max_buffered_pcm_bytes=6400)
 
 
 class WindowSource:

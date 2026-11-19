@@ -453,7 +453,7 @@ function discardCancelledScreenSharingStart(attempt) {{
   discardCalls += 1;
   return attempt.cancelled;
 }}
-function releaseReusedStreamUnderPrivacy() {{}}
+function releaseReusedStreamIfUnheld() {{}}
 async function startScreenSharingOnce(attempt) {{
   startCalls += 1;
   await new Promise((resolve) => {{ releaseStart = resolve; }});
@@ -756,7 +756,9 @@ def test_every_screen_share_toggle_treats_a_pending_start_as_on():
     stale_guard = start_once.index(
         "if (S.screenCaptureStream !== captureStream)", onended
     )
-    onended_stop = start_once.index("stopScreening();", onended)
+    onended_stop = start_once.index(
+        "handleScreenCaptureTrackEnded(captureStream);", onended
+    )
     assert stale_guard < onended_stop
     activate = start_once.index("screenButton().classList.add('active')")
     activation_guard = start_once.rfind(

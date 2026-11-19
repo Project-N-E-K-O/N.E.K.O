@@ -251,6 +251,10 @@ async def test_failed_facts_remain_retryable_after_diagnostic_threshold(
 
     monkeypatch.setattr(sync_worker, "MAX_FAILED_ATTEMPTS", 2)
     monkeypatch.setattr(sync_worker, "_post_facts_batch", fail_batch)
+    # The ownership gate reads process-wide login/device-hold state that earlier
+    # tests may have left behind; a closed gate skips the upload and leaves
+    # failed_counts empty. This test is about retry bookkeeping, so open it.
+    monkeypatch.setattr(sync_worker, "_device_bound_to_other_account", lambda: False)
 
     for _attempt in range(3):
         await sync_worker._sync_one_lanlan(

@@ -309,9 +309,9 @@ class MessagePlaneRpcClient:
             await sock.send(raw, flags=0, copy=False, track=False)
         except Exception:
             return None
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         while True:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 return None
             try:

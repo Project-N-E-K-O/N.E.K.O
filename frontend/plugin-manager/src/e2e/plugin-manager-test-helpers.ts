@@ -70,6 +70,9 @@ export async function isolateAppearanceApis(page: Page) {
   await page.route('**/market/oauth/status', (route) =>
     route.fulfill({ json: { authenticated: false, auth_state: 'disconnected' } })
   )
+  await page.route('**/market/feedback?*', route =>
+    route.fulfill({ status: 409, json: { detail: { code: 'market_auth_required' } } })
+  )
   await page.route('**/market/installed?*', (route) => route.fulfill({ json: { items: [] } }))
   await page.route('**/plugin-cli/plugins', (route) =>
     route.fulfill({ json: { plugins: [], plugin_refs: [], count: 0 } })

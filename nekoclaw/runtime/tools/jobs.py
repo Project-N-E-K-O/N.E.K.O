@@ -183,6 +183,14 @@ class JobRegistry:
     def running(self) -> list[Job]:
         return [job for job in self.visible() if job.active]
 
+    def waking(self) -> list[Job]:
+        """Return the running jobs whose end tells the session, which starts its next run.
+
+        Not one that whoever stopped it already knows about (the model's own
+        ``job_kill``): nothing follows its end.
+        """
+        return [job for job in self.running() if not job.notice_suppressed]
+
     def remove(self, job: Job) -> None:
         self._jobs.pop(job.id, None)
         self.pending_notices.pop(job.id, None)

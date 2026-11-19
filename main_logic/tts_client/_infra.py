@@ -342,9 +342,14 @@ def enqueue_configured_tts_failure(response_queue, provider_key: str, stage: str
     _enqueue_error(response_queue, configured_tts_failure_payload(provider_key, stage))
 
 try:
-    from websockets.connection import State as _WsState
+    # websockets >= 11 renamed websockets.connection to websockets.protocol;
+    # the old module name is deprecated and disappearing from newer releases.
+    from websockets.protocol import State as _WsState
 except (ImportError, AttributeError):
-    _WsState = None
+    try:
+        from websockets.connection import State as _WsState
+    except (ImportError, AttributeError):
+        _WsState = None
 
 def _ws_is_open(ws_conn) -> bool:
     """Connection-state check compatible with different websockets versions."""

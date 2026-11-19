@@ -709,7 +709,7 @@ async def test_actual_connector_saves_exact_reply_and_keeps_memory_projection_se
     queue.put_nowait({"type": "system", "data": "session end", "_memory_settlement_done": completed})
     connector = asyncio.create_task(cross_server.run_sync_connector(queue, "Lan", config={"monitor": False, "bullet": False}))
     try:
-        await asyncio.wait_for(completed, 1)
+        await asyncio.wait_for(completed, 10)  # Hang guard only.
     finally:
         connector.cancel()
         await asyncio.gather(connector, return_exceptions=True)

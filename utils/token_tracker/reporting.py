@@ -25,6 +25,7 @@ import secrets
 import time
 import urllib.request
 import urllib.error
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from utils.file_utils import atomic_write_json
@@ -54,6 +55,12 @@ _TELEMETRY_REPORT_INTERVAL = 60
 _TELEMETRY_TIMEOUT = 10  # Seconds.
 
 _TELEMETRY_GZIP_THRESHOLD = 1024
+
+# Final saves must not queue behind work whose stop signal is issued by
+# shutdown. One shared worker also serializes periodic and shutdown saves.
+# The executor is lazy. Normal interpreter shutdown joins its IO before atexit;
+# os._exit (including merged-mode exit) skips both, so pending saves may be lost.
+_SAVE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="token-save")
 
 def _compute_telemetry_signature(payload_json: str, timestamp: float) -> str:
     """Compute the HMAC-SHA256 signature for telemetry reporting."""
@@ -365,7 +372,22 @@ class ReportingMixin:
         except Exception as e:
             logger.debug(f"Token tracker: failed to persist unsent queue: {e}")
 
-    def save(self):
+    def submit_save(self, *, report_timeout: float | None = None) -> Future:
+        """Queue a save even when shutdown has no asynchronous wait budget left.
+
+        Submission is synchronous, but disk/network IO runs on the independent
+        worker. The concurrent future owns queued work without an event loop.
+        Normal interpreter shutdown joins the executor before atexit. Merged
+        mode and owner-death exits use os._exit, bypassing both; saves that
+        shutdown stopped waiting for are best effort and may be lost.
+        """
+        return _SAVE_EXECUTOR.submit(self.save, report_timeout=report_timeout)
+
+    async def asave(self, *, report_timeout: float | None = None):
+        """Save independently of application workers without cancelling queued IO."""
+        await asyncio.shield(asyncio.wrap_future(self.submit_save(report_timeout=report_timeout)))
+
+    def save(self, *, report_timeout: float | None = None):
         """Persist incremental data to disk. Multi-process safe.
 
         Flow:
@@ -379,6 +401,7 @@ class ReportingMixin:
         being sent. Skip the local disk write but still call _report_to_server, letting
         it decide internally via has_data() whether to actually POST.
         """
+        report_options = {} if report_timeout is None else {"timeout": report_timeout}
         with self._lock:
             if not self._dirty:
                 report_only = True
@@ -396,7 +419,7 @@ class ReportingMixin:
         if report_only:
             # No local LLM data to write; check only pending instruments.
             try:
-                self._report_to_server(delta_daily, delta_records)
+                self._report_to_server(delta_daily, delta_records, **report_options)
             except Exception:
                 # Remote failures do not affect idle paths: no local writes remain, only network
                 # errors retried next 60s cycle / atexit. _report_to_server already persists
@@ -435,7 +458,7 @@ class ReportingMixin:
 
             # After local save, try remote reporting outside the file lock to avoid blocking other processes.
             try:
-                self._report_to_server(delta_daily, delta_records)
+                self._report_to_server(delta_daily, delta_records, **report_options)
             except Exception:
                 pass  # Remote-report failures silently leave local saves unaffected.
 
@@ -454,7 +477,7 @@ class ReportingMixin:
                 self._delta_records.extend(restored[-200:])
                 self._dirty = True
 
-    def _report_to_server(self, delta_daily: dict, delta_records: list):
+    def _report_to_server(self, delta_daily: dict, delta_records: list, *, timeout: float | None = None):
         """Report incremental data to the remote telemetry server.
 
         Data-loss prevention design:
@@ -623,7 +646,9 @@ class ReportingMixin:
                 headers=headers,
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=_TELEMETRY_TIMEOUT) as resp:
+            with urllib.request.urlopen(
+                req, timeout=_TELEMETRY_TIMEOUT if timeout is None else timeout,
+            ) as resp:
                 if resp.status == 200:
                     self._last_report_time = now
                     # Success: clear batch_seq for the next window and remove unsent files.
@@ -685,7 +710,7 @@ class ReportingMixin:
                     # import failures fall through, skipping this cycle and retrying next.
                     pass
             if need_save:
-                await asyncio.to_thread(self.save)
+                await self.asave()
             # Also persist sparse event_logger buffers and run retention cleanup.
             # Even without token_tracker dirty state, event_logger may hold
             # session/crash events. Do not gate on self._dirty, or frontend-only

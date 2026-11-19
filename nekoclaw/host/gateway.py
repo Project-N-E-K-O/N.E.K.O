@@ -210,6 +210,10 @@ class Grant:
     candidate_plugin_ids: tuple[str, ...] = ()
     # Whether the model of this commission's task agent can see pictures.
     supports_images: bool = False
+    # The token of a session that only reads and answers (a copy of another
+    # session, in that one's working directory): capabilities are found
+    # with it, and none is called or handed over.
+    reads_only: bool = False
     # The groups of built-in tools that were handed over through this token:
     # how they are used and their tools' definitions. A new token starts
     # without any, as the session it is for may no longer hold them.
@@ -226,6 +230,13 @@ class Grant:
     # Calls ruled on before they were made, by capability and arguments
     # (``_call_key``); each is taken by the call it was ruled on for.
     cleared: dict[tuple[str, str], _Cleared] = field(default_factory=dict)
+
+
+_READS_ONLY_TEXT = (
+    "Nothing can be called from this session: it is a copy of another session and only reads and answers, "
+    "while the other may be at work in the same place. Answer from what you have, or report what would "
+    "have to be done."
+)
 
 
 def _text(text: str, *, error: bool = False) -> dict[str, Any]:
@@ -456,11 +467,20 @@ class CapabilityGateway:
 
     # -- tokens -----------------------------------------------------------
 
-    def issue(self, commission_id: str, *, candidate_plugin_ids: Any = (), supports_images: bool = False) -> str:
+    def issue(
+        self,
+        commission_id: str,
+        *,
+        candidate_plugin_ids: Any = (),
+        supports_images: bool = False,
+        reads_only: bool = False,
+    ) -> str:
         """Return a new token for a commission, replacing any earlier one.
 
         ``supports_images`` says whether the model of the commission's task
         agent can see pictures; tools that need that are offered only then.
+        With ``reads_only`` the token finds capabilities and calls none:
+        for a session that is not to change anything (``Grant.reads_only``).
         """
         self.revoke(commission_id)
         grant = Grant(
@@ -468,6 +488,7 @@ class CapabilityGateway:
             token=secrets.token_urlsafe(32),
             candidate_plugin_ids=tuple(str(item) for item in candidate_plugin_ids),
             supports_images=bool(supports_images),
+            reads_only=bool(reads_only),
         )
         self._grants[grant.token] = grant
         self._by_commission[commission_id] = grant
@@ -802,8 +823,16 @@ class CapabilityGateway:
         if name == SEARCH_TOOL:
             group = arguments.get("group")
             if isinstance(group, str) and group.strip():
+                if grant.reads_only:
+                    # What a group hands over is how to call its tools.
+                    return _text(_READS_ONLY_TEXT, error=True)
                 return await self._load_group(grant, group.strip(), reply)
             return _text(await self._search(grant, str(arguments.get("query") or "")))
+        if grant.reads_only:
+            # Whatever is named, through the call tool or by itself: here,
+            # where every call comes by, and not by the tools a session is
+            # opened with alone.
+            return _text(_READS_ONLY_TEXT, error=True)
         if name == CALL_TOOL:
             target = arguments.get("name")
             if not isinstance(target, str) or not target:
@@ -981,7 +1010,7 @@ class CapabilityGateway:
         from config.nekoclaw_settings import GATEWAY_CLEARED_CALL_SECONDS
 
         grant = self._by_commission.get(commission_id)
-        if grant is None or name == SEARCH_TOOL:
+        if grant is None or grant.reads_only or name == SEARCH_TOOL:
             return
         if name == CALL_TOOL:
             target = arguments.get("name")

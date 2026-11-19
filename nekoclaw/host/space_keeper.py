@@ -64,8 +64,11 @@ logger = logging.getLogger(__name__)
 _REVIEWED_AT_ONCE = frozenset({"done", "cancelled"})
 _REVIEWABLE = frozenset({"done", "cancelled", "failed"})
 _OUTPUTS_NAME = "outputs"
-# What became of one session that was looked at.
-_REMOVED, _NOTHING, _NOT_REMOVED = "removed", "nothing", "not_removed"
+# What became of one session that was looked at. ``_SKIPPED``: left alone
+# because a commission that is worked on in it is still under way (to the
+# scan the same as nothing to remove; to whoever asked for this one session
+# to be cleared, not).
+_REMOVED, _NOTHING, _NOT_REMOVED, _SKIPPED = "removed", "nothing", "not_removed", "skipped"
 _EVENT_PAGE = 500
 _CLEAN_BATCH = 200
 # Reviews that had a model write: the ones a round of tidying makes so many of.
@@ -722,27 +725,69 @@ class SpaceKeeper:
             except (SpaceError, OSError) as exc:
                 logger.warning("what a commission filed could not be moved to its project (%s)", type(exc).__name__)
         kept: list[str] = []
+        # The pending entries what it made went into, by where they are.
+        pending: list[tuple[str | None, str]] = []
         entries = data.get("entries")
+        bases = await self._space.evidence_bases(commission.workdir, project)
         for item in (entries if isinstance(entries, list) else [])[: self._entries_allowed(commission)]:
             if not isinstance(item, dict):
                 continue
             kind = str(item.get("type") or "").strip().lower()
             everywhere = str(item.get("scope") or "").strip().lower() == "global" and kind != "progress"
+            waits: list[str] = []
             try:
-                entry, _created = await self._space.file_entry(
+                # Judged like a note of a task agent: the model read an
+                # account and checked nothing, so what it made for the
+                # project takes effect when a file it gives, or one its
+                # words name, exists where the commission worked, and waits
+                # to be seen again otherwise. A global one waits whatever
+                # files it names, which are kept for reference only
+                # (``propose_entry``).
+                entry, _created = await self._space.propose_entry(
                     None if everywhere else project,
                     title=str(item.get("title") or ""),
                     content=_whole_sentences(item.get("content"), TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS),
                     kind=kind if kind in ENTRY_TYPES else "lesson",
                     description=str(item.get("description") or ""),
                     source=commission.id,
+                    observer=commission.parent_id or commission.id,
+                    bases=bases,
+                    evidence=item.get("evidence") or (),
+                    waits=waits,
                 )
             except (SpaceError, OSError) as exc:
                 logger.warning("an entry of a review could not be kept (%s)", type(exc).__name__)
                 continue
+            if entry is None:
+                pending.extend((None if everywhere else project, name) for name in waits)
+                continue
             kept.append(entry.id if everywhere else f"{project}/{entry.id}")
+        # As it stands now: a later entry of the same review may have had
+        # an earlier one take effect (the same note, with a file this time).
+        in_effect = set(kept)
+        maybe = {
+            (layer, name) for layer, name in pending if (name if layer is None else f"{layer}/{name}") not in in_effect
+        }
         await self._space.write_review(project, commission, text, entries=tuple(kept))
+        # Or it went into another entry, and is no file any more: only
+        # what still waits is counted. One by one, by its own file: one
+        # that is known to wait no longer is left out, and one that
+        # cannot be read just now is counted as it was noted. Counted
+        # once the review is written: writing it waits its turn, and a
+        # guess may take effect while it does.
+        still: set[tuple[str | None, str]] = set()
+        for layer in {layer for layer, _name in maybe}:
+            names = {name for at, name in maybe if at == layer}
+            try:
+                there = await self._space.still_pending(layer, names)
+            except (SpaceError, OSError):
+                there = names
+            still.update((layer, name) for name in there)
+        waiting = len(still)
         outcome: dict[str, Any] = {"status": "written", "project": project, "entries": kept}
+        if waiting:
+            # Made by the review and not in effect yet: pending entries, in no index and not among its entries.
+            outcome["waiting"] = waiting
         if refiled:
             outcome["refiled"] = [f"{project}/{entry_id}" for entry_id in refiled]
         return outcome
@@ -840,6 +885,9 @@ class SpaceKeeper:
                 return False
             self._last_upkeep = now
             for name, step in (
+                # First, and with no model: what is archived and reviewed
+                # after it reads indexes that no longer list what expired.
+                ("evidence", self._check_evidence),
                 ("late reviews", lambda: self._late_reviews(now, float(since))),
                 ("archiving", lambda: self._archive_idle(now)),
                 ("old sessions", lambda: self._clean_sessions(now, state)),
@@ -853,6 +901,17 @@ class SpaceKeeper:
             return True
         finally:
             self._tidying = False
+
+    async def _check_evidence(self) -> None:
+        """Have the space look whether the files its entries rest on are still there; see ``TaskAgentSpace.check_evidence``."""
+        outcome = await self._space.check_evidence()
+        if any(outcome.values()):
+            logger.info(
+                "task agent space: %d entries expired, %d are in effect again, %d pending ones were removed",
+                outcome.get("expired", 0),
+                outcome.get("restored", 0),
+                outcome.get("dropped", 0),
+            )
 
     async def _archive_messages(self, project: Project) -> list[dict[str, str]]:
         from config.nekoclaw_settings import (
@@ -922,6 +981,7 @@ class SpaceKeeper:
             SPACE_ARCHIVES_PER_UPKEEP,
             SPACE_PROJECT_DESCRIPTION_MAX_TOKENS,
             SPACE_PROJECT_IDLE_SECONDS,
+            TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS,
         )
         idle = [
             project
@@ -998,12 +1058,21 @@ class SpaceKeeper:
                     continue
                 kind = str(item.get("type") or "").strip().lower()
                 try:
-                    await self._space.file_entry(
+                    # Judged as what a review makes is; see ``_keep_review``.
+                    # Nobody is named as having seen it: the summary is
+                    # made from what the project's own commissions did,
+                    # so it says again what one of them found and is no
+                    # second sighting of it. It is global, so it waits
+                    # whatever files it names, which are kept for
+                    # reference only (``propose_entry``).
+                    await self._space.propose_entry(
                         None,
                         title=str(item.get("title") or ""),
-                        content=str(item.get("content") or ""),
+                        content=_whole_sentences(item.get("content"), TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS),
                         kind=kind if kind in ENTRY_TYPES and kind != "progress" else "lesson",
                         description=str(item.get("description") or ""),
+                        bases=[project.workdir] if project.workdir else [],
+                        evidence=item.get("evidence") or (),
                     )
                 except (SpaceError, OSError) as exc:
                     logger.warning("an entry of a project's summary could not be kept (%s)", type(exc).__name__)
@@ -1148,7 +1217,15 @@ class SpaceKeeper:
             if current is None or current.status == "cleared" or current.last_active_at > until:
                 return _NOTHING
             if await self._ledger.select(session_id=session_id, statuses=ACTIVE_STATUSES, limit=1):
-                return _NOTHING
+                return _SKIPPED
+            # What was copied from it goes with it, and first: a session
+            # made from this one (``fork_session``) holds what was said
+            # here, is of no use once this one starts over from nothing,
+            # and reads what this one kept of long tool output where it
+            # is. While a copy is in use this session stays as it is, and
+            # is looked at again next round.
+            if not await self._clean_copies(current.id):
+                return _NOT_REMOVED
             directory = await asyncio.to_thread(self._session_dir_of, current)
             # A thread cannot be stopped. Cancelled (the host shutting down),
             # this still waits for the removing to finish before the hold
@@ -1165,6 +1242,32 @@ class SpaceKeeper:
         finally:
             if self._release_files is not None:
                 self._release_files(session_id)
+
+    async def _clean_copies(self, session_id: str) -> bool:
+        """Remove what was said in the sessions copied from a session. False while one of them is in use."""
+        for copy in await self._ledger.forks_of(session_id):
+            if copy.status == "cleared":
+                continue
+            # By what became of it just now, not by asking again whether a
+            # commission is under way in it: that may have changed since.
+            if await self._clean_one(copy.id, float("inf")) in (_NOT_REMOVED, _SKIPPED):
+                return False
+        return True
+
+    async def clear_session(self, session_id: str) -> bool:
+        """Remove what was said in a session now, however lately it was in use. Returns whether nothing of it is left.
+
+        For a session whose owner is done with it (a copy that was made to
+        ask something). As when an old session is cleaned: only what the
+        runtime wrote into the session's own directory, never its working
+        directory; not while a commission is at work in it or waits for
+        it; and the session is ``cleared`` afterwards.
+        """
+        if self._session_dir_of is None:
+            return False
+        # Removed, or nothing was there. Not: in use, or left alone for a
+        # commission that is still under way in it.
+        return await self._clean_one(session_id, float("inf")) in (_REMOVED, _NOTHING)
 
     @staticmethod
     def _confirmed_line(state: dict[str, Any], now: float, due: float) -> tuple[float | None, bool]:

@@ -86,6 +86,8 @@ social_need      *= 0.72   # 满足 28%
 stimulation_need *= 0.82   # 满足 18%
 ```
 
+所有气泡统一在 `540ms` 戳破收尾点隐藏，并停止仍在淡出的关联声音。自然播完的声音仍按 `done` 结算，收尾点主动停止的声音按既有 `cancelled` 协议结算。气泡只发一次 `thought_bubble_pop`。CAT1 的玩具老鼠与小鱼饼干在收尾后可按现有门禁接上 `cat1_mouse` 和吃零食 runner，手动表现不写额外五维反馈、cooldown 或 return episode。
+
 普通 hover、本地文字、拖拽和 rapid drag 都只修改五维，不直接指定 social、eat、move 或 play，也不创建 interaction level。hover 很容易因指针经过而频繁触发，所以只作为低权重背景证据；本地文字是一条明确但不读取内容的互动事实；完整拖拽和 rapid 还提供更明确的活动反馈与物理负荷。合并式和 2.3 的 overflow 泄漏共同形成“真实高频输入越多、短时回应越明显，但不会随输入数量线性爆发”的连续曲线。
 
 ### 3.2 真实物理活动
@@ -127,15 +129,17 @@ CAT1 本地文字的 `5%` 哈气彩蛋只通过哈气专用窄入口请求既有
 
 `cat1_touch` 与 `cat1_cosplay_1` 也是视觉-only 的 CAT1 独立表现 runner，分别提供 `requestCat1Touch()` 与 `requestCat1Cosplay1()` 显式 presentation API。显式 API 本身不绑定键盘、本地文字、定时器或五维反馈；其中 `cat1_touch` 同时是下述 `cat1_idle_random` 的表现成员，`cat1_cosplay_1` 不进入自动调度。两者分别按已核验的 `6.04s` 和 `4.04s` 播放一轮后直接恢复；与 `cat1_happy` 共用互斥、中断和恢复内核，但保留各自的资源、能力、API 和终态原因。
 
-同一视觉-only 内核还注册 `cat1_change`、`cat1_cosplay_2`、`cat1_eat_2`、`cat1_eat_3`、`cat1_laugh`、`cat1_lion_dance`、`cat1_love_1`、`cat1_mouse`、`cat1_wave`、`cat1_sad`、`cat1_scared`、`cat1_stroke` 与 `cat1_wagging`。这些显式 presentation API 本身不生成 Cat Mind 结果、声音、五维或 cooldown；其中 `touch`、`mouse`、`laugh`、`love_1`、`wagging` 与 `happy` 仅在 `cat1_idle_random` 统一入口中成为自动表现成员，`sad` 只由下述 `cat1_inactive_sad` 自动入口复用，其他单个 profile 不注册独立 Cat Mind action。`eat_2`、`eat_3` 的素材同时作为正式 `cat1_eat_snack` runner 的表现变体，直接 API 与业务动作入口不能混淆。其余文件名带 `play` 等字样的 profile 不复用 selector 动作。每个 profile 独立声明资源、能力、API、布局和终态原因；animated WebP 的单轮时长由注册表提供，保留在 `movement/` 的 GIF 才回退到 GIF 解析，共享的只有门禁、互斥、计时、取消与恢复机制。`cat1_mouse` 的 `wide-centered` 和 `cat1_lion_dance` 的 `tall-bottom` 是为保持首尾 CAT1 锚点而声明的资源布局，不创建新的动作状态；主猫与 compact mirror 按各自 flex/非 flex 上下文只补偿一次。
+同一视觉-only 内核还注册 `cat1_change`、`cat1_cosplay_2`、`cat1_eat_2`、`cat1_eat_3`、`cat1_laugh`、`cat1_lion_dance`、`cat1_love_1`、`cat1_mouse`、`cat1_wave`、`cat1_sad`、`cat1_scared`、`cat1_stroke` 与 `cat1_wagging`。这些显式 presentation API 本身不生成 Cat Mind 结果、声音、五维或 cooldown；其中 `touch`、`laugh`、`love_1`、`wagging` 与 `happy` 仅在 `cat1_idle_random` 统一入口中成为自动表现成员，`sad` 只由下述 `cat1_inactive_sad` 自动入口复用，其他单个 profile 不注册独立 Cat Mind action。`eat_2`、`eat_3` 的素材同时作为正式 `cat1_eat_snack` runner 的表现变体，直接 API 与业务动作入口不能混淆。其余文件名带 `play` 等字样的 profile 不复用 selector 动作。每个 profile 独立声明资源、能力、API、布局和终态原因；animated WebP 的单轮时长由注册表提供，保留在 `movement/` 的 GIF 才回退到 GIF 解析，共享的只有门禁、互斥、计时、取消与恢复机制。`cat1_mouse` 的 `wide-centered` 和 `cat1_lion_dance` 的 `tall-bottom` 是为保持首尾 CAT1 锚点而声明的资源布局，不创建新的动作状态；主猫与 compact mirror 按各自 flex/非 flex 上下文只补偿一次。
+
+此外，`cat1_banana`、`cat1_catnip_1`、`cat1_catnip_2`、`cat1_cry`、`cat1_ninjutsu`、`cat1_wag_1`、`cat1_wag_2` 和 `cat1_sad_2` 各有一个显式表现入口。它们共用独立动作的门禁、占用和恢复，读取注册表的已核验时长，动画 WebP 成功加载后播一轮。戳破 CAT1 猫薄荷袋气泡后，等概率调用猫薄荷 1 或猫薄荷 2。戳破 CAT1 玩具老鼠气泡后调用抓老鼠。自动伤心 `cat1_inactive_sad` 使用 `sad` 实现。
 
 正式 `cat1_eat_snack` 每次成功启动时，在 `action.cat1.eat`、`action.cat1.eat_2`、`action.cat1.eat_3` 中按等宽随机区间各以 `1/3` 概率选定一份，并在本次 runner 生命周期内固定使用该 URL。三份素材共用原 eat 的声音、Cat Mind action ID、五维结算、8 分钟 cooldown、互斥、中断和恢复；结束时间仍等待所选动画一整轮与声音都完成。能力预检要求三份素材和原 eat 声音全部可用，不做缺失素材降级，以免破坏三等分。
 
-为逐个验收其余素材，当前 CAT1 猫本体右键使用无状态加权随机：`stroke` 独占 `50%`，cosplay 1、change、cosplay 2、lion dance、wave 平分剩余 `50%`，各为 `10%`。每次合法右键独立抽取一次，不保存顺序或上次结果；runner 门禁拒绝也不产生待续下标。`scared` 已从 CAT1 右键池拆出，只保留给下述 CAT2/CAT3 降级入口。`happy`、`touch`、`mouse`、`laugh`、`love 1`、`wagging` 只由 `cat1_idle_random` 统一随机入口自动调度，`sad` 只由 `cat1_inactive_sad` 自动调度，`eat 2`、`eat 3` 只由正式 eat 的三等分素材池选中。该适配器只是人工验收入口，不改变 selector、Cat Mind、五维、声音或 cooldown 设计。
+为逐个验收其余素材，当前 CAT1 猫本体右键使用无状态加权随机：`stroke` 独占 `50%`，cosplay 1、change、cosplay 2、lion dance、wave 平分剩余 `50%`，各为 `10%`。每次合法右键独立抽取一次，不保存顺序或上次结果；runner 门禁拒绝也不产生待续下标。`scared` 已从 CAT1 右键池拆出，只保留给下述 CAT2/CAT3 降级入口。`sad` 只由 `cat1_inactive_sad` 自动调度，`eat 2`、`eat 3` 只由正式 eat 的三等分素材池选中。该适配器只是人工验收入口，不改变 selector、Cat Mind、五维、声音或 cooldown 设计。
 
 CAT2/CAT3 猫本体右键不进入上述 CAT1 随机池，而是直接请求原第 6 项 `scared` 并把视觉 tier 正式降回 CAT1。降级会把 tier 推进基准重放到累计 `10m`，因此下一次自动 tick 不会按旧的全局 `15m/18m` 立刻弹回睡眠形态，之后仍按标准再过 `5m` 进入 CAT2。入口复用现有 `820ms` tier 双图层渐变：旧 CAT2/CAT3 art 直接淡出到 `scared`，不额外闪现 CAT1 idle；渐变完成、主 art 重新从首帧载入后才开始计算 scared 的完整单轮时长，正常结束再利用其 CAT1 对齐尾帧直接恢复 CAT1 idle。该人工入口不参与 CAT1 右键概率，也不生成 Cat Mind 动作或五维反馈。
 
-`cat1_idle_random` 与六个五维评分动作争夺同一个 Cat Mind 动作槽，但不进入五维评分排序。每个没有用户触发合并的 CAT1 `cat_elapsed` tick，在全局硬门、5 分钟硬 cooldown 和六份资源能力都通过后先掷一次 `20%`；命中则本轮由该动作占用，未命中才继续原有评分候选。统一 runner 再在 `happy / touch / mouse / laugh / love1 / wagging` 六项间按等宽区间各 `1/6` 抽取一次并锁定到终态。硬 cooldown 只从严格 `started` 开始，期间不做 provider 预检、不消耗概率；直接 API 和右键验收不写该 cooldown。该动作的 done/cancelled/interrupted 只结算生命周期，不修改五维、不生成短时 intent、不写 return episode。
+`cat1_idle_random` 与六个五维评分动作争夺同一个 Cat Mind 动作槽，但不进入五维评分排序。每个没有用户触发合并的 CAT1 `cat_elapsed` tick，在全局硬门、5 分钟硬 cooldown 和本组资源能力都通过后先掷一次 `20%`；命中则本轮由该动作占用，未命中才继续原有评分候选。统一 runner 再在 `happy / touch / laugh / love1 / wagging / banana / ninjutsu / oiia` 八项间按等宽区间各 `1/8` 抽取一次并锁定到终态。OIIA 沿用独立动作的三轮播放和配乐，随机组校验它的动画和音频资源，声音服从猫形态音频开关。硬 cooldown 只从严格 `started` 开始，期间不做 provider 预检、不消耗概率；直接 API 和右键验收不写该 cooldown。该动作的 done/cancelled/interrupted 只结算生命周期，不修改五维、不生成短时 intent、不写 return episode。
 
 CAT2/CAT3 复用同一随机入口时钟、硬门与唯一动作槽，分别以 `cat2_idle_random`、`cat3_idle_random` 作为形态限定的组动作；并不复用 CAT1 的成员池。每个合格自主 tick 也以 `20%` 争夺动作槽；CAT2 硬 cooldown 为 `1m`，CAT3 为 `5m`，都只从严格 `started` 起算。CAT2 组抽 `turn_1 80% / back1_1 20%`，CAT3 组抽 `turn_2 80% / back1_1 10% / back1_2 10%`，只抽一次并保持到终态。随机未命中时，原 `cat2_nap_feedback` 和 `cat3_sleep_feedback` 继续按各自五维评分、软 cooldown 与音频门禁运行；视觉组不要求音频开启，也不领取睡眠反馈的五维或 return episode。turn 完成恢复原形态，back 完成并成功调用既有视觉降级入口才回 CAT1；取消和中断只关闭生命周期。
 

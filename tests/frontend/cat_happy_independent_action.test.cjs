@@ -18,85 +18,125 @@ const CASES = Object.freeze({
   happy: Object.freeze({
     capability: 'cat1_happy', slot: 'action.cat1.happy', legacyClassName: 'is-cat1-happy',
     wrapper: '_playNekoIdleCat1HappyAction',
-    requestApi: 'requestCat1Happy', url: 'happy.gif?v=1', duration: 4040, layout: 'normal',
+    requestApi: 'requestCat1Happy', url: 'happy.webp?v=1', duration: 4040, layout: 'normal',
     started: 'cat1-happy-action', finished: 'cat1-happy-action-finished',
   }),
   touch: Object.freeze({
     capability: 'cat1_touch', slot: 'action.cat1.touch', legacyClassName: 'is-cat1-touching',
     wrapper: '_playNekoIdleCat1TouchAction',
-    requestApi: 'requestCat1Touch', url: 'touch.gif?v=1', duration: 6040, layout: 'normal',
+    requestApi: 'requestCat1Touch', url: 'touch.webp?v=1', duration: 6040, layout: 'normal',
     started: 'cat1-touch-action', finished: 'cat1-touch-action-finished',
   }),
   cosplay1: Object.freeze({
     capability: 'cat1_cosplay_1', slot: 'action.cat1.cosplay_1', legacyClassName: 'is-cat1-cosplay-1',
     wrapper: '_playNekoIdleCat1Cosplay1Action',
-    requestApi: 'requestCat1Cosplay1', url: 'cos-1.gif?v=1', duration: 4040, layout: 'normal',
+    requestApi: 'requestCat1Cosplay1', url: 'cos-1.webp?v=1', duration: 4040, layout: 'normal',
     started: 'cat1-cosplay-1-action', finished: 'cat1-cosplay-1-action-finished',
   }),
   change: Object.freeze({
     capability: 'cat1_change', slot: 'action.cat1.change',
-    requestApi: 'requestCat1Change', url: 'change.gif?v=1', duration: 6040, layout: 'normal',
+    requestApi: 'requestCat1Change', url: 'change.webp?v=1', duration: 6040, layout: 'normal',
     started: 'cat1-change-action', finished: 'cat1-change-action-finished',
   }),
   cosplay2: Object.freeze({
     capability: 'cat1_cosplay_2', slot: 'action.cat1.cosplay_2',
-    requestApi: 'requestCat1Cosplay2', url: 'cos-2.gif?v=1', duration: 6040, layout: 'normal',
+    requestApi: 'requestCat1Cosplay2', url: 'cos-2.webp?v=1', duration: 6040, layout: 'normal',
     started: 'cat1-cosplay-2-action', finished: 'cat1-cosplay-2-action-finished',
   }),
   eat2: Object.freeze({
     capability: 'cat1_eat_2', slot: 'action.cat1.eat_2',
-    requestApi: 'requestCat1Eat2', url: 'eat-2.gif?v=1', duration: 5040, layout: 'normal',
+    requestApi: 'requestCat1Eat2', url: 'eat-2.webp?v=1', duration: 5040, layout: 'normal',
     started: 'cat1-eat-2-action', finished: 'cat1-eat-2-action-finished',
   }),
   eat3: Object.freeze({
     capability: 'cat1_eat_3', slot: 'action.cat1.eat_3',
-    requestApi: 'requestCat1Eat3', url: 'eat-3.gif?v=1', duration: 4040, layout: 'normal',
+    requestApi: 'requestCat1Eat3', url: 'eat-3.webp?v=1', duration: 4040, layout: 'normal',
     started: 'cat1-eat-3-action', finished: 'cat1-eat-3-action-finished',
   }),
   laugh: Object.freeze({
     capability: 'cat1_laugh', slot: 'action.cat1.laugh',
-    requestApi: 'requestCat1Laugh', url: 'laugh.gif?v=1', duration: 4040, layout: 'normal',
+    requestApi: 'requestCat1Laugh', url: 'laugh.webp?v=1', duration: 4040, layout: 'normal',
     started: 'cat1-laugh-action', finished: 'cat1-laugh-action-finished',
   }),
   lionDance: Object.freeze({
     capability: 'cat1_lion_dance', slot: 'action.cat1.lion_dance',
-    requestApi: 'requestCat1LionDance', url: 'lion_dance.gif?v=1', duration: 4040, layout: 'tall-bottom',
+    requestApi: 'requestCat1LionDance', url: 'lion_dance.webp?v=1', duration: 4040, layout: 'tall-bottom',
     started: 'cat1-lion-dance-action', finished: 'cat1-lion-dance-action-finished',
   }),
   love1: Object.freeze({
     capability: 'cat1_love_1', slot: 'action.cat1.love_1',
-    requestApi: 'requestCat1Love1', url: 'love-1.gif?v=1', duration: 4040, layout: 'normal',
+    requestApi: 'requestCat1Love1', url: 'love-1.webp?v=1', duration: 4040, layout: 'normal',
     started: 'cat1-love-1-action', finished: 'cat1-love-1-action-finished',
   }),
   mouse: Object.freeze({
     capability: 'cat1_mouse', slot: 'action.cat1.mouse',
-    requestApi: 'requestCat1Mouse', url: 'mouse.gif?v=1', duration: 5040, layout: 'wide-centered',
+    requestApi: 'requestCat1Mouse', url: 'mouse.webp?v=1', duration: 5040, layout: 'wide-centered',
     started: 'cat1-mouse-action', finished: 'cat1-mouse-action-finished',
   }),
   wave: Object.freeze({
     capability: 'cat1_wave', slot: 'action.cat1.wave',
-    requestApi: 'requestCat1Wave', url: 'wave.gif?v=1', duration: 4040, layout: 'normal',
+    requestApi: 'requestCat1Wave', url: 'wave.webp?v=1', duration: 4040, layout: 'normal',
     started: 'cat1-wave-action', finished: 'cat1-wave-action-finished',
   }),
   sad: Object.freeze({
     capability: 'cat1_sad', slot: 'action.cat1.sad',
-    requestApi: 'requestCat1Sad', url: 'sad.gif?v=1', duration: 4040, layout: 'normal',
+    requestApi: 'requestCat1Sad', url: 'sad.webp?v=1', duration: 4040, layout: 'normal',
     started: 'cat1-sad-action', finished: 'cat1-sad-action-finished',
+  }),
+  sad2: Object.freeze({
+    capability: 'cat1_sad_2', slot: 'action.cat1.sad_2',
+    requestApi: 'requestCat1Sad2', url: 'sad-2.webp?v=1', duration: 6040, layout: 'normal', waitForArt: true,
+    started: 'cat1-sad-2-action', finished: 'cat1-sad-2-action-finished',
   }),
   scared: Object.freeze({
     capability: 'cat1_scared', slot: 'action.cat1.scared',
-    requestApi: 'requestCat1Scared', url: 'scared.gif?v=1', duration: 4040, layout: 'normal',
+    requestApi: 'requestCat1Scared', url: 'scared.webp?v=1', duration: 4040, layout: 'normal',
     started: 'cat1-scared-action', finished: 'cat1-scared-action-finished',
   }),
   stroke: Object.freeze({
     capability: 'cat1_stroke', slot: 'action.cat1.stroke',
-    requestApi: 'requestCat1Stroke', url: 'stroke.gif?v=1', duration: 7980, layout: 'normal',
+    requestApi: 'requestCat1Stroke', url: 'stroke.webp?v=1', duration: 7980, layout: 'normal',
     started: 'cat1-stroke-action', finished: 'cat1-stroke-action-finished',
   }),
   wagging: Object.freeze({
     capability: 'cat1_wagging', slot: 'action.cat1.wagging',
-    requestApi: 'requestCat1Wagging', url: 'wagging.gif?v=1', duration: 4040, layout: 'normal',
+    requestApi: 'requestCat1Wagging', url: 'wagging.webp?v=1', duration: 4040, layout: 'normal',
     started: 'cat1-wagging-action', finished: 'cat1-wagging-action-finished',
+  }),
+  banana: Object.freeze({
+    capability: 'cat1_banana', slot: 'action.cat1.banana',
+    requestApi: 'requestCat1Banana', url: 'banana.webp?v=1', duration: 5040, layout: 'wide-centered', waitForArt: true,
+    started: 'cat1-banana-action', finished: 'cat1-banana-action-finished',
+  }),
+  catnip1: Object.freeze({
+    capability: 'cat1_catnip_1', slot: 'action.cat1.catnip_1',
+    requestApi: 'requestCat1Catnip1', url: 'catnip-1.webp?v=1', duration: 6040, layout: 'normal', waitForArt: true,
+    started: 'cat1-catnip-1-action', finished: 'cat1-catnip-1-action-finished',
+  }),
+  catnip2: Object.freeze({
+    capability: 'cat1_catnip_2', slot: 'action.cat1.catnip_2',
+    requestApi: 'requestCat1Catnip2', url: 'catnip-2.webp?v=1', duration: 6040, layout: 'normal', waitForArt: true,
+    started: 'cat1-catnip-2-action', finished: 'cat1-catnip-2-action-finished',
+  }),
+  cry: Object.freeze({
+    capability: 'cat1_cry', slot: 'action.cat1.cry',
+    requestApi: 'requestCat1Cry', url: 'sad-3.webp?v=1', duration: 5040, layout: 'normal', waitForArt: true,
+    started: 'cat1-cry-action', finished: 'cat1-cry-action-finished',
+  }),
+  ninjutsu: Object.freeze({
+    capability: 'cat1_ninjutsu', slot: 'action.cat1.ninjutsu',
+    requestApi: 'requestCat1Ninjutsu', url: 'ninjutsu.webp?v=1', duration: 6040, layout: 'wide-centered', waitForArt: true,
+    started: 'cat1-ninjutsu-action', finished: 'cat1-ninjutsu-action-finished',
+  }),
+  wag1: Object.freeze({
+    capability: 'cat1_wag_1', slot: 'action.cat1.wag_1',
+    requestApi: 'requestCat1Wag1', url: 'wag-1.webp?v=1', duration: 5040, layout: 'normal', waitForArt: true,
+    started: 'cat1-wag-1-action', finished: 'cat1-wag-1-action-finished',
+  }),
+  wag2: Object.freeze({
+    capability: 'cat1_wag_2', slot: 'action.cat1.wag_2',
+    requestApi: 'requestCat1Wag2', url: 'wag-2.webp?v=1', duration: 5040, layout: 'normal', waitForArt: true,
+    started: 'cat1-wag-2-action', finished: 'cat1-wag-2-action-finished',
   }),
 });
 
@@ -133,7 +173,12 @@ const SLEEP_CASES = Object.freeze({
   }),
 });
 
-const ALL_CASES = Object.freeze({ ...CASES, ...SLEEP_CASES });
+const OIIA_CASE = Object.freeze({
+  capability: 'cat1_oiia', slot: 'action.cat1.oiia', requestApi: 'requestCat1Oiia',
+  url: 'oiia.webp?v=1', duration: 1960, layout: 'normal',
+  started: 'cat1-oiia-action', finished: 'cat1-oiia-action-finished',
+});
+const ALL_CASES = Object.freeze({ ...CASES, oiia: OIIA_CASE, ...SLEEP_CASES });
 
 function between(source, startMarker, endMarker, label) {
   const start = source.indexOf(startMarker);
@@ -381,9 +426,9 @@ test('every visual action shares one kernel with an explicit profile and request
   const source = visualSource();
   assert.match(source, /function _playNekoIdleCat1VisualAction\(button, actionKey, options = \{\}\)/);
   assert.match(source, /function _cancelNekoIdleCat1VisualAction\(button, options = \{\}\)/);
-  assert.doesNotMatch(source, /_playNekoIdleSound\s*\(|_beginNekoCatMindStateAction\s*\(/);
+  assert.doesNotMatch(source, /_beginNekoCatMindStateAction\s*\(/);
   const h = harness();
-  assert.deepEqual(Object.keys(h.context.profiles), Object.keys(ALL_CASES));
+  assert.deepEqual(Object.keys(h.context.profiles).sort(), Object.keys(ALL_CASES).sort());
   for (const [key, entry] of Object.entries(ALL_CASES)) {
     assert.equal(h.context.profiles[key].capability, entry.capability);
     assert.equal(h.context.profiles[key].slot, entry.slot);
@@ -422,6 +467,109 @@ test('every visual action shares one kernel with an explicit profile and request
     assert.equal(h.context.window.NekoCatIdlePresentation[entry.requestApi](requestOptions), true);
     assert.deepEqual(requests.at(-1), { key, options: requestOptions });
   }
+});
+
+test('OIIA cues three rotations on the WebP timeline and cancels pending music on interruption', async () => {
+  for (const terminal of ['done', 'interrupted', 'before-spin', 'image-error']) {
+    const h = harness();
+    const prepared = [];
+    const played = [];
+    const stopped = [];
+    h.context._getNekoCatVoiceUrl = (slot) => slot === 'cat1.oiia' ? 'oiia.wav' : '';
+    h.context.isNekoIdleCatAudioEnabled = () => true;
+    h.context._prepareNekoIdleSound = (state, src, volume) => {
+      const audio = { src, volume };
+      prepared.push(audio);
+      state.audio = audio;
+      return audio;
+    };
+    h.context._startNekoIdleSound = (_state, audio) => played.push(audio);
+    h.context._stopNekoIdleSoundAudio = (state) => {
+      stopped.push(state.audio);
+      state.audio = null;
+    };
+    assert.equal(h.context._playNekoIdleCat1VisualAction(h.button, 'oiia', {
+      onTerminal: (result) => h.terminals.push(result),
+    }), true);
+    assert.equal(h.context._playNekoIdleCat1VisualAction(h.button, 'oiia'), false);
+    assert.equal(played.length, 0);
+    if (terminal === 'image-error') {
+      h.art.dispatch('error');
+      assert.equal(prepared.length, 0);
+      assert.equal(h.art.src, 'idle.gif?v=1');
+      continue;
+    }
+    h.art.dispatch('load');
+    await flush();
+    assert.deepEqual(prepared, [{ src: 'oiia.wav', volume: 0.12 }]);
+    assert.equal(played.length, 0, 'the opening pose is silent');
+    const startSound = h.timers.find((timer) => timer.delay === 510);
+    assert.ok(startSound, 'music starts at the end of the 510 ms first frame');
+    if (terminal === 'before-spin') {
+      h.cancel({ reason: 'return-ball-drag-active' });
+      assert.equal(startSound.cleared, true);
+      startSound.callback();
+      assert.equal(played.length, 0);
+      assert.deepEqual(stopped, prepared);
+      assert.deepEqual(h.terminals, ['interrupted']);
+      continue;
+    }
+    h.setNow(1510);
+    startSound.callback();
+    assert.deepEqual(played, [{ src: 'oiia.wav', volume: 0.12 }]);
+    const finish = h.timers.find((timer) => timer.delay === 5880);
+    assert.ok(finish);
+    const prepareSecond = h.timers.at(-1);
+    assert.equal(prepareSecond.delay, 1450);
+    if (terminal === 'interrupted') {
+      h.cancel({ reason: 'return-ball-drag-active' });
+      assert.equal(prepareSecond.cleared, true);
+      assert.equal(finish.cleared, true);
+      prepareSecond.callback();
+      finish.callback();
+      assert.equal(prepared.length, 1);
+      assert.deepEqual(stopped, played);
+    } else {
+      h.setNow(2975); // A late preload must not shift the rotation's cue.
+      prepareSecond.callback();
+      assert.equal(prepared.length, 2);
+      assert.equal(played.length, 1);
+      assert.equal(h.timers.at(-1).delay, 495);
+      h.setNow(3470);
+      h.timers.at(-1).callback();
+      assert.deepEqual(played, prepared);
+
+      assert.equal(h.timers.at(-1).delay, 1450);
+      h.setNow(4920);
+      h.timers.at(-1).callback();
+      assert.equal(prepared.length, 3);
+      assert.equal(h.timers.at(-1).delay, 510);
+      h.setNow(5430);
+      const timerCount = h.timers.length;
+      h.timers.at(-1).callback();
+      assert.deepEqual(played, prepared);
+      assert.equal(h.timers.length, timerCount, 'the third rotation schedules no fourth loop');
+      assert.equal(h.art.src, OIIA_CASE.url);
+      h.setNow(6880);
+      finish.callback();
+      assert.deepEqual(stopped, [played[2]]);
+    }
+    assert.deepEqual(h.terminals, [terminal]);
+    assert.equal(h.art.src, 'idle.gif?v=1');
+  }
+});
+
+test('an already-failed OIIA image rejects the request before reporting a terminal', () => {
+  const h = harness();
+  h.art.complete = true;
+  h.art.naturalWidth = 0;
+
+  assert.equal(h.context._playNekoIdleCat1VisualAction(h.button, 'oiia', {
+    onTerminal: (result) => h.terminals.push(result),
+  }), false);
+  assert.equal(h.art.src, 'idle.gif?v=1');
+  assert.equal(h.timers.filter((timer) => !timer.cleared).length, 0);
+  assert.equal(h.terminals.length, 0);
 });
 
 test('five sleep-tier actions start in their filename tier and keep explicit terminal behavior', async () => {
@@ -512,7 +660,7 @@ test('sleep back waits for image load and cancels without demotion on load failu
   assert.notEqual(stalled.terminals[0].result, 'done');
 });
 
-test('CAT1 idle random pool contains six equal-width visual actions including mouse', () => {
+test('CAT1 idle random pool selects eight actions with equal probability', () => {
   const h = harness();
   vm.runInContext(
     'this.randomVisualKeys = Array.from(_NEKO_IDLE_CAT1_RANDOM_VISUAL_ACTION_KEYS);',
@@ -520,18 +668,21 @@ test('CAT1 idle random pool contains six equal-width visual actions including mo
   );
   assert.deepEqual(
     JSON.parse(JSON.stringify(h.context.randomVisualKeys)),
-    ['happy', 'touch', 'mouse', 'laugh', 'love1', 'wagging'],
+    ['happy', 'touch', 'laugh', 'love1', 'wagging', 'banana', 'ninjutsu', 'oiia'],
   );
 
   const cases = [
     [0, 'happy'],
-    [(1 / 6) - 0.000001, 'happy'],
-    [1 / 6, 'touch'],
-    [2 / 6, 'mouse'],
-    [3 / 6, 'laugh'],
-    [4 / 6, 'love1'],
-    [5 / 6, 'wagging'],
-    [0.999999, 'wagging'],
+    [(1 / 8) - 0.000001, 'happy'],
+    [1 / 8, 'touch'],
+    [2 / 8, 'laugh'],
+    [3 / 8, 'love1'],
+    [4 / 8, 'wagging'],
+    [5 / 8, 'banana'],
+    [6 / 8, 'ninjutsu'],
+    [(7 / 8) - 0.000001, 'ninjutsu'],
+    [7 / 8, 'oiia'],
+    [0.999999, 'oiia'],
   ];
   for (const [roll, expected] of cases) {
     h.context.__idleRandomRoll = roll;
@@ -581,15 +732,22 @@ test('each visual action owns one audited cycle, restores directly and restarts 
     assert.deepEqual(h.mirrors[0], { src: entry.url, reason: entry.started, artLayout: entry.layout });
     assert.deepEqual(h.cleanup, { hover: 1, transition: 1, playback: 1 });
     assert.equal(h.journeyCalls.pause, 1);
+    if (entry.waitForArt) {
+      await flush();
+      assert.equal(h.timers.filter((timer) => !timer.cleared && timer.delay === entry.duration).length, 0,
+        `${key} waits for the WebP to load before counting the cycle`);
+      h.art.dispatch('load');
+    }
     await flush();
-    assert.equal(h.timers.length, 1);
-    assert.equal(h.timers[0].delay, entry.duration);
+    const activeTimers = () => h.timers.filter((timer) => !timer.cleared);
+    assert.equal(activeTimers().length, 1);
+    assert.equal(activeTimers()[0].delay, entry.duration);
     assert.equal(h.play(key), false, 'same action cannot reset the active cycle');
     const other = Object.keys(CASES).find((candidate) => candidate !== key);
     assert.equal(h.play(other), false, `${key} excludes ${other}`);
-    assert.equal(h.timers.length, 1);
+    assert.equal(activeTimers().length, 1);
 
-    const timer = h.timers[0];
+    const timer = activeTimers()[0];
     timer.callback();
     assert.equal(h.buttonClasses.has('is-cat1-visual-action'), false);
     assert.equal(h.containerClasses.has('is-cat1-visual-action'), false);

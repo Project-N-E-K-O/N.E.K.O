@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 import json
 import logging
 import os
@@ -48,11 +49,13 @@ from typing import Any
 
 from config.prompts import prompts_nekoclaw as texts
 from nekoclaw.runtime import protocol
+from nekoclaw.runtime import fork
 from nekoclaw.runtime.context import (
     Compaction,
     ContextManager,
     ContextPolicy,
     RowKind,
+    SummaryCutShort,
     Transcript,
     compact_ratio,
     estimate_tokens,
@@ -134,8 +137,8 @@ from nekoclaw.runtime.tools.todo import TodoState
 
 logger = logging.getLogger(__name__)
 
-TRANSCRIPT_FILE = "transcript.jsonl"
-OUTPUTS_DIRECTORY = "outputs"
+TRANSCRIPT_FILE = fork.TRANSCRIPT_FILE
+OUTPUTS_DIRECTORY = fork.OUTPUTS_DIRECTORY
 TODO_NAMESPACE = "nekoclaw.todos"
 # Which entry holds the text that opened the commission under way (``prompt`` with ``opening``).
 COMMISSION_NAMESPACE = "nekoclaw.commission"
@@ -267,6 +270,14 @@ class TranscriptStorage(JsonlSessionStorage):
         entry_id = payload.get("id") if isinstance(payload, dict) else None
         return entry_id if isinstance(entry_id, str) else None
 
+    def sync(self) -> None:
+        """Have what the file holds written to the disk."""
+        with self._locked(exclusive=True):
+            # Opened for writing: where a file is flushed through its handle,
+            # one that only reads cannot be.
+            with self.path.open("ab") as file:
+                os.fsync(file.fileno())
+
 
 class SessionRecorder:
     """Appends entries to the JSONL transcript in order, off the event loop.
@@ -287,6 +298,8 @@ class SessionRecorder:
         self._lost: dict[str, str | None] = {}
         # True after an entry was given up on, until a write succeeds again.
         self._failing = False
+        # What to call once an entry is in the file: id -> the call.
+        self._saved: dict[str, Callable[[], None]] = {}
         self.last_id: str | None = None
 
     def _read_blocking(self) -> list[SessionEntry]:
@@ -300,11 +313,15 @@ class SessionRecorder:
 
         A fragment at the end is removed. The entry counts as saved when it is
         the last complete line: its write reached the file whole and only a
-        later step (syncing it to disk) failed.
+        later step (syncing it to disk) failed. That step is made up for
+        here, before the entry is said to be saved: whoever is told so
+        (``link``'s ``saved``) takes it to be on the disk.
         """
         self._storage.drop_torn_tail()
         saved = self._storage.last_entry_id() == entry.id
-        # Cleared only now: had either step failed, the next attempt must look
+        if saved:
+            self._storage.sync()
+        # Cleared only now: had any step failed, the next attempt must look
         # again instead of writing the entry a second time unseen.
         self._check_tail = False
         return saved
@@ -324,10 +341,16 @@ class SessionRecorder:
     async def read_all(self) -> list[SessionEntry]:
         return await asyncio.to_thread(self._read_blocking)
 
-    def link(self, entry: SessionEntry) -> SessionEntry:
-        """Chain ``entry`` behind the previous one and queue it for writing."""
+    def link(self, entry: SessionEntry, *, saved: Callable[[], None] | None = None) -> SessionEntry:
+        """Chain ``entry`` behind the previous one and queue it for writing.
+
+        ``saved`` is called once the entry is in the file, and not at all
+        when it had to be given up on.
+        """
         entry.parent_id = self.last_id
         self.last_id = entry.id
+        if saved is not None:
+            self._saved[entry.id] = saved
         self._queue.put_nowait(entry)
         if self._writer is None or self._writer.done():
             self._writer = asyncio.ensure_future(self._write())
@@ -338,6 +361,12 @@ class SessionRecorder:
             entry = await self._queue.get()
             try:
                 await self._append(entry)
+                saved = self._saved.pop(entry.id, None)
+                if saved is not None and entry.id not in self._lost:
+                    try:
+                        saved()
+                    except Exception:  # noqa: BLE001 - what is told of a write must not stop the writing
+                        logger.exception("telling that a transcript entry is saved failed")
             finally:
                 self._queue.task_done()
 
@@ -379,6 +408,10 @@ class SessionRecorder:
 
     async def flush(self) -> None:
         await self._queue.join()
+
+    def gave_up_on(self, entry_id: str | None) -> bool:
+        """Whether an entry was given up on: it could not be written, and is not on the record."""
+        return entry_id is not None and entry_id in self._lost
 
     async def close(self) -> None:
         await self.flush()
@@ -442,8 +475,16 @@ class TaskAgentSession(SessionInbox):
         self._seq = 0
         # Texts taken through prompt, steer and follow_up; see EndedEvent.inputs.
         self._inputs = 0
+        # Those of them that are not in the conversation yet, each with its
+        # number; see TakenEvent.
+        self._given: list[tuple[int, AgentMessage]] = []
+        # Those of them no person wrote (``human`` False), until they are in
+        # the conversation.
+        self._not_human: list[AgentMessage] = []
         self._closing = False
         self._abort_requested = False
+        # True while what runs is the summing up asked for by ``compact``.
+        self._compacting = False
         self._run_task: asyncio.Task[None] | None = None
         self._abort_timer: asyncio.TimerHandle | None = None
         self._human_in_run = False
@@ -468,6 +509,8 @@ class TaskAgentSession(SessionInbox):
         self._compactions = 0
         self._compaction_due = False
         self._tokens_before_compaction = 0
+        # The entry of the latest summary made here, to ask the record whether it took it.
+        self._compaction_entry_id: str | None = None
         # The entry of the text that opened the commission under way, which a
         # summary leaves as it is; and that text as a message, from the
         # moment it is handed over until it is in the transcript.
@@ -579,6 +622,19 @@ class TaskAgentSession(SessionInbox):
             executors = sorted([*executors, *gateway_tools], key=lambda tool: tool.name)
         self._executors = executors
         self._workdir, self._session_dir = workdir, session_dir
+        # A session made from another by copying what was said in it
+        # (``fork.py``) reads the tool output that one kept where it is:
+        # what was said names those files.
+        readable = [spill.directory]
+        for custom in state.custom_entries if state is not None else ():
+            if custom.namespace != fork.FORK_NAMESPACE:
+                continue
+            # Where the session it was made from kept its output, and
+            # where the ones that one was made from kept theirs.
+            behind = custom.data.get("outputs_behind")
+            for kept_there in (custom.data.get("outputs"), *(behind if isinstance(behind, list) else ())):
+                if isinstance(kept_there, str) and kept_there:
+                    readable.append(Path(kept_there))
         # Known before the snapshot is looked at, which says how often the
         # conversation had been summed up when it was made.
         self._compactions = len(state.compaction_entries) if state is not None else 0
@@ -624,7 +680,13 @@ class TaskAgentSession(SessionInbox):
                     is_cancelled=lambda: self.harness.cancelled,
                     # Reading back a result kept there is not reading
                     # outside the working directory.
-                    readable=(spill.directory,),
+                    readable=tuple(readable),
+                    # Called, these are answered by what stands in for
+                    # them, which does nothing: nobody is asked about them.
+                    # Those the session was opened without, and any other
+                    # the model is told of that is not there now. (Never
+                    # one that is there after all.)
+                    withheld=(frozenset(spec.disabled_tools) | {tool.name for tool in self._tools}) - there,
                 ),
                 after_tool_call=self._after_tool_call,
                 finish_turn=self._finish_turn,
@@ -691,7 +753,6 @@ class TaskAgentSession(SessionInbox):
             tool_names=[tool.name for tool in self._executors],
             workdir=str(self._workdir),
             platform=self._platform,
-            reply_language=spec.reply_language,
             instructions=spec.instructions,
         )
         self._wire_tools = list(self._executors)
@@ -741,6 +802,12 @@ class TaskAgentSession(SessionInbox):
                 # The last one counts: the commission the session was on.
                 entry_id = custom.data.get("entry_id")
                 self._opening_entry_id = entry_id if isinstance(entry_id, str) and entry_id else None
+            elif custom.namespace == fork.FORK_NAMESPACE:
+                # Everything before this was said in another session, and
+                # copied: its to-do list and its goal were that one's. (The
+                # entries after it are this session's own.)
+                self.todos.restore(None)
+                self.goals.restore(None)
         self._compactions = len(state.compaction_entries)
         self._recorder.last_id = state.active_leaf_id
         replies = [message for message in self.harness.message_list if isinstance(message, AssistantMessage)]
@@ -775,8 +842,8 @@ class TaskAgentSession(SessionInbox):
     def _save_goal(self) -> None:
         self._recorder.link(CustomEntry(namespace=GOAL_NAMESPACE, data=self.goals.to_json()))
 
-    def _record(self, message: AgentMessage) -> None:
-        """Append one message to the transcript and register it."""
+    def _record(self, message: AgentMessage, *, saved: Callable[[], None] | None = None) -> None:
+        """Append one message to the transcript and register it; ``saved`` is called once it is in the file."""
         entry: SessionEntry
         if isinstance(message, CustomMessage):
             entry = CustomMessageEntry(
@@ -789,7 +856,7 @@ class TaskAgentSession(SessionInbox):
         else:
             entry = MessageEntry(message=message)
             kind = kind_of(message)
-        self._recorder.link(entry)
+        self._recorder.link(entry, saved=saved)
         self.transcript.register(message, entry.id, kind)
         if message is self._opening_message:
             # Noted in the transcript, so that a session opened later knows
@@ -841,12 +908,35 @@ class TaskAgentSession(SessionInbox):
             self._on_message(event.message)
 
     def _on_message(self, message: AgentMessage) -> None:
+        taken: Callable[[], None] | None = None
+        for index, (number, given) in enumerate(self._given):
+            if given is message:
+                # One of the texts the session was given is in its
+                # conversation from here on. That is told once it is in the
+                # record too, where a session opened again finds it: told
+                # before, a process that ends meanwhile would leave a text
+                # that is nowhere and that nobody sends again.
+                del self._given[index]
+                taken = functools.partial(
+                    self._emit, protocol.TakenEvent(session_id=self.session_id, inputs=number)
+                )
+                break
         if not self.transcript.is_registered(message):
-            self._record(message)
+            self._record(message, saved=taken)
+        elif taken is not None:
+            taken()
         if isinstance(message, UserMessage):
-            # Text from the user: it authorizes goal management for this run and
-            # makes an earlier run of identical tool calls irrelevant.
-            self._human_in_run = True
+            written_by_nobody = any(message is other for other in self._not_human)
+            if written_by_nobody:
+                # What another session wrote, or what the host says of a
+                # time that has come: it is in the conversation like any
+                # text, and is no word of the user's. The run is not one
+                # the user spoke in on its account.
+                self._not_human = [other for other in self._not_human if other is not message]
+            else:
+                # Text from the user: it authorizes goal management for this run.
+                self._human_in_run = True
+            # Either makes an earlier run of identical tool calls irrelevant.
             self._repeat.reset()
         elif isinstance(message, AssistantMessage):
             self._last_assistant = message
@@ -902,6 +992,23 @@ class TaskAgentSession(SessionInbox):
         from config.nekoclaw_settings import TASK_AGENT_UNSURE_REFUSAL_TOKENS
 
         if signal is None or not signal.is_cancelled():
+            if await self._budget_spent(signal):
+                # The host has ended what this session works on, for what
+                # it used: no further request is made.
+                stopped = AssistantMessage(
+                    model=model, stop_reason="aborted", error_message="stopped: the usage allowed for this work is spent"
+                )
+                yield AssistantErrorEvent(reason="aborted", error=stopped)
+                return
+            if signal is not None and signal.is_cancelled():
+                # Stopped while the host was waited for (the user was
+                # asked). It ends here: nothing more is said to the
+                # session, its conversation is not summed up (a request
+                # as long as all of it, after the stop), and what is due
+                # after an earlier summary is left to the next run.
+                stopped = AssistantMessage(model=model, stop_reason="aborted", error_message="stopped")
+                yield AssistantErrorEvent(reason="aborted", error=stopped)
+                return
             self._inject_runtime_context()
             failed_before, self._last_request_failed = self._last_request_failed, False
             long = failed_before and await self._size() > TASK_AGENT_UNSURE_REFUSAL_TOKENS
@@ -1037,21 +1144,80 @@ class TaskAgentSession(SessionInbox):
             # the session is managed for the one it had.
             back()
 
-    async def _fit(self, *, force: bool) -> None:
+    async def _budget_spent(self, signal: CancellationToken | None) -> bool:
+        """Ask the host, before a model request, whether what this session works on may use more; True to stop.
+
+        A host that keeps count of what its sessions use (``budget`` among
+        its callbacks) is asked before every request of a run: between two
+        steps, when no tool call of the run is under way. It answers at
+        once while there is room. When there is none it asks the user,
+        which may take as long as the user does, and the request waits.
+        Its answer may carry a ``notice``: said to the model in front of
+        the request (the user allowed no more, and what there is has to be
+        handed over). ``stop`` ends the run without the request.
+
+        A host that cannot answer does not hold the work up.
+        """
+        if "budget" not in self._host.capabilities:
+            return False
+        asking = asyncio.ensure_future(self._host.call(self.session_id, "budget", {}))
+        try:
+            while True:
+                done, _pending = await asyncio.wait({asking}, timeout=_INPUT_POLL_SECONDS)
+                if done:
+                    break
+                if signal is not None and signal.is_cancelled():
+                    # Stopped while it waited: the request that follows says so itself.
+                    return False
+        finally:
+            if not asking.done():
+                asking.cancel()
+                await asyncio.gather(asking, return_exceptions=True)
+        try:
+            verdict = asking.result()
+        except asyncio.CancelledError:
+            # The question was withdrawn: what it was asked for is over.
+            return True
+        except Exception:  # noqa: BLE001 - counting must not stop the work
+            logger.warning("session %s: the host could not say whether more may be used", self.session_id, exc_info=True)
+            return False
+        if signal is not None and signal.is_cancelled():
+            # Stopped by the time the answer is looked at: the run is over,
+            # and nothing more is said to its session. The request that
+            # follows says so itself.
+            return False
+        notice = verdict.get("notice")
+        if isinstance(notice, str) and notice.strip():
+            message = CustomMessage(custom_type="notice:usage", content=notice, display=False)
+            self.harness.message_list.append(message)
+            self._record(message)
+        return bool(verdict.get("stop"))
+
+    async def _fit(self, *, force: bool, tight: bool | None = None, or_drop: bool = True) -> None:
         # Each summary is saved the moment it is applied, not after fit()
         # returns: an abort during a later summary ends fit() with the earlier
         # one already in the conversation, and later entries refer to its id.
         await self.context.fit(
             self.transcript,
             force=force,
+            tight=tight,
             on_compaction=self._persist_compaction,
             # The commission under way stays as it was handed over.
             pinned=self._pinned(),
+            or_drop=or_drop,
         )
 
     def _pinned(self) -> tuple[str, ...]:
-        """Return the row a summary leaves word for word: the text that opened the commission under way.
+        """Return the rows a summary leaves word for word: the text that opened the commission under way, and what the host said about usage.
 
+        What the host said about usage (that no more may be used, and
+        that what there is has to be handed over) is said for the run
+        it was said in, and taken out when that is over
+        (``_drop_usage_notices``). Summed up on the way, it would be
+        part of the summary, which is told to keep such limits, and
+        every later run of the session would be told to stop.
+
+        The text that opened the commission:
         Not when it is longer than half of what a conversation may fill of
         the window: kept whole next to what every request begins with, it
         would leave a summary nothing to shorten, and the request would be
@@ -1060,15 +1226,20 @@ class TaskAgentSession(SessionInbox):
         small.) It is then cut down and summed up like what the user said
         before it.
         """
+        rows = self.transcript.rows()
+        pinned = [
+            row.entry_id
+            for row in rows
+            if isinstance(row.message, CustomMessage) and row.message.custom_type == "notice:usage"
+        ]
         opening = self._opening_entry_id
-        if not opening:
-            return ()
-        row = next((row for row in self.transcript.rows() if row.entry_id == opening), None)
-        if row is None:
-            return ()
-        policy = self.context.policy
-        room = (policy.threshold - self.context.fixed_tokens) // 2
-        return (opening,) if estimate_tokens(row.message, policy.image_tokens) <= room else ()
+        row = next((row for row in rows if row.entry_id == opening), None) if opening else None
+        if row is not None:
+            policy = self.context.policy
+            room = (policy.threshold - self.context.fixed_tokens) // 2
+            if estimate_tokens(row.message, policy.image_tokens) <= room:
+                pinned.append(row.entry_id)
+        return tuple(pinned)
 
     def _persist_compaction(self, compaction: Compaction) -> None:
         self._recorder.link(
@@ -1082,7 +1253,10 @@ class TaskAgentSession(SessionInbox):
             )
         )
         self._compactions += 1
+        self._compaction_entry_id = compaction.summary_row.entry_id
         self._tokens_before_compaction = compaction.tokens_before
+        # (What the request that wrote it used was told when it came back:
+        # ``_summarize``.)
         # What follows a summary is done before the next request, not here:
         # this is called while the conversation is still being fitted.
         self._compaction_due = True
@@ -1091,13 +1265,18 @@ class TaskAgentSession(SessionInbox):
             # over before (a group of tools and how they are used) may be gone.
             self._gateway.compactions = self._compactions
 
-    async def _after_compaction(self) -> None:
+    async def _after_compaction(self, *, tell: bool = True) -> None:
         """Do what follows a summary of the conversation, before the next request.
 
         The head of the request changes with a summary anyway, so this is
         when the system prompt and the tool definitions are put together
         anew: what the host's instructions hold by now, and the tools there
         are now, take effect.
+
+        ``tell`` is whether the host is told that the conversation was
+        summed up. Not when this is only made up for (the summary was
+        made before the session was last closed) by a summing up that
+        made none itself: the host takes the word for that one.
         """
         await self._renew_snapshot(REASON_COMPACTED)
         self.context.fixed_tokens = await self._fixed_tokens()
@@ -1105,6 +1284,8 @@ class TaskAgentSession(SessionInbox):
         # Only now: stopped while the snapshot was written, the next run
         # does all of this again, and measures against what it sends.
         self._compaction_due = False
+        if not tell:
+            return
         self._emit(
             protocol.CompactedEvent(
                 session_id=self.session_id,
@@ -1183,7 +1364,37 @@ class TaskAgentSession(SessionInbox):
                 # itself: looked at here like any other failure.)
                 raise asyncio.CancelledError from None
             raise
+        self._tell_summary_usage(reply.usage)
+        if reply.stop_reason == "toolUse":
+            # It called a tool instead of writing the summary (the request
+            # offers the tools, as every request of the session does).
+            # What it wrote before that leads up to the call and sums
+            # nothing up: a summary that failed, not one that was cut
+            # short.
+            raise RuntimeError("the model called a tool instead of writing the summary")
+        if reply.stop_reason == "length":
+            # Ended at its limit: the last sections are missing, or cut off.
+            raise SummaryCutShort(reply.text)
         return reply.text, reply.usage
+
+    def _tell_summary_usage(self, usage: Usage | None) -> None:
+        """Tell what a request that sums the conversation up used, whether or not its summary is taken."""
+        if usage is not None and (usage.input + usage.cache_read + usage.cache_write or usage.output):
+            # The request that wrote the summary is one the session made:
+            # counted with what it used, apart from those of its runs.
+            self._emit(
+                protocol.UsageEvent(
+                    session_id=self.session_id,
+                    input=usage.input,
+                    output=usage.output,
+                    cache_read=usage.cache_read,
+                    cache_write=usage.cache_write,
+                    reasoning=usage.reasoning,
+                    total_tokens=usage.total_tokens,
+                    context_window=self._window,
+                    summary=True,
+                )
+            )
 
     def _inject_runtime_context(self) -> None:
         """Append the time, running jobs and open todos as a message when due."""
@@ -1244,8 +1455,12 @@ class TaskAgentSession(SessionInbox):
         return self.harness.has_queued_messages()
 
     def has_pending_user_steer(self) -> bool:
+        # Not what another session wrote, or the host says of a time that has
+        # come: that waits its turn in the queue, and ends no wait as the
+        # user's own words do.
         return any(
-            isinstance(message, UserMessage) for message in self.harness.queued_messages.steering
+            isinstance(message, UserMessage) and not any(message is other for other in self._not_human)
+            for message in self.harness.queued_messages.steering
         )
 
     async def wait_for_input(self, timeout_seconds: float) -> bool:
@@ -1296,20 +1511,23 @@ class TaskAgentSession(SessionInbox):
         """True while a run is in progress or a background job is still running."""
         return self.running or bool(self.jobs.running())
 
-    def prompt(self, text: str, *, opening: bool = False) -> None:
+    def prompt(self, text: str, *, opening: bool = False, human: bool = True) -> None:
         """Hand the session work. ``opening`` marks the text that opens a commission.
 
         A session takes several commissions, one after the other. The text
         that opens the one under way stays in the conversation word for
         word when the rest is summed up: what the commission is, what was
         said of it and what was picked for it is all in that text.
+
+        ``human`` False says that no person wrote the text (another
+        session did, or the host): the run it starts is not one the user
+        spoke in, for what only the user's own words allow.
         """
         if self._closing:
             raise SessionError("the session is closed")
         if self.running:
             raise SessionError("a run is in progress; use steer or follow_up to add to it")
-        self._inputs += 1
-        message = UserMessage(content=text)
+        message = self._give(text, human)
         if opening:
             # Its entry is known once the run has taken it (``_record``).
             self._opening_message = message
@@ -1337,23 +1555,37 @@ class TaskAgentSession(SessionInbox):
         self._goal_of_this_start = False
         self._goal_given = True
 
-    def steer(self, text: str) -> None:
-        if self._closing:
-            raise SessionError("the session is closed")
+    def _give(self, text: str, human: bool) -> UserMessage:
+        """Count a text the session is given and return the message it becomes."""
         self._inputs += 1
-        if self.running:
-            self.harness.steer_message(UserMessage(content=text))
-        else:
-            self._begin_run(UserMessage(content=text))
+        message = UserMessage(content=text)
+        self._given.append((self._inputs, message))
+        if not human:
+            self._not_human.append(message)
+        return message
 
-    def follow_up(self, text: str) -> None:
+    def steer(self, text: str, *, human: bool = True) -> None:
         if self._closing:
             raise SessionError("the session is closed")
-        self._inputs += 1
+        if self._compacting:
+            # Not a run that would take it: it would be counted as taken and never read.
+            raise SessionError("the conversation is being summed up; nothing can be added to it now")
+        message = self._give(text, human)
         if self.running:
-            self.harness.follow_up_message(UserMessage(content=text))
+            self.harness.steer_message(message)
         else:
-            self._begin_run(UserMessage(content=text))
+            self._begin_run(message)
+
+    def follow_up(self, text: str, *, human: bool = True) -> None:
+        if self._closing:
+            raise SessionError("the session is closed")
+        if self._compacting:
+            raise SessionError("the conversation is being summed up; nothing can be added to it now")
+        message = self._give(text, human)
+        if self.running:
+            self.harness.follow_up_message(message)
+        else:
+            self._begin_run(message)
 
     def abort(self) -> bool:
         """Stop the current run and the session's background jobs.
@@ -1369,6 +1601,10 @@ class TaskAgentSession(SessionInbox):
         self._abort_requested = True
         self.harness.clear_queues()
         self.harness.cancel()
+        if self._compacting:
+            # Not a run of the loop: there is no token for it to look at.
+            task.cancel()
+            return True
         if self._abort_timer is None:
             self._abort_timer = asyncio.get_running_loop().call_later(
                 ABORT_GRACE_SECONDS, self._force_stop, task
@@ -1395,8 +1631,16 @@ class TaskAgentSession(SessionInbox):
             self._abort_requested = True
             self.harness.clear_queues()
             self.harness.cancel()
+            if self._compacting:
+                task.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(task), CLOSE_GRACE_SECONDS)
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if not task.cancelled() or (current is not None and current.cancelling()):
+                    raise
+                # The summing up was stopped before it took a step: it is
+                # over, and the rest of the closing goes on.
             except asyncio.TimeoutError:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
@@ -1414,11 +1658,164 @@ class TaskAgentSession(SessionInbox):
             await self._gateway.aclose()
         self._emit(protocol.EndedEvent(session_id=self.session_id, reason="closed"))
 
+    async def flush(self) -> None:
+        """Wait until everything said so far is written to the transcript."""
+        await self._recorder.flush()
+
+    def compact(self) -> None:
+        """Sum the conversation up now, whatever its length; its end is told like that of a run.
+
+        For a session nothing is at work in, a background command
+        included: what was said is replaced by a summary and the newest
+        part of it, as before a request that would not fit. A ``compacted`` event follows when a summary was
+        made, and an ``ended`` event either way.
+        """
+        if self._closing:
+            raise SessionError("the session is closed")
+        if self.running:
+            raise SessionError("a run is in progress")
+        if self.jobs.running():
+            # What a background command says when it ends would come while
+            # the conversation is summed up: it would reach no run, and
+            # wait for whatever is said to the session next.
+            raise SessionError("a background command is still running")
+        self._abort_requested = False
+        self._compacting = True
+        task = asyncio.ensure_future(self._compact())
+        self._run_task = task
+        task.add_done_callback(self._compact_never_ran)
+
+    def _compact_never_ran(self, task: "asyncio.Task[None]") -> None:
+        """End a summing up that was stopped before it took its first step.
+
+        A task that is cancelled before it has run never enters its own
+        code: nothing in ``_compact`` gets to say that it is over. Left
+        like that, the session would count as at work for good.
+        """
+        if self._run_task is not task:
+            # It ran, and ended itself.
+            return
+        self._compacting = False
+        self._run_task = None
+        if not self._closing:
+            self._emit(protocol.EndedEvent(session_id=self.session_id, reason="aborted", inputs=self._inputs))
+
+    async def _compact(self) -> None:
+        reason: protocol.EndReason = "completed"
+        error: str | None = None
+        # The conversation as it stands before anything is done to it: what
+        # it goes back to when the record does not take the summary.
+        as_it_was: list[Any] | None = None
+        before, due_before = self._compactions, self._compaction_due
+        try:
+            # As much is kept word for word as a summary before a request
+            # keeps: this is not the conversation that was refused as too
+            # long. Nor does anything have to go: without a whole summary
+            # the conversation stays as it is. What the host said about
+            # usage in a run that is over is not part of what is summed up.
+            self._drop_usage_notices()
+            as_it_was = self.transcript.rows()
+            await self._fit(force=True, tight=False, or_drop=False)
+            made = await self._summary_on_record(before, due_before, as_it_was)
+            if self._compaction_due:
+                # Also when no summary was made now and one from before the
+                # session was last closed still waits for what follows it:
+                # that is done, and the host is not told of a summing up,
+                # there having been none this time.
+                await self._after_compaction(tell=made)
+            await self._recorder.flush()
+        except asyncio.CancelledError:
+            if not (self._abort_requested or self._closing):
+                self._compacting = False
+                self._run_task = None
+                raise
+            reason = "aborted"
+            if as_it_was is not None:
+                # Stopped, and a summary may be on its way to the record
+                # this moment. Whether the record takes it is settled
+                # before this is over: the next run goes on from the
+                # conversation as it is then. (No longer than the record
+                # tries to write an entry.) In a task of its own, and
+                # waited for however often this one is stopped again
+                # meanwhile (a second abort, a close that ran out of
+                # time): over before then, the next run would go on
+                # from a summary the record may still refuse, with
+                # nothing left that would undo it.
+                settling = asyncio.ensure_future(self._summary_on_record(before, due_before, as_it_was))
+                while not settling.done():
+                    try:
+                        await asyncio.shield(settling)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:  # noqa: BLE001 - told below
+                        break
+                if not settling.cancelled() and settling.exception() is not None:
+                    logger.warning(
+                        "session %s: whether the record took a summary could not be settled: %s",
+                        self.session_id,
+                        settling.exception(),
+                    )
+        except Exception as exc:  # noqa: BLE001 - reported through the ended event
+            logger.exception("session %s: summing the conversation up failed", self.session_id)
+            reason = "error"
+            error = f"{type(exc).__name__}: {exc}"
+        self._compacting = False
+        self._run_task = None
+        self._emit(protocol.EndedEvent(session_id=self.session_id, reason=reason, error=error, inputs=self._inputs))
+
+    async def _summary_on_record(self, before: int, due_before: bool, as_it_was: list[Any]) -> bool:
+        """Wait for what was said to be written, and return whether a summary was made since ``before`` and is on the record.
+
+        One the record did not take (the disk refused it, after the
+        retries) is undone: the conversation goes back to ``as_it_was``,
+        which is what the record has. Left with the summary, a later
+        one would stand for it and not for what it had replaced, and a
+        session opened from the record would be handed that later
+        summary and the old replies both. Nor is it counted, here, in
+        the snapshot or with the gateway, or told to the host.
+        """
+        await self._recorder.flush()
+        if self._compactions <= before:
+            return False
+        if not self._recorder.gave_up_on(self._compaction_entry_id):
+            return True
+        self.transcript.rewrite(as_it_was)
+        self.context.invalidate()
+        self._compactions, self._compaction_due = before, due_before
+        if self._gateway is not None:
+            # Nor is the gateway to take what it handed over before (a
+            # group of tools and how they are used) for gone: the
+            # conversation that is back holds it.
+            self._gateway.compactions = before
+        return False
+
     # ------------------------------------------------------------------
     # Runs
     # ------------------------------------------------------------------
 
+    def _drop_usage_notices(self) -> None:
+        """Take what the host said about usage in earlier runs out of the conversation.
+
+        That no more may be used, and that what there is has to be handed
+        over, was said for the run it was said in. The host is asked
+        again before the first request of every run, and says it again
+        if it still holds. Left in, it would have the next commission of
+        the session, or this one after the user allowed more, hand over
+        at once. Only in memory, like other cuts: the saved transcript
+        keeps it, and a session opened from it does this again.
+        """
+        rows = self.transcript.rows()
+        kept = [
+            row
+            for row in rows
+            if not (isinstance(row.message, CustomMessage) and row.message.custom_type == "notice:usage")
+        ]
+        if len(kept) != len(rows):
+            self.transcript.rewrite(kept)
+            self.context.invalidate()
+
     def _begin_run(self, message: AgentMessage, goal_round: GoalRound | None = None) -> None:
+        self._drop_usage_notices()
         self._abort_requested = False
         self._run_task = asyncio.ensure_future(self._run(message, goal_round))
 
@@ -1488,6 +1885,10 @@ class TaskAgentSession(SessionInbox):
             await self._recorder.flush()
         if reason == "aborted":
             self.harness.clear_queues()
+            # What was given and never got into the conversation went with
+            # the queues: it is not kept to be looked for.
+            self._given.clear()
+            self._not_human.clear()
         self._goal_round = None
         self._human_in_run = False
         self._run_task = None
@@ -1500,5 +1901,7 @@ class TaskAgentSession(SessionInbox):
                 text=last.text if last is not None else "",
                 error=error,
                 inputs=self._inputs,
+                jobs=len(self.jobs.running()),
+                waking_jobs=len(self.jobs.waking()),
             )
         )

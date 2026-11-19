@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from plugin.core.call_registry import CallLink, Origin, delivery_link
 from plugin.server.application.plugins.dispatch_service import PluginDispatchService
 from plugin.server.application.plugins.event_contracts import (
     VOICE_TRANSCRIPT_ACTION_NOOP,
@@ -47,11 +48,12 @@ async def resolve_voice_transcript_request(
     if not isinstance(event, Mapping) or not voice_transcript_event_has_text(event):
         return voice_transcript_noop("empty_transcript")
     service = dispatch_service or PluginDispatchService()
-    return await service.trigger_arbitrated_custom_event(
-        event_type=VOICE_TRANSCRIPT_EVENT_TYPE,
-        args=_args_from_bridge_event(event),
-        timeout=timeout,
-    )
+    with delivery_link(CallLink(Origin.of("chat_hook"))):
+        return await service.trigger_arbitrated_custom_event(
+            event_type=VOICE_TRANSCRIPT_EVENT_TYPE,
+            args=_args_from_bridge_event(event),
+            timeout=timeout,
+        )
 
 
 __all__ = [

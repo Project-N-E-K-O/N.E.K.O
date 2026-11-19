@@ -23,21 +23,32 @@ should receive the standard OpenAI body unless it is explicitly recognized by
 
 from __future__ import annotations
 
+from email.message import Message
+from typing import NamedTuple
 from urllib.parse import parse_qsl, urlparse, urlunparse
 
 
-OPENAI_TTS_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 OPENAI_TTS_DEFAULT_MODEL = "gpt-4o-mini-tts"
 OPENAI_TTS_DEFAULT_VOICE = "marin"
 # Raw PCM returned by Speech API enters the project's streaming 24 kHz -> 48 kHz resampler.
 # Fix the same source sample rate for configurable providers, or playback speed and pitch become incorrect.
 OPENAI_TTS_PCM_SAMPLE_RATE = 24000
+# Bounds for a sample rate advertised in ``Content-Type``; anything outside is
+# treated as a malformed header and the 24 kHz OpenAI contract is assumed.
+_PCM_HEADER_MIN_SAMPLE_RATE = 8000
+_PCM_HEADER_MAX_SAMPLE_RATE = 192000
+_PCM_HEADER_MAX_CHANNELS = 8
 
 # Match exact domains so SiliconFlow-specific fields never reach unrelated OpenAI-compatible services whose
 # domains merely contain the same text, such as user-controlled subdomains.
 _SILICONFLOW_TTS_HOSTS = frozenset({
     "api.siliconflow.cn",
     "api.siliconflow.com",
+})
+# Fish Audio's OpenAI-compatible endpoint (``/compat/v1``) returns 44.1 kHz PCM
+# unless ``sample_rate`` is supplied. Same exact-host rule as SiliconFlow.
+_FISH_AUDIO_TTS_HOSTS = frozenset({
+    "api.fish.audio",
 })
 
 
@@ -107,18 +118,81 @@ def openai_tts_sdk_options(
 def openai_tts_extra_body(base_url: str) -> dict[str, int | bool]:
     """Return vendor extensions needed to preserve the PCM wire contract.
 
-    OpenAI-compatible PCM is 24 kHz. SiliconFlow exposes a configurable sample
-    rate and does not guarantee that its default matches that contract, so pin
-    it explicitly while leaving strict OpenAI-compatible providers untouched.
+    OpenAI-compatible PCM is 24 kHz. SiliconFlow and Fish Audio expose a
+    configurable sample rate and their defaults do not match that contract, so
+    pin it explicitly while leaving strict OpenAI-compatible providers untouched.
     """
 
     parsed = urlparse(str(base_url or "").strip())
-    if (parsed.hostname or "").lower() in _SILICONFLOW_TTS_HOSTS:
+    host = (parsed.hostname or "").lower()
+    if host in _SILICONFLOW_TTS_HOSTS:
         # SiliconFlow streams PCM through an OpenAI-compatible HTTP endpoint but uses extension fields for sample rate
         # and streaming. Fix both explicitly so runtime playback and connectivity probes share
         # the same transport format; never send these fields to other generic compatible providers.
         return {"sample_rate": OPENAI_TTS_PCM_SAMPLE_RATE, "stream": True}
+    if host in _FISH_AUDIO_TTS_HOSTS:
+        # Fish Audio defaults raw PCM to 44.1 kHz; request the 24 kHz OpenAI contract explicitly.
+        return {"sample_rate": OPENAI_TTS_PCM_SAMPLE_RATE}
     return {}
+
+
+class OpenAITtsPcmFormat(NamedTuple):
+    """Raw PCM layout advertised by a speech response ``Content-Type``."""
+
+    # ``None`` when the header states no usable rate; callers then fall back
+    # to ``OPENAI_TTS_PCM_SAMPLE_RATE``.
+    sample_rate: int | None
+    channels: int
+    # ``audio/L16`` is network byte order (RFC 2586); OpenAI ``pcm`` is little-endian.
+    big_endian: bool
+
+
+def _bounded_int(raw: str | None, low: int, high: int) -> int | None:
+    try:
+        value = int(str(raw or "").strip())
+    except ValueError:
+        return None
+    return value if low <= value <= high else None
+
+
+def openai_tts_pcm_format(content_type: str | None) -> OpenAITtsPcmFormat:
+    """Read the raw PCM layout advertised by a speech response ``Content-Type``.
+
+    Some compatible providers ignore the 24 kHz contract and describe the real
+    format in the header instead, e.g. ``audio/pcm; rate=44100``. ``rate`` (or
+    ``sample_rate``) and ``channels`` are honored; a malformed header yields the
+    OpenAI defaults rather than failing synthesis. Samples are 16-bit either way.
+    """
+
+    message = Message()
+    message["Content-Type"] = str(content_type or "")
+    try:
+        raw_params = message.get_params() or []
+    except Exception:
+        # Malformed RFC 2231 continuations can raise inside the stdlib parser;
+        # the body may still be playable, so keep the default contract.
+        raw_params = []
+    # Read the media type independently so a malformed parameter list cannot
+    # flip ``audio/L16`` back to little-endian decoding.
+    media_type = str(content_type or "").split(";", 1)[0].strip().lower()
+    params = {
+        str(key).lower(): value
+        for key, value in raw_params[1:]
+        if isinstance(value, str)
+    }
+
+    sample_rate = None
+    for key in ("rate", "sample_rate"):
+        sample_rate = _bounded_int(
+            params.get(key),
+            _PCM_HEADER_MIN_SAMPLE_RATE,
+            _PCM_HEADER_MAX_SAMPLE_RATE,
+        )
+        if sample_rate is not None:
+            break
+
+    channels = _bounded_int(params.get("channels"), 1, _PCM_HEADER_MAX_CHANNELS) or 1
+    return OpenAITtsPcmFormat(sample_rate, channels, media_type == "audio/l16")
 
 
 def build_openai_tts_payload(text: str, model: str, voice: str) -> dict[str, str]:
