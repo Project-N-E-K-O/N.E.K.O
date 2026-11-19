@@ -25,8 +25,18 @@ def _forbidden(module: str) -> bool:
     return any(module == name or module.startswith(name + '.') for name in FORBIDDEN)
 
 
+def _import_function_names(tree: ast.AST) -> set[str]:
+    """Names that call importlib.import_module here, aliases included (`import_module as load`)."""
+    names = set(_IMPORTLIB_CALLS)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == 'importlib':
+            names.update(alias.asname or alias.name for alias in node.names if alias.name == 'import_module')
+    return names
+
+
 def _imported_modules(tree: ast.AST):
     """Yield (line, module) for absolute imports and importlib string literals."""
+    import_functions = _import_function_names(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -38,9 +48,12 @@ def _imported_modules(tree: ast.AST):
                 yield node.lineno, f'{node.module}.{alias.name}'
         elif isinstance(node, ast.Call) and node.args:
             func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, 'id', None)
+            if isinstance(func, ast.Attribute):  # importlib.import_module / il.import_module
+                matches = func.attr in _IMPORTLIB_CALLS
+            else:
+                matches = getattr(func, 'id', None) in import_functions
             first = node.args[0]
-            if name in _IMPORTLIB_CALLS and isinstance(first, ast.Constant) and isinstance(first.value, str):
+            if matches and isinstance(first, ast.Constant) and isinstance(first.value, str):
                 yield node.lineno, first.value
 
 
@@ -82,10 +95,15 @@ def test_scanner_catches_each_import_form(tmp_path):
         'import importlib\n'
         'importlib.import_module("services.chat_sync.runtime")\n'
         '__import__("utils.recent_file")\n'
+        'from importlib import import_module as load\n'
+        'load("utils.recent_file")\n'
+        'from importlib import import_module\n'
+        'import_module("services.chat_sync")\n'
+        'unrelated_loader("utils.recent_file")\n'  # not bound to importlib.import_module
         'from .utils import recent_file as local_helper\n'  # plugin's own relative module
         'import utils.recent_file_helpers\n',  # a different module that shares the prefix
         encoding='utf-8',
     )
     tree = ast.parse(sample.read_text(encoding='utf-8'))
     lines = sorted({line for line, module in _imported_modules(tree) if _forbidden(module)})
-    assert lines == [1, 2, 3, 4, 5, 7, 8]
+    assert lines == [1, 2, 3, 4, 5, 7, 8, 10, 12]
