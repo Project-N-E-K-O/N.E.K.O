@@ -34,7 +34,8 @@ request carries only one line about each group (``BUILTIN_GROUP_SUMMARIES``,
 in the description of the gateway's search tool). Loading a group hands over
 how it is used (``BUILTIN_GROUP_GUIDANCE``) followed by the definitions of
 its tools, and the tools are then called by name through the gateway's call
-tool.
+tool. When a group is selected up front for one commission, the gateway
+includes its guidance once alongside its native tool definitions instead.
 
 All of it is English text read by the model and is deliberately not
 translated; the language a task agent uses towards the user is set elsewhere.

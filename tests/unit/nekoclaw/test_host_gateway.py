@@ -1124,6 +1124,38 @@ async def _tool_names(host: Any, grant: Any) -> list[str]:
     return [tool["name"] for tool in answer["result"]["tools"]]
 
 
+async def test_declared_device_is_scoped_to_the_commission_and_still_needs_permission(builtin_host):
+    host = builtin_host
+    commission = await _commission(host)
+    token = host.gateway.issue(commission.id, supports_images=True, first_turn_groups=("browser",))
+    grant = host.gateway._grant(token)
+    assert set(await _tool_names(host, grant)) == {SEARCH_TOOL, CALL_TOOL, "browser_navigate_page", "browser_take_screenshot"}
+    assert not host.provider.calls and not grant.loaded_groups
+    await host.permission_store.set_mode("browser", "deny")
+    # Screenshot isn't a legacy first action. Seeing its schema doesn't authorize it.
+    result = await _call(host, grant, "browser_take_screenshot")
+    assert result["isError"] and "permission denied" in _text(result) and not host.provider.calls
+    await host.permission_store.set_mode("browser", "allow")
+    result = await _call(host, grant, "browser_take_screenshot")
+    assert not result["isError"] and len(host.provider.calls) == 1 and not grant.loaded_groups
+    next_token = host.gateway.issue(commission.id, supports_images=True)
+    assert await _tool_names(host, host.gateway._grant(next_token)) == [SEARCH_TOOL, CALL_TOOL]
+
+
+async def test_first_turn_listing_respects_availability_image_support_and_readonly_forks(builtin_host):
+    host = builtin_host
+    commission = await _commission(host)
+    groups = BUILTIN_GROUPS
+    token = host.gateway.issue(commission.id, first_turn_groups=groups)
+    grant = host.gateway._grant(token)
+    assert await _tool_names(host, grant) == [SEARCH_TOOL, CALL_TOOL, "browser_navigate_page"]
+    host.provider.switched_off.add("browser_navigate_page")
+    assert await _tool_names(host, grant) == [SEARCH_TOOL, CALL_TOOL]
+    assert (await _call(host, grant, "browser_navigate_page"))["isError"]
+    token = host.gateway.issue(commission.id, supports_images=True, first_turn_groups=groups, reads_only=True)
+    assert await _tool_names(host, host.gateway._grant(token)) == [SEARCH_TOOL, CALL_TOOL]
+
+
 def _cost(definition: dict[str, Any]) -> int:
     """The tokens one listed definition is counted as."""
     from utils.tokenize import count_tokens

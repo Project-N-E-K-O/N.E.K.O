@@ -196,6 +196,34 @@ async def _fallbacks(host: Any, commission_id: str) -> list[dict[str, Any]]:
     return [event.payload for event in await host.ledger.events(commission_id) if event.type == "runtime_fallback"]
 
 
+@pytest.mark.parametrize(
+    ("enabled", "runtime", "native", "text", "has_browser"),
+    [
+        (False, "builtin", False, "Open the browser", False),
+        (True, "builtin", False, "Open the browser", True),
+        (True, "builtin", False, "Explain the browser", False),
+        (True, "auto", False, "Open the browser", False),
+        (True, "auto", True, "Open the browser", True),
+    ],
+)
+async def test_dispatch_only_mounts_devices_on_a_supported_related_route(
+    hosts, tmp_path, monkeypatch, enabled, runtime, native, text, has_browser
+):
+    from config import nekoclaw_settings
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    monkeypatch.setattr(nekoclaw_settings, "FIRST_TURN_DEVICE_TOOLS", enabled)
+    if native:
+        monkeypatch.setattr(Dsh, "supports_device_schemas", lambda self, model: True, raising=False)
+    llm = ScriptedLLM([_report("ready", "done")])
+    host = _host(hosts, tmp_path, llm, Installation(preference=runtime),
+                 builtins=BuiltinToolProvider(state=lambda group: (True, "")))
+    await wait_status(host, await _dispatch(host, text), "done")
+    names = {tool["function"]["name"] for tool in llm.overrides[0]["tools"]}
+    assert ("browser_navigate_page" in names) == has_browser
+    assert "computer" not in names and {"capability_call", "capability_search"} <= names
+
+
 # ---------------------------------------------------------------------------
 # Which runtime
 # ---------------------------------------------------------------------------

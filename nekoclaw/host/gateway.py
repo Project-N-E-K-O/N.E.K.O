@@ -28,9 +28,9 @@ What the gateway serves:
 * MCP tools of the servers the user configured (through the ``mcp_adapter``
   plugin, see ``capabilities.py``);
 * the built-in tools (keyboard and mouse, browser) while they are available.
-  They come in groups and are never listed up front: their definitions would
-  be sent with every request of every task agent, whether it touches a
-  browser or not. The search tool's description carries one line about each
+  An opt-in route lists the groups relevant to a commission up front, with
+  their usage guidance. Other groups remain discoverable and load on demand.
+  The search tool's description carries one line about each
   group on offer, with the group's first call. A group is handed over, how
   it is used and then the definitions of its tools (within
   ``GATEWAY_TOOL_GROUP_MAX_TOKENS``), in one of three ways, and its tools
@@ -217,6 +217,10 @@ class Grant:
     # session, in that one's working directory): capabilities are found
     # with it, and none is called or handed over.
     reads_only: bool = False
+    # Requested for this commission, and the exact tools actually declared
+    # to its runtime. A later switch-on still goes through discovery.
+    first_turn_groups: tuple[str, ...] = ()
+    declared_devices: set[str] = field(default_factory=set)
     # The groups of built-in tools that were handed over through this token:
     # how they are used and their tools' definitions. A new token starts
     # without any, as the session it is for may no longer hold them.
@@ -477,6 +481,7 @@ class CapabilityGateway:
         candidate_plugin_ids: Any = (),
         supports_images: bool = False,
         reads_only: bool = False,
+        first_turn_groups: tuple[str, ...] = (),
     ) -> str:
         """Return a new token for a commission, replacing any earlier one.
 
@@ -492,6 +497,7 @@ class CapabilityGateway:
             candidate_plugin_ids=tuple(str(item) for item in candidate_plugin_ids),
             supports_images=bool(supports_images),
             reads_only=bool(reads_only),
+            first_turn_groups=() if reads_only else first_turn_groups,
         )
         self._grants[grant.token] = grant
         self._by_commission[commission_id] = grant
@@ -750,21 +756,22 @@ class CapabilityGateway:
     # -- tools ------------------------------------------------------------
 
     async def tool_definitions(self, grant: Grant) -> list[dict[str, Any]]:
-        """Return the tools a task agent is offered: the search and the call tool, always.
+        """Offer discovery and call to every session, plus devices selected for this commission."""
+        from config.nekoclaw_settings import GATEWAY_COMMISSION_TOOL_META_KEY
+        from config.prompts.prompts_nekoclaw_builtin import BUILTIN_GROUP_GUIDANCE
 
-        The same for every commission, and whether or not anything can be
-        called right now. A session keeps the tools it was opened with for
-        as long as it lasts, and what can be called changes meanwhile (a
-        plugin is installed, the browser is switched on): offered only
-        while there is something to call, the two would be missing from a
-        session opened before that, which could then reach none of it.
-        Nothing else is listed: what was picked for a commission is told
-        with the commission (``candidate_definitions``); the built-in tools
-        are told of in the search tool's description, a group at a time,
-        and a group is handed over when it is first used.
-        """
         callable_now = self._offered(grant, await self._registry.callable_by_task_agents())
-        return [_search_tool_definition(callable_now), _CALL_TOOL_DEFINITION]
+        listed = [_search_tool_definition(callable_now), _CALL_TOOL_DEFINITION]
+        described: set[str] = set()
+        for item in callable_now:
+            if item.kind == KIND_BUILTIN and item.group in grant.first_turn_groups:
+                tool = _definition(item)
+                if item.group not in described:
+                    tool["description"] += "\n\n" + BUILTIN_GROUP_GUIDANCE[item.group]
+                    described.add(item.group)
+                listed.append({**tool, "_meta": {GATEWAY_COMMISSION_TOOL_META_KEY: True}})
+                grant.declared_devices.add(item.tool_name)
+        return listed
 
     async def candidate_definitions(self, commission_id: str) -> list[dict[str, Any]]:
         """Return the entries picked for a commission, as its opening message tells of them.
@@ -857,7 +864,7 @@ class CapabilityGateway:
         if commission is None or not commission.active:
             return _text("this commission is no longer under way", error=True)
         group = capability.group
-        if not group or _in_hand(grant, group, reply):
+        if not group or capability.tool_name in grant.declared_devices or _in_hand(grant, group, reply):
             return await self._call_capability(commission, capability, arguments)
         # A tool of a group the task agent did not have in hand when it
         # wrote this call: how the group is used has not been read, and but
@@ -1029,7 +1036,10 @@ class CapabilityGateway:
         if commission is None or not commission.active:
             return
         group = capability.group
-        if group and group not in grant.loaded_groups and not _is_first_call(capability, arguments):
+        if (
+            group and name not in grant.declared_devices and group not in grant.loaded_groups
+            and not _is_first_call(capability, arguments)
+        ):
             return
         key = _call_key(capability.id, arguments)
         cleared = await self._permit(commission, capability)

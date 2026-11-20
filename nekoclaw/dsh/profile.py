@@ -324,6 +324,26 @@ def config_dir(home: Path) -> Path:
     return home / "nekoclaw"
 
 
+def uses_stock_tool_presentation(home: Path) -> bool:
+    """The pinned stock ACP recipe sends active MCP schemas natively on new and resume.
+
+    A custom Cordis patch or agent preset can present tools through run_code
+    instead, or filter the scope. Leave those routes on normal discovery.
+    """
+    directory = home / "profiles" / PROFILE
+    try:
+        package = json.loads((directory / "package.json").read_text(encoding="utf-8"))
+        if package["dsh"]["profile"] != {"bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-acp-app"]}:
+            return False
+        for filename in ("cordis.yml", "cordis.patch.yml"):
+            lines = (directory / filename).read_text(encoding="utf-8").splitlines()
+            if "".join(line.partition("#")[0].strip() for line in lines) != "[]":
+                return False
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    return True
+
+
 def write_profile(home: Path, patch: list[dict[str, Any]], *, tag: str = "") -> Path:
     """Write the patch and the guard below ``home`` and return the patch's path. Blocking.
 

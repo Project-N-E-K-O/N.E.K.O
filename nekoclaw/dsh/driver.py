@@ -123,6 +123,7 @@ class _Process:
     # What this process sends as the key of its model requests.
     token: str
     free_slots: list[int]
+    native_device_schemas: bool = False
     guard_ready: asyncio.Event = field(default_factory=asyncio.Event)
     sessions: dict[str, "_Session"] = field(default_factory=dict)
     # dsh session id -> session.
@@ -531,6 +532,11 @@ class DshRuntime:
             raise DshUnavailable(reason)
         await self._ensure_process(shape_of(model))
 
+    def supports_device_schemas(self, model: protocol.ModelConfig) -> bool:
+        """Whether the prepared process serves the explicitly verified ACP tool route."""
+        process = self._processes.get(shape_of(model))
+        return bool(process and process.native_device_schemas and not process.retiring and process.connection.alive)
+
     async def _ensure_process(self, shape: Shape) -> _Process:
         async with self._process_lock:
             process = self._processes.get(shape)
@@ -610,6 +616,10 @@ class DshRuntime:
             except asyncio.TimeoutError as exc:
                 # Without it dsh's tools would act without asking: not used at all.
                 raise DshUnavailable("dsh did not load the permission guard") from exc
+            from config.nekoclaw_settings import FIRST_TURN_DEVICE_TOOLS
+
+            if FIRST_TURN_DEVICE_TOOLS:
+                process.native_device_schemas = await asyncio.to_thread(profile.uses_stock_tool_presentation, launch.home)
         except BaseException as exc:
             process.retiring = True
             await asyncio.shield(connection.close(DSH_CLOSE_SECONDS))

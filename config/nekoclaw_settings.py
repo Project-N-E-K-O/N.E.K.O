@@ -19,6 +19,8 @@ budgets bound text that reaches a model; they are applied with
 ``utils.tokenize.truncate_to_tokens``, never by counting characters.
 """
 
+import os
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -962,6 +964,11 @@ all the same keeps the changes that are complete."""
 GATEWAY_TOOL_LIST_MAX_TOKENS = 3000
 """Budget for the tool definitions one commission is handed up front. Entries
 beyond it stay reachable through the gateway's search tool."""
+
+# Opt-in measurement until the extra per-request input has been approved.
+FIRST_TURN_DEVICE_TOOLS = os.getenv("NEKOCLAW_FIRST_TURN_DEVICE_TOOLS") == "1"
+GATEWAY_COMMISSION_TOOL_META_KEY = "nekoclaw/commissionTool"
+"""MCP metadata marking tools declared for this commission only."""
 
 GATEWAY_TOOL_DESCRIPTION_MAX_TOKENS = 200
 """Cap on one tool description served by the gateway."""
