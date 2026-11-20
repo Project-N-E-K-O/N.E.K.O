@@ -2356,7 +2356,9 @@
             // (wasAllowed null), which may run before its settings loaded and
             // would end another window's legitimate round; every open window
             // sees the change through the cross-window sync and sends this.
-            if (wasAllowed === true) {
+            // Only when a switch did it: a privacy-mode revocation already
+            // sends proactive_vision_consent, which moves the same epoch.
+            if (wasAllowed === true && isVisionConsentHeldNow()) {
                 invalidateProactiveVisionRounds();
             }
             return;

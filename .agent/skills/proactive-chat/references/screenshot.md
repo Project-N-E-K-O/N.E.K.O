@@ -84,7 +84,7 @@
 
 撤权用递增的序号表示，不用布尔值比较：后端是 `_proactive_vision_revocation_epoch`，前端是 `static/app/app-proactive.js` 的 `proactiveVisionRevocationSeq`。「关了又马上打开」之后布尔值和之前一样，但撤权之前截的图不能再用。前端发送前还会读一次 `localStorage` 里最新保存的设置（另一个窗口的撤权可能先落盘，同步事件还没到）。
 
-「主动搭话」和它下面的「屏幕分享」开关不属于授权，只在前端挡新请求。它们把视觉从允许变成不允许时（`syncProactiveVisionDuringSpeech`），前端发一次 WebSocket 的 `proactive_vision_invalidate`，后端 `invalidate_proactive_vision_rounds` 只把 `_proactive_vision_revocation_epoch` 加一，在途的语音和文本轮按上面的规则丢掉屏幕；授权状态、手动分享的帧缓存和 `_screen_consent_revocation_epoch` 都不动。前端同时递增 `proactiveVisionRevocationSeq`，文本轮发送前的 `discardVisionRevokedSince` 也看这两个开关。被取代的旧窗口 socket 发这条消息时照常处理，不关闭连接。
+「主动搭话」和它下面的「屏幕分享」开关不属于授权，只在前端挡新请求。它们把视觉从允许变成不允许时（`syncProactiveVisionDuringSpeech`），前端发一次 WebSocket 的 `proactive_vision_invalidate`，后端 `invalidate_proactive_vision_rounds` 只把 `_proactive_vision_revocation_epoch` 加一，在途的语音和文本轮按上面的规则丢掉屏幕；授权状态、手动分享的帧缓存和 `_screen_consent_revocation_epoch` 都不动。前端同时递增 `proactiveVisionRevocationSeq`，文本轮发送前的 `discardVisionRevokedSince` 也看这两个开关。被取代的旧窗口 socket 发这条消息时照常处理，不关闭连接。只有授权还在、是开关让视觉变成不允许时才发；开启隐私模式由 `proactive_vision_consent` 负责递增序号，不再重复发这条。
 
 ### 已知并接受的残留窗口
 
@@ -93,5 +93,6 @@
 - 请求已经发出、后端还没开始这一轮时关掉开关：`proactive_vision_invalidate` 走 WebSocket，可能先于这条 HTTP 请求到达，这一轮按新序号开始，仍可能看屏。WebSocket 没连上时这条消息也不补发。
 - 文本轮已经带着截图调用了模型之后再撤权或关开关：之后的流式输出、TTS 和最终发布不会被中止，基于屏幕生成的话照常说完（语音轮同理，画面已发给实时模型时回答照常播完）。截图已经交给模型，作废只能挡住之后的视觉步骤；中途掐断回复是另一个设计决定，和隐私撤权共用同一个序号，单独跟进。
 - 多个窗口各发一次 `proactive_vision_invalidate`，其中一条到得很晚（用户已经重新打开开关、新一轮已经开始）时，会让新一轮少看一次屏。只影响那一轮，不为此给消息加去重序号。
+- 作废只递增序号，不清实时会话里缓存的那张屏幕帧（它可能是手动分享的帧）。语音通话中关掉「屏幕分享」又马上打开，如果新帧到达前正好排到一次语音搭话，它会用到关之前截的那张。那张图是开关开着时截的，前端重新打开时也会立刻补发新帧，窗口很短，不为此给缓存帧记序号。
 
 这几种都需要用户在极短时间内完成特定操作才会发生，不为它们增加新的跨窗口协议。评审再提同类意见按此回复。

@@ -1165,3 +1165,17 @@ test('after the load baseline, the first switch-off sends one invalidation', () 
     h.window.syncProactiveVisionDuringSpeech(); // the user's first save
     assert.equal(invalidations(h), 1);
 });
+
+test('turning privacy mode on leaves the epoch to the consent message', () => {
+    const { h } = runningCall();
+    h.window.syncProactiveVisionDuringSpeech();
+    h.S.proactiveVisionEnabled = false; // privacy mode on in this window
+    h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(invalidations(h), 0);
+
+    const other = runningCall();
+    other.h.window.syncProactiveVisionDuringSpeech();
+    other.h.settings.proactiveVisionEnabled = false; // privacy mode on elsewhere
+    other.h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(invalidations(other.h), 0);
+});
