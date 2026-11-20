@@ -1194,6 +1194,55 @@
         }
     }
 
+    // Live screen consent this window reports and acts on. The rule lives in
+    // appProactive.isVisionConsentHeldNow: this window's value and the latest
+    // saved setting must both allow it, so a revocation another window just
+    // saved wins even before its storage event reaches this window.
+    function _visionConsentHeldNow() {
+        if (typeof S.proactiveVisionEnabled !== 'boolean') return S.proactiveVisionEnabled;
+        const proactive = window.appProactive;
+        return proactive && typeof proactive.isVisionConsentHeldNow === 'function'
+            ? proactive.isVisionConsentHeldNow()
+            : S.proactiveVisionEnabled;
+    }
+
+    // Another window may have turned privacy mode on (an explicit write in the
+    // shared snapshot) before its storage event reached this window. This
+    // window's "allowed" copy is then stale: saving it would overwrite the
+    // revocation in localStorage and the server body. Adopt the revocation the
+    // way the storage listener will once the event arrives. A value this
+    // window changed since its last sync is newer intent and stays.
+    function _adoptUnseenVisionRevocation(value) {
+        const key = 'proactiveVisionEnabled';
+        if (value !== true) return value;
+        if (_settingsBaseline
+            && Object.prototype.hasOwnProperty.call(_settingsBaseline, key)
+            && _settingsBaseline[key] !== value) return value;
+        let stored = null;
+        try {
+            const raw = localStorage.getItem('project_neko_settings');
+            stored = raw ? JSON.parse(raw) : null;
+        } catch (_) {
+            return value;
+        }
+        if (!stored || stored[key] !== false) return value;
+        const meta = _readSharedWriteMeta(stored);
+        if (!meta || meta.writerId === _SHARED_WRITER_ID) return value;
+        if (meta.changedKeys.indexOf(key) === -1) return value;
+        if (!_sharedWriteTokenOutranks(meta, _knownSharedKeyWrites[key])) return value;
+        // Same server-floor check as the listener: a write the server has
+        // since superseded is not a pending revocation.
+        const token = meta.knownKeyWrites[key];
+        if (token && Number.isInteger(token.confirmedRevision)
+            && Number.isInteger(_knownServerKeyRevisions[key])
+            && token.confirmedRevision < _knownServerKeyRevisions[key]) return value;
+        _rememberSharedKeyWrites([key], meta);
+        if (_settingsBaseline && !_dirtySettingsKeys.has(key)) {
+            _settingsBaseline[key] = false;
+        }
+        return false;
+    }
+
     // Privacy mode, Proactive Chat and its Screen Share option together
     // decide whether the voice-call heartbeat may look at the screen. Run
     // after every save and every cross-window sync, like the privacy check.
@@ -1208,17 +1257,18 @@
     }
 
     function stopVisionAfterPrivacyEnabled() {
+        const consent = _visionConsentHeldNow();
         // Screenshots taken before a revocation must not ride a later request,
         // even if consent is re-enabled before that request is sent.
         if (window.appProactive && typeof window.appProactive.noteProactiveVisionConsent === 'function') {
-            window.appProactive.noteProactiveVisionConsent(S.proactiveVisionEnabled);
+            window.appProactive.noteProactiveVisionConsent(consent);
         }
         // Notify live work before the queued settings POST reaches disk. Reconnect
         // repeats this snapshot; enabling still needs persisted backend consent.
         if (window.appWebSocket && typeof window.appWebSocket.syncProactiveVisionConsent === 'function') {
-            window.appWebSocket.syncProactiveVisionConsent(S.proactiveVisionEnabled);
+            window.appWebSocket.syncProactiveVisionConsent(consent);
         }
-        if (S.proactiveVisionEnabled !== false) return;
+        if (consent !== false) return;
 
         try {
             if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
@@ -1644,9 +1694,11 @@
         const currentProactive = typeof window.proactiveChatEnabled !== 'undefined'
             ? window.proactiveChatEnabled
             : S.proactiveChatEnabled;
-        const currentVision = typeof window.proactiveVisionEnabled !== 'undefined'
-            ? window.proactiveVisionEnabled
-            : S.proactiveVisionEnabled;
+        const currentVision = _adoptUnseenVisionRevocation(
+            typeof window.proactiveVisionEnabled !== 'undefined'
+                ? window.proactiveVisionEnabled
+                : S.proactiveVisionEnabled
+        );
         const currentVisionChat = typeof window.proactiveVisionChatEnabled !== 'undefined'
             ? window.proactiveVisionChatEnabled
             : S.proactiveVisionChatEnabled;

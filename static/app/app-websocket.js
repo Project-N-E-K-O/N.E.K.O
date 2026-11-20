@@ -2641,10 +2641,14 @@
 
     function syncProactiveVisionConsent(enabled) {
         if (typeof enabled !== 'boolean') {
-            enabled = window.appProactive
-                && typeof window.appProactive.isProactiveVisionEnabledNow === 'function'
-                ? window.appProactive.isProactiveVisionEnabledNow()
-                : S.proactiveVisionEnabled;
+            // Same rule as capture (appProactive.isVisionConsentHeldNow): this
+            // window's value and the latest saved setting must both allow it.
+            // An unknown local value still sends nothing.
+            enabled = S.proactiveVisionEnabled;
+            if (typeof enabled === 'boolean' && window.appProactive
+                && typeof window.appProactive.isVisionConsentHeldNow === 'function') {
+                enabled = window.appProactive.isVisionConsentHeldNow();
+            }
         }
         if (typeof enabled !== 'boolean' || !S.socket || S.socket.readyState !== WebSocket.OPEN) return;
         try {

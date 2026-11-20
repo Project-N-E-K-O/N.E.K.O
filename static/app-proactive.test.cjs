@@ -649,3 +649,35 @@ test('typing pushes a nearer proactive tick to 30s after the last input at any i
     assert.ok(deferred, 'tick must re-arm for the rest of the input window');
     assert.equal(deferred.ms, 15000);
 });
+
+
+test('reconnect reports consent only when this window and the latest saved setting both allow it', () => {
+    const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
+    const start = websocketSource.indexOf('    function syncProactiveVisionConsent(');
+    const end = websocketSource.indexOf('    function ensureWebSocketOpen(', start);
+    for (const [local, saved, expected] of [
+        [true, true, true],
+        [true, false, false], // another window revoked; its storage event is not here yet
+        [false, true, false], // this window revoked; its own save failed
+        [false, false, false],
+    ]) {
+        const sent = [];
+        const state = {
+            proactiveVisionEnabled: local,
+            socket: { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } },
+        };
+        const sharedSettings = JSON.stringify({ proactiveVisionEnabled: saved });
+        const window = { appState: state, appConst: {}, addEventListener() {} };
+        const context = {
+            window,
+            document: { addEventListener() {}, getElementById() { return null; } },
+            localStorage: { getItem(key) { return key === 'project_neko_settings' ? sharedSettings : null; } },
+            console: { log() {}, warn() {} }, clearTimeout() {}, clearInterval() {},
+        };
+        vm.runInNewContext(source, context);
+        const mod = {};
+        vm.runInNewContext(websocketSource.slice(start, end), { window, S: state, mod, WebSocket: { OPEN: 1 }, console: { warn() {} } });
+        mod.syncProactiveVisionConsent();
+        assert.deepEqual(sent, [{ action: 'proactive_vision_consent', enabled: expected }], `local=${local} saved=${saved}`);
+    }
+});
