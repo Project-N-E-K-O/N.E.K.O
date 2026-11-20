@@ -418,6 +418,75 @@ async def test_image_route_rechecks_capture_consent_before_provider_request(prov
 
 
 @pytest.mark.parametrize("provider", ["openai", "gemini"])
+@pytest.mark.parametrize("reenable", [False, True])
+async def test_mixed_tool_batch_revalidates_screen_consent_after_slow_tool(provider, reenable, monkeypatch):
+    from main_logic.core.proactive import ProactiveMixin
+    from main_logic.tool_calling import ToolDefinition, ToolResult
+    from tests.unit.test_tool_calling import _GenaiChunk, _GenaiPart, _GenaiFunctionCall
+    from tests.unit.test_offline_turn_cancellation_e2e import _text
+
+    manager, client, captures, requests = _screen_routing_client(provider, monkeypatch)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_recall(call):
+        started.set()
+        await release.wait()
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    recall = ToolDefinition(
+        name="recall_memory", description="slow memory lookup",
+        parameters={"type": "object", "properties": {}},
+        handler=slow_recall, metadata={"source": "builtin"},
+    )
+    manager.tool_registry.register(recall)
+    client._tool_definitions.append(recall)
+    client.prepare_for_tool_images = AsyncMock(return_value=True)
+
+    if provider == "gemini":
+        client.script = [
+            [_GenaiChunk([
+                _GenaiPart(function_call=_GenaiFunctionCall("read_current_screen", id_="capture")),
+                _GenaiPart(function_call=_GenaiFunctionCall("recall_memory", id_="memory")),
+            ])],
+            [_GenaiChunk([_GenaiPart(text="The tool batch has finished.")])],
+        ]
+    else:
+        client.script = [[LLMStreamChunk(
+            content="", finish_reason="tool_calls", tool_call_deltas=[
+                {"index": 0, "id": "capture", "type": "function",
+                 "function": {"name": "read_current_screen", "arguments": "{}"}},
+                {"index": 1, "id": "memory", "type": "function",
+                 "function": {"name": "recall_memory", "arguments": "{}"}},
+            ],
+        )], [_text("The tool batch has finished."), _text("", "stop")]]
+
+    task = asyncio.create_task(client.stream_text("Read the current screen and recall relevant memory"))
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        assert len(captures) == 1
+        snapshot_id = next(iter(manager._screen_inspection_state["images"]))
+        ProactiveMixin.update_proactive_vision_consent(manager, False)
+        if reenable:
+            ProactiveMixin.update_proactive_vision_consent(manager, True)
+        release.set()
+        await asyncio.wait_for(task, 5)
+
+        assert len(requests) == 2
+        images, outputs, text = _screen_routing_request(requests[-1], provider)
+        assert images == []
+        assert "Test APP" not in text and snapshot_id not in text
+        screen_outputs = [item for item in outputs if item.get("status") == "released"]
+        assert len(screen_outputs) == 1
+        assert any(item.get("ok") is True for item in outputs)
+        assert not client._publish_provider_frames.call_args_list
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("provider", ["openai", "gemini"])
 async def test_cancellation_during_image_route_never_sends_capture(provider, monkeypatch):
     manager, client, captures, requests = _screen_routing_client(provider, monkeypatch)
     preparing, release = asyncio.Event(), asyncio.Event()

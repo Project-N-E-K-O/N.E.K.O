@@ -211,6 +211,23 @@ class ToolCallingMixin:
                 return ToolResult(call_id=call.call_id, name=call.name,
                                   output=rejected["output"], is_error=True)
             capture_owner = _owner(self)
+            if isinstance(invoking_session, OmniOfflineClient):
+                async def screen_capture_still_valid(owner):
+                    from main_logic.screen_inspection import _check_permission, InspectionError
+
+                    try:
+                        await _check_permission(self, owner)
+                        return True
+                    except InspectionError:
+                        return False
+                    except Exception:
+                        logger.warning(
+                            "Screen capture consent revalidation failed; dropping evidence",
+                            exc_info=True,
+                        )
+                        return False
+
+                invoking_session.screen_capture_still_valid = screen_capture_still_valid
         result = await self.tool_registry.execute(call)
         if result.images:
             await self._route_tool_images(
@@ -231,6 +248,7 @@ class ToolCallingMixin:
                 rejected = failure(self, reason)
                 return ToolResult(call_id=call.call_id, name=call.name,
                                   output=rejected["output"], is_error=True)
+            result.screen_capture_owner = capture_owner
         return result
 
     async def _route_tool_images(
