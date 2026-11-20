@@ -1782,6 +1782,8 @@
   function stopSdkVoiceBestEffort(client) {
     if (!client || !client.capabilities.has('voice-input')) return Promise.resolve(false);
     if (['running', 'degraded'].indexOf(client.runtime.state) < 0) return Promise.resolve(false);
+    // Like toggle / query: a late stop reply must not touch a newer round.
+    var observedRequestSequence = state.voiceControlRequestSequence;
     var stopRequest;
     try {
       stopRequest = client.voice.stop({ timeoutMs: 6500 });
@@ -1789,9 +1791,11 @@
       stopRequest = Promise.reject(error);
     }
     return Promise.resolve(stopRequest).then(function (voiceState) {
+      if (observedRequestSequence !== state.voiceControlRequestSequence) return false;
       handleSdkVoiceState(voiceState);
       return !!voiceState && voiceState.ok !== false;
     }).catch(function () {
+      if (observedRequestSequence !== state.voiceControlRequestSequence) return false;
       state.voiceRouteActive = false;
       state.voiceRouteStarting = false;
       state.voiceControlPending = false;

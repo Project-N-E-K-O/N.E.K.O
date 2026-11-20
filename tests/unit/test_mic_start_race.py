@@ -1487,7 +1487,16 @@ async function gameSttGateConfirmsBeforeLiveCase() {
   env.S.isMicMuted = true;
   assert(env.mod.hostMicrophoneCaptureLive() === false
          && env.mod.hostMicrophoneCaptureReopening() === false,
-         'a muted host is not reopening its capture');
+         'a muted STT gate is not reopening its capture');
+  // Outside the gate, a muted device switch (stream dropped) still reopens.
+  const gateWasActive = env.S.gameVoiceSttGateActive;
+  const streamBefore = env.S.stream;
+  env.S.gameVoiceSttGateActive = false;
+  env.S.stream = null;
+  assert(env.S.isRecording === true && env.mod.hostMicrophoneCaptureReopening() === true,
+         'a muted ordinary device switch is still reported as reopening');
+  env.S.gameVoiceSttGateActive = gateWasActive;
+  env.S.stream = streamBefore;
   env.S.isMicMuted = false;
   env.mod.stopGameVoiceSttGate({ restoreOrdinaryMic: false });
   assert(env.S.gameVoiceSttCapturing === false, 'stopping the gate must clear the confirmed flag');

@@ -1215,6 +1215,25 @@ async function testVoiceTogglePendingAndSupersededRepliesAreNotFailures() {
   await api.querySdkVoiceRouteState(client);
   assertEqual(api.state.voiceRouteStarting, false,
     'a failed voice query left the voice button held');
+
+  // A stop that fails after a newer request began must leave that request alone.
+  for (const settle of ['reject', 'resolve']) {
+    let finishStop;
+    client.voice.stop = () => new Promise((resolve, reject) => {
+      finishStop = settle === 'reject'
+        ? () => reject(new Error('timeout'))
+        : () => resolve({ ok: true, active: false, starting: false });
+    });
+    const stopping = api.stopSdkVoiceBestEffort(client);
+    api.state.voiceControlRequestSequence += 1;
+    api.state.voiceRouteStarting = true;
+    api.state.voiceControlPending = true;
+    finishStop();
+    assertEqual(await stopping, false, 'a stale stop reported success');
+    assertEqual(api.state.voiceRouteStarting && api.state.voiceControlPending, true,
+      `a stale stop (${settle}) cleared a newer request's voice state`);
+    api.state.voiceControlPending = false;
+  }
 }
 
 async function testCharacterBindingIsSharedRetiredAndRebound() {

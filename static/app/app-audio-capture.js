@@ -291,9 +291,10 @@
         return (
             S.isRecording === true
             && S.voiceInputRouteBlocked !== true
-            // Muted is a deliberate pause, not a reopen (the STT gate stops
-            // its recogniser on mute and the ordinary pipeline is gone).
-            && S.isMicMuted !== true
+            // A muted STT gate is a deliberate pause, not a reopen: the gate
+            // stops its recogniser on mute and released the ordinary
+            // pipeline. A muted ordinary device switch still reopens.
+            && !(S.isMicMuted === true && S.gameVoiceSttGateActive === true)
             && !S.stream
             && !hostMicrophoneCaptureLive()
         );
