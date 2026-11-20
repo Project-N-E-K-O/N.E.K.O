@@ -40,6 +40,47 @@ async def create():
 
 
 @pytest.mark.asyncio
+async def test_personalization_follows_local_feedback_and_separates_accounts(client, monkeypatch):
+    http, snapshot = client
+    signed_in = dict(snapshot)
+    snapshot.clear()
+    monkeypatch.setattr(routes, "load_global_conversation_settings", lambda: {
+        "proactiveMusicEnabled": True, "proactiveCommunityChatEnabled": True,
+    })
+    guest = await routes.capture_owner()
+    music_id = await create()
+    community = {"success": True, "action": "chat", "source_mode": "community", "turn_id": "card",
+                 "source_links": [{"url": "https://community.example/cards/a", "mode": "community"}]}
+    await routes.attach_proactive_recommendations(community, await routes.capture_owner(), "Neko",
+                                                  community_tags=(" #Space ", "space"))
+    community_id = community["proactive_recommendations"][0]["id"]
+    for rec_id, event_id in [(music_id, "music-accepted"), (community_id, "card-accepted")]:
+        accepted = http.post(f"/api/proactive/recommendations/{rec_id}/events",
+                             json={"event_id": event_id, "kind": "accepted"})
+        assert accepted.status_code == 200
+    guest_context = await routes.load_recommendation_context(guest)
+    assert not guest_context.bearer
+    assert guest_context.preferences.community_tags == {"space": pytest.approx(1)}
+    assert guest_context.preferences.music_artists == {"artist": pytest.approx(1)}
+    assert "local_tags" not in http.get("/api/proactive/recommendations/events").text
+
+    snapshot.update(signed_in)
+    account = await routes.capture_owner()
+    assert account["user_id"] and account["key"] != guest["key"]
+    account_context = await routes.load_recommendation_context(account)
+    assert account_context.bearer == signed_in["access_token"]
+    assert account_context.preferences.community_tags == {} and account_context.preferences.music_artists == {}
+    stale_context = await routes.load_recommendation_context(guest)
+    assert not stale_context.bearer and stale_context.preferences.music_artists == {}
+
+    snapshot.clear()
+    restored = await routes.load_recommendation_context(await routes.capture_owner())
+    assert not restored.bearer
+    assert restored.preferences.music_artists == {"artist": pytest.approx(1)}
+    assert restored.preferences.community_tags == {"space": pytest.approx(1)}
+
+
+@pytest.mark.asyncio
 async def test_actual_routes_register_decide_and_export_without_tokens(client):
     http, _ = client
     rec = await create()

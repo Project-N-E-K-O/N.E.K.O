@@ -1173,13 +1173,14 @@ async def test_screen_and_window_sources_follow_live_vision_consent(monkeypatch,
     monkeypatch.setattr(service, "collect_proactive_sources", fake_collect)
     requested = ["news"] if case == "no-vision-modes" else ["vision", "window", "news"]
 
-    modes, sources, withheld = await service._collect_sources_under_vision_consent(
+    modes, sources, withheld, verse_ranked = await service._collect_sources_under_vision_consent(
         command=contracts.ProactiveChatCommand(lanlan_name="Yui"),
         enabled_modes=requested,
         lanlan_name="Yui",
         vision_consent_check=lambda: consent["enabled"],
     )
     assert withheld is (case not in ("granted", "no-vision-modes"))
+    assert not verse_ranked
 
     if case in ("granted", "no-vision-modes"):
         assert collected_modes == [requested]
@@ -1292,7 +1293,7 @@ async def test_community_source_uses_round_locale_through_http(
             return_value="desktop-token" if auth_status else "",
         ))
         monkeypatch.setattr(trending_content.httpx, "AsyncClient", lambda **kwargs: isolated)
-        modes, sources, withheld = await service._collect_sources_under_vision_consent(
+        modes, sources, withheld, verse_ranked = await service._collect_sources_under_vision_consent(
             command=command, enabled_modes=["community"], lanlan_name="Yui",
             vision_consent_check=AsyncMock(return_value=True), mgr=manager,
         )
@@ -1300,6 +1301,7 @@ async def test_community_source_uses_round_locale_through_http(
 
     assert modes == ["community"]
     assert withheld is False
+    assert not verse_ranked
     assert sources["community"]["raw_data"]["posts"][0]["id"] == "card"
     assert len(requests) == (2 if auth_status in (401, 403) else 1)
     body = json.loads(requests[-1].content)

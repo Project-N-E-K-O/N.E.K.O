@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from utils.proactive_preferences.preference_model import Profile
+
 from .decisions import _should_skip_source
+from .phase1_ranking import rank_proactive_links
 from .state import _source_hash
 
 
@@ -42,12 +45,20 @@ def _format_phase1_link_candidate(index: int, item: dict[str, Any]) -> str:
             # Community card fields are public, untrusted text inside a prompt
             # section whose structural delimiters use ``=`` and ``|``.
             return _escape_phase1_community_text(text)
-        return text
+        return text.replace("NEKO_MATCH=HIGH", r"NEKO_MATCH\u003dHIGH").replace(
+            "NEKO_TREND=FEATURED", r"NEKO_TREND\u003dFEATURED"
+        )
 
     title = str(
         item.get("phase1_title") or _field_text(item.get("title"), field="title")
     ).strip()
     details: list[str] = []
+    if item.get("phase1_featured_trend"):
+        details.append("NEKO_TREND=FEATURED")
+    elif item.get("phase1_priority"):
+        details.append("NEKO_MATCH=HIGH")
+    elif item.get("interest_match"):
+        details.append("推荐依据=符合用户兴趣")
     field_labels = (
         ("source", "来源"),
         ("author", "作者"),
@@ -138,6 +149,7 @@ def _selected_web_link_from_match(
     selected = dict(matched)
     selected.update(
         {
+            "phase1_canonical_title": canonical_title,
             "title": (
                 canonical_title
                 if keep_canonical
@@ -190,42 +202,24 @@ def _round_robin_phase1_links(
     *,
     total: int,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Give every enabled web mode candidates before any one mode can dominate."""
-
+    """Return the diverse shortlist grouped by mode for existing callers."""
     selected = {mode: [] for mode in modes}
-    positions = {mode: 0 for mode in modes}
-    links_by_mode = {
-        mode: list((sources.get(mode) or {}).get("links", []) or [])
-        for mode in modes
-    }
-    seen_keys: set[str] = set()
-    remaining = max(0, total)
-    while remaining:
-        made_progress = False
-        for mode in modes:
-            links = links_by_mode[mode]
-            while positions[mode] < len(links):
-                link = dict(links[positions[mode]])
-                positions[mode] += 1
-                key = _source_hash(
-                    link.get("dedupe_key") or link.get("url", ""),
-                    link.get("title", ""),
-                )
-                if key and (key in seen_keys or _should_skip_source(key)):
-                    continue
-                if key:
-                    seen_keys.add(key)
-                link.setdefault("mode", mode)
-                if link["mode"] == "community":
-                    link["phase1_title"] = _escape_phase1_community_text(
-                        link.get("title")
-                    )
-                selected[mode].append(link)
-                remaining -= 1
-                made_progress = True
-                break
-            if remaining <= 0:
-                break
-        if not made_progress:
-            break
+    for link in _select_phase1_links(modes, sources, total=total):
+        selected[link["mode"]].append(link)
+    return selected
+
+
+def _select_phase1_links(
+    modes: list[str], sources: dict[str, Any], *, total: int,
+    profile: Profile | None = None, source_weights: dict[str, float] | None = None,
+    prefer_trending: bool = False,
+) -> list[dict[str, Any]]:
+    selected = rank_proactive_links(
+        modes, sources, total=total, profile=profile, source_weights=source_weights or {},
+        should_skip=_should_skip_source,
+        prefer_trending=prefer_trending,
+    )
+    for link in selected:
+        if link["mode"] == "community":
+            link["phase1_title"] = _escape_phase1_community_text(link["title"])
     return selected

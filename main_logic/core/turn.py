@@ -2755,6 +2755,12 @@ class TurnMixin:
         original_id = (uuid4().hex if record_transcript_text and is_chat_input_source(raw_source)
                        and getattr(self, '_config_manager', None) is not None else None)
         if original_id:
+            from main_logic.proactive_chat.preference_capture import remember_chat_source
+
+            await remember_chat_source(
+                self.lanlan_name, original_id, record_transcript_text,
+                config_manager=self._config_manager,
+            )
             user_message["chat_original_source"] = {"recordId": original_id,
                 "originalTime": str(int(_transcript_arrival_ts * 1000)), "origin": "chat"}
         self.sync_message_queue.put({"type": "user", "data": user_message})

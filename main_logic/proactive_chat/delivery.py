@@ -140,7 +140,9 @@ class ProactiveLifecycle:
             "next_schedule_fixed_mode",
             self.next_schedule_fixed_mode,
         )
-        return ProactiveChatResult(body=body, status_code=result.status_code)
+        return ProactiveChatResult(
+            body=body, status_code=result.status_code, community_tags=result.community_tags,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -562,10 +564,13 @@ async def _record_committed_delivery(
         web_title = web_link.get("title", "") or (
             web_parsed.get("title", "") if web_parsed else ""
         )
+        from .phase1_ranking import history_aliases
+
         await _record_source_used(
             url=web_link.get("dedupe_key") or web_link.get("url", "") or "",
             kind="web",
             title=web_title,
+            **({"aliases": history_aliases(web_link)} if web_link else {}),
             **state_storage_kwargs,
         )
         print(
@@ -623,5 +628,8 @@ async def _record_committed_delivery(
                if delivery.vision_screenshot_b64 and response_text.strip()
                and not source_links and primary_channel in {"chat", "vision", "unknown"}
                else {}),
-        )
+        ),
+        community_tags=tuple(selected_web_link.get("tags") or ())
+        if selected_web_link and selected_web_link.get("mode") == "community"
+        and _is_link_selected(selected_web_link, source_links) else (),
     )

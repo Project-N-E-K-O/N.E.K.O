@@ -1001,19 +1001,16 @@ def test_service_skips_unmatched_grounded_news_picks():
     assert passed.get("linkless_labels") == "phase1_linkless_labels"
     assert passed.get("linkless_records") == "phase1_linkless_records"
 
-    # Both collections are filled where fallback text sections are rendered.
-    def _fills(name: str, method: str) -> bool:
-        return any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == method
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == name
-            for node in ast.walk(tree)
-        )
+    from main_logic.proactive_chat.service import _build_ranked_web_prompt
 
-    assert _fills("phase1_linkless_labels", "append")
-    assert _fills("phase1_linkless_records", "extend")
+    text = "A real window topic"
+    prompt, links, labels, records = _build_ranked_web_prompt(
+        ["window"],
+        {"window": {"formatted_content": text}},
+        profile=None, source_weights={}, language="en",
+    )
+    assert text in prompt and not links
+    assert labels and records == [text]
     # The branch skips the pick: it neither selects a link nor records a topic.
     branch_body = ast.unparse(ast.Module(body=branch.body, type_ignores=[]))
     assert "selected_web_link" not in branch_body

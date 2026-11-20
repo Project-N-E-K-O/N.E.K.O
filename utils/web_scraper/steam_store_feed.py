@@ -31,6 +31,7 @@ titles are worse than no Steam topic at all.
 from __future__ import annotations
 
 import json
+import re
 from itertools import zip_longest
 from typing import Any
 
@@ -42,6 +43,7 @@ from ._shared import get_random_user_agent, logger
 
 _FEATURED_CATEGORIES_URL = "https://store.steampowered.com/api/featuredcategories"
 _GET_ITEMS_URL = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/"
+_STORE_SEARCH_URL = "https://store.steampowered.com/search/results/"
 _DEFAULT_LANGUAGE = ("english", "us")
 # UI language -> (Steam store language, store country code)
 _LANGUAGE_TO_STORE = {
@@ -202,6 +204,74 @@ def _failure(error: str) -> dict[str, Any]:
     return {"success": False, "source": "steam", "games": [], "error": error}
 
 
+async def _get_steam_items(client, app_ids, store_language, country, headers):
+    details_request = {
+        "ids": [{"appid": int(app_id)} for app_id in app_ids],
+        "context": {
+            "language": store_language,
+            "country_code": country.upper(),
+            "steam_realm": 1,
+        },
+        "data_request": {"include_basic_info": True},
+    }
+    response = await client.get(
+        _GET_ITEMS_URL,
+        params={"input_json": json.dumps(details_request)},
+        headers=headers,
+        timeout=10.0,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+async def search_steam_games(
+    query: str, *, language: str, limit: int
+) -> list[dict[str, Any]]:
+    """Run the store's text search and verify each result's content descriptors."""
+    store_language, country = steam_store_locale_for_language(language)
+    client = get_external_http_client()
+    headers = {"User-Agent": get_random_user_agent()}
+    response = await client.get(
+        _STORE_SEARCH_URL,
+        params={
+            "term": query,
+            "category1": 998,
+            "count": _MAX_CANDIDATES,
+            "infinite": 1,
+            "l": store_language,
+            "cc": country,
+        },
+        headers=headers,
+        timeout=5.0,
+    )
+    response.raise_for_status()
+    html = response.json().get("results_html")
+    if not isinstance(html, str):
+        return []
+    app_ids = list(dict.fromkeys(re.findall(r'data-ds-appid="([0-9]+)"', html)))[
+        :_MAX_CANDIDATES
+    ]
+    if not app_ids:
+        return []
+    payload = await _get_steam_items(
+        client, app_ids, store_language, country, headers
+    )
+    items = payload.get("response", {}).get("store_items") or []
+    candidates = {}
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        item = _store_item(raw, "search")
+        if item and item["app_id"] in app_ids:
+            candidates[item["app_id"]] = item
+    games = vet_steam_games(
+        [candidates[app_id] for app_id in app_ids if app_id in candidates],
+        parse_steam_item_details(payload),
+        limit=limit,
+    )
+    return games
+
+
 async def fetch_steam_featured(limit: int = 10) -> dict[str, Any]:
     """Fetch vetted Steam store top sellers and new releases."""
     store_language, country = steam_store_locale_for_language(get_global_language_full())
@@ -219,24 +289,11 @@ async def fetch_steam_featured(limit: int = 10) -> dict[str, Any]:
         candidates = normalize_steam_featured(response.json(), limit=candidate_limit)
         if not candidates:
             return _failure("Steam returned no games")
-        details_request = {
-            "ids": [{"appid": int(game["app_id"])} for game in candidates],
-            "context": {
-                "language": store_language,
-                "country_code": country.upper(),
-                "steam_realm": 1,
-            },
-            "data_request": {"include_basic_info": True},
-        }
-        details_response = await client.get(
-            _GET_ITEMS_URL,
-            params={"input_json": json.dumps(details_request)},
-            headers=headers,
-            timeout=10.0,
+        payload = await _get_steam_items(
+            client, [game["app_id"] for game in candidates], store_language, country, headers
         )
-        details_response.raise_for_status()
         games = vet_steam_games(
-            candidates, parse_steam_item_details(details_response.json()), limit=limit
+            candidates, parse_steam_item_details(payload), limit=limit
         )
     except Exception as error:
         message = f"{type(error).__name__}: {error}"

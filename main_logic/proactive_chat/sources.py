@@ -52,6 +52,8 @@ from .content_logging import (
     _log_video_content,
 )
 from .contracts import ProactiveChatCommand
+from .interest_retrieval import collect_interest_candidates
+from utils.proactive_preferences.personalization import RecommendationContext
 
 
 logger = get_module_logger(__name__, "Main")
@@ -223,6 +225,8 @@ def _extract_links_from_raw(
                         link["tags"] = post["tags"]
                     if post.get("created_at"):
                         link["published_at"] = post["created_at"]
+                    if post.get("interest_match"):
+                        link["interest_match"] = True
                     links.append(link)
 
         elif mode == "video":
@@ -352,6 +356,7 @@ async def _fetch_source(
     lanlan_name: str,
     log: Any,
     community_locale: str | None = None,
+    recommendations: RecommendationContext | None = None,
 ) -> tuple[str, dict]:
     """Fetch and normalize one enabled source using the established shape."""
     screenshot_data = command.screenshot_data
@@ -425,6 +430,7 @@ async def _fetch_source(
             # caps the prompt with its cross-source total candidate budget.
             limit=NEKO_COMMUNITY_FEED_PAGE_SIZE,
             locale=community_locale,
+            **({"recommendations": recommendations} if recommendations is not None else {}),
         )
         if not content["success"]:
             raise ValueError(f"获取喵宇宙社区失败: {content.get('error')}")
@@ -452,6 +458,14 @@ async def _fetch_source(
         content = await fetch_window_context_content(limit=5)
         if not content["success"]:
             raise ValueError(f"获取窗口上下文失败: {content.get('error')}")
+        if recommendations is not None and content.get("search_results"):
+            profile = recommendations.preferences.profile
+            items = [
+                {**item, "description_hint": item.get("abstract", "")}
+                for item in content["search_results"]
+                if isinstance(item, dict)
+            ]
+            content = {**content, "search_results": profile.rank("window", items)}
         raw_title = content.get("window_title", "")
         sanitized_title = raw_title[:30] + "..." if len(raw_title) > 30 else raw_title
         print(f"[{lanlan_name}] 成功获取窗口上下文: {sanitized_title}")
@@ -510,9 +524,10 @@ async def collect_proactive_sources(
     lanlan_name: str,
     log: Any,
     community_locale: str | None = None,
+    recommendations: RecommendationContext | None = None,
 ) -> dict[str, dict]:
     """Fetch enabled sources concurrently and retain successful results."""
-    fetch_results = await asyncio.gather(
+    baseline = asyncio.gather(
         *(
             _fetch_source(
                 mode,
@@ -520,11 +535,27 @@ async def collect_proactive_sources(
                 lanlan_name=lanlan_name,
                 log=log,
                 community_locale=community_locale,
+                recommendations=recommendations,
             )
             for mode in enabled_modes
         ),
         return_exceptions=True,
     )
+    interest_candidates: dict[str, list[dict]] = {}
+    if recommendations is None:
+        fetch_results = await baseline
+    else:
+        fetch_results, interest_candidates = await asyncio.gather(
+            baseline,
+            collect_interest_candidates(
+                recommendations.preferences,
+                [
+                    mode for mode in enabled_modes
+                    if mode != "community" or recommendations.allows_guest_community
+                ],
+                locale=community_locale,
+            ),
+        )
 
     sources: dict[str, dict] = {}
     for index, result in enumerate(fetch_results):
@@ -535,5 +566,36 @@ async def collect_proactive_sources(
             )
             continue
         mode, content = result
+        is_hot_feed = mode == "home" or (
+            mode == "video" and (content.get("raw_data") or {}).get("region") == "china"
+        )
+        if is_hot_feed or mode == "news":
+            trend_ranks = {}
+            for position, link in enumerate(content.get("links") or []):
+                if is_hot_feed or link.get("source") in {"微博", "Twitter", "Google Trends", "Steam"}:
+                    key = link.get("dedupe_key") or link["url"].rstrip("/")
+                    trend_ranks.setdefault(key, position)
+            if trend_ranks:
+                content = {**content, "trend_ranks": trend_ranks}
         sources[mode] = content
+    for mode, candidates in interest_candidates.items():
+        # The community feed may have delivered cross-device exclusions while
+        # these requests were in flight. Check the latest profile before merging.
+        if recommendations is not None:
+            profile = recommendations.preferences.profile
+            candidates = [
+                item for item in candidates
+                if (profile.score(mode, profile.match(mode, item)) or 0) > 0
+            ]
+        if mode == "community":
+            candidates = _extract_links_from_raw(mode, {"posts": candidates}, log=log)
+        if not candidates:
+            continue
+        source = sources.setdefault(mode, {"formatted_content": "", "raw_data": {}, "links": []})
+        links = {}
+        for item in candidates + source["links"]:
+            key = item.get("dedupe_key") or item["url"].rstrip("/")
+            if key not in links:
+                links[key] = item
+        source["links"] = list(links.values())
     return sources

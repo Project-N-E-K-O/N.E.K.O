@@ -271,6 +271,7 @@ async def _record_source_used(
     kind: str,
     title: str = "",
     memory_dir: str | Path | None = None,
+    aliases: dict[str, str] | None = None,
 ) -> None:
     """Update, prune and persist one consumed source record."""
     global _source_history_skipped_records
@@ -337,6 +338,10 @@ async def _record_source_used(
             "title": (title or "")[:80],
         }
         now = time.time()
+        for identity, identity_kind in (aliases or {}).items():
+            key = _source_hash(identity)
+            if key and key != source_hash:
+                _source_history[key] = {"ts": now, "kind": identity_kind}
         forgotten = [
             existing_hash
             for existing_hash, entry in _source_history.items()

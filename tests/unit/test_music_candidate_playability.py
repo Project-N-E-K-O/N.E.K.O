@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from main_logic.proactive_chat import delivery, music_recommendation, state
+from utils.proactive_preferences.personalization import LocalPreferences
 from utils import music_crawlers as music
 
 
@@ -48,6 +49,21 @@ def selection(tracks, skipped=()):
         {'formatted_content': 'candidate material', 'raw_data': {'success': True, 'data': tracks}},
         lang='en', source_hash=state._source_hash, should_skip_source=lambda key: key in skipped,
     )
+
+
+def test_artist_preference_ranks_the_eligible_tracks_and_keeps_the_selected_identity():
+    tracks = [track(1), {**track(2), "artist": "Favorite"}, {**track(3), "artist": "Favorite"}]
+    skipped = state._source_hash("", "Song 2 - Favorite")
+    result = music_recommendation._select_music_recommendation(
+        {"formatted_content": "candidate material", "raw_data": {"success": True, "data": tracks}},
+        lang="en",
+        source_hash=state._source_hash,
+        should_skip_source=lambda key: key == skipped,
+        preferences=LocalPreferences(music_artists={"favorite": 2}),
+    )
+    assert result.link["title"] == "Song 3"
+    assert result.topic_key == state._source_hash("", "Song 3 - Favorite")
+    assert [candidate["name"] for candidate in result.content["raw_data"]["data"]] == ["Song 3", "Song 1"]
 
 
 @pytest.mark.asyncio

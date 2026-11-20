@@ -40,6 +40,8 @@ def _create_store():
 
 
 async def create_runtime():
+    from utils.social_base import social_base_url
+
     # Composition owns the concrete store; services receive a neutral instance.
     # A cancelled worker-thread read may complete late, but owns no HTTP pool.
     store = await asyncio.to_thread(_create_store)
@@ -50,7 +52,7 @@ async def create_runtime():
         from utils.preferences import reserve_current_settings_snapshot
         options["current_settings_provider"] = lambda owner: reserve_current_settings_snapshot(owner, capture.get_control_snapshot)
     return runtime_type(store, settings_drain=drain_settings, settings_pending_provider=pending_settings,
-                        upload_paused=paused, **options)
+                        upload_paused=paused, chat_interest_origin=social_base_url(), **options)
 
 
 @router.on_event("startup")

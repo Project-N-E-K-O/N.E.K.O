@@ -19,6 +19,15 @@ from pathlib import Path
 from typing import Literal, get_args
 from urllib.parse import urlsplit
 
+from utils.proactive_preferences.personalization import (
+    CHAT_INTEREST_KINDS, CHAT_INTEREST_SCOPES, ChatPreferenceEvidence, LocalPreferences,
+    SyncedChatInterest, normalize_labels,
+)
+from utils.proactive_preferences.preference_model import (
+    DAY, SCOPES, SYNC_BATCH_LIMIT, PreferenceEvent, Profile, normalize, valid_feature,
+)
+from utils.proactive_preferences.search_policy import SearchPermission, is_public_topic
+
 
 RecommendationEventKind = Literal["shown", "accepted", "skipped", "playing", "paused", "ended", "stopped", "failed"]
 RECOMMENDATION_EVENT_KINDS = frozenset(get_args(RecommendationEventKind))
@@ -108,6 +117,29 @@ class RecommendationStore:
             db.execute("PRAGMA user_version=2")
             db.execute("CREATE INDEX IF NOT EXISTS recommendation_owner ON recommendations(owner)")
             db.execute("CREATE INDEX IF NOT EXISTS recommendation_event_card ON recommendation_events(recommendation_id, kind)")
+            db.execute("""CREATE INDEX IF NOT EXISTS recommendation_owner_created
+                ON recommendations(owner, created_at DESC) WHERE decision IS NOT NULL""")
+            db.execute("""CREATE TABLE IF NOT EXISTS recommendation_preferences (
+                owner TEXT NOT NULL, id TEXT NOT NULL, feature TEXT NOT NULL, scope TEXT NOT NULL,
+                kind TEXT NOT NULL, direction INTEGER NOT NULL, at INTEGER NOT NULL,
+                PRIMARY KEY(owner, id))""")
+            db.execute("""CREATE INDEX IF NOT EXISTS recommendation_preferences_recent
+                ON recommendation_preferences(owner, at DESC, id DESC)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS recommendation_search_permissions (
+                owner TEXT NOT NULL, id TEXT NOT NULL, public INTEGER NOT NULL,
+                game INTEGER NOT NULL, PRIMARY KEY(owner, id),
+                FOREIGN KEY(owner, id) REFERENCES recommendation_preferences(owner, id) ON DELETE CASCADE)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS recommendation_analyzed_chat (
+                owner TEXT NOT NULL, source TEXT NOT NULL, at INTEGER NOT NULL,
+                PRIMARY KEY(owner, source))""")
+            db.execute("""CREATE TABLE IF NOT EXISTS recommendation_chat_sources (
+                source TEXT PRIMARY KEY, owner TEXT NOT NULL, character TEXT NOT NULL,
+                digest TEXT NOT NULL, at INTEGER NOT NULL)""")
+            db.execute("""CREATE INDEX IF NOT EXISTS recommendation_chat_sources_recent
+                ON recommendation_chat_sources(owner, character, at DESC)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS recommendation_chat_interest_synced (
+                owner TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(owner, id),
+                FOREIGN KEY(owner, id) REFERENCES recommendation_preferences(owner, id) ON DELETE CASCADE)""")
             yield db
             db.commit()
         except BaseException:
@@ -265,6 +297,8 @@ class RecommendationStore:
                     "content_id": hashlib.sha256(f"{source}\n{track['name']}\n{track['artist']}".encode()).hexdigest()}
         if category != "music":
             metadata["category"] = category
+        if category == "community" and track.get("local_tags"):
+            metadata["local_tags"] = normalize_labels(track["local_tags"])
         with self._transaction() as db:
             if self._awaiting_ack(db, "recommendation") >= self.MAX_RECOMMENDATIONS:
                 raise FeedbackConflict("feedback_capacity_reached")
@@ -387,10 +421,207 @@ class RecommendationStore:
             if original is not None:
                 item["original_event"] = json.loads(original)
             item["track"] = json.loads(item["track"])
+            item["track"].pop("local_tags", None)
             item["settings"] = json.loads(item["settings"])
             item["category"] = item["track"].get("category", "music")
             result.append(item)
         return {"events": result, "next_cursor": result[-1]["seq"] if result else after}
+
+    def local_preferences(self, owner: dict) -> LocalPreferences:
+        return self.preference_context(owner)[0]
+
+    def save_preferences(
+        self, owner_key: str, events: list[PreferenceEvent], *,
+        permissions: dict[str, SearchPermission] | None = None,
+    ) -> None:
+        with self._transaction() as db:
+            self._save_preference_events(db, owner_key, events, permissions)
+
+    def save_chat_preferences(
+        self, owner_key: str, evidence: dict[str, ChatPreferenceEvidence]
+    ) -> None:
+        # The receipt and its evidence commit together so repeat Phase 1 rounds
+        # cannot inflate a topic by paraphrasing the same original message.
+        with self._transaction() as db:
+            events = []
+            permissions = {}
+            for source, result in evidence.items():
+                accepted = db.execute(
+                    "INSERT OR IGNORE INTO recommendation_analyzed_chat (owner, source, at) VALUES (?, ?, ?)",
+                    (owner_key, source, result.at),
+                ).rowcount
+                if accepted:
+                    events.extend(result.events)
+                    permissions.update(result.permissions)
+            if events:
+                self._save_preference_events(db, owner_key, events, permissions)
+            db.execute(
+                "DELETE FROM recommendation_analyzed_chat WHERE owner=? AND at<?",
+                (owner_key, int(time.time()) - 30 * DAY),
+            )
+
+    def remember_chat_source(self, owner_key, character, source, digest):
+        now = int(time.time())
+        with self._transaction() as db:
+            db.execute(
+                """INSERT OR IGNORE INTO recommendation_chat_sources (source, owner, character, digest, at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (source, owner_key, character, digest, now),
+            )
+            db.execute("DELETE FROM recommendation_chat_sources WHERE at<?", (now - 7 * DAY,))
+
+    def chat_source_digests(self, owner_key: str, character: str) -> dict[str, str]:
+        with self._transaction() as db:
+            return dict(db.execute(
+                """SELECT source, digest FROM recommendation_chat_sources
+                   WHERE owner=? AND character=? AND at>=? ORDER BY at DESC, rowid DESC LIMIT 256""",
+                (owner_key, character, int(time.time()) - 7 * DAY),
+            ).fetchall())
+
+    def pending_chat_interests(
+        self, owner: dict, public_words: frozenset[str] = frozenset()
+    ) -> list[SyncedChatInterest]:
+        cutoff = int(time.time()) - 30 * DAY
+        with self._transaction() as db:
+            preferences = LocalPreferences(search_permissions=self._search_permissions(db, owner["key"], cutoff))
+            rows = db.execute(
+                """SELECT e.id, e.feature, e.scope, e.kind, e.direction, e.at, s.game
+                   FROM recommendation_preferences e
+                   JOIN recommendation_search_permissions s ON e.owner=s.owner AND e.id=s.id
+                   LEFT JOIN recommendation_chat_interest_synced c ON e.owner=c.owner AND e.id=c.id
+                   WHERE e.owner=? AND s.public=1 AND c.id IS NULL AND (e.kind!='inferred' OR e.at>=?)
+                   ORDER BY e.at, e.id""",
+                (owner["key"], cutoff),
+            ).fetchall()
+        return [
+            SyncedChatInterest(
+                PreferenceEvent(row["id"], row["feature"], row["scope"], row["kind"],
+                                row["direction"], row["at"]),
+                bool(row["game"]),
+            )
+            for row in rows
+            if re.fullmatch(r"[0-9a-f]{64}", row["id"])
+            and row["kind"] in CHAT_INTEREST_KINDS
+            and row["scope"] in CHAT_INTEREST_SCOPES
+            and is_public_topic(row["feature"], public_words)
+            and row["feature"] == normalize(row["feature"])
+            and (permission := preferences.search_permission(row["scope"], row["feature"])) is not None
+            and permission.public
+        ][:SYNC_BATCH_LIMIT]
+
+    def complete_chat_interest_sync(
+        self, owner: dict, sent: list[SyncedChatInterest], received: list[SyncedChatInterest]
+    ) -> None:
+        owner_key = owner["key"]
+        with self._transaction() as db:
+            if received:
+                self._save_preference_events(
+                    db, owner_key, [interest.event for interest in received],
+                    {interest.event.id: SearchPermission(True, interest.game) for interest in received},
+                )
+            db.executemany(
+                """INSERT OR IGNORE INTO recommendation_chat_interest_synced (owner, id)
+                   SELECT owner, id FROM recommendation_preferences WHERE owner=? AND id=?""",
+                ((owner_key, interest.event.id) for interest in (*sent, *received)),
+            )
+
+    @staticmethod
+    def _save_preference_events(db, owner_key, events, permissions):
+        db.executemany("""INSERT OR IGNORE INTO recommendation_preferences
+            (owner, id, feature, scope, kind, direction, at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ((owner_key, event.id, event.feature, event.scope, event.kind, event.direction, event.at)
+             for event in events))
+        if permissions:
+            db.executemany("""INSERT OR IGNORE INTO recommendation_search_permissions
+                (owner, id, public, game) VALUES (?, ?, ?, ?)""",
+                ((owner_key, event.id, item.public, item.game)
+                 for event in events if (item := permissions.get(event.id)) is not None))
+        db.execute("""DELETE FROM recommendation_preferences
+            WHERE owner=? AND kind='inferred' AND at<?""", (owner_key, int(time.time()) - 30 * DAY))
+        db.execute("""DELETE FROM recommendation_preferences WHERE owner=? AND id IN (
+            SELECT id FROM recommendation_preferences WHERE owner=?
+            ORDER BY at DESC, id DESC LIMIT -1 OFFSET 2000)""", (owner_key, owner_key))
+
+    @staticmethod
+    def _search_permissions(db, owner_key, cutoff):
+        permissions: dict[tuple[str, str], SearchPermission] = {}
+        for row in db.execute(
+            """SELECT e.scope, e.feature, s.public, s.game
+               FROM recommendation_search_permissions s
+               JOIN recommendation_preferences e ON e.owner=s.owner AND e.id=s.id
+               WHERE e.owner=? AND (e.kind!='inferred' OR e.at>=?)
+               ORDER BY e.at DESC, e.id DESC LIMIT 2000""",
+            (owner_key, cutoff),
+        ):
+            permissions.setdefault(
+                (row["scope"], row["feature"]),
+                SearchPermission(bool(row["public"]), bool(row["game"])),
+            )
+        return permissions
+
+    def preference_context(self, owner: dict) -> tuple[LocalPreferences, tuple[PreferenceEvent, ...]]:
+        now = time.time()
+        cutoff = now - 30 * 86400
+        observed_playback = "0"
+        if self.protocol_version == 2:
+            observed_playback = """coalesce((SELECT slot.meter_prefix / 1000.0 FROM feedback_v2_offers slot
+                WHERE slot.offer_id=r.id), 0)"""
+        with self._transaction() as db:
+            analyzed_chat_sources = frozenset(row["source"] for row in db.execute(
+                "SELECT source FROM recommendation_analyzed_chat WHERE owner=? AND at>=?",
+                (owner["key"], int(cutoff)),
+            ))
+            events = [PreferenceEvent(**dict(row)) for row in db.execute(
+                """SELECT id, feature, scope, kind, direction, at FROM recommendation_preferences
+                   WHERE owner=? AND (kind!='inferred' OR at>=?)
+                   ORDER BY at DESC, id DESC LIMIT 2000""", (owner["key"], int(cutoff)),
+            )]
+            search_permissions = self._search_permissions(db, owner["key"], int(cutoff))
+            rows = db.execute(f"""SELECT r.track, r.decision, r.decision_event, moment.reason, moment.received_at,
+                max({observed_playback}, coalesce((SELECT max(e.listened_seconds) FROM recommendation_events e
+                 WHERE e.recommendation_id=r.id AND e.kind IN ('playing','paused','ended','stopped')), 0)) AS listened
+                FROM recommendations r JOIN recommendation_events moment ON moment.event_id=r.decision_event
+                WHERE r.owner=? AND r.decision IS NOT NULL AND r.created_at>?
+                ORDER BY r.created_at DESC LIMIT 500""", (owner["key"], cutoff)).fetchall()
+        # An unattended autoplay is only a positive signal if it actually played.
+        observations = [
+            (json.loads(row["track"]), row["decision"], row["listened"],
+             max(0, now - row["received_at"]) / 86400)
+            for row in rows
+            if row["reason"] != "countdown_elapsed" or row["listened"] >= 30
+        ]
+        preferences = LocalPreferences.from_observations(observations)
+        preferences.search_permissions = search_permissions
+        preferences.analyzed_chat_sources = analyzed_chat_sources
+        latest_explicit: dict[tuple[str, str], int] = {}
+        for event in events:
+            if event.kind == "explicit":
+                latest_explicit.setdefault((event.scope, event.feature), event.direction)
+        preferences.explicit_topics = {key for key, direction in latest_explicit.items() if direction > 0}
+        explicit_profile = Profile.from_events(events, int(now))
+        for row in rows:
+            if row["reason"] == "countdown_elapsed" and row["listened"] < 30:
+                continue
+            track = json.loads(row["track"])
+            scope = track.get("category", "music")
+            if scope not in SCOPES or scope in {"vision", "window"}:
+                continue
+            tags = {normalize(tag) for tag in track.get("local_tags", [])}
+            if scope == "music":
+                tags.update(normalize_labels([track.get("artist")]))
+            features = tags | explicit_profile.match(scope, track)
+            kinds = ["skip"] if row["decision"] == "skipped" else ["view"]
+            if row["listened"] >= 30 and kinds == ["view"]:
+                kinds.append("played")
+            for feature in sorted(features)[:12]:
+                if valid_feature(feature):
+                    for kind in kinds:
+                        event_id = hashlib.sha256(f"{row['decision_event']}\0{scope}\0{feature}\0{kind}".encode()).hexdigest()
+                        events.append(PreferenceEvent(event_id, feature, scope, kind,
+                                                      -1 if kind == "skip" else 1, int(row["received_at"])))
+        events = list({event.id: event for event in events}.values())
+        preferences.profile = Profile.from_events(events, int(now))
+        return preferences, tuple(events)
 
     def enqueue_settings(self, owner: dict, entry_id: str, payload: dict, *, context: dict | None = None):
         """Import an immutable JSON settings journal entry before acknowledging it.
@@ -889,6 +1120,8 @@ class RecommendationStore:
         metadata = {"name": track["name"], "artist": track["artist"], "source": source,
                     "content_id": hashlib.sha256(f"{source}\n{track['name']}\n{track['artist']}".encode()).hexdigest()}
         metadata["category"] = category
+        if category == "community" and track.get("local_tags"):
+            metadata["local_tags"] = normalize_labels(track["local_tags"])
         context = {"owner_key": owner["key"], "offer_id": offer_id}
         if control:
             context["origin_context"] = json.loads(_canonical(control))

@@ -1,8 +1,10 @@
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
+from main_logic import recommendation_feedback
 from main_logic.recommendation_feedback import FeedbackConflict, RecommendationStore
 
 
@@ -39,6 +41,42 @@ def test_evidence_persists_and_exports_account_settings_and_actual_playback(stor
     assert batch["events"][-1]["user_id"] == "a"
     assert reopened.events(OTHER, 0, 100)["events"] == []
     assert reopened.events(OWNER, batch["next_cursor"], 100)["events"] == []
+
+
+@pytest.mark.parametrize("protocol", [1, 2])
+def test_local_music_preferences_use_actual_decisions_and_listening(tmp_path, protocol, monkeypatch):
+    now = recommendation_feedback.time.time()
+    monkeypatch.setattr(recommendation_feedback, "time", SimpleNamespace(time=lambda: now))
+    store = RecommendationStore(tmp_path / "personalization.sqlite3", protocol_version=protocol)
+    guest = {"key": "guest", "user_id": None, "community": None}
+
+    def offer(artist):
+        return store.create(guest, "Neko", "turn", {**TRACK, "artist": artist}, {})["id"]
+
+    automatic = offer("Automatic")
+    store.record(guest, automatic, event("accepted", "automatic", reason="countdown_elapsed"))
+    skipped = offer("Skipped")
+    store.record(guest, skipped, event("skipped", "skipped"))
+    offer("Ignored")
+    assert store.local_preferences(guest).music_artists == {"skipped": pytest.approx(-0.5)}
+
+    if protocol == 2:
+        def measure(event_id, start, end):
+            store.record(guest, automatic, event("measurement", event_id, playback_id="listen", measurement={
+                "version": "playback_elapsed_observed_v2", "epoch_id": "epoch",
+                "range_start_ms": start, "range_end_ms": end,
+            }))
+
+        measure("first-checkpoint", 0, 16_000)
+        assert "automatic" not in store.local_preferences(guest).music_artists
+        measure("second-checkpoint", 16_000, 32_000)
+    else:
+        store.record(guest, automatic, event("ended", "played", playback_id="listen", listened_seconds=32))
+    profile = store.local_preferences(guest)
+    assert profile.music_artists == {"automatic": pytest.approx(2), "skipped": pytest.approx(-0.5)}
+    tracks = [{"artist": "Skipped"}, {"artist": "Another"}, {"artist": "Automatic"}]
+    assert [track["artist"] for track in profile.rank_music(tracks)] == ["Automatic", "Another", "Skipped"]
+    assert store.prepare_batch(guest) is None
 
 
 def test_two_windows_make_exactly_one_decision_and_retries_are_idempotent(store):

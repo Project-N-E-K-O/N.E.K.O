@@ -3,15 +3,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sqlite3
 import threading
 import time
+from dataclasses import asdict
 
 import httpx
 from portalocker.exceptions import LockException
 
 from services.proactive_feedback import host
 from services.proactive_feedback.protocol import COMMUNITY_ORIGIN, MAX_RESPONSE_BYTES, canonical_bytes, valid_receipt
+from utils.proactive_preferences.personalization import parse_synced_chat_interests
+from utils.proactive_preferences.preference_model import SYNC_BATCH_LIMIT, VERSION
+from utils.social_base import community_bearer_transport_allowed
+from utils.web_scraper.interest_catalog import fetch_public_search_words
 
 
 class SyncFailure(Exception):
@@ -31,7 +37,8 @@ class ProactiveFeedbackRuntime:
                  client: httpx.AsyncClient | None = None, settings_drain=None, clock=time.monotonic,
                  attribution_context=host.attribution_context, trusted_origin=COMMUNITY_ORIGIN,
                  settings_pending_provider=None, upload_paused=False,
-                 fenced_snapshot_provider=host.credentials.saved_session_snapshot):
+                 fenced_snapshot_provider=host.credentials.saved_session_snapshot,
+                 chat_interest_origin: str | None = None):
         self.store = store
         self.snapshot_provider, self.session_provider = snapshot_provider, session_provider
         self.http = client or httpx.AsyncClient(timeout=10, follow_redirects=False, trust_env=False)
@@ -39,6 +46,8 @@ class ProactiveFeedbackRuntime:
         self.settings_drain = settings_drain
         self.settings_pending_provider = settings_pending_provider
         self.upload_paused = bool(upload_paused)
+        self.chat_interest_origin = chat_interest_origin
+        self._chat_interest_revision: tuple[str, str] | None = None
         # Called only while attribution_context holds the credential writer
         # fence. Reacquiring saved_snapshot's non-reentrant file lock is unsafe.
         self.fenced_snapshot_provider = fenced_snapshot_provider
@@ -69,14 +78,15 @@ class ProactiveFeedbackRuntime:
         if host.owner_from_snapshot(snapshot) != owner or (token is not None and (snapshot or {}).get("access_token") != token):
             raise SyncFailure("session_changed")
 
-    async def _json_request(self, method, path, token, owner, *, body=None):
+    async def _json_request(self, method, path, token, owner, *, body=None, origin=None,
+                            response_limit=MAX_RESPONSE_BYTES):
         await self._guard(owner, token)
         headers = {"Authorization": f"Bearer {token}"}
         if body is not None:
             headers["Content-Type"] = "application/json"
         # Stream with a bounded accumulator: an oversized/malformed receipt never
         # counts as an acknowledgement, even when HTTP reports success.
-        async with asyncio.timeout(15), self.http.stream(method, self.origin + path, headers=headers, content=body, follow_redirects=False) as response:
+        async with asyncio.timeout(15), self.http.stream(method, (origin or self.origin) + path, headers=headers, content=body, follow_redirects=False) as response:
             if response.status_code >= 300:
                 status = response.status_code
                 await self._guard(owner, token)
@@ -89,7 +99,7 @@ class ProactiveFeedbackRuntime:
                 raise SyncFailure("cloud_unavailable")
             raw = bytearray()
             async for chunk in response.aiter_bytes():
-                if len(raw) + len(chunk) > MAX_RESPONSE_BYTES:
+                if len(raw) + len(chunk) > response_limit:
                     raise SyncFailure("invalid_receipt")
                 raw.extend(chunk)
             try:
@@ -304,11 +314,72 @@ class ProactiveFeedbackRuntime:
                     "upgrade_url": "https://github.com/Project-N-E-K-O/N.E.K.O/releases",
                     "retry_after_seconds": max(0, self._retry_at.get(owner["key"], 0) - self.clock())}
 
+    def _commit_chat_interests(self, owner, token, sent, received):
+        with self.attribution_context() as current_owner:
+            snapshot = self.fenced_snapshot_provider() or {}
+            if self._closing or current_owner != owner or snapshot.get("access_token") != token:
+                raise SyncFailure("session_changed")
+            self.store.complete_chat_interest_sync(owner, sent, received)
+
+    async def _sync_chat_interests(self):
+        from utils.language_utils import get_global_language_full
+        from utils.preferences import ais_privacy_mode_enabled
+
+        origin = self.chat_interest_origin
+        if self.upload_paused or self._closing or not origin or not community_bearer_transport_allowed(origin):
+            return
+        try:
+            saved = await self._snapshot()
+            owner = host.owner_from_snapshot(saved)
+            if not owner["user_id"] or owner["community"] != origin or await ais_privacy_mode_enabled():
+                return
+            token = saved.get("access_token") if saved else None
+            if not isinstance(token, str) or not token:
+                return
+            vocabulary = await fetch_public_search_words(get_global_language_full() or "en")
+            sent = await asyncio.to_thread(self.store.pending_chat_interests, owner, vocabulary)
+            if await ais_privacy_mode_enabled():
+                return
+            query = {
+                "version": VERSION, "account_id": str(owner["user_id"]),
+                "events": [{**asdict(item.event), "game": item.game} for item in sent],
+            }
+            cached = self._chat_interest_revision
+            if cached is not None and cached[0] == owner["key"]:
+                query["known_revision"] = cached[1]
+            reply = await self._json_request(
+                "POST", "/api/users/me/chat-interests/sync", token, owner,
+                body=canonical_bytes(query), origin=origin, response_limit=1024 * 1024,
+            )
+            if not isinstance(reply, dict) or reply.get("version") != VERSION:
+                return
+            revision = reply.get("revision")
+            if revision is not None and (
+                not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{64}", revision)
+            ):
+                return
+            received = parse_synced_chat_interests(reply.get("events"), int(time.time()))
+            if not await ais_privacy_mode_enabled():
+                # Importing a full account snapshot can evict old local rows.
+                # Drain any remaining eligible uploads before merging it.
+                if len(sent) == SYNC_BATCH_LIMIT:
+                    await asyncio.to_thread(self._commit_chat_interests, owner, token, sent, [])
+                    return
+                if sent or received:
+                    await asyncio.to_thread(self._commit_chat_interests, owner, token, sent, received)
+                self._chat_interest_revision = (owner["key"], revision) if revision else None
+        except (SyncFailure, httpx.HTTPError, OSError, sqlite3.Error, RuntimeError, TimeoutError, ValueError, LockException):
+            # The next cycle retries from SQLite without altering feedback sync state.
+            pass
+
     async def _run(self):
         while not self._closing:
             self._wake.clear()
             try:
-                await self.sync_once()
+                if self.chat_interest_origin:
+                    await asyncio.gather(self.sync_once(), self._sync_chat_interests())
+                else:
+                    await self.sync_once()
             except (OSError, sqlite3.Error, RuntimeError, ValueError, LockException):
                 # Never emit token-bearing exception text; retain durable data.
                 pass

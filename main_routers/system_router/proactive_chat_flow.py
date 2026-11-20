@@ -39,8 +39,12 @@ from main_logic.proactive_chat.music_recommendation import (
     _record_music_played_through,
 )
 from main_logic.proactive_chat.music_refusal import record_music_card_choice
+from utils.proactive_preferences.personalization import RecommendationContext
 from utils.theater_activity import is_theater_active
-from main_routers.recommendation_router import capture_owner, attach_music_recommendation, attach_proactive_recommendations
+from main_routers.recommendation_router import (
+    attach_music_recommendation, attach_proactive_recommendations, capture_owner,
+    load_recommendation_context,
+)
 
 from ..shared_state import get_config_manager, get_session_manager
 from ._shared import _validate_local_mutation_request, logger, router
@@ -194,6 +198,20 @@ async def proactive_chat(request: Request):
         except Exception as exc:
             recommendation_owner = None
             logger.warning("Recommendation identity unavailable: %s", type(exc).__name__)
+
+        async def load_recommendations():
+            if recommendation_owner is None:
+                return RecommendationContext(community_identity_known=False)
+            return await load_recommendation_context(recommendation_owner)
+
+        async def recommendation_owner_is_current():
+            if recommendation_owner is None:
+                return True
+            try:
+                return await capture_owner() == recommendation_owner
+            except (OSError, RuntimeError, ValueError):
+                return False
+
         result = await proactive_service.handle_proactive_chat(
             command,
             config_manager=config_manager,
@@ -205,6 +223,8 @@ async def proactive_chat(request: Request):
             push_mini_game_invite_options=_push_mini_game_invite_options,
             push_mini_game_invite_resolved=_push_mini_game_invite_resolved,
             meme_proxy_candidate_fetchable=_meme_proxy_candidate_fetchable,
+            load_recommendations=load_recommendations,
+            recommendation_owner_is_current=recommendation_owner_is_current,
         )
         try:
             if recommendation_owner is not None:
@@ -215,7 +235,8 @@ async def proactive_chat(request: Request):
             logger.warning("Music recommendation registration failed: %s", type(exc).__name__)
         try:
             if recommendation_owner is not None:
-                await attach_proactive_recommendations(result.body, recommendation_owner, lanlan_name)
+                await attach_proactive_recommendations(result.body, recommendation_owner, lanlan_name,
+                                                       community_tags=result.community_tags)
         except Exception as exc:
             logger.warning("Proactive recommendation registration failed: %s", type(exc).__name__)
         return _adapt_result(result)

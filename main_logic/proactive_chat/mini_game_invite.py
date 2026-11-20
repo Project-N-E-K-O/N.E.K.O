@@ -428,6 +428,7 @@ def _pick_mini_game_type(
     lanlan_name: str | None = None, *, manager=None,
     user_toggle_enabled: bool = True,
     theater_toggle_enabled: bool = False,
+    preferences=None,
 ) -> str | None:
     """Pick an available mini-game type with invite copy configured.
 
@@ -451,6 +452,22 @@ def _pick_mini_game_type(
     if not candidates:
         return None
     import random as _random
+    if preferences and preferences.features("mini_game"):
+        labels = {
+            "soccer": ["足球"], "badminton": ["羽毛球"], "draw-and-guess": ["你画我猜", "绘画", "猜谜"],
+            "basketball": ["篮球"], "air-basketball": ["篮球"],
+            "watch-together": ["一起看视频"], "theater": ["剧场", "角色扮演"],
+        }
+        choices = []
+        for game in candidates:
+            features = preferences.match("mini_game", {"name": game, "tags": labels.get(game, [])})
+            score = preferences.score("mini_game", features)
+            if score is not None:
+                choices.append((score, game))
+        if not choices:
+            return None
+        best = max(score for score, _ in choices)
+        candidates = [game for score, game in choices if score == best]
     return _random.choice(candidates)
 
 
@@ -467,6 +484,8 @@ async def _attempt_mini_game_invite_delivery(
     memory_dir: str | Path | None = None,
     round_id: str | None = None,
     character_prompt: str = "",
+    load_recommendations=None,
+    recommendation_owner_is_current=None,
 ) -> dict | None:
     """Deliver an eligible invite for either the legacy or staged caller.
 
@@ -520,6 +539,7 @@ async def _attempt_mini_game_invite_delivery(
     # flags must not bypass users explicitly disabling mini-game sources in the frontend.
     force_game = MINI_GAME_INVITE_FORCE_GAME_TYPE
     debug_force = bool(force_game)
+    context = None
     if debug_force and not (
         theater_toggle_enabled if force_game == "theater" else user_toggle_enabled
     ):
@@ -571,9 +591,15 @@ async def _attempt_mini_game_invite_delivery(
             and total_so_far >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
         )
 
+        if not force_first:
+            import random as _random
+            if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
+                return None
+        context = await load_recommendations() if load_recommendations is not None else None
         game_type = _pick_mini_game_type(
             lanlan_name, manager=mgr, user_toggle_enabled=user_toggle_enabled,
             theater_toggle_enabled=theater_toggle_enabled,
+            **({"preferences": context.preferences.profile} if context is not None else {}),
         )
         if game_type is None:
             logger.warning(
@@ -585,10 +611,6 @@ async def _attempt_mini_game_invite_delivery(
             )
             return None
 
-        if not force_first:
-            import random as _random
-            if _random.random() >= MINI_GAME_INVITE_TRIGGER_PROBABILITY:
-                return None
     selected_theater = await _select_theater_story() if game_type == "theater" else None
     if game_type == "theater" and selected_theater is None:
         return None
@@ -599,6 +621,15 @@ async def _attempt_mini_game_invite_delivery(
     )
     if not invite_text:
         return None
+
+    owner_check = recommendation_owner_is_current if context is not None else None
+    account_changed = _proactive_pass_body(
+        PROACTIVE_REASON_DELIVERY_PREEMPTED,
+        message="mini-game invite skipped: recommendation account changed",
+    )
+    if owner_check is not None and not await owner_check():
+        return account_changed
+    account_guard = {"delivery_is_current": owner_check} if owner_check is not None else {}
 
     # Same round ownership as the main Phase 2 path: a retired HTTP task must
     # not claim or advance a replacement round.
@@ -625,6 +656,10 @@ async def _attempt_mini_game_invite_delivery(
         "last_user_engagement_time",
         None,
     )
+    if owner_check is not None and not await owner_check():
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
+        return account_changed
     tts_accepted = True
     try:
         feed = getattr(mgr, 'feed_tts_chunk', None)
@@ -634,11 +669,16 @@ async def _attempt_mini_game_invite_delivery(
                 expected_speech_id=proactive_sid,
                 expected_user_engagement_time=expected_user_engagement_time,
                 **delivery_round,
+                **account_guard,
             )
     except Exception as exc:
         logger.warning(
             "[%s] mini-game invite feed_tts_chunk failed: %s", lanlan_name, exc,
         )
+    if owner_check is not None and not await owner_check():
+        if _proactive_turn_still_owned(mgr, proactive_sid):
+            await mgr.handle_new_message()
+        return account_changed
     if tts_accepted is False and _proactive_feed_rejected_for_takeover(
         mgr,
         proactive_sid,
@@ -660,6 +700,7 @@ async def _attempt_mini_game_invite_delivery(
         expected_speech_id=proactive_sid,
         expected_user_engagement_time=expected_user_engagement_time,
         **delivery_round,
+        **account_guard,
     )
     if not committed:
         if _proactive_turn_still_owned(mgr, proactive_sid):
@@ -767,6 +808,8 @@ async def _run_mini_game_invite_short_circuit(
     memory_dir: str | Path | None = None,
     round_id: str | None = None,
     character_prompt: str = "",
+    load_recommendations=None,
+    recommendation_owner_is_current=None,
 ) -> MiniGameInviteShortCircuit | None:
     """Run the invite attempt and expose framework-neutral short-circuit data."""
     state_storage_kwargs = (
@@ -783,6 +826,9 @@ async def _run_mini_game_invite_short_circuit(
         push_options_compat=False,
         round_id=round_id,
         character_prompt=character_prompt,
+        **({"load_recommendations": load_recommendations} if load_recommendations is not None else {}),
+        **({"recommendation_owner_is_current": recommendation_owner_is_current}
+           if recommendation_owner_is_current is not None else {}),
         **state_storage_kwargs,
     )
     if body is None:

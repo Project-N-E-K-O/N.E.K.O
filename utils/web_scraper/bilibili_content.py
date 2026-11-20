@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from html import unescape
 import re
 import time
 from typing import Any, Awaitable, Callable
@@ -212,6 +213,8 @@ def _normalise_video(
     native_reason = _recommendation_reason(item)
     if lane == "hot":
         reason = f"全站热门第{rank}名"
+    elif lane == "search":
+        reason = ""
     else:
         reason = native_reason or "B站首页推荐"
     published_at = item.get("pubdate") or item.get("ctime") or 0
@@ -273,6 +276,33 @@ async def fetch_bilibili_hot(limit: int = 10) -> dict[str, Any]:
         ttl=_HOT_TTL_SECONDS,
         fetcher=_fetch,
     )
+
+
+async def search_bilibili_videos(query: str, *, limit: int) -> list[dict[str, Any]]:
+    """Search the public video index without using the account credential."""
+
+    async def fetch() -> dict[str, Any]:
+        from bilibili_api import search
+
+        raw = await search.search_by_type(
+            query, search_type=search.SearchObjectType.VIDEO, page_size=limit
+        )
+        videos = []
+        for rank, item in enumerate(_items_from_result(raw, "result")[:limit], 1):
+            if not re.fullmatch(r"BV[0-9A-Za-z]{10}", str(item.get("bvid") or "")):
+                continue
+            title = unescape(re.sub(r"</?em\b[^>]*>", "", str(item.get("title") or "")))
+            video = _normalise_video(
+                {**item, "title": title[:200]}, lane="search", rank=rank, authenticated=False
+            )
+            if video:
+                videos.append({**video, "source": "B站", "grounded_news": True})
+        return {"success": True, "videos": videos}
+
+    result = await _cached_result(
+        f"bilibili_search:{query}:{limit}", ttl=_HOT_TTL_SECONDS, fetcher=fetch
+    )
+    return result["videos"]
 
 
 async def fetch_bilibili_home(limit: int = 10) -> dict[str, Any]:

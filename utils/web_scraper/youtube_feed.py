@@ -280,6 +280,63 @@ def _youtube_confirms_authentication(
     return logged_in if isinstance(logged_in, bool) else False
 
 
+async def _bootstrap_innertube(client, *, accept_language, cookie_header, user_agent):
+    bootstrap = await client.get(
+        _YOUTUBE_ORIGIN,
+        headers={
+            "Accept-Language": accept_language,
+            "Cookie": cookie_header,
+            "User-Agent": user_agent,
+        },
+        timeout=12.0,
+    )
+    bootstrap.raise_for_status()
+    config = _extract_ytcfg(bootstrap.text)
+    api_key = config.get("INNERTUBE_API_KEY")
+    context = config.get("INNERTUBE_CONTEXT")
+    if not isinstance(api_key, str) or not api_key or not isinstance(context, dict):
+        raise ValueError("YouTube bootstrap page did not expose Innertube configuration")
+
+    client_config = context.get("client", {}) if isinstance(context.get("client"), dict) else {}
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Cookie": cookie_header,
+        "Origin": _YOUTUBE_ORIGIN,
+        "User-Agent": user_agent,
+        "X-YouTube-Client-Name": str(config.get("INNERTUBE_CONTEXT_CLIENT_NAME") or _DEFAULT_CLIENT_NAME),
+        "X-YouTube-Client-Version": str(client_config.get("clientVersion") or _DEFAULT_CLIENT_VERSION),
+    }
+    visitor_data = client_config.get("visitorData") or config.get("VISITOR_DATA")
+    if visitor_data:
+        headers["X-Goog-Visitor-Id"] = str(visitor_data)
+    return config, api_key, context, headers
+
+
+async def _search_youtube(client, api_key, context, headers, query, limit):
+    response = await client.post(
+        f"{_YOUTUBE_ORIGIN}/youtubei/v1/search",
+        params={"prettyPrint": "false", "key": api_key},
+        headers=headers,
+        json={"context": context, "query": query},
+        timeout=15.0,
+    )
+    response.raise_for_status()
+    return _extract_videos(response.json(), limit)
+
+
+async def search_youtube_videos(query: str, *, limit: int) -> list[dict[str, Any]]:
+    """Use YouTube's existing public discovery protocol without account cookies."""
+    language, _ = _request_language_settings()
+    client = get_external_http_client()
+    _, api_key, context, headers = await _bootstrap_innertube(
+        client, accept_language=language, cookie_header=_cookie_header({}),
+        user_agent=get_random_user_agent(),
+    )
+    videos = await _search_youtube(client, api_key, context, headers, query, limit)
+    return [{**video, "grounded_news": True} for video in videos]
+
+
 async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
     """Fetch YouTube's anonymous or signed-in homepage recommendations."""
     client: httpx.AsyncClient | None = None
@@ -308,35 +365,10 @@ async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
         else:
             client = get_external_http_client()
 
-        bootstrap_headers = {
-            "Accept-Language": accept_language,
-            "Cookie": cookie_header,
-            "User-Agent": user_agent,
-        }
-        bootstrap = await client.get(_YOUTUBE_ORIGIN, headers=bootstrap_headers, timeout=12.0)
-        bootstrap.raise_for_status()
-        config = _extract_ytcfg(bootstrap.text)
-
-        api_key = config.get("INNERTUBE_API_KEY")
-        context = config.get("INNERTUBE_CONTEXT")
-        if not isinstance(api_key, str) or not api_key or not isinstance(context, dict):
-            raise ValueError("YouTube bootstrap page did not expose Innertube configuration")
-
-        client_config = context.get("client", {}) if isinstance(context.get("client"), dict) else {}
-        client_name = str(config.get("INNERTUBE_CONTEXT_CLIENT_NAME") or _DEFAULT_CLIENT_NAME)
-        client_version = str(client_config.get("clientVersion") or _DEFAULT_CLIENT_VERSION)
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "Cookie": cookie_header,
-            "Origin": _YOUTUBE_ORIGIN,
-            "User-Agent": user_agent,
-            "X-YouTube-Client-Name": client_name,
-            "X-YouTube-Client-Version": client_version,
-        }
-        visitor_data = client_config.get("visitorData") or config.get("VISITOR_DATA")
-        if visitor_data:
-            headers["X-Goog-Visitor-Id"] = str(visitor_data)
+        config, api_key, context, headers = await _bootstrap_innertube(
+            client, accept_language=accept_language, cookie_header=cookie_header,
+            user_agent=user_agent,
+        )
 
         authorization = _build_sapisid_authorization(cookies)
         auth_requested = bool(authorization)
@@ -409,15 +441,9 @@ async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
                 headers = _without_authentication(headers)
                 authorization = ""
             authenticated = False
-            discovery_response = await client.post(
-                f"{_YOUTUBE_ORIGIN}/youtubei/v1/search",
-                params={"prettyPrint": "false", "key": api_key},
-                headers=headers,
-                json={"context": context, "query": discovery_query},
-                timeout=15.0,
+            videos = await _search_youtube(
+                client, api_key, context, headers, discovery_query, max(1, limit)
             )
-            discovery_response.raise_for_status()
-            videos = _extract_videos(discovery_response.json(), max(1, limit))
             feed_kind = "public_discovery"
 
         if not videos:
