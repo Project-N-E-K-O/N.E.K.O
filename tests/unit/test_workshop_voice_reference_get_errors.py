@@ -6,12 +6,22 @@ message holds the server's absolute path, into a ``ValueError``. Both routes
 used to put ``str(e)`` into the response, so that path reached the client
 (#3843). They now answer with fixed messages and keep the details in the log;
 the status codes and the plain "not found" answers are unchanged.
+
+The 503 text comes from ``GET /subscribed-items``, whose 500 branch used to
+embed ``str(e)`` too. That route now only returns fixed strings, so the 503
+can keep showing them (e.g. "Steamworks未初始化").
 """
 
+import ast
+import inspect
 import json
+import os
+import textwrap
+from types import SimpleNamespace
 
 import pytest
 
+from main_routers.workshop_router import ugc as wr_ugc
 from main_routers.workshop_router import voice_refs
 from main_routers.workshop_router.voice_manifest import WORKSHOP_VOICE_MANIFEST_NAME
 
@@ -97,22 +107,89 @@ async def test_unknown_item_is_still_404(install_folder, route):
     assert json.loads(body)['error'] == '未找到对应的订阅工坊物品'
 
 
+class _BrokenWorkshop:
+    def __init__(self, secret) -> None:
+        self._secret = secret
+
+    def GetNumSubscribedItems(self):
+        raise PermissionError(13, 'Permission denied', str(self._secret))
+
+
 @pytest.mark.parametrize('route', sorted(_ROUTES))
-async def test_subscription_lookup_failure_does_not_echo_its_message(
+async def test_steam_not_running_is_still_explained(monkeypatch, route):
+    monkeypatch.setattr(wr_ugc, 'get_steamworks', lambda: None)
+
+    status, body = await _call(route)
+
+    assert status == 503
+    assert json.loads(body)['error'] == 'Steamworks未初始化'
+
+
+@pytest.mark.parametrize('route', sorted(_ROUTES))
+async def test_subscription_lookup_failure_does_not_echo_server_path(
     tmp_path, monkeypatch, route
 ):
     secret = tmp_path / 'private' / 'steam_api.log'
-
-    async def _boom(item_id):
-        raise RuntimeError(f'获取订阅物品失败: [Errno 13] Permission denied: {str(secret)!r}')
-
-    monkeypatch.setattr(voice_refs, '_find_subscribed_item_by_id', _boom)
+    monkeypatch.setattr(
+        wr_ugc, 'get_steamworks', lambda: SimpleNamespace(Workshop=_BrokenWorkshop(secret))
+    )
 
     status, body = await _call(route)
 
     assert status == 503
     _assert_no_path(body, secret)
     assert json.loads(body)['error'] == '获取订阅物品失败'
+
+
+async def test_subscribed_items_route_does_not_echo_server_path(tmp_path, monkeypatch):
+    secret = tmp_path / 'private' / 'steam_api.log'
+    monkeypatch.setattr(
+        wr_ugc, 'get_steamworks', lambda: SimpleNamespace(Workshop=_BrokenWorkshop(secret))
+    )
+
+    response = await wr_ugc.get_subscribed_workshop_items()
+    body = response.body.decode('utf-8')
+
+    assert response.status_code == 500
+    _assert_no_path(body, secret)
+    assert json.loads(body)['error'] == '获取订阅物品失败'
+
+
+def test_subscribed_items_route_only_returns_fixed_error_text():
+    # The voice-reference routes pass SubscribedItemsUnavailable's message on
+    # to the client; that is only safe while every "error" (and per-item
+    # "error_message") this route builds is a literal. Scope: dict literals
+    # only, which is how every response in this route is written today.
+    tree = ast.parse(textwrap.dedent(inspect.getsource(wr_ugc.get_subscribed_workshop_items)))
+    checked = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if isinstance(key, ast.Constant) and key.value in ('error', 'error_message'):
+                checked += 1
+                assert isinstance(value, ast.Constant), ast.unparse(value)
+    assert checked >= 2
+
+
+@pytest.mark.parametrize('route', sorted(_ROUTES))
+async def test_audio_escaping_the_item_folder_is_400_without_path(install_folder, tmp_path, route):
+    outside = tmp_path / 'outside.wav'
+    outside.write_bytes(b'RIFF-fake-wav')
+    try:
+        os.symlink(outside, install_folder / 'voice_sample.wav')
+    except (OSError, NotImplementedError):
+        pytest.skip('symlinks are not available here')
+    (install_folder / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
+        json.dumps({'version': 1, 'reference_audio': 'voice_sample.wav'}), encoding='utf-8'
+    )
+
+    status, body = await _call(route)
+
+    assert status == 400
+    _assert_no_path(body, outside)
+    _assert_no_path(body, install_folder)
+    assert json.loads(body)['error'] == '读取参考语音文件失败'
 
 
 async def test_item_without_manifest_keeps_its_answers(install_folder):

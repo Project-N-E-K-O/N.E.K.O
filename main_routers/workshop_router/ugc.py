@@ -741,11 +741,19 @@ async def _get_subscribed_items_payload() -> dict:
     return {'success': False, 'error': '获取订阅物品响应异常'}
 
 
+class SubscribedItemsUnavailable(RuntimeError):
+    """The subscribed-items list could not be fetched.
+
+    The message is always one of the fixed "error" strings returned by
+    get_subscribed_workshop_items, so callers may show it to the client.
+    """
+
+
 async def _find_subscribed_item_by_id(item_id: str) -> dict | None:
     payload = await _get_subscribed_items_payload()
     if not payload.get('success'):
         error = payload.get('error') or '获取订阅物品失败'
-        raise RuntimeError(error)
+        raise SubscribedItemsUnavailable(error)
 
     for item in payload.get('items', []):
         if str(item.get('publishedFileId')) == str(item_id):
@@ -1117,7 +1125,9 @@ async def get_subscribed_workshop_items():
                             "needsUpdate": False,
                             "error": True
                         },
-                        "error_message": str(item_error)
+                        # Fixed text: the exception may carry server paths;
+                        # the details are logged above.
+                        "error_message": "无法获取物品信息"
                     }
                     items_info.append(basic_item_info)
                     logger.debug(f'已添加物品 {item_id} 的基本信息到结果列表')
@@ -1143,7 +1153,10 @@ async def get_subscribed_workshop_items():
 
     except Exception as e:
         logger.error(f"获取订阅物品列表时出错: {e}")
+        # Keep the exception text (it may carry server paths) in the log only.
+        # Every "error" this route returns is a fixed string, which lets
+        # SubscribedItemsUnavailable carry it on to the client.
         return JSONResponse({
             "success": False,
-            "error": f"获取订阅物品失败: {str(e)}"
+            "error": "获取订阅物品失败"
         }, status_code=500)

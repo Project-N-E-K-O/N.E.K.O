@@ -22,7 +22,7 @@ from ._shared import logger, router
 from .config_files import _assert_under_base
 from .content_gate import ContentFolderBusy, claim_reference_pair
 from .publish import _resolve_workshop_export_child
-from .ugc import _find_subscribed_item_by_id
+from .ugc import SubscribedItemsUnavailable, _find_subscribed_item_by_id
 from .voice_manifest import (
     WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES,
     WORKSHOP_REFERENCE_AUDIO_EXTENSIONS,
@@ -353,13 +353,13 @@ async def get_workshop_voice_reference(item_id: str):
     """Return the reference-voice manifest inside a subscribed workshop item, by publishedFileId."""
     try:
         item = await _find_subscribed_item_by_id(item_id)
-    except RuntimeError as e:
-        # The message may come from an arbitrary exception upstream; keep it
-        # in the log only.
-        logger.warning(f"读取参考语音清单时获取订阅物品失败: {e}")
+    except SubscribedItemsUnavailable as e:
+        # The message is one of the fixed strings returned by /subscribed-items
+        # (e.g. "Steamworks未初始化"), never raw exception text, so it is safe
+        # to show; see get_subscribed_workshop_items.
         return JSONResponse({
             "success": False,
-            "error": "获取订阅物品失败",
+            "error": str(e),
         }, status_code=503)
 
     if not item:
@@ -395,6 +395,15 @@ async def get_workshop_voice_reference(item_id: str):
             "available": False,
             "error": "读取参考语音清单失败",
         }, status_code=400)
+    except OSError as e:
+        # e.g. PermissionError from _assert_under_base when the audio is a
+        # symlink pointing outside the item folder.
+        logger.warning(f"读取工坊物品 {item_id!r} 的参考语音文件失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "available": False,
+            "error": "读取参考语音文件失败",
+        }, status_code=400)
 
     if not voice_ref:
         return JSONResponse({
@@ -418,13 +427,13 @@ async def get_workshop_voice_reference_audio(item_id: str):
     """Return the reference-voice audio stream from a subscribed workshop item."""
     try:
         item = await _find_subscribed_item_by_id(item_id)
-    except RuntimeError as e:
-        # The message may come from an arbitrary exception upstream; keep it
-        # in the log only.
-        logger.warning(f"读取参考语音音频时获取订阅物品失败: {e}")
+    except SubscribedItemsUnavailable as e:
+        # The message is one of the fixed strings returned by /subscribed-items
+        # (e.g. "Steamworks未初始化"), never raw exception text, so it is safe
+        # to show; see get_subscribed_workshop_items.
         return JSONResponse({
             "success": False,
-            "error": "获取订阅物品失败",
+            "error": str(e),
         }, status_code=503)
 
     if not item:
@@ -454,6 +463,13 @@ async def get_workshop_voice_reference_audio(item_id: str):
         return JSONResponse({
             "success": False,
             "error": "读取参考语音清单失败",
+        }, status_code=400)
+    except OSError as e:
+        # Same as the manifest route.
+        logger.warning(f"读取工坊物品 {item_id!r} 的参考语音文件失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": "读取参考语音文件失败",
         }, status_code=400)
 
     if not voice_ref:
