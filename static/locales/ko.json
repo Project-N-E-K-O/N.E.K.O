@@ -7353,7 +7353,7 @@
         "retry": "다시 시도"
     },
   "modelWorkshop": {
-    "title": "공유 모델 가져오기",
+    "title": "마켓 모델 공유/다운로드",
     "help": "모델 마켓의 .neko-model.zip 패키지(최대 500 MiB)를 선택하세요. Live2D, VRM, MMD를 지원하며 캐릭터를 만들지 않습니다. 접수된 작업은 페이지를 닫아도 계속됩니다.",
     "fileLabel": "모델 패키지",
     "start": "가져오기 시작",
@@ -7388,20 +7388,6 @@
     "committing": "설치를 마무리하는 중입니다. 취소할 수 없습니다…",
     "uploadUnknown": "업로드 응답이 끊겨 접수 여부를 알 수 없습니다. 모델 목록을 확인한 후 다시 업로드하세요.",
     "previewRequested": "미리 보기를 요청했습니다. 모델 표시를 확인한 후 기존 저장 버튼으로 적용하세요.",
-    "stateUnavailable": "모델 설치 상태를 확인할 수 없습니다. 나중에 다시 시도하세요.",
-    "connectedBrowsing": "{{name}}의 모델을 교체할 모델을 선택하세요.",
-    "connectedDownloading": "본체에서 모델 다운로드 중…",
-    "connectedInstalling": "본체에서 검증 및 설치 중…",
-    "connectedApplying": "캐릭터 모델 저장 중…",
-    "connectedSaved": "모델 교체를 저장했습니다. NEKO로 돌아가 확인하세요.",
-    "connectedSavedWarning": "모델은 저장했지만 실행 갱신이 끝나지 않았습니다. 다시 시도하기 전에 NEKO를 확인하세요.",
-    "connectedTargetChanged": "캐릭터나 설정이 변경되었습니다. NEKO로 돌아가 다시 선택하세요.",
-    "connectedLogin": "NEKO에서 마켓에 로그인한 뒤 공방을 다시 여세요.",
-    "connectedFailed": "모델 교체가 끝나지 않았습니다. NEKO를 확인하세요. 기존 리소스는 유지됩니다.",
-    "connectedEdited": "편집 또는 저장 중이므로 자동 교체를 멈췄습니다. 편집을 마치고 공방을 다시 여세요.",
-    "connectedPopup": "브라우저가 공방 창을 차단했습니다. 팝업을 허용하고 다시 시도하세요.",
-    "connectedOpenFailed": "공방을 열 수 없습니다. 연결을 확인하고 다시 시도하세요.",
-    "connectedIdle": "공방에서 모델을 선택하면 현재 캐릭터의 모델을 자동으로 교체합니다.",
-    "connectedHelp": "NEKO에서 공방을 열면 다운로드 후 적용됩니다. 별도 방문 시 패키지만 다운로드하며 캐릭터를 교체하지 않습니다."
+    "stateUnavailable": "모델 설치 상태를 확인할 수 없습니다. 나중에 다시 시도하세요."
   }
 }

@@ -184,7 +184,7 @@ def test_connected_native_owner_saves_and_reloads_host_without_manual_save(full_
                 time.sleep(.02)
             assert state['phase'] == 'completed'
             manager.locator('[data-workshop=start]').click()
-            manager.wait_for_function("document.querySelector('[data-workshop=status]').textContent.includes('请选择模型')")
+            manager.wait_for_function("sessionStorage.getItem('neko.modelWorkshop.launch') !== null")
             assert len(launches) == 1 and applied == []
             launches[0].result = state['result']; launches[0].phase = 'installed'
             # Saving must notify immediately, while the manager is still open.

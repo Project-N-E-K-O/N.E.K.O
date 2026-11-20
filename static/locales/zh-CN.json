@@ -7353,7 +7353,7 @@
         "retry": "重试"
     },
   "modelWorkshop": {
-    "title": "导入分享模型",
+    "title": "分享/下载市场模型",
     "help": "选择从模型市场下载的 .neko-model.zip 包（最大 500 MiB）。支持 Live2D、VRM、MMD；不会创建角色。关闭页面后，已受理任务仍会继续。",
     "fileLabel": "模型包",
     "start": "开始导入",
@@ -7388,20 +7388,6 @@
     "committing": "正在完成安装，此时不能取消…",
     "uploadUnknown": "上传响应中断，无法确认是否已受理。请先检查模型列表，勿立即重复上传。",
     "previewRequested": "已请求预览。请确认模型显示正常后，使用原有保存按钮应用。",
-    "stateUnavailable": "模型安装状态暂不可用，请稍后重试。",
-    "connectedBrowsing": "请选择模型，将替换 {{name}} 的模型。",
-    "connectedDownloading": "本体正在下载模型…",
-    "connectedInstalling": "本体正在校验并安装…",
-    "connectedApplying": "正在保存角色模型…",
-    "connectedSaved": "模型替换已保存，请回到 NEKO 查看。",
-    "connectedSavedWarning": "模型已保存，但运行刷新未完成。请回到 NEKO 检查，不要重复替换。",
-    "connectedTargetChanged": "角色或配置已变化，未替换。请回到 NEKO 重新选择。",
-    "connectedLogin": "请在 NEKO 登录市场，再重新打开工坊。",
-    "connectedFailed": "模型替换未完成，请回到 NEKO 查看；原资源仍保留。",
-    "connectedEdited": "页面有编辑或正在保存，已暂停自动替换。请处理编辑后重新打开工坊。",
-    "connectedPopup": "浏览器阻止了工坊窗口，请允许弹窗后重试。",
-    "connectedOpenFailed": "无法打开工坊，请检查连接后重试。",
-    "connectedIdle": "打开工坊，选择模型后自动替换当前角色。",
-    "connectedHelp": "从 NEKO 打开工坊可下载并使用；独立访问只下载模型包，不会替换角色。"
+    "stateUnavailable": "模型安装状态暂不可用，请稍后重试。"
   }
 }

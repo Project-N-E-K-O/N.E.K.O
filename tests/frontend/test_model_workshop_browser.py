@@ -36,8 +36,17 @@ def page():
         page.add_style_tag(content=(ROOT / 'static/css/model_manager.css').read_text())
         page.add_script_tag(content=(ROOT / 'static/js/model_manager/model-workshop.js').read_text())
         page.evaluate('''() => {
-            window.testState = {dirty:false, character:'Original', applied:[], clean:[], opened:[]};
-            window.electronShell = {openExternal: async url => testState.opened.push(url)};
+            window.testState = {dirty:false, character:'Original', applied:[], clean:[], opened:[], events:[], openFailed:false, minimizeFailed:false};
+            window.electronShell = {openExternal: async url => {
+                testState.events.push('open');
+                if (testState.openFailed) return {success:false};
+                testState.opened.push(url); return {success:true};
+            }};
+            window.nekoWindowControl = {minimize: async () => {
+                testState.events.push('minimize');
+                if (testState.minimizeFailed) throw new Error('window unavailable');
+                return {ok:true};
+            }};
             window.mountPanel = locale => NekoModelWorkshop.mount(document.getElementById('model-workshop-panel'), {
                 translate: (key, values={}) => Object.entries(values).reduce((text,[name,value]) => text.replace('{{'+name+'}}',value), locale[key]),
                 capture: async () => ({character:testState.character}),
@@ -69,7 +78,7 @@ def network(page, phase='browsing'):
         else:
             state['reads'] += 1
             if state['unknown']: return route.abort()
-        if state['deny']: return route.fulfill(status=403, json={'success':False})
+        if state['deny']: return route.fulfill(status=404, json={'success':False, 'error_code':'model_market_expired'})
         route.fulfill(json={'success':True, 'request_id':REQUEST, 'character_name':'Original',
                             'phase':state['phase'], 'url':'https://market.example.test/#/models?model_code=test'})
     page.route('**/api/config/page_config', lambda route: route.fulfill(json={'autostart_csrf_token':'test-native-only'}))
@@ -79,12 +88,17 @@ def network(page, phase='browsing'):
 
 @pytest.mark.parametrize('locale', ['en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'])
 def test_button_uses_workshop_and_keeps_original_import_separate(page, locale):
+    page.set_viewport_size({'width':390,'height':844})
     state = network(page); texts = mounted(page, locale)
     assert page.locator('[data-workshop=file]').count() == 0
     assert page.locator('[data-workshop=view]').count() == 0
+    assert page.locator('#model-workshop-panel p, #model-workshop-panel progress, [data-workshop=cancel], [data-workshop=retry]').count() == 0
     page.locator('[data-workshop=start]').click()
     page.wait_for_function('testState.opened.length === 1')
     assert page.locator('[data-workshop=start]').text_content() == texts['title']
+    assert page.locator('#model-workshop-panel').inner_text() == texts['title']
+    assert page.evaluate('testState.events') == ['open', 'minimize']
+    assert page.locator('[data-workshop=start]').evaluate('button => button.scrollWidth <= button.clientWidth + 1')
     assert state['writes'] == ['']
     assert page.evaluate('sessionStorage.getItem("neko.modelWorkshop.launch")') == REQUEST
 
@@ -95,7 +109,7 @@ def test_installed_result_automatically_applies_once_without_save_or_preview(pag
     page.wait_for_function('testState.applied.length === 1')
     assert state['writes'] == ['', '/' + REQUEST + '/apply']
     assert page.evaluate('sessionStorage.getItem("neko.modelWorkshop.launch")') is None
-    assert page.locator('[data-workshop=cancel]').is_hidden()
+    assert page.locator('[data-workshop=start]').is_enabled()
 
 
 @pytest.mark.parametrize('reason', ['dirty', 'role', 'input'])
@@ -106,7 +120,7 @@ def test_edit_or_character_change_never_applies_late_install(page, reason):
     elif reason == 'role': page.evaluate('testState.character = "Other"')
     else: page.locator('#editor').fill('changed and then restored'); page.locator('#editor').fill('')
     state['phase'] = 'installed'
-    page.wait_for_function('document.querySelector("[data-workshop=cancel]").hidden')
+    page.wait_for_function('!document.querySelector("[data-workshop=start]").disabled')
     assert state['writes'] == ['', '/' + REQUEST + '/cancel']
     assert page.evaluate('testState.applied') == []
 
@@ -114,17 +128,18 @@ def test_edit_or_character_change_never_applies_late_install(page, reason):
 def test_dirty_page_does_not_create_launch(page):
     state = network(page); mounted(page); page.evaluate('testState.dirty = true')
     page.locator('[data-workshop=start]').click()
-    page.wait_for_function('document.querySelector("[data-workshop=status]").textContent.includes("edits")')
+    page.wait_for_function('!document.querySelector("[data-workshop=start]").disabled')
     assert state['writes'] == [] and page.evaluate('testState.opened') == []
 
 
 def test_edit_cancellation_racing_save_reports_actual_saved_result(page):
-    state = network(page); texts = mounted(page)
+    state = network(page); mounted(page)
     page.locator('[data-workshop=start]').click(); page.wait_for_function('testState.opened.length === 1')
     page.locator('#editor').fill('keep this edit')
     state['saved_on_cancel'] = True; state['phase'] = 'installed'
     page.wait_for_function('testState.applied.length === 1')
-    assert page.locator('[data-workshop=status]').text_content() == texts['connectedSaved']
+    assert state['phase'] == 'saved'
+    assert page.locator('#model-workshop-panel p, #model-workshop-panel progress').count() == 0
     assert page.locator('#editor').input_value() == 'keep this edit'
     assert page.evaluate('testState.clean') == [False]
     assert state['writes'] == ['', '/' + REQUEST + '/cancel']
@@ -134,11 +149,51 @@ def test_missing_task_never_relaunches_or_applies(page):
     state = network(page); state['deny'] = True
     page.evaluate('id => sessionStorage.setItem("neko.modelWorkshop.launch",id)', REQUEST)
     mounted(page)
-    page.wait_for_function('!document.querySelector("[data-workshop=retry]").hidden')
+    page.wait_for_function('sessionStorage.getItem("neko.modelWorkshop.launch") === null')
+    assert page.locator('[data-workshop=start]').is_enabled()
     assert state['writes'] == []
-    page.locator('[data-workshop=retry]').click()
-    page.wait_for_timeout(100)
-    assert state['writes'] == []
+
+
+def test_transient_status_failure_recovers_without_inline_ui_or_relaunch(page):
+    state = network(page); state['unknown'] = True
+    mounted(page); page.locator('[data-workshop=start]').click()
+    page.wait_for_function('testState.opened.length === 1')
+    page.wait_for_timeout(1100)
+    state['unknown'] = False; state['phase'] = 'installed'
+    page.wait_for_function('testState.applied.length === 1')
+    assert state['writes'] == ['', '/' + REQUEST + '/apply']
+    assert page.locator('#model-workshop-panel').inner_text() == json.loads((ROOT / 'static/locales/en.json').read_text())['modelWorkshop']['title']
+
+
+def test_external_open_failure_does_not_minimize_the_manager(page):
+    state = network(page); mounted(page); page.evaluate('testState.openFailed = true')
+    page.locator('[data-workshop=start]').click()
+    page.wait_for_function('!document.querySelector("[data-workshop=start]").disabled')
+    assert page.evaluate('testState.events') == ['open']
+    assert state['writes'] == ['', '/' + REQUEST + '/cancel']
+
+
+def test_minimize_failure_keeps_accepted_task_and_automatic_apply(page):
+    state = network(page, 'installed'); mounted(page); page.evaluate('testState.minimizeFailed = true')
+    page.locator('[data-workshop=start]').click()
+    page.wait_for_function('testState.applied.length === 1')
+    assert page.evaluate('testState.events') == ['open', 'minimize']
+    assert state['writes'] == ['', '/' + REQUEST + '/apply']
+
+
+def test_browser_fallback_opens_market_without_native_window_control(page):
+    network(page); mounted(page)
+    page.evaluate('delete window.electronShell; delete window.nekoWindowControl')
+    page.context.route('https://market.example.test/**', lambda route: route.fulfill(content_type='text/html',body='<title>Market</title>'))
+    with page.expect_popup() as opened:
+        page.locator('[data-workshop=start]').click()
+    popup = opened.value
+    popup.wait_for_url('https://market.example.test/**')
+    # Playwright retains the creation relationship; verify the page's actual
+    # scripting access instead of its historical opener metadata.
+    assert popup.evaluate('window.opener === null')
+    assert page.evaluate('testState.events') == []
+
 
 
 def test_saved_handle_recovery_notifies_once_and_never_saves_again(page):
@@ -152,7 +207,7 @@ def test_reload_cannot_renew_permission_invalidated_by_page_edit(page):
     state = network(page, 'installed')
     page.evaluate('id => sessionStorage.setItem("neko.modelWorkshop.launch", "blocked:" + id)', REQUEST)
     mounted(page)
-    page.wait_for_function('document.querySelector("[data-workshop=cancel]").hidden')
+    page.wait_for_function('!document.querySelector("[data-workshop=start]").disabled')
     assert state['writes'] == ['/' + REQUEST + '/cancel']
     assert page.evaluate('testState.applied') == []
 
