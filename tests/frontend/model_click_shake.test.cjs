@@ -564,6 +564,28 @@ test('pending combo lines stay with the clicked character', () => {
     assert.equal(first.allowTouchSet, true);
 });
 
+test('a line already handed to the host is re-checked against the clicked character after the reconnect wait', () => {
+    const calls = [];
+    const h = comboHelper({
+        lanlan_config: { lanlan_name: 'A' },
+        appState: { isSwitchingCatgirl: false },
+        appButtons: { sendAvatarInteractionPayload: (payload, options) => { calls.push({ payload, options }); return Promise.resolve(true); } }
+    });
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.gap);
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.shake.COMBO_WINDOW_MS);
+    assert.equal(calls.length, 1);
+    const { isStillValid } = calls[0].options;
+    assert.equal(typeof isStillValid, 'function');
+    assert.equal(isStillValid(), true);
+    h.window.appState.isSwitchingCatgirl = true;
+    assert.equal(isStillValid(), false, 'a switch in progress invalidates the queued line');
+    h.window.appState.isSwitchingCatgirl = false;
+    h.window.lanlan_config.lanlan_name = 'B';
+    assert.equal(isStillValid(), false, "A's click must not be sent on B's connection");
+});
+
 test('reloading the model (character switch) clears the angry cooldown, so A -> B -> A starts fresh', () => {
     const h = comboHelper({ lanlan_config: { lanlan_name: 'A' } });
     for (let i = 0; i < 4; i++) {

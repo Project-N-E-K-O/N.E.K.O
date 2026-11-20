@@ -1865,7 +1865,10 @@
         return normalized;
     }
 
-    async function sendAvatarInteractionPayload(payload) {
+    // options.isStillValid（可选）：等待 WebSocket 重连后、真正发送前再确认一次这条互动是否还该发
+    // （例如等待期间已切换角色）。不传时行为不变。
+    async function sendAvatarInteractionPayload(payload, options) {
+        var isStillValid = options && typeof options.isStillValid === 'function' ? options.isStillValid : null;
         var normalized = normalizeAvatarInteractionPayload(payload);
         if (!normalized) {
             return false;
@@ -1895,6 +1898,13 @@
 
         try {
             await window.ensureWebSocketOpen();
+            if (isStillValid && !isStillValid()) {
+                console.debug('[AvatarInteraction] dropped stale interaction after reconnect wait:', normalized.interaction_id);
+                if (avatarInteractionTextContinuationState.interactionId === normalized.interaction_id) {
+                    releaseDeferredTextAfterAvatarInteraction();
+                }
+                return false;
+            }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) {
                 throw new Error('WEBSOCKET_NOT_CONNECTED');
             }
