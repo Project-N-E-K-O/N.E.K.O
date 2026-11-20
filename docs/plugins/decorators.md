@@ -132,12 +132,12 @@ Defines a scheduled task that executes at fixed intervals.
     auto_start=True          # Start automatically (default: True)
 )
 async def cleanup(self, **_):
-    # Runs in a dedicated timer thread with its own event loop
+    # Runs in a dedicated timer thread; each tick gets a new event loop
     return Ok({"cleaned": True})
 ```
 
 ::: info
-Timer tasks must use `async def`. Each timer runs in a separate thread with its own event loop; exceptions are logged but don't stop the timer.
+Timer tasks must use `async def`. Each timer runs in a separate thread, and each tick runs in a new event loop (`asyncio.run`), so do not keep async clients on `self` across ticks; exceptions are logged but don't stop the timer.
 :::
 
 ## @message

@@ -210,7 +210,7 @@ self.include_router(CountdownRouter(), prefix="time_")
 这样 `countdown` 入口的实际 ID 变成 `time_countdown`。
 
 ::: warning 不要把 `prefix` 和 `__routers__` 一起用
-router 类列在 `__routers__` 里时（如上面的示例），宿主的静态扫描从类上读取入口 ID，看不到这个前缀。宿主登记的 ID（`countdown`）和运行时的 ID（`time_countdown`）对不上，按运行时 ID 调用时，宿主找不到这个入口的超时和 `[[plugin.entries]]` 配置覆盖。列在 `__routers__` 里的 router 类不要用 `prefix`，直接把命名空间写进入口 ID（例如 `id="time_countdown"`）。
+router 类列在 `__routers__` 里时（如上面的示例），宿主的静态扫描从类上读取入口 ID，看不到这个前缀。宿主登记的 ID（`countdown`）和运行时的 ID（`time_countdown`）对不上，宿主入口列表里显示的 ID 调不通，真正能调用的 ID 又不在列表里，宿主也就找不到它的超时和 `[[plugin.entries]]` 配置覆盖。列在 `__routers__` 里的 router 类不要用 `prefix`，直接把命名空间写进入口 ID（例如 `id="time_countdown"`）。
 
 这条只针对 router 类。如果 `__routers__` 里放的是 router 实例，扫描会调用它们的 `collect_entries()`，会带上实例上已经设好的前缀（例如 `set_prefix("time_")`）。这时要把同一批实例传给 `self.include_router(router)`；上面 `router_cls()` 的循环只适用于类。
 :::

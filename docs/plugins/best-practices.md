@@ -98,7 +98,7 @@ async def batch_job(self, items: list, **_):
 
 ## Input validation
 
-Use a Pydantic model with `params=` when input must be validated: the host validates the arguments with the model before your handler runs and rejects invalid input. A bare `input_schema` mapping is only published (to the UI, the Agent, and other callers); it is **not** validated at runtime. `params` and `input_schema` are mutually exclusive: passing both raises `ValueError`.
+Use a Pydantic model with `params=` when input must be validated: the plugin runtime validates the arguments with the model before your handler runs and rejects invalid input. This applies to calls dispatched through the runtime (from the host, other plugins, or UI); calling the method directly inside your plugin (`await self.fetch(...)`) skips validation. A bare `input_schema` mapping is only published (to the UI, the Agent, and other callers); it is **not** validated at runtime. `params` and `input_schema` are mutually exclusive: passing both raises `ValueError`.
 
 ```python
 # Option A: Pydantic model (validated at call time, schema generated from the model)

@@ -211,7 +211,7 @@ self.include_router(CountdownRouter(), prefix="time_")
 この場合、`countdown` エントリーの実際の ID は `time_countdown` になります。
 
 ::: warning `prefix` と `__routers__` を併用しない
-router クラスを `__routers__` に列挙すると（上の例のように）、ホストの静的スキャンはクラスからエントリー ID を読み取り、この prefix を認識しません。ホストが登録する ID（`countdown`）と実行時の ID（`time_countdown`）が一致しなくなり、実行時の ID で呼び出すと、ホストはそのエントリーのタイムアウトも `[[plugin.entries]]` の設定上書きも見つけられません。`__routers__` に列挙する router クラスでは `prefix` を使わず、名前空間をエントリー ID に直接書いてください（例：`id="time_countdown"`）。
+router クラスを `__routers__` に列挙すると（上の例のように）、ホストの静的スキャンはクラスからエントリー ID を読み取り、この prefix を認識しません。ホストが登録する ID（`countdown`）と実行時の ID（`time_countdown`）が一致しなくなり、ホストのエントリー一覧に表示される ID は呼び出せず、実際に呼び出せる ID は一覧にないため、ホストはそのタイムアウトも `[[plugin.entries]]` の設定上書きも見つけられません。`__routers__` に列挙する router クラスでは `prefix` を使わず、名前空間をエントリー ID に直接書いてください（例：`id="time_countdown"`）。
 
 これは router クラスの場合です。`__routers__` に router インスタンスを列挙すると、スキャンはその `collect_entries()` を使い、インスタンスに設定済みの prefix（例：`set_prefix("time_")`）を含めます。その場合は同じインスタンスを `self.include_router(router)` に渡してください。上の `router_cls()` のループはクラスにしか使えません。
 :::

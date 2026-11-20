@@ -98,7 +98,7 @@ async def batch_job(self, items: list, **_):
 
 ## 输入验证
 
-需要校验输入时，用 `params=` 传 Pydantic 模型：宿主在调用处理函数前用模型校验参数，不合法的输入直接拒绝。单独的 `input_schema` 映射只会发布给调用方（UI、Agent、其他插件），运行时**不会**校验。`params` 与 `input_schema` 互斥，同时传会抛出 `ValueError`。
+需要校验输入时，用 `params=` 传 Pydantic 模型：插件运行时在调用处理函数前用模型校验参数，不合法的输入直接拒绝。这只对经运行时分发的调用（来自宿主、其他插件或 UI）生效；在插件内部直接调用方法（`await self.fetch(...)`）不会校验。单独的 `input_schema` 映射只会发布给调用方（UI、Agent、其他插件），运行时**不会**校验。`params` 与 `input_schema` 互斥，同时传会抛出 `ValueError`。
 
 ```python
 # 方式 A：Pydantic 模型（调用时校验，schema 由模型生成）

@@ -131,7 +131,7 @@ async def cleanup(self, **_):
 ```
 
 ::: info
-timer task は `async def` が必須です。各 task は独自 event loop を持つ timer thread で実行され、exception は log されますが timer は停止しません。
+timer task は `async def` が必須です。各 task は専用の timer thread で実行され、実行のたびに新しい event loop（`asyncio.run`）が使われるため、async client を `self` に保持して実行をまたいで再利用しないでください。exception は log されますが timer は停止しません。
 :::
 
 ## @message

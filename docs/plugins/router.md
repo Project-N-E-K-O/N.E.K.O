@@ -210,7 +210,7 @@ self.include_router(CountdownRouter(), prefix="time_")
 Now the `countdown` entry's actual ID becomes `time_countdown`.
 
 ::: warning Do not combine `prefix` with `__routers__`
-When a router class is listed in `__routers__` (as in the examples above), the host's static scan reads entry IDs from the class and does not see the prefix. The ID the host registers (`countdown`) then differs from the runtime ID (`time_countdown`), so the host does not find the entry's timeout or its `[[plugin.entries]]` overrides for calls by the runtime ID. For router classes listed in `__routers__`, do not use `prefix`: write the namespace into the entry IDs instead (for example `id="time_countdown"`).
+When a router class is listed in `__routers__` (as in the examples above), the host's static scan reads entry IDs from the class and does not see the prefix. The ID the host registers (`countdown`) then differs from the runtime ID (`time_countdown`): the ID shown in the host's entry lists cannot be called, and the ID that can be called is not in the lists, so the host does not find its timeout or its `[[plugin.entries]]` overrides. For router classes listed in `__routers__`, do not use `prefix`: write the namespace into the entry IDs instead (for example `id="time_countdown"`).
 
 This applies to router classes. If `__routers__` lists router instances, the scan uses their `collect_entries()`, which includes a prefix already set on the instance (for example with `set_prefix("time_")`). In that case pass the same instances to `self.include_router(router)`; the `router_cls()` loop above only works for classes.
 :::
