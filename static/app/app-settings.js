@@ -2460,6 +2460,11 @@
                 // 把首启本地默认值写到服务器；GET 回来读到自家 echo 误判「云端已有偏好」、干扰
                 // 设置合并，marker 也可能错误留存。GET 走 finally 后周期同步才安全
                 startPeriodicSync();
+                // Settings are now final (merged, or local on a failed GET), and
+                // a merge without changes saves nothing: give the switch
+                // reconcile its baseline here, so the first switch-off in this
+                // window is seen as a change and ends in-flight vision rounds.
+                syncSpeechVisionWithSwitches();
             });
             // Gate settings POSTs (bounded) behind the GET+merge so their
             // send-time snapshots carry server truth for untouched fields;
@@ -2478,6 +2483,7 @@
             // GET 链路本身就挂了，至少把 periodic sync 起来兜底，
             // 避免用户的本地修改永远上不了服务器
             startPeriodicSync();
+            syncSpeechVisionWithSwitches(); // baseline, as in the finally above
         }
     }
 

@@ -1148,3 +1148,20 @@ test('a proactive round that asks for vision records that vision is in use', () 
     assert.match(proactive, /voiceModes\.push\('vision'\);\s*noteProactiveVisionInUse\(\);/);
     assert.match(proactive, /availableModes\.push\('window'\);\s*noteProactiveVisionInUse\(\);/);
 });
+
+test('app-settings gives the switch reconcile a baseline once settings load settles', () => {
+    const settingsSource = read('static/app/app-settings.js');
+    // Merged or failed GET: the finally of the load chain.
+    assert.match(settingsSource, /\}\)\.finally\(\(\) => \{[\s\S]*?startPeriodicSync\(\);[\s\S]*?syncSpeechVisionWithSwitches\(\);\s*\}\);/);
+    // The GET never started.
+    assert.match(settingsSource, /服务器设置同步启动失败[\s\S]*?startPeriodicSync\(\);\s*syncSpeechVisionWithSwitches\(\);/);
+});
+
+test('after the load baseline, the first switch-off sends one invalidation', () => {
+    const h = loadProactive({ privacyAllowsVision: true });
+    h.S.isRecording = false;
+    h.window.syncProactiveVisionDuringSpeech(); // load-settled baseline, no round started
+    h.S.proactiveChatEnabled = false;
+    h.window.syncProactiveVisionDuringSpeech(); // the user's first save
+    assert.equal(invalidations(h), 1);
+});
