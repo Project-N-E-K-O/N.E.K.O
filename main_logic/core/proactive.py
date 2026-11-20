@@ -142,6 +142,21 @@ class ProactiveMixin:
                         exc_info=True,
                     )
 
+    def invalidate_proactive_vision_rounds(self) -> None:
+        """End the screen access of proactive rounds already in flight.
+
+        The frontend sends this when Proactive Chat or its Screen Share option
+        turns proactive vision off while privacy mode still allows it. Those
+        switches only gate new requests in the browser; a round that already
+        started (a voice nudge with vision, a text round with a screenshot)
+        compares this epoch on every visual step and drops its screen once it
+        moved. Unlike a consent revocation, consent stays granted and no frame
+        cache is cleared: the switches do not govern manual screen sharing.
+        """
+        self._proactive_vision_revocation_epoch = (
+            getattr(self, "_proactive_vision_revocation_epoch", 0) + 1
+        )
+
     def _proactive_round_owned(self, round_id: str | None) -> bool:
         """Whether ``round_id`` still owns the proactive round; ``None`` opts out.
 

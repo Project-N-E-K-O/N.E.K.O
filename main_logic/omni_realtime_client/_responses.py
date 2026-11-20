@@ -443,6 +443,8 @@ class _ResponseMixin:
         *,
         turn_id: str,
         visual_still_owned=None,
+        screen_consent_holds=None,
+        image_request_ids: Sequence[str | None] = (),
         source: str | None = None,
     ):
         """Submit one atomic raw-image + external-ASR user turn.
@@ -450,6 +452,13 @@ class _ResponseMixin:
         Unsupported Realtime protocols fail closed so Core can hand the whole
         turn to an Offline VLM. This method never invokes the annotation model
         and never degrades a visual turn into text-only input.
+
+        Two caller predicates are re-checked across this method's awaits:
+        ``visual_still_owned`` False (a successor utterance took the frames)
+        drops every frame; ``screen_consent_holds`` False (screen consent was
+        revoked) drops only the live frames. ``image_request_ids`` (aligned
+        with ``images``) marks the screenshots the user attached; those stay.
+        A frame without a request_id counts as live.
         """
 
         if self.get_multimodal_turn_delivery() is not (
@@ -479,6 +488,12 @@ class _ResponseMixin:
         )
         staged_images, images_bytes = self._normalize_multimodal_turn_images(
             images
+        )
+        # Per staged frame: True for a screenshot the user attached.
+        _request_ids = tuple(image_request_ids or ())
+        user_flags = tuple(
+            index < len(_request_ids) and _request_ids[index] is not None
+            for index in range(len(staged_images))
         )
 
         if self._is_gemini:
@@ -516,6 +531,14 @@ class _ResponseMixin:
                     self._decode_multimodal_turn_image(image)
                     for image in _fitted
                 )
+                # The ladder never samples here (the per-turn cap equals its
+                # sample size) and only ever drops from the front, so the
+                # survivors are the tail of the staged frames.
+                user_flags = (
+                    user_flags[len(user_flags) - len(images_bytes):]
+                    if len(images_bytes) <= len(user_flags)
+                    else (False,) * len(images_bytes)
+                )
                 # Above asyncio.to_thread compresses several MB-sized screenshots, a real, lengthy yield
                 # during which a successor utterance can complete _begin_core_multimodal_turn (synchronously invalidating
                 # this turn's record) + prepare_external_voice_turn +
@@ -542,6 +565,8 @@ class _ResponseMixin:
                 clean,
                 images_bytes=images_bytes,
                 visual_still_owned=visual_still_owned,
+                screen_consent_holds=screen_consent_holds,
+                image_user_flags=user_flags,
                 turn_id=stable_turn_id,
                 source=frame_source,
             )
@@ -592,8 +617,33 @@ class _ResponseMixin:
         # so remove first; otherwise frames destined for discard that cannot fit would raise
         # RealtimeImagePayloadTooLargeError and fail the whole turn (Core's
         # ASR_MULTIMODAL_TURN_FAILED), instead of text-only degradation with speech still sent.
+        #
+        # The user's own screenshots are tracked by part identity: the shrink
+        # step rewrites image_url in place and removes whole parts, so identity
+        # is what survives it. A part not listed here counts as live.
+        user_image_parts = [
+            part
+            for part, is_user in zip(
+                (
+                    part
+                    for part in item_event["item"]["content"]
+                    if part.get("type") == "input_image"
+                ),
+                user_flags,
+            )
+            if is_user
+        ]
+
         def _downgrade_if_visual_ownership_lost(event: Dict[str, Any]) -> None:
-            if visual_still_owned is None or visual_still_owned():
+            if visual_still_owned is not None and not visual_still_owned():
+                keep_user_frames = False
+                reason = "lost visual ownership; submitting text-only"
+            elif screen_consent_holds is not None and not screen_consent_holds():
+                # Screen consent revoked: live frames go, the user's own
+                # screenshots stay.
+                keep_user_frames = True
+                reason = "saw screen consent revoked; dropping live frames"
+            else:
                 return
             _item = event.get("item")
             if not isinstance(_item, dict):
@@ -605,14 +655,19 @@ class _ResponseMixin:
                 part
                 for part in _content
                 if not (
-                    isinstance(part, dict) and part.get("type") == "input_image"
+                    isinstance(part, dict)
+                    and part.get("type") == "input_image"
+                    and not (
+                        keep_user_frames
+                        and any(part is user for user in user_image_parts)
+                    )
                 )
             ]
             if len(_kept) != len(_content):
                 logger.info(
-                    "external multimodal turn %s lost visual ownership; "
-                    "submitting text-only",
+                    "external multimodal turn %s %s",
                     stable_turn_id,
+                    reason,
                 )
                 _item["content"] = _kept
 
@@ -1249,10 +1304,17 @@ class _ResponseMixin:
         *,
         images_bytes: tuple[bytes, ...] = (),
         visual_still_owned=None,
+        screen_consent_holds=None,
+        image_user_flags: tuple[bool, ...] = (),
         turn_id: Optional[str] = None,
         source: str | None = None,
     ) -> None:
-        """Submit one external-ASR turn through the owned Gemini lifecycle."""
+        """Submit one external-ASR turn through the owned Gemini lifecycle.
+
+        ``image_user_flags`` (aligned with ``images_bytes``) marks the
+        screenshots the user attached; see ``submit_multimodal_turn`` for the
+        two predicates.
+        """
 
         # Same rule as submit_multimodal_turn: fix the channel label before
         # this function's own first await (_await_gemini_external_quarantine).
@@ -1293,6 +1355,27 @@ class _ResponseMixin:
                 "send; submitting text-only"
             )
             images_bytes = ()
+        elif (
+            images_bytes
+            and screen_consent_holds is not None
+            and not screen_consent_holds()
+        ):
+            # Screen consent revoked (e.g. during the compression above): only
+            # the live frames go; the user's own screenshots stay. Misaligned
+            # flags count every frame as live.
+            flags = tuple(image_user_flags or ())
+            if len(flags) != len(images_bytes):
+                flags = (False,) * len(images_bytes)
+            kept_images = tuple(
+                image for image, is_user in zip(images_bytes, flags) if is_user
+            )
+            if len(kept_images) != len(images_bytes):
+                logger.info(
+                    "Gemini external turn saw screen consent revoked before "
+                    "the SDK send; dropping %d live frame(s)",
+                    len(images_bytes) - len(kept_images),
+                )
+            images_bytes = kept_images
         self._user_recent_activity_time = time.time()
         outcome_token = object()
         self._gemini_external_submit_task = submit_task

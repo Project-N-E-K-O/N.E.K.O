@@ -92,7 +92,7 @@ from .multimodal_turn import (
     _CoreMultimodalTurnRecord,
     _IndependentVisualFrame,
     multimodal_turn_after_revocation,
-    multimodal_turn_consent_holds,
+    multimodal_turn_consent_unrevoked,
 )
 from main_logic.voice_input.activation.wiring import (
     VoiceSessionActivationFactory,
@@ -6691,13 +6691,15 @@ class AsrRuntimeMixin:
                                     # Gemini additionally awaits compression before sending,
                                     # allowing successor speech to take frame ownership there.
                                     # Same ownership criterion as offline handoff.
+                                    visual_still_owned=lambda: not visual_ownership_lost(),
                                     # Screen consent is re-checked there too:
                                     # a revocation during that compression
-                                    # must keep live frames out.
-                                    visual_still_owned=(
+                                    # keeps the live frames out, while the
+                                    # user's own screenshots (by request_id)
+                                    # still go.
+                                    screen_consent_holds=(
                                         lambda turn=multimodal_turn: (
-                                            not visual_ownership_lost()
-                                            and multimodal_turn_consent_holds(
+                                            multimodal_turn_consent_unrevoked(
                                                 turn,
                                                 getattr(
                                                     self,
@@ -6706,6 +6708,9 @@ class AsrRuntimeMixin:
                                                 ),
                                             )
                                         )
+                                    ),
+                                    image_request_ids=tuple(
+                                        multimodal_turn.image_request_ids or ()
                                     ),
                                 )
                             except ResponseAdmissionRejected:

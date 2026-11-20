@@ -88,7 +88,7 @@ function loadProactive({ privacyAllowsVision, appScreen = {} }) {
     vm.runInContext(proactiveSource, window, { filename: 'app-proactive.js' });
     const frames = () => sent.filter((message) => message.action === 'stream_data').length;
     const heartbeat = () => [...intervals.values()].find((timer) => timer.ms === S.proactiveVisionInterval * 1000);
-    return { window, S, settings, frames, heartbeat };
+    return { window, S, settings, frames, heartbeat, sent };
 }
 
 test('heartbeat runs and sends frames while the gate allows it', async () => {
@@ -1050,4 +1050,79 @@ test('a click-acquired stream asks for a fresh frame even while a capture is in 
         assert.equal(pending.length, sent ? 1 : 2,
             sent ? 'the frame in flight went out: no second frame' : 'nothing went out: a fresh frame is captured right after');
     }
+});
+
+// ── in-flight proactive rounds: proactive_vision_invalidate (#3800) ─────────
+
+const invalidations = (h) => h.sent.filter((message) => message.action === 'proactive_vision_invalidate').length;
+
+for (const key of ['proactiveChatEnabled', 'proactiveVisionChatEnabled']) {
+    test(`turning ${key} off tells the backend once to end in-flight vision`, () => {
+        const { h } = runningCall();
+        h.window.syncProactiveVisionDuringSpeech(); // allowed: nothing to end
+        assert.equal(invalidations(h), 0);
+
+        h.S[key] = false;
+        h.window.syncProactiveVisionDuringSpeech();
+        assert.equal(invalidations(h), 1);
+
+        h.window.syncProactiveVisionDuringSpeech(); // any later settings save
+        assert.equal(invalidations(h), 1, 'only on the allowed -> not allowed change');
+
+        h.S[key] = true;
+        h.window.syncProactiveVisionDuringSpeech();
+        assert.equal(invalidations(h), 1, 'turning it back on sends nothing');
+    });
+}
+
+test('a switch closed in another window also ends in-flight vision, outside a call too', () => {
+    const h = loadProactive({ privacyAllowsVision: true });
+    h.S.isRecording = false; // text mode: a text round may carry a screenshot
+    h.window.syncProactiveVisionDuringSpeech();
+    h.settings.proactiveVisionChatEnabled = false; // saved elsewhere
+    h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(invalidations(h), 1);
+});
+
+test('the invalidation is not sent while the socket is not open', () => {
+    const { h } = runningCall();
+    h.window.syncProactiveVisionDuringSpeech();
+    h.S.socket.readyState = 3;
+    h.S.proactiveChatEnabled = false;
+    assert.doesNotThrow(() => h.window.syncProactiveVisionDuringSpeech());
+    assert.equal(invalidations(h), 0);
+});
+
+test('a text-chat screenshot taken before a switch went off does not ride its request', () => {
+    const h = loadProactive({ privacyAllowsVision: true });
+    h.S.isRecording = false;
+    h.window.syncProactiveVisionDuringSpeech();
+    const api = h.window.appProactive;
+    const capture = () => ({
+        screenshot_data: 'data:image/jpeg;base64,AAAA',
+        window_title: 'Editor',
+        enabled_modes: ['vision', 'window', 'news'],
+    });
+
+    let seq = api.currentProactiveVisionRevocationSeq();
+    let body = capture();
+    assert.equal(api.discardVisionRevokedSince(body, seq), false, 'switches on: the screenshot stays');
+
+    // Off, then on again before the request is sent.
+    seq = api.currentProactiveVisionRevocationSeq();
+    body = capture();
+    h.S.proactiveVisionChatEnabled = false;
+    h.window.syncProactiveVisionDuringSpeech();
+    h.S.proactiveVisionChatEnabled = true;
+    h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(api.discardVisionRevokedSince(body, seq), true);
+    assert.equal(body.screenshot_data, undefined);
+    assert.equal(body.window_title, undefined);
+    assert.deepEqual([...body.enabled_modes], ['news']);
+
+    // Off in another window, this window not synced yet.
+    seq = api.currentProactiveVisionRevocationSeq();
+    body = capture();
+    h.settings.proactiveChatEnabled = false;
+    assert.equal(api.discardVisionRevokedSince(body, seq), true);
 });

@@ -226,21 +226,16 @@ def multimodal_turn_after_revocation(turn, current_epoch: int):
     )
 
 
-def multimodal_turn_consent_holds(turn, current_epoch: int) -> bool:
-    """Whether ``turn``'s frames may still be sent under screen consent.
+def multimodal_turn_consent_unrevoked(turn, current_epoch: int) -> bool:
+    """Whether screen consent was not revoked since ``turn``'s frames froze.
 
     For a check repeated after the submit started (a provider that compresses
-    or queues before its send): False once consent was revoked since the
-    freeze and the turn still carries a live frame. Such a provider drops
-    all frames of the turn then, the user's screenshots included.
+    or queues before its send). False means the live frames must stay out;
+    the provider still sends the screenshots the user attached, which it
+    tells apart by the turn's ``image_request_ids``.
     """
     frozen_epoch = getattr(turn, "consent_epoch", None)
-    if frozen_epoch is None or frozen_epoch == current_epoch:
-        return True
-    request_ids = tuple(getattr(turn, "image_request_ids", ()) or ())
-    return len(request_ids) == len(turn.images) and all(
-        rid is not None for rid in request_ids
-    )
+    return frozen_epoch is None or frozen_epoch == current_epoch
 
 
 def multimodal_turn_attachment_kwargs(turn) -> dict:
