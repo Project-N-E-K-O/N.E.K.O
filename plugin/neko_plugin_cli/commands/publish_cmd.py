@@ -395,6 +395,16 @@ def _report_market_response(status_code: int, payload: dict) -> int:
                 "Market のレビュアーはこの Release を承認済みです",
             )
         )
+    elif status == "platform_attention":
+        print(
+            "[FAIL] " + _tri(
+                "Market needs platform operator attention for this release",
+                "此 Release 需要 Market 平台人员处理",
+                "この Release は Market 運営者の対応が必要です",
+            ),
+            file=sys.stderr,
+        )
+        return 1
     elif status == "superseded":
         print(
             "[FAIL] "

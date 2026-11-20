@@ -204,14 +204,16 @@ import {
 import { fetchMarketPluginVersions } from '@/api/market'
 import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
 
-const TAG_TYPES: Record<PublishStepState, 'success' | 'warning' | 'info'> = {
+const TAG_TYPES: Record<PublishStepState, 'success' | 'warning' | 'info' | 'danger'> = {
   done: 'success',
+  failed: 'danger',
   todo: 'warning',
   waiting: 'info',
   unknown: 'info',
 }
 const STATE_LABELS: Record<PublishStepState, string> = {
   done: 'authoring.publishStatusDone',
+  failed: 'authoring.publishTaskFailed',
   todo: 'authoring.publishStatusTodo',
   waiting: 'authoring.publishStatusWaiting',
   unknown: 'authoring.publishStatusUnknown',

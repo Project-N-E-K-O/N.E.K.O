@@ -418,6 +418,15 @@ _MARKET_RELEASE_URL = "https://github.com/neko/n.e.k.o_plugin_demo/releases/tag/
             "waiting for a Market reviewer",
         ),
         (
+            httpx.Response(202, json={
+                "status": "platform_attention",
+                "publication_request": {"id": 12, "status": "platform_attention"},
+            }),
+            1,
+            "[MARKET] status=platform_attention request=12\n",
+            "[FAIL] Market needs platform operator attention",
+        ),
+        (
             httpx.Response(202, json=_market_review("superseded")),
             1,
             "[MARKET] status=superseded candidate=7\n",

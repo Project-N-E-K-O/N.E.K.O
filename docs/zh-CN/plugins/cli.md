@@ -219,7 +219,7 @@ cd ../../..
 uv run neko-plugin publish hello_world
 ```
 
-匿名发布须使用 PEP 440 版本，且高于当前 stable 版本。如果当前版本使用历史非标准标签，请通过 CLI 打印的 Market 链接，以作者身份提交一次 Release。已被取代的回执会以非零状态退出。
+匿名发布须使用 PEP 440 版本，且高于当前 stable 版本。如果当前版本使用历史非标准标签，请通过 CLI 打印的 Market 链接，以作者身份提交一次 Release。已被取代的回执会以非零状态退出。 收到 `platform_attention` 也会以失败退出，需要 Market 平台人员处理。
 
 ## 8. 发布 beta 或填写更新说明
 

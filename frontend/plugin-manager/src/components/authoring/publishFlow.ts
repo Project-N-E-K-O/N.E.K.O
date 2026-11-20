@@ -24,7 +24,7 @@ import type { AuthoringMessageKey } from '@/i18n/authoring'
 export type PublishStepId = 'repository' | 'verify' | 'submission' | 'release' | 'market'
 /** Step 0 prepares the machine; it is a page of the publish tab, not a publish step. */
 export type PublishPageId = 'toolchain' | PublishStepId
-export type PublishStepState = 'done' | 'todo' | 'waiting' | 'unknown'
+export type PublishStepState = 'done' | 'failed' | 'todo' | 'waiting' | 'unknown'
 
 /** An i18n key under `authoring.` with its parameters. */
 export interface FlowMessage {
@@ -292,9 +292,9 @@ function marketPublicationAnswer(status: MarketPublicationStatus, candidate?: nu
     case 'retry_wait':
       return { state: 'waiting', detail: message('marketVersionVerifying') }
     case 'platform_attention':
-      return { state: 'waiting', detail: message('marketVersionPlatformAttention') }
+      return { state: 'failed', detail: message('marketVersionPlatformAttention') }
     case 'superseded':
-      return { state: 'waiting', detail: message('marketVersionSuperseded') }
+      return { state: 'failed', detail: message('marketVersionSuperseded') }
     case 'rejected':
       return { state: 'todo', detail: candidate
         ? message('marketVersionRejected', { candidate })
@@ -513,7 +513,7 @@ export function publishFlow(facts: PublishFlowFacts): PublishFlow {
   const current: { id: PublishPageId } | undefined =
     tools.state === 'todo'
       ? { id: 'toolchain' }
-      : (steps.find((step) => step.state === 'todo') ?? steps.find((step) => step.state === 'unknown'))
+      : (steps.find((step) => step.state === 'todo' || step.state === 'failed') ?? steps.find((step) => step.state === 'unknown'))
   const blockerFacts: BlockerFacts = {
     status,
     submission,

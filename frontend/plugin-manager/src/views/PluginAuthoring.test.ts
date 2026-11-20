@@ -675,8 +675,25 @@ describe('authoring workbench backed by the server project list', () => {
     const container = await mount()
     await openPublish(container)
     const marketVersion = steps()[4]!
+    expect(marketVersion.textContent).toContain(en.publishTaskFailed)
     expect(marketVersion.textContent).toContain(en.marketVersionPlatformAttention)
     expect(marketVersion.textContent).not.toContain(en.marketVersionRejectedReceipt)
+  })
+
+  it('shows a superseded Market receipt as a failed publication step', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      { id: 59, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0', status: 'superseded' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    expect(page('market').textContent).toContain(en.marketVersionSuperseded)
+    expect(page('market').textContent).toContain(en.publishTaskFailed)
   })
 
   it('takes the newest receipt when the Release was sent again under the same tag', async () => {
