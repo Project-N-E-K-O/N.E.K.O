@@ -1194,52 +1194,62 @@
         }
     }
 
-    // Live screen consent this window reports and acts on. The rule lives in
-    // appProactive.isVisionConsentHeldNow: this window's value and the latest
-    // saved setting must both allow it, so a revocation another window just
-    // saved wins even before its storage event reaches this window.
-    function _visionConsentHeldNow() {
-        if (typeof S.proactiveVisionEnabled !== 'boolean') return S.proactiveVisionEnabled;
-        const proactive = window.appProactive;
-        return proactive && typeof proactive.isVisionConsentHeldNow === 'function'
-            ? proactive.isVisionConsentHeldNow()
-            : S.proactiveVisionEnabled;
+    // Another window may have turned privacy mode on before its storage event
+    // reached this window. Returns that revocation's write token, or null.
+    // Read-only. Only a revocation carrying the key's own write token counts
+    // (the explicit write, or the knownKeyWrites token that window's later
+    // unrelated saves keep carrying) and only when it is newer than what this
+    // window already holds -- the same per-key provenance the storage
+    // listener uses. An incidental stale "false" another window copied along
+    // in an unrelated save is not a choice and is ignored.
+    function _unseenVisionRevocationToken() {
+        const key = 'proactiveVisionEnabled';
+        let stored = null;
+        try {
+            const raw = localStorage.getItem('project_neko_settings');
+            stored = raw ? JSON.parse(raw) : null;
+        } catch (_) {
+            return null;
+        }
+        if (!stored || stored[key] !== false) return null;
+        const meta = _readSharedWriteMeta(stored);
+        if (!meta || meta.writerId === _SHARED_WRITER_ID) return null;
+        const token = meta.changedKeys.indexOf(key) !== -1
+            ? meta
+            : meta.knownKeyWrites[key];
+        if (!_sharedWriteTokenOutranks(token, _knownSharedKeyWrites[key])) return null;
+        // Same server-floor check as the listener: a write the server has
+        // since superseded is not a pending revocation.
+        const keyToken = meta.knownKeyWrites[key];
+        if (keyToken && Number.isInteger(keyToken.confirmedRevision)
+            && Number.isInteger(_knownServerKeyRevisions[key])
+            && keyToken.confirmedRevision < _knownServerKeyRevisions[key]) return null;
+        return token;
     }
 
-    // Another window may have turned privacy mode on before its storage event
-    // reached this window. This window's "allowed" copy is then stale: saving
-    // it would overwrite the revocation in localStorage and the server body.
-    // Adopt the revocation the way the storage listener will once the event
-    // arrives: by the key's own write token, which later unrelated saves of
-    // that window keep carrying (knownKeyWrites). A value this window changed
-    // since its last sync is newer intent and stays.
+    // Live screen consent this window reports to the backend and acts on
+    // (settings save, cross-window sync, WebSocket reconnect): this window's
+    // value, overridden by an unseen revocation from another window. A failed
+    // local save does not change it: this window's own value is used. (If that
+    // save failed AND another window's newer revocation is stored, this
+    // reports "not allowed" even for a fresh local enable: the safe side.)
+    function visionConsentForBackend() {
+        if (S.proactiveVisionEnabled !== true) return S.proactiveVisionEnabled;
+        return !_unseenVisionRevocationToken();
+    }
+
+    // Saving this window's stale "allowed" copy would overwrite an unseen
+    // revocation in localStorage and the server body. Adopt it first, the way
+    // the storage listener will once the event arrives. A value this window
+    // changed since its last sync is newer intent and stays.
     function _adoptUnseenVisionRevocation(value) {
         const key = 'proactiveVisionEnabled';
         if (value !== true) return value;
         if (_settingsBaseline
             && Object.prototype.hasOwnProperty.call(_settingsBaseline, key)
             && _settingsBaseline[key] !== value) return value;
-        let stored = null;
-        try {
-            const raw = localStorage.getItem('project_neko_settings');
-            stored = raw ? JSON.parse(raw) : null;
-        } catch (_) {
-            return value;
-        }
-        if (!stored || stored[key] !== false) return value;
-        const meta = _readSharedWriteMeta(stored);
-        if (!meta || meta.writerId === _SHARED_WRITER_ID) return value;
-        const token = meta.changedKeys.indexOf(key) !== -1
-            ? meta
-            : meta.knownKeyWrites[key];
-        // No token: an incidental copy (e.g. a boot default), not a choice.
-        if (!_sharedWriteTokenOutranks(token, _knownSharedKeyWrites[key])) return value;
-        // Same server-floor check as the listener: a write the server has
-        // since superseded is not a pending revocation.
-        const keyToken = meta.knownKeyWrites[key];
-        if (keyToken && Number.isInteger(keyToken.confirmedRevision)
-            && Number.isInteger(_knownServerKeyRevisions[key])
-            && keyToken.confirmedRevision < _knownServerKeyRevisions[key]) return value;
+        const token = _unseenVisionRevocationToken();
+        if (!token) return value;
         _rememberSharedKeyWrites([key], token);
         // Record it as a cross-window change, as the listener does, so a 412
         // conflict merge keeps it instead of restoring the server's older
@@ -1265,7 +1275,7 @@
     }
 
     function stopVisionAfterPrivacyEnabled() {
-        const consent = _visionConsentHeldNow();
+        const consent = visionConsentForBackend();
         // Screenshots taken before a revocation must not ride a later request,
         // even if consent is re-enabled before that request is sent.
         if (window.appProactive && typeof window.appProactive.noteProactiveVisionConsent === 'function') {
@@ -3104,6 +3114,7 @@
     // ======================== 导出 ========================
 
     mod.saveSettings = saveSettings;
+    mod.visionConsentForBackend = visionConsentForBackend;
     mod.loadSettings = loadSettings;
     mod.syncSettingsToServer = syncSettingsToServer;
     mod.getConversationSettings = getConversationSettings;

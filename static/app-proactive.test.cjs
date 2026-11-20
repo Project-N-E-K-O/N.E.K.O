@@ -651,33 +651,28 @@ test('typing pushes a nearer proactive tick to 30s after the last input at any i
 });
 
 
-test('reconnect reports consent only when this window and the latest saved setting both allow it', () => {
+test('reconnect reports the same live consent a settings save does', () => {
     const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
     const start = websocketSource.indexOf('    function syncProactiveVisionConsent(');
     const end = websocketSource.indexOf('    function ensureWebSocketOpen(', start);
-    for (const [local, saved, expected] of [
-        [true, true, true],
-        [true, false, false], // another window revoked; its storage event is not here yet
-        [false, true, false], // this window revoked; its own save failed
-        [false, false, false],
-    ]) {
+    const run = (local, appSettings) => {
         const sent = [];
         const state = {
             proactiveVisionEnabled: local,
-            socket: { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } },
+            socket: { readyState: 1, send(raw) { sent.push(JSON.parse(raw).enabled); } },
         };
-        const sharedSettings = JSON.stringify({ proactiveVisionEnabled: saved });
-        const window = { appState: state, appConst: {}, addEventListener() {} };
-        const context = {
-            window,
-            document: { addEventListener() {}, getElementById() { return null; } },
-            localStorage: { getItem(key) { return key === 'project_neko_settings' ? sharedSettings : null; } },
-            console: { log() {}, warn() {} }, clearTimeout() {}, clearInterval() {},
-        };
-        vm.runInNewContext(source, context);
         const mod = {};
-        vm.runInNewContext(websocketSource.slice(start, end), { window, S: state, mod, WebSocket: { OPEN: 1 }, console: { warn() {} } });
+        vm.runInNewContext(websocketSource.slice(start, end), {
+            window: { appSettings }, S: state, mod, WebSocket: { OPEN: 1 }, console: { warn() {} },
+        });
         mod.syncProactiveVisionConsent();
-        assert.deepEqual(sent, [{ action: 'proactive_vision_consent', enabled: expected }], `local=${local} saved=${saved}`);
-    }
+        return sent;
+    };
+    // app-settings owns the rule (an unseen revocation from another window wins).
+    assert.deepEqual(run(true, { visionConsentForBackend: () => false }), [false]);
+    assert.deepEqual(run(true, { visionConsentForBackend: () => true }), [true]);
+    // Without app-settings, or with an unknown local value, behave as before.
+    assert.deepEqual(run(true, undefined), [true]);
+    assert.deepEqual(run(false, undefined), [false]);
+    assert.deepEqual(run(undefined, { visionConsentForBackend: () => true }), []);
 });

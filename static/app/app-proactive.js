@@ -160,9 +160,6 @@
     function isVisionConsentHeldNow() {
         return !!S.proactiveVisionEnabled && isProactiveVisionEnabledNow();
     }
-    // Also the live consent this window reports to the backend
-    // (app-settings stopVisionAfterPrivacyEnabled, app-websocket reconnect).
-    mod.isVisionConsentHeldNow = isVisionConsentHeldNow;
 
     // Whether proactive vision (speech heartbeat or text-chat screenshots)
     // still needs the cached screen stream. The single keep-the-stream rule

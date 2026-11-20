@@ -11,6 +11,7 @@ from tests.support.websocket_source_harness import (
 STATIC_APP = Path(__file__).resolve().parents[3] / "static" / "app"
 APP_SETTINGS_PATH = STATIC_APP / "app-settings.js"
 APP_PROACTIVE_PATH = STATIC_APP / "app-proactive.js"
+APP_WEBSOCKET_PATH = STATIC_APP / "app-websocket.js"
 
 pytestmark = pytest.mark.frontend_contract
 
@@ -45,6 +46,7 @@ _HARNESS = textwrap.dedent(
     // One shared store; each write queues a storage event for every other
     // window, delivered only when the test says so (the stale-window gap).
     const store = new Map();
+    let clock = Date.now();
     const windows = [];
     let serverRevision = 0;
     let serverSettings = { proactiveVisionEnabled: true, mergeMessagesEnabled: false };
@@ -56,6 +58,11 @@ _HARNESS = textwrap.dedent(
       const postBodies = [];
       let win = null;
       const sandbox = {
+        // One shared clock that always moves forward, as in a real profile
+        // where user actions are far apart: write ids never tie by accident.
+        Date: class extends Date {
+          static now() { clock += 5; return clock; }
+        },
         console: { log() {}, info() {}, debug() {}, warn() {}, error() {} },
         setInterval() { return 0; },
         clearInterval() {},
@@ -169,6 +176,25 @@ _HARNESS = textwrap.dedent(
       };
       windows.push(win);
       return win;
+    }
+
+    const websocketSource = fs.readFileSync(__APP_WEBSOCKET_PATH__, 'utf8');
+    const syncSlice = websocketSource.slice(
+      websocketSource.indexOf('    function syncProactiveVisionConsent('),
+      websocketSource.indexOf('    function ensureWebSocketOpen(')
+    );
+    // What the window would report on a WebSocket reconnect.
+    function reconnectConsent(win) {
+      const sent = [];
+      const S = Object.assign({}, win.S, {
+        socket: { readyState: 1, send(raw) { sent.push(JSON.parse(raw).enabled); } },
+      });
+      const mod = {};
+      vm.runInNewContext(syncSlice, {
+        window: { appSettings: win.mod }, S, mod, WebSocket: { OPEN: 1 }, console: { warn() {} },
+      });
+      mod.syncProactiveVisionConsent();
+      return sent[0];
     }
 
     function stored() {
@@ -299,6 +325,8 @@ _HARNESS = textwrap.dedent(
       const older = d.inbox.shift();
       assert(JSON.parse(older.newValue).proactiveVisionEnabled === true,
         'precondition: the first event predates the revocation');
+      assert(reconnectConsent(d) === false,
+        'a reconnect before the revocation event arrives does not re-grant');
       d.consent.length = 0;
       d.runtime.stoppedScreening = 0;
       d.fire(older);
@@ -326,6 +354,39 @@ _HARNESS = textwrap.dedent(
       assert(d.S.proactiveVisionEnabled === true, 'D keeps its fresh choice');
       assert(lastConsent(d) === true, 'D reports its fresh choice');
       assert(stored() === true, 'D saves its fresh choice');
+
+      // An incidental stale "false" is not a revocation on the listener and
+      // reconnect paths either. C has not received D's re-enable and saves
+      // something unrelated, copying its old "false" along. D rejects the
+      // value by its write token and must keep reporting "allowed" without
+      // stopping its screen sending.
+      d.deliver(); // C's older explicit writes, superseded by D's choice
+      await settle();
+      assert(d.S.proactiveVisionEnabled === true, 'precondition: D kept its choice');
+      assert(c.S.proactiveVisionEnabled === false, 'precondition: C is stale');
+      c.holdPosts = true; // until its POST conflicts and merges, C's copy stays stale
+      c.S.mergeMessagesEnabled = !c.S.mergeMessagesEnabled;
+      c.mod.saveSettings();
+      await settle();
+      assert(stored() === false && JSON.parse(store.get('project_neko_settings'))
+        ._sharedWriteMeta.changedKeys.indexOf('proactiveVisionEnabled') === -1,
+        'precondition: an incidental stale false is in localStorage');
+      d.consent.length = 0;
+      d.runtime.stoppedScreening = 0;
+      d.deliver();
+      await settle();
+      assert(d.S.proactiveVisionEnabled === true, 'D rejects the incidental false');
+      assert(d.consent.length > 0 && d.consent.every((v) => v === true),
+        'D keeps reporting "allowed": ' + JSON.stringify(d.consent));
+      assert(d.runtime.stoppedScreening === 0, 'D does not stop its screen sending');
+      assert(reconnectConsent(d) === true, 'a reconnect keeps reporting "allowed"');
+      c.releasePosts();
+      await settle();
+      c.deliver();
+      d.deliver();
+      await settle();
+      assert(c.S.proactiveVisionEnabled === true && d.S.proactiveVisionEnabled === true
+        && stored() === true, 'C catches up with the re-enable from D');
 
       // 412 path, with a window that never touched the privacy key: E saves
       // something unrelated (lands, so F's ETag is now stale), then revokes
@@ -380,7 +441,7 @@ _HARNESS = textwrap.dedent(
     """
 ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH))).replace(
     "__APP_PROACTIVE_PATH__", json.dumps(str(APP_PROACTIVE_PATH))
-)
+).replace("__APP_WEBSOCKET_PATH__", json.dumps(str(APP_WEBSOCKET_PATH)))
 
 
 def _run(mode):
