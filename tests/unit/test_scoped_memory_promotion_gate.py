@@ -32,15 +32,16 @@ GROUP = MemorySubject.group_chat("neko_visit", "room1")
 MEMBER = MemorySubject.group_participant("neko_visit", "room1", "peer1")
 
 
-def _day(ago: int) -> str:
-    return (datetime.now() - timedelta(days=ago)).date().isoformat()
+def _day(ago: int, now: datetime | None = None) -> str:
+    return ((now or datetime.now()) - timedelta(days=ago)).date().isoformat()
 
 
 def _iso(ago_days: float = 0) -> str:
     return (datetime.now() - timedelta(days=ago_days)).isoformat()
 
 
-READY_DAYS = [_day(d) for d in (40, 30, 20, 10)]
+READY_AGES = (40, 30, 20, 10)
+READY_DAYS = [_day(d) for d in READY_AGES]
 
 
 def _scoped(rid: str, *, days=None, counts=None, subject=GROUP, **extra) -> dict:
@@ -133,17 +134,21 @@ def test_observed_days_of_older_lines():
     assert observed_days({"observed_days": [_day(2), _day(9), _day(2)]}) == [_day(9), _day(2)]
 
 
-@pytest.mark.parametrize("days, ready", [
-    (READY_DAYS, True),
-    (READY_DAYS[1:], False),  # three days only
-    ([_day(d) for d in (29, 20, 10, 1)], False),  # four days, first 29 days ago
-    ([_day(d) for d in (30, 20, 10, 1)], True),
-    ([], False),
+# Day offsets, not dates: dates computed at collection time would drift by a
+# day against the ``now`` used at run time if the run crosses midnight.
+@pytest.mark.parametrize("ages, ready", [
+    (READY_AGES, True),
+    (READY_AGES[1:], False),  # three days only
+    ((29, 20, 10, 1), False),  # four days, first 29 days ago
+    ((30, 20, 10, 1), True),
+    ((), False),
 ])
-def test_scoped_promotion_ready(days, ready):
+def test_scoped_promotion_ready(ages, ready):
     from memory.evidence import scoped_promotion_ready
 
-    assert scoped_promotion_ready({"observed_days": days}, datetime.now()) is ready
+    now = datetime.now()
+    days = [_day(d, now) for d in ages]
+    assert scoped_promotion_ready({"observed_days": days}, now) is ready
 
 
 # ── the time-driven pass ────────────────────────────────────────────
