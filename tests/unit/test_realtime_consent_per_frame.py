@@ -338,3 +338,127 @@ async def test_send_event_keeps_the_shrunk_payload_when_the_recheck_changes_noth
     assert await client.send_event(event, pre_send=lambda _ev: None) is True
     assert json.loads(written[0])["image"] == "small"
     await client.close()
+
+
+async def _submit_websocket_shrink_fails(monkeypatch, *, revoke_during_shrink):
+    """The item is over the frame limit and its recompression fails; screen
+    consent may go while that recompression runs on the worker thread."""
+    client = _make_client("openai", "gpt-4o-realtime-preview")
+    client.ws = AsyncMock()
+    client.handle_interruption = AsyncMock()
+    # Both frames together exceed the limit; the user's screenshot alone fits.
+    monkeypatch.setattr(responses_module, "OMNI_WS_FRAME_LIMIT_BYTES", len(LIVE) + len(USER))
+    consent = [True]
+
+    def _shrink_fails(_event, _payload):
+        if revoke_during_shrink:
+            consent[0] = False
+        return None
+
+    client._try_shrink_image_payload = _shrink_fails
+    captured: list = []
+
+    async def _fake_enqueue(**kwargs):
+        captured.append(kwargs["events_before_response"][0])
+        loop = asyncio.get_running_loop()
+        sent, done = loop.create_future(), loop.create_future()
+        sent.set_result(None)
+        done.set_result(None)
+        return SimpleNamespace(sent=sent, done=done)
+
+    client._ensure_response_arbiter = lambda: SimpleNamespace(
+        enqueue=_fake_enqueue,
+        resume_dispatch=lambda: None,
+        pause_dispatch=lambda owner=None: None,
+        cancel_ticket=AsyncMock(),
+        begin_turn_preparation=lambda owner=None: None,
+        end_turn_preparation=lambda _token=None: None,
+        has_live_response=True,
+        allow_ticket_while_paused=lambda ticket: None,
+        cancel_current=AsyncMock(),
+    )
+    await client.prepare_external_voice_turn(turn_id="turn-1")
+    await client.submit_multimodal_turn(
+        "看一下这张图",
+        (LIVE, USER),
+        turn_id="turn-1",
+        screen_consent_holds=lambda: consent[0],
+        image_request_ids=(None, "req-1"),
+    )
+    content = captured[0]["item"]["content"]
+    assert any(part.get("text") == "看一下这张图" for part in content)
+    return [
+        part["image_url"].split(",", 1)[1]
+        for part in content
+        if part.get("type") == "input_image"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_recompression_rechecks_consent_before_failing_the_turn(monkeypatch):
+    sent = await _submit_websocket_shrink_fails(monkeypatch, revoke_during_shrink=True)
+    assert sent == [USER]
+
+
+@pytest.mark.asyncio
+async def test_failed_recompression_under_consent_still_fails_the_turn(monkeypatch):
+    from main_logic.omni_realtime_client._transport import RealtimeImagePayloadTooLargeError
+
+    with pytest.raises(RealtimeImagePayloadTooLargeError):
+        await _submit_websocket_shrink_fails(monkeypatch, revoke_during_shrink=False)
+
+
+async def _send_with_failed_shrink(strip: bool):
+    client = _make_client("openai", "gpt-4o-realtime-preview")
+    written: list = []
+
+    class _Sock:
+        async def send(self, payload):
+            written.append(payload)
+
+        async def close(self):
+            pass
+
+    client.ws = _Sock()
+    consent = [True]
+    event = {
+        "type": "conversation.item.create",
+        "item": {
+            "role": "user",
+            "content": [
+                {"type": "input_image", "image_url": "data:image/jpeg;base64," + "A" * 400_000},
+                {"type": "input_text", "text": "look"},
+            ],
+        },
+    }
+
+    def _shrink_fails(_ev, _payload):
+        consent[0] = False
+        return None
+
+    client._try_shrink_image_payload = _shrink_fails
+
+    def _hook(ev):
+        if strip and not consent[0]:
+            ev["item"]["content"] = [
+                part for part in ev["item"]["content"] if part.get("type") != "input_image"
+            ]
+
+    result = await client.send_event(event, pre_send=_hook)
+    await client.close()
+    return result, written
+
+
+@pytest.mark.asyncio
+async def test_send_event_failed_shrink_sends_what_the_hook_leaves():
+    result, written = await _send_with_failed_shrink(strip=True)
+    assert result is True
+    content = json.loads(written[0])["item"]["content"]
+    assert [part["type"] for part in content] == ["input_text"]
+
+
+@pytest.mark.asyncio
+async def test_send_event_failed_shrink_still_drops_an_oversized_event():
+    result, written = await _send_with_failed_shrink(strip=False)
+    assert result is False
+    assert written == []

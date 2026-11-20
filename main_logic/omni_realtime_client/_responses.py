@@ -691,11 +691,17 @@ class _ResponseMixin:
                 item_payload,
             )
             if shrunk is None:
-                from ._transport import RealtimeImagePayloadTooLargeError
+                # The recompression yielded to a worker thread: a revocation
+                # or ownership loss meanwhile may remove the frames that did
+                # not fit. Re-run the downgrade; only fail the turn when what
+                # is left still exceeds the limit.
+                _downgrade_if_visual_ownership_lost(item_event)
+                if len(json.dumps(item_event)) > OMNI_WS_FRAME_LIMIT_BYTES:
+                    from ._transport import RealtimeImagePayloadTooLargeError
 
-                raise RealtimeImagePayloadTooLargeError(
-                    "multimodal turn item exceeds the realtime frame limit"
-                )
+                    raise RealtimeImagePayloadTooLargeError(
+                        "multimodal turn item exceeds the realtime frame limit"
+                    )
         text_hash = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:8]
         logger.info(
             "external_multimodal_turn queued turn=%s chars=%d images=%d hash=%s",

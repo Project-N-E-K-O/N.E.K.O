@@ -1053,6 +1053,14 @@ class _TransportMixin:
                     payload = await asyncio.to_thread(
                         self._try_shrink_image_payload, event, payload
                     )
+                    if payload is None and pre_send is not None:
+                        # The hook may now remove what did not fit (it runs
+                        # after the worker-thread yield); give up only if the
+                        # rest is still too large.
+                        pre_send(event)
+                        rechecked = json.dumps(event)
+                        if len(rechecked) <= OMNI_WS_FRAME_LIMIT_BYTES:
+                            payload = rechecked
                     if payload is None:
                         if raise_on_oversize:
                             raise RealtimeImagePayloadTooLargeError(
