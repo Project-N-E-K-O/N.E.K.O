@@ -1199,9 +1199,13 @@
     // Read-only. Only a revocation carrying the key's own write token counts
     // (the explicit write, or the knownKeyWrites token that window's later
     // unrelated saves keep carrying) and only when it is newer than what this
-    // window already holds -- the same per-key provenance the storage
-    // listener uses. An incidental stale "false" another window copied along
-    // in an unrelated save is not a choice and is ignored.
+    // window already holds -- the storage listener's per-key write-token
+    // comparison and its server-floor check. The listener's pending-key and
+    // server-merge revision rules are not repeated: in those races this may
+    // revoke where the listener would keep a pending value for a moment, and
+    // the revoking window's own event, arriving next, settles the same way.
+    // An incidental stale "false" another window copied along in an
+    // unrelated save is not a choice and is ignored.
     function _unseenVisionRevocationToken() {
         const key = 'proactiveVisionEnabled';
         let stored = null;
@@ -1255,7 +1259,11 @@
         // conflict merge keeps it instead of restoring the server's older
         // "allowed" (see preservedKeys in syncSettingsToServer).
         _noteCrossWindowMutations({ [key]: false }, [key]);
-        if (_settingsBaseline && !_dirtySettingsKeys.has(key)) {
+        // Even when this window toggled the key before (it stays in the dirty
+        // set), the adopted value is another window's choice: roll the
+        // baseline so this save and the next do not claim it as this
+        // window's explicit write with a fresh write id.
+        if (_settingsBaseline) {
             _settingsBaseline[key] = false;
         }
         return false;

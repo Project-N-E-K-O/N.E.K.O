@@ -306,6 +306,47 @@ _HARNESS = textwrap.dedent(
       assert(b.S.proactiveVisionEnabled === true,
         'an incidental stale false must not override B\\'s consent');
 
+      // The 412 merge's own save (serverMerged) must adopt too. H's POST is
+      // already in flight when G revokes, so the key is not protected by that
+      // POST; it conflicts and merges the server's "allowed". Skipping the
+      // adoption there would write "allowed" over G's revocation in
+      // localStorage and report it to the backend.
+      windows.length = 0;
+      serverSettings = Object.assign({}, serverSettings, { proactiveVisionEnabled: true });
+      serverRevision += 1;
+      const g = makeWindow('G');
+      const h = makeWindow('H');
+      await settle();
+      g.deliver();
+      h.deliver();
+      g.S.mergeMessagesEnabled = !g.S.mergeMessagesEnabled;
+      g.mod.saveSettings();
+      await settle();
+      h.holdPosts = true;
+      h.S.mergeMessagesEnabled = !h.S.mergeMessagesEnabled;
+      h.mod.saveSettings();
+      await settle();
+      g.holdPosts = true;
+      g.S.proactiveVisionEnabled = false;
+      g.mod.saveSettings();
+      await settle();
+      h.consent.length = 0;
+      h.releasePosts();
+      await settle();
+      assert(h.consent.length > 0, 'precondition: the 412 merge saved and reported');
+      assert(h.consent.every((v) => v === false),
+        'the 412 merge save must not re-grant consent: ' + JSON.stringify(h.consent));
+      assert(stored() === false, 'the 412 merge save must not write "allowed" back');
+      g.releasePosts();
+      await settle();
+      g.deliver();
+      h.deliver();
+      await settle();
+      assert(g.S.proactiveVisionEnabled === false && h.S.proactiveVisionEnabled === false
+        && serverSettings.proactiveVisionEnabled === false, 'G and H converge on revoked');
+
+      serverSettings = Object.assign({}, serverSettings, { proactiveVisionEnabled: true });
+      serverRevision += 1;
       // Listener entry: D processes an older event from C while C's newer
       // revocation is already in localStorage. D must not report "allowed".
       windows.length = 0;
@@ -387,6 +428,33 @@ _HARNESS = textwrap.dedent(
       await settle();
       assert(c.S.proactiveVisionEnabled === true && d.S.proactiveVisionEnabled === true
         && stored() === true, 'C catches up with the re-enable from D');
+
+      // D has toggled the key itself before (it stays in the dirty set). When D
+      // adopts C's next revocation, its snapshot must not claim that "false"
+      // as D's own explicit write, now or on the following save.
+      c.S.proactiveVisionEnabled = false;
+      c.mod.saveSettings();
+      await settle();
+      // Read D's own snapshot right after each save (a later 412 merge may
+      // replace it with a server-merge snapshot).
+      const changedKeysOf = () => JSON.parse(store.get('project_neko_settings'))
+        ._sharedWriteMeta.changedKeys;
+      d.S.mergeMessagesEnabled = !d.S.mergeMessagesEnabled;
+      d.mod.saveSettings();
+      const firstKeys = changedKeysOf();
+      await settle();
+      assert(d.S.proactiveVisionEnabled === false, 'D adopts the revocation');
+      assert(firstKeys.indexOf('proactiveVisionEnabled') === -1,
+        'the adopted value is not an explicit write: ' + JSON.stringify(firstKeys));
+      d.S.mergeMessagesEnabled = !d.S.mergeMessagesEnabled;
+      d.mod.saveSettings();
+      const nextKeys = changedKeysOf();
+      await settle();
+      assert(nextKeys.indexOf('proactiveVisionEnabled') === -1,
+        'nor on the next save: ' + JSON.stringify(nextKeys));
+      c.deliver();
+      d.deliver();
+      await settle();
 
       // 412 path, with a window that never touched the privacy key: E saves
       // something unrelated (lands, so F's ETag is now stale), then revokes
