@@ -498,6 +498,14 @@
                 await hooks.request('/audio/check/isolation/release', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: owned.token }) });
             }
         }
+        let closePromise = null;
+        function close() {
+            if (closePromise) return closePromise;
+            pageHidden = true;
+            const owned = { id: isolationId, token: isolationToken, serverOwned: isolationServerOwned };
+            closePromise = Promise.all([cancelOperation(), releaseIsolation(owned)]).then(() => {});
+            return closePromise;
+        }
         async function testInput() {
             if (pending || hooks.enrolling()) return;
             const returnFocus = typeof el['input-setup'].contains === 'function' && el['input-setup'].contains(document.activeElement);
@@ -775,7 +783,10 @@
             isolationId = null; isolationToken = null;
             if (pollTimer !== null) root.clearTimeout(pollTimer);
         });
-        root.addEventListener('pageshow', () => { pageHidden = false; render(false); });
+        root.addEventListener('pageshow', () => { pageHidden = false; closePromise = null; render(false); });
+        if (root.opener && !root.opener.closed) {
+            root.opener.postMessage({ type: 'neko-voice-enrollment-opened', operationId: root.nekoMicrophoneInput.operationId() }, root.location.origin);
+        }
         enumerate().catch(() => {});
         // The single enrollment gate; canStart and the button hint both read it.
         function startHintKey() {
@@ -785,7 +796,7 @@
             return 'voiceIdentity.enrollmentReady';
         }
         return {
-            refreshResources, receivedStream, controls: () => render(false), isPending: () => pending,
+            refreshResources, receivedStream, close, controls: () => render(false), isPending: () => pending,
             startHintKey,
             canStart: () => startHintKey() === 'voiceIdentity.enrollmentReady',
             canResume: () => !inputChangedDuringEnrollment,

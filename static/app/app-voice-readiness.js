@@ -22,6 +22,7 @@
             if (owned.expiry !== null) root.clearTimeout(owned.expiry);
             owned.expiry = null;
             if (isolation === owned) isolation = null;
+            if (owned.released) owned.released();
         }
         function boundIsolation(owned, milliseconds) {
             if (owned.expiry !== null) root.clearTimeout(owned.expiry);
@@ -108,6 +109,48 @@
             }
             return current;
         }
+        async function prepareCapture() {
+            const atSocket = S.socket;
+            if (bridge && typeof bridge.close === 'function') {
+                const result = await bridge.close();
+                if (!result || result.closed !== true) throw new Error('capture_owner_unavailable');
+            } else {
+                for (const child of [...children]) {
+                    if (!child.closed) {
+                        let timer;
+                        try {
+                            await Promise.race([
+                                typeof child.nekoBeforeWindowClose === 'function' ? child.nekoBeforeWindowClose() : Promise.resolve(),
+                                new Promise((_, reject) => {
+                                    timer = root.setTimeout(() => reject(new Error('voice_control_timeout')), 13000);
+                                })
+                            ]);
+                        } finally {
+                            root.clearTimeout(timer);
+                            child.close();
+                        }
+                    }
+                }
+                // Older desktop bridges close their bound page when an idle
+                // registration advances the capture revision.
+                if (bridge) await register(false);
+            }
+            if (isolation) {
+                const owned = isolation;
+                let timer;
+                try {
+                    await new Promise((resolve, reject) => {
+                        owned.released = resolve;
+                        timer = root.setTimeout(() => reject(new Error('voice_control_timeout')), 13000);
+                    });
+                } finally {
+                    root.clearTimeout(timer);
+                    owned.released = null;
+                }
+            }
+            if (atSocket !== S.socket) throw new Error('capture_owner_unavailable');
+            for (const child of children) if (child.closed) children.delete(child);
+        }
         function control(event, extra, requestId) {
             const ownerSocket = S.socket;
             if (!ownerSocket || ownerSocket.readyState !== 1) return Promise.reject(new Error('capture_owner_unavailable'));
@@ -187,8 +230,10 @@
                 const hasLiveTrack = S.stream && typeof S.stream.getAudioTracks === 'function' && S.stream.getAudioTracks().some(track => track.readyState === 'live');
                 if (physicalStopped && atSocket === S.socket && identity.sessionId === localSession && identity.revision === String(revision) && !S.isRecording && !hasLiveTrack) {
                     // Plain data survives contextBridge; custom Error fields do
-                    // not. This confirms capture only, never server isolation.
-                    return { ...identity, stopped: false, physicalStopped: true, reason: error.message };
+                    // not. A confirmed denial means this attempt received no
+                    // server ticket; a timeout must retain its uncertain fence.
+                    return { ...identity, stopped: false, physicalStopped: true,
+                        isolationDenied: error.voiceControlConfirmed === true, reason: error.message };
                 }
                 throw error;
             }
@@ -218,15 +263,19 @@
             bridge.onStopCapture(prepare);
             bridge.onOpen(request => {
                 if (request.sessionId !== localSession || request.revision !== String(revision)) return;
-                root.open(request.url, 'neko-voice-enrollment');
+                const child = root.open(request.url, 'neko-voice-enrollment');
+                if (child) children.add(child);
             });
             register(false).catch(() => {});
         }
         root.addEventListener('message', async event => {
             if (event.origin !== root.location.origin || !event.source || !event.data || typeof event.data.operationId !== 'string') return;
             if (event.data.type === 'neko-voice-enrollment-release' && children.has(event.source)) {
-                children.delete(event.source);
                 prepare({ ...event.data, event: 'release' }).catch(() => {});
+                return;
+            }
+            if (event.data.type === 'neko-voice-enrollment-opened' && event.source.opener === root) {
+                children.add(event.source);
                 return;
             }
             if (event.source.opener !== root || event.data.type !== 'neko-voice-enrollment-prepare') return;
@@ -239,7 +288,7 @@
         root.addEventListener('localechange', render);
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount, { once: true }); else mount();
         return {
-            register, reset, controlResult, activationStatus,
+            register, prepareCapture, reset, controlResult, activationStatus,
             blocked: () => !!isolation || restartRequired,
             disconnected: () => { reset(); waiting.forEach(p => { root.clearTimeout(p.timeout); p.reject(new Error('capture_owner_unavailable')); }); waiting.clear(); },
             stopped: () => { reset(); if (bridge && !isolation) register(false).catch(() => {}); }

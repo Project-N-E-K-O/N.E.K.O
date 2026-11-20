@@ -1803,6 +1803,7 @@
             state.closeStarted = true;
             state.cancelPending = true;
             stopMicrophone('capture_cancelled');
+            if (readiness && typeof readiness.close === 'function') await readiness.close();
             await cancelEnrollment({ keepalive: true, silent: true });
             return true;
         };
