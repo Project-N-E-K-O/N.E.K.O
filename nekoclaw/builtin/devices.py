@@ -18,6 +18,8 @@ The host owns the permission and lease of each slot. A provider contributes
 its tool schemas and a lazy driver. The desktop driver accepts cancellable
 actions and releases held input. The browser driver accepts named calls with
 the host's refusal and reopen checks and owns the corresponding window.
+The host can call open_driver() on the event loop: construct the driver
+without blocking, and defer device I/O until an action is carried out.
 """
 
 from __future__ import annotations
@@ -84,14 +86,16 @@ def registered_tools(
     for group, provider in ((BUILTIN_GROUP_KEYBOARD_MOUSE, desktop), (BUILTIN_GROUP_BROWSER, browser)):
         tools: dict[str, Capability] = {}
         for definition, needs_images in provider.tools():
-            tool = builtin_tool(group, definition, needs_images=needs_images)
-            if not tool.tool_name or tool.tool_name in registered_names:
-                raise ValueError(f"invalid or duplicate built-in tool name {tool.tool_name!r}")
-            tools[tool.tool_name] = tool
-            registered_names.add(tool.tool_name)
+            name = definition.get("name")
+            if not isinstance(name, str) or not name or name.strip() != name or name in registered_names:
+                raise ValueError(f"invalid or duplicate built-in tool name {name!r}")
+            tools[name] = builtin_tool(group, definition, needs_images=needs_images)
+            registered_names.add(name)
         groups[group] = tools
     # The desktop driver receives an action through one tool. Browser calls
     # pass the registered tool name to the driver as well as its arguments.
     if groups[BUILTIN_GROUP_KEYBOARD_MOUSE].keys() != {COMPUTER_TOOL_NAME}:
         raise ValueError(f"the desktop provider must register exactly {COMPUTER_TOOL_NAME!r}")
+    if not groups[BUILTIN_GROUP_KEYBOARD_MOUSE][COMPUTER_TOOL_NAME].needs_images:
+        raise ValueError("the desktop tool requires a model that can see screenshots")
     return groups

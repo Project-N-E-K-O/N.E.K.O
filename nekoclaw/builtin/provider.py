@@ -174,6 +174,7 @@ class BuiltinToolProvider:
             return self._desktop
 
     def browser_installed(self) -> bool:
+        """Probe the registered installation. A prebuilt driver can still be disconnected."""
         return self._browser_provider.installed()
 
     def browser(self) -> Any:

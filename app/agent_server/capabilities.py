@@ -61,9 +61,9 @@ def _browser_dependency_status() -> tuple[bool, str]:
     now = time.monotonic()
     if _browser_search is not None and now - _browser_search[0] < _BROWSER_SEARCH_TTL_SECONDS:
         return _browser_search[1], _browser_search[2]
-    try:
-        from .nekoclaw_builtins import provider
+    from .nekoclaw_builtins import provider
 
+    try:
         found = provider.browser_installed()
     except Exception as exc:
         logger.warning("[Agent] Searching for a browser failed: %s", exc)
