@@ -124,7 +124,11 @@ reply does not imply the start was cancelled. A game must not apply a
 `route_superseded` reply to the UI of its current route; the state stream
 carries the current route's truth. `reason: 'start_pending'` means the host's
 wait ran out while it was still starting: the result is unknown, not failed,
-and a later state update reports the outcome. The three groups are independent:
+and a later state update reports the outcome. For a start the command issued,
+the host replies once that start has settled (not merely once capture
+committed), so `start_outcome: 'pending'` only appears when the wait ran out;
+even then `start_committed` / `start_capture_live` / `host_capture_active`
+say whether the microphone is on. The three groups are independent:
 a start that stood down after its capture committed reads `start_outcome:
 'cancelled'` with `start_committed: true`, and `start_capture_live` alone says
 whether that capture is still the live one. The voice API never stops,

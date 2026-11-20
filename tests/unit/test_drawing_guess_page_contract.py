@@ -580,11 +580,14 @@ def test_drawing_guess_static_route_contract():
     # #3003: a reply for a route that ended mid-command must not be painted over
     # the current route or reported as a failure (the host microphone may well
     # be live), and a start still pending at the deadline is not a failure.
-    # The client budget must outlast the host's own 12 s start wait (which only
-    # begins once the command arrives), or the SDK rejects before a
-    # start_pending reply can land and the catch reports a failure.
+    # The client budget must outlast the host bridge's own start wait
+    # (COMMAND_TIMEOUT_MS, which only begins once the command arrives) plus
+    # the reply's way back, or the SDK rejects before a start_pending reply can
+    # land and the catch reports a failure.
+    host_bridge = (ROOT / "static" / "app" / "app-game-voice-control.js").read_text(encoding="utf-8")
+    host_wait = int(re.search(r"var COMMAND_TIMEOUT_MS = (\d+);", host_bridge).group(1))
     toggle_budget = int(script.split("client.voice.toggle({ timeoutMs: ", 1)[1].split(" ", 1)[0])
-    assert toggle_budget > 12000 + 2000
+    assert toggle_budget >= host_wait + 2000, (toggle_budget, host_wait)
     toggle_reply = script.split("client.voice.toggle({ timeoutMs: 15000 }).then(", 1)[1]
     toggle_reply = toggle_reply.split("}).catch(", 1)[0]
     superseded_at = toggle_reply.index("voiceState.reason === 'route_superseded') return;")

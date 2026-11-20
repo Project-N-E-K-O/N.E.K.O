@@ -492,8 +492,11 @@ declare namespace NekoMiniGame {
   type VoiceStartAttribution = 'command' | 'observed' | 'already_active' | 'none';
 
   /** How the start issued by this command ended, as far as the host knows at reply time.
-   * `pending` means the host was still starting when the reply was sent: the capture may
-   * still commit afterwards, so it is neither a failure nor a cancellation.
+   * The host replies once the start has settled, or when its wait runs out; only in the
+   * latter case is it `pending` (paired with `reason: 'start_pending'`, or with `started`
+   * if capture committed but the start had not finished yet). `pending` is neither a
+   * failure nor a cancellation: whether capture is on is `start_committed` /
+   * `start_capture_live` / `host_capture_active`.
    * `superseded` means the start finished but its own capture lost to one something else owns.
    */
   type VoiceStartOutcome =

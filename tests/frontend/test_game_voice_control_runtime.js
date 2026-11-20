@@ -614,6 +614,75 @@ async function main() {
   `a host reopening its capture was reported as live: ${JSON.stringify(reopeningReply)}`);
   resetMicrophone();
 
+  // The handler still awaits after its capture commits (proactive vision, the
+  // stand-down checks). The reply must wait for the command's own start to
+  // settle, not answer 'started' on the commit with start_outcome 'pending'.
+  let postCommitReceipt = null;
+  const commitThenKeepAwaiting = (receipt) => {
+    appState.voiceSessionStartEpoch += 1;
+    receipt.accepted = true;
+    receipt.voiceStartEpoch = appState.voiceSessionStartEpoch;
+    windowMock.isMicStarting = true;
+    commitReceipt(receipt);
+    postCommitReceipt = receipt;
+  };
+  clickBehavior = commitThenKeepAwaiting;
+  sendStart('post-commit-start', 'route-instance-h');
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert(!posted.some((message) => message.request_id === 'post-commit-start'
+    && message.reason !== 'working'),
+  'the bridge answered on the commit while its own start was still running');
+  postCommitReceipt.outcome = 'started';
+  windowMock.isMicStarting = false;
+  const postCommitReply = await finalReply('post-commit-start');
+  assert(postCommitReply.reason === 'started'
+    && postCommitReply.start_outcome === 'started'
+    && postCommitReply.start_committed === true,
+  `a settled start was not reported as started: ${JSON.stringify(postCommitReply)}`);
+  // Same window, but the handler stands down after the commit (a text send
+  // inside proactive vision): it stops the capture and settles 'cancelled'.
+  resetMicrophone();
+  clickBehavior = commitThenKeepAwaiting;
+  sendStart('post-commit-stand-down', 'route-instance-h');
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert(!posted.some((message) => message.request_id === 'post-commit-stand-down'
+    && message.reason !== 'working'),
+  'the bridge answered on the commit while its own start was still running');
+  appState.isRecording = false;
+  liveCaptureToken = 0;
+  postCommitReceipt.outcome = 'cancelled';
+  windowMock.isMicStarting = false;
+  const standDownAfterCommitReply = await finalReply('post-commit-stand-down');
+  assert(standDownAfterCommitReply.reason === 'start_failed'
+    && standDownAfterCommitReply.start_outcome === 'cancelled'
+    && standDownAfterCommitReply.start_committed === true
+    && standDownAfterCommitReply.start_capture_live === false,
+  `a start that stood down after committing was reported as started: ${JSON.stringify(standDownAfterCommitReply)}`);
+  resetMicrophone();
+
+  // A host page without receipt support: the start is attributed but not
+  // tracked, and one still in flight at the deadline is pending, not failed.
+  const offerVoiceStartReceipt = windowMock.offerVoiceStartReceipt;
+  delete windowMock.offerVoiceStartReceipt;
+  holdMicStart = true;
+  const untrackedDateNow = Date.now;
+  let untrackedSkewMs = 0;
+  Date.now = () => untrackedDateNow() + untrackedSkewMs;
+  try {
+    sendStart('untracked-deadline-start', 'route-instance-h');
+    await flush();
+    untrackedSkewMs = 13000;
+    const untrackedReply = await finalReply('untracked-deadline-start');
+    assert(untrackedReply.reason === 'start_pending'
+      && untrackedReply.start_attribution === 'command'
+      && untrackedReply.start_outcome === 'unknown',
+    `an untracked start in flight at the deadline was reported as failed: ${JSON.stringify(untrackedReply)}`);
+  } finally {
+    Date.now = untrackedDateNow;
+    windowMock.offerVoiceStartReceipt = offerVoiceStartReceipt;
+  }
+  resetMicrophone();
+
   // A start the handler accepted but then stood down from (text takeover,
   // blocked route, goodbye) settles nothing itself; once its lifecycle has
   // closed the bridge reports it as cancelled, not pending.

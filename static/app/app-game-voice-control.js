@@ -322,7 +322,17 @@
             attempt.attribution = 'command';
             attempt.receipt = receipt;
         }
-        await waitFor(voiceStartSettled, COMMAND_TIMEOUT_MS);
+        // For a start this command issued, wait for its own receipt to settle
+        // too, not just for capture to commit: the handler still awaits after
+        // the commit (proactive vision, the stand-down checks) and can stand
+        // down there. Replying on the commit alone would answer 'started'
+        // with start_outcome 'pending' for a start that may yet be cancelled.
+        // Still bounded by the same deadline, after which the reply says
+        // 'pending' explicitly.
+        await waitFor(function () {
+            return voiceStartSettled()
+                && (!attempt.receipt || startReceiptOutcome(attempt) !== 'pending');
+        }, COMMAND_TIMEOUT_MS);
         return S.isRecording === true;
     }
 
@@ -441,7 +451,9 @@
                 !ok
                 && effectiveAction === 'start'
                 && (report.start_outcome === 'pending'
-                    || (report.start_attribution === 'observed' && report.host_capture_starting))
+                    || (report.start_attribution === 'observed' && report.host_capture_starting)
+                    // A host without receipt support: attributed, untracked.
+                    || (report.start_outcome === 'unknown' && report.host_capture_starting))
             ) {
                 // The wait ran out while the host is still starting. That is
                 // an unknown result, not a failure: the capture may still

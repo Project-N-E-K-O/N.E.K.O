@@ -2333,10 +2333,7 @@
         // getUserMedia() half of the window as well.
         micStartGeneration += 1;
         const micStartToken = micStartGeneration;
-        if (startReceipt) {
-            startReceipt.captureToken = micStartToken;
-            micStartReceipts.set(micStartToken, startReceipt);
-        }
+        if (startReceipt) startReceipt.captureToken = micStartToken;
         // Bind capture constraints, Worklet output and the wire header before
         // permission/player awaits or selected-device fallback can interleave.
         const captureTargetSampleRate = window.appUtils.isMobile() ? 16000 : 48000;
@@ -2361,6 +2358,9 @@
         // UI reported a failed start while the browser microphone stayed live.
         let ownStream = null;
         try {
+            // Indexed inside the try so its finally always drops the entry,
+            // even if something between here and the first await throws.
+            if (startReceipt) micStartReceipts.set(micStartToken, startReceipt);
             // 开始录音前添加录音状态类到两个按钮
             if (_mic) _mic.classList.add('recording');
 
