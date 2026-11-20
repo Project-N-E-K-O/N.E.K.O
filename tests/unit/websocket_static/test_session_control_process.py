@@ -1,6 +1,7 @@
 from pathlib import Path
 import pytest
 
+from tests.unit.test_voice_start_failure_static import _mic_button_start_flow
 from tests.unit.websocket_static._scenarios import (
     _block_after,
 )
@@ -131,7 +132,7 @@ def test_game_voice_command_commits_its_teardown_before_it_can_yield():
 
     handler = _block_after(source, "async function handleRequest(request) {")
     admit_at = handler.index("if (!routeMatches(request))")
-    dispatch_at = handler.index("await startOfficialVoiceSession()")
+    dispatch_at = handler.index("await startOfficialVoiceSession(startAttempt)")
     admitted_segment = handler[admit_at:dispatch_at]
     assert "await" not in admitted_segment, (
         "an await was introduced between the route check that admits a voice "
@@ -139,15 +140,68 @@ def test_game_voice_command_commits_its_teardown_before_it_can_yield():
     )
 
     superseded_at = handler.index("if (!routeSnapshotIsCurrent(acceptedRoute))")
-    superseded_branch = handler[superseded_at:handler.index("broadcastState({", superseded_at)]
+    superseded_branch = handler[superseded_at:handler.index("broadcastState(", superseded_at)]
     # Code only: this branch carries a long comment explaining which mechanisms
     # it deliberately does NOT reach for, and those names must not trip the check.
     superseded_code = chr(10).join(
         line for line in superseded_branch.splitlines()
         if not line.strip().startswith("//")
     )
-    for teardown in ("stopMicCapture(", "startMicCapture(", ".click("):
+    # invalidatePendingMicStart is a teardown too: it cancels whatever start is
+    # in flight, which may be the user's own press. offerVoiceStartReceipt would
+    # attach this command's attribution to a start it did not issue.
+    for teardown in (
+        "stopMicCapture(",
+        "startMicCapture(",
+        ".click(",
+        "invalidatePendingMicStart",
+        "offerVoiceStartReceipt",
+    ):
         assert teardown not in superseded_code, (
             f"the superseded branch reaches for {teardown}; a command whose route "
             "is gone must not touch the process-global microphone"
         )
+
+
+def test_mic_button_start_takes_and_settles_a_game_start_receipt():
+    """#3003: where the host-side start receipt is taken, accepted and settled.
+
+    The runtime harnesses model this handler; this pins the placement they rely
+    on. The receipt is taken before any early return (so it can only describe
+    this dispatch and never attaches to a later user press), accepted with the
+    epoch before the first await, re-offered immediately before
+    ``startMicCapture()`` (which takes it on entry), and settled on the success
+    and failure paths BEFORE the lifecycle flags clear -- the bridge reads a
+    pending receipt whose lifecycle has closed as "stood down".
+    """
+    source = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    flow = _mic_button_start_flow(source)
+
+    take_at = flow.index("window.takeVoiceStartReceipt()")
+    assert take_at < flow.index("return;"), "the receipt must be taken before the first early return"
+    assert take_at < flow.index("await "), "the receipt must be taken before the first await"
+
+    epoch_at = flow.index("S.voiceSessionStartEpoch = voiceStartEpoch;")
+    accept_at = flow.index("voiceStartReceipt.voiceStartEpoch = voiceStartEpoch;")
+    assert epoch_at < accept_at < flow.index("await "), (
+        "the receipt must be accepted with this start's epoch before the first await"
+    )
+
+    capture_at = flow.index("var microphoneStarted = await window.startMicCapture();")
+    offer_at = flow.rindex("window.offerVoiceStartReceipt(voiceStartReceipt);", 0, capture_at)
+    assert "await" not in flow[offer_at:capture_at], (
+        "nothing may yield between offering the receipt and startMicCapture taking it"
+    )
+
+    success_settle = flow.index("settleVoiceStartReceipt(\n", capture_at)
+    success_clear = flow.index("S.voiceStartPending = false;", capture_at)
+    assert success_settle < success_clear, "success must settle the receipt before clearing the lifecycle"
+
+    catch_at = flow.index("} catch (error) {", success_clear)
+    catch_settle = flow.index("settleVoiceStartReceipt(", catch_at)
+    assert catch_settle < flow.index("S.voiceStartPending = false;", catch_at), (
+        "the failure path must settle the receipt before clearing the lifecycle"
+    )
+    assert catch_settle < flow.index("if (micStartMustStandDown()) return;", catch_at), (
+        "the failure path must settle the receipt before it can stand down and return"
+    )

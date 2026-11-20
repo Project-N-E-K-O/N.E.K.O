@@ -577,6 +577,16 @@ def test_drawing_guess_static_route_contract():
     assert "client.voice.query({ timeoutMs: 5000 })" in script
     assert "client.voice.stop({ timeoutMs: 6500 })" in script
     assert "client.voice.toggle({ timeoutMs: 12000 })" in script
+    # #3003: a reply for a route that ended mid-command must not be painted over
+    # the current route or reported as a failure (the host microphone may well
+    # be live), and a start still pending at the deadline is not a failure.
+    toggle_reply = script.split("client.voice.toggle({ timeoutMs: 12000 }).then(", 1)[1]
+    toggle_reply = toggle_reply.split("}).catch(", 1)[0]
+    superseded_at = toggle_reply.index("voiceState.reason === 'route_superseded') return;")
+    pending_at = toggle_reply.index("voiceState.reason === 'start_pending') return;")
+    apply_at = toggle_reply.index("handleSdkVoiceState(voiceState);")
+    failure_at = toggle_reply.index("drawingGuess.voice.controlFailed")
+    assert superseded_at < apply_at < pending_at < failure_at
     assert "client.voice.handoff(" not in script
     assert "voiceHandoff" not in script
     assert "function handleSdkVoiceTranscript" in script

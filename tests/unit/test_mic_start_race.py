@@ -1281,3 +1281,131 @@ def test_superseded_mic_start_does_not_tear_down_the_winner_harness():
         f"stderr:\n{result.stderr}"
     )
     assert "HARNESS_OK" in result.stdout
+
+
+_START_ATTRIBUTION_CASES = r"""
+function receipt() {
+  return { accepted: true, voiceStartEpoch: 1, captureToken: null, committed: false, outcome: 'pending' };
+}
+
+async function attributedCommitCase() {
+  // A game-issued start parked in getUserMedia while its route ends, then
+  // released: nothing on the route-exit path cancels it, and the capture
+  // commits. The receipt must record that THIS attempt committed and that its
+  // capture is the live one -- the fact the bridge's route_superseded reply
+  // used to deny.
+  const env = loadModule();
+  const r = receipt();
+  const release = env.parkGetUserMedia();
+  env.mod.offerVoiceStartReceipt(r);
+  const attempt = env.mod.startMicCapture();
+  assert(env.mod.takeVoiceStartReceipt() === null,
+         'startMicCapture must consume an offered receipt synchronously on entry');
+  assert(typeof r.captureToken === 'number' && r.captureToken > 0,
+         'the receipt must be bound to the attempt it describes before the first await');
+  await settle();
+  assert(r.committed === false, 'nothing has committed while getUserMedia is parked');
+  release();
+  assert((await attempt) === true, 'the attributed attempt should commit');
+  assert(r.committed === true, 'the commit fact must be recorded on the attempt receipt');
+  assert(env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === true,
+         "the attributed attempt's capture is the live one");
+
+  // Turning the microphone off keeps the history but not the liveness.
+  env.mod.stopRecording({ notifyServer: false });
+  assert(r.committed === true, 'a later stop must not erase that the attempt committed');
+  assert(env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === false,
+         'a stopped capture is no longer live');
+}
+
+async function attributedTakeoverCase() {
+  // The attributed attempt is parked in getUserMedia while an UNattributed
+  // start (the host's own route-exit resume) commits first. The loser returns
+  // true to protect the winner, and S.isRecording is true -- neither may be
+  // read as "this command's capture committed".
+  const env = loadModule();
+  const r = receipt();
+  const release = env.parkGetUserMedia();
+  env.mod.offerVoiceStartReceipt(r);
+  const first = env.mod.startMicCapture();
+  await settle();
+  env.unparkGetUserMedia();
+  const second = env.mod.startMicCapture();
+  await settle();
+  assert((await second) === true && env.S.isRecording === true, 'the unattributed start should win');
+  release();
+  assert((await first) === true, 'the superseded loser reports the live winner (existing behaviour)');
+  assert(r.committed === false,
+         'a superseded attempt must not be recorded as committed because someone else is recording');
+  assert(env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === false,
+         "the live capture is not the attributed attempt's");
+  assert(env.mod.micStartTokenOwnsLiveCapture(r.captureToken + 1) === true,
+         "the winner's own token owns the live capture");
+}
+
+async function attributedFailureCases() {
+  // A worklet failure BEFORE the publish: no commit.
+  let env = loadModule();
+  let r = receipt();
+  env.failAddModule(new Error('boom'));
+  env.mod.offerVoiceStartReceipt(r);
+  let threw = false;
+  try { await env.mod.startMicCapture(); } catch (_) { threw = true; }
+  assert(threw && r.committed === false, 'a pre-commit worklet failure must not record a commit');
+
+  // A throw AFTER the publish: the capture did commit, whatever the caller
+  // does with the error next.
+  env = loadModule();
+  r = receipt();
+  env.failAfterCommit();
+  env.mod.offerVoiceStartReceipt(r);
+  threw = false;
+  try { await env.mod.startMicCapture(); } catch (_) { threw = true; }
+  assert(threw && r.committed === true, 'a post-commit failure still committed');
+}
+
+async function receiptDoesNotLeakCase() {
+  // An offered receipt is consumed by the next startMicCapture even when it
+  // refuses before minting a generation, so it cannot attach to a later,
+  // unrelated start (the user's own press, or the route-exit resume).
+  const env = loadModule();
+  const r = receipt();
+  env.S.voiceInputRouteBlocked = true;
+  env.mod.offerVoiceStartReceipt(r);
+  assert((await env.mod.startMicCapture()) === false, 'a blocked route refuses the start');
+  env.S.voiceInputRouteBlocked = false;
+  assert((await env.mod.startMicCapture()) === true, 'the next, unattributed start commits');
+  assert(r.captureToken === null && r.committed === false,
+         'a receipt consumed by a refused start must not describe a later one');
+}
+
+(async () => {
+  await attributedCommitCase();
+  await attributedTakeoverCase();
+  await attributedFailureCases();
+  await receiptDoesNotLeakCase();
+  console.log('HARNESS_OK');
+})().catch((error) => {
+  console.log('HARNESS_FAILED: ' + (error && error.message ? error.message : error));
+  process.exitCode = 1;
+});
+"""
+
+
+@pytest.mark.unit
+def test_game_issued_start_records_its_own_commit_harness():
+    # #3003: a start a mini-game issued can commit after its route ended. The
+    # bridge's report depends on a per-attempt commit fact recorded at the real
+    # publish point -- not on startMicCapture's return value or S.isRecording,
+    # both of which read true for a superseded attempt.
+    prelude = textwrap.dedent(_HARNESS).split("(async () => {", 1)[0]
+    harness = (prelude + textwrap.dedent(_START_ATTRIBUTION_CASES)).replace(
+        "__APP_AUDIO_CAPTURE_PATH__", json.dumps(str(APP_AUDIO_CAPTURE_PATH))
+    )
+    result = _run_mic_capture_harness(harness)
+    assert result.returncode == 0, (
+        "start-attribution harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout

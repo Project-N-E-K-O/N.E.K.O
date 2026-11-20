@@ -5134,7 +5134,14 @@
     updateControls();
     client.voice.toggle({ timeoutMs: 12000 }).then(function (voiceState) {
       if (requestSequence !== state.voiceControlRequestSequence) return;
+      // A reply for a route that ended while the command ran describes that
+      // route, not this one, and ok:false there does not mean the host
+      // microphone is off. The state stream carries the current route's truth.
+      if (voiceState && voiceState.reason === 'route_superseded') return;
       handleSdkVoiceState(voiceState);
+      // The host was still starting when its wait ran out: unknown, not a
+      // failure. The state stream reports the outcome when it lands.
+      if (voiceState && voiceState.reason === 'start_pending') return;
       if (voiceState && voiceState.ok === false) {
         addEventMessage('drawingGuess.voice.controlFailed', 'Voice operation failed: {{reason}}', {
           reason: String(voiceState.reason || 'request_failed')

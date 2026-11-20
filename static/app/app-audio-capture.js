@@ -230,6 +230,43 @@
     // so async ownership checks cannot lose intermediate changes.
     let microphoneSelectionGeneration = 0;
 
+    // Start attribution for host-mediated (mini-game) microphone starts.
+    //
+    // A receipt is a plain object owned by its requester; this module only
+    // writes facts onto it. It travels by a one-shot hand-off slot that is
+    // always consumed synchronously by the very next consumer (the mic-button
+    // handler, then startMicCapture), so it cannot leak onto an unrelated
+    // start. While an attempt is in flight its receipt is indexed by that
+    // attempt's own immutable token -- never by "the latest start" -- and the
+    // entry is dropped in the attempt's finally, so the table is bounded by
+    // the attempts in flight. The commit fact is recorded at the single
+    // publish point inside startAudioWorklet, which is the only place a
+    // capture ever becomes live: neither startMicCapture's return value (a
+    // superseded attempt returns true to protect the live winner) nor the
+    // global S.isRecording can prove that THIS attempt committed.
+    let voiceStartReceiptHandoff = null;
+    const micStartReceipts = new Map();
+    let publishedMicStartToken = 0;
+
+    function offerVoiceStartReceipt(receipt) {
+        voiceStartReceiptHandoff = receipt && typeof receipt === 'object' ? receipt : null;
+    }
+
+    function takeVoiceStartReceipt() {
+        const receipt = voiceStartReceiptHandoff;
+        voiceStartReceiptHandoff = null;
+        return receipt;
+    }
+
+    function micStartTokenOwnsLiveCapture(token) {
+        return (
+            typeof token === 'number'
+            && token > 0
+            && token === publishedMicStartToken
+            && hasLiveCommittedMicrophonePipeline()
+        );
+    }
+
     function invalidatePendingMicStart() {
         micStartGeneration += 1;
     }
@@ -1955,6 +1992,11 @@
             S.micGainNode = ownGainNode;
             S.inputAnalyser = ownAnalyser;
             S.workletNode = ownWorkletNode;
+            // Same synchronous boundary as the publish above: from here on this
+            // attempt's capture is (or was) live, whatever happens next.
+            publishedMicStartToken = startToken;
+            const attributedStartReceipt = micStartReceipts.get(startToken);
+            if (attributedStartReceipt) attributedStartReceipt.committed = true;
 
             // 用户主动开麦，意味着要讲话；focus mode 的 isPlaying guard 此刻必须让路。
             // 切档案后自动触发的 greeting 音频播完如果没把 isPlaying 复位（finalize
@@ -2248,6 +2290,11 @@
     }
 
     async function startMicCapture() {
+        // Consumed first, before any early return, so an offered receipt can
+        // never outlive this synchronous call and attach to a later start.
+        const startReceipt = typeof window.takeVoiceStartReceipt === 'function'
+            ? window.takeVoiceStartReceipt()
+            : null;
         if (typeof window.isNekoVisitVoiceBlocked === 'function' && window.isNekoVisitVoiceBlocked()) {
             return false;
         }
@@ -2279,6 +2326,10 @@
         // getUserMedia() half of the window as well.
         micStartGeneration += 1;
         const micStartToken = micStartGeneration;
+        if (startReceipt) {
+            startReceipt.captureToken = micStartToken;
+            micStartReceipts.set(micStartToken, startReceipt);
+        }
         // Bind capture constraints, Worklet output and the wire header before
         // permission/player awaits or selected-device fallback can interleave.
         const captureTargetSampleRate = window.appUtils.isMobile() ? 16000 : 48000;
@@ -2518,6 +2569,7 @@
             stopGameVoiceSttGate({ restoreOrdinaryMic: false });
             throw err;
         } finally {
+            micStartReceipts.delete(micStartToken);
             if (pendingMicStartUiOwnerToken === micStartToken) {
                 pendingMicStartUiOwnerToken = null;
             }
@@ -3209,6 +3261,9 @@
     window.stopMicCapture = stopMicCapture;
     window.abortVoiceStartForBlockedRoute = abortVoiceStartForBlockedRoute;
     window.invalidatePendingMicStart = invalidatePendingMicStart;
+    window.offerVoiceStartReceipt = offerVoiceStartReceipt;
+    window.takeVoiceStartReceipt = takeVoiceStartReceipt;
+    window.micStartTokenOwnsLiveCapture = micStartTokenOwnsLiveCapture;
     window.stopRecording = stopRecording;
     // Only same-origin, same-Session storage events carry device preferences.
     // Electron partitions retain their separately salted device identifiers.
@@ -3345,6 +3400,9 @@
     mod.startMicCapture = startMicCapture;
     mod.stopMicCapture = stopMicCapture;
     mod.invalidatePendingMicStart = invalidatePendingMicStart;
+    mod.offerVoiceStartReceipt = offerVoiceStartReceipt;
+    mod.takeVoiceStartReceipt = takeVoiceStartReceipt;
+    mod.micStartTokenOwnsLiveCapture = micStartTokenOwnsLiveCapture;
     mod.stopRecording = stopRecording;
     mod.sampleMicVolumeLevel = sampleMicVolumeLevel;
     mod.startSettingsMicVolumeTest = startSettingsMicVolumeTestFromSettings;

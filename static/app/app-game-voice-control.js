@@ -216,15 +216,104 @@
         return predicate();
     }
 
-    async function startOfficialVoiceSession() {
-        if (S.isRecording === true) return true;
+    // Per-command start attribution. `attribution` says how this command
+    // relates to the host start it reports on:
+    //  * 'command'        -- the host accepted a start this command issued;
+    //  * 'observed'       -- a start was already in flight (typically the
+    //                        user's own press); this command only waited on it;
+    //  * 'already_active' -- capture was already running, nothing was started;
+    //  * 'none'           -- no start was issued or accepted (stop, or the host
+    //                        refused the press).
+    // Only a 'command' start carries a receipt, and only the host writes to it
+    // (app-buttons.js / app-audio-capture.js): whether it was accepted, the
+    // capture generation it ran under, whether that capture ever committed,
+    // and how the start finally ended. The receipt is local to this command,
+    // so a later start cannot overwrite what this one reports.
+    function createStartAttempt() {
+        return { attribution: 'none', receipt: null, issued: false };
+    }
+
+    function createStartReceipt() {
+        return {
+            origin: 'game_voice_control',
+            accepted: false,
+            voiceStartEpoch: null,
+            captureToken: null,
+            committed: false,
+            outcome: 'pending'
+        };
+    }
+
+    function startReceiptOutcome(attempt) {
+        if (!attempt || attempt.attribution !== 'command') {
+            return attempt && attempt.issued ? 'not_started' : 'not_applicable';
+        }
+        var receipt = attempt.receipt;
+        if (!receipt) return 'unknown';
+        if (receipt.outcome !== 'pending') return receipt.outcome;
+        // The handler settles the receipt before it clears the lifecycle
+        // flags on its success and failure paths. A start that is no longer
+        // the current lifecycle without having settled stood down (text
+        // takeover, blocked route, goodbye): report it as cancelled. While it
+        // IS still current the result is genuinely unknown -- the host may
+        // still commit after this reply -- and must not be reported as final.
+        var lifecycleOpen = S.voiceSessionStartEpoch === receipt.voiceStartEpoch
+            && (S.voiceStartPending === true || window.isMicStarting === true);
+        return lifecycleOpen ? 'pending' : 'cancelled';
+    }
+
+    function startReport(attempt) {
+        var receipt = attempt && attempt.attribution === 'command' ? attempt.receipt : null;
+        var committed = !!(receipt && receipt.committed === true);
+        var captureLive = committed
+            && typeof window.micStartTokenOwnsLiveCapture === 'function'
+            && window.micStartTokenOwnsLiveCapture(receipt.captureToken) === true;
+        var hostActive = S.isRecording === true;
+        return {
+            start_attribution: attempt ? attempt.attribution : 'none',
+            start_outcome: startReceiptOutcome(attempt),
+            start_committed: committed,
+            start_capture_live: captureLive,
+            host_capture_active: hostActive,
+            host_capture_starting: !hostActive
+                && (S.voiceStartPending === true || window.isMicStarting === true)
+        };
+    }
+
+    async function startOfficialVoiceSession(attempt) {
+        if (S.isRecording === true) {
+            attempt.attribution = 'already_active';
+            return true;
+        }
         if (S.voiceStartPending === true || window.isMicStarting === true) {
+            // Someone else's start. Only observed: nothing on the route-exit
+            // path may treat it as this command's.
+            attempt.attribution = 'observed';
             await waitFor(voiceStartSettled, COMMAND_TIMEOUT_MS);
             return S.isRecording === true;
         }
+        // A start was needed from here on; if none gets accepted the outcome
+        // is 'not_started', not 'not_applicable'.
+        attempt.issued = true;
         var micButton = document.getElementById('micButton');
         if (!micButton || micButton.disabled) return false;
-        micButton.click();
+        var receipt = createStartReceipt();
+        var canAttribute = typeof window.offerVoiceStartReceipt === 'function';
+        if (canAttribute) window.offerVoiceStartReceipt(receipt);
+        try {
+            micButton.click();
+        } finally {
+            // click() dispatches synchronously and the handler takes the
+            // receipt before its first await; clear an untaken one so it can
+            // never attach to a later, unrelated press.
+            if (canAttribute) window.offerVoiceStartReceipt(null);
+        }
+        if (!canAttribute) {
+            attempt.attribution = 'command';
+        } else if (receipt.accepted === true) {
+            attempt.attribution = 'command';
+            attempt.receipt = receipt;
+        }
         await waitFor(voiceStartSettled, COMMAND_TIMEOUT_MS);
         return S.isRecording === true;
     }
@@ -272,6 +361,7 @@
 
         commandInFlight = true;
         broadcastState({ ok: true, reason: 'working', request_id: requestId }, true, acceptedRoute);
+        var startAttempt = createStartAttempt();
         try {
             var voiceWasActive = S.isRecording === true
                 || S.voiceStartPending === true
@@ -280,7 +370,7 @@
                 ? ((S.isRecording === true || S.voiceStartPending === true || window.isMicStarting === true) ? 'stop' : 'start')
                 : action;
             var ok = effectiveAction === 'start'
-                ? await startOfficialVoiceSession()
+                ? await startOfficialVoiceSession(startAttempt)
                 : await stopOfficialVoiceSession();
             if (!routeSnapshotIsCurrent(acceptedRoute)) {
                 // The microphone is process-global, and this module does not own
@@ -311,14 +401,25 @@
                 // (see the header); a command whose route is gone reports and
                 // stops there. A microphone left on is visible in the UI and the
                 // host's own route-exit path decides its fate.
-                broadcastState({
+                //
+                // The report keeps three things apart. The ROUTE fields stay
+                // what they were (ok/available/active/starting false): the old
+                // route is gone and must not look usable. What THIS command's
+                // start did -- attribution, whether its own capture committed,
+                // whether that capture is still the live one, and how the start
+                // ended (possibly still pending) -- comes from its own receipt.
+                // The HOST capture fields are a snapshot of the process-global
+                // microphone, whoever owns it. So "route_superseded" no longer
+                // implies "nothing was started" when the command's capture in
+                // fact committed after the route ended.
+                broadcastState(Object.assign(startReport(startAttempt), {
                     ok: false,
                     reason: 'route_superseded',
                     request_id: requestId,
                     available: false,
                     active: false,
                     starting: false
-                }, true, {
+                }), true, {
                     active: false,
                     gameType: acceptedRoute.gameType,
                     sessionId: acceptedRoute.sessionId,
@@ -326,14 +427,31 @@
                 });
                 return;
             }
-            broadcastState({
+            var report = startReport(startAttempt);
+            var reason = ok ? (effectiveAction === 'start' ? 'started' : 'stopped') : (effectiveAction + '_failed');
+            if (
+                !ok
+                && effectiveAction === 'start'
+                && (report.start_outcome === 'pending'
+                    || (report.start_attribution === 'observed' && report.host_capture_starting))
+            ) {
+                // The wait ran out while the host is still starting. That is
+                // an unknown result, not a failure: the capture may still
+                // commit after this reply, and the state stream will say so.
+                reason = 'start_pending';
+            }
+            broadcastState(Object.assign(report, {
                 ok: ok,
-                reason: ok ? (effectiveAction === 'start' ? 'started' : 'stopped') : (effectiveAction + '_failed'),
+                reason: reason,
                 request_id: requestId
-            }, true, acceptedRoute);
+            }), true, acceptedRoute);
         } catch (error) {
             console.warn('[GameVoiceControl] host command failed:', error);
-            broadcastState({ ok: false, reason: 'command_failed', request_id: requestId }, true, acceptedRoute);
+            broadcastState(Object.assign(startReport(startAttempt), {
+                ok: false,
+                reason: 'command_failed',
+                request_id: requestId
+            }), true, acceptedRoute);
         } finally {
             commandInFlight = false;
             broadcastState({}, true);
