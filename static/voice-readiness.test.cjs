@@ -1280,6 +1280,37 @@ test('closing an input test stops capture immediately and waits for server-owned
     assert.equal(h.controller.canStart(), false);
 });
 
+for (const desktop of [false, true]) {
+    test(`closing waits for a trial's already pending ${desktop ? 'desktop' : 'HTTP'} isolation release`, async () => {
+        const release = deferred(); let releaseCalls = 0;
+        const h = harness({ requestRouter: async (url, config) => {
+            if (url === '/resources') return { can_enroll: true, resources: {} };
+            if (url === '/audio/check/isolation') return { token: 'trial-token' };
+            if (url === '/audio/check') return { accepted: true, audio_contract: { revision: 1 } };
+            if (url === '/audio/check/isolation/release') { releaseCalls++; return release.promise; }
+            throw new Error('unexpected request: ' + url);
+        } });
+        if (desktop) h.root.nekoVoiceEnrollment = {
+            prepare: async ({ operationId }) => ({ operationId, stopped: true, token: 'trial-token' }),
+            release: () => { releaseCalls++; return release.promise; }
+        };
+        await h.controller.refreshResources();
+        const testing = h.elements.get('voice-identity-test').emit('click');
+        while (!releaseCalls) await new Promise(resolve => setImmediate(resolve));
+        let closed = false;
+        const closing = h.controller.close().then(() => { closed = true; });
+        try {
+            await new Promise(resolve => setImmediate(resolve));
+            assert.equal(closed, false, 'clearing the local token does not confirm the pending release');
+            assert.equal(releaseCalls, 1, 'closing must share the existing release');
+            if (!desktop) assert.equal(h.calls.find(call => call.url === '/audio/check/isolation/release').config.keepalive, true);
+        } finally {
+            release.resolve({ released: true }); await testing; await closing;
+        }
+        assert.equal(closed, true);
+    });
+}
+
 test('a shared preview acknowledgement cannot make another window release the owner ticket', async () => {
     const owner = isolationHarness();
     const observer = isolationHarness();

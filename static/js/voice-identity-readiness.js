@@ -108,6 +108,7 @@
         let isolationId = null;
         let isolationToken = null;
         let isolationServerOwned = false;
+        const isolationReleases = new Set();
         let requestAbort = null;
         let pollTimer = null;
         let pollResolve = null;
@@ -492,18 +493,22 @@
         async function releaseIsolation(owned) {
             if (!owned || !owned.token) return;
             if (isolationId === owned.id && isolationToken === owned.token) { isolationId = null; isolationToken = null; }
-            if (root.nekoVoiceEnrollment && !owned.serverOwned) await root.nekoVoiceEnrollment.release({ operationId: owned.id });
+            let releasing;
+            if (root.nekoVoiceEnrollment && !owned.serverOwned) releasing = root.nekoVoiceEnrollment.release({ operationId: owned.id });
             else {
                 if (root.opener && !root.opener.closed) root.opener.postMessage({ type: 'neko-voice-enrollment-release', operationId: owned.id, token: owned.token }, root.location.origin);
-                await hooks.request('/audio/check/isolation/release', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: owned.token }) });
+                releasing = hooks.request('/audio/check/isolation/release', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: owned.token }) });
             }
+            isolationReleases.add(releasing);
+            try { await releasing; }
+            finally { isolationReleases.delete(releasing); }
         }
         let closePromise = null;
         function close() {
             if (closePromise) return closePromise;
             pageHidden = true;
             const owned = { id: isolationId, token: isolationToken, serverOwned: isolationServerOwned };
-            closePromise = Promise.all([cancelOperation(), releaseIsolation(owned)]).then(() => {});
+            closePromise = Promise.all([cancelOperation(), releaseIsolation(owned), ...isolationReleases]).then(() => {});
             return closePromise;
         }
         async function testInput() {
