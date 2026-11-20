@@ -3095,4 +3095,7 @@ def test_validate_plugin_dir_warns_plugin_store_backend_is_not_read(tmp_path: Pa
     assert len(store_issues) == 1
     level, message = store_issues[0]
     assert level == "warning"
-    assert message.startswith("[plugin.store].backend is not read by the runtime and has no effect")
+    lines = message.split("\n")
+    assert lines[0] == "[plugin.store].backend is not read by the runtime and has no effect"
+    assert [line.strip().split(":", 1)[0] for line in lines[1:]] == ["zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt"]
+    assert all(line.strip().split(": ", 1)[1].startswith("[plugin.store].backend") for line in lines[1:])

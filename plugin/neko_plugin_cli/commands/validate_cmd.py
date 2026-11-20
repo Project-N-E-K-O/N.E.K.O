@@ -42,6 +42,27 @@ _PLUGIN_ENTRY_FIELDS_MAX = 64
 _PLUGIN_ENTRY_KEY_LENGTH_MAX = 256
 # Fields the registry coerces with bool(), so "false" would read as True.
 _PLUGIN_ENTRY_BOOL_FIELDS = ENTRY_CONTRACT_BOOL_FIELDS
+# Locales for new check messages: English first as the main line, the rest below it.
+_MESSAGE_LOCALES = ("en", "zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt")
+_STORE_BACKEND_IGNORED = {
+    "en": "[plugin.store].backend is not read by the runtime and has no effect",
+    "zh-CN": "[plugin.store].backend 不会被运行时读取，写了没有效果",
+    "zh-TW": "[plugin.store].backend 不會被執行環境讀取，寫了沒有效果",
+    "ja": "[plugin.store].backend はランタイムで読み取られないため、効果はありません",
+    "ko": "[plugin.store].backend는 런타임에서 읽지 않으므로 효과가 없습니다",
+    "ru": "[plugin.store].backend не читается средой выполнения и ни на что не влияет",
+    "es": "[plugin.store].backend no lo lee el entorno de ejecución y no tiene ningún efecto",
+    "pt": "[plugin.store].backend não é lido pelo ambiente de execução e não tem efeito",
+}
+
+
+def _format_multilingual(texts: dict[str, str]) -> str:
+    """One message: the English line, then one indented line per other locale."""
+    lines = [texts["en"]]
+    lines.extend(f"      {locale}: {texts[locale]}" for locale in _MESSAGE_LOCALES if locale != "en")
+    return "\n".join(lines)
+
+
 # Old persist_mode spellings check used to accept; the host never applied them.
 _PLUGIN_STATE_PERSIST_MODE_MIGRATIONS = {"always": "auto", "disabled": "off"}
 
@@ -429,12 +450,7 @@ def _check_store_table(value: object, issues: list[tuple[str, str]]) -> None:
     if "backend" in value:
         # Still a known key so existing plugin.toml files keep passing, but the SDK
         # only reads [plugin.store].enabled (resolve_store_enabled); backend is never read.
-        issues.append((
-            "warning",
-            "[plugin.store].backend is not read by the runtime and has no effect / "
-            "[plugin.store].backend 不会被运行时读取，写了没有效果 / "
-            "[plugin.store].backend はランタイムで読み取られないため、効果はありません",
-        ))
+        issues.append(("warning", _format_multilingual(_STORE_BACKEND_IGNORED)))
 
 
 def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
