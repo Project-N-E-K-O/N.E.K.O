@@ -3003,7 +3003,7 @@ async function loadCurrentApiKey() {
             if (typeof data.disableTts === 'boolean' && document.getElementById('disableTts')) {
                 document.getElementById('disableTts').checked = data.disableTts;
             }
-            rememberChatGPTIndependentSettings(data.chatgptIndependentSlots);
+            rememberChatGPTIndependentSettings(data.chatgptIndependentSlots, data);
 
         } else {
             showCurrentApiKey(window.t ? window.t('api.getCurrentApiKeyFailed') : '获取当前API Key失败', '', false);
@@ -3935,7 +3935,7 @@ function refreshAutoResolvedModelUrlsForSave(params) {
 }
 
 
-function rememberChatGPTIndependentSettings(slots) {
+function rememberChatGPTIndependentSettings(slots, settings = {}) {
     _chatgptIndependentSlots = Array.isArray(slots)
         ? slots.filter(slot => MODEL_TYPES.includes(slot) || slot === 'image') : [];
     _loadedChatGPTIndependentFields = {};
@@ -3950,6 +3950,13 @@ function rememberChatGPTIndependentSettings(slots) {
     if (_chatgptIndependentSlots.includes('image')) {
         Object.assign(_loadedChatGPTIndependentFields, imageSettingsPayload());
     }
+    if (_chatgptIndependentSlots.includes('tts')) {
+        // These are separate legacy TTS fields, not ttsModel* settings. Snapshot
+        // their persisted values so a full-form save cannot overwrite dormant
+        // voice configuration with UI defaults while ChatGPT owns the slot.
+        _loadedChatGPTIndependentFields.ttsProvider = settings.ttsProvider ?? '';
+        _loadedChatGPTIndependentFields.ttsVoiceId = settings.ttsVoiceId ?? '';
+    }
     if (_loadedChatGPTIndependentFields.ttsModelProvider === 'gptsovits') {
         _loadedChatGPTIndependentFields.ttsModelUrl = getGptSovitsConfigForSave().url;
     }
@@ -3959,6 +3966,12 @@ function rememberChatGPTIndependentSettings(slots) {
 
 function prepareChatGPTIndependentSettingsForSave(params) {
     const payload = {...params};
+    if (_chatgptIndependentSlots.includes('tts')) {
+        for (const field of ['ttsProvider', 'ttsVoiceId']) {
+            if (Object.hasOwn(params, field) && params[field] !== _loadedChatGPTIndependentFields[field]) return null;
+            delete payload[field];
+        }
+    }
     for (const slot of _chatgptIndependentSlots) {
         const providerField = `${slot}ModelProvider`;
         const provider = params[providerField] ?? _loadedChatGPTIndependentFields[providerField];

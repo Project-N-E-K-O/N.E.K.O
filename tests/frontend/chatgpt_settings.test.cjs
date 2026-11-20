@@ -524,9 +524,10 @@ test('ordinary full-form saves omit unchanged dormant slots including inherited 
         ttsModelProvider: 'follow_assist', ttsModelUrl: 'https://old.test/tts',
         ttsModelId: '', ttsModelApiKey: '__NEKO_SECRET_MASKED__',
         imageModelProvider: 'disabled', imageModelUrl: '', imageModelId: '', imageModelApiKey: '',
+        ttsProvider: 'legacy-voice-provider', ttsVoiceId: 'legacy-voice-id',
     };
     const ui = independentSettingsSurface(values);
-    ui.context.rememberChatGPTIndependentSettings(['omni', 'tts', 'image']);
+    ui.context.rememberChatGPTIndependentSettings(['omni', 'tts', 'image'], values);
     assert.equal(ui.nodes['chatgpt-independent-settings-note'].hidden, false);
     ui.nodes.omniModelId.dataset = {fixedModelHidden: 'true'};
     const fullForm = {...values, enableCustomApi: true, coreApi: 'qwen', assistApi: 'qwen',
@@ -538,6 +539,9 @@ test('ordinary full-form saves omit unchanged dormant slots including inherited 
     assert.equal(ui.calls[0].body.conversationModelId, 'new-chat-model');
     assert.equal(ui.calls[0].body.disableTts, true);
     for (const field of Object.keys(values)) assert.equal(Object.hasOwn(ui.calls[0].body, field), false);
+    const changedVoice = {...fullForm, ttsVoiceId: 'different-voice'};
+    await ui.context.saveApiKey(changedVoice);
+    assert.equal(ui.calls.length, 1, 'a dormant legacy voice edit must be rejected');
     assert.equal(fullForm.imageModelProvider, 'disabled', 'the original confirmation payload stays unchanged');
 });
 
