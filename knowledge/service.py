@@ -40,6 +40,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import logging
+import inspect
 import json
 import hashlib
 import shutil
@@ -241,6 +242,10 @@ _QUERY_WORK: contextvars.ContextVar[list[concurrent.futures.Future[Any]] | None]
 )
 
 
+class _SelectionChanged(Exception):
+    """The active source selection changed before a last-source removal."""
+
+
 def _file_identity(path: Path) -> tuple[int, int] | None:
     """Size and modification time, or None when the file cannot be read."""
     try:
@@ -379,9 +384,11 @@ class KnowledgeService:
         # A replan can commit SQLite before registry persistence fails. Block
         # further capacity decisions/encoding until their counts agree again.
         self._pending_chunk_reconcile = False
-        # pack_id -> (pack digest, spec digest, other packs' chunks) of a token
-        # replan refused by chunk limits; it is not retried until one changes.
-        self._refused_replans: dict[str, tuple[str, str, int]] = {}
+        # pack_id -> ((pack digest, spec digest, other packs' chunks), reason)
+        # of a token replan refused by chunk limits. Its over-long rows count
+        # as failed until the inputs that reason depends on change; then they
+        # are reopened and the replan is tried once more.
+        self._refused_replans: dict[str, tuple[tuple[str, str, int], str]] = {}
         self._source_capabilities: dict[str, tuple[tuple, bool]] = {}
 
     # ── lifecycle ───────────────────────────────────────────────────
@@ -500,7 +507,10 @@ class KnowledgeService:
                     continue
                 if job.state in ACTIVE_JOB_STATES:
                     record = self._registry.packs.get(job.pack_id)
+                    # A pack the startup reconcile found broken was not
+                    # repaired by this task, whatever its registry digest says.
                     if (job.kind != "pack_export" and record is not None
+                            and job.pack_id not in self._broken_packs
                             and record.pack_sha256 == job.staged_sha256
                             and record.subscription == job.subscription
                             and record.archive_sha256 == job.archive_sha256):
@@ -860,7 +870,8 @@ class KnowledgeService:
         self,
         pack_id: str,
         releases: frozenset[Release] | None,
-        decide: Callable[[PackRecord | None], tuple[PackRecord | None, str]],
+        decide: Callable[[PackRecord | None], tuple[PackRecord | None, str]
+                         | Awaitable[tuple[PackRecord | None, str]]],
         *,
         retain_sources: bool = False,
     ) -> dict[str, Any]:
@@ -875,7 +886,9 @@ class KnowledgeService:
         self._pending_removals[pack_id] = self._pending_removals.get(pack_id, frozenset()) | {removal}
 
         async def run() -> dict[str, Any]:
-            record, kept = decide(self._registry.packs.get(pack_id))
+            decided = decide(self._registry.packs.get(pack_id))
+            # An async rule re-reads what it needs under this same lock.
+            record, kept = await decided if inspect.isawaitable(decided) else decided
             registry = self._registry.without_pack(pack_id) if record is not None else None
             if registry is not None:
                 # Commit the history-list preference before removing the active
@@ -1112,7 +1125,7 @@ class KnowledgeService:
 
     async def remove_source(self, pack_id: str, doc_id: str) -> dict[str, Any]:
         """Remove an active selection without deleting its original or history."""
-        async def run():
+        async def selection() -> list[dict]:
             pack = await self._thread(self._source_pack, pack_id)
             if pack is None:
                 raise KnowledgePackError("source_not_found")
@@ -1126,13 +1139,40 @@ class KnowledgeService:
                 # Removing the last active document removes the pack, which
                 # would cancel an append of another document still waiting.
                 raise KnowledgePackError("job_in_progress")
-            return await self._project_sources(pack_id, pack.source.name, retained) if retained else None
-        result = await self._locked(run)
-        if result is not None:
-            return result
-        # An empty schema-v1 pack is invalid. Removing its last source uses the
-        # existing pack-removal ordering while leaving every retained revision.
-        await self.remove_pack(pack_id, _retain_sources=True)
+            return retained
+
+        for _attempt in range(3):
+            async def run():
+                retained = await selection()
+                if not retained:
+                    return None
+                pack = await self._thread(self._source_pack, pack_id)
+                return await self._project_sources(pack_id, pack.source.name, retained)
+            result = await self._locked(run)
+            if result is not None:
+                return result
+            if pack_id not in self._registry.packs:
+                raise KnowledgePackError("source_not_found")
+
+            async def decide(record: PackRecord | None) -> tuple[PackRecord | None, str]:
+                # Checked again under the removal's own lock: an append that
+                # took the lock in between must not be removed with A, and
+                # must not make A reappear after this removal.
+                if record is None:
+                    raise KnowledgePackError("source_not_found")
+                if await selection():
+                    raise _SelectionChanged()
+                return record, ""
+
+            try:
+                # An empty schema-v1 pack is invalid. Removing its last source
+                # uses the existing pack-removal ordering and keeps revisions.
+                await self._remove(pack_id, None, decide, retain_sources=True)
+                break
+            except _SelectionChanged:
+                continue  # Another document became active; remove only this one.
+        else:
+            raise KnowledgePackError("job_in_progress")
         stamp = utc_now()
         job = ImportJob(uuid.uuid4().hex, pack_id, "active", stamp, stamp, kind="import_commit")
         self._remember_job(job)
@@ -1863,14 +1903,20 @@ class KnowledgeService:
     def _staging_path(self, job_id: str) -> Path:
         return self.root / STAGING_DIR / f"{job_id}.json"
 
+    @staticmethod
+    def _holds_artifact(job: ImportJob) -> bool:
+        """A finished export is the only handle to its artifact (download,
+        publish, delete); it stays tracked until the user deletes it."""
+        return job.kind == "pack_export" and job.state == "active" and bool(job.result)
+
     def _remember_job(self, job: ImportJob) -> None:
         self._jobs[job.job_id] = job
-        while len(self._jobs) > MAX_TRACKED_JOBS:
-            # A finished export is the only handle to its artifact (download,
-            # publish, delete); the bounded window must not orphan it.
+        # The bounded window applies to ordinary tasks only, so retained
+        # exports can neither be evicted nor crowd out recent failed imports.
+        while sum(not self._holds_artifact(item) for item in self._jobs.values()) > MAX_TRACKED_JOBS:
             oldest = next(
                 (job_id for job_id, item in self._jobs.items() if item.state in TERMINAL_JOB_STATES
-                 and not (item.kind == "pack_export" and item.state == "active" and item.result)),
+                 and not self._holds_artifact(item)),
                 None,
             )
             if oldest is None:
@@ -1911,6 +1957,9 @@ class KnowledgeService:
     def discard_job(self, job_id: str) -> bool:
         job = self._jobs.get(job_id)
         if job is None or job.state not in TERMINAL_JOB_STATES:
+            return False
+        if self._holds_artifact(job):
+            # Only delete_export may remove a finished export with its ZIP.
             return False
         job.export_deleted = True
         del self._jobs[job_id]
@@ -2136,6 +2185,12 @@ class KnowledgeService:
                 # and chunk count were for other bytes.
                 raise KnowledgeUnavailable("knowledge_error")
             pack = decode_pack_bytes(raw)
+            if job.kind == "import_commit" and previous is not None and not self._sources_managed(job.pack_id):
+                # A source task (including a retry of its frozen input) may
+                # only replace a pack that is still the projection of its local
+                # sources; an unrelated pack that took the id since is not its
+                # target, even though the old source history is still on disk.
+                raise KnowledgePackError("pack_changed")
             if (job.frozen_input.get("source_confirmation_required")
                     and (previous.enabled if previous else bool(job.initial_enabled))
                     and not job.frozen_input.get("enabled_confirmed")):
@@ -2257,12 +2312,25 @@ class KnowledgeService:
                 logger.warning("[Knowledge] old file of %s changed; not restoring its index", pack_id)
                 self._store.delete_pack(pack_id)
                 return
-            self._store.replace_pack(
-                decode_pack_bytes(raw),
+            pack = decode_pack_bytes(raw)
+            options = self._rebuild_options(previous)
+            if "fit" in options:
+                # Same rule as the startup reconcile: a token plan that would
+                # exceed the budgets keeps the admitted (legacy) layout.
+                chunks = count_pack_chunks(pack, fit=options["fit"])
+                others = sum(item.chunks for key, item in self._registry.packs.items() if key != pack_id)
+                if chunks > MAX_CHUNKS_PER_PACK or others + chunks > MAX_TOTAL_CHUNKS:
+                    options.pop("fit")
+            restored = self._store.replace_pack(
+                pack,
                 pack_sha256=previous.pack_sha256,
                 disabled_keys=previous.disabled_titles,
-                **self._rebuild_options(previous),
+                **options,
             )
+            if restored != previous.chunks:
+                # The registry still holds the old count; repair it before any
+                # further admission or encoding relies on it.
+                self._pending_chunk_reconcile = True
         except Exception as exc:
             # Startup reconcile repairs the index from the registry anyway.
             logger.warning("[Knowledge] could not restore index after a failed import (%s)", type(exc).__name__)
@@ -2470,11 +2538,26 @@ class KnowledgeService:
                 self._seed_failures.clear()
         await self._locked(run, wait=True)
 
+    async def _reopen_refused_replans(self, specification: Mapping) -> None:
+        """Retry a refused replan once what its refusal depended on changed.
+
+        A per-pack limit depends on the pack and the encoder; a total-capacity
+        refusal also on the other packs, so freeing capacity reopens it.
+        """
+        for pack_id, (key, reason) in list(self._refused_replans.items()):
+            current = self._replan_key(pack_id, specification)
+            if current is None:
+                self._refused_replans.pop(pack_id, None)  # Removed pack: its rows are gone.
+                continue
+            relevant = slice(None) if reason == "capacity_chunks" else slice(0, 2)
+            if current[relevant] == key[relevant]:
+                continue
+            self._refused_replans.pop(pack_id, None)
+            await self._locked(lambda pack_id=pack_id: self._thread(self._store.reset_attempts, pack_id), wait=True)
+
     def _replan_key(self, pack_id: str, specification: Mapping | None) -> tuple[str, str, int] | None:
         """Identify the inputs a limit-refused token replan depended on."""
         record = self._registry.packs.get(pack_id)
-        if record is None:
-            self._refused_replans.pop(pack_id, None)
         if record is None or not specification:
             return None
         others = sum(item.chunks for key, item in self._registry.packs.items() if key != pack_id)
@@ -2504,11 +2587,16 @@ class KnowledgeService:
             key = (record.archive_sha256, identity)
             if key in self._seeded_artifacts:
                 continue
-            path = self.artifact_path(record.archive_sha256)
-            stamp = await self._thread(_file_identity, path)
+            # Identity of the expected location: a missing optional ZIP is
+            # remembered as None and retried once a file appears there.
+            stamp = await self._thread(
+                _file_identity, self.root / "artifacts" / (record.archive_sha256 + ".neko-knowledge.zip"))
             if key in self._seed_failures and self._seed_failures[key] == stamp:
                 continue  # A damaged ZIP is not re-hashed and re-validated every batch.
             try:
+                # Resolved inside the guard: a missing retained ZIP must not
+                # stop ordinary backfill of this or any other pack.
+                path = self.artifact_path(record.archive_sha256)
                 checked = await self._thread(read_archive, path, expected_spec=specification)
                 if checked["artifact_sha256"] != record.archive_sha256:
                     self._seed_failures[key] = stamp
@@ -2566,6 +2654,8 @@ class KnowledgeService:
                 # must wait, rather than emit uncertified/truncated vectors.
                 break
             if specification is not None:
+                if self._refused_replans:
+                    await self._reopen_refused_replans(specification)
                 await self._seed_retained_packages(pack_ids, specification)
             rows = await self._thread(
                 self._store.pending_chunks, model_id=model_id, pack_ids=pack_ids, limit=INDEX_BATCH_SIZE,
@@ -2588,7 +2678,8 @@ class KnowledgeService:
                     refused: set[str] = set()
                     for pack_id in sorted(set(owners.values())):
                         key = self._replan_key(pack_id, specification)
-                        if key is not None and self._refused_replans.get(pack_id) == key:
+                        if key is not None and pack_id in self._refused_replans:
+                            # Entries whose inputs changed were reopened above.
                             refused.add(pack_id)
                             continue
                         try:
@@ -2597,7 +2688,7 @@ class KnowledgeService:
                             if exc.reason in {"too_many_chunks", "capacity_chunks"} and key is not None:
                                 # Remember the limit refusal: re-tokenizing the
                                 # whole pack every round cannot change it.
-                                self._refused_replans[pack_id] = key
+                                self._refused_replans[pack_id] = (key, exc.reason)
                                 refused.add(pack_id)
                             else:
                                 deferred_packs.add(pack_id)
@@ -2614,7 +2705,7 @@ class KnowledgeService:
                         # Over-long rows of a refused pack stay keyword-only and
                         # show as failed, so progress can finish; its other rows
                         # still get vectors. A new model or restart retries once.
-                        over_long = [row[0] for row, size in zip(rows, counts)
+                        over_long = [(row[0], row[1], owners[row[0]]) for row, size in zip(rows, counts)
                                      if size > specification["max_length"] and owners.get(row[0]) in refused]
                         marked = await self._locked(
                             lambda ids=over_long: self._thread(self._store.exhaust_attempts, ids), wait=True)

@@ -120,7 +120,30 @@ async def test_finished_exports_outlive_the_bounded_task_window(tmp_path, restar
             await service.start()
         ids = [job["job_id"] for job in service.list_jobs()]
         assert export.job_id in ids and failed_export.job_id not in ids
-        assert len(ids) == MAX_TRACKED_JOBS
+        # The window bounds ordinary tasks; the retained export is extra.
+        assert len(ids) == MAX_TRACKED_JOBS + 1
+        # Discarding is not a way to drop a finished export and orphan its ZIP.
+        assert service.discard_job(export.job_id) is False
+        assert export.job_id in [job["job_id"] for job in service.list_jobs()]
+    finally:
+        await service.stop()
+
+
+async def test_retained_exports_do_not_crowd_out_recent_failed_imports(tmp_path):
+    from knowledge.service import MAX_TRACKED_JOBS, ImportJob
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        for index in range(MAX_TRACKED_JOBS + 3):
+            stamp = f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}Z"
+            service._remember_job(ImportJob(f"e{index:031x}", "demo-memes", "active", stamp, stamp, kind="pack_export",
+                                            result={"artifact_id": f"{index:064x}", "format_version": 2}))
+        failed = ImportJob("f" * 32, "demo-memes", "failed", "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z")
+        service._remember_job(failed)
+        service._remember_job(ImportJob("a" * 32, "demo-memes", "active", "2026-01-02T00:00:01Z", "2026-01-02T00:00:01Z"))
+        ids = [job["job_id"] for job in service.list_jobs()]
+        assert failed.job_id in ids and len(ids) == MAX_TRACKED_JOBS + 5
     finally:
         await service.stop()
 
@@ -160,6 +183,83 @@ async def test_removing_the_last_source_does_not_cancel_a_waiting_append(tmp_pat
         else:
             service._admitting.pop(pack_id)
         assert (await service.remove_source(pack_id, value["doc_id"]))["state"] == "active"
+    finally:
+        await service.stop()
+
+
+async def test_last_source_removal_rechecks_an_append_admitted_before_its_lock(tmp_path):
+    """The check and the registry removal happen under one lock acquisition."""
+    from knowledge.models import KnowledgePackError
+    from knowledge.service import ImportJob
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        value = (await service.preview_source("notes.txt", b"Lighthouse reference."))["preview"]
+        await _finished(service, await service.commit_source(value["preview_id"], value["sha256"]))
+        pack_id = (await service.list_packs())[0]["pack_id"]
+        remove = service._remove
+
+        async def append_slips_in(*args, **kwargs):
+            # An append of B wins the lock after the first check released it.
+            stamp = "2026-01-01T00:00:00Z"
+            service._jobs["append-b"] = ImportJob("append-b", pack_id, "queued", stamp, stamp, arrived_at=10**9)
+            return await remove(*args, **kwargs)
+
+        service._remove = append_slips_in
+        with pytest.raises(KnowledgePackError) as error:
+            await service.remove_source(pack_id, value["doc_id"])
+        assert error.value.reason == "job_in_progress"
+        assert [row["pack_id"] for row in await service.list_packs()] == [pack_id]
+        assert service._jobs["append-b"].state == "queued"
+    finally:
+        service._jobs.pop("append-b", None)
+        await service.stop()
+
+
+async def test_last_source_removal_that_finds_a_committed_append_removes_only_that_document(tmp_path):
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        first = (await service.preview_source("a.txt", b"Lighthouse reference A.", name="References"))["preview"]
+        await _finished(service, await service.commit_source(first["preview_id"], first["sha256"]))
+        pack_id = (await service.list_packs())[0]["pack_id"]
+        remove = service._remove
+        calls = []
+
+        async def append_lands_first(*args, **kwargs):
+            if not calls:
+                # B is appended and committed after the first check saw only A.
+                second = (await service.preview_source("b.txt", b"Garden reference B.", pack_id=pack_id))["preview"]
+                await _finished(service, await service.commit_source(second["preview_id"], second["sha256"]))
+            calls.append(args)
+            return await remove(*args, **kwargs)
+
+        service._remove = append_lands_first
+        result = await service.remove_source(pack_id, first["doc_id"])
+        assert (await _finished(service, result))["state"] == "active"
+        sources = {row["name"]: row for row in (await service.list_sources(pack_id))["sources"]}
+        assert sources["a.txt"]["removed"] is True and sources["b.txt"]["removed"] is False
+        assert [row["pack_id"] for row in await service.list_packs()] == [pack_id]
+    finally:
+        await service.stop()
+
+
+async def test_source_task_does_not_replace_an_unrelated_pack_that_took_its_id(tmp_path):
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        value = (await service.preview_source("notes.txt", b"Lighthouse reference."))["preview"]
+        await _finished(service, await service.commit_source(value["preview_id"], value["sha256"]))
+        pack_id = (await service.list_packs())[0]["pack_id"]
+        frozen = [service._sources.version(pack_id, value["doc_id"], 1)]
+        # An unrelated local pack now holds the id; the old source history stays on disk.
+        assert (await _import(service, _pack(pack_id)))["state"] == "active"
+        unrelated = service._registry.packs[pack_id].pack_sha256
+        # The same path a retry of the frozen source selection takes.
+        retried = await _finished(service, await service._project_sources(pack_id, "References", frozen))
+        assert retried["state"] == "failed" and retried["reason"] == "pack_changed"
+        assert service._registry.packs[pack_id].pack_sha256 == unrelated
     finally:
         await service.stop()
 

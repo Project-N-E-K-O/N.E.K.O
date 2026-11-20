@@ -950,15 +950,23 @@ class KnowledgeStore:
                 cursor = conn.execute("UPDATE chunks SET attempts=0 WHERE attempts > 0")
             return cursor.rowcount
 
-    def exhaust_attempts(self, chunk_ids: Sequence[int]) -> int:
-        """Count rows that cannot be encoded as failed until the next reset."""
-        if not chunk_ids:
+    def exhaust_attempts(self, rows: Sequence[tuple[int, str, str]]) -> int:
+        """Count rows that cannot be encoded as failed until the next reset.
+
+        ``rows`` are (chunk id, text hash, pack id) from an earlier read; like
+        ``store_vectors``, a row replaced since then (its id reused by new
+        text or another pack) is left untouched.
+        """
+        if not rows:
             return 0
+        marked = 0
         with self._write() as conn:
-            return conn.execute(
-                "UPDATE chunks SET attempts=? WHERE attempts < ? AND id IN (SELECT value FROM json_each(?))",
-                (MAX_EMBED_ATTEMPTS, MAX_EMBED_ATTEMPTS, json.dumps(list(chunk_ids))),
-            ).rowcount
+            for chunk_id, text_hash, pack_id in rows:
+                marked += conn.execute(
+                    "UPDATE chunks SET attempts=? WHERE id=? AND text_hash=? AND pack_id=? AND attempts < ?",
+                    (MAX_EMBED_ATTEMPTS, chunk_id, text_hash, pack_id, MAX_EMBED_ATTEMPTS),
+                ).rowcount
+        return marked
 
     def chunk_pack_ids(self, chunk_ids: Sequence[int]) -> dict[int, str]:
         """Resolve batch ownership without exposing SQLite to the index runner."""

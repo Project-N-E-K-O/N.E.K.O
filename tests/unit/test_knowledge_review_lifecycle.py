@@ -483,3 +483,32 @@ async def test_damaged_retained_archive_is_not_reread_until_the_file_changes(tmp
         assert len(reads) == 2 and service._seeded_artifacts
     finally:
         await service.stop()
+
+
+
+@pytest.mark.parametrize("broken", [False, True])
+async def test_restart_does_not_report_an_unrepaired_broken_pack_as_a_successful_import(tmp_path, broken):
+    from knowledge.service import ImportJob
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _import(service, _pack())
+        record = service._registry.packs["demo-memes"]
+        stamp = "2026-01-01T00:00:00Z"
+        job = ImportJob("d" * 32, "demo-memes", "building", stamp, stamp, staged_sha256=record.pack_sha256)
+        (tmp_path / "jobs" / (job.job_id + ".json")).write_text(json.dumps(service._job_record(job)))
+    finally:
+        await service.stop()
+    if broken:
+        (tmp_path / "packs" / record.file_name).write_bytes(b"{}")
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        assert ("demo-memes" in service._broken_packs) is broken
+        recovered = next(row for row in service.list_jobs() if row["job_id"] == "d" * 32)
+        assert recovered["state"] == ("failed" if broken else "active")
+        if broken:
+            assert recovered["reason"] == "process_interrupted"
+    finally:
+        await service.stop()
