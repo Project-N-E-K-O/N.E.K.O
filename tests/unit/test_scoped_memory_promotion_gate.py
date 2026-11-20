@@ -36,20 +36,20 @@ def _day(ago: int, now: datetime | None = None) -> str:
     return ((now or datetime.now()) - timedelta(days=ago)).date().isoformat()
 
 
-def _iso(ago_days: float = 0) -> str:
-    return (datetime.now() - timedelta(days=ago_days)).isoformat()
+def _iso(ago_days: float = 0, now: datetime | None = None) -> str:
+    return ((now or datetime.now()) - timedelta(days=ago_days)).isoformat()
 
 
 READY_AGES = (40, 30, 20, 10)
 READY_DAYS = [_day(d) for d in READY_AGES]
 
 
-def _scoped(rid: str, *, days=None, counts=None, subject=GROUP, **extra) -> dict:
+def _scoped(rid: str, *, days=None, counts=None, subject=GROUP, now=None, **extra) -> dict:
     row = {
         "id": rid, "text": f"群里常聊 {rid}", "entity": subject.kind,
-        "status": "confirmed", "created_at": _iso(45),
-        "confirmed_at": _iso(8), "reinforcement": 0.5,
-        "rein_last_signal_at": _iso(1), "disputation": 0.0,
+        "status": "confirmed", "created_at": _iso(45, now),
+        "confirmed_at": _iso(8, now), "reinforcement": 0.5,
+        "rein_last_signal_at": _iso(1, now), "disputation": 0.0,
         **subject.as_entry_fields(),
     }
     if days is not None:
@@ -100,14 +100,15 @@ def _promoted_texts(engine) -> list[str]:
 def test_others_fact_days_skip_the_characters_own_words():
     from memory.evidence import others_fact_days
 
+    now = datetime.now()
     facts = [
-        {"id": "a", "created_at": _iso(3), "source": "user_observation"},
-        {"id": "b", "created_at": _iso(3)},  # no source: the others' words
-        {"id": "c", "created_at": _iso(1), "source": "ai_disclosure"},
+        {"id": "a", "created_at": _iso(3, now), "source": "user_observation"},
+        {"id": "b", "created_at": _iso(3, now)},  # no source: the others' words
+        {"id": "c", "created_at": _iso(1, now), "source": "ai_disclosure"},
         {"id": "d", "created_at": "not a time"},
-        {"id": "e", "created_at": _iso(5)},
+        {"id": "e", "created_at": _iso(5, now)},
     ]
-    assert others_fact_days(facts) == [_day(5), _day(3)]
+    assert others_fact_days(facts) == [_day(5, now), _day(3, now)]
 
 
 def test_merge_observed_days_keeps_the_first_and_the_latest():
@@ -125,11 +126,12 @@ def test_merge_observed_days_keeps_the_first_and_the_latest():
 def test_observed_days_of_older_lines():
     from memory.evidence import observed_days
 
+    now = datetime.now()
     # Predates the record: its creation day, once.
-    assert observed_days({"created_at": _iso(12)}) == [_day(12)]
+    assert observed_days({"created_at": _iso(12, now)}) == [_day(12, now)]
     # ... unless its counts say it rests only on the character's own words.
     assert observed_days({
-        "created_at": _iso(12), "fact_source_counts": {"user": 0, "ai": 3},
+        "created_at": _iso(12, now), "fact_source_counts": {"user": 0, "ai": 3},
     }) == []
     assert observed_days({"observed_days": [_day(2), _day(9), _day(2)]}) == [_day(9), _day(2)]
 
@@ -287,11 +289,11 @@ def _install(tmpdir: str):
     return SimpleNamespace(event_log=event_log, fs=fs, pm=pm, engine=engine, cm=cm)
 
 
-def _group_fact(fid: str, ago: int, source: str = "user_observation") -> dict:
+def _group_fact(fid: str, ago: int, source: str = "user_observation", now=None) -> dict:
     return {
         "id": fid, "text": f"群里聊了 {fid}", "entity": "group_chat",
         "importance": 6, "absorbed": False, "source": source,
-        "created_at": _iso(ago), "signal_processed": True,
+        "created_at": _iso(ago, now), "signal_processed": True,
         **GROUP.as_entry_fields(),
     }
 
@@ -325,18 +327,19 @@ async def _stored(env, rid):
 @pytest.mark.asyncio
 async def test_new_scoped_line_records_the_days_of_others_words(tmp_path):
     env = _install(str(tmp_path))
-    facts = [_group_fact(f"g{i}", 3) for i in range(4)] + [
-        _group_fact("own", 1, "ai_disclosure"),
+    now = datetime.now()
+    facts = [_group_fact(f"g{i}", 3, now=now) for i in range(4)] + [
+        _group_fact("own", 1, "ai_disclosure", now=now),
     ]
     answer = [{"entity": "relationship", "relation_type": "preference",
                "reflection": "群里爱聊游戏", "temporal_scope": "pattern",
                "event_when": None, "based_on": [1, 2, 3, 4, 5]}]
     [created] = await _synthesize_group(env, facts, answer)
     assert created["status"] == "confirmed"
-    assert created["observed_days"] == [_day(3)], "角色自己说的话不算被看到"
+    assert created["observed_days"] == [_day(3, now)], "角色自己说的话不算被看到"
     assert created["fact_source_counts"] == {"user": 4, "ai": 1}
 
-    own = [_group_fact(f"a{i}", 2, "ai_disclosure") for i in range(5)]
+    own = [_group_fact(f"a{i}", 2, "ai_disclosure", now=now) for i in range(5)]
     env2 = _install(str(tmp_path / "own"))
     [only_own] = await _synthesize_group(env2, own, [{
         "entity": "relationship", "relation_type": "preference",
@@ -356,9 +359,10 @@ async def test_restated_scoped_line_is_seen_again_and_moves_to_the_front(tmp_pat
     from memory.evidence import evidence_score, initial_reinforcement_from_importance
 
     env = _install(str(tmp_path))
+    now = datetime.now()
     old = env.engine._normalize_reflection(_scoped(
-        "r_old", days=[_day(30)], counts={"user": 4, "ai": 0},
-        reinforcement=0.1, rein_last_signal_at=_iso(30),
+        "r_old", days=[_day(30, now)], counts={"user": 4, "ai": 0}, now=now,
+        reinforcement=0.1, rein_last_signal_at=_iso(30, now),
         counted_fact_ids=["x1"], source_fact_ids=["x1"],
     ))
     await env.engine.asave_reflections(NAME, [old])
@@ -366,20 +370,20 @@ async def test_restated_scoped_line_is_seen_again_and_moves_to_the_front(tmp_pat
     env.engine._build_existing_impressions_block = AsyncMock(
         return_value=(f"[r_old] {old['text']}\n", {"r_old": target}),
     )
-    facts = [_group_fact(f"g{i}", 2) for i in range(4)] + [
-        _group_fact("own", 1, "ai_disclosure"),
+    facts = [_group_fact(f"g{i}", 2, now=now) for i in range(4)] + [
+        _group_fact("own", 1, "ai_disclosure", now=now),
     ]
     created = await _synthesize_group(env, facts, [_skip("r_old", [1, 2, 3, 4, 5])])
 
     assert created == []
     row = await _stored(env, "r_old")
-    assert row["observed_days"] == [_day(30), _day(2)]
+    assert row["observed_days"] == [_day(30, now), _day(2, now)]
     assert row["reinforcement"] == pytest.approx(0.1 + SCOPED_REOBSERVED_REINFORCEMENT)
-    now = datetime.now()
-    assert evidence_score(row, now) > initial_reinforcement_from_importance(10), (
+    scored_at = datetime.now()
+    assert evidence_score(row, scored_at) > initial_reinforcement_from_importance(10), (
         "被重新看到的印象要排在所有新印象前面"
     )
-    assert evidence_score(row, now) <= EVIDENCE_REINFORCEMENT_CAP
+    assert evidence_score(row, scored_at) <= EVIDENCE_REINFORCEMENT_CAP
 
     # The same facts once more (a rerun): no new sighting, no second boost.
     facts_by_id = {f["id"]: f for f in facts}
@@ -395,19 +399,21 @@ async def test_restated_scoped_line_is_seen_again_and_moves_to_the_front(tmp_pat
 @pytest.mark.asyncio
 async def test_restatement_in_the_characters_own_words_is_no_sighting(tmp_path):
     env = _install(str(tmp_path))
+    now = datetime.now()
     old = env.engine._normalize_reflection(_scoped(
-        "r_old", days=[_day(30)], reinforcement=0.1, rein_last_signal_at=_iso(30),
+        "r_old", days=[_day(30, now)], now=now,
+        reinforcement=0.1, rein_last_signal_at=_iso(30, now),
     ))
     await env.engine.asave_reflections(NAME, [old])
     target = {"kind": "reflection", "id": "r_old", "text": old["text"]}
     env.engine._build_existing_impressions_block = AsyncMock(
         return_value=(f"[r_old] {old['text']}\n", {"r_old": target}),
     )
-    own = [_group_fact(f"a{i}", 2, "ai_disclosure") for i in range(5)]
+    own = [_group_fact(f"a{i}", 2, "ai_disclosure", now=now) for i in range(5)]
     await _synthesize_group(env, own, [_skip("r_old", [1, 2, 3, 4, 5])])
 
     row = await _stored(env, "r_old")
-    assert row["observed_days"] == [_day(30)]
+    assert row["observed_days"] == [_day(30, now)]
     assert row["reinforcement"] == pytest.approx(0.1)
 
 
@@ -456,13 +462,14 @@ async def test_merge_of_two_backed_lines_counts_as_seen_again(tmp_path):
     from config import SCOPED_REOBSERVED_REINFORCEMENT
 
     env = _install(str(tmp_path))
+    now = datetime.now()
     merged = await _merge(env, [
-        _scoped("a", days=[_day(40), _day(20)], counts={"user": 3, "ai": 1},
-                counted_fact_ids=["f1", "f2"], reinforcement=0.4),
-        _scoped("b", days=[_day(20), _day(5)], counts={"user": 2, "ai": 0},
-                counted_fact_ids=["f3"], reinforcement=0.2),
+        _scoped("a", days=[_day(40, now), _day(20, now)], counts={"user": 3, "ai": 1},
+                counted_fact_ids=["f1", "f2"], reinforcement=0.4, now=now),
+        _scoped("b", days=[_day(20, now), _day(5, now)], counts={"user": 2, "ai": 0},
+                counted_fact_ids=["f3"], reinforcement=0.2, now=now),
     ])
-    assert merged["observed_days"] == [_day(40), _day(20), _day(5)]
+    assert merged["observed_days"] == [_day(40, now), _day(20, now), _day(5, now)]
     assert merged["fact_source_counts"] == {"user": 5, "ai": 1}
     assert merged["counted_fact_ids"] == ["f1", "f2", "f3"]
     assert merged["reinforcement"] == pytest.approx(0.4 + SCOPED_REOBSERVED_REINFORCEMENT)
@@ -471,11 +478,13 @@ async def test_merge_of_two_backed_lines_counts_as_seen_again(tmp_path):
 @pytest.mark.asyncio
 async def test_merge_with_a_line_on_own_words_adds_nothing(tmp_path):
     env = _install(str(tmp_path))
+    now = datetime.now()
     merged = await _merge(env, [
-        _scoped("a", days=[_day(40)], counts={"user": 3, "ai": 0}, reinforcement=0.4),
-        _scoped("b", days=[], counts={"user": 0, "ai": 4}, reinforcement=0.1),
+        _scoped("a", days=[_day(40, now)], counts={"user": 3, "ai": 0},
+                reinforcement=0.4, now=now),
+        _scoped("b", days=[], counts={"user": 0, "ai": 4}, reinforcement=0.1, now=now),
     ])
-    assert merged["observed_days"] == [_day(40)]
+    assert merged["observed_days"] == [_day(40, now)]
     assert merged["fact_source_counts"] == {"user": 3, "ai": 4}
     assert merged["reinforcement"] == pytest.approx(0.4)
 
