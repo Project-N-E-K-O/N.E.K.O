@@ -156,6 +156,23 @@ console.log('Frontend: 16 scenarios passed');
     assert.equal(f.sent[0].data_url,'stream-pixels');assert.deepEqual(f.captures,[]);
     assert.deepEqual(f.sent[0].windows,[]);
 }
+// A picker-selected monitor stream must override a stale selected screen ID.
+{
+    const f=fixture(); f.state.selectedScreenSourceId='screen:1';
+    window.electronDesktopCapturer.sourceEnumerationMayPrompt=true;
+    const track={id:'picker-monitor',getSettings:()=>({displaySurface:'monitor'})};
+    f.state.screenCaptureStream={active:true,getVideoTracks:()=>[track]};
+    const video={videoWidth:1280,videoHeight:720,play:async()=>{},pause(){}};
+    global.document={createElement:name=>name==='video'?video:{getContext:()=>({drawImage(){}}),toDataURL:()=> 'picker-monitor-pixels'}};
+    window.electronDesktopCapturer.captureSourceAsDataUrl=async id=>{
+        f.captures.push(id); return {success:true,dataUrl:'stale-native-pixels'};
+    };
+    await run({operation:'overview',request_id:'picker-monitor'},f.state,f.socket);
+    assert.equal(f.sent[0].success,true);
+    assert.equal(f.sent[0].data_url,'picker-monitor-pixels');
+    assert.match(f.sent[0].scope,/^stream:/);
+    assert.deepEqual(f.captures,[]);
+}
 // Unnamed monitor streams have different scopes, even when track IDs are reused.
 {
     const f=fixture();
