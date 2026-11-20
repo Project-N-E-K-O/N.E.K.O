@@ -951,7 +951,8 @@ class MMDInteraction {
         return easingMap[easingType] || easingMap.easeOutCubic;
     }
 
-    _animateModelToPosition(startPosition, targetPosition) {
+    _animateModelToPosition(startPosition, targetPosition, { isCurrentSettlement = () => true } = {}) {
+        if (!isCurrentSettlement()) return Promise.resolve(false);
         const mesh = this.manager.currentModel?.mesh;
         if (!mesh) return Promise.resolve(false);
         if (!Number.isFinite(targetPosition?.x) || !Number.isFinite(targetPosition?.y) || !Number.isFinite(targetPosition?.z)) {
@@ -976,6 +977,13 @@ class MMDInteraction {
         return new Promise((resolve) => {
             this._snapResolve = resolve;
             const animate = (currentTime) => {
+                if (!isCurrentSettlement() || this.manager.currentModel?.mesh !== mesh) {
+                    this._isSnappingModel = false;
+                    this._snapCancelFrame = null;
+                    this._snapResolve = null;
+                    resolve(false);
+                    return;
+                }
                 const elapsed = currentTime - startTime;
                 const progress = Math.min(elapsed / duration, 1);
                 const eased = easingFn(progress);
@@ -1005,7 +1013,8 @@ class MMDInteraction {
      * 将 MMD 模型回弹到当前可见区域内。
      * 返回 true 表示位置被修正；修正完成后会保存最终位置。
      */
-    async _snapModelIntoScreen({ animate = true } = {}) {
+    async _snapModelIntoScreen({ animate = true, isCurrentSettlement = () => true } = {}) {
+        if (!isCurrentSettlement()) return false;
         if (this._isSnappingModel) return false;
         const mesh = this.manager.currentModel?.mesh;
         if (!mesh || !this.manager.camera || !this.manager.renderer || !THREE) return false;
@@ -1023,13 +1032,13 @@ class MMDInteraction {
 
         let changed = false;
         if (animate) {
-            changed = await this._animateModelToPosition(startPosition, targetPosition);
+            changed = await this._animateModelToPosition(startPosition, targetPosition, { isCurrentSettlement });
         } else {
             mesh.position.copy(targetPosition);
             changed = true;
         }
 
-        if (changed) {
+        if (changed && isCurrentSettlement()) {
             await this._savePositionAfterInteraction();
         }
         return changed;

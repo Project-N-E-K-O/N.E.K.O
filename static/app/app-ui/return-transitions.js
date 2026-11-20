@@ -39,6 +39,14 @@
         }
     }
 
+    I.cancelModelReturnEnter = function cancelModelReturnEnter(reason = 'cancelled') {
+        if (window._nekoModelReturnEnterTimer) {
+            clearTimeout(window._nekoModelReturnEnterTimer);
+            window._nekoModelReturnEnterTimer = null;
+        }
+        resolveModelReturnEnter(reason);
+    };
+
     function startModelReturnEnterWait(container) {
         resolveModelReturnEnter('replaced');
         let resolveWait = null;
@@ -183,7 +191,8 @@
         return { dx, dy };
     }
 
-    async function snapPngtuberIntoScreen() {
+    async function snapPngtuberIntoScreen(isCurrentSettlement) {
+        if (!isCurrentSettlement()) return false;
         const manager = getPngtuberManager();
         if (!manager || !manager.config || !isModelContainerVisible('pngtuber-container')) {
             return false;
@@ -192,10 +201,11 @@
         if (!delta || (!delta.dx && !delta.dy)) return false;
         I.applyPngtuberScreenDelta(delta.dx, delta.dy);
         await I.waitForAnimationFrames(1);
-        return true;
+        return isCurrentSettlement();
     }
 
-    async function saveReturnModelPosition(modelType) {
+    async function saveReturnModelPosition(modelType, isCurrentSettlement) {
+        if (!isCurrentSettlement()) return;
         try {
             if (modelType === 'mmd') {
                 const interaction = window.mmdManager && window.mmdManager.interaction;
@@ -226,10 +236,21 @@
         }
     }
 
-    I.settleReturnedModelBounds = async function settleReturnedModelBounds(shouldSaveWhenUnchanged) {
+    I.settleReturnedModelBounds = async function settleReturnedModelBounds(shouldSaveWhenUnchanged, options = {}) {
+        const isCurrentSettlement = () => {
+            if (typeof options.isCurrentSettlement === 'function' && !options.isCurrentSettlement()) return false;
+            if (['live2d', 'vrm', 'mmd', 'pngtuber'].some(type => window[`${type}Manager`]?._goodbyeClicked)) return false;
+            if (I.multiWindowReturnBallDragState?.isDragging) return false;
+            if (I.isNativeReturnBallViewportSize?.(window.innerWidth, window.innerHeight)) return false;
+            const restoreBounds = I.getPendingModelViewportRestoreBounds?.();
+            return !restoreBounds || I.isModelViewportRestored(restoreBounds);
+        };
+        if (!isCurrentSettlement()) return;
         // showCurrentModel 会恢复容器和 canvas；等布局提交后再读边界，避免拿到隐藏态尺寸。
         await waitForModelReturnEnterToSettle();
+        if (!isCurrentSettlement()) return;
         await I.waitForAnimationFrames(2);
+        if (!isCurrentSettlement()) return;
 
         let activeModelType = null;
         try {
@@ -237,12 +258,12 @@
                 activeModelType = 'mmd';
                 const interaction = window.mmdManager.interaction;
                 if (interaction && typeof interaction._snapModelIntoScreen === 'function') {
-                    const snapped = await interaction._snapModelIntoScreen({ animate: true });
+                    const snapped = await interaction._snapModelIntoScreen({ animate: true, isCurrentSettlement });
                     if (!snapped && shouldSaveWhenUnchanged) {
-                        await saveReturnModelPosition('mmd');
+                        await saveReturnModelPosition('mmd', isCurrentSettlement);
                     }
                 } else if (shouldSaveWhenUnchanged) {
-                    await saveReturnModelPosition('mmd');
+                    await saveReturnModelPosition('mmd', isCurrentSettlement);
                 }
                 return;
             }
@@ -251,15 +272,15 @@
                 activeModelType = 'vrm';
                 const interaction = window.vrmManager.interaction;
                 if (interaction && typeof interaction._snapModelIntoScreen === 'function') {
-                    const snapped = await interaction._snapModelIntoScreen({ animate: true });
+                    const snapped = await interaction._snapModelIntoScreen({ animate: true, isCurrentSettlement });
                     if (snapped) {
                         // VRM 的回弹方法只负责动画，最终位置需要由外层保存。
-                        await saveReturnModelPosition('vrm');
+                        await saveReturnModelPosition('vrm', isCurrentSettlement);
                     } else if (shouldSaveWhenUnchanged) {
-                        await saveReturnModelPosition('vrm');
+                        await saveReturnModelPosition('vrm', isCurrentSettlement);
                     }
                 } else if (shouldSaveWhenUnchanged) {
-                    await saveReturnModelPosition('vrm');
+                    await saveReturnModelPosition('vrm', isCurrentSettlement);
                 }
                 return;
             }
@@ -268,30 +289,30 @@
                 && getPngtuberManager()
                 && isModelContainerVisible('pngtuber-container')) {
                 activeModelType = 'pngtuber';
-                const snapped = await snapPngtuberIntoScreen();
+                const snapped = await snapPngtuberIntoScreen(isCurrentSettlement);
                 if (snapped || shouldSaveWhenUnchanged) {
-                    await saveReturnModelPosition('pngtuber');
+                    await saveReturnModelPosition('pngtuber', isCurrentSettlement);
                 }
                 return;
             }
 
-            if (window.live2dManager) {
+            if (window.live2dManager && isModelContainerVisible('live2d-container')) {
                 activeModelType = 'live2d';
                 const liveModel = typeof window.live2dManager.getCurrentModel === 'function'
                     ? window.live2dManager.getCurrentModel() : null;
                 if (liveModel && !liveModel.destroyed && typeof window.live2dManager._checkAndPerformSnap === 'function') {
-                    const snapped = await window.live2dManager._checkAndPerformSnap(liveModel, { allowWhenNotReady: true });
+                    const snapped = await window.live2dManager._checkAndPerformSnap(liveModel, { allowWhenNotReady: true, isCurrentSettlement });
                     if (!snapped && shouldSaveWhenUnchanged) {
-                        await saveReturnModelPosition('live2d');
+                        await saveReturnModelPosition('live2d', isCurrentSettlement);
                     }
                 } else if (shouldSaveWhenUnchanged) {
-                    await saveReturnModelPosition('live2d');
+                    await saveReturnModelPosition('live2d', isCurrentSettlement);
                 }
             }
         } catch (error) {
             console.warn('[App] 回来后的边界回弹计算失败:', error);
             if (shouldSaveWhenUnchanged && activeModelType) {
-                await saveReturnModelPosition(activeModelType);
+                await saveReturnModelPosition(activeModelType, isCurrentSettlement);
             }
         }
     }
@@ -670,12 +691,8 @@
     I.playModelReturnEnter = function playModelReturnEnter(container, rect) {
         if (!container || !rect) return false;
         setModelExitTransformOrigin(container, rect);
-        if (window._nekoModelReturnEnterTimer) {
-            clearTimeout(window._nekoModelReturnEnterTimer);
-            window._nekoModelReturnEnterTimer = null;
-            resolveModelReturnEnter('timer-cleared');
-        }
-        startModelReturnEnterWait(container);
+        I.cancelModelReturnEnter('replaced');
+        const enterPromise = startModelReturnEnterWait(container);
 
         container.style.transition = 'none';
         container.style.opacity = '0';
@@ -683,6 +700,7 @@
         void container.offsetWidth;
 
         requestAnimationFrame(() => {
+            if (window._nekoModelReturnEnterPromise !== enterPromise) return;
             if (!container || !container.isConnected) {
                 resolveModelReturnEnter('disconnected-before-raf');
                 return;
@@ -691,6 +709,7 @@
             container.style.opacity = '1';
             container.style.transform = 'scale(1) translateZ(0)';
             window._nekoModelReturnEnterTimer = setTimeout(() => {
+                if (window._nekoModelReturnEnterPromise !== enterPromise) return;
                 if (container && container.isConnected) {
                     container.style.removeProperty('transition');
                     container.style.removeProperty('opacity');

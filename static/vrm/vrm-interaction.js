@@ -1612,7 +1612,8 @@ class VRMInteraction {
     /**
      * 执行模型回弹动画
      */
-    _animateModelToPosition(startPosition, targetPosition) {
+    _animateModelToPosition(startPosition, targetPosition, { isCurrentSettlement = () => true } = {}) {
+        if (!isCurrentSettlement()) return Promise.resolve(false);
         if (!this.manager.currentModel?.scene) {
             return Promise.resolve(false);
         }
@@ -1642,7 +1643,7 @@ class VRMInteraction {
         return new Promise((resolve) => {
             this._snapResolve = resolve;
             const animate = (currentTime) => {
-                if (this.manager.currentModel?.scene !== scene || interactionToken !== this.movementToken) {
+                if (!isCurrentSettlement() || this.manager.currentModel?.scene !== scene || interactionToken !== this.movementToken) {
                     this._isSnappingModel = false;
                     this._snapCancelFrame = null;
                     this._snapResolve = null;
@@ -1677,7 +1678,8 @@ class VRMInteraction {
     /**
      * 出界回弹：保持原有边界检查逻辑不变，仅在需要时执行回弹动画
      */
-    async _snapModelIntoScreen({ animate = true } = {}) {
+    async _snapModelIntoScreen({ animate = true, isCurrentSettlement = () => true } = {}) {
+        if (!isCurrentSettlement()) return false;
         if (this._isSnappingModel) return false;
         if (!this.manager.currentModel?.scene || !this.manager.camera || !this.manager.renderer) return false;
         if (!THREE) return false;
@@ -1703,7 +1705,7 @@ class VRMInteraction {
             return true;
         }
 
-        return await this._animateModelToPosition(startPosition, targetPosition);
+        return await this._animateModelToPosition(startPosition, targetPosition, { isCurrentSettlement });
     }
 
     /**
