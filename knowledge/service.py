@@ -246,20 +246,21 @@ class _SelectionChanged(Exception):
     """The active source selection changed before a last-source removal."""
 
 
-def _budgeted_plan(pack: KnowledgePack, options: dict[str, Any], others: int) -> tuple[dict[str, Any], int]:
+def _budgeted_plan(pack: KnowledgePack, options: dict[str, Any], others: int) -> tuple[dict[str, Any], int] | None:
     """Pick the rebuild plan that fits the chunk budgets, preferring vectors.
 
     Try the token plan with verified archive rows, then without the token
     plan, then the admitted local (legacy) layout. A rebuild must never grow a
     pack past the per-pack or total limits; a later replan is refused before
-    native inference instead of truncating text or overfilling.
+    native inference instead of truncating text or overfilling. Return None
+    when no candidate fits so callers can retain existing rows and records.
     """
     for dropped in ((), ("fit",), ("fit", "seed_vectors")):
         trial = {key: value for key, value in options.items() if key not in dropped}
         chunks = count_pack_chunks(pack, fit=trial.get("fit"), seed_vectors=trial.get("seed_vectors", ()))
         if chunks <= MAX_CHUNKS_PER_PACK and others + chunks <= MAX_TOTAL_CHUNKS:
-            break
-    return trial, chunks
+            return trial, chunks
+    return None
 
 
 def _file_identity(path: Path) -> tuple[int, int] | None:
@@ -559,7 +560,7 @@ class KnowledgeService:
             await self._thread(atomic_write_json, self.root / "jobs" / (job.job_id + ".json"), self._job_record(job))
 
     def _reconcile_blocking(self, registry: Registry) -> tuple[list[str], Registry]:
-        """Make ``knowledge.db`` match the registry; return packs whose raw file is lost."""
+        """Match the registry; return packs whose complete index cannot be rebuilt."""
         indexed = self._store.pack_versions()
         for pack_id in indexed.keys() - registry.packs.keys():
             self._store.delete_pack(pack_id)
@@ -598,7 +599,15 @@ class KnowledgeService:
                 broken.append(pack_id)
                 continue
             others = sum(value.chunks for key, value in registry.packs.items() if key != pack_id)
-            options, chunks = _budgeted_plan(pack, self._rebuild_options(record), others)
+            plan = _budgeted_plan(pack, self._rebuild_options(record), others)
+            if plan is None:
+                # A capacity refusal is not SQLite corruption: keep the old
+                # rows/record and use the existing reimport repair path. Do not
+                # let it reach _open_blocking's database replacement fallback.
+                broken.append(pack_id)
+                logger.warning("[Knowledge] rebuild of pack %s exceeds the chunk budget", pack_id)
+                continue
+            options, chunks = plan
             self._store.replace_pack(pack, pack_sha256=record.pack_sha256,
                                      disabled_keys=record.disabled_titles, **options)
             if chunks != record.chunks:
@@ -2337,7 +2346,21 @@ class KnowledgeService:
             pack = decode_pack_bytes(raw)
             # Same rule as the startup reconcile.
             others = sum(item.chunks for key, item in self._registry.packs.items() if key != pack_id)
-            options, _chunks = _budgeted_plan(pack, self._rebuild_options(previous), others)
+            plan = _budgeted_plan(pack, self._rebuild_options(previous), others)
+            if plan is None:
+                current = self._registry.packs.get(pack_id)
+                if (current is not None and self._store.pack_versions().get(pack_id) != current.pack_sha256
+                        and pack_id not in self._broken_packs):
+                    # A failed replacement's rows are not the registered pack;
+                    # flag the existing repair route instead of reporting an
+                    # unchanged import as if it had restored the old version.
+                    self._broken_packs = (*self._broken_packs, pack_id)
+                # SQLite may already contain the failed replacement's counts.
+                # Keep them gated until the ordinary coordinator repairs them.
+                self._pending_chunk_reconcile = True
+                logger.warning("[Knowledge] restore of pack %s exceeds the chunk budget", pack_id)
+                return
+            options, _chunks = plan
             restored = self._store.replace_pack(
                 pack,
                 pack_sha256=previous.pack_sha256,
