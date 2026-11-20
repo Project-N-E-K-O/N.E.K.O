@@ -269,7 +269,7 @@ function sharedStream(displaySurface) {
     return {active: true, getVideoTracks: () => [track], getTracks: () => [track]};
 }
 
-for (const surface of ['window', 'browser', 'monitor']) {
+for (const surface of ['window', 'browser']) {
     await test(`picker fallback cannot inspect the stale native window: ${surface}`, async () => {
         const f = sharingFixture();
         await f.window.selectScreenSource('window:2', 'Editor');
@@ -300,6 +300,34 @@ for (const surface of ['window', 'browser', 'monitor']) {
         assert.equal(stream.getVideoTracks()[0].readyState, 'live');
     });
 }
+
+await test('picker monitor stream overrides a stale selected monitor ID', async () => {
+    const f = sharingFixture();
+    await f.window.selectScreenSource('screen:1', 'Original monitor');
+    const stream = sharedStream('monitor');
+    const acquisitions = [];
+    f.mediaDevices.getUserMedia = async options => {
+        acquisitions.push(options.video.mandatory.chromeMediaSourceId);
+        throw new Error('native capture unavailable');
+    };
+    let prompts = 0;
+    f.mediaDevices.getDisplayMedia = async () => { prompts++; return stream; };
+    assert.equal(await f.window.acquireOrReuseCachedStream({allowPrompt: true}), stream);
+    assert.deepEqual(acquisitions, ['screen:1']);
+    assert.equal(prompts, 1);
+    assert.equal(f.state.selectedScreenSourceId, 'screen:1');
+    assert.equal(f.window.getScreenCaptureStreamSourceId(stream), undefined);
+
+    await run({operation: 'overview', request_id: 'picker-monitor'}, f.state, f.socket);
+    const reply = f.sent.at(-1);
+    assert.equal(reply.success, true);
+    assert.equal(reply.data_url, 'data:image/png;base64,shared-pixels');
+    assert.equal(reply.title, 'Shared screen');
+    assert.match(reply.scope, /^stream:/);
+    assert.equal(reply.source_id, reply.scope);
+    assert.deepEqual(f.captures, [], 'must use the actual picker stream, not stale screen:1');
+    assert.equal(stream.getVideoTracks()[0].readyState, 'live');
+});
 await test('a bound native window stream still permits read-only inspection', async () => {
     const f = sharingFixture();
     await f.window.selectScreenSource('window:2', 'Editor');

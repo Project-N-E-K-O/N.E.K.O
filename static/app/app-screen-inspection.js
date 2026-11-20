@@ -40,6 +40,11 @@ export async function handleScreenInspection(request, state, socket) {
         const displaySurface = stream && track.getSettings().displaySurface;
         const bound = stream && typeof window.getScreenCaptureStreamSourceId === 'function'
             && window.getScreenCaptureStreamSourceId(stream) === id;
+        if (stream && !bound && displaySurface === 'monitor') {
+            // A getDisplayMedia picker stream is the user's actual current choice.
+            // Do not reuse a stale native monitor ID when the picker chose another monitor.
+            return {key: streamKey(stream), restricted: false, id: '', stream};
+        }
         if (id.startsWith('window:')) {
             // A picker fallback can leave the former native ID selected.
             if (stream && !bound) throw new Error('scope_changed');
