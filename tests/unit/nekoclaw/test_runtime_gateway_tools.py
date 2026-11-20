@@ -149,6 +149,42 @@ async def test_handshake_then_tool_list(gateway):
     assert gateway.headers[2]["mcp-protocol-version"] == "2025-06-18"
 
 
+async def test_every_request_is_made_with_the_one_tls_configuration_of_the_process(gateway, monkeypatch):
+    import ssl
+
+    import httpx
+
+    given: list[Any] = []
+    real_client = httpx.AsyncClient
+
+    def client(**kwargs: Any) -> Any:
+        given.append(kwargs.get("verify"))
+        return real_client(**kwargs)
+
+    made: list[Any] = []
+    real_context = httpx.create_ssl_context
+
+    def context(**kwargs: Any) -> Any:
+        made.append(kwargs)
+        return real_context(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    monkeypatch.setattr(httpx, "create_ssl_context", context)
+    monkeypatch.setattr(gateway_module, "_TLS", None)
+
+    # Two sessions: a handshake each, and a call.
+    await GatewayClient(gateway.url, TOKEN).connect()
+    second = GatewayClient(gateway.url, TOKEN)
+    await second.connect()
+    await second.call("plugin__weather__today", {"city": "Lyon"})
+
+    # A client that is given none loads the certificate bundle anew, for every request.
+    assert len(given) == 7 and isinstance(given[0], ssl.SSLContext)
+    assert all(item is given[0] for item in given)
+    # Put together once, and without what the environment says of certificates and proxies.
+    assert made == [{"trust_env": False}]
+
+
 def _picture(data: str = "QUJD", mime: Any = "image/jpeg") -> dict[str, Any]:
     """One MCP image block as the gateway sends it."""
     block: dict[str, Any] = {"type": "image", "data": data}
@@ -185,7 +221,7 @@ async def test_call_returns_text_pictures_and_the_error_flag(gateway):
     assert gateway.requests[-3]["params"] == {
         "name": "plugin__weather__today",
         "arguments": {"city": "Lyon"},
-        "_meta": {"nekoclaw/reply": 0},
+        "_meta": {"nekoclaw/reply": 0, "nekoclaw/compactions": 0},
     }
 
 
@@ -203,11 +239,74 @@ async def test_every_call_names_the_reply_of_the_model_it_was_written_in(gateway
     client.next_reply()
     await client.call("plugin__weather__today", {"city": "Brest"})
 
-    named = [body["params"]["_meta"] for body in gateway.requests if body["method"] == "tools/call"]
+    named = [body["params"]["_meta"]["nekoclaw/reply"] for body in gateway.requests if body["method"] == "tools/call"]
     # The calls of one reply name the same reply, those of the next another.
-    assert named == [{"nekoclaw/reply": 0}, {"nekoclaw/reply": 1}, {"nekoclaw/reply": 1}, {"nekoclaw/reply": 2}]
+    assert named == [0, 1, 1, 2]
     # Nothing but the calls names one.
     assert all("_meta" not in (body.get("params") or {}) for body in gateway.requests if body["method"] != "tools/call")
+
+
+async def test_every_call_names_how_often_the_conversation_was_summed_up(gateway):
+    from config.nekoclaw_settings import GATEWAY_COMPACTIONS_META_KEY
+
+    assert GATEWAY_COMPACTIONS_META_KEY == "nekoclaw/compactions"
+    client = GatewayClient(gateway.url, TOKEN)
+    await client.connect()
+
+    await client.call("plugin__weather__today", {"city": "Lyon"})
+    client.compactions = 2
+    await client.call("plugin__weather__today", {"city": "Nice"})
+
+    named = [body["params"]["_meta"] for body in gateway.requests if body["method"] == "tools/call"]
+    assert [meta["nekoclaw/compactions"] for meta in named] == [0, 2]
+
+
+async def test_a_session_tells_the_gateway_when_its_conversation_was_summed_up(tmp_path, gateway):
+    from nekoclaw.runtime.protocol import ModelConfig
+
+    model = ModelConfig(model="fake-model", api_key="k", context_window=32_000, max_output_tokens=2_000)
+    spec = _spec(tmp_path, gateway, model=model)
+
+    def weather(city: str, call_id: str) -> list[Any]:
+        return [call("plugin__weather__today", {"city": city}, call_id), finish("tool_calls")]
+
+    def told() -> list[int]:
+        return [
+            body["params"]["_meta"]["nekoclaw/compactions"] for body in gateway.requests if body["method"] == "tools/call"
+        ]
+
+    llm = ScriptedLLM([weather("Lyon", "c1"), [say("Sunny."), finish()]])
+    session, events = await open_session(spec, llm)
+    try:
+        session.prompt("weather in Lyon")
+        await events.wait_ended()
+        for index in range(4):
+            llm.add(say(f"Step {index}. " + " ".join(f"s{index}w{word}" for word in range(300))), finish())
+            mark = len(events.events)
+            session.prompt(f"Do step {index}.")
+            await events.wait_ended(start=mark)
+        # The next request is refused as too long: the conversation is summed up, and the call after that says so.
+        llm.add(RuntimeError("Error code: 400 - This model's maximum context length is 32000 tokens."))
+        llm.add(say("## Current Work\n- summed up"), finish())
+        llm.add(*weather("Nice", "c2"))
+        llm.add(say("Sunny there too."), finish())
+        mark = len(events.events)
+        session.prompt("and in Nice")
+        await events.wait_ended(start=mark)
+        assert [event["count"] for event in events.of("compacted")] == [1]
+        assert told() == [0, 1]
+    finally:
+        await session.close()
+
+    # A session opened later goes on counting from what its transcript holds.
+    llm = ScriptedLLM([weather("Metz", "c3"), [say("Sunny."), finish()]])
+    session, events = await open_session(spec, llm)
+    try:
+        session.prompt("and in Metz")
+        await events.wait_ended()
+        assert told() == [0, 1, 1]
+    finally:
+        await session.close()
 
 
 async def test_a_session_tells_the_gateway_which_calls_were_written_in_one_reply(tmp_path, gateway):
@@ -467,6 +566,30 @@ async def test_session_offers_gateway_tools_next_to_the_built_in_ones(tmp_path, 
         assert llm.requests[1][-1] == {"role": "tool", "tool_call_id": "call-1", "content": "sunny in Lyon"}
         end = events.of("tool_end")[0]
         assert (end["tool_name"], end["is_error"], end["text"]) == ("plugin__weather__today", False, "sunny in Lyon")
+    finally:
+        await session.close()
+
+
+async def test_a_group_is_loaded_with_its_name_alone_through_the_search_tool_of_a_session_opened_without_groups(
+    tmp_path, gateway
+):
+    from nekoclaw.host.gateway import CALL_TOOL, SEARCH_TOOL, _CALL_TOOL_DEFINITION, _search_tool_definition
+
+    # As the host lists its two tools while no group of built-in tools can be used.
+    gateway.tools = [_search_tool_definition([]), _CALL_TOOL_DEFINITION]
+    gateway.results[SEARCH_TOOL] = {"content": [{"type": "text", "text": "the browser tools"}], "isError": False}
+    llm = ScriptedLLM([[call(SEARCH_TOOL, {"group": "browser"}), finish("tool_calls")], [say("Loaded."), finish()]])
+    session, events = await open_session(_spec(tmp_path, gateway), llm)
+    try:
+        assert {SEARCH_TOOL, CALL_TOOL} <= set(events.of("started")[0]["tools"])
+        session.prompt("open the page")
+        await events.wait_ended()
+
+        # The call reaches the gateway: the definition the session keeps does not ask for a query.
+        asked = [body["params"] for body in gateway.requests if body.get("method") == "tools/call"]
+        assert [(item["name"], item["arguments"]) for item in asked] == [(SEARCH_TOOL, {"group": "browser"})]
+        end = events.of("tool_end")[0]
+        assert (end["tool_name"], end["is_error"], end["text"]) == (SEARCH_TOOL, False, "the browser tools")
     finally:
         await session.close()
 

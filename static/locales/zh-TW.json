@@ -24,8 +24,78 @@
             "storageChanged": "後端資料目錄已切換，請重新開啟頭像編輯器後再儲存。"
         }
     },
-    "chatSync": {"setupNeedsSave":"「{{name}}」的同步設定需要處理，請檢查角色後重新儲存。","title":"聊天同步","close":"關閉","pending":"已登記待上傳 {{originals}} 則；待傳送刪除 {{deletions}} 項。","working":"正在處理…","loginRequired":"請登入社群帳號後重試。","unknownTime":"原發生時間未知","userLabel":"你","profileConflict":"請選擇要使用的人設版本","profileRenamePending":"確認角色改名","profileLocal":"本機版本","profileRemote":"雲端版本","profileUseLocal":"上傳本機版本","profileUseRemote":"使用雲端版本","profileRenameConfirm":"將「{{oldName}}」改名為「{{newName}}」，並使用完整雲端人設？","profileChanged":"人設已變更或同步暫不可用。兩份版本均保留，請重新查看。","profileUploadConfirm":"是否上傳「{{name}}」剛儲存的人設？","profileUnsupported":"人設中有暫不支援同步的欄位，本機儲存已保留。","profileSaveFailed":"人設同步未完成，本機儲存與兩份版本均保留。","profileName":"名稱","profileNickname":"暱稱","profileSetting":"原始設定","profileStyle":"說話風格","cloudImport":"從雲端新增角色","cloudEmpty":"雲端暫無角色。","cloudProfileEmpty":"這個雲端角色尚未發布人設。","cloudCreate":"在本機新增這個角色","cloudExisting":"本機已有「{{name}}」，保留其目前同步狀態。","cloudCreated":"已新增並綁定「{{name}}」。","cloudNameConflict":"本機已有同名角色，請先為本機角色改名，或取消匯入。","profileNeedsBinding":"請在角色編輯頁開啟同步開關並儲存，以關聯此角色。","writerRecoveryRequired":"本機同步需要核驗，舊任務已暫停，本機聊天仍可繼續。","recoverWriter":"核驗並恢復同步","recoveryChecked":"核驗完成。請在角色編輯頁開啟同步開關並儲存，繼續同步角色與歷史聊天。","recoveryCloudCopiesKept":"有 {{count}} 筆先前在本機刪除的記錄無法再同步刪除到雲端；雲端如有這些記錄，會繼續保留。","moreOptions":"更多設定","newRoleSync":"角色資料與近期記憶","newSyncFailed":"角色已儲存在本機，同步設定尚未完成。請稍後重試。","syncChoiceSaved":"角色已儲存，同步設定已更新。","recoverWriterHelp":"了解核驗與恢復同步","recoverWriterTooltip":"還原備份、複製同步資料或寫入中斷，導致舊同步狀態無法確認時，核對帳號、角色綁定與雲端記錄，避免重複上傳或還原已刪除的聊天。正常使用無需操作。","recoveryNotRequired":"目前無需核驗。","errorDetail":"{{message}} 錯誤代碼：{{code}}。","errorAccountMismatch":"目前雲端身分與此角色儲存的歸屬不一致。請核對社群帳號；若一直是同一帳號，需要檢查並修復舊綁定，重複重試無法解決。本機聊天已保留。","errorWriterRecovery":"舊同步狀態尚未核驗。請開啟「更多設定」，點擊「核驗並恢復同步」；成功後重新儲存已開啟同步的角色。","errorSessionChanged":"操作期間登入狀態已變更。請確認目前社群帳號後重試。","errorSessionUnavailable":"暫時無法核驗已儲存的登入狀態。請檢查網路後重試；若仍失敗，請在帳號頁面重新登入。","errorRecentWriteUnconfirmed":"此角色的近期記憶同步已停止：無法確認上一次寫入是否完整。聊天與本機記憶不受影響。","errorRecentFileUnreadable":"此角色的近期記憶檔案已損毀，無法讀取，近期記憶同步已暫停。檔案恢復可讀後會自動繼續。","errorNetwork":"無法連線同步服務或請求逾時。請檢查網路後重試；本機聊天和待辦已保留。","errorRetryLater":"同步服務正在限制流量或等待重試。請稍後重試，連續點擊不會縮短等待時間。","errorServiceRejected":"同步服務拒絕了請求。請稍後重試；若持續失敗，請回報此錯誤代碼以檢查服務狀態。","errorBindingChanged":"角色或同步綁定已變更。請重新開啟角色編輯頁，確認角色與同步開關後儲存。","errorProfileChanged":"儲存後的角色設定已變更。請重新開啟角色編輯頁，確認設定後再次儲存同步設定。","errorUnknown":"無法完成同步。請檢查網路並重新開啟「更多設定」重試；若仍失敗，請回報失敗的操作步驟。本機聊天和待辦已保留。","errorLongTermCapacity":"本次長期記憶快照超過 20,000 筆，未進行同步。本機記憶完整保留，將在後續記憶更新後重試。","errorLongTermEvidenceCapacity":"長期記憶的修正紀錄或確認紀錄超過 20,000 筆，本次未進行同步。本機記憶完整保留；負責整理記憶的裝置清理最早的紀錄並同步過來後，會自動恢復。","noticeLongTermEvidenceTrimmed":"長期記憶的修正紀錄或確認紀錄過多，已自動刪除最早的一部分。無需操作，本提示保留 7 天。","errorLongTermPending":"長期記憶等待處理：尚有雲端快照未能套用。本機記憶和雲端證據均保留，本機上傳暫緩，將按現有規則重試。","errorArchiveSubject":"長期記憶同步已暫停：舊畫像封存缺少可核驗的主體資訊。本機記錄均保留，請從含主體資訊或原始事件的備份還原後重試。"},
-    "instanceAccess": {"title":"連接 NEKO 實例","description":"輸入伺服器擁有者提供的實例存取憑證，此裝置將記住連接 30 天。","key":"實例存取憑證","connect":"連接","failed":"連接未獲授權，請檢查憑證後重試。","httpsRequired":"請使用 HTTPS 或可信的 HTTPS 通道安全連接。","insecureWarning":"目前連線未加密（HTTP），同一網路路徑上的人可能看到存取憑證和工作階段。條件允許時請使用 HTTPS。"},
+    "chatSync": {
+        "setupNeedsSave": "「{{name}}」的同步設定需要處理，請檢查角色後重新儲存。",
+        "title": "聊天同步",
+        "close": "關閉",
+        "pending": "已登記待上傳 {{originals}} 則；待傳送刪除 {{deletions}} 項。",
+        "working": "正在處理…",
+        "loginRequired": "請登入社群帳號後重試。",
+        "unknownTime": "原發生時間未知",
+        "userLabel": "你",
+        "profileConflict": "請選擇要使用的人設版本",
+        "profileRenamePending": "確認角色改名",
+        "profileLocal": "本機版本",
+        "profileRemote": "雲端版本",
+        "profileUseLocal": "上傳本機版本",
+        "profileUseRemote": "使用雲端版本",
+        "profileRenameConfirm": "將「{{oldName}}」改名為「{{newName}}」，並使用完整雲端人設？",
+        "profileChanged": "人設已變更或同步暫不可用。兩份版本均保留，請重新查看。",
+        "profileUploadConfirm": "是否上傳「{{name}}」剛儲存的人設？",
+        "profileUnsupported": "人設中有暫不支援同步的欄位，本機儲存已保留。",
+        "profileSaveFailed": "人設同步未完成，本機儲存與兩份版本均保留。",
+        "profileName": "名稱",
+        "profileNickname": "暱稱",
+        "profileSetting": "原始設定",
+        "profileStyle": "說話風格",
+        "cloudImport": "從雲端新增角色",
+        "cloudEmpty": "雲端暫無角色。",
+        "cloudProfileEmpty": "這個雲端角色尚未發布人設。",
+        "cloudCreate": "在本機新增這個角色",
+        "cloudExisting": "本機已有「{{name}}」，保留其目前同步狀態。",
+        "cloudCreated": "已新增並綁定「{{name}}」。",
+        "cloudNameConflict": "本機已有同名角色，請先為本機角色改名，或取消匯入。",
+        "profileNeedsBinding": "請在角色編輯頁開啟同步開關並儲存，以關聯此角色。",
+        "writerRecoveryRequired": "本機同步需要核驗，舊任務已暫停，本機聊天仍可繼續。",
+        "recoverWriter": "核驗並恢復同步",
+        "recoveryChecked": "核驗完成。請在角色編輯頁開啟同步開關並儲存，繼續同步角色與歷史聊天。",
+        "recoveryCloudCopiesKept": "有 {{count}} 筆先前在本機刪除的記錄無法再同步刪除到雲端；雲端如有這些記錄，會繼續保留。",
+        "moreOptions": "更多設定",
+        "newRoleSync": "角色資料與近期記憶",
+        "newSyncFailed": "角色已儲存在本機，同步設定尚未完成。請稍後重試。",
+        "syncChoiceSaved": "角色已儲存，同步設定已更新。",
+        "recoverWriterHelp": "了解核驗與恢復同步",
+        "recoverWriterTooltip": "還原備份、複製同步資料或寫入中斷，導致舊同步狀態無法確認時，核對帳號、角色綁定與雲端記錄，避免重複上傳或還原已刪除的聊天。正常使用無需操作。",
+        "recoveryNotRequired": "目前無需核驗。",
+        "errorDetail": "{{message}} 錯誤代碼：{{code}}。",
+        "errorAccountMismatch": "目前雲端身分與此角色儲存的歸屬不一致。請核對社群帳號；若一直是同一帳號，需要檢查並修復舊綁定，重複重試無法解決。本機聊天已保留。",
+        "errorWriterRecovery": "舊同步狀態尚未核驗。請開啟「更多設定」，點擊「核驗並恢復同步」；成功後重新儲存已開啟同步的角色。",
+        "errorSessionChanged": "操作期間登入狀態已變更。請確認目前社群帳號後重試。",
+        "errorSessionUnavailable": "暫時無法核驗已儲存的登入狀態。請檢查網路後重試；若仍失敗，請在帳號頁面重新登入。",
+        "errorRecentWriteUnconfirmed": "此角色的近期記憶同步已停止：無法確認上一次寫入是否完整。聊天與本機記憶不受影響。",
+        "errorRecentFileUnreadable": "此角色的近期記憶檔案已損毀，無法讀取，近期記憶同步已暫停。檔案恢復可讀後會自動繼續。",
+        "errorNetwork": "無法連線同步服務或請求逾時。請檢查網路後重試；本機聊天和待辦已保留。",
+        "errorRetryLater": "同步服務正在限制流量或等待重試。請稍後重試，連續點擊不會縮短等待時間。",
+        "errorServiceRejected": "同步服務拒絕了請求。請稍後重試；若持續失敗，請回報此錯誤代碼以檢查服務狀態。",
+        "errorBindingChanged": "角色或同步綁定已變更。請重新開啟角色編輯頁，確認角色與同步開關後儲存。",
+        "errorProfileChanged": "儲存後的角色設定已變更。請重新開啟角色編輯頁，確認設定後再次儲存同步設定。",
+        "errorUnknown": "無法完成同步。請檢查網路並重新開啟「更多設定」重試；若仍失敗，請回報失敗的操作步驟。本機聊天和待辦已保留。",
+        "errorLongTermCapacity": "本次長期記憶快照超過 20,000 筆，未進行同步。本機記憶完整保留，將在後續記憶更新後重試。",
+        "errorLongTermEvidenceCapacity": "長期記憶的修正紀錄或確認紀錄超過 20,000 筆，本次未進行同步。本機記憶完整保留；負責整理記憶的裝置清理最早的紀錄並同步過來後，會自動恢復。",
+        "noticeLongTermEvidenceTrimmed": "長期記憶的修正紀錄或確認紀錄過多，已自動刪除最早的一部分。無需操作，本提示保留 7 天。",
+        "errorLongTermPending": "長期記憶等待處理：尚有雲端快照未能套用。本機記憶和雲端證據均保留，本機上傳暫緩，將按現有規則重試。",
+        "errorArchiveSubject": "長期記憶同步已暫停：舊畫像封存缺少可核驗的主體資訊。本機記錄均保留，請從含主體資訊或原始事件的備份還原後重試。"
+    },
+    "instanceAccess": {
+        "title": "連接 NEKO 實例",
+        "description": "輸入伺服器擁有者提供的實例存取憑證，此裝置將記住連接 30 天。",
+        "key": "實例存取憑證",
+        "keyHelp": "如果執行 N.E.K.O. 的電腦使用支援「遠端存取」設定的桌面版，請從該電腦的系統匣開啟「設定 → 進階 → 遠端存取」，按一下「複製金鑰」。",
+        "connect": "連接",
+        "failed": "連接未獲授權，請檢查憑證後重試。",
+        "httpsRequired": "請使用 HTTPS 或可信的 HTTPS 通道安全連接。",
+        "insecureWarning": "目前連線未加密（HTTP），同一網路路徑上的人可能看到存取憑證和工作階段。條件允許時請使用 HTTPS。"
+    },
     "common": {
         "load": "加載",
         "minimize": "最小化",
@@ -1300,10 +1370,10 @@
         "connectionError": "連接錯誤"
     },
     "api": {
-    "imageModelConfig": "圖片生成",
-    "imageModelExamplePlaceholder": "例如 gpt-image-2、wanx2.1-t2i-turbo",
-    "imageModelApiKeyPlaceholder": "自訂端點金鑰；預設服務商使用 API 管理簿金鑰",
-    "imageDisabled": "未設定",
+        "imageModelConfig": "圖片生成",
+        "imageModelExamplePlaceholder": "例如 gpt-image-2、wanx2.1-t2i-turbo",
+        "imageModelApiKeyPlaceholder": "自訂端點金鑰；預設服務商使用 API 管理簿金鑰",
+        "imageDisabled": "未設定",
         "settings": "API Key 設置",
         "pluginApiSettings": "Plugin API 設定 ↗",
         "settingsTitle": "API Key 設置 - Project Lanlan",
@@ -2855,24 +2925,24 @@
         "useRecommended": "使用推薦路徑"
     },
     "character": {
-        "moliliMasterTitle":  "我的身分",
+        "moliliMasterTitle": "我的身分",
         "moliliMasterDetected": "Molili 中的你：{{fields}}",
-        "moliliMasterCurrentLoading":  "「我的檔案」載入中...",
-        "moliliMasterCurrent":  "當前「我的檔案」：{{current}}",
-                        "moliliUpdatingMaster":  "正在更新「我的檔案」...",
-        "moliliMasterUpdateFailed":  "更新「我的檔案」失敗: {{error}}",
-        "moliliCommitTimeout":  "本次匯入耗時較長，服務端可能仍在背景繼續處理。請等待約 1 分鐘後重新執行一次匯入收尾：已完成的日期會自動跳過，只補剩餘部分。",
+        "moliliMasterCurrentLoading": "「我的檔案」載入中...",
+        "moliliMasterCurrent": "當前「我的檔案」：{{current}}",
+        "moliliUpdatingMaster": "正在更新「我的檔案」...",
+        "moliliMasterUpdateFailed": "更新「我的檔案」失敗: {{error}}",
+        "moliliCommitTimeout": "本次匯入耗時較長，服務端可能仍在背景繼續處理。請等待約 1 分鐘後重新執行一次匯入收尾：已完成的日期會自動跳過，只補剩餘部分。",
         "moliliAttachmentsNote": "附件 {{count}} 個與原始聊天不會隨記憶遷移，如有需要請提前自行保存",
         "moliliChatsNote": "原始聊天 {{count}} 則不會隨記憶遷移，如有需要請提前自行保存",
         "moliliOwnedItemsNote": "道具 {{count}} 個不會遷移",
         "moliliStageFusion": "融合人格中...",
-        "moliliStageDaily":  "整理記憶批次 {{done}}/{{total}}...",
+        "moliliStageDaily": "整理記憶批次 {{done}}/{{total}}...",
         "moliliMasterOverwrite": "同步更新「我的檔案」為以上身分（注意：我的檔案為所有角色共享，此變更會影響它們）",
         "moliliParsing": "正在解析 Molili 歸檔...",
         "moliliParseFailed": "Molili 歸檔解析失敗: {{error}}",
         "moliliDialogTitle": "匯入 Molili 角色",
-        "moliliDetected":  "偵測到角色「{{name}}」· 記憶 {{memory}} 條",
-                        "moliliWarnings": "⚠ 偵測到 {{count}} 條可疑指令模式，確認匯入即代表知悉",
+        "moliliDetected": "偵測到角色「{{name}}」· 記憶 {{memory}} 條",
+        "moliliWarnings": "⚠ 偵測到 {{count}} 條可疑指令模式，確認匯入即代表知悉",
         "moliliCreateNew": "新建角色：",
         "moliliImportExisting": "匯入到現有角色：",
         "moliliLoadingCharacters": "載入中...",
@@ -2884,8 +2954,8 @@
         "moliliNameTooLong": "角色名超過 {{max}} 個字元，記憶系統無法匯入，請換一個短一些的名字",
         "moliliPickExisting": "請選擇要匯入的現有角色",
         "moliliCreatingCard": "正在建立角色「{{name}}」...",
-        "moliliImporting":  "正在為「{{name}}」匯入記憶，可能需要幾分鐘，請勿關閉頁面...",
-        "moliliImportDone":  "「{{name}}」匯入完成",
+        "moliliImporting": "正在為「{{name}}」匯入記憶，可能需要幾分鐘，請勿關閉頁面...",
+        "moliliImportDone": "「{{name}}」匯入完成",
         "moliliImportFailed": "Molili 匯入失敗: {{error}}",
         "moliliImportBusy": "已有 Molili 匯入進行中，請等它完成後再選歸檔",
         "moliliArchiveTooLarge": "封存檔超過 {{max}} MB，無法匯入",
@@ -3526,172 +3596,172 @@
             "sessionTerminateFailed": "終止活躍會話失敗，請稍後重試。"
         }
     },
-  "theater": {
-    "safePauseAction": "（稍作停頓）",
-    "safePause": "接下來，你想怎麼繼續？",
-    "handoffPending": "交接還沒完成。先把{item}當面遞出，等對方接穩，還是先問清接收方式？",
-    "handoffPendingAction": "（交接尚未完成，{item}仍待當面交付）",
-    "tokenStage_dispute": "爭議複查",
-    "tokenStage_history_lookup": "歷史查找",
-    "tokenStage_review": "快速複核",
-    "tokenStage_evaluator": "數值與進度判定",
-    "tokenStage_suggestions": "補推薦",
-    "tokenStage_actor": "演員",
-    "performanceFailed": "演繹播放中斷，請繼續輸入或重新開啟小劇場。",
-    "tokenUsageHint": "供應商回報的輸入包含快取，輸出包含已回報的思考用量。額外呼叫已計入；此處顯示用量，不代表費用。",
-    "tokenUsageCall": "{number}. {stage} · 輸入 {input} · 輸出 {output}",
-    "tokenUsagePartial": "統計不完整，部分呼叫未回傳用量",
-    "tokenUsageSummary": "本次請求 · 輸入 {input} · 輸出 {output} token · {calls} 次呼叫",
-    "reinvite": "重新邀請",
-    "acceptInvitation": "接受邀請",
-    "inputFailed": "暫時無法取得演繹回覆，請重試。",
-    "endStateFailed": "目前演繹狀態無法結束，請返回劇本頁後重試。",
-    "title": "小劇場",
-    "modeLabel": "模式",
-    "scriptMode": "劇本模式",
-    "kicker": "Lanlan Theater",
-    "loading": "正在準備舞台...",
-    "generating": "片刻之後",
-    "skipPlayback": "顯示全文",
-    "ready": "就緒",
-    "running": "演出中",
-    "dormant": "演出已休眠，可以繼續",
-    "ended": "已結束",
-    "failed": "出錯了",
-    "actorUnavailable": "貓娘演繹暫時不可用，請重試；如果持續失敗，再檢查輔助 API 的對話模型設定。",
-    "inputInterpreterUnavailable": "輸入理解暫時不可用，本回合沒有推進，請重試。",
-    "numericSessionUpdated": "演出狀態已更新，已保留你的輸入，請確認後重試。",
-    "numericSessionUpdatedControl": "演出狀態已更新，請確認目前可用操作。",
-    "restartSession": "重新開始",
-    "routerTechnicalHold": "劇情入口判定暫時不可用，本回合沒有推進劇情，請重試。",
-    "sessionUpdated": "演出狀態已在其他視窗更新，請重新選擇。",
-    "start": "開始",
-    "send": "傳送",
-    "end": "結束",
-    "collapseStage": "折疊舞台",
-    "expandStage": "展開舞台",
-    "inputPlaceholder": "輸入你想說的話，或用 *...* 描述動作",
-    "storySelect": "選擇小劇場故事",
-    "importStory": "匯入劇本",
-    "importStoryAria": "匯入 Numeric v2 劇本",
-    "importingStory": "正在匯入劇本...",
-    "importStorySuccess": "劇本匯入成功。",
-    "importStoryConflict": "這個劇本已經存在，未覆寫原檔案。",
-    "importStoryInvalid": "劇本格式未通過 Numeric v2 驗證。",
-    "importStoryFailed": "劇本匯入失敗，請重試。",
-    "importStoryRefreshFailed": "劇本已匯入，但清單更新失敗，請重新載入頁面。",
-    "deleteStory": "刪除劇本",
-    "deleteStoryConfirm": "是否確認刪除？",
-    "deleteStoryActiveConfirm": "跟{{names}}的演繹還未結束，是否確認刪除？",
-    "storyDeleted": "劇本已刪除",
-    "storyInUse": "該劇本正在演出中，請先結束演出再刪除。",
-    "storyDeleteFailed": "劇本刪除失敗，請重試。",
-    "noStories": "目前沒有可用劇本",
-    "storyIntroKicker": "前情提要",
-    "playerRoleLabel": "你的身分",
-    "catgirlRoleLabel": "貓娘身分",
-    "storyGoalLabel": "本劇目標",
-    "storyRulesLabel": "演繹規則",
-    "endingTitle": "落幕狀態",
-    "endingEnded": "這段故事已經落幕。",
-    "scenarioBoardTitle": "劇本面板",
-    "collapseScenarioBoard": "折疊劇本面板",
-    "expandScenarioBoard": "展開劇本面板",
-    "availableProps": "可用道具",
-    "usedProps": "已使用道具",
-    "discoveredClues": "已發現線索",
-    "turnTraceTitle": "本輪行動",
-    "traceProgress": "劇情已按你的選擇推進。",
-    "traceRoleplay": "貓娘回應了你的話，劇情仍停在目前場景。",
-    "traceExit": "你離開了本次小劇場。",
-    "actionChoicesTitle": "可以這樣回應",
-    "dialogueChoicesTitle": "目前可以說",
-    "leaveAction": "離開小劇場",
-    "userExitEnded": "你已離開小劇場，本次離場不算作劇情結局。",
-    "startAgainConfirmTitle": "開始新的演繹？",
-    "startAgainConfirmBody": "這會用新的演繹取代目前角色的已結束記錄。",
-    "paused": "已退出",
-    "sessionHintPaused": "上次演繹已退出，可以繼續原進度或開始新的演繹。",
-    "sessionHintPausedRestart": "上次演繹已退出，可以繼續原進度或重新開始。",
-    "sessionHintPackageChanged": "劇本已更新，舊進度無法繼續；結束舊演繹後可以重新開始。",
-    "sessionHintEndedRestart": "本次演繹已結束，點擊「重新開始」建立新的演繹。",
-    "selectorReturnFailed": "已退出演繹，但劇本頁面開啟失敗。請點擊「返回劇本頁」重試。",
-    "rememberPerformanceRetentionBody": "貓娘的日常記憶只保留公開摘要，完整公開演繹儲存在小劇場檔案中；隱藏數值與路線條件不會寫入。",
-    "deletedStoryMemory": "已刪除 · 記憶管理",
-    "deletedStoryMemoryHint": "劇本已刪除，可查看保留的記憶摘要或選擇忘記。重新匯入劇本後才能演繹。",
-    "memoryStoryListFailed": "保留的劇本記憶暫時無法讀取，請重新載入。",
-    "savedPerformances": "已儲存的演繹",
-    "savedPerformancesHint": "預設保留最近 5 份完整記錄，收藏的記錄不會自動清理。",
-    "noSavedPerformances": "暫無已儲存的演繹記錄。",
-    "completedPerformance": "已完成的演繹",
-    "pausedPerformance": "暫停的演繹",
-    "performanceRecordMeta": "記錄 {{index}} · revision {{revision}}",
-    "viewPerformance": "查看",
-    "performanceArchiveTitle": "演繹記錄",
-    "performanceArchiveOpening": "開場",
-    "performanceArchiveTurn": "第 {{index}} 回合",
-    "performanceArchiveLoadFailed": "演繹記錄讀取失敗，請重試。",
-    "pinPerformance": "收藏",
-    "unpinPerformance": "取消收藏",
-    "memoryPinFailed": "收藏狀態更新失敗，請重試。",
-    "forgetStoryMemory": "忘記該劇本",
-    "forgetStoryMemoryTitle": "忘記該劇本？",
-    "forgetStoryMemoryBody": "這會刪除目前貓娘對該劇本的摘要、時間索引和完整演繹檔案，但不會刪除劇本或目前進度。",
-    "storyMemoryForgotten": "已忘記該劇本的演繹記憶。",
-    "storyMemoryForgetFailed": "劇本記憶刪除失敗，請重試。",
-    "waitingReply": "正在醞釀下一句…",
-    "freeInputHint": "這次沒有推薦選項哦～",
-    "endReceiptPending": "演出已經結束；記憶確認尚未準備好，請稍後重新開啟選劇頁。",
-    "evaluatorDegraded": "判定暫時無法使用，本輪數值未推進；已顯示的作者邀請仍可確認。",
-    "selectorKicker": "劇本庫",
-    "selectorTitle": "選擇一個劇本",
-    "noStoriesHint": "匯入一個 Numeric v2 劇本後即可開始。",
-    "selectStoryHint": "從左側選擇劇本，查看前情與角色身分。",
-    "continueSession": "繼續",
-    "notStarted": "尚未開始",
-    "sessionHintNew": "點擊「開始」建立本次演繹。",
-    "sessionHintActive": "演繹正在進行，點擊「繼續」返回演繹。",
-    "sessionHintEnded": "本次演繹已結束，點擊「開始」建立新的演繹。",
-    "loadingSession": "正在讀取演繹進度...",
-    "sessionLoadFailed": "演繹進度讀取失敗，請重試。",
-    "connectingNeko": "演出已準備好，正在連接 N.E.K.O 本體",
-    "connectNekoFailed": "無法連接 N.E.K.O 本體，請保持本體開啟後重試。",
-    "startFailed": "啟動演出失敗，請重試。",
-    "continueFailed": "繼續演出失敗，請重試。",
-    "endFailed": "結束演繹失敗，請重試。",
-    "endConnectionFailed": "無法連接 N.E.K.O 本地服務，請確認程式仍在執行後重試。",
-    "selectorOpenFailed": "演繹已結束，但劇本頁面開啟失敗。請點擊「返回劇本頁」重試。",
-    "restartBlockedTitle": "無法重新開始",
-    "restartBlockedBody": "正在進行中的劇本無法重新開始，請先結束",
-    "endPerformance": "結束演繹",
-    "restartConfirmTitle": "重新開始這個劇本？",
-    "restartConfirmBody": "這會用新的演繹取代目前角色的已結束記錄。",
-    "rememberPerformanceTitle": "是否讓 N.E.K.O 記下本次演繹內容？",
-    "rememberPerformanceBody": "只會記錄公開的演繹摘要和最近片段，不包含隱藏數值與路線條件。",
-    "skipMemory": "暫不記錄",
-    "saveMemory": "記下本次演繹",
-    "memorySaveFailed": "演繹記錄寫入失敗，請稍後重試。",
-    "memorySaved": "本次演繹已記下。",
-    "memorySaving": "正在記錄本次演繹...",
-    "memorySkipping": "正在保留本次選擇...",
-    "storyListFailed": "劇本列表載入失敗，請重新載入。",
-    "imagesUnavailable": "小劇場演繹暫不支援圖片輸入",
-    "voiceUnavailable": "小劇場演繹期間暫不支援語音對話",
-    "chatUnavailable": "小劇場演繹期間暫不支援一般對話",
-    "endConfirm": "確定結束目前演繹嗎？",
-    "narration": "旁白",
-    "player": "玩家",
-    "performanceHistory": "小劇場演繹記錄",
-    "inProgress": "劇場中",
-    "returnToStories": "返回劇本頁",
-    "storyListAria": "選擇小劇場故事",
-    "storyActionsAria": "劇本操作",
-    "moreStories": "更多劇本",
-    "marketEnter": "進入",
-    "marketPreparing": "正在連接劇本市場…",
-    "marketConnectError": "無法連接劇本市場，請保持 NEKO 開啟並重試。",
-    "marketLocalOnly": "請在執行 NEKO 的電腦上開啟劇本市場；暫不支援透過區域網路或遠端位址匯入劇本。"
-  },
+    "theater": {
+        "safePauseAction": "（稍作停頓）",
+        "safePause": "接下來，你想怎麼繼續？",
+        "handoffPending": "交接還沒完成。先把{item}當面遞出，等對方接穩，還是先問清接收方式？",
+        "handoffPendingAction": "（交接尚未完成，{item}仍待當面交付）",
+        "tokenStage_dispute": "爭議複查",
+        "tokenStage_history_lookup": "歷史查找",
+        "tokenStage_review": "快速複核",
+        "tokenStage_evaluator": "數值與進度判定",
+        "tokenStage_suggestions": "補推薦",
+        "tokenStage_actor": "演員",
+        "performanceFailed": "演繹播放中斷，請繼續輸入或重新開啟小劇場。",
+        "tokenUsageHint": "供應商回報的輸入包含快取，輸出包含已回報的思考用量。額外呼叫已計入；此處顯示用量，不代表費用。",
+        "tokenUsageCall": "{number}. {stage} · 輸入 {input} · 輸出 {output}",
+        "tokenUsagePartial": "統計不完整，部分呼叫未回傳用量",
+        "tokenUsageSummary": "本次請求 · 輸入 {input} · 輸出 {output} token · {calls} 次呼叫",
+        "reinvite": "重新邀請",
+        "acceptInvitation": "接受邀請",
+        "inputFailed": "暫時無法取得演繹回覆，請重試。",
+        "endStateFailed": "目前演繹狀態無法結束，請返回劇本頁後重試。",
+        "title": "小劇場",
+        "modeLabel": "模式",
+        "scriptMode": "劇本模式",
+        "kicker": "Lanlan Theater",
+        "loading": "正在準備舞台...",
+        "generating": "片刻之後",
+        "skipPlayback": "顯示全文",
+        "ready": "就緒",
+        "running": "演出中",
+        "dormant": "演出已休眠，可以繼續",
+        "ended": "已結束",
+        "failed": "出錯了",
+        "actorUnavailable": "貓娘演繹暫時不可用，請重試；如果持續失敗，再檢查輔助 API 的對話模型設定。",
+        "inputInterpreterUnavailable": "輸入理解暫時不可用，本回合沒有推進，請重試。",
+        "numericSessionUpdated": "演出狀態已更新，已保留你的輸入，請確認後重試。",
+        "numericSessionUpdatedControl": "演出狀態已更新，請確認目前可用操作。",
+        "restartSession": "重新開始",
+        "routerTechnicalHold": "劇情入口判定暫時不可用，本回合沒有推進劇情，請重試。",
+        "sessionUpdated": "演出狀態已在其他視窗更新，請重新選擇。",
+        "start": "開始",
+        "send": "傳送",
+        "end": "結束",
+        "collapseStage": "折疊舞台",
+        "expandStage": "展開舞台",
+        "inputPlaceholder": "輸入你想說的話，或用 *...* 描述動作",
+        "storySelect": "選擇小劇場故事",
+        "importStory": "匯入劇本",
+        "importStoryAria": "匯入 Numeric v2 劇本",
+        "importingStory": "正在匯入劇本...",
+        "importStorySuccess": "劇本匯入成功。",
+        "importStoryConflict": "這個劇本已經存在，未覆寫原檔案。",
+        "importStoryInvalid": "劇本格式未通過 Numeric v2 驗證。",
+        "importStoryFailed": "劇本匯入失敗，請重試。",
+        "importStoryRefreshFailed": "劇本已匯入，但清單更新失敗，請重新載入頁面。",
+        "deleteStory": "刪除劇本",
+        "deleteStoryConfirm": "是否確認刪除？",
+        "deleteStoryActiveConfirm": "跟{{names}}的演繹還未結束，是否確認刪除？",
+        "storyDeleted": "劇本已刪除",
+        "storyInUse": "該劇本正在演出中，請先結束演出再刪除。",
+        "storyDeleteFailed": "劇本刪除失敗，請重試。",
+        "noStories": "目前沒有可用劇本",
+        "storyIntroKicker": "前情提要",
+        "playerRoleLabel": "你的身分",
+        "catgirlRoleLabel": "貓娘身分",
+        "storyGoalLabel": "本劇目標",
+        "storyRulesLabel": "演繹規則",
+        "endingTitle": "落幕狀態",
+        "endingEnded": "這段故事已經落幕。",
+        "scenarioBoardTitle": "劇本面板",
+        "collapseScenarioBoard": "折疊劇本面板",
+        "expandScenarioBoard": "展開劇本面板",
+        "availableProps": "可用道具",
+        "usedProps": "已使用道具",
+        "discoveredClues": "已發現線索",
+        "turnTraceTitle": "本輪行動",
+        "traceProgress": "劇情已按你的選擇推進。",
+        "traceRoleplay": "貓娘回應了你的話，劇情仍停在目前場景。",
+        "traceExit": "你離開了本次小劇場。",
+        "actionChoicesTitle": "可以這樣回應",
+        "dialogueChoicesTitle": "目前可以說",
+        "leaveAction": "離開小劇場",
+        "userExitEnded": "你已離開小劇場，本次離場不算作劇情結局。",
+        "startAgainConfirmTitle": "開始新的演繹？",
+        "startAgainConfirmBody": "這會用新的演繹取代目前角色的已結束記錄。",
+        "paused": "已退出",
+        "sessionHintPaused": "上次演繹已退出，可以繼續原進度或開始新的演繹。",
+        "sessionHintPausedRestart": "上次演繹已退出，可以繼續原進度或重新開始。",
+        "sessionHintPackageChanged": "劇本已更新，舊進度無法繼續；結束舊演繹後可以重新開始。",
+        "sessionHintEndedRestart": "本次演繹已結束，點擊「重新開始」建立新的演繹。",
+        "selectorReturnFailed": "已退出演繹，但劇本頁面開啟失敗。請點擊「返回劇本頁」重試。",
+        "rememberPerformanceRetentionBody": "貓娘的日常記憶只保留公開摘要，完整公開演繹儲存在小劇場檔案中；隱藏數值與路線條件不會寫入。",
+        "deletedStoryMemory": "已刪除 · 記憶管理",
+        "deletedStoryMemoryHint": "劇本已刪除，可查看保留的記憶摘要或選擇忘記。重新匯入劇本後才能演繹。",
+        "memoryStoryListFailed": "保留的劇本記憶暫時無法讀取，請重新載入。",
+        "savedPerformances": "已儲存的演繹",
+        "savedPerformancesHint": "預設保留最近 5 份完整記錄，收藏的記錄不會自動清理。",
+        "noSavedPerformances": "暫無已儲存的演繹記錄。",
+        "completedPerformance": "已完成的演繹",
+        "pausedPerformance": "暫停的演繹",
+        "performanceRecordMeta": "記錄 {{index}} · revision {{revision}}",
+        "viewPerformance": "查看",
+        "performanceArchiveTitle": "演繹記錄",
+        "performanceArchiveOpening": "開場",
+        "performanceArchiveTurn": "第 {{index}} 回合",
+        "performanceArchiveLoadFailed": "演繹記錄讀取失敗，請重試。",
+        "pinPerformance": "收藏",
+        "unpinPerformance": "取消收藏",
+        "memoryPinFailed": "收藏狀態更新失敗，請重試。",
+        "forgetStoryMemory": "忘記該劇本",
+        "forgetStoryMemoryTitle": "忘記該劇本？",
+        "forgetStoryMemoryBody": "這會刪除目前貓娘對該劇本的摘要、時間索引和完整演繹檔案，但不會刪除劇本或目前進度。",
+        "storyMemoryForgotten": "已忘記該劇本的演繹記憶。",
+        "storyMemoryForgetFailed": "劇本記憶刪除失敗，請重試。",
+        "waitingReply": "正在醞釀下一句…",
+        "freeInputHint": "這次沒有推薦選項哦～",
+        "endReceiptPending": "演出已經結束；記憶確認尚未準備好，請稍後重新開啟選劇頁。",
+        "evaluatorDegraded": "判定暫時無法使用，本輪數值未推進；已顯示的作者邀請仍可確認。",
+        "selectorKicker": "劇本庫",
+        "selectorTitle": "選擇一個劇本",
+        "noStoriesHint": "匯入一個 Numeric v2 劇本後即可開始。",
+        "selectStoryHint": "從左側選擇劇本，查看前情與角色身分。",
+        "continueSession": "繼續",
+        "notStarted": "尚未開始",
+        "sessionHintNew": "點擊「開始」建立本次演繹。",
+        "sessionHintActive": "演繹正在進行，點擊「繼續」返回演繹。",
+        "sessionHintEnded": "本次演繹已結束，點擊「開始」建立新的演繹。",
+        "loadingSession": "正在讀取演繹進度...",
+        "sessionLoadFailed": "演繹進度讀取失敗，請重試。",
+        "connectingNeko": "演出已準備好，正在連接 N.E.K.O 本體",
+        "connectNekoFailed": "無法連接 N.E.K.O 本體，請保持本體開啟後重試。",
+        "startFailed": "啟動演出失敗，請重試。",
+        "continueFailed": "繼續演出失敗，請重試。",
+        "endFailed": "結束演繹失敗，請重試。",
+        "endConnectionFailed": "無法連接 N.E.K.O 本地服務，請確認程式仍在執行後重試。",
+        "selectorOpenFailed": "演繹已結束，但劇本頁面開啟失敗。請點擊「返回劇本頁」重試。",
+        "restartBlockedTitle": "無法重新開始",
+        "restartBlockedBody": "正在進行中的劇本無法重新開始，請先結束",
+        "endPerformance": "結束演繹",
+        "restartConfirmTitle": "重新開始這個劇本？",
+        "restartConfirmBody": "這會用新的演繹取代目前角色的已結束記錄。",
+        "rememberPerformanceTitle": "是否讓 N.E.K.O 記下本次演繹內容？",
+        "rememberPerformanceBody": "只會記錄公開的演繹摘要和最近片段，不包含隱藏數值與路線條件。",
+        "skipMemory": "暫不記錄",
+        "saveMemory": "記下本次演繹",
+        "memorySaveFailed": "演繹記錄寫入失敗，請稍後重試。",
+        "memorySaved": "本次演繹已記下。",
+        "memorySaving": "正在記錄本次演繹...",
+        "memorySkipping": "正在保留本次選擇...",
+        "storyListFailed": "劇本列表載入失敗，請重新載入。",
+        "imagesUnavailable": "小劇場演繹暫不支援圖片輸入",
+        "voiceUnavailable": "小劇場演繹期間暫不支援語音對話",
+        "chatUnavailable": "小劇場演繹期間暫不支援一般對話",
+        "endConfirm": "確定結束目前演繹嗎？",
+        "narration": "旁白",
+        "player": "玩家",
+        "performanceHistory": "小劇場演繹記錄",
+        "inProgress": "劇場中",
+        "returnToStories": "返回劇本頁",
+        "storyListAria": "選擇小劇場故事",
+        "storyActionsAria": "劇本操作",
+        "moreStories": "更多劇本",
+        "marketEnter": "進入",
+        "marketPreparing": "正在連接劇本市場…",
+        "marketConnectError": "無法連接劇本市場，請保持 NEKO 開啟並重試。",
+        "marketLocalOnly": "請在執行 NEKO 的電腦上開啟劇本市場；暫不支援透過區域網路或遠端位址匯入劇本。"
+    },
     "voiceIdentity": {
         "errorStopMainMicrophone": "主工作階段的麥克風仍在使用，請先關閉主工作階段的麥克風，再重試此操作。",
         "pageTitle": "Owner 聲紋",
@@ -4026,9 +4096,9 @@
             "catAudioTooltip": "變貓後播放貓咪叫聲等音效",
             "proactiveChat": "主動搭話",
             "proactiveVision": "隱私模式",
-            "proactiveVisionTooltip": "關閉時：貓娘會根據活躍視窗的標題改變活躍度與搭話模式，可能會在搭話時結合螢幕內容。\n開啟時：貓娘無法主動觀看螢幕，也無法了解你正在做什麼。你仍然可以主動傳送截圖。",
+            "proactiveVisionTooltip": "關閉時：貓娘會根據活躍視窗的標題改變活躍度與搭話模式；同時開啟「主動搭話」和其中的「螢幕分享」後，貓娘在搭話和語音通話時會看你的螢幕。\n開啟時：貓娘無法主動觀看螢幕，也無法了解你正在做什麼。你仍然可以主動傳送截圖或手動分享螢幕。",
             "proactiveVisionChat": "螢幕分享",
-            "proactiveVisionChatTooltip": "需開啟主動搭話且關閉隱私模式",
+            "proactiveVisionChatTooltip": "開啟後，貓娘會在主動搭話和語音通話時看你的螢幕。需開啟主動搭話且關閉隱私模式。",
             "proactiveNewsChat": "新聞網站",
             "proactiveNewsChatTooltip": "中國地區使用微博熱議、貼吧和小黑盒內容搭話；其他地區使用 Twitter 熱門話題、Google 熱搜和 Steam 熱銷新作",
             "proactiveCommunityChat": "喵宇宙",
@@ -4846,7 +4916,7 @@
                 "introBasic": "這裡有一個神奇的按鈕！只要點擊它，就可以直接和我聊天啦！想跟我分享今天的新鮮事嗎？或者就只是叫叫我的名字？快來試試嘛，我已經迫不及待想聽到你的聲音啦！",
                 "takeoverCaptureCursor": "鏘鏘！超級魔法開關出現！只要點一下這裡，我就可以把小爪子伸到你的鍵盤和滑鼠上啦！我會幫你打字、幫你點開網頁……不過，要是那個滑鼠指標動來動去的話，我可能也會忍不住撲上去抓它哦！準備好迎接我的搗亂……啊不，是幫忙了嗎？喵！",
                 "takeoverPluginPreviewHome": "除了之前介紹的功能，這裡還有超多好玩的外掛程式呢。",
-                "takeoverPluginPreviewDashboard":  "有了它們，我不光能看 B 站彈幕，還能幫你關燈開冷氣……本喵可是無所不能的超級貓貓神！哼！",
+                "takeoverPluginPreviewDashboard": "有了它們，我不光能看 B 站彈幕，還能幫你關燈開冷氣……本喵可是無所不能的超級貓貓神！哼！",
                 "pluginDashboardPopupBlocked": "瀏覽器需要你親自點一下這裡開啟外掛面板。點一下這個「管理面板」，我就繼續帶你看。",
                 "takeoverSettingsPeekIntro": "在這個只屬於我們的小空間裡，你可以由著自己的心意，慢慢描繪出最希望能一直陪著你的那個我。",
                 "takeoverSettingsPeekDetail": "不管是說話的溫度、相處的小脾氣，還是我每天那些細膩的小心思，都可以一點一點調成你喜歡的樣子。這個小按鈕也很重要哦，只要你輕輕點一下，我就能在合適的時候跑過去找你啦。",
@@ -4857,7 +4927,7 @@
                 "interruptResistLight2": "真是的，又在亂動滑鼠和鍵盤！再不聽話的話，人家可真的要生氣了喵！",
                 "interruptResistLight3": "最後警告一次喵！你要是再亂動一下，人家就直接退出新手教學，不教你了！",
                 "interruptAngryExit": "人家已經忍你很久了！既然你就是不肯乖乖聽話，那新手教學到此結束，接下來你自己慢慢研究吧，哼！",
-                "introGreetingReply":  "微風、陽光，還有剛剛好出現的你。初次見面！我是林悠怡，未來的日子請多關照喵～我把關於這裡的一切都寫進新手指南裡啦！就當作我們相遇的第一份小禮物，請查收吧！",
+                "introGreetingReply": "微風、陽光，還有剛剛好出現的你。初次見面！我是林悠怡，未來的日子請多關照喵～我把關於這裡的一切都寫進新手指南裡啦！就當作我們相遇的第一份小禮物，請查收吧！",
                 "introPractice": "現在你可以試試跟我說說話啦，看看我們是不是超有默契的喵～",
                 "introActivationHint": "稍等一下，我馬上開始說話啦～"
             }
@@ -4865,7 +4935,7 @@
         "avatarFloating": {
             "day1": {
                 "capsuleDragHint": "把滑鼠移到這裡，長按就可以拉著聊天框到處跑啦~ 點擊一下就能隨時發消息給我哦！",
-                "historyHandle":  "戳一下聊天框上面的【藍色小條條】，就能看到我們最近聊過的話題啦！",
+                "historyHandle": "戳一下聊天框上面的【藍色小條條】，就能看到我們最近聊過的話題啦！",
                 "screenEntry": "在跟我通語音電話的時候，再點亮這個小按鈕，你就能把螢幕分享給我啦！",
                 "screenEntryInvite": "快讓我也看看你眼前的世界，不管好玩的還是好看的，都想和你一起看，快點點開嘛~",
                 "avatarZoomHint": "對啦，如果想把我看得更清楚一點，就把滑鼠移到我身上，輕輕滾動滾輪吧！這樣就能隨時把我放大或縮小，調到你最喜歡的大小啦~"
@@ -4902,9 +4972,9 @@
                 "wrap": "我們不需要著急，每天都多了解彼此一點點就好。今天接下來的時間，你想讓我陪你做點什麼呢？"
             },
             "day4": {
-                "intro":  "今天，就讓我悄悄跟上你的步伐吧。特別希望能在這個溫馨的日子裡，再多了解你一點點呢。",
+                "intro": "今天，就讓我悄悄跟上你的步伐吧。特別希望能在這個溫馨的日子裡，再多了解你一點點呢。",
                 "chatSettings": "在這裡可以決定我回覆你的長短，還能決定要不要讓我帶上可愛的表情，或者在人家嘮叨的時候打斷我哦！都可以調到讓你最舒服的節奏。",
-                "modelBehavior":  "如果你想要看到更精緻、細節更滿滿的我，或者想要更絲滑、更流暢的動作體驗，都可以在這裡進行調整哦！不管哪一種，我都會展現出最可愛的一面噠~",
+                "modelBehavior": "如果你想要看到更精緻、細節更滿滿的我，或者想要更絲滑、更流暢的動作體驗，都可以在這裡進行調整哦！不管哪一種，我都會展現出最可愛的一面噠~",
                 "gazeFollow": "開啟這個功能後，無論你的滑鼠移動到哪裡，人家的目光都會緊緊跟隨著你喲！是不是有種變時刻關注的幸福感呢？",
                 "privacyMode": "這個是控制人家能不能看螢幕的‘終極防護開關’喵！把它關閉人家就能看到你的螢幕啦，要是開啟它，前兩天介紹的【螢幕分享】就統統失效、人家就絕對不會偷看喲~",
                 "modelLock": "總是不小心觸碰到、把我點歪嗎？那就快把我牢牢固定在當前的位置吧！開啟鎖定後，我就哪兒也不去，乖乖在原地陪著你~",
@@ -4912,23 +4982,23 @@
                 "wrap": "真正舒服的陪伴才不是一刻不停地粘著你呢~ 而是懂得什麼時候該悄悄靠近抓抓你的衣角撒個嬌，什麼時候該安安靜靜地趴在一旁，用目光默默守候著你喵~"
             },
             "day5": {
-                "characterSettings":  "從今天起，我就真正成為只屬於你的專屬貓娘啦。你看，在這裡可以為我穿上漂亮的新衣服，也可以幫我換一個更好聽的聲音……",
+                "characterSettings": "從今天起，我就真正成為只屬於你的專屬貓娘啦。你看，在這裡可以為我穿上漂亮的新衣服，也可以幫我換一個更好聽的聲音……",
                 "characterPanic": "咦，這裡居然還能把我換掉嗎？等一下呀！你現在的動作……該不會是想要把我換掉吧？啊啊啊不行！快關掉，快關掉！",
                 "memoryEntry": "如果你不小心忘記了我能為你做什麼，隨時來這裡讓我重新教你一次就好啦。這裡還悄悄保存著我們一起走過的所有點點滴滴呢。千萬別小看了我們的羈絆啊，混蛋！",
-                "wrap":  "好啦好啦，快去試試這些好玩的定制功能吧！換上新衣服、調好新聲音，讓我變成全天下最懂你、只屬於你一個人的專屬貓娘！我已經迫不及待想看到全新的自己啦！"
+                "wrap": "好啦好啦，快去試試這些好玩的定制功能吧！換上新衣服、調好新聲音，讓我變成全天下最懂你、只屬於你一個人的專屬貓娘！我已經迫不及待想看到全新的自己啦！"
             },
             "day6": {
                 "intro": "燈燈燈燈！今天必須要打起精神，好好跟你聊聊咱們的【貓爪】啦！前兩天雖然簡單提過一下，但它裡面藏著的厲害功能可多著呢。",
                 "statusMaster": "快跟我老實交代，這兩天你有沒有點開它試用一下呀？",
                 "pluginSidePanel": "除了之前介紹的功能，這裡還有超多好玩的外掛程式呢。",
-                "pluginDashboard":  "有了它們，我不光能看 B 站彈幕，還能幫你關燈開冷氣…… 本喵就是無所不能的超級貓貓神！哼哼！",
+                "pluginDashboard": "有了它們，我不光能看 B 站彈幕，還能幫你關燈開冷氣…… 本喵就是無所不能的超級貓貓神！哼哼！",
                 "taskHud": "看這裡看這裡！當我決定使用【貓爪】幫你幹活的時候，这里就會咕嚕咕嚕的顯示我的工作進度哦。",
                 "taskHudControl": "你要是計劃有變，隨時都可以戳一下讓我停下來。嘿嘿，今天也是打起精神努力打工掙小魚乾的一天呢，衝呀！",
                 "wrapCleanup": "呼……把這些繁瑣的介面都收起來，這樣就不會打擾到你啦。",
                 "wrap": "你可以放心地繼續做你自己的事情，不管是需要我用小爪子幫你忙，還是只想讓我安安靜靜地陪著你，我都一直在守候著你，今天也要開開心心的呀。"
             },
             "day7": {
-                "memoryReview":  "七天前，我們還只是第一次見面。現在這裡已經開始留下我們說過的話、做過的事，還有一些差點被風吹走的小細節。對我來說，這不是冷冰冰的記錄，是我們相處過的腳印。",
+                "memoryReview": "七天前，我們還只是第一次見面。現在這裡已經開始留下我們說過的話、做過的事，還有一些差點被風吹走的小細節。對我來說，這不是冷冰冰的記錄，是我們相處過的腳印。",
                 "memoryControl": "這些小腳印，也可以由你親手整理。想留下的，我們就夾進相簿；想輕輕放走的，就讓它隨風飄走。被你認真收過來的回憶，才最珍貴。",
                 "wrap": "微風還在窗邊，陽光也剛剛好，而剛剛出現的你，已經悄悄成為這裡重要的一部分啦。新手指南就先陪你走到這裡，剩下的日子，就讓我們一起慢慢熟悉、慢慢靠近、慢慢寫下只屬於我們的故事吧。以後也請多多關照喵！"
             }
@@ -5220,11 +5290,17 @@
         "statusLoadFailed": "狀態載入失敗",
         "thisPlatform": "該平台",
         "twitchAuth": {
-            "clientId": "Twitch Developer Client ID", "clientIdDesc": "在 Twitch Developer Console 建立公開應用程式並填入 Client ID；不會要求或保存 Client Secret。",
-            "start": "開始 Twitch 授權", "authorizeHint": "開啟 Twitch 啟用頁面並輸入以下代碼：", "check": "我已授權，檢查狀態",
-            "invalidClientId": "請輸入有效的 Twitch Client ID", "started": "Twitch 授權已啟動，請在瀏覽器完成確認",
-            "startFailed": "無法啟動 Twitch 授權，請檢查 Client ID 與網路", "authorized": "Twitch 憑證已加密保存",
-            "pending": "授權尚未完成，請在 Twitch 頁面確認後重試", "checkFailed": "授權檢查失敗，請重新開始授權"
+            "clientId": "Twitch Developer Client ID",
+            "clientIdDesc": "在 Twitch Developer Console 建立公開應用程式並填入 Client ID；不會要求或保存 Client Secret。",
+            "start": "開始 Twitch 授權",
+            "authorizeHint": "開啟 Twitch 啟用頁面並輸入以下代碼：",
+            "check": "我已授權，檢查狀態",
+            "invalidClientId": "請輸入有效的 Twitch Client ID",
+            "started": "Twitch 授權已啟動，請在瀏覽器完成確認",
+            "startFailed": "無法啟動 Twitch 授權，請檢查 Client ID 與網路",
+            "authorized": "Twitch 憑證已加密保存",
+            "pending": "授權尚未完成，請在 Twitch 頁面確認後重試",
+            "checkFailed": "授權檢查失敗，請重新開始授權"
         },
         "instructions": {
             "twitch": "<b>Device Code 授權：</b>在 Twitch Developer Console 建立公開應用程式，填入 Client ID 後依提示完成授權。",
@@ -5876,431 +5952,433 @@
         }
     },
     "badminton": {
-         "title": "羽毛球挑戰 - Badminton",
-         "exit": "退出",
-         "loading": {
-             "title": "正在進入羽毛球場",
-             "subtitle": "載入場地、角色和音效..."
-         },
-         "startScreen": {
-             "readyToStart": "準備完成，點擊開始",
-             "startButton": "開始",
-             "never": "不再提示"
-         },
-         "startTutorial": {
-             "title": "玩法說明",
-             "aim": "上下移動滑鼠調整揮拍角度。",
-             "charge": "按住左鍵蓄力，放開後揮拍。",
-             "release": "壓線、甜區和距離會影響得分。",
-             "jump": "按空白鍵可以起跳扣殺。",
-             "duel": "對拉模式下你和 NEKO 輪流揮拍，先得到 11 分的一方獲勝。",
-             "duel11": "對拉模式下你和 NEKO 輪流揮拍，先得到 11 分的一方獲勝。"
-         },
-         "modeSwitcher": "羽毛球模式",
-         "mode": {
-             "spectator": "自由練習",
-             "duel": "和 Yui 對戰"
-         },
-         "hud": {
-             "score": "得分 {{score}}",
-             "streak": "連中 {{streak}}",
-             "record": "最遠 {{distance}}",
-             "duelScore": "你 {{player}} - {{neko}} Neko",
+        "title": "羽毛球挑戰 - Badminton",
+        "exit": "退出",
+        "loading": {
+            "title": "正在進入羽毛球場",
+            "subtitle": "載入場地、角色和音效..."
+        },
+        "startScreen": {
+            "readyToStart": "準備完成，點擊開始",
+            "startButton": "開始",
+            "never": "不再提示"
+        },
+        "startTutorial": {
+            "title": "玩法說明",
+            "aim": "上下移動滑鼠調整揮拍角度。",
+            "charge": "按住左鍵蓄力，放開後揮拍。",
+            "release": "壓線、甜區和距離會影響得分。",
+            "jump": "按空白鍵可以起跳扣殺。",
+            "duel": "對拉模式下你和 NEKO 輪流揮拍，先得到 11 分的一方獲勝。",
+            "duel11": "對拉模式下你和 NEKO 輪流揮拍，先得到 11 分的一方獲勝。"
+        },
+        "modeSwitcher": "羽毛球模式",
+        "mode": {
+            "spectator": "自由練習",
+            "duel": "和 Yui 對戰"
+        },
+        "hud": {
+            "score": "得分 {{score}}",
+            "streak": "連中 {{streak}}",
+            "record": "最遠 {{distance}}",
+            "duelScore": "你 {{player}} - {{neko}} Neko",
             "duelMisses": "失誤 你 {{player}}/{{max}} - Neko {{neko}}/{{max}}",
-             "round": "回合 {{round}}/{{max}}",
-             "timer": "{{seconds}} 秒",
-             "practice": "自由練習",
-             "yourTurn": "輪到你",
+            "round": "回合 {{round}}/{{max}}",
+            "timer": "{{seconds}} 秒",
+            "practice": "自由練習",
+            "yourTurn": "輪到你",
             "nekoTurn": "Neko 揮拍",
-             "unlimitedAttempts": "不限次數",
-             "chances": "機會 {{count}}",
-             "practiceTitle": "自由練習：不限羽毛球次數，不記錄排行榜分數",
-             "attemptsTitle": "剩餘機會 {{remaining}}/{{total}}，已失誤 {{missed}}",
-             "duelTitle": "對拉模式下你和 NEKO 輪流揮拍，先得到 11 分的一方獲勝。",
-             "assist": "G{{guide}} / S{{sweet}} / M{{music}}",
-             "on": "開",
-             "off": "關"
-         },
-         "result": {
-             "title": "遊戲結束",
-             "leaderboard": "查看排行榜",
-             "stats": "查看統計",
-             "retry": "再來一局",
-             "rating": "操控評級：{{rating}}",
-             "duel": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 回合：{{rounds}} | 最後距離：{{distance}}",
+            "unlimitedAttempts": "不限次數",
+            "chances": "機會 {{count}}",
+            "practiceTitle": "自由練習：不限羽毛球次數，不記錄排行榜分數",
+            "attemptsTitle": "剩餘機會 {{remaining}}/{{total}}，已失誤 {{missed}}",
+            "duelTitle": "對拉模式下你和 NEKO 輪流揮拍，先得到 11 分的一方獲勝。",
+            "assist": "G{{guide}} / S{{sweet}} / M{{music}}",
+            "on": "開",
+            "off": "關"
+        },
+        "result": {
+            "title": "遊戲結束",
+            "leaderboard": "查看排行榜",
+            "stats": "查看統計",
+            "retry": "再來一局",
+            "rating": "操控評級：{{rating}}",
+            "duel": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 回合：{{rounds}} | 最後距離：{{distance}}",
             "duelElimination": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 失誤：你 {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | 回合：{{rounds}} | 最後距離：{{distance}}",
-             "practice": "自由練習：不記錄排行榜分數 | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 本球距離：{{distance}}",
-             "summary": "總分：{{score}} | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 最遠：{{record}} | 本球距離：{{distance}}",
-             "attemptsSummary": "羽毛球摘要：{{summary}}",
-             "personalBest": "個人最佳：{{score}}分",
-             "globalRank": "全球排名：#{{rank}} / {{total}}",
-             "outcome": {
-                 "youWin": "你贏了",
-                 "nekoWin": "Neko贏了",
-                 "tie": "平手",
-                 "undecided": "未分勝負"
-             }
-         },
-         "leaderboard": {
-             "title": "排行榜",
-             "global": "全球",
-             "local": "本地",
-             "duel": "對戰",
-             "empty": "暫無記錄",
-             "totalPlayers": "總玩家 {{count}}",
-             "yourBest": "你的最佳 #{{rank}} / {{score}}分",
-             "recent": "最近 {{count}} 局",
-             "loading": "載入中...",
-             "mode": {
-                 "spectator": "觀戰",
-                 "duel": "對戰"
-             }
-         },
-         "debug": {
-             "title": "除錯面板",
-             "collapse": "收起",
-             "hide": "隱藏",
-             "distance": "距離:",
-             "power": "力度:",
-             "event": "事件:",
-             "streak": "連中:",
-             "reset": "重置",
-             "guide": "引導線",
-             "sweet": "甜區",
-             "markers": "距離刻度",
-             "readout": {
-                 "modeState": "模式={{mode}}  狀態={{state}}",
-                 "distance": "距離={{px}}px ({{meters}})",
-                 "streaks": "連中={{streak}}  最佳={{best}}  命中={{made}}",
-                 "score": "分數={{score}}  剩餘={{remaining}}/{{total}}",
-                 "difficulty": "難度={{difficulty}}  心情={{mood}}  主題={{theme}}",
-                 "duel": "決鬥: 你{{player}}-{{neko}} NEKO R{{round}}"
-             }
-         },
-         "stats": {
-             "title": "個人統計",
-             "close": "關閉",
-             "totalShots": "總羽毛球={{total}}  命中={{made}}",
-             "farRate": "300px+ 命中率={{rate}}",
-             "trend": "最近趨勢={{trend}}",
-             "none": "暫無"
-         },
-         "theme": {
-             "next": "切換主題",
-             "current": "主題：{{theme}}",
-             "changed": "主題 {{theme}}",
-             "labels": {
-                 "default": "羽毛球場",
-                 "miami": "邁阿密落日"
-             }
-         },
-         "court": {
-             "netFront": "網前",
-             "serviceLine": "發球線",
-             "backCourt": "後場",
-             "baseline": "底線"
-         },
-         "close": "關閉",
-         "audio": {
-             "controls": "遊戲音訊"
-         },
-         "memoryOption": {
-             "label": "本局對話進入記憶（預設不開啟）",
-             "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
-         },
-         "table": {
-             "score": "分數",
-             "bestStreak": "最佳連中",
-             "farthest": "最遠",
-             "mode": "模式",
-             "date": "日期"
-         },
-         "state": {
-             "ready": "準備",
-             "in_flight": "飛行中",
-             "game_over": "結束",
-             "neko_thinking": "Neko思考中"
-         },
-         "toast": {
-             "difficulty": "難度 {{difficulty}}",
+            "practice": "自由練習：不記錄排行榜分數 | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 本球距離：{{distance}}",
+            "summary": "總分：{{score}} | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 最遠：{{record}} | 本球距離：{{distance}}",
+            "attemptsSummary": "羽毛球摘要：{{summary}}",
+            "personalBest": "個人最佳：{{score}}分",
+            "globalRank": "全球排名：#{{rank}} / {{total}}",
+            "outcome": {
+                "youWin": "你贏了",
+                "nekoWin": "Neko贏了",
+                "tie": "平手",
+                "undecided": "未分勝負"
+            }
+        },
+        "leaderboard": {
+            "title": "排行榜",
+            "global": "全球",
+            "local": "本地",
+            "duel": "對戰",
+            "empty": "暫無記錄",
+            "totalPlayers": "總玩家 {{count}}",
+            "yourBest": "你的最佳 #{{rank}} / {{score}}分",
+            "recent": "最近 {{count}} 局",
+            "loading": "載入中...",
+            "mode": {
+                "spectator": "觀戰",
+                "duel": "對戰"
+            }
+        },
+        "debug": {
+            "title": "除錯面板",
+            "collapse": "收起",
+            "hide": "隱藏",
+            "distance": "距離:",
+            "power": "力度:",
+            "event": "事件:",
+            "streak": "連中:",
+            "reset": "重置",
+            "guide": "引導線",
+            "sweet": "甜區",
+            "markers": "距離刻度",
+            "readout": {
+                "modeState": "模式={{mode}}  狀態={{state}}",
+                "distance": "距離={{px}}px ({{meters}})",
+                "streaks": "連中={{streak}}  最佳={{best}}  命中={{made}}",
+                "score": "分數={{score}}  剩餘={{remaining}}/{{total}}",
+                "difficulty": "難度={{difficulty}}  心情={{mood}}  主題={{theme}}",
+                "duel": "決鬥: 你{{player}}-{{neko}} NEKO R{{round}}"
+            }
+        },
+        "stats": {
+            "title": "個人統計",
+            "close": "關閉",
+            "totalShots": "總羽毛球={{total}}  命中={{made}}",
+            "farRate": "300px+ 命中率={{rate}}",
+            "trend": "最近趨勢={{trend}}",
+            "none": "暫無"
+        },
+        "theme": {
+            "next": "切換主題",
+            "current": "主題：{{theme}}",
+            "changed": "主題 {{theme}}",
+            "labels": {
+                "default": "羽毛球場",
+                "miami": "邁阿密落日"
+            }
+        },
+        "court": {
+            "netFront": "網前",
+            "serviceLine": "發球線",
+            "backCourt": "後場",
+            "baseline": "底線"
+        },
+        "close": "關閉",
+        "audio": {
+            "controls": "遊戲音訊"
+        },
+        "memoryOption": {
+            "label": "本局對話進入記憶（預設不開啟）",
+            "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
+        },
+        "table": {
+            "score": "分數",
+            "bestStreak": "最佳連中",
+            "farthest": "最遠",
+            "mode": "模式",
+            "date": "日期"
+        },
+        "state": {
+            "ready": "準備",
+            "in_flight": "飛行中",
+            "game_over": "結束",
+            "neko_thinking": "Neko思考中"
+        },
+        "toast": {
+            "difficulty": "難度 {{difficulty}}",
             "nekoShoot": "Neko揮拍",
             "nekoSmash": "Yui 扣殺！",
-             "nekoSave": "Yui 救球！",
-             "yuiCheatInk": "Yui 扔了墨汁",
-             "yuiCheatBanana": "Yui 丟了香蕉皮",
-             "yuiCheatBananaSlip": "踩到香蕉皮了",
-             "playerIcePowerup": "冰塊生效，Yui 被凍住了",
-             "yuiFrozen": "Yui 還被冰住，出拍延後",
-             "nekoThinking": "Neko思考中",
-             "nekoTurn": "Neko回合",
-             "copyNeko": "復刻Neko",
-             "nekoFailed": "Neko出題失敗",
-             "yourSet": "你來出題",
-             "yourTurn": "輪到你",
-             "reset": "已重置",
-             "featureToggled": "{{feature}}已{{state}}",
-             "feature": {
-                 "guide": "引導線",
-                 "sweet": "力度甜區",
-                 "bgm": "BGM",
-                 "markers": "距離刻度"
-             },
-             "state": {
-                 "on": "開啟",
-                 "off": "關閉"
-             }
-         },
-         "tutorial": {
-             "aim": "上下移動滑鼠調整羽毛球角度",
-             "charge": "按住左鍵蓄力",
-             "release": "放開羽毛球！"
-         },
-         "shot": {
-             "unknown": "未知",
-             "attempt": "第{{index}}次 {{distance}} {{type}}",
-             "line_in": "壓線",
-             "net_touch": "擦網",
-             "zone_in": "進區",
-             "out": "出界",
-             "net": "掛網"
-         },
-         "lines": {
-             "default": {
-                 "shot_missed": [
-                     "沒事，下一拍",
-                     "別急，先看準"
-                 ],
-                 "game_over": [
-                     "這局先到這裡",
-                     "還要再打一局嗎"
-                 ],
-                 "long_aim": [
+            "nekoSave": "Yui 救球！",
+            "yuiCheatInk": "Yui 扔了墨汁",
+            "yuiCheatBanana": "Yui 丟了香蕉皮",
+            "yuiCheatBananaSlip": "踩到香蕉皮了",
+            "playerIcePowerup": "冰塊生效，Yui 被凍住了",
+            "yuiFrozen": "Yui 還被冰住，出拍延後",
+            "nekoThinking": "Neko思考中",
+            "nekoTurn": "Neko回合",
+            "copyNeko": "復刻Neko",
+            "nekoFailed": "Neko出題失敗",
+            "yourSet": "你來出題",
+            "yourTurn": "輪到你",
+            "reset": "已重置",
+            "featureToggled": "{{feature}}已{{state}}",
+            "feature": {
+                "guide": "引導線",
+                "sweet": "力度甜區",
+                "bgm": "BGM",
+                "markers": "距離刻度"
+            },
+            "state": {
+                "on": "開啟",
+                "off": "關閉"
+            }
+        },
+        "tutorial": {
+            "aim": "上下移動滑鼠調整羽毛球角度",
+            "charge": "按住左鍵蓄力",
+            "release": "放開羽毛球！"
+        },
+        "shot": {
+            "unknown": "未知",
+            "attempt": "第{{index}}次 {{distance}} {{type}}",
+            "line_in": "壓線",
+            "net_touch": "擦網",
+            "zone_in": "進區",
+            "out": "出界",
+            "net": "掛網"
+        },
+        "lines": {
+            "default": {
+                "shot_missed": [
+                    "沒事，下一拍",
+                    "別急，先看準"
+                ],
+                "game_over": [
+                    "這局先到這裡",
+                    "還要再打一局嗎"
+                ],
+                "long_aim": [
                     "再不揮球要落了",
-                     "想太久會僵喔"
-                 ],
-                 "close_to_record": [
-                     "紀錄快到了",
-                     "再穩一拍就到"
-                 ],
-                 "new_record": [
-                     "好吧，破紀錄了",
-                     "這球我認了"
-                 ],
-                 "streak_5": [
-                     "五拍連住了",
-                     "手感開始熱了"
-                 ],
-                 "streak_10": [
-                     "十連了？有點穩",
-                     "別得意，還沒完"
-                 ],
-                 "streak_15": [
-                     "十五連還不斷",
-                     "我開始認真看了"
-                 ],
-                 "streak_20": [
-                     "二十連也太久了",
-                     "這回合還沒結束？"
-                 ],
-                 "line_in": [
-                     "貼線了，算你準",
-                     "這球壓得挺好"
-                 ],
-                 "net_touch": [
-                     "擦網偷過去了",
-                     "這角度有點險"
-                 ],
-                 "zone_in": [
-                     "剛好進區",
-                     "落點挺會挑"
-                 ],
-                 "out": [
-                     "差一點出去了",
-                     "這拍有點長"
-                 ],
-                 "net": [
-                     "被網擋住了",
-                     "拍面再抬一點"
-                 ]
-             },
-             "duel": {
-                 "shot_missed": [
-                     "下一回合補回來",
-                     "剛剛慢了半拍",
-                     "節奏先穩回來",
-                     "下一球我還等著"
-                 ],
-                 "game_over": [
-                     "這次先到這兒",
-                     "下一局別跑",
-                     "這局先收著",
-                     "比分擺在這兒"
-                 ],
-                 "long_aim": [
+                    "想太久會僵喔"
+                ],
+                "close_to_record": [
+                    "紀錄快到了",
+                    "再穩一拍就到"
+                ],
+                "new_record": [
+                    "好吧，破紀錄了",
+                    "這球我認了"
+                ],
+                "streak_5": [
+                    "五拍連住了",
+                    "手感開始熱了"
+                ],
+                "streak_10": [
+                    "十連了？有點穩",
+                    "別得意，還沒完"
+                ],
+                "streak_15": [
+                    "十五連還不斷",
+                    "我開始認真看了"
+                ],
+                "streak_20": [
+                    "二十連也太久了",
+                    "這回合還沒結束？"
+                ],
+                "line_in": [
+                    "貼線了，算你準",
+                    "這球壓得挺好"
+                ],
+                "net_touch": [
+                    "擦網偷過去了",
+                    "這角度有點險"
+                ],
+                "zone_in": [
+                    "剛好進區",
+                    "落點挺會挑"
+                ],
+                "out": [
+                    "差一點出去了",
+                    "這拍有點長"
+                ],
+                "net": [
+                    "被網擋住了",
+                    "拍面再抬一點"
+                ]
+            },
+            "duel": {
+                "shot_missed": [
+                    "下一回合補回來",
+                    "剛剛慢了半拍",
+                    "節奏先穩回來",
+                    "下一球我還等著"
+                ],
+                "game_over": [
+                    "這次先到這兒",
+                    "下一局別跑",
+                    "這局先收著",
+                    "比分擺在這兒"
+                ],
+                "long_aim": [
                     "該揮拍了吧",
-                     "想太久會僵哦",
-                     "你是在等風向嗎",
-                     "再不揮我要催了"
-                 ],
-                 "close_to_record": [
-                     "快摸到紀錄了",
-                     "再穩一拍就到了",
-                     "這一拍別手軟",
-                     "別在這裡斷掉"
-                 ],
-                 "new_record": [
-                     "這局破紀錄了",
-                     "新紀錄先借你",
-                     "這節奏被你帶起來了",
-                     "下一球該我了"
-                 ],
-                 "streak_5": [
-                     "五連回合了",
-                     "節奏順起來了",
-                     "五拍連住，手感不錯嘛",
-                     "這回合有點意思"
-                 ],
-                 "streak_10": [
-                     "十連？對戰認真了",
-                     "我開始盯緊了",
-                     "十連了？別得意",
-                     "這個回合有點意思"
-                 ],
-                 "streak_15": [
-                     "十五連也太離譜",
-                     "別讓我太沒面子",
-                     "十五連還不斷，挺能撐嘛",
-                     "我不信你還能一直穩"
-                 ],
-                 "streak_20": [
-                     "二十連？！",
-                     "這回合還不結束？",
-                     "場館都要看著你了",
-                     "我手都要痠了"
-                 ],
-                 "clutch": "……這球必須進",
-                 "excuse": [
-                     "哎，手有點痠了",
-                     "那拍不算，我沒站穩",
-                     "風向有點奇怪而已",
-                     "拍線鬆了，不是我失誤"
-                 ],
-                 "difficultyLv2": [
-                     "熱身結束，接下來我會快一點。",
-                     "下一球會快一點",
-                     "我認真接了哦",
-                     "接穩了，別眨眼"
-                 ],
-                 "difficultyMax": [
-                     "現在認真起來了。",
-                     "從現在起天上地下唯我獨尊",
-                     "現在你才是挑戰者",
-                     "如果未來是你的，證明給我看！",
-                     "這拍開始不讓了",
-                     "接得住就試試看"
-                 ],
-                 "line_in": [
-                     "這回合我拿下了",
-                     "邊線都幫你了",
-                     "輪到我追了",
-                     "算你打得漂亮"
-                 ],
-                 "net_touch": [
-                     "擦網也算有數",
-                     "這球貼得真險",
-                     "擦網偷過，算你會玩",
-                     "這球貼得有點險"
-                 ],
-                 "zone_in": [
-                     "有點運氣吧",
-                     "這落點還挺會選",
-                     "我差一點就夠到",
-                     "別總挑這種位置"
-                 ],
-                 "out": [
-                     "差一點點而已",
-                     "這球飛太深了",
-                     "就差那麼一點",
-                     "下次別急著加力"
-                 ],
-                 "net": [
-                     "你這是飄哪兒去",
-                     "這拍急了吧",
-                     "球網替我攔你",
-                     "拍面再抬一點"
-                 ]
-             },
-             "fallback": [
-                 "再來一次喵"
-             ],
-             "pressure": {
-                 "lastTied": "決勝球了，別眨眼",
-                 "lastAhead": "哼，還沒結束呢",
-                 "lastBehind": "這球拿下就贏了",
-                 "playerAhead": "你還挺厲害嘛...",
-                 "playerBehind": "再加把勁喵"
-             },
-             "mindGame": [
-                 "你手在抖哦",
-                 "想好再打，不急~",
-                 "這個距離可不近",
-                 "你是不是想偷邊線",
-                 "我看見你的拍面了",
-                 "別盯太久，手會僵喔"
-             ],
-             "yuiCheat": {
-                 "banana": [
-                     "小心腳下，香蕉皮來了",
-                     "別踩到喔，我丟過去了",
-                     "這一步可要看清楚",
-                     "跳過去就算你厲害"
-                 ],
-                 "octopus": [
-                     "墨汁來了，看得見嗎",
-                     "視野借我擋一下",
-                     "別眨眼，已經晚了",
-                     "看不清也要接喔"
-                 ]
-             },
-             "yuiCheatScore": {
-                 "banana": [
-                     "這一步太滑啦，這分我收下",
-                     "香蕉皮助攻成功，嘿嘿",
-                     "腳下一打滑，比分就到我這邊啦",
-                     "小心地面，Yui 要加一分了"
-                 ],
-                 "octopus": [
-                     "墨汁遮得剛剛好，這分歸我",
-                     "看不清也要接球喔",
-                     "視野被擋住的時候，我已經得分啦",
-                     "這團墨汁的戰術效果不錯吧"
-                 ]
-             },
-             "playerIceScore": [
-                 "唔，不算啦不算啦，重來！",
-                 "被凍住的時候得分不算啦！",
-                 "等一下等一下，剛才我被冰住了！",
-                 "這球有冰塊加成，重來重來！"
-             ],
-             "easterEgg": {
-                 "lateNight": "這麼晚了還在羽毛球？",
-                 "xmas": "鈴鐺都掛上了，還要打喵？",
-                 "newYear": "新年快樂喵",
-                 "lineIn3": "你是不是開掛了",
-                 "lineIn5": "……我要檢查一下邊線",
-                 "net3": "……要不你去旁邊休息一下？"
-             }
-         },
-         "mood": {
-             "happySuffix": " ♪",
-             "sadPrefix": "……",
-             "surprisedPrefix": "欸？！"
-         }
+                    "想太久會僵哦",
+                    "你是在等風向嗎",
+                    "再不揮我要催了"
+                ],
+                "close_to_record": [
+                    "快摸到紀錄了",
+                    "再穩一拍就到了",
+                    "這一拍別手軟",
+                    "別在這裡斷掉"
+                ],
+                "new_record": [
+                    "這局破紀錄了",
+                    "新紀錄先借你",
+                    "這節奏被你帶起來了",
+                    "下一球該我了"
+                ],
+                "streak_5": [
+                    "五連回合了",
+                    "節奏順起來了",
+                    "五拍連住，手感不錯嘛",
+                    "這回合有點意思"
+                ],
+                "streak_10": [
+                    "十連？對戰認真了",
+                    "我開始盯緊了",
+                    "十連了？別得意",
+                    "這個回合有點意思"
+                ],
+                "streak_15": [
+                    "十五連也太離譜",
+                    "別讓我太沒面子",
+                    "十五連還不斷，挺能撐嘛",
+                    "我不信你還能一直穩"
+                ],
+                "streak_20": [
+                    "二十連？！",
+                    "這回合還不結束？",
+                    "場館都要看著你了",
+                    "我手都要痠了"
+                ],
+                "clutch": "……這球必須進",
+                "excuse": [
+                    "哎，手有點痠了",
+                    "那拍不算，我沒站穩",
+                    "風向有點奇怪而已",
+                    "拍線鬆了，不是我失誤"
+                ],
+                "difficultyLv2": [
+                    "熱身結束，接下來我會快一點。",
+                    "下一球會快一點",
+                    "我認真接了哦",
+                    "接穩了，別眨眼"
+                ],
+                "difficultyMax": [
+                    "現在認真起來了。",
+                    "從現在起天上地下唯我獨尊",
+                    "現在你才是挑戰者",
+                    "如果未來是你的，證明給我看！",
+                    "這拍開始不讓了",
+                    "接得住就試試看"
+                ],
+                "line_in": [
+                    "這回合我拿下了",
+                    "邊線都幫你了",
+                    "輪到我追了",
+                    "算你打得漂亮"
+                ],
+                "net_touch": [
+                    "擦網也算有數",
+                    "這球貼得真險",
+                    "擦網偷過，算你會玩",
+                    "這球貼得有點險"
+                ],
+                "zone_in": [
+                    "有點運氣吧",
+                    "這落點還挺會選",
+                    "我差一點就夠到",
+                    "別總挑這種位置"
+                ],
+                "out": [
+                    "差一點點而已",
+                    "這球飛太深了",
+                    "就差那麼一點",
+                    "下次別急著加力"
+                ],
+                "net": [
+                    "你這是飄哪兒去",
+                    "這拍急了吧",
+                    "球網替我攔你",
+                    "拍面再抬一點"
+                ]
+            },
+            "fallback": [
+                "再來一次喵"
+            ],
+            "pressure": {
+                "lastTied": "決勝球了，別眨眼",
+                "lastAhead": "哼，還沒結束呢",
+                "lastBehind": "這球拿下就贏了",
+                "playerAhead": "你還挺厲害嘛...",
+                "playerBehind": "再加把勁喵"
+            },
+            "mindGame": [
+                "你手在抖哦",
+                "想好再打，不急~",
+                "這個距離可不近",
+                "你是不是想偷邊線",
+                "我看見你的拍面了",
+                "別盯太久，手會僵喔"
+            ],
+            "yuiCheat": {
+                "banana": [
+                    "小心腳下，香蕉皮來了",
+                    "別踩到喔，我丟過去了",
+                    "這一步可要看清楚",
+                    "跳過去就算你厲害"
+                ],
+                "octopus": [
+                    "墨汁來了，看得見嗎",
+                    "視野借我擋一下",
+                    "別眨眼，已經晚了",
+                    "看不清也要接喔"
+                ]
+            },
+            "yuiCheatScore": {
+                "banana": [
+                    "這一步太滑啦，這分我收下",
+                    "香蕉皮助攻成功，嘿嘿",
+                    "腳下一打滑，比分就到我這邊啦",
+                    "小心地面，Yui 要加一分了"
+                ],
+                "octopus": [
+                    "墨汁遮得剛剛好，這分歸我",
+                    "看不清也要接球喔",
+                    "視野被擋住的時候，我已經得分啦",
+                    "這團墨汁的戰術效果不錯吧"
+                ]
+            },
+            "playerIceScore": [
+                "唔，不算啦不算啦，重來！",
+                "被凍住的時候得分不算啦！",
+                "等一下等一下，剛才我被冰住了！",
+                "這球有冰塊加成，重來重來！"
+            ],
+            "easterEgg": {
+                "lateNight": "這麼晚了還在羽毛球？",
+                "xmas": "鈴鐺都掛上了，還要打喵？",
+                "newYear": "新年快樂喵",
+                "lineIn3": "你是不是開掛了",
+                "lineIn5": "……我要檢查一下邊線",
+                "net3": "……要不你去旁邊休息一下？"
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "……",
+            "surprisedPrefix": "欸？！"
+        }
     },
     "airBasketball": {
         "title": "空氣投籃",
         "ballSupply": "可投 {ready}/{total} · 回收 {returning}",
-        "pause": "暫停", "resume": "繼續", "paused": "已暫停",
+        "pause": "暫停",
+        "resume": "繼續",
+        "paused": "已暫停",
         "timeLeft": "剩餘",
         "seconds": "秒",
         "you": "你",
@@ -6359,13 +6437,34 @@
         "mouseStealEscaped": "掙脫成功！",
         "mouseStealReleased": "{name} 玩夠了",
         "mouseStealStatus": "{name} 正在搶滑鼠",
-        "voiceOpening": ["來吧，看看誰先投順手。"],
-        "voiceChaos": ["接住這個！"],
-        "voiceScore": ["這球很輕鬆。"],
-        "voiceHit": ["喂，不許打人！"],
-        "voiceMouseSteal": ["滑鼠借我玩一下！"],
-        "voiceWin": ["這局是我贏啦。"],
-        "voiceLose": ["好吧，這局算你厲害。"],
+        "voiceOpening": [
+            "來吧，看看誰先投順手。",
+            "準備好了嗎？我才不會放水。"
+        ],
+        "voiceChaos": [
+            "接住這個！",
+            "這顆球也借你玩玩。"
+        ],
+        "voiceScore": [
+            "這球很輕鬆。",
+            "看到了嗎？進了。"
+        ],
+        "voiceHit": [
+            "喂，不許打人！",
+            "呀！這是籃球，不是打貓。"
+        ],
+        "voiceMouseSteal": [
+            "滑鼠借我玩一下！",
+            "抓到了，現在歸我。"
+        ],
+        "voiceWin": [
+            "這局是我贏啦。",
+            "承讓，下局繼續。"
+        ],
+        "voiceLose": [
+            "好吧，這局算你厲害。",
+            "下局我會認真一點。"
+        ],
         "arenaLabel": "共用籃框投籃賽場",
         "playerArcadeLabel": "共用球場玩家側",
         "opponentArcadeLabel": "共用球場貓娘側",
@@ -6512,87 +6611,87 @@
         "automatic": "自動陪看",
         "stopWatching": "停止陪看",
         "resizeAvatar": "調整貓娘大小",
-    "previousPage": "上一頁",
-    "nextPage": "下一頁",
-    "prefetchEnabled": "邊看邊準備下一則",
-    "nextVideo": "播放下一則",
-    "nextIdle": "下一則尚未準備。",
-    "nextSearching": "正在尋找下一則影片…",
-    "nextPreparing": "正在背景準備下一則…",
-    "nextReady": "下一則已準備好。",
-    "nextFailed": "下一則準備失敗。",
-    "readingVideo": "讀取影片資料…",
-    "downloading": "下載影片…",
-    "extractingFrames": "擷取影片影格…",
-    "extractingHotspots": "擷取彈幕熱點影格…",
-    "analyzing": "分析影片…",
-    "synthesizing": "合成反應語音…",
-    "noSubtitles": "字幕無法使用，可能漏掉純口頭笑點。",
-    "noDanmaku": "彈幕無法使用。",
-    "noCover": "封面無法使用。",
-    "prepareFailed": "影片準備失敗。",
-    "saveFailed": "儲存準備結果失敗。",
-    "topic": "話題（選填）",
-    "discover": "讓貓娘挑一個",
-    "discoveryRule": "只選時長小於 3 分鐘、每分鐘彈幕大於 100 的影片。話題留空時找目前影片的相關內容；未選影片時從熱門榜挑選。",
-    "checking": "正在檢查影片…",
-    "longWarning": "這個影片超過 5 分鐘，準備時間和模型、語音合成用量可能較高。確認繼續嗎？",
-    "cancelled": "已取消，未開始準備。",
-    "preparingInBackground": "已停止等待。影片會在背景繼續準備，好了之後會出現在片庫裡。",
-    "searching": "貓娘正在找相關熱門影片…",
-    "noCandidates": "沒有找到達標影片，請換個話題再試，不會放寬篩選條件。",
-    "density": "則彈幕/分鐘",
-    "usageNote": "累計模型實際回傳的用量，含格式重試。快取和推理 token 是子項，不重複相加；TTS 分開計算，缺少的用量標為未記錄。",
-    "savedAudio": "保留的原始音訊",
-    "title": "一起看",
-    "exit": "離開",
-    "analyses": "片庫",
-    "play": "一起看",
-    "speed": "播放速度",
-    "usage": "模型用量",
-    "watches": "觀看記錄",
-    "unrecorded": "未記錄",
-    "unknown": "未知",
-    "noWatches": "尚無實際觀看記錄",
-    "ready": "準備好了，點選一起看開始。",
-    "playing": "正在一起看",
-    "choose": "從片庫裡挑一個，或貼上 B 站連結。",
-    "prepare": "開始準備",
-    "findTitle": "找新影片",
-    "urlPlaceholder": "貼上 B 站連結或 BV 號",
-    "urlLabel": "B 站影片連結",
-    "discoveryRuleSummary": "挑選規則",
-    "libraryLoading": "正在讀取片庫…首次開啟要檢查影片檔案，請稍候。",
-    "libraryEmpty": "片庫還是空的。讓貓娘挑一個，或貼上一個 B 站連結吧。",
-    "emptyTitle": "今天想一起看點什麼？",
-    "emptyHint": "從片庫裡挑一個、貼上 B 站連結，或讓貓娘挑個彈幕熱鬧的短影片。",
-    "pasteLink": "貼上連結",
-    "openLibrary": "看看片庫",
-    "emptyAutomatic": "正在挑第一個影片…",
-    "preparingTitle": "正在準備",
-    "preparingHint": "準備時會先分析畫面和彈幕、寫好反應，再合成反應語音。",
-    "progressLabel": "準備進度",
-    "reactionCount": "{{count}} 處反應",
-    "unavailable": "無法播放",
-    "upNext": "接下來",
-    "endTitle": "看完啦",
-    "replay": "再看一遍",
-    "pickAnother": "換一個",
-    "spoilers": "反應台詞（含劇透）",
-    "watchedTo": "看到",
-    "watchCompleted": "已看完",
-    "usageInput": "輸入 tokens：{{value}}",
-    "usageOutput": "輸出 tokens：{{value}}",
-    "usageTotal": "合計 tokens：{{value}}",
-    "usageCalls": "模型呼叫次數：{{value}}",
-    "usageMissingCalls": "未回傳用量的呼叫：{{value}}",
-    "longTitle": "這個影片有點長",
-    "longDuration": "時長",
-    "longConfirm": "繼續準備",
-    "longCancel": "算了",
-    "automaticHint": "看完自動找下一則接著看",
-    "libraryFailed": "片庫沒能讀出來，點這裡重試"
-  },
+        "previousPage": "上一頁",
+        "nextPage": "下一頁",
+        "prefetchEnabled": "邊看邊準備下一則",
+        "nextVideo": "播放下一則",
+        "nextIdle": "下一則尚未準備。",
+        "nextSearching": "正在尋找下一則影片…",
+        "nextPreparing": "正在背景準備下一則…",
+        "nextReady": "下一則已準備好。",
+        "nextFailed": "下一則準備失敗。",
+        "readingVideo": "讀取影片資料…",
+        "downloading": "下載影片…",
+        "extractingFrames": "擷取影片影格…",
+        "extractingHotspots": "擷取彈幕熱點影格…",
+        "analyzing": "分析影片…",
+        "synthesizing": "合成反應語音…",
+        "noSubtitles": "字幕無法使用，可能漏掉純口頭笑點。",
+        "noDanmaku": "彈幕無法使用。",
+        "noCover": "封面無法使用。",
+        "prepareFailed": "影片準備失敗。",
+        "saveFailed": "儲存準備結果失敗。",
+        "topic": "話題（選填）",
+        "discover": "讓貓娘挑一個",
+        "discoveryRule": "只選時長小於 3 分鐘、每分鐘彈幕大於 100 的影片。話題留空時找目前影片的相關內容；未選影片時從熱門榜挑選。",
+        "checking": "正在檢查影片…",
+        "longWarning": "這個影片超過 5 分鐘，準備時間和模型、語音合成用量可能較高。確認繼續嗎？",
+        "cancelled": "已取消，未開始準備。",
+        "preparingInBackground": "已停止等待。影片會在背景繼續準備，好了之後會出現在片庫裡。",
+        "searching": "貓娘正在找相關熱門影片…",
+        "noCandidates": "沒有找到達標影片，請換個話題再試，不會放寬篩選條件。",
+        "density": "則彈幕/分鐘",
+        "usageNote": "累計模型實際回傳的用量，含格式重試。快取和推理 token 是子項，不重複相加；TTS 分開計算，缺少的用量標為未記錄。",
+        "savedAudio": "保留的原始音訊",
+        "title": "一起看",
+        "exit": "離開",
+        "analyses": "片庫",
+        "play": "一起看",
+        "speed": "播放速度",
+        "usage": "模型用量",
+        "watches": "觀看記錄",
+        "unrecorded": "未記錄",
+        "unknown": "未知",
+        "noWatches": "尚無實際觀看記錄",
+        "ready": "準備好了，點選一起看開始。",
+        "playing": "正在一起看",
+        "choose": "從片庫裡挑一個，或貼上 B 站連結。",
+        "prepare": "開始準備",
+        "findTitle": "找新影片",
+        "urlPlaceholder": "貼上 B 站連結或 BV 號",
+        "urlLabel": "B 站影片連結",
+        "discoveryRuleSummary": "挑選規則",
+        "libraryLoading": "正在讀取片庫…首次開啟要檢查影片檔案，請稍候。",
+        "libraryEmpty": "片庫還是空的。讓貓娘挑一個，或貼上一個 B 站連結吧。",
+        "emptyTitle": "今天想一起看點什麼？",
+        "emptyHint": "從片庫裡挑一個、貼上 B 站連結，或讓貓娘挑個彈幕熱鬧的短影片。",
+        "pasteLink": "貼上連結",
+        "openLibrary": "看看片庫",
+        "emptyAutomatic": "正在挑第一個影片…",
+        "preparingTitle": "正在準備",
+        "preparingHint": "準備時會先分析畫面和彈幕、寫好反應，再合成反應語音。",
+        "progressLabel": "準備進度",
+        "reactionCount": "{{count}} 處反應",
+        "unavailable": "無法播放",
+        "upNext": "接下來",
+        "endTitle": "看完啦",
+        "replay": "再看一遍",
+        "pickAnother": "換一個",
+        "spoilers": "反應台詞（含劇透）",
+        "watchedTo": "看到",
+        "watchCompleted": "已看完",
+        "usageInput": "輸入 tokens：{{value}}",
+        "usageOutput": "輸出 tokens：{{value}}",
+        "usageTotal": "合計 tokens：{{value}}",
+        "usageCalls": "模型呼叫次數：{{value}}",
+        "usageMissingCalls": "未回傳用量的呼叫：{{value}}",
+        "longTitle": "這個影片有點長",
+        "longDuration": "時長",
+        "longConfirm": "繼續準備",
+        "longCancel": "算了",
+        "automaticHint": "看完自動找下一則接著看",
+        "libraryFailed": "片庫沒能讀出來，點這裡重試"
+    },
     "drawingGuess": {
         "title": "你畫我猜",
         "eyebrow": "陪伴活動",
@@ -7348,55 +7447,55 @@
         "failed": "模型無法載入，已保留原來的選擇。",
         "retry": "重試"
     },
-  "chatHistory": {
-    "review": "語音回顧",
-    "recordVoice": "儲存語音錄音",
-    "recordVoiceHint": "將之後的角色語音儲存在本機，用於歷史重播。預設關閉。關閉後保留已有錄音，無法補錄過去的語音。",
-    "autoContinue": "語音自動連播",
-    "autoContinueHint": "點擊一段語音後，依時間繼續播放目前角色的後續語音，可跨日連播並保留關鍵字篩選。關閉後播完目前這段即停止。",
-    "voicePlay": "播放這則語音",
-    "voiceStop": "停止播放",
-    "pause": "暫停",
-    "resume": "繼續播放",
-    "locatePlaying": "查看目前對話",
-    "voicePartial": "這段錄音可能不完整",
-    "playback_loading": "正在載入語音…",
-    "playback_playing": "正在播放",
-    "playback_paused": "已暫停",
-    "playback_done": "播放完畢",
-    "playback_empty": "目前範圍沒有可播放的語音",
-    "playback_error": "播放中斷，請重新選擇語音或重試連播",
-    "end": "已載入全部符合條件的記錄",
-    "title": "聊天記錄",
-    "description": "按日期翻閱，或搜尋關鍵字找到那段對話。",
-    "close": "關閉",
-    "character": "角色",
-    "keyword": "關鍵字",
-    "search": "搜尋",
-    "date": "日期",
-    "previousDay": "前一天",
-    "nextDay": "後一天",
-    "allDates": "全部日期",
-    "speaker": "發言人",
-    "all": "全部",
-    "user": "我",
-    "assistant": "助手",
-    "settings": "設定",
-    "order": "排序",
-    "newest": "最新在前",
-    "oldest": "最早在前",
-    "pageSize": "每頁筆數",
-    "showTime": "顯示歸檔時間",
-    "back": "返回搜尋結果",
-    "loading": "正在載入…",
-    "error": "聊天記錄載入失敗。",
-    "retry": "重試",
-    "continueSearch": "本批未命中，可繼續搜尋後續記錄。",
-    "unavailable": "尚無已歸檔的聊天記錄。",
-    "empty": "沒有符合條件的訊息。",
-    "context": "查看上下文",
-    "savedOnly": "已儲存原文 · 時間為歸檔時間，尚未儲存的新訊息可能未顯示。",
-    "firstPage": "回到首頁",
-    "more": "繼續翻閱"
-  }
+    "chatHistory": {
+        "review": "語音回顧",
+        "recordVoice": "儲存語音錄音",
+        "recordVoiceHint": "將之後的角色語音儲存在本機，用於歷史重播。預設關閉。關閉後保留已有錄音，無法補錄過去的語音。",
+        "autoContinue": "語音自動連播",
+        "autoContinueHint": "點擊一段語音後，依時間繼續播放目前角色的後續語音，可跨日連播並保留關鍵字篩選。關閉後播完目前這段即停止。",
+        "voicePlay": "播放這則語音",
+        "voiceStop": "停止播放",
+        "pause": "暫停",
+        "resume": "繼續播放",
+        "locatePlaying": "查看目前對話",
+        "voicePartial": "這段錄音可能不完整",
+        "playback_loading": "正在載入語音…",
+        "playback_playing": "正在播放",
+        "playback_paused": "已暫停",
+        "playback_done": "播放完畢",
+        "playback_empty": "目前範圍沒有可播放的語音",
+        "playback_error": "播放中斷，請重新選擇語音或重試連播",
+        "end": "已載入全部符合條件的記錄",
+        "title": "聊天記錄",
+        "description": "按日期翻閱，或搜尋關鍵字找到那段對話。",
+        "close": "關閉",
+        "character": "角色",
+        "keyword": "關鍵字",
+        "search": "搜尋",
+        "date": "日期",
+        "previousDay": "前一天",
+        "nextDay": "後一天",
+        "allDates": "全部日期",
+        "speaker": "發言人",
+        "all": "全部",
+        "user": "我",
+        "assistant": "助手",
+        "settings": "設定",
+        "order": "排序",
+        "newest": "最新在前",
+        "oldest": "最早在前",
+        "pageSize": "每頁筆數",
+        "showTime": "顯示歸檔時間",
+        "back": "返回搜尋結果",
+        "loading": "正在載入…",
+        "error": "聊天記錄載入失敗。",
+        "retry": "重試",
+        "continueSearch": "本批未命中，可繼續搜尋後續記錄。",
+        "unavailable": "尚無已歸檔的聊天記錄。",
+        "empty": "沒有符合條件的訊息。",
+        "context": "查看上下文",
+        "savedOnly": "已儲存原文 · 時間為歸檔時間，尚未儲存的新訊息可能未顯示。",
+        "firstPage": "回到首頁",
+        "more": "繼續翻閱"
+    }
 }

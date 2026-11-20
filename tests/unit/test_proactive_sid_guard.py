@@ -13,7 +13,7 @@ import os
 import sys
 from queue import Queue
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -935,9 +935,12 @@ async def test_finish_proactive_delivery_stages_screenshot_only_under_live_conse
     )
 
     assert committed is True
-    mgr.session.set_proactive_screenshot.assert_called_once_with(
-        None if live_consent is False else "SHOT_B64"
-    )
+    if live_consent is False:
+        mgr.session.set_proactive_screenshot.assert_called_once_with(None)
+    else:
+        mgr.session.set_proactive_screenshot.assert_called_once_with(
+            "SHOT_B64", consent_check=ANY,
+        )
 
 
 async def _finish_with_engagement_during_publish(engaged: bool) -> LLMSessionManager:

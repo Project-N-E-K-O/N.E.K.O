@@ -1,6 +1,7 @@
 name: Plugin Tests
 
-# The plugin-subsystem pytest gate. Scoped to plugin/** on purpose: plugin PRs
+# The plugin-subsystem pytest gate. Scoped to plugin/** (plus the neko-plugin
+# skill, whose text guards live in plugin/tests) on purpose: plugin PRs
 # historically shipped with no test gate at all, which let silent drift
 # accumulate (e.g. #1464's ocr_reader → ocr_window_scanner extraction broke
 # monkeypatch namespaces in 4 tests, #1480's install_source field broke the
@@ -17,6 +18,9 @@ on:
       - 'plugin/**'
       - 'utils/process_creation.py'
       - '.github/workflows/plugin-tests.yml'
+      # The neko-plugin skill is copied into new plugin projects; its text
+      # guards live in plugin/tests (test_neko_plugin_agent_guides.py).
+      - '.agent/skills/neko-plugin/**'
       # Dependency changes alter the plugin test/runtime environment (e.g.
       # removing a dev dep plugin/tests needs) — without these a deps-only
       # PR skips the gate and the breakage surfaces on the next plugin PR.
@@ -28,6 +32,7 @@ on:
       - 'plugin/**'
       - 'utils/process_creation.py'
       - '.github/workflows/plugin-tests.yml'
+      - '.agent/skills/neko-plugin/**'
       - 'pyproject.toml'
       - 'uv.lock'
   workflow_dispatch:

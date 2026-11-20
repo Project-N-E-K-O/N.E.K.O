@@ -51,8 +51,19 @@ class TodoState:
             self._on_change()
         return todos
 
+    def clear(self) -> None:
+        """Drop the list, as if none had been written."""
+        if self.items is None:
+            return
+        self.items = None
+        if self._on_change is not None:
+            self._on_change()
+
     def restore(self, items: object) -> None:
-        if isinstance(items, list):
+        if items is None:
+            # Saved by ``clear``: what was written before it no longer counts.
+            self.items = None
+        elif isinstance(items, list):
             self.items = [
                 {"content": str(item["content"]), "status": str(item["status"])}
                 for item in items

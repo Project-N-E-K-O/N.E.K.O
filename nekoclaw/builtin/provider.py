@@ -464,13 +464,39 @@ class BuiltinToolProvider:
         """Whether a browser is still held after ``close_browser``: closing it failed, and it is kept to be closed later."""
         return self._browser is not None and self._browser.holds_a_browser()
 
-    async def release_keys(self) -> None:
-        """Let go of keys and buttons a stopped call left held; never raises."""
-        if self._desktop is not None:
+    async def release_keys(self) -> bool:
+        """Let go of keys and buttons a stopped call left held; never raises.
+
+        True when nothing is left held. False when something is (a key that
+        would not come up, or a call still at the keyboard): worth one more
+        try later.
+        """
+        if self._desktop is None:
+            return True
+        try:
+            return bool(await asyncio.to_thread(self._desktop.release_held))
+        except Exception:  # noqa: BLE001 - shutting down goes on
+            logger.debug("releasing held keys failed", exc_info=True)
+            return False
+
+    def release_keys_unwaited(self) -> None:
+        """Hand letting go of held keys and buttons to a thread of its own, not waited for.
+
+        For a shutdown with no time left to wait for ``release_keys``: the
+        release is still tried, and nothing waits for it. A daemon thread, so
+        it cannot hold up the process's exit either.
+        """
+        desktop = self._desktop
+        if desktop is None:
+            return
+
+        def release() -> None:
             try:
-                await asyncio.to_thread(self._desktop.release_held)
+                desktop.release_held()
             except Exception:  # noqa: BLE001 - shutting down goes on
                 logger.debug("releasing held keys failed", exc_info=True)
+
+        threading.Thread(target=release, name="nekoclaw-release-keys", daemon=True).start()
 
     async def aclose(self) -> None:
         """Let go of everything; for shutting down."""

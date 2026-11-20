@@ -39,6 +39,8 @@ class MyPlugin(NekoPluginBase):
     timeout=30.0,                # 执行超时时间（秒）
     llm_result_fields=["text"],  # 为 LLM 消费提取的字段
     llm_result_model=MyResult,   # 用于结果 schema 的 Pydantic 模型
+    output_schema={...},         # 返回值的 JSON Schema（输出契约）
+    strict_output=False,         # True：返回值不符合契约时本次调用失败
     metadata={"category": "data"}  # 附加元数据
 )
 async def process(self, data: str, **_):
@@ -63,6 +65,12 @@ async def process(self, data: str, **_):
 | `llm_result_model` | `type` | `None` | 用于结果 schema 的 Pydantic 模型 |
 | `fields` | `type` | `None` | `params` 的别名 |
 | `metadata` | `dict` | `None` | 附加元数据 |
+| `output_schema` | `dict` | `None` | 返回值的 JSON Schema。不写时，返回注解是 Pydantic 模型就自动推导。见[入口与参数](./entries)的「输出契约」一节 |
+| `strict_output` | `bool` | `False` | 返回值不符合输出契约时，除了记告警日志，还让本次调用失败（`PLUGIN_OUTPUT_SCHEMA_VIOLATION`）。默认只记告警。只有从 Pydantic 返回注解推导的契约会被检查，所以对显式的 `output_schema` 不起作用 |
+
+`output_schema` 和 `llm_result_fields` / `llm_result_model` 互不影响：后两者决定模型读哪些字段，`output_schema` 描述整个返回值。两者可以同时用。
+
+从 Pydantic 返回注解推导的契约，运行时由 model 校验（和 `params` 一样）；显式写的 `output_schema` 只发布（和 `input_schema` 一样）。见[入口与参数](./entries)的「输出契约」一节。
 
 ::: tip
 只有在处理器有意接受宿主额外字段时才使用 `**_`。显式签名的处理器会由运行时过滤不支持的关键字参数，因此它不是硬性要求。

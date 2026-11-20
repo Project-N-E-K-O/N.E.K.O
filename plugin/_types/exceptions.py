@@ -47,6 +47,26 @@ class PluginExecutionError(PluginError):
         super().__init__(f"Plugin '{plugin_id}' entry '{entry_id}' execution failed: {error}")
 
 
+# Error code of an entry whose return value violates its output_schema while
+# the entry declares strict_output=True. Part of the /runs and call_entry
+# error contract: keep the string stable.
+OUTPUT_SCHEMA_VIOLATION_CODE = "PLUGIN_OUTPUT_SCHEMA_VIOLATION"
+
+
+class PluginOutputSchemaError(PluginExecutionError):
+    """An entry with ``strict_output=True`` returned data its output_schema rejects.
+
+    ``issues`` holds ``{"path", "type"}`` items only; the message is built from
+    them and never quotes the returned data.
+    """
+
+    code = OUTPUT_SCHEMA_VIOLATION_CODE
+
+    def __init__(self, plugin_id: str, entry_id: str, issues: list[dict[str, str]], summary: str):
+        self.issues = issues
+        super().__init__(plugin_id, entry_id, f"output does not match output_schema: {summary}")
+
+
 class PluginCommunicationError(PluginError):
     """Plugin interprocess communication error."""
     

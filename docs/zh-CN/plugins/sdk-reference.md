@@ -269,6 +269,18 @@ self.register_dynamic_entry(
 )
 ```
 
+### 输出契约
+
+`@plugin_entry` 或 `register_dynamic_entry()` 的 `output_schema` 声明返回值的 JSON Schema。和入参对称：静态入口的返回注解是 Pydantic 模型时会自动推导，运行时由模型校验返回的数据（和 `params` 一样）；显式写的 `output_schema` 字典（动态入口都是这种）只发布、不校验（和 `input_schema` 一样）。默认不符合时只在插件日志里告警（有限流）；`strict_output=True` 时调用失败，错误码 `PLUGIN_OUTPUT_SCHEMA_VIOLATION`。日志和错误里只有字段路径和错误类型。详见[入口与参数](./entries)的「输出契约」一节。
+
+```python
+self.register_dynamic_entry(
+    entry_id="my-tool-described",
+    handler=handler,
+    output_schema={"type": "object", "required": ["summary"]},  # 只发布，不校验
+)
+```
+
 ---
 
 ## Result 类型：Ok / Err
@@ -328,6 +340,28 @@ result = await self.plugins.require_enabled("dependency_plugin")
 
 所有方法返回 `Result` 类型 — 在使用 `.value` 之前，请先用 `isinstance(result, Ok)` 检查。
 
+### 谁调了你：`ctx.call_chain`
+
+`self.ctx.call_chain` 是当前这次调用「从哪来」的只读视图。它由宿主按自己的记录生成；插件只能读，改了也不影响宿主。
+
+```python
+chain = self.ctx.call_chain
+chain.callers        # 一路调到这里的插件 id，根在前；宿主直接调你时是 ()
+chain.origin.kind    # "run"、"chat_tool"、"chat_hook"、"ui_action"、"plugin_self" 或 "system"
+chain.origin.ref     # run id 这类编号，不含消息原文
+chain.hops           # 每一步 (plugin_id, event_type, event_id)
+chain.rights         # 链上每个插件都被用户确认过的能力
+chain.rights_known   # 宿主没给出时为 False（见下）
+chain.allows("memory.read")
+```
+
+- 永远不是 `None`。不在调用里（定时器、入口返回后还在跑的后台任务），或宿主把开关关了时，它是只含你自己的链，`rights_known=False`。
+- `allows()` 只是参考。权限未知时它一律回答 `False`，所以「没有」和「不知道」读出来都是 `False`，要区分就看 `rights_known`。每次使用由宿主自己判定：这里是 `False` 不代表宿主一定拒绝，是 `True` 也只是投递那一刻的快照。
+- 交给 `loop.run_in_executor` 或裸 `threading.Thread` 的工作会丢掉调用上下文，宿主会把这些请求当成插件自发的。`asyncio.to_thread` 会保留；自己开线程时，用 `contextvars.copy_context().run(...)` 包住要做的事。
+- 它和旧的 `plugin.sdk.shared.runtime.call_chain`（只在一个插件进程内部记调用）是两回事。
+
+宿主会记录插件互调和能力使用，用于审计（只记编号和能力名，不记参数、返回值和消息原文）。设计见 [`docs/design/plugin-call-chain.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/design/plugin-call-chain.md)。
+
 ---
 
 ## PluginStore（持久化存储）
@@ -382,7 +416,7 @@ records = await self.bus.memory.get(bucket_id="default", limit=20)
 
 【访问范围】这几个 store 是共享的，读取不按插件做权限隔离：任何已启用的插件都能读 `conversations` 和 `frames`，包括来自用户、以及来自别的插件的轮次与画面。这不会扩大宿主**已经发给模型**的内容——会话没发过的帧不会出现在这里——但确实扩大了**谁能看到**：从模型服务方扩大到用户启用的每一个插件。安装一个插件就等于授予它这份可见性；你的插件如果读这两条总线，请在自己的说明里写明。
 
-`bus.memory` 保存的是有容量上限、只驻留内存的近期用户话语事件（TTL 为一小时），与角色持久化的事实、反思和人格相互独立。`ctx.query_memory(...)` 只为兼容而保留，它调用已弃用的占位端点，不执行语义召回。
+`bus.memory` 保存的是有容量上限、只驻留内存的近期用户话语事件（TTL 为一小时），与角色持久化的事实、反思和人格相互独立。`ctx.query_memory(...)` 对角色的私聊记忆执行与内置 `recall_memory` 工具相同的混合召回，返回 `{"result": text}`；`text` 是按角色提示词语言渲染、带编号并受 token 预算限制的命中列表，没有相关记忆时为空字符串。
 
 ### Frames
 

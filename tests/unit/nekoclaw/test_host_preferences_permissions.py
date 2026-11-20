@@ -244,11 +244,12 @@ def test_the_kind_words_cover_every_language():
 # ---------------------------------------------------------------------------
 
 
-async def test_injected_preferences_never_exceed_150_tokens(preferences):
+async def test_injected_preferences_never_exceed_their_cap(preferences):
     from config.nekoclaw_settings import PREFERENCE_PROMPT_MAX_TOKENS
     from utils.tokenize import count_tokens
 
-    assert PREFERENCE_PROMPT_MAX_TOKENS == 150
+    # 150 until the owner had the caps of what a commission is told loosened (2026-11-18).
+    assert PREFERENCE_PROMPT_MAX_TOKENS == 300
     for number in range(40):
         await preferences.state(
             f"For weather task number {number} always use provider {number} and answer in a table with units", kind="default"
@@ -257,7 +258,7 @@ async def test_injected_preferences_never_exceed_150_tokens(preferences):
     rendered = await preferences.render("weather task provider table units")
 
     assert rendered
-    assert count_tokens(rendered) <= 150
+    assert count_tokens(rendered) <= PREFERENCE_PROMPT_MAX_TOKENS
     # Whole entries only: nothing is cut in the middle.
     assert all(line.startswith("- For weather task number") and line.endswith("units") for line in rendered.splitlines())
     assert len(rendered.splitlines()) < 40

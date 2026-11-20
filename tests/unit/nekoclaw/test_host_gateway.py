@@ -185,28 +185,54 @@ async def test_notifications_get_no_answer_and_bad_messages_an_error(host, serve
 # ---------------------------------------------------------------------------
 
 
-async def test_candidates_are_listed_and_the_rest_is_reached_through_search(host, server):
+async def test_only_the_two_tools_are_listed_and_what_was_picked_for_a_commission_is_told_with_it(host, server):
+    _catalog(server)
+    commission = await _commission(host)
+    grant = _grant(host, commission, "weather")
+    plain = await _commission(host, title="something else")
+    plain_grant = _grant(host, plain)
+
+    tools = (await _rpc(host, grant, "tools/list"))["result"]["tools"]
+    picked = await host.gateway.candidate_definitions(commission.id)
+
+    # The tools are the same whatever was picked: a session takes several
+    # commissions, and its tool definitions stay as they are.
+    assert [tool["name"] for tool in tools] == [SEARCH_TOOL, CALL_TOOL]
+    assert tools == (await _rpc(host, plain_grant, "tools/list"))["result"]["tools"]
+    assert [item["name"] for item in picked] == ["plugin__weather__today"]
+    weather = picked[0]
+    assert weather["description"] == "weather: today. Today's weather for a city"
+    assert weather["inputSchema"]["required"] == ["city"]
+    # Nothing is told with a commission nothing was picked for, or one without a token.
+    assert await host.gateway.candidate_definitions(plain.id) == []
+    assert await host.gateway.candidate_definitions("no-such-commission") == []
+    host.gateway.revoke(commission.id)
+    assert await host.gateway.candidate_definitions(commission.id) == []
+
+
+async def test_what_was_picked_is_called_by_name_through_the_call_tool_or_directly(host, server):
     _catalog(server)
     grant = _grant(host, await _commission(host), "weather")
 
-    tools = (await _rpc(host, grant, "tools/list"))["result"]["tools"]
+    through = await _call(host, grant, CALL_TOOL, {"name": "plugin__weather__today", "arguments": {"city": "Lyon"}})
+    # A client that lists none of them may still know the name.
+    direct = await _call(host, grant, "plugin__weather__today", {"city": "Nice"})
 
-    assert [tool["name"] for tool in tools] == ["plugin__weather__today", SEARCH_TOOL, CALL_TOOL]
-    weather = tools[0]
-    assert weather["description"] == "weather: today. Today's weather for a city"
-    assert weather["inputSchema"]["required"] == ["city"]
+    assert (through["isError"], direct["isError"]) == (False, False)
+    assert [call["args"]["city"] for call in server.calls] == ["Lyon", "Nice"]
 
 
 async def test_hidden_entries_and_passive_plugins_are_never_served(host, server):
     _catalog(server)
-    grant = _grant(host, await _commission(host), "weather", "lamp", "radio")
+    commission = await _commission(host)
+    grant = _grant(host, commission, "weather", "lamp", "radio")
 
-    names = [tool["name"] for tool in (await _rpc(host, grant, "tools/list"))["result"]["tools"]]
+    names = [item["name"] for item in await host.gateway.candidate_definitions(commission.id)]
     hidden = await _call(host, grant, "plugin__weather__admin")
     passive = await _call(host, grant, CALL_TOOL, {"name": "plugin__radio__play"})
     found = _text(await _call(host, grant, SEARCH_TOOL, {"query": "radio station cache reset"}))
 
-    # Everything visible is listed, so the search tools are not needed.
+    # What is told with the commission is what can be called, and nothing else.
     assert names == ["plugin__weather__today", "plugin__lamp__switch"]
     assert hidden["isError"] and "no capability named plugin__weather__admin" in _text(hidden)
     assert passive["isError"]
@@ -214,10 +240,27 @@ async def test_hidden_entries_and_passive_plugins_are_never_served(host, server)
     assert server.calls == []
 
 
-async def test_without_any_capability_no_tool_is_offered(host, server):
+async def test_without_any_capability_the_two_tools_are_offered_all_the_same(host, server):
     grant = _grant(host, await _commission(host))
 
-    assert (await _rpc(host, grant, "tools/list"))["result"]["tools"] == []
+    # A session keeps the tools it was opened with, and what can be called changes while it
+    # lasts: a plugin installed later is reached through these two.
+    tools = (await _rpc(host, grant, "tools/list"))["result"]["tools"]
+    assert [tool["name"] for tool in tools] == [SEARCH_TOOL, CALL_TOOL]
+    # The plain search tool: no group of built-in tools is told of. It takes ``group`` all
+    # the same, by itself: the session keeps this definition, and a group that is switched
+    # on later is loaded through it.
+    assert tools[0] == PLAIN_SEARCH_TOOL
+    assert "required" not in tools[0]["inputSchema"] and "enum" not in tools[0]["inputSchema"]["properties"]["group"]
+    found = await _call(host, grant, SEARCH_TOOL, {"query": "what the weather is"})
+    # Said for now only: the session goes on, and what can be called changes.
+    assert _text(found).startswith("No capabilities are available right now.")
+    assert "search again when a later commission needs one" in _text(found)
+
+    _catalog(server)
+    host.registry.invalidate()
+    assert (await _rpc(host, grant, "tools/list"))["result"]["tools"] == tools
+    assert "plugin__weather__today" in _text(await _call(host, grant, SEARCH_TOOL, {"query": "what the weather is"}))
 
 
 async def test_listed_tools_stay_within_the_token_budget(host, server):
@@ -226,16 +269,18 @@ async def test_listed_tools_stay_within_the_token_budget(host, server):
 
     entries = [entry(f"entry{n}", "does something " + "very specific " * 400) for n in range(60)]
     server.add_plugin(plugin("big", "A plugin with many entries", entries), entry59=_returns(finish({"reply": "ok"})))
-    grant = _grant(host, await _commission(host), "big")
+    commission = await _commission(host)
+    grant = _grant(host, commission, "big")
 
     tools = (await _rpc(host, grant, "tools/list"))["result"]["tools"]
+    listed = await host.gateway.candidate_definitions(commission.id)
 
-    listed = [tool for tool in tools if tool["name"].startswith("plugin__")]
+    assert all(item["name"].startswith("plugin__") for item in listed)
     assert 0 < len(listed) < 60
     assert count_tokens(json.dumps(listed, ensure_ascii=False)) <= GATEWAY_TOOL_LIST_MAX_TOKENS + 2 * len(listed)
     assert all(count_tokens(tool["description"]) <= GATEWAY_TOOL_DESCRIPTION_MAX_TOKENS for tool in listed)
     # What did not fit is still reachable.
-    assert [tool["name"] for tool in tools[-2:]] == [SEARCH_TOOL, CALL_TOOL]
+    assert [tool["name"] for tool in tools] == [SEARCH_TOOL, CALL_TOOL]
     reachable = await _call(host, grant, CALL_TOOL, {"name": "plugin__big__entry59"})
     assert not reachable["isError"]
 
@@ -289,6 +334,39 @@ async def test_capability_call_reaches_an_entry_that_was_not_listed(host, server
 
     assert _text(result).startswith("lamp is off")
     assert [call["entry_id"] for call in server.calls] == ["switch"]
+
+
+async def test_a_token_that_only_reads_finds_capabilities_and_calls_none(host, server):
+    _catalog(server)
+    commission = await _commission(host)
+    token = host.gateway.issue(commission.id, candidate_plugin_ids=("weather",), reads_only=True)
+    grant = host.gateway._grant(token)
+    assert grant.reads_only is True
+
+    # The two tools are told of as to any session, and what there is can be looked for.
+    listed = await _rpc(host, grant, "tools/list")
+    assert [tool["name"] for tool in listed["result"]["tools"]] == [SEARCH_TOOL, CALL_TOOL]
+    found = await _call(host, grant, SEARCH_TOOL, {"query": "lamp"})
+    assert not found["isError"] and "plugin__lamp__switch" in _text(found)
+    # Nothing is called, through the call tool or by its name, and no group of built-in tools is handed over.
+    for name, arguments in (
+        (CALL_TOOL, {"name": "plugin__lamp__switch", "arguments": {}}),
+        ("plugin__weather__today", {"city": "Paris"}),
+        (CALL_TOOL, {"name": "computer", "arguments": {"action": "type", "text": "x"}}),
+        (SEARCH_TOOL, {"group": "computer"}),
+    ):
+        refused = await _call(host, grant, name, arguments)
+        assert refused["isError"] and "only reads and answers" in _text(refused), name
+    assert server.calls == [] and server.run_requests == [] and grant.loaded_groups == set()
+    # Nor is anything ruled on ahead for a call it will not make.
+    await host.gateway.clear_call(commission.id, "plugin__lamp__switch", {})
+    assert grant.cleared == {}
+
+    # The same commission with a token like any calls as before.
+    grant = host.gateway._grant(host.gateway.issue(commission.id, candidate_plugin_ids=("weather",)))
+    assert grant.reads_only is False
+    result = await _call(host, grant, CALL_TOOL, {"name": "plugin__lamp__switch", "arguments": {}})
+    assert _text(result).startswith("lamp is off")
 
 
 async def test_capability_call_needs_a_name(host, server):
@@ -560,9 +638,10 @@ async def test_the_adapters_entries_that_call_any_server_are_not_served(host, se
     )
     asker = Asker("deny")
     host.permissions.set_asker(asker)
-    grant = _grant(host, await _commission(host), "mcp_adapter")
+    commission = await _commission(host)
+    grant = _grant(host, commission, "mcp_adapter")
 
-    names = [tool["name"] for tool in (await _rpc(host, grant, "tools/list"))["result"]["tools"]]
+    names = [item["name"] for item in await host.gateway.candidate_definitions(commission.id)]
     direct = await _call(host, grant, "plugin__mcp_adapter__call_tool", {"server_name": "notes", "tool_name": "search"})
     through = await _call(host, grant, CALL_TOOL, {"name": "plugin__mcp_adapter__gateway_invoke"})
     found = _text(await _call(host, grant, SEARCH_TOOL, {"query": "call MCP tool gateway invoke"}))
@@ -577,9 +656,10 @@ async def test_the_adapters_entries_that_call_any_server_are_not_served(host, se
 async def test_entries_whose_names_differ_only_in_where_the_separator_falls_are_told_apart(host, server):
     server.add_plugin(plugin("a__b", "First", [entry("c", "First entry")]), c=_returns(finish({"reply": "first"})))
     server.add_plugin(plugin("a", "Second", [entry("b__c", "Second entry")]), b__c=_returns(finish({"reply": "second"})))
-    grant = _grant(host, await _commission(host), "a__b", "a")
+    commission = await _commission(host)
+    grant = _grant(host, commission, "a__b", "a")
 
-    tools = [tool["name"] for tool in (await _rpc(host, grant, "tools/list"))["result"]["tools"]]
+    tools = [item["name"] for item in await host.gateway.candidate_definitions(commission.id)]
 
     assert len(tools) == 2 and len(set(tools)) == 2
     answers = [_text(await _call(host, grant, name)).splitlines()[0] for name in tools]
@@ -1001,10 +1081,17 @@ PLAIN_SEARCH_TOOL = {
         "by what they do. Returns their names, descriptions and argument schemas. Call one with "
         "capability_call."
     ),
+    # ``group`` without a name to choose from: a group that is switched on while a session
+    # lasts is named by a search result, and loaded with ``group`` alone.
     "inputSchema": {
         "type": "object",
-        "properties": {"query": {"type": "string", "description": "What the capability should do."}},
-        "required": ["query"],
+        "properties": {
+            "query": {"type": "string", "description": "What the capability should do."},
+            "group": {
+                "type": "string",
+                "description": "Instead of query: the tool group a search result names, to get its tools.",
+            },
+        },
     },
 }
 GROUPS_INTRO = TOOL_GROUPS_INTRO.format(call_tool="capability_call")
@@ -1043,7 +1130,9 @@ async def _search_tool(host: Any, grant: Any) -> dict[str, Any]:
 async def _groups_on_offer(host: Any, grant: Any) -> list[str]:
     """The groups the search tool tells this commission of, as it names them."""
     search = await _search_tool(host, grant)
-    return list(search["inputSchema"]["properties"].get("group", {}).get("enum", []))
+    # A line each in what the tool says of itself; the argument is not tied to them.
+    assert "enum" not in search["inputSchema"]["properties"]["group"]
+    return [line[2:].split(":")[0] for line in search["description"].splitlines() if line.startswith("- ")]
 
 
 async def _load(host: Any, grant: Any, group: str) -> dict[str, Any]:
@@ -1064,8 +1153,8 @@ async def test_builtin_tools_are_not_listed_and_the_search_tool_tells_of_their_g
 
     tools = (await _rpc(builtin_host, grant, "tools/list"))["result"]["tools"]
 
-    assert [tool["name"] for tool in tools] == ["plugin__weather__today", SEARCH_TOOL, CALL_TOOL]
-    assert tools[1] == {
+    assert [tool["name"] for tool in tools] == [SEARCH_TOOL, CALL_TOOL]
+    assert tools[0] == {
         "name": SEARCH_TOOL,
         "description": "\n".join(
             [PLAIN_SEARCH_TOOL["description"], GROUPS_INTRO, GROUP_LINES["browser"], GROUP_LINES["desktop"]]
@@ -1074,10 +1163,14 @@ async def test_builtin_tools_are_not_listed_and_the_search_tool_tells_of_their_g
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "What the capability should do."},
+                # Any name: the session keeps this definition, and a group that is switched
+                # on while it lasts is named by a search result.
                 "group": {
                     "type": "string",
-                    "enum": ["browser", "desktop"],
-                    "description": "Instead of query: a tool group to get the tools of, without making its first call.",
+                    "description": (
+                        "Instead of query: a tool group to get the tools of, without making its first call. "
+                        "One of those named above, or one a search result names."
+                    ),
                 },
             },
         },
@@ -1099,16 +1192,21 @@ async def test_without_a_group_to_load_the_search_tool_is_what_it_always_was(hos
 
     tools = (await _rpc(host, grant, "tools/list"))["result"]["tools"]
 
-    assert [tool["name"] for tool in tools] == ["plugin__weather__today", SEARCH_TOOL, CALL_TOOL]
-    assert tools[1] == PLAIN_SEARCH_TOOL
+    assert [tool["name"] for tool in tools] == [SEARCH_TOOL, CALL_TOOL]
+    assert tools[0] == PLAIN_SEARCH_TOOL
 
 
 async def test_the_groups_cost_the_plugin_entries_nothing_of_their_budget(builtin_host, server, monkeypatch):
     import config.nekoclaw_settings as settings
 
     _catalog(server)
-    grant = _grant(builtin_host, await _commission(builtin_host), "weather", "lamp", images=True)
-    definitions = {item["name"]: item for item in await builtin_host.gateway.tool_definitions(grant)}
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, "weather", "lamp", images=True)
+
+    async def picked() -> list[str]:
+        return [item["name"] for item in await builtin_host.gateway.candidate_definitions(commission.id)]
+
+    definitions = {item["name"]: item for item in await builtin_host.gateway.candidate_definitions(commission.id)}
     # Exactly the room the two plugin entries need.
     monkeypatch.setattr(
         settings,
@@ -1116,14 +1214,14 @@ async def test_the_groups_cost_the_plugin_entries_nothing_of_their_budget(builti
         _cost(definitions["plugin__weather__today"]) + _cost(definitions["plugin__lamp__switch"]),
     )
 
-    assert await _tool_names(builtin_host, grant) == [
-        "plugin__weather__today",
-        "plugin__lamp__switch",
-        SEARCH_TOOL,
-        CALL_TOOL,
-    ]
+    assert await picked() == ["plugin__weather__today", "plugin__lamp__switch"]
+    assert await _tool_names(builtin_host, grant) == [SEARCH_TOOL, CALL_TOOL]
+    # One token less, and the second no longer fits.
+    monkeypatch.setattr(settings, "GATEWAY_TOOL_LIST_MAX_TOKENS", settings.GATEWAY_TOOL_LIST_MAX_TOKENS - 1)
+    assert await picked() == ["plugin__weather__today"]
     # Even with no room at all for plugin entries the groups are told of.
     monkeypatch.setattr(settings, "GATEWAY_TOOL_LIST_MAX_TOKENS", 1)
+    assert await picked() == []
     assert await _tool_names(builtin_host, grant) == [SEARCH_TOOL, CALL_TOOL]
     assert await _groups_on_offer(builtin_host, grant) == ["browser", "desktop"]
 
@@ -1139,7 +1237,8 @@ async def test_builtins_alone_are_enough_for_a_gateway(builtin_host):
 async def test_without_a_provider_there_are_no_builtin_tools(host):
     grant = _grant(host, await _commission(host), images=True)
 
-    assert await _tool_names(host, grant) == []
+    assert await _tool_names(host, grant) == [SEARCH_TOOL, CALL_TOOL]
+    assert await _groups_on_offer(host, grant) == []
     assert host.registry.builtins() == []
     asked = await _load(host, grant, "browser")
     assert asked["isError"] is True
@@ -1257,7 +1356,7 @@ async def test_a_group_that_is_switched_off_is_not_told_of_and_cannot_be_loaded_
     found = _text(await _call(builtin_host, grant, SEARCH_TOOL, {"query": "operate the desktop with the mouse"}))
 
     assert search["description"].splitlines()[1:] == [GROUPS_INTRO, GROUP_LINES["browser"]]
-    assert search["inputSchema"]["properties"]["group"]["enum"] == ["browser"]
+    assert "enum" not in search["inputSchema"]["properties"]["group"]
     assert loaded["isError"] is True
     # With the provider's own words for why.
     assert _text(loaded) == (
@@ -1753,6 +1852,84 @@ async def test_what_was_loaded_through_one_token_does_not_count_for_another(buil
     assert [cid for _name, cid, _args in builtin_host.provider.calls] == [commission.id]
 
 
+async def _call_after(
+    host: Any, grant: Any, compactions: Any, name: str, arguments: dict[str, Any] | None = None, reply: Any = None
+) -> dict[str, Any]:
+    """A call that says how often its conversation has been summed up, as a task agent's runtime does."""
+    meta: dict[str, Any] = {"nekoclaw/compactions": compactions}
+    if reply is not None:
+        meta["nekoclaw/reply"] = reply
+    params = {"name": name, "arguments": arguments or {}, "_meta": meta}
+    return (await _rpc(host, grant, "tools/call", params))["result"]
+
+
+async def test_a_group_is_handed_over_anew_once_the_conversation_it_was_in_was_summed_up(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    builtin_host.provider.definitions["browser_click"] = (BUILTIN_GROUP_BROWSER, CLICK, False)
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True, loaded=())
+
+    loaded = await _call_after(builtin_host, grant, 0, SEARCH_TOOL, {"group": "browser"}, reply=1)
+    carried_out = await _call_after(builtin_host, grant, 0, "browser_click", {"uid": "1_1"}, reply=2)
+    assert (loaded["isError"], carried_out["isError"]) == (False, False)
+    calls_before = len(builtin_host.provider.calls)
+
+    # The conversation was summed up: how the group is used and its tools'
+    # definitions are no longer in it, so the call is not carried out and
+    # is answered with the group, as before it was first loaded.
+    refused = await _call_after(builtin_host, grant, 1, "browser_click", {"uid": "1_1"}, reply=3)
+    assert refused["isError"] is True
+    assert "which were not loaded yet" in _text(refused)
+    assert "browser_click" in [item["name"] for item in _served(_text(refused))]
+    assert len(builtin_host.provider.calls) == calls_before
+    # From the next reply on it is in hand again, and stays so while nothing more is summed up.
+    for reply in (4, 5):
+        again = await _call_after(builtin_host, grant, 1, "browser_click", {"uid": "1_1"}, reply=reply)
+        assert again["isError"] is False
+    assert len(builtin_host.provider.calls) == calls_before + 2
+    assert grant.loaded_groups == {BUILTIN_GROUP_BROWSER} and grant.compactions == 1
+
+
+async def test_the_first_call_after_a_summary_brings_the_group_back_with_its_result(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True, loaded=())
+    await _call_after(builtin_host, grant, 3, SEARCH_TOOL, {"group": "browser"}, reply=1)
+    assert grant.loaded_groups == {BUILTIN_GROUP_BROWSER}
+
+    result = await _call_after(builtin_host, grant, 4, "browser_navigate_page", {"type": "url", "url": "https://example.com"}, reply=2)
+
+    # The group's first call is carried out as always, with the group in front of what it returns.
+    assert result["isError"] is False
+    assert "browser_navigate_page" in [item["name"] for item in _served(result["content"][0]["text"])]
+    assert grant.loaded_groups == {BUILTIN_GROUP_BROWSER}
+
+
+@pytest.mark.parametrize("named", [None, "one", True, 1.5])
+async def test_a_client_that_says_nothing_of_summaries_keeps_what_it_was_handed(builtin_host, named):
+    builtin_host.permissions.set_asker(Asker("once"))
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True, loaded=())
+    await _call_after(builtin_host, grant, 0, SEARCH_TOOL, {"group": "browser"})
+
+    # What is no count is no word about summaries (dsh sums up on its own and names none).
+    params = {"name": "browser_take_screenshot", "arguments": {}}
+    if named is not None:
+        params["_meta"] = {"nekoclaw/compactions": named}
+    result = (await _rpc(builtin_host, grant, "tools/call", params))["result"]
+
+    assert result["isError"] is False
+    assert grant.loaded_groups == {BUILTIN_GROUP_BROWSER} and grant.compactions == 0
+
+
+async def test_the_count_a_new_token_first_hears_takes_nothing_away(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    # A session that was summed up before this commission began: its first call names a count above none.
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True, loaded=())
+    grant.loaded_groups.add(BUILTIN_GROUP_BROWSER)
+
+    result = await _call_after(builtin_host, grant, 7, "browser_take_screenshot")
+
+    assert result["isError"] is False and grant.compactions == 7
+
+
 @pytest.mark.parametrize("tool", ["browser_navigate_page", "browser_take_screenshot"])
 async def test_a_call_before_its_group_was_loaded_is_told_first_that_the_commission_is_over(builtin_host, tool):
     commission = await _commission(builtin_host)
@@ -1821,7 +1998,7 @@ async def test_a_tool_that_needs_pictures_is_kept_from_a_model_that_cannot_see_t
 
     # The desktop's only tool works from pictures: the group is not told of.
     assert search["description"].splitlines()[1:] == [GROUPS_INTRO, GROUP_LINES["browser"]]
-    assert search["inputSchema"]["properties"]["group"]["enum"] == ["browser"]
+    assert "enum" not in search["inputSchema"]["properties"]["group"]
     # The browser is handed over without its screenshot tool.
     assert browser["isError"] is False
     assert [item["name"] for item in _served(_text(browser))] == ["browser_navigate_page"]

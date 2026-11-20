@@ -149,7 +149,7 @@ def test_the_system_prompt_is_ours_and_names_the_hosts_tools_as_dsh_shows_them()
     assert "{{" not in prompt["personaPrefix"] and "{{" not in suffix
 
 
-@pytest.mark.parametrize(("window", "headroom"), [(128_000, 16_000), (1_000_000, 65_536), (16_000, 2_000)])
+@pytest.mark.parametrize(("window", "headroom"), [(128_000, 12_800), (1_000_000, 65_536), (16_000, 1_600)])
 def test_the_summary_margin_follows_the_window(window: int, headroom: int) -> None:
     rows = _rows(Shape(context_window=window, max_output_tokens=8_192, supports_images=False))
     compaction = rows["compaction-basic"]["config"]
@@ -157,6 +157,23 @@ def test_the_summary_margin_follows_the_window(window: int, headroom: int) -> No
     assert compaction["headroomTokens"] == headroom
     assert compaction["maxTokens"] == min(8_192, headroom)
     assert window - 8_192 - headroom > 0
+
+
+def test_dsh_sums_a_conversation_up_from_where_the_built_in_runtime_does() -> None:
+    from nekoclaw.runtime.context import COMPACT_RATIO, ContextPolicy
+
+    # The owner's numbers (2026-11-18): 200,000, summed up from 170,000 on.
+    shape = Shape(context_window=200_000, max_output_tokens=8_192, supports_images=False)
+    assert shape.compact_ratio == COMPACT_RATIO
+    compaction = _rows(shape)["compaction-basic"]["config"]
+    # dsh takes the smaller of the part of the window and what the output and the margin leave.
+    by_ratio = round(200_000 * compaction["thresholdRatio"])
+    by_reserve = 200_000 - 8_192 - compaction["headroomTokens"]
+    assert min(by_ratio, by_reserve) == 170_000 == ContextPolicy(window=200_000, max_output=8_192).threshold
+
+    # Told another point for a model, dsh is told the same.
+    told = Shape(context_window=200_000, max_output_tokens=8_192, supports_images=False, compact_ratio=0.75)
+    assert _rows(told)["compaction-basic"]["config"]["thresholdRatio"] == 0.75
 
 
 def test_long_results_are_kept_below_dshs_home() -> None:

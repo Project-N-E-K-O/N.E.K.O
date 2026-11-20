@@ -18,6 +18,9 @@
               @click.stop="$emit('click')"
             >{{ plugin.name }}</button>
           </h3>
+          <el-tag v-if="awaitingReply > 0" size="small" type="warning" data-testid="market-awaiting-reply">
+            {{ t('marketFeedback.awaitingReply') }} {{ awaitingReply }}
+          </el-tag>
           <el-tag v-if="effectiveAction.installed" size="small" type="success">
             {{ effectiveAction.effectiveSource === 'builtin' ? t('market.usingBuiltin') : t('market.installed') }}
           </el-tag>
@@ -146,6 +149,7 @@ import type { MarketPluginAction } from '@/utils/marketPluginInstallState'
 
 interface Props {
   plugin: MarketPlugin
+  awaitingReply?: number
   installed?: boolean
   installing?: boolean
   /** v2: 本地已装版本；用于和 plugin.version 比较是否需要升级。 */
@@ -161,6 +165,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  awaitingReply: 0,
   installed: false,
   installing: false,
   localVersion: undefined,

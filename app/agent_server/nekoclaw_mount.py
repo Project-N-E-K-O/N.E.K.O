@@ -284,7 +284,10 @@ async def send_report(item: Any) -> bool:
         "success": True,
         "delivery_mode": payload.get("delivery_mode") or "proactive",
         # For her only: neither a chat bubble nor a HUD toast shows it.
-        "visibility": [],
+        # Unless the row says it is for the HUD: what NekoClaw tells the
+        # user of its own settings is shown to the user as it is written,
+        # and goes into no model's context (its delivery mode is silent).
+        "visibility": ["hud"] if "hud" in (payload.get("visibility") or ()) else [],
         "priority": _NOTICE_PRIORITY,
         "coalesce_key": f"nekoclaw:{item.kind}:{task_id or item.id}",
         "metadata": {"nekoclaw_kind": item.kind, "nekoclaw_reason": reason},
@@ -355,6 +358,34 @@ def peek_host() -> Any:
     return mount.peek_host()
 
 
+# Stops of everything that found no host and are on their way to one (they
+# look for the record first, which takes a moment), and the hosts whose
+# hand-overs are held for them. Whoever builds the host meanwhile (a page
+# that asks for the tasks, say) starts it with nothing handed over: started
+# as usual, it would hand a session what an earlier process left for it, and
+# that would be a turn the stop comes too late for.
+_stops_on_their_way = 0
+_held_for_stops: list[Any] = []
+
+
+def _hold_for_stops(host: Any) -> None:
+    """Hold a host's hand-overs for the stops that are on their way to it; once per host, nothing awaited."""
+    if _stops_on_their_way and not any(held is host for held in _held_for_stops):
+        host.wakes.hold()
+        _held_for_stops.append(host)
+
+
+def _stop_arrived() -> None:
+    """One of those stops is through: with the last of them, what was held for them goes on."""
+    global _stops_on_their_way
+    _stops_on_their_way -= 1
+    if _stops_on_their_way <= 0:
+        _stops_on_their_way = 0
+        held, _held_for_stops[:] = list(_held_for_stops), []
+        for host in held:
+            host.wakes.release()
+
+
 async def ready_host() -> Any:
     """Return the host, building it on first use.
 
@@ -368,6 +399,8 @@ async def ready_host() -> Any:
     from nekoclaw.host.ledger import ACTIVE_STATUSES
 
     host = mount.get_host()
+    # Before anything is awaited, and before it is started below.
+    _hold_for_stops(host)
     if _filled_from is not host:
         try:
             for commission in await host.ledger.select(statuses=ACTIVE_STATUSES, oldest_first=True):
@@ -432,35 +465,70 @@ async def ledger_exists() -> bool:
 
 async def stop_everything(reason: str = "Cancelled by user") -> int:
     """Stop every commission that is under way. Returns how many were stopped."""
-    from nekoclaw.host.ledger import ACTIVE_STATUSES
+    global _stops_on_their_way
 
     host = peek_host()
-    if host is None:
-        # Nothing has used the host in this process, yet an earlier process
-        # may have left a deferred result under way. That is stopped too,
-        # whether or not NekoClaw is on by now.
-        if not await ledger_exists():
-            return 0
-        try:
-            host = await ready_host()
-        except Exception as e:
-            logger.warning("[Agent] opening the ledger to stop what is under way failed: %s", e)
-            return 0
+    held = None
+    # Said before anything is awaited: see ``_stops_on_their_way``.
+    on_its_way = host is None
+    if on_its_way:
+        _stops_on_their_way += 1
+    # Whatever ends this, a cancel while the host is made ready included:
+    # what was held is let go again, once. Left held, nothing would be
+    # handed to a session for as long as the process lasts.
+    try:
+        if host is None:
+            # Nothing has used the host in this process, yet an earlier process
+            # may have left a deferred result under way. That is stopped too,
+            # whether or not NekoClaw is on by now.
+            if not await ledger_exists():
+                return 0
+            try:
+                # Held before it is made ready: making it ready starts what an
+                # earlier process left to be handed to sessions, and a note
+                # handed over then would start a turn this stop comes too late
+                # for.
+                from nekoclaw.host import mount
+
+                built = mount.get_host()
+                built.wakes.hold()
+                held = built
+                host = await ready_host()
+            except Exception as e:
+                logger.warning("[Agent] opening the ledger to stop what is under way failed: %s", e)
+                return 0
+        return await _stop_everything(host, reason)
+    finally:
+        if held is not None:
+            held.wakes.release()
+        if on_its_way:
+            _stop_arrived()
+
+
+async def _stop_everything(host: Any, reason: str) -> int:
+    from nekoclaw.host.ledger import ACTIVE_STATUSES
+
     # A dispatch still in its first round has no commission yet and would be
     # missed below; it is told not to file one.
     host.brain.drop_pending_dispatches()
-    to_stop = [
-        commission
-        for commission in await host.ledger.select(statuses=ACTIVE_STATUSES)
-        # A child is stopped along with its parent. A blocked one has ended
-        # as far as work goes; it only waits to be taken up again.
-        if commission.parent_id is None and commission.status != "blocked"
-    ]
-    # All at once: a plugin that is slow to take its cancel must not keep the
-    # other commissions at work until it has answered.
-    outcomes = await asyncio.gather(
-        *(host.abort(commission.id, reason=reason) for commission in to_stop), return_exceptions=True
-    )
+    # Likewise a note one task agent session wrote to another that was not
+    # handed over yet: handed over after the stop, it would start a turn.
+    # Dropped now, and none is handed over while the commissions are being
+    # stopped; what one of them wrote meanwhile is dropped at the end. (A
+    # time a task agent set for itself goes with its commission below.)
+    async with host.stopping_everything():
+        to_stop = [
+            commission
+            for commission in await host.ledger.select(statuses=ACTIVE_STATUSES)
+            # A child is stopped along with its parent. A blocked one has ended
+            # as far as work goes; it only waits to be taken up again.
+            if commission.parent_id is None and commission.status != "blocked"
+        ]
+        # All at once: a plugin that is slow to take its cancel must not keep the
+        # other commissions at work until it has answered.
+        outcomes = await asyncio.gather(
+            *(host.abort(commission.id, reason=reason) for commission in to_stop), return_exceptions=True
+        )
     stopped = 0
     for commission, outcome in zip(to_stop, outcomes):
         if isinstance(outcome, BaseException):

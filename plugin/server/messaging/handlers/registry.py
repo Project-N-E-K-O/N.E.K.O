@@ -40,7 +40,12 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         handle_bus_unsubscribe,
     )
 
-    return {
+    from plugin.server.application.plugins.capability_gate import (
+        CAPABILITY_BY_OPERATION,
+        capability_checked,
+    )
+
+    handlers: dict[str, RequestHandler] = {
         "PLUGIN_TO_PLUGIN": handle_plugin_to_plugin,
         "PLUGIN_QUERY": handle_plugin_query,
         "PLUGIN_CONFIG_GET": handle_plugin_config_get,
@@ -67,3 +72,7 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         "BUS_SUBSCRIBE": handle_bus_subscribe,
         "BUS_UNSUBSCRIBE": handle_bus_unsubscribe,
     }
+    # Every judged operation gets the same decision entry point (one table).
+    for operation, capability in CAPABILITY_BY_OPERATION.items():
+        handlers[operation] = capability_checked(capability, handlers[operation])
+    return handlers

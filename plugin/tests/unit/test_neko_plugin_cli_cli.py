@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -15,6 +17,7 @@ from plugin.neko_plugin_cli.commands._resolve import parse_github_repository_rem
 from plugin.neko_plugin_cli.commands.validate_cmd import validate_plugin_dir
 from plugin.neko_plugin_cli.core.toml_utils import load_toml
 from plugin.neko_plugin_cli.paths import CliDefaults
+from plugin.neko_plugin_cli.templates import agent_kit
 from plugin.neko_plugin_cli.templates.generator import (
     PluginSpec,
     generate_plugin,
@@ -1814,6 +1817,334 @@ def test_setup_repo_generates_support_templates_for_explicit_plugin_path(
     assert '"nekoPlugin.repoRoot":' in settings
     assert '"cwd": "${config:nekoPlugin.repoRoot}"' in tasks
     assert "${workspaceFolder}" in tasks
+
+
+def test_setup_repo_adds_agent_kit_and_preserves_existing_files_unless_overwrite(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "setup_agents")
+    setup_args = [
+        "setup-repo",
+        str(plugin_dir),
+        "--no-readme",
+        "--no-tests",
+        "--no-gitignore",
+        "--no-vscode",
+    ]
+
+    assert neko_plugin_cli.main(setup_args) == 0
+    agents_md = plugin_dir / "AGENTS.md"
+    skill_dir = plugin_dir / agent_kit.SKILL_TARGET_DIR
+    skill_entry = skill_dir / "SKILL.md"
+    reference = skill_dir / "references" / "runtime-model.md"
+    snapshot = agent_kit.skill_files()
+    # Same renderer as init, so the explicit-path commands are included.
+    assert "neko-plugin lint ." in agents_md.read_text(encoding="utf-8")
+    assert "neko-plugin precheck ." in agents_md.read_text(encoding="utf-8")
+    assert (plugin_dir / "CLAUDE.md").read_text(encoding="utf-8") == agent_kit.render_claude_md()
+    assert all(
+        (plugin_dir / relative).read_text(encoding="utf-8") == content
+        for relative, content in snapshot.items()
+    )
+
+    agents_md.write_text("# custom guide\n", encoding="utf-8")
+    skill_entry.write_text("# custom skill\n", encoding="utf-8")
+    reference.unlink()
+    assert neko_plugin_cli.main(setup_args) == 0
+    assert agents_md.read_text(encoding="utf-8") == "# custom guide\n"
+    assert skill_entry.read_text(encoding="utf-8") == "# custom skill\n"
+    assert reference.read_text(encoding="utf-8") == snapshot[
+        agent_kit.SKILL_TARGET_DIR / "references" / "runtime-model.md"
+    ]
+
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+    assert "neko-plugin lint ." in agents_md.read_text(encoding="utf-8")
+    assert skill_entry.read_text(encoding="utf-8") == snapshot[
+        agent_kit.SKILL_TARGET_DIR / "SKILL.md"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("stamp", "warned"),
+    [
+        (None, False),  # no snapshot at all: nothing to refresh
+        ("", True),  # snapshot without a stamp (generated before stamping)
+        ("0.0.1", True),
+        ("current", False),
+        ("99.0.0", False),
+    ],
+)
+def test_check_warns_about_a_stale_agent_kit_without_changing_the_exit_code(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    stamp: str | None,
+    warned: bool,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "kit_demo")
+    if stamp is not None:
+        skill_entry = plugin_dir / agent_kit.SKILL_TARGET_DIR / "SKILL.md"
+        skill_entry.parent.mkdir(parents=True)
+        version = agent_kit.CLI_VERSION if stamp == "current" else stamp
+        header = f'---\nname: neko-plugin\nmetadata:\n  neko-plugin-cli-version: "{version}"\n---\n' if version else ""
+        skill_entry.write_text(f"{header}# skill\n", encoding="utf-8")
+
+    exit_code = neko_plugin_cli.main(["check", str(plugin_dir)])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert ("agent kit snapshot is older than this neko-plugin CLI" in out) is warned
+    # Some Windows temp paths (e.g. a user name with "!") get the placeholder.
+    target = release_cmd._shell_quote(str(plugin_dir)) or release_cmd._PLUGIN_DIR_PLACEHOLDER
+    refresh = f"setup-repo {target} --overwrite --no-readme --no-tests --no-gitignore --no-vscode"
+    assert (refresh in out) is warned
+
+
+def test_refresh_hint_never_prints_a_windows_path_cmd_would_expand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+
+    assert release_cmd._shell_quote(r"C:\work\demo dir") == r'"C:\work\demo dir"'
+    assert release_cmd._shell_quote(r"C:\work\%K%\demo") is None
+    # PowerShell expands these inside double quotes.
+    assert release_cmd._shell_quote(r"C:\work\$tmp\demo") is None
+    assert release_cmd._shell_quote("C:\\work\\a`b\\demo") is None
+    # cmd with delayed expansion expands !NAME! inside double quotes.
+    assert release_cmd._shell_quote(r"C:\work\plugin!KIT!") is None
+    fix = release_cmd._suggest_fix(
+        "agent kit snapshot is older than this neko-plugin CLI: ...",
+        plugin_id="demo",
+        plugin_dir=PureWindowsPath(r"C:\work\%K%\demo"),
+    )
+    assert 'setup-repo "<plugin directory>" --overwrite' in fix
+    assert "%K%" not in fix
+
+
+def test_setup_repo_points_kept_agent_kit_files_at_their_official_sources(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "kept_kit")
+    setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
+
+    assert neko_plugin_cli.main(setup_args) == 0
+    assert "[SKIPPED]" not in capsys.readouterr().out
+
+    (plugin_dir / "AGENTS.md").write_text("# my guide\n", encoding="utf-8")
+    reference = plugin_dir / agent_kit.SKILL_TARGET_DIR / "references" / "runtime-model.md"
+    reference.unlink()
+    assert neko_plugin_cli.main(setup_args) == 0
+    out = capsys.readouterr().out
+    prefix = agent_kit.SOURCE_URL_PREFIX
+    assert (
+        f"[SKIPPED] AGENTS.md -> {prefix}plugin/neko_plugin_cli/templates/agent_guides/AGENTS.md.tmpl" in out
+    )
+    assert (
+        f"[SKIPPED] .agents/skills/neko-plugin/SKILL.md -> {prefix}.agent/skills/neko-plugin/SKILL.md" in out
+    )
+    # The missing reference was written, so it is not reported as kept.
+    assert "references/runtime-model.md ->" not in out
+    assert out.count("[SKIPPED]") == len(agent_kit.skill_files()) + 1  # + CLAUDE.md
+    assert "--overwrite" in out
+    assert (plugin_dir / "AGENTS.md").read_text(encoding="utf-8") == "# my guide\n"
+
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+    assert "[SKIPPED]" not in capsys.readouterr().out
+
+
+def test_agent_kit_source_urls_name_files_in_this_repository() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    targets = [Path("AGENTS.md"), Path("CLAUDE.md"), *agent_kit.skill_files()]
+
+    for target in targets:
+        url = agent_kit.source_url(target)
+        assert url is not None and url.startswith(agent_kit.SOURCE_URL_PREFIX), target
+        assert (repo_root / url.removeprefix(agent_kit.SOURCE_URL_PREFIX)).is_file(), url
+    assert agent_kit.source_url(Path("README.md")) is None
+
+
+def test_setup_repo_overwrite_leaves_symlinked_guides_alone(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "linked_kit")
+    setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
+    assert neko_plugin_cli.main(setup_args) == 0
+    claude_md = plugin_dir / "CLAUDE.md"
+    claude_md.unlink()
+    try:
+        claude_md.symlink_to("AGENTS.md")
+    except OSError:
+        pytest.skip("symlinks are not available here")
+    agents_md = (plugin_dir / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+
+    assert "CLAUDE.md ->" not in capsys.readouterr().out
+    assert claude_md.is_symlink()
+    assert (plugin_dir / "AGENTS.md").read_text(encoding="utf-8") == agents_md
+
+
+def test_setup_repo_overwrite_never_writes_through_a_linked_skill_folder(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "shared_kit")
+    shared = tmp_path / "shared-skills"
+    (shared / "neko-plugin").mkdir(parents=True)
+    (shared / "neko-plugin" / "SKILL.md").write_text("# shared skill\n", encoding="utf-8")
+    (plugin_dir / ".agents").mkdir()
+    try:
+        (plugin_dir / ".agents" / "skills").symlink_to(shared, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available here")
+    setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
+
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+
+    assert (shared / "neko-plugin" / "SKILL.md").read_text(encoding="utf-8") == "# shared skill\n"
+    assert sorted(path.name for path in (shared / "neko-plugin").iterdir()) == ["SKILL.md"]
+    assert (plugin_dir / "AGENTS.md").is_file()
+    assert ".agents/skills" not in capsys.readouterr().out
+
+
+def test_check_leaves_a_linked_skill_snapshot_to_its_owner(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "linked_snapshot")
+    shared = tmp_path / "shared-skills"
+    (shared / "neko-plugin").mkdir(parents=True)
+    (shared / "neko-plugin" / "SKILL.md").write_text("# unstamped shared skill\n", encoding="utf-8")
+    (plugin_dir / ".agents").mkdir()
+    try:
+        (plugin_dir / ".agents" / "skills").symlink_to(shared, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available here")
+
+    # check already rejects the link itself; a refresh hint on top could never
+    # clear, because setup-repo --overwrite skips linked targets.
+    neko_plugin_cli.main(["check", str(plugin_dir)])
+    captured = capsys.readouterr()
+    assert "must not contain symbolic links" in captured.err
+    assert "agent kit snapshot" not in captured.out
+
+
+def test_agent_kit_guards_treat_a_windows_junction_as_a_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "junction_kit")
+    # A junction is a real directory to is_symlink() on Python 3.11; only
+    # readlink reveals it, so fake readlink for this one directory.
+    junction = plugin_dir / ".agents" / "skills"
+    (junction / "neko-plugin").mkdir(parents=True)
+    shared_skill = junction / "neko-plugin" / "SKILL.md"
+    shared_skill.write_text("# unstamped shared skill\n", encoding="utf-8")
+    real_readlink = os.readlink
+
+    def readlink(path, *args, **kwargs):
+        if Path(path) == junction:
+            return str(tmp_path / "shared-skills")
+        return real_readlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "readlink", readlink)
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
+
+    setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+    assert shared_skill.read_text(encoding="utf-8") == "# unstamped shared skill\n"
+    assert sorted(path.name for path in (junction / "neko-plugin").iterdir()) == ["SKILL.md"]
+    assert (plugin_dir / "AGENTS.md").is_file()
+
+
+def test_check_ignores_an_agent_kit_snapshot_it_cannot_read(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "unreadable_kit")
+    skill_entry = plugin_dir / agent_kit.SKILL_TARGET_DIR / "SKILL.md"
+    skill_entry.parent.mkdir(parents=True)
+    skill_entry.write_bytes(b"\xff\xfe not utf-8 \x80")
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
+
+
+def test_check_ignores_an_agent_kit_it_cannot_inspect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "locked_kit")
+    real_is_file = Path.is_file
+
+    def denied(path: Path) -> bool:
+        if path.name == "SKILL.md":
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", denied)
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("parent", ["repo", "my $HOME (copy)"])
+def test_suggested_refresh_only_rewrites_the_agent_kit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    parent: str,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / parent, "refresh_kit")
+    assert neko_plugin_cli.main(["setup-repo", str(plugin_dir)]) == 0
+    skill_entry = plugin_dir / agent_kit.SKILL_TARGET_DIR / "SKILL.md"
+    skill_entry.write_text("# old snapshot\n", encoding="utf-8")
+    readme = plugin_dir / "README.md"
+    readme.write_text("# my readme\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    fix = next(line for line in capsys.readouterr().out.splitlines() if "setup-repo" in line and "--overwrite" in line)
+    # Parse the command the way the user's shell would; the path may hold
+    # spaces, "$" and parentheses.
+    refresh = fix.split("fix: neko-plugin ", 1)[1].split(" --no-vscode", 1)[0] + " --no-vscode"
+    if os.name == "nt":
+        arguments = [arg.strip('"') for arg in shlex.split(refresh, posix=False)]
+        if any(char in str(plugin_dir) for char in release_cmd._WINDOWS_EXPANDING_CHARS):
+            # No Windows quoting keeps such a path literal in both cmd and
+            # PowerShell, so the hint names a placeholder for the user to fill.
+            assert arguments[1] == "<plugin directory>"
+            arguments[1] = str(plugin_dir)
+    else:
+        arguments = shlex.split(refresh)
+        # A real shell must not expand anything in the quoted path.
+        target = refresh.removeprefix("setup-repo ").split(" --overwrite", 1)[0]
+        echoed = subprocess.run(["sh", "-c", f"printf %s {target}"], capture_output=True, text=True, check=True)
+        assert echoed.stdout == str(plugin_dir)
+    assert arguments[1] == str(plugin_dir)
+    assert neko_plugin_cli.main(arguments) == 0
+
+    assert readme.read_text(encoding="utf-8") == "# my readme\n"
+    assert agent_kit.snapshot_cli_version(skill_entry.read_text(encoding="utf-8")) == agent_kit.CLI_VERSION
+    capsys.readouterr()
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
+
+
+def test_check_does_not_flag_a_freshly_generated_agent_kit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "fresh_kit")
+    assert neko_plugin_cli.main(["setup-repo", str(plugin_dir)]) == 0
+    capsys.readouterr()
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
 
 
 def test_setup_repo_upgrade_github_actions_adds_only_managed_action_files(

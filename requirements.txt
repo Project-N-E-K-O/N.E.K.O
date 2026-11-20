@@ -56,7 +56,7 @@ bilibili-api-dev==18.0.0a2
     # via n-e-k-o
 blessed==1.25.0
     # via inquirer
-brotli==1.2.0
+brotli==1.2.1
     # via bilibili-api-dev
 cachetools==6.2.6
     # via n-e-k-o
@@ -118,7 +118,7 @@ editor==1.6.6
     # via inquirer
 fastapi==0.141.1
     # via n-e-k-o
-filelock==3.29.0
+filelock==4.2.12
     # via
     #   huggingface-hub
     #   n-e-k-o
@@ -250,7 +250,7 @@ packaging==25.0
     #   n-e-k-o
     #   onnxruntime
     #   pytesseract
-pillow==12.3.0
+pillow==13.0.0
     # via
     #   bilibili-api-dev
     #   imagehash
@@ -271,7 +271,7 @@ protobuf==6.33.5
     #   onnxruntime
 psutil==7.2.2
     # via n-e-k-o
-pyasn1==0.6.4
+pyasn1==0.6.5
     # via
     #   pyasn1-modules
     #   rsa
@@ -1025,7 +1025,7 @@ pyobjc-framework-webkit==12.1 ; sys_platform == 'darwin'
     # via pyobjc
 pyparsing==3.2.5 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via matplotlib
-pypdf==6.19.0
+pypdf==6.21.4
     # via n-e-k-o
 pyperclip==1.9.0
     # via
@@ -1129,7 +1129,9 @@ socksio==1.0.0
     # via httpx
 soundfile==0.13.1 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via audiolab
-soupsieve==2.10
+soupsieve==2.10 ; python_full_version < '3.11.5'
+    # via beautifulsoup4
+soupsieve==4.1.1 ; python_full_version >= '3.11.5'
     # via beautifulsoup4
 soxr==0.5.0.post1
     # via n-e-k-o
@@ -1153,7 +1155,7 @@ tomli==2.4.1
     # via n-e-k-o
 tomli-w==1.2.0
     # via n-e-k-o
-tornado==6.5.10
+tornado==6.6.1
     # via n-e-k-o
 tqdm==4.67.1
     # via

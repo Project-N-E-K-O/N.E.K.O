@@ -65,6 +65,7 @@ from ._shared import (  # noqa: F401
     PLUGIN_NAME_CACHE_TTL,
     _get_throttled_logger,
     _bump_state_revision,
+    _put_switch_off,
     _set_capability,
     _track_background_task,
     _create_tracked_task,

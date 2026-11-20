@@ -123,6 +123,13 @@ class GoalState:
         if self._on_change is not None:
             self._on_change()
 
+    def drop(self) -> None:
+        """Forget the goal, whatever phase it is in."""
+        if self.current is None:
+            return
+        self.current = None
+        self._changed()
+
     # -- operations -----------------------------------------------------------
 
     def _rounds(self, requested: object) -> int:
