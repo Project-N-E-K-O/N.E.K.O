@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -1137,6 +1138,51 @@ async def _groups_on_offer(host: Any, grant: Any) -> list[str]:
 
 async def _load(host: Any, grant: Any, group: str) -> dict[str, Any]:
     return await _call(host, grant, SEARCH_TOOL, {"group": group})
+
+
+@pytest.mark.parametrize("dsh_precheck", [False, True], ids=["builtin", "dsh"])
+async def test_registered_browser_is_discovered_called_and_released_through_the_gateway(server, tmp_path, dsh_precheck):
+    from nekoclaw.builtin.browser.tools import BrowserTools
+    from nekoclaw.builtin.devices import BrowserDeviceProvider
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    registration = create_autospec(BrowserDeviceProvider, instance=True)
+    driver = create_autospec(BrowserTools, instance=True)
+    registration.tools.return_value = [({**NAVIGATE, "name": "browser_fixture"}, False)]
+    registration.open_driver.return_value = driver
+    driver.closed_by_user.return_value = False
+    driver.window.return_value = None
+    driver.call.return_value = BuiltinOutcome(True, "a page")
+    def ports() -> set[int]:
+        return {48911}
+
+    devices = BuiltinToolProvider(state=lambda group: (True, ""), browser_provider=registration, own_ports=ports)
+    host = make_host(tmp_path, server, builtins=devices)
+    try:
+        asker = Asker("once")
+        host.permissions.set_asker(asker)
+        commission = await _commission(host)
+        grant = _grant(host, commission, loaded=())
+        loaded = _served(_text(await _load(host, grant, "browser")))
+        assert [item["name"] for item in loaded] == ["browser_fixture"]
+        registration.open_driver.assert_not_called()
+        arguments = {"name": "browser_fixture", "arguments": {"url": "https://example.org"}}
+        if dsh_precheck:
+            reply = await host.task_agents._cb_permission(
+                commission.id, {"tool": CALL_TOOL, "category": "gateway", "arguments": arguments}
+            )
+            assert reply["allow"] is True
+        result = await _call(host, grant, CALL_TOOL, arguments)
+        assert _text(result) == "a page"
+        assert len(asker.asked) == 1
+        registration.open_driver.assert_called_once_with(own_ports=ports)
+        assert driver.call.await_args.args == ("browser_fixture", arguments["arguments"])
+        assert driver.call.await_args.kwargs["refused"]() is None
+        assert host.leases.release(commission.id) == [BUILTIN_GROUP_BROWSER]
+        await host.leases.settle()
+        driver.released.assert_awaited_once_with()
+    finally:
+        await host.shutdown()
 
 
 def _served(text: str) -> list[dict[str, Any]]:

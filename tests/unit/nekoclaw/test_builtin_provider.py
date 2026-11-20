@@ -41,6 +41,7 @@ from nekoclaw.builtin import desktop as desktop_module
 from nekoclaw.builtin import provider as provider_module
 from nekoclaw.builtin.browser import tools as tools_module
 from nekoclaw.builtin.desktop import DesktopActionError, DesktopResult, DesktopStopped
+from nekoclaw.builtin.devices import BrowserDeviceProvider, DesktopDeviceProvider
 from nekoclaw.builtin.provider import BuiltinToolProvider
 from nekoclaw.host.capabilities import (
     BUILTIN_GROUP_BROWSER,
@@ -272,6 +273,74 @@ def test_the_parts_are_made_on_first_use_and_kept(monkeypatch: Any) -> None:
 def test_parts_that_were_given_are_the_ones_used(rig: Rig) -> None:
     assert rig.provider.desktop() is rig.desktop
     assert rig.provider.browser() is rig.browser
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"desktop": object(), "desktop_provider": DesktopDeviceProvider()},
+        {"browser": object(), "browser_provider": BrowserDeviceProvider()},
+    ],
+)
+def test_a_slot_cannot_use_both_a_registered_provider_and_an_unrelated_driver(options) -> None:
+    with pytest.raises(ValueError, match="either a provider or a prebuilt driver"):
+        BuiltinToolProvider(state=Switches(), **options)
+
+
+async def test_registered_desktop_is_lazy_and_releases_the_driver_that_handled_the_call() -> None:
+    driver = FakeDesktop()
+    opened = []
+
+    class TestDesktop(DesktopDeviceProvider):
+        def open_driver(self) -> Any:
+            opened.append(driver)
+            return driver
+
+    provider = BuiltinToolProvider(state=Switches(), desktop_provider=TestDesktop())
+    computer = next(tool for tool in provider.available() if tool.tool_name == "computer")
+    assert opened == []
+    outcome = await provider.run(computer, commission_id="c", arguments={"action": "screenshot"})
+    assert outcome.success and len(outcome.images) == 1
+    await provider.released(computer.group, "c")
+    assert opened == [driver] and len(driver.release_threads) == 1
+
+
+def test_two_registered_devices_cannot_publish_the_same_tool() -> None:
+    class CollidingBrowser(BrowserDeviceProvider):
+        def tools(self):
+            yield COMPUTER_TOOL, True
+
+    with pytest.raises(ValueError, match="duplicate built-in tool name 'computer'"):
+        BuiltinToolProvider(state=Switches(), browser_provider=CollidingBrowser())
+
+
+def test_the_desktop_registers_its_single_action_dispatch_tool() -> None:
+    class ExtraDesktopTool(DesktopDeviceProvider):
+        def tools(self):
+            yield from super().tools()
+            yield {**COMPUTER_TOOL, "name": "another_desktop"}, True
+
+    with pytest.raises(ValueError, match="desktop provider must register exactly 'computer'"):
+        BuiltinToolProvider(state=Switches(), desktop_provider=ExtraDesktopTool())
+
+
+def test_a_provider_cannot_offer_the_desktop_to_a_model_that_cannot_see() -> None:
+    class BlindDesktop(DesktopDeviceProvider):
+        def tools(self):
+            yield COMPUTER_TOOL, False
+
+    with pytest.raises(ValueError, match="requires a model that can see screenshots"):
+        BuiltinToolProvider(state=Switches(), desktop_provider=BlindDesktop())
+
+
+@pytest.mark.parametrize("definition", [{}, {"name": None}, {"name": " "}])
+def test_a_registered_tool_needs_a_name(definition) -> None:
+    class NamelessBrowser(BrowserDeviceProvider):
+        def tools(self):
+            yield definition, False
+
+    with pytest.raises(ValueError, match="invalid or duplicate built-in tool name"):
+        BuiltinToolProvider(state=Switches(), browser_provider=NamelessBrowser())
 
 
 # ---------------------------------------------------------------------------

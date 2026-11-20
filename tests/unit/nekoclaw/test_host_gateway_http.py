@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from typing import Any
+from unittest.mock import create_autospec
 
 import httpx
 import pytest
@@ -454,6 +456,52 @@ async def test_revoked_token_stops_working(server, hosts, tmp_path):
     with pytest.raises(GatewayError, match="401"):
         await client.call("plugin__weather__today", {"city": "Lyon"})
     assert server.calls == []
+
+
+async def test_revoking_a_registered_desktop_call_stops_its_worker_and_releases_its_keys(server, hosts, tmp_path):
+    from nekoclaw.builtin.desktop import Desktop, DesktopStopped
+    from nekoclaw.builtin.devices import DesktopDeviceProvider
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    driver = create_autospec(Desktop, instance=True)
+    started = asyncio.Event()
+    stopped = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def screenshot(action, arguments, cancelled):
+        assert action == "screenshot"
+        loop.call_soon_threadsafe(started.set)
+        assert cancelled.wait(timeout=10)
+        stopped.set()
+        raise DesktopStopped()
+
+    driver.act.side_effect = screenshot
+    registration = create_autospec(DesktopDeviceProvider, instance=True)
+    registration.tools.return_value = DesktopDeviceProvider().tools()
+    registration.open_driver.return_value = driver
+    devices = BuiltinToolProvider(state=lambda group: (True, ""), desktop_provider=registration)
+    host = make_host(tmp_path, server, builtins=devices)
+    hosts.append(host)
+    host.permissions.set_asker(_allow_once)
+    url = await host.gateway.start()
+    commission = await _working_commission(host)
+    client = GatewayClient(url, host.gateway.issue(commission.id, supports_images=True))
+    await client.connect()
+    registration.open_driver.assert_not_called()
+    calling = asyncio.create_task(client.call("capability_call", {"name": "computer", "arguments": {"action": "screenshot"}}))
+    try:
+        await asyncio.wait_for(started.wait(), 10)
+        registration.open_driver.assert_called_once_with()
+        host.gateway.revoke(commission.id)
+        with pytest.raises(GatewayError, match="499"):
+            await calling
+        assert stopped.is_set()
+        assert host.leases.release(commission.id) == [BUILTIN_GROUP_KEYBOARD_MOUSE]
+        await host.leases.settle()
+        driver.release_held.assert_called_once_with()
+    finally:
+        calling.cancel()
+        await asyncio.gather(calling, return_exceptions=True)
 
 
 async def test_dropping_a_call_cancels_the_plugin_run(server, hosts, tmp_path):
