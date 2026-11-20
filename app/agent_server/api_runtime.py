@@ -709,7 +709,17 @@ async def shutdown():
     # this process (see ``BROWSER_KILL_AT_SHUTDOWN_SECONDS``). Cancelled once
     # the browser has been closed.
     browser_killed_at = asyncio.get_running_loop().time() + BROWSER_KILL_AT_SHUTDOWN_SECONDS
-    browser_last_resort = threading.Timer(BROWSER_KILL_AT_SHUTDOWN_SECONDS, _kill_browser_at_last)
+    # Set by the timer before it kills, and read below instead of the loop's
+    # clock alone: the timer and the loop keep time apart, and the timer may
+    # fire a clock tick (about 15.6 ms on Windows) before the loop's clock
+    # reaches ``browser_killed_at``.
+    browser_last_resort_fired = threading.Event()
+
+    def browser_last_resort_kill() -> None:
+        browser_last_resort_fired.set()
+        _kill_browser_at_last()
+
+    browser_last_resort = threading.Timer(BROWSER_KILL_AT_SHUTDOWN_SECONDS, browser_last_resort_kill)
     browser_last_resort.daemon = True
     browser_last_resort.start()
     # And no call of the built-in tools is carried out from here on. The
@@ -802,10 +812,12 @@ async def shutdown():
         # down, and a browser that is still closing then would run on with
         # nobody to close it. It is asked to close within what is left before
         # the time it is killed at, and killed when it has not; with nothing
-        # left (the steps above took it all) it is not asked at all.
+        # left (the steps above took it all) it is not asked at all, and
+        # neither once the last resort has fired, whatever the loop's clock
+        # says is left: that browser is killed (or being killed) already.
         left = min(BROWSER_CLOSE_AT_SHUTDOWN_SECONDS, browser_killed_at - asyncio.get_running_loop().time())
         closed_in_time = False
-        if left > 0:
+        if left > 0 and not browser_last_resort_fired.is_set():
             try:
                 await asyncio.wait_for(_close_browser(), timeout=left)
                 closed_in_time = True

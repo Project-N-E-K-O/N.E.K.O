@@ -52,7 +52,7 @@ def shutdown_fixture(tmp_path, monkeypatch):
         timers.append(current)
         return current
 
-    monkeypatch.setattr(api_runtime, "threading", SimpleNamespace(Timer=timer))
+    monkeypatch.setattr(api_runtime, "threading", SimpleNamespace(Timer=timer, Event=threading.Event))
     for name, label in [
         ("shutdown_nekoclaw_host", "host"),
         ("_ensure_plugin_lifecycle_stopped", "plugin"),
@@ -216,6 +216,49 @@ async def test_browser_last_resort_survives_slow_host_cleanup(shutdown_fixture, 
         assert "browser" not in fixture.events, "do not reopen/close a browser after its kill deadline"
         assert "keys" in fixture.events and "status" in fixture.events
         assert fixture.tracker._storage_path.exists()
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await fixture.tracker.asave()
+
+
+@pytest.mark.asyncio
+async def test_browser_last_resort_fired_ahead_of_loop_clock_is_not_closed(shutdown_fixture, monkeypatch):
+    """The timer and the loop keep time apart: on Windows the timer can fire a
+    clock tick (~15.6 ms) before the loop's clock reaches the kill time. A
+    browser the last resort has killed must not be asked to close because the
+    loop still sees time left."""
+    from config import nekoclaw_settings
+
+    fixture = shutdown_fixture
+    monkeypatch.setattr(nekoclaw_settings, "BROWSER_KILL_AT_SHUTDOWN_SECONDS", 1.0)
+
+    def early_timer(seconds, callback):
+        # Far more than one tick early, so the loop is sure to see time left.
+        current = threading.Timer(seconds - .9, callback)
+        fixture.timers.append(current)
+        return current
+
+    monkeypatch.setattr(fixture.api, "threading", SimpleNamespace(Timer=early_timer, Event=threading.Event))
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def host():
+        entered.set()
+        await release.wait()
+        fixture.events.append("host")
+
+    monkeypatch.setattr(fixture.api, "shutdown_nekoclaw_host", host)
+    task = asyncio.create_task(fixture.api.shutdown())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        async with asyncio.timeout(2):
+            while "browser-killed" not in fixture.events:
+                await asyncio.sleep(.01)
+        release.set()
+        await asyncio.wait_for(task, 2)
+        assert "browser" not in fixture.events, "do not close a browser the last resort has killed"
+        assert "keys" in fixture.events and "status" in fixture.events
     finally:
         release.set()
         task.cancel()
