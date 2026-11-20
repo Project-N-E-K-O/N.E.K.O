@@ -211,12 +211,14 @@
         }
         const now = Date.now();
         const character = currentCharacter();
-        if (now < angryUntil && angryCharacter === character) {
+        // 剧场内外各算各的：进出剧场都从第 1 下重新数，剧场里攒的次数不带到剧场外
+        const theater = isTheaterBlockingChat();
+        const cooling = now < angryUntil && angryCharacter === character;
+        if (cooling && !theater) {
             // 气还没消：这一下当作没点
             return { count: 0, angry: true, allowTouchSet: false, comboId: 0 };
         }
-        // 剧场内外各算各的：进出剧场都从第 1 下重新数，剧场里攒的次数不带到剧场外
-        const theater = isTheaterBlockingChat();
+        // 剧场里本来就只晃不出声不换表情，冷却期也照常晃；但点击动作/表情仍按冷却拦着
         if (!combo || combo.element !== element || combo.character !== character
                 || combo.theater !== theater || now - combo.lastAt > COMBO_WINDOW_MS) {
             resetCombo();
@@ -248,7 +250,7 @@
         // 剧场里的点击不预约语音（发送时还会再查一次）；同一串里之前排上的也作废，免得离场后补发
         if (isTheaterBlockingChat()) cancelPendingVoice(state);
         else if (COMBO_VOICE_INTENSITY[count]) scheduleVoice(state, COMBO_VOICE_INTENSITY[count]);
-        return { count, angry: false, allowTouchSet: count < 2, comboId: state.id };
+        return { count, angry: false, allowTouchSet: !cooling && count < 2, comboId: state.id };
     }
 
     // 延后执行的点击动作在真正播放前再问一次：这期间连上了下一下、或已经被惹烦，都不再播

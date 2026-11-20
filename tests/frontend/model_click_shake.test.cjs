@@ -604,6 +604,34 @@ test('leaving the theater mid-combo starts counting again from the first tap', (
     assert.equal(h.sent.length, 0);
 });
 
+test('entering the theater during the angry cooldown still shakes, but keeps touch effects blocked', () => {
+    let theater = false;
+    const h = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => theater } });
+    for (let i = 0; i < 4; i++) {
+        h.shake.tap(h.canvas);
+        h.clock.advance(h.gap);
+    }
+    const shakesAtAngry = h.shakes.length;
+    theater = true;
+    const results = [];
+    for (let i = 0; i < 4; i++) {
+        results.push(h.shake.tap(h.canvas));
+        h.clock.advance(h.gap);
+    }
+    assert.equal(h.shakes.length, shakesAtAngry + 4, 'every theater tap shakes even while still angry');
+    assert.deepEqual(results.map(r => r.count), [1, 2, 3, 4]);
+    assert.ok(results.every(r => r.allowTouchSet === false && r.angry === false));
+    assert.ok(results.every(r => !h.shake.stillAllowsTouchSet(r)));
+    h.clock.advance(h.shake.COMBO_WINDOW_MS * 2);
+    assert.deepEqual(h.emotions, ['happy', 'surprised', 'angry']);
+    assert.equal(h.sent.length, 1);
+    // 离场时冷却还没过：照旧一点反馈都没有
+    theater = false;
+    const shakesBeforeLeaving = h.shakes.length;
+    assert.equal(h.shake.tap(h.canvas).allowTouchSet, false);
+    assert.equal(h.shakes.length, shakesBeforeLeaving);
+});
+
 test('taps during the theater never leave a line queued for after it ends', () => {
     let theater = true;
     const h = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => theater } });

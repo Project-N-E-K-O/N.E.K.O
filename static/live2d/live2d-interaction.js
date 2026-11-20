@@ -4737,7 +4737,10 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
                             return false;
                         }
 
-                        const result = await this.playActionMotion(groupName, 0);
+                        // 动作启动前也要认连点抢占：loadMotion 期间被抢占的旧调用不能再把动作播出来
+                        const result = await this.playActionMotion(groupName, 0, {
+                            isCurrent: () => (this._clickComboPreemptGeneration || 0) === clickComboGeneration
+                        });
 
                         if (result) {
                             triggerLog.motions.push({
