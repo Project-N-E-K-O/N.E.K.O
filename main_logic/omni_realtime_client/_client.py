@@ -544,7 +544,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # the wire-format snapshots are rebuilt from it on each connect/
         # update_session so callers can mutate the list at any time.
         self.on_tool_call: Optional[OnToolCallCallback] = on_tool_call
-        self._tool_definitions: List[ToolDefinition] = list(tool_definitions or [])
+        self.set_tools(tool_definitions)
         # Provider behaviour matrix:
         #   gpt   → flat schema, response.done has output[].type=function_call
         #   glm   → flat schema, response.function_call_arguments.done event

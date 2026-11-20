@@ -110,7 +110,12 @@ class _ToolingMixin:
         (only providers whose protocol allows mid-session tool updates
         will honour it; OpenAI Realtime and Step accept ``session.update``
         with new ``tools``)."""
-        self._tool_definitions = list(tool_definitions or [])
+        # Offline-only tools depend on the chat client's follow-up and image
+        # lifecycle; exposing their schemas here would advertise unusable calls.
+        self._tool_definitions = [
+            tool for tool in (tool_definitions or [])
+            if not tool.metadata.get("offline_only")
+        ]
 
     def set_tool_call_handler(self, handler: Optional[OnToolCallCallback]) -> None:
         self.on_tool_call = handler

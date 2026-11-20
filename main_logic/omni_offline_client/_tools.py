@@ -13,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+
+from utils.llm_client.messages import message_metadata
 from utils.screen_comment_guard import project_screen_history, strip_screen_labels
 
 from ._turn_context import _TurnContextMixin, is_turn_context_message
@@ -69,6 +72,10 @@ _TOOLS_REFUSAL_REQUEST_QUALIFIERS = (
     "when using",
     "for this request",
 )
+
+
+def _is_screen_image_message(message):
+    return message_metadata(message).get("screen_inspection_image") is True
 
 
 class _ToolingMixin(_TurnContextMixin):
@@ -216,11 +223,41 @@ class _ToolingMixin(_TurnContextMixin):
         turn-context messages, which never count as the turn's user message.
         """
         paired = self._paired_tool_rounds(messages)
+        # Also protect a new turn while the preceding provider is still in
+        # flight, or when history was produced before release receipts existed.
+        last_user = next(
+            (index for index in range(len(paired) - 1, -1, -1)
+             if getattr(paired[index], "type", None) == "human"
+             and id(paired[index]) not in context_ids
+             and not is_turn_context_message(paired[index])
+             and not _is_screen_image_message(paired[index])),
+            0,
+        )
+        if any(_is_screen_image_message(message) or (
+            isinstance(message, dict) and message.get("role") == "tool"
+            and message.get("name") == "read_current_screen"
+        ) for message in paired[:last_user]):
+            from config.prompts.prompts_screen_inspection import text as screen_text
+
+            receipt = self._released_screen_result_content()
+            placeholder = screen_text("released", self._tool_image_locale())
+            paired = [
+                {"role": "user", "content": placeholder,
+                 "metadata": {"screen_inspection_image": True}}
+                if index < last_user and _is_screen_image_message(message)
+                else
+                {**message, "content": receipt}
+                if index < last_user and isinstance(message, dict)
+                and message.get("role") == "tool" and message.get("name") == "read_current_screen"
+                else message
+                for index, message in enumerate(paired)
+            ]
         turn_start = next(
             (index + 1 for index in range(len(paired) - 1, -1, -1)
              if getattr(paired[index], "type", None) == "human"
              and id(paired[index]) not in context_ids
-             and not is_turn_context_message(paired[index])),
+             and not is_turn_context_message(paired[index])
+             and not _is_screen_image_message(paired[index])),
             len(paired),
         )
         hits: dict = {}
@@ -593,6 +630,52 @@ class _ToolingMixin(_TurnContextMixin):
         )
         return executed
 
+    async def _revalidate_screen_capture_slots(self, tool_image_slots, tool_bus_frames=None) -> bool:
+        """Recheck screen consent at every provider-request boundary.
+
+        A tool-round sentinel yields control to the outer stream consumer. The
+        user can revoke consent while that consumer flushes pre-tool text, so a
+        check only inside _run_tool_round is not sufficient for the next model
+        request. Keep this check immediately before request construction too.
+        """
+        callback = getattr(self, "screen_capture_still_valid", None)
+        if not callable(callback) or not tool_image_slots:
+            return True
+        invalid = False
+        for slot in tuple(tool_image_slots):
+            if len(slot) < 5 or slot[4] is None:
+                continue
+            try:
+                if not await callback(slot[4]):
+                    invalid = True
+                    break
+            except Exception:
+                logger.warning(
+                    "Screen capture consent revalidation failed before provider request",
+                    exc_info=True,
+                )
+                invalid = True
+                break
+        if not invalid:
+            return True
+        revoked = []
+        retained = []
+        for slot in tool_image_slots:
+            message = slot[2]
+            if _is_screen_image_message(message) or (
+                isinstance(message, dict) and message.get("name") == "read_current_screen"
+            ):
+                revoked.append(slot)
+            else:
+                retained.append(slot)
+        tool_image_slots[:] = retained
+        if tool_bus_frames is not None:
+            tool_bus_frames[:] = [
+                frame for frame in tool_bus_frames if frame[2] != "read_current_screen"
+            ]
+        self._release_tool_image_slots(revoked)
+        return False
+
     async def _run_tool_round(
         self,
         messages,
@@ -631,7 +714,45 @@ class _ToolingMixin(_TurnContextMixin):
             tool_rounds.append(assistant_turn)
         tool_results: list = []
         image_results: list = []
+        revoked_screen_slots: list = []
         round_complete = False
+
+        async def screen_capture_slots_valid() -> bool:
+            callback = getattr(self, "screen_capture_still_valid", None)
+            if not callable(callback) or tool_image_slots is None:
+                return True
+            for slot in tool_image_slots:
+                if len(slot) < 5 or slot[4] is None:
+                    continue
+                try:
+                    if not await callback(slot[4]):
+                        return False
+                except Exception:
+                    logger.warning("Screen capture consent revalidation failed; dropping evidence", exc_info=True)
+                    return False
+            return True
+
+        def revoke_screen_evidence() -> None:
+            if tool_image_slots is None:
+                return
+            retained_slots = []
+            for slot in tool_image_slots:
+                message = slot[2]
+                if _is_screen_image_message(message) or (
+                    isinstance(message, dict) and message.get("name") == "read_current_screen"
+                ):
+                    revoked_screen_slots.append(slot)
+                else:
+                    retained_slots.append(slot)
+            tool_image_slots[:] = retained_slots
+            image_results[:] = [
+                item for item in image_results if item[0].name != "read_current_screen"
+            ]
+            if tool_bus_frames is not None:
+                tool_bus_frames[:] = [
+                    frame for frame in tool_bus_frames if frame[2] != "read_current_screen"
+                ]
+
         try:
             for tool_call in tool_calls:
                 if not generation_is_active():
@@ -670,8 +791,26 @@ class _ToolingMixin(_TurnContextMixin):
                 }
                 messages.append(tool_result_message)
                 tool_results.append(tool_result_message)
+                if tool_call.name == "read_current_screen" and tool_image_slots is not None:
+                    if result.is_error and isinstance(result.output, dict) and result.output.get("reason") in (
+                        "disabled", "scope_changed", "superseded",
+                    ):
+                        revoke_screen_evidence()
+                    receipt = self._released_screen_result_content()
+                    # Track text even when image delivery is omitted or the round
+                    # is cancelled. Window inventories are only useful this turn.
+                    tool_image_slots.append((
+                        messages, len(messages) - 1, tool_result_message, receipt,
+                        getattr(result, "screen_capture_owner", None),
+                    ))
                 if getattr(result, "images", None):
                     image_results.append((result, tool_result_message))
+                # A later tool in this same batch may await network or disk IO.
+                # Recheck every capture owner after each handler returns, so a
+                # revoke-then-reenable during that wait still releases prior
+                # screenshots, titles and snapshot handles before the next request.
+                if not await screen_capture_slots_valid():
+                    revoke_screen_evidence()
             else:
                 round_complete = True
         finally:
@@ -682,6 +821,9 @@ class _ToolingMixin(_TurnContextMixin):
             kept = len(tool_results)
             if not round_complete or not generation_is_active() or tool_results:
                 kept = self._settle_unfinished_tool_round(messages, assistant_turn, tool_results)
+            # Settle first: it reinserts this round's original result objects.
+            # Releasing earlier would resurrect their titles or duplicate replies.
+            self._release_tool_image_slots(revoked_screen_slots)
         # A round that left history with its turn (kept nothing) is not live:
         # its images would be orphaned at the end of history.
         live = round_complete and generation_is_active() and (kept or not tool_results)
@@ -845,7 +987,10 @@ class _ToolingMixin(_TurnContextMixin):
 
         used_count = 0
         used_b64_bytes = 0
-        for _messages, _index, image_message, _placeholder in slots:
+        for slot in slots:
+            _messages, _index, image_message, _placeholder = slot[:4]
+            if image_message.get("role") != "user":
+                continue
             for part in image_message.get("content", []):
                 if part.get("type") != "image_url":
                     continue
@@ -855,12 +1000,16 @@ class _ToolingMixin(_TurnContextMixin):
                 used_count += 1
                 used_b64_bytes += len(url.rsplit(",", 1)[-1])
 
+        # Screen inspection needs overview + window + crop + one re-check.
+        # Other tools retain their existing image-count and byte budgets.
+        image_limit = (4 if result.name == 'read_current_screen'
+                       else _TOOL_IMAGE_TURN_MAX_COUNT)
         content = []
         omitted_count = 0
         for img in images:
             image_b64_bytes = len(img.data_b64)
             if (
-                used_count >= _TOOL_IMAGE_TURN_MAX_COUNT
+                used_count >= image_limit
                 or used_b64_bytes + image_b64_bytes
                 > _TOOL_IMAGE_TURN_MAX_B64_BYTES
             ):
@@ -919,6 +1068,11 @@ class _ToolingMixin(_TurnContextMixin):
             return None
 
         message = {"role": "user", "content": content}
+        if result.name == "read_current_screen":
+            # Internal metadata survives history serialization but is omitted
+            # from provider messages. A concurrent new turn can now release its
+            # request view without mutating the old provider's in-flight image.
+            message["metadata"] = {"screen_inspection_image": True}
         index = len(messages)
         if insert_after is not None:
             after = _find_by_identity(messages, -1, insert_after)
@@ -941,19 +1095,17 @@ class _ToolingMixin(_TurnContextMixin):
                 recall_suffix += _loc(TOOL_IMAGE_RECALL_HINT, lang).format(
                     recall_hint=recall_hint.strip()
                 )
-        slots.append((
-            messages,
-            index,
-            message,
-            _loc(TOOL_IMAGE_HISTORY_PLACEHOLDER, lang).format(
-                tool_name=result.name,
-                recall_suffix=recall_suffix,
-            ),
-        ))
+        placeholder = _loc(TOOL_IMAGE_HISTORY_PLACEHOLDER, lang).format(
+            tool_name=result.name, recall_suffix=recall_suffix,
+        )
+        if result.name == "read_current_screen":
+            from config.prompts.prompts_screen_inspection import text as screen_text
+            placeholder = screen_text("released", lang)
+        slots.append((messages, index, message, placeholder))
         return message
 
     def _release_tool_image_slots(self, slots=None) -> None:
-        """Swap every injected image turn for its text placeholder.
+        """Release image turns and transient screen results, keeping call pairing.
 
         Called from the exit of both tool loops (``finally``, so an abandoned
         generator still cleans up). Identity is re-checked before writing:
@@ -964,16 +1116,31 @@ class _ToolingMixin(_TurnContextMixin):
             slots = getattr(self, "_pending_tool_image_slots", None)
         if not slots:
             return
-        for messages, index, message, placeholder in slots:
+        for slot in slots:
+            messages, index, message, placeholder = slot[:4]
             try:
                 # A settled concurrent tool round or a cancelled reply commit
                 # may have shifted the turn; identity finds it again.
                 index = _find_by_identity(messages, index, message)
                 if index >= 0:
-                    messages[index] = {"role": "user", "content": placeholder}
+                    messages[index] = {**message, "content": placeholder}
             except Exception as e:
                 logger.warning("Releasing a tool image slot failed (ignored): %s", e)
         slots.clear()
+
+    @staticmethod
+    def _has_tool_image_slots(slots) -> bool:
+        """Only delivered images relax the pipe guard, never text receipts."""
+        return any(slot[2].get("role") == "user" for slot in slots)
+
+    def _released_screen_result_content(self) -> str:
+        """Keep a short valid tool reply without stale titles or snapshot handles."""
+        from config.prompts.prompts_screen_inspection import text as screen_text
+
+        return json.dumps({
+            "status": "released",
+            "message": screen_text("released", self._tool_image_locale()),
+        }, ensure_ascii=False)
 
     async def _notify_reasoning_active(self) -> None:
         """Tell the host that the model is emitting reasoning / thinking chunks, so
@@ -1271,6 +1438,9 @@ class _ToolingMixin(_TurnContextMixin):
         # cap logs must not falsely claim iterations exhausted.
         zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
+            if not generation_is_active():
+                return
+            await self._revalidate_screen_capture_slots(tool_image_slots, tool_bus_frames)
             if not generation_is_active():
                 return
             deltas_per_chunk: list = []

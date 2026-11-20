@@ -1,0 +1,20 @@
+diff --git a/src/preload/bridges/pet-websocket-bridge.js b/src/preload/bridges/pet-websocket-bridge.js
+--- a/src/preload/bridges/pet-websocket-bridge.js
++++ b/src/preload/bridges/pet-websocket-bridge.js
+@@ -4,6 +4,8 @@ const PET_ONLY_CAPTURE_BRIDGE_REQUEST_TYPES = new Set([
+   'capture_bridge_request',
+   'capture_bridge_computer_use_request',
+   'capture_bridge_region_request',
++  // Chat mirrors share this socket; only Pet owns capture state and permissions.
++  'request_screen_inspection',
+ ]);
+ 
+ const PET_ONLY_CAPTURE_BRIDGE_PROXY_ACTIONS = new Set([
+@@ -11,6 +13,7 @@ const PET_ONLY_CAPTURE_BRIDGE_PROXY_ACTIONS = new Set([
+   'capture_bridge_response',
+   'capture_bridge_computer_use_response',
+   'capture_bridge_region_response',
++  'screen_inspection_response',
+ ]);
+ 
+ function installPetWebSocketBridge({ lifecycle, window, ipcRenderer, channels }) {

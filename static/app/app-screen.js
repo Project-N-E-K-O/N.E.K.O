@@ -26,7 +26,10 @@
     // 「记住窗口」时才写入，与 selectedScreenWindowTitle 受同一个开关约束。
     const SCREEN_SOURCE_LABEL_KEY = 'selectedScreenSourceLabel';
     const MAX_REMEMBERED_WINDOW_TITLE_LENGTH = 512;
+    const screenCaptureStreamSources = new WeakMap();
+    window.getScreenCaptureStreamSourceId = stream => screenCaptureStreamSources.get(stream);
     var screenSourceSelectionGeneration = 0;
+    window.getScreenSourceSelectionGeneration = () => screenSourceSelectionGeneration;
     var explicitScreenSourceSelectionGeneration = null;
     // 来源列表里最近一次点击的令牌：所有列表（宠物窗口菜单、设置面板等）共用，
     // 后点的那次让更早、还在确认来源是否存在的点击作废。
@@ -628,7 +631,7 @@
     }
     mod.reconcileRememberedWindowSource = reconcileRememberedWindowSource;
 
-    async function prepareRememberedWindowCapture() {
+    async function prepareRememberedWindowCapture(options) {
         var rememberedTitle = normalizeScreenSourceTitle(readRememberedWindowTitle());
         var titleMatchEnabled = isScreenSourceTitleMatchEnabled();
         var selectedWindowIsBounded = typeof S.selectedScreenSourceId === 'string'
@@ -690,6 +693,24 @@
                 || rememberedTitle !== normalizeScreenSourceTitle(readRememberedWindowTitle())
                 || !isScreenSourceTitleMatchEnabled()) {
                 return buildCaptureResult(false, 'superseded');
+            }
+
+            if (options && options.readOnly) {
+                var selected = sources.find(function (source) {
+                    return source.id === resolutionSourceId && source.id.startsWith('window:');
+                });
+                var matches = rememberedTitle ? sources.filter(function (source) {
+                    return source.id.startsWith('window:')
+                        && normalizeScreenSourceTitle(source.name) === rememberedTitle;
+                }) : [];
+                var selectedIsTitleMatch = !!selected && matches.some(function (source) {
+                    return source.id === selected.id;
+                });
+                var allowed = !!selected && (rememberedTitle
+                    ? (matches.length === 1 && matches[0].id === selected.id)
+                        || (selectedIsTitleMatch && isCurrentScreenSourceSelectionExplicit(selected))
+                    : isCurrentScreenSourceSelectionExplicit(selected));
+                return buildCaptureResult(allowed, allowed ? 'matched' : 'scope-changed');
             }
 
             var selectedBeforeReconcile = S.selectedScreenSourceId;
@@ -1241,6 +1262,7 @@
                             stream.getTracks().forEach(function (t) { t.stop(); });
                             return null;
                         }
+                        screenCaptureStreamSources.set(stream, captureSourceId);
                         return stream;
                     })(),
                     new Promise(function (_, reject) {
@@ -2540,6 +2562,7 @@
                                 }
                             }));
                             if (discardSupersededManualCapture()) return;
+                            screenCaptureStreamSources.set(captureStream, selectedSourceId);
                         } catch (captureErr) {
                             if (discardCancelledScreenSharingStart(attempt)) return;
                             if (!manualCaptureIdentityIsCurrent()) {
@@ -2578,6 +2601,7 @@
                                         }));
                                         if (discardCancelledScreenSharingStart(attempt)) return;
                                         if (discardSupersededManualCapture()) return;
+                                        screenCaptureStreamSources.set(captureStream, fallbackSources[0].id);
                                         S.selectedScreenSourceId = fallbackSources[0].id;
                                         try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
                                         rememberScreenSourceLabel(fallbackSources[0], 0);

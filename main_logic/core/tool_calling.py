@@ -68,7 +68,10 @@ class ToolCallingMixin:
         that turn. A tool of another source that holds one of these names is
         not known to only look up.
         """
-        if tool_name not in ("recall_memory", public_knowledge.TOOL_NAME, QUERY_TOOL_NAME):
+        if tool_name not in (
+            "recall_memory", public_knowledge.TOOL_NAME, QUERY_TOOL_NAME,
+            "read_current_screen",
+        ):
             return False
         held = self.tool_registry.get(tool_name)
         return held is None or held.metadata.get("source") == "builtin"
@@ -164,6 +167,16 @@ class ToolCallingMixin:
         call. Forwards to the registry (process-global, outliving any
         single session), then routes any images the tool returned.
         """
+        if call.name == "read_current_screen":
+            if (invoking_session is not None and invoking_session is not self.session) or (
+                call.reply_owner is not None
+                and call.reply_owner != getattr(self.session, "_active_reply_owner", None)
+            ):
+                from main_logic.screen_inspection import failure
+
+                rejected = failure(self, "superseded")
+                return ToolResult(call_id=call.call_id, name=call.name,
+                                  output=rejected["output"], is_error=True)
         if not self._only_looks_up(call.name):
             self._turn_acted_through_tools = True
         light_bubble = getattr(self, "_push_focus_thinking", None)
@@ -184,11 +197,67 @@ class ToolCallingMixin:
                 call.host_reply = reply_tail_registry.tool_context(
                     self, call.reply_owner, call.call_id, str(tool.metadata.get("source", "")),
                 )
+        # Lighting the bubble can yield to a replacement session or reply.
+        # Recheck immediately before capture, with no intervening await.
+        capture_owner = None
+        if call.name == "read_current_screen":
+            from main_logic.screen_inspection import _owner, failure
+
+            if (invoking_session is not None and invoking_session is not self.session) or (
+                call.reply_owner is not None
+                and call.reply_owner != getattr(self.session, "_active_reply_owner", None)
+            ):
+                rejected = failure(self, "superseded")
+                return ToolResult(call_id=call.call_id, name=call.name,
+                                  output=rejected["output"], is_error=True)
+            capture_owner = _owner(self)
+            if isinstance(invoking_session, OmniOfflineClient):
+                async def screen_capture_still_valid(owner):
+                    from main_logic.screen_inspection import _check_permission, InspectionError
+
+                    def clear_owned_snapshot():
+                        state = getattr(self, "_screen_inspection_state", None)
+                        if isinstance(state, dict) and state.get("owner") == owner:
+                            images = state.get("images")
+                            if isinstance(images, dict):
+                                images.clear()
+
+                    try:
+                        await _check_permission(self, owner)
+                        return True
+                    except InspectionError:
+                        clear_owned_snapshot()
+                        return False
+                    except Exception:
+                        clear_owned_snapshot()
+                        logger.warning(
+                            "Screen capture consent revalidation failed; dropping evidence",
+                            exc_info=True,
+                        )
+                        return False
+
+                invoking_session.screen_capture_still_valid = screen_capture_still_valid
         result = await self.tool_registry.execute(call)
         if result.images:
             await self._route_tool_images(
                 result, invoking_session=invoking_session,
             )
+        # Preparing the vision route can yield after capture's final check.
+        # Keep its original revocation epoch, even if consent is enabled again.
+        if capture_owner is not None:
+            reason = None
+            if getattr(self, "_proactive_vision_enabled", None) is False:
+                reason = "disabled"
+            elif capture_owner != _owner(self) or (
+                call.reply_owner is not None
+                and call.reply_owner != getattr(self.session, "_active_reply_owner", None)
+            ):
+                reason = "superseded"
+            if reason:
+                rejected = failure(self, reason)
+                return ToolResult(call_id=call.call_id, name=call.name,
+                                  output=rejected["output"], is_error=True)
+            result.screen_capture_owner = capture_owner
         return result
 
     async def _route_tool_images(
@@ -291,6 +360,9 @@ class ToolCallingMixin:
             metadata={"source": "builtin"},
         )
         self.tool_registry.register(recall_tool, replace=True)
+        from main_logic.screen_inspection import build_tools as build_screen_tools
+        for tool in build_screen_tools(self):
+            self.tool_registry.register(tool, replace=True)
         self._register_public_knowledge_tool()
         self._register_task_tools()
 

@@ -200,6 +200,8 @@ class ToolResult:
     # model at all, and empties the list when it cannot -- so anything
     # downstream may treat a non-empty list as "these are going out".
     images: List["ToolImage"] = field(default_factory=list)
+    # Host-only capture ownership; never serialized into the model-facing output.
+    screen_capture_owner: Any = field(default=None, repr=False)
 
     def output_as_json_string(self) -> str:
         """Render ``output`` as the JSON string that OpenAI Realtime / GLM /

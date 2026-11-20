@@ -160,6 +160,7 @@ jobs:
 
       - name: Run frontend contract tests
         run: |
+          node tests/frontend/screen_inspection.mjs
           node --test static/voice-identity.test.cjs static/voice-readiness.test.cjs
           node --test tests/frontend/asr_input_delivery_status.test.cjs
           node --test tests/frontend/mic_recovery_route.test.cjs
