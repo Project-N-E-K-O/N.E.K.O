@@ -689,3 +689,24 @@ def test_symlink_loops_do_not_stop_the_workshop_search(vrm_api, tmp_path, monkey
     response = client.post(f"{API}/emotion_mapping/Avatar", json={"happy": ["smile"]})
     assert response.status_code == 200
     assert vrm_router._get_model_path("Avatar") == ((workshop_root / "200" / "Avatar.vrm").resolve(), "/workshop")
+
+
+@pytest.mark.parametrize("escape_at", ["static_dir", "user_dir"])
+def test_escaping_builtin_entry_does_not_stop_the_workshop_search(vrm_api, tmp_path, monkeypatch, escape_at):
+    """The escaping file is refused, but a valid Workshop model with the same name still saves."""
+    client, _ = vrm_api
+    outside = tmp_path / "outside.vrm"
+    outside.write_bytes(b"outside sentinel")
+    link_dir = tmp_path / "project" / "static" / "vrm" if escape_at == "static_dir" else tmp_path / "user_vrm"
+    try:
+        (link_dir / "Avatar.vrm").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    workshop_root = tmp_path / "workshop"
+    (workshop_root / "200").mkdir(parents=True)
+    (workshop_root / "200" / "Avatar.vrm").write_bytes(b"glTF")
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    assert vrm_router._get_model_path("Avatar") == ((workshop_root / "200" / "Avatar.vrm").resolve(), "/workshop")
+    response = client.post(f"{API}/emotion_mapping/Avatar", json={"happy": ["smile"]})
+    assert response.status_code == 200
+    assert outside.read_bytes() == b"outside sentinel"
