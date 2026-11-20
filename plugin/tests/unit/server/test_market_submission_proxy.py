@@ -836,19 +836,20 @@ def test_a_failed_refresh_after_401_stops_without_replaying_the_request(monkeypa
     assert upstream.requests[0].headers["authorization"] == f"Bearer {_ACCESS_TOKEN}"
 
 
-def test_publication_requests_forward_the_plugin_path_and_request_id(monkeypatch):
+@pytest.mark.parametrize("query", [{"request_id": "12"}, {"limit": "20", "offset": "20"}])
+def test_publication_requests_forward_the_plugin_path_and_receipt_query(monkeypatch, query):
     receipts = [{"id": 12, "status": "verifying", "release_url": "https://x"}]
     client, upstream, _ = _install(monkeypatch, _ok(receipts))
     response = client.get(
         "/market/publication-requests/42",
-        params={**_BRIDGE, "request_id": "12", "extra": "1"},
+        params={**_BRIDGE, **query, "extra": "1"},
     )
     assert response.status_code == 200
     assert response.json() == receipts
     forwarded = upstream.requests[0]
     assert forwarded.method == "GET"
     assert forwarded.url.path == "/api/v1/plugins/42/versions/publication-requests"
-    assert dict(forwarded.url.params) == {"request_id": "12"}
+    assert dict(forwarded.url.params) == query
     assert forwarded.headers["authorization"] == f"Bearer {_ACCESS_TOKEN}"
 
 

@@ -198,6 +198,7 @@ import {
 } from '@/api/pluginProjects'
 import {
   listMarketPublicationReceipts,
+  PUBLICATION_RECEIPT_PAGE_SIZE,
   type MarketPublicationReceipt,
   type SubmissionPanelState,
 } from '@/api/marketSubmissions'
@@ -397,6 +398,35 @@ async function load(options: { fresh?: boolean } = {}) {
   await loadMarketListing()
 }
 
+function newestReleaseReceipt(
+  receipts: MarketPublicationReceipt[], repository: string, tag: string, afterId = 0,
+  channel?: MarketPublicationReceipt['channel'],
+) {
+  return receipts
+    .filter(item => item.id > afterId && (!channel || (item.channel ?? 'stable') === channel)
+      && isReleaseUrlOf(item.release_url, repository, tag, item.target_version))
+    .reduce<MarketPublicationReceipt | undefined>((latest, item) => (!latest || item.id > latest.id ? item : latest), undefined)
+}
+
+// Market pages are newest first. Stop at the pinned request; older receipts cannot replace it.
+async function findReplacementReceipt(
+  pluginId: number, repository: string, tag: string, requestId: number,
+  channel: MarketPublicationReceipt['channel'], read: number,
+) {
+  let offset = 0
+  let previousOldest = Infinity
+  while (!disposed && read === marketReads) {
+    const page = await listMarketPublicationReceipts(pluginId, undefined, offset).catch(() => [])
+    if (!Array.isArray(page) || !page.length) return
+    const replacement = newestReleaseReceipt(page, repository, tag, requestId, channel)
+    if (replacement) return replacement
+    const oldest = Math.min(...page.map(item => item.id))
+    if (page.length < PUBLICATION_RECEIPT_PAGE_SIZE || oldest <= requestId || oldest >= previousOldest) break
+    previousOldest = oldest
+    offset += page.length
+  }
+}
+
 /**
  * Read whether the approved plugin's public version list has this Release's
  * tag (the Market stores the tag as the version). Only the newest read
@@ -424,17 +454,14 @@ async function loadMarketListing() {
   if (disposed || read !== marketReads) return
   marketListed.value = versions ? versions.some((item) => item.version === tag) : null
   const receipts = await receiptsRequest
-  if (disposed || read !== marketReads) return
-  // The task's own receipt is picked by its request id; the Release URL is
-  // only the fallback for a receipt the task did not record. A Release sent
-  // again under the same tag has several receipts; the newest one counts,
-  // whatever order the Market lists them in.
-  const receipt = repository && Array.isArray(receipts) && (
-    (requestId ? receipts.find(item => item.id === requestId) : undefined) ??
-    receipts
-      .filter(item => isReleaseUrlOf(item.release_url, repository, tag))
-      .reduce<MarketPublicationReceipt | undefined>((newest, item) => (!newest || item.id > newest.id ? item : newest), undefined)
-  )
+  if (disposed || read !== marketReads || !repository || !Array.isArray(receipts)) return
+  const pinned = requestId ? receipts.find(item => item.id === requestId) : undefined
+  let receipt = pinned ?? newestReleaseReceipt(receipts, repository, tag)
+  if (requestId && (pinned?.status ?? currentTask?.market_status) === 'superseded') {
+    const replacement = await findReplacementReceipt(pluginId, repository, tag, requestId, pinned?.channel ?? 'stable', read)
+    if (disposed || read !== marketReads) return
+    receipt = replacement ?? receipt
+  }
   if (receipt && isMarketPublicationStatus(receipt.status)) marketReceipt.value = receipt.status
 }
 // The submission panel finds the approved plugin after the status is read.

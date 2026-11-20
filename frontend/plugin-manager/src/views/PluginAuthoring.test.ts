@@ -696,6 +696,56 @@ describe('authoring workbench backed by the server project list', () => {
     expect(page('market').textContent).toContain(en.publishTaskFailed)
   })
 
+  it.each([
+    ['verifying', en.marketVersionVerifying],
+    ['pending_review', en.marketVersionAwaitingReview],
+    ['unavailable', en.marketVersionSuperseded],
+    ['no replacement', en.marketVersionSuperseded],
+  ])('shows the Release status after a superseded task: %s', async (status, expected) => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success', ready: true } } })
+    )
+    const release = 'https://github.com/owner/hello_world/releases/tag/v0.2.0'
+    api.getPluginProjectPublishTask.mockResolvedValue(publishTask({
+      mode: 'market_notify', status: 'failed', release_url: release, market_request_id: 55, market_status: 'superseded',
+    }))
+    const pinned = { id: 55, channel: 'stable', release_url: release, status: 'superseded' }
+    const others = [
+      { ...pinned, id: 70, release_url: release.replace('owner/', 'other/'), status: 'rejected' },
+      { ...pinned, id: 69, release_url: release.replace('v0.2.0', 'v0.3.0'), status: 'rejected' },
+      { ...pinned, id: 66, channel: 'beta', status: 'rejected' },
+      { ...pinned, id: 52, status: 'rejected' },
+    ]
+    market.listMarketPublicationReceipts.mockImplementation(async (_pluginId: number, requestId?: number, offset = 0) => {
+      if (requestId === pinned.id) return [pinned]
+      if (status === 'unavailable') throw new Error('Market unavailable')
+      if (status === 'no replacement') return others
+      // The replacement is older than a full page of receipts for a different tag.
+      if (offset === 0) return Array.from({ length: 20 }, (_, i) => ({ ...others[1], id: 100 - i }))
+      const replacement = status === 'verifying'
+        ? { ...pinned, id: 61, status }
+        : { ...pinned, id: 61, release_url: release.replace('tag/v0.2.0', '123456'), target_version: 'v0.2.0', status }
+      return [...others, { ...pinned, id: 58 }, replacement, pinned]
+    })
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    const versionStep = page('market')
+    expect(versionStep.textContent).toContain(expected)
+    expect(versionStep.querySelector('.authoring-publish-task .el-tag')?.textContent).toContain(en.publishTaskFailed)
+    expect(market.listMarketPublicationReceipts).toHaveBeenCalledWith(7, undefined, 0)
+    if (status === 'verifying' || status === 'pending_review') {
+      expect(versionStep.textContent).not.toContain(en.marketVersionSuperseded)
+      expect(versionStep.querySelector('header .el-tag')?.textContent).toContain(en.publishStatusWaiting)
+      expect(versionStep.classList.contains('authoring-publish-step--current')).toBe(false)
+      expect(market.listMarketPublicationReceipts).toHaveBeenCalledWith(7, undefined, 20)
+    } else {
+      expect(versionStep.querySelector('header .el-tag')?.textContent).toContain(en.publishTaskFailed)
+    }
+  })
+
   it('takes the newest receipt when the Release was sent again under the same tag', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
