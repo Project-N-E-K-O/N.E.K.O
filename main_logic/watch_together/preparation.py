@@ -24,11 +24,10 @@ _SECRET_PATTERNS = (
     (re.compile(r"\b(Authorization['\"]?\s*[:=]\s*['\"]?)(?:[A-Za-z]+\s+)?[^\s'\",;}]+", re.IGNORECASE), r"\1***"),
     (re.compile(r"\bBearer\s+[^\s'\",;}]+", re.IGNORECASE), "Bearer ***"),
     (re.compile(r"\bsk-[A-Za-z0-9_\-]+"), "sk-***"),
-    # A Cookie (or Set-Cookie) header holds several ``name=value;`` pairs: mask
-    # a quoted value whole (the quoted branches come first), an unquoted one up
-    # to the line end; the unquoted branch never starts on bare whitespace.
-    (re.compile(r"\b(Cookie['\"]?\s*[:=]\s*)(?:'[^']*'?|\"[^\"]*\"?|[^\s'\"][^\r\n'\"]*)", re.IGNORECASE),
-     r"\1***"),
+    # Everything after a Cookie / Set-Cookie header name is credentials (quoted
+    # or not, any number of pairs): mask to the end of the line. Over-masking
+    # a one-line repr or JSON that embeds the header is the safe side.
+    (re.compile(r"\b(Cookie['\"]?\s*[:=]\s*)[^\r\n]+", re.IGNORECASE), r"\1***"),
     # Quoted values run to the closing quote, or to the end of the bounded
     # input when truncation cut the quote off.
     (re.compile(r"\b([A-Za-z_\-]{0,32}(?:key|token|secret|password|cookie)['\"]?\s*[:=]\s*)"
