@@ -512,3 +512,42 @@ async def test_restart_does_not_report_an_unrepaired_broken_pack_as_a_successful
             assert recovered["reason"] == "process_interrupted"
     finally:
         await service.stop()
+
+
+async def test_a_retained_archive_restored_with_its_old_mtime_is_tried_again(tmp_path, monkeypatch):
+    """Restoring a same-size ZIP with a preserved mtime (cp -p / rsync -a) still changes its identity."""
+    import shutil
+
+    service = KnowledgeService(tmp_path / "library")
+    await service.start()
+    try:
+        result = await service.import_pack(make_archive(tmp_path / "package.zip"))
+        assert (await _finished(service, result))["state"] == "active"
+        record = service._registry.packs["imp.example"]
+        path = service.artifact_path(record.archive_sha256)
+        backup = tmp_path / "backup.zip"
+        shutil.copy2(path, backup)
+        good = path.read_bytes()
+        damaged = bytearray(good)
+        damaged[len(damaged) // 2] ^= 0xFF
+        stamp = path.stat()
+        path.write_bytes(bytes(damaged))
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        reads = []
+        original = archive.read_archive
+
+        def counted(*args, **kwargs):
+            reads.append(args[0])
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(archive, "read_archive", counted)
+        await service._seed_retained_packages(["imp.example"], specification())
+        await service._seed_retained_packages(["imp.example"], specification())
+        assert len(reads) == 1 and not service._seeded_artifacts
+        restored = path.with_name(path.name + ".restore")
+        shutil.copy2(backup, restored)  # same size and mtime, written as a new file
+        os.replace(restored, path)
+        await service._seed_retained_packages(["imp.example"], specification())
+        assert len(reads) == 2 and service._seeded_artifacts
+    finally:
+        await service.stop()

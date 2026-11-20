@@ -95,7 +95,6 @@ export default {
     globalSwitchHint: 'When off, the model is no longer offered the knowledge lookup tool, chats stop drawing on packs automatically, and background indexing pauses. Imported data is kept.',
     enabledSaved: "Knowledge enabled",
     disabledSaved: "Knowledge turned off",
-    // Unavailable also covers indexes that cannot be safely rebuilt within capacity.
     brokenPacksTitle: 'Some data packs are temporarily unavailable',
     brokenPacksHint: 'These data packs cannot be searched right now. Check the original files and knowledge base capacity, then import them again: {packs}',
     entries: 'Entries',

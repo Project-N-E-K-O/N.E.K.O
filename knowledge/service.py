@@ -250,10 +250,10 @@ def _budgeted_plan(pack: KnowledgePack, options: dict[str, Any], others: int) ->
     """Pick the rebuild plan that fits the chunk budgets, preferring vectors.
 
     Try the token plan with verified archive rows, then without the token
-    plan, then the admitted local (legacy) layout. A rebuild must never grow a
-    pack past the per-pack or total limits; a later replan is refused before
-    native inference instead of truncating text or overfilling. Return None
-    when no candidate fits so callers can retain existing rows and records.
+    plan, then the local (legacy) layout. A rebuild must never grow a pack
+    past the per-pack or total limits: when no plan fits (e.g. a pack admitted
+    with its archive layout whose retained ZIP is now gone), return None and
+    let the caller refuse the rebuild before writing anything.
     """
     for dropped in ((), ("fit",), ("fit", "seed_vectors")):
         trial = {key: value for key, value in options.items() if key not in dropped}
@@ -263,13 +263,17 @@ def _budgeted_plan(pack: KnowledgePack, options: dict[str, Any], others: int) ->
     return None
 
 
-def _file_identity(path: Path) -> tuple[int, int] | None:
-    """Size and modification time, or None when the file cannot be read."""
+def _file_identity(path: Path) -> tuple[int, ...] | None:
+    """Cache key for a file's state, or None when it cannot be read.
+
+    Inode and change time are included, so restoring a same-size file with a
+    preserved mtime (``cp -p``, ``rsync -a``) still counts as a change.
+    """
     try:
         info = path.stat()
     except OSError:
         return None
-    return info.st_size, info.st_mtime_ns
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
 def _job_files(jobs: Sequence[ImportJob], *, installing: Registry | None) -> frozenset[str]:
@@ -397,7 +401,7 @@ class KnowledgeService:
         self._seeded_artifacts: set[tuple[str, str]] = set()
         # (archive, spec) -> file identity of a retained ZIP that failed to
         # seed; re-read only after the file itself changes.
-        self._seed_failures: dict[tuple[str, str], tuple[int, int] | None] = {}
+        self._seed_failures: dict[tuple[str, str], tuple[int, ...] | None] = {}
         # A replan can commit SQLite before registry persistence fails. Block
         # further capacity decisions/encoding until their counts agree again.
         self._pending_chunk_reconcile = False
