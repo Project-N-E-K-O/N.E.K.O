@@ -230,6 +230,13 @@ class DynamicPlugin(NekoPluginBase):
                 handler=self._make_handler(cmd_config),
                 name=cmd_config.get("name", cmd_id),
                 description=cmd_config.get("description", ""),
+                # 动态注册不会从处理函数推断 schema
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "cmd": {"type": "string", "description": "命令输入"},
+                    },
+                },
             )
         return Ok({"registered": list(commands.keys())})
 

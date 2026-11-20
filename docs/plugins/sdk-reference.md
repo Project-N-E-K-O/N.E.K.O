@@ -219,7 +219,7 @@ self.register_static_ui("static")  # serves <plugin_dir>/static/index.html
 
 Mount a `PluginRouter` to organize a large or feature-split normal plugin.
 
-Also list every router class in the plugin class attribute `__routers__`: the host's static entry scan only reads that list (see [PluginRouter](./router)). Related methods are `exclude_router(router_or_name) -> bool`, `get_router(name)`, and `list_routers()`. A Router cannot be the manifest `[plugin].entry`. `on_mount` / `on_unmount` are never called by the host; do not override them.
+Also list every router class in the plugin class attribute `__routers__`: the host's static entry scan only reads that list (see [PluginRouter](./router)). Do not combine a router class listed there with `prefix`: the listed ID would not be callable (see [Prefixed Routers](./router#prefixed-routers)). Related methods are `exclude_router(router_or_name) -> bool`, `get_router(name)`, and `list_routers()`. A Router cannot be the manifest `[plugin].entry`. `on_mount` / `on_unmount` are never called by the host; do not override them.
 
 #### Hosted/static UI and list actions
 

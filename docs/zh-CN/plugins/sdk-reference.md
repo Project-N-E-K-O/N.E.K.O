@@ -222,7 +222,7 @@ self.register_static_ui("static")  # 提供 <plugin_dir>/static/index.html 服�
 
 挂载一个 `PluginRouter`，用于组织大型或按功能拆分的普通 Plugin。
 
-还要把每个 router 类列进插件类属性 `__routers__`：宿主的静态入口扫描只读这个列表（见 [PluginRouter](./router)）。相关方法还有 `exclude_router(router_or_name) -> bool`、`get_router(name)` 和 `list_routers()`。Router 不能作为 manifest 的 `[plugin].entry`。`on_mount` / `on_unmount` 不会被宿主调用，不要覆盖它们。
+还要把每个 router 类列进插件类属性 `__routers__`：宿主的静态入口扫描只读这个列表（见 [PluginRouter](./router)）。列进去的 router 类不要再配 `prefix`，否则列表里的 ID 调不通（见[带前缀的 Router](./router#prefixed-routers)）。相关方法还有 `exclude_router(router_or_name) -> bool`、`get_router(name)` 和 `list_routers()`。Router 不能作为 manifest 的 `[plugin].entry`。`on_mount` / `on_unmount` 不会被宿主调用，不要覆盖它们。
 
 #### Hosted/静态 UI 与列表操作
 

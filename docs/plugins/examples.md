@@ -231,6 +231,13 @@ class DynamicPlugin(NekoPluginBase):
                 handler=self._make_handler(cmd_config),
                 name=cmd_config.get("name", cmd_id),
                 description=cmd_config.get("description", ""),
+                # Dynamic registration does not infer a schema from the handler
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "cmd": {"type": "string", "description": "Command input"},
+                    },
+                },
             )
         return Ok({"registered": list(commands.keys())})
 

@@ -231,6 +231,13 @@ class DynamicPlugin(NekoPluginBase):
                 handler=self._make_handler(cmd_config),
                 name=cmd_config.get("name", cmd_id),
                 description=cmd_config.get("description", ""),
+                # 動的登録ではハンドラーから schema を推論しない
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "cmd": {"type": "string", "description": "コマンド入力"},
+                    },
+                },
             )
         return Ok({"registered": list(commands.keys())})
 

@@ -199,7 +199,7 @@ class WeatherRouter(PluginRouter):
 
 ---
 
-## Prefixed Routers
+## Prefixed Routers {#prefixed-routers}
 
 If you want to prefix all entry IDs in a router (to avoid ID conflicts):
 

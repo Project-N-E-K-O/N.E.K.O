@@ -209,7 +209,7 @@ self.register_static_ui("static")  # <plugin_dir>/static/index.html を配信
 
 大規模または機能分割された通常 Plugin を整理するために `PluginRouter` を mount します。
 
-各 router クラスはプラグインのクラス属性 `__routers__` にも列挙してください。ホストの静的エントリースキャンはこのリストだけを読みます（[PluginRouter](./router) を参照）。関連 method は `exclude_router(router_or_name) -> bool`、`get_router(name)`、`list_routers()` です。Router は manifest `[plugin].entry` にはできません。`on_mount` / `on_unmount` はホストから呼ばれないため、オーバーライドしないでください。
+各 router クラスはプラグインのクラス属性 `__routers__` にも列挙してください。ホストの静的エントリースキャンはこのリストだけを読みます（[PluginRouter](./router) を参照）。ここに列挙した router クラスに `prefix` を組み合わせないでください。一覧の ID が呼び出せなくなります（[prefix 付き Router](./router#prefixed-routers) を参照）。関連 method は `exclude_router(router_or_name) -> bool`、`get_router(name)`、`list_routers()` です。Router は manifest `[plugin].entry` にはできません。`on_mount` / `on_unmount` はホストから呼ばれないため、オーバーライドしないでください。
 
 #### Hosted/static UI と list action
 

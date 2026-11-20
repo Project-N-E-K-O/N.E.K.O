@@ -200,7 +200,7 @@ class WeatherRouter(PluginRouter):
 
 ---
 
-## prefix 付き Router
+## prefix 付き Router {#prefixed-routers}
 
 ID の衝突を避けるため、router 内のすべてのエントリー ID に prefix を付けたい場合があります。
 

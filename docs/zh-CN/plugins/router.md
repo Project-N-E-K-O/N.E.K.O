@@ -199,7 +199,7 @@ class WeatherRouter(PluginRouter):
 
 ---
 
-## 带前缀的 Router
+## 带前缀的 Router {#prefixed-routers}
 
 如果你想给某个 router 的所有入口加一个前缀（避免 ID 冲突）：
 
