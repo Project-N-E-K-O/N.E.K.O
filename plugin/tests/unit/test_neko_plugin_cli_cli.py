@@ -2957,7 +2957,7 @@ def _validate_with_extra_toml(tmp_path: Path, extra: str) -> list[tuple[str, str
     return validate_plugin_dir(plugin_dir, strict=True)
 
 
-@pytest.mark.parametrize("backend", ["file", "memory", "off", "File"])
+@pytest.mark.parametrize("backend", ["file", "memory", "off", "File", ""])
 def test_validate_plugin_dir_accepts_runtime_plugin_state_backends(tmp_path: Path, backend: str) -> None:
     issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\nbackend = "{backend}"')
 
@@ -2975,7 +2975,7 @@ def test_plugin_state_backends_match_sdk_runtime() -> None:
     from plugin.sdk.shared.models.exceptions import InvalidArgumentError
     from plugin.sdk.shared.storage.state import PluginStatePersistence
 
-    for backend in ("file", "memory", "off", "File"):
+    for backend in ("file", "memory", "off", "File", ""):
         PluginStatePersistence.normalize_backend(backend)
     for backend in ("sqlite", "disabled"):
         with pytest.raises(InvalidArgumentError):
@@ -2989,13 +2989,27 @@ def test_validate_plugin_dir_accepts_runtime_plugin_state_persist_modes(tmp_path
     assert not any("[plugin_state].persist_mode" in message for _level, message in issues)
 
 
-@pytest.mark.parametrize("persist_mode", ["always", "disabled", "Auto"])
+@pytest.mark.parametrize(
+    ("persist_mode", "hint"),
+    [("always", ' (use "auto" instead of "always")'), ("disabled", ' (use "off" instead of "disabled")'), ("Auto", "")],
+)
 def test_validate_plugin_dir_rejects_plugin_state_persist_mode_runtime_ignores(
-    tmp_path: Path, persist_mode: str
+    tmp_path: Path, persist_mode: str, hint: str
 ) -> None:
     issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\npersist_mode = "{persist_mode}"')
 
-    assert ("error", "[plugin_state].persist_mode must be one of: auto, manual, off") in issues
+    assert ("error", f"[plugin_state].persist_mode must be one of: auto, manual, off{hint}") in issues
+
+
+def test_host_applies_the_persist_modes_check_accepts() -> None:
+    from plugin.sdk.shared.storage.state import PluginStatePersistence
+
+    assert PluginStatePersistence.VALID_PERSIST_MODES == ("auto", "manual", "off")
+    # Read the source instead of importing the host module.
+    source = (Path(__file__).resolve().parents[2] / "core" / "host.py").read_text(encoding="utf-8")
+    # The host reads both [plugin_state] and the legacy [plugin_checkpoint] through the shared constant.
+    assert source.count("in valid_persist_modes") == 2
+    assert '("auto", "manual", "off")' not in source
 
 
 def test_validate_plugin_dir_accepts_plugin_database_table(tmp_path: Path) -> None:
@@ -3033,12 +3047,13 @@ def test_validate_plugin_dir_rejects_non_table_plugin_database(tmp_path: Path) -
     assert ("error", "[plugin.database] must be a table") in validate_plugin_dir(plugin_dir, strict=True)
 
 
-@pytest.mark.parametrize("name", ["../escape.db", "sub/notes.db", "."])
+@pytest.mark.parametrize("name", ["../escape.db", "sub/notes.db", ".", "C:notes.db", "C:\\\\notes.db"])
 def test_validate_plugin_dir_rejects_plugin_database_name_runtime_refuses(tmp_path: Path, name: str) -> None:
     from plugin.sdk.shared.storage.database import PluginDatabase
 
-    with pytest.raises(ValueError):
-        PluginDatabase._normalize_db_name(name)
+    if ":" not in name:
+        with pytest.raises(ValueError):
+            PluginDatabase._normalize_db_name(name)
 
     issues = _validate_with_extra_toml(tmp_path, f'[plugin.database]\nname = "{name}"')
 
@@ -3053,14 +3068,23 @@ def test_validate_plugin_dir_warns_unknown_plugin_database_key(tmp_path: Path) -
     assert ("warning", "[plugin.database].path is not a recognized plugin.toml field") in issues
 
 
+@pytest.mark.parametrize("table", ["plugin.database", "plugin.store"])
 @pytest.mark.parametrize("enabled", ['"false"', '"no"'])
-def test_validate_plugin_dir_rejects_string_plugin_database_enabled(tmp_path: Path, enabled: str) -> None:
-    issues = _validate_with_extra_toml(tmp_path, f"[plugin.database]\nenabled = {enabled}")
+def test_validate_plugin_dir_rejects_string_storage_enabled(tmp_path: Path, table: str, enabled: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f"[{table}]\nenabled = {enabled}")
 
     assert (
         "error",
-        "[plugin.database].enabled must be true/false, not a string; the SDK reads any non-empty string as true",
+        f"[{table}].enabled must be true/false, not a string; the SDK reads any non-empty string as true",
     ) in issues
+
+
+@pytest.mark.parametrize("table", ["plugin.database", "plugin.store"])
+@pytest.mark.parametrize("enabled", ["true", "false"])
+def test_validate_plugin_dir_accepts_boolean_storage_enabled(tmp_path: Path, table: str, enabled: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f"[{table}]\nenabled = {enabled}")
+
+    assert not any(f"[{table}]" in message for _level, message in issues)
 
 
 @pytest.mark.parametrize("backend", ["file", "sqlite", "anything"])

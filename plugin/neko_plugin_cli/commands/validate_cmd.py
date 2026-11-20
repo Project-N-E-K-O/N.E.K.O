@@ -27,6 +27,7 @@ from plugin.sdk.shared.core.push_message_schema import (
     LEGACY_PUSH_MESSAGE_TRUTHY_ONLY_FIELDS,
     format_push_message_v1_static_diagnostic,
 )
+from plugin.sdk.shared.models.exceptions import InvalidArgumentError
 from plugin.sdk.shared.storage.database import PluginDatabase
 from plugin.sdk.shared.storage.state import PluginStatePersistence
 
@@ -41,9 +42,8 @@ _PLUGIN_ENTRY_FIELDS_MAX = 64
 _PLUGIN_ENTRY_KEY_LENGTH_MAX = 256
 # Fields the registry coerces with bool(), so "false" would read as True.
 _PLUGIN_ENTRY_BOOL_FIELDS = ENTRY_CONTRACT_BOOL_FIELDS
-# [plugin_state].persist_mode values the host applies (plugin/core/host.py);
-# any other value is silently ignored there, so check reports it.
-_PLUGIN_STATE_PERSIST_MODES = frozenset({"auto", "manual", "off"})
+# Old persist_mode spellings check used to accept; the host never applied them.
+_PLUGIN_STATE_PERSIST_MODE_MIGRATIONS = {"always": "auto", "disabled": "off"}
 
 
 def validate_plugin_dir(
@@ -424,7 +424,8 @@ def _check_store_table(value: object, issues: list[tuple[str, str]]) -> None:
         issues.append(("error", "[plugin.store] must be a table"))
         return
     _warn_unknown_keys(value, {"enabled", "backend"}, "[plugin.store]", issues)
-    _check_optional_bool(value, "enabled", "[plugin.store].enabled", issues)
+    # The SDK applies bool() (resolve_store_enabled), so enabled = "false" would turn the store on.
+    _check_entry_bool(value.get("enabled"), "[plugin.store].enabled", issues, reader="the SDK")
     if "backend" in value:
         # Still a known key so existing plugin.toml files keep passing, but the SDK
         # only reads [plugin.store].enabled (resolve_store_enabled); backend is never read.
@@ -457,6 +458,11 @@ def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
         PluginDatabase._normalize_db_name(name)
     except ValueError as exc:
         issues.append(("error", f"[plugin.database].name is invalid: {exc}"))
+        return
+    # The SDK checks with the host's own Path; a name like "C:notes.db" passes on
+    # Linux/macOS but is refused on Windows, so check the Windows reading too.
+    if name and PureWindowsPath(name).name != name:
+        issues.append(("error", "[plugin.database].name is invalid: db_name must be a plain filename within plugin_dir"))
 
 
 def _check_shared_table(value: object, issues: list[tuple[str, str]]) -> None:
@@ -990,16 +996,23 @@ def _check_plugin_state_table(value: object, issues: list[tuple[str, str]]) -> N
     _warn_unknown_keys(value, {"backend", "persist_mode"}, "[plugin_state]", issues)
     backend = value.get("backend")
     if backend is not None:
-        # The SDK lower-cases the backend before matching (PluginStatePersistence.normalize_backend).
-        _check_enum(
-            backend.lower() if isinstance(backend, str) else backend,
-            "[plugin_state].backend",
-            set(PluginStatePersistence.VALID_BACKENDS),
-            issues,
-        )
+        # Ask the SDK itself: it treats "" as "off" and ignores case.
+        try:
+            accepted = isinstance(backend, str) and bool(PluginStatePersistence.normalize_backend(backend))
+        except InvalidArgumentError:
+            accepted = False
+        if not accepted:
+            _check_enum(backend, "[plugin_state].backend", set(PluginStatePersistence.VALID_BACKENDS), issues)
     persist_mode = value.get("persist_mode")
-    if persist_mode is not None:
-        _check_enum(persist_mode, "[plugin_state].persist_mode", set(_PLUGIN_STATE_PERSIST_MODES), issues)
+    if persist_mode is not None and persist_mode not in PluginStatePersistence.VALID_PERSIST_MODES:
+        message = (
+            "[plugin_state].persist_mode must be one of: "
+            f"{', '.join(sorted(PluginStatePersistence.VALID_PERSIST_MODES))}"
+        )
+        replacement = _PLUGIN_STATE_PERSIST_MODE_MIGRATIONS.get(persist_mode) if isinstance(persist_mode, str) else None
+        if replacement is not None:
+            message += f' (use "{replacement}" instead of "{persist_mode}")'
+        issues.append(("error", message))
 
 
 def _check_entry_target(
