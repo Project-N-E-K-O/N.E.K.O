@@ -308,9 +308,9 @@ def retry_pending_voice_archive_purges(config_manager) -> dict:
         # that the deleted identity is absent. A missing, malformed or
         # unpersisted characters.json must leave the purge fenced for retry.
         characters_data = config_manager.load_characters(require_authoritative=True)
-        catgirls = characters_data.get("猫娘", {}) if isinstance(characters_data, dict) else {}
-        if not isinstance(catgirls, dict):
-            catgirls = {}
+        if not isinstance(characters_data, dict) or not isinstance(characters_data.get("猫娘"), dict):
+            raise ValueError("character_config_not_authoritative")
+        catgirls = characters_data["猫娘"]
     except Exception as exc:
         summary["errors"].append(str(exc))
         log.warning("Voice archive purge recovery cannot read characters.json: %s", exc)
