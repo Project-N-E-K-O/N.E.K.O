@@ -485,8 +485,7 @@ async def test_a_terminal_notifies_the_host_and_rotates_only_without_server_vad(
         await _settle()
         socket.feed({"type": "response.done", "response": {"id": "r"}})
         await _settle()
-        socket.finish()
-        await asyncio.wait_for(loop_task, timeout=1)
+        await _finish_loop(socket, loop_task)
         return client, done, rotations
 
     # lanlan.app free is _is_free_proxy and NOT _is_gemini: arbitrated, and

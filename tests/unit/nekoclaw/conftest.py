@@ -22,7 +22,10 @@ import pytest
 
 # Long enough that the first round of a dispatch never runs out on a loaded CI
 # runner. It only changes anything when the round is slow: a fast round is
-# answered as soon as it finishes.
+# answered as soon as it finishes. Note it is longer than the main dialogue's
+# TASK_TOOL_TIMEOUT_SECONDS (2.5 s): a future test that goes through that client
+# to a slow first round would see the client time out, not the "received"
+# receipt production gives; such a test must set its own budget.
 GENEROUS_FIRST_ROUND_SECONDS = 30.0
 
 
