@@ -407,6 +407,9 @@ def test_retry_reset_is_preserved_when_archive_queue_is_full(tmp_path, monkeypat
         # the queue. It is retained as a priority control event instead.
         await archive_event(mgr, 'retry', 's')
         assert 's' in mgr._owner_voice_archive_retry_resets
+        # A new-attempt chunk can also overflow before the reset reaches disk.
+        # Its partial marker must not be cleared as if it belonged to the old attempt.
+        await archive_event(mgr, 'audio', 's', data=b'dropped-new-attempt')
         release.set()
         await drain_voice_archive(mgr)
         assert 's' not in mgr._owner_voice_archive_retry_resets
@@ -419,7 +422,7 @@ def test_retry_reset_is_preserved_when_archive_queue_is_full(tmp_path, monkeypat
         path = tmp_path / 'voice_archive/archive.sqlite3'
         assert read(path, 'SELECT data FROM chunks') == [(b'accepted-attempt',)]
         assert read(path, 'SELECT text FROM text_events') == [('accepted attempt',)]
-        assert read(path, 'SELECT text,stream_complete FROM clips') == [('accepted attempt', 1)]
+        assert read(path, 'SELECT text,stream_complete,archive_error FROM clips') == [('accepted attempt', 1, 1)]
 
     asyncio.run(run())
 
