@@ -710,3 +710,23 @@ def test_escaping_builtin_entry_does_not_stop_the_workshop_search(vrm_api, tmp_p
     response = client.post(f"{API}/emotion_mapping/Avatar", json={"happy": ["smile"]})
     assert response.status_code == 200
     assert outside.read_bytes() == b"outside sentinel"
+
+
+@pytest.mark.parametrize("location", ["user", "workshop"])
+def test_looping_canonical_file_does_not_hide_a_case_variant(vrm_api, tmp_path, monkeypatch, location):
+    """A looping Avatar.vrm is skipped; Avatar.VRM in the same folder still saves its mapping."""
+    client, _ = vrm_api
+    if location == "user":
+        directory = tmp_path / "user_vrm"
+    else:
+        directory = tmp_path / "workshop" / "200"
+        directory.mkdir(parents=True)
+        monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(tmp_path / "workshop"))
+    try:
+        (directory / "Avatar.vrm").symlink_to("Avatar.vrm")
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    (directory / "Avatar.VRM").write_bytes(b"glTF")
+    assert vrm_router._get_model_path("Avatar")[0] == (directory / "Avatar.VRM").resolve()
+    response = client.post(f"{API}/emotion_mapping/Avatar", json={"happy": ["smile"]})
+    assert response.status_code == 200

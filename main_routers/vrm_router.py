@@ -765,7 +765,11 @@ def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:
         yield from (path for path in _iter_vrm_model_files(vrm_dir)
                     if path.stem == model_name and path != canonical_path)
     for candidate in candidates():
-        resolved = candidate.resolve()
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError):
+            # A looping link (RuntimeError on 3.11) must not hide a valid case variant.
+            continue
         if not resolved.is_relative_to(vrm_dir.resolve()):
             logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
             raise ValueError("路径越界")
