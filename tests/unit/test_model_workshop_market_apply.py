@@ -134,3 +134,43 @@ async def test_switch_while_waiting_for_save_lock_cannot_race_guard(application,
         with pytest.raises(WorkshopError, match='target_changed'):
             await applying
         assert config.get_runtime_config_path('characters.json').read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['live2d', 'vrm', 'pmx', 'pmd'])
+async def test_native_apply_http_reuses_real_save_and_duplicate_is_read_only(application, owner, no_network, tmp_path, monkeypatch, kind):
+    import httpx
+    from fastapi import FastAPI
+    from main_routers import model_market_router as api
+    from main_routers.system_router import _shared
+    from services.model_workshop.download import ConnectedDownloads
+
+    _, config = application
+    async with main_character_runtime(config, {NAME: 'idle', OTHER: 'active'}) as harness:
+        shared_state.init_shared_state(role_state=harness.module.role_state, config_manager=config,
+                                       steamworks=None, templates=None, init_one_catgirl=harness.module.init_one_catgirl)
+        driver = ConnectedDownloads()
+        launch = driver.launches.create(config)
+        package, _ = bundle_path(tmp_path, kind)
+        launch.result = _public_result(config, install(owner, package)['result'])
+        launch.phase = 'installed'
+        monkeypatch.setattr(api, 'connected_downloads', driver)
+        monkeypatch.setattr(_shared, 'AUTOSTART_CSRF_TOKEN', 'native-apply-only')
+        app = FastAPI(); app.include_router(api.router)
+        url = '/api/model-market/launch/' + launch.request_id + '/apply'
+        headers = {'Origin': 'http://127.0.0.1:48911', 'X-CSRF-Token': 'native-apply-only'}
+        before = config.get_runtime_config_path('characters.json').read_bytes()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app, client=('127.0.0.1', 40000)), base_url='http://127.0.0.1:48911') as client:
+            assert (await client.post(url, json={})).status_code == 403
+            assert (await client.post(url, json={'role': OTHER}, headers=headers)).status_code == 400
+            assert config.get_runtime_config_path('characters.json').read_bytes() == before
+            # Both accepted callers await one owner; neither can cause a second save.
+            first, second = await asyncio.gather(*(client.post(url, json={}, headers=headers) for _ in range(2)))
+            assert first.status_code == second.status_code == 200
+            assert first.json()['phase'] == second.json()['phase'] == 'saved'
+            saved = config.get_runtime_config_path('characters.json').read_bytes()
+            assert saved != before
+            assert (await client.post(url, json={}, headers=headers)).json()['phase'] == 'saved'
+            assert config.get_runtime_config_path('characters.json').read_bytes() == saved
+            assert first.headers['cache-control'] == 'no-store'
+        await driver.close()

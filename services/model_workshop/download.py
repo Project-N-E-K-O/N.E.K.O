@@ -21,6 +21,7 @@ from utils.market_config import get_market_web_url
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason_readonly
 
 from .catalog import public_result
+from .application import apply_installed
 from .market import Launches, PackageStream
 from .paths import WorkshopError
 from .runtime import get_service
@@ -133,8 +134,13 @@ class ConnectedDownloads:
         if fresh:
             job = asyncio.create_task(self._run(config, row))
             self.jobs[row.request_id] = job
-            job.add_done_callback(lambda _: self.jobs.pop(row.request_id, None))
+            job.add_done_callback(lambda finished: self._forget(row.request_id, finished))
         return row.public()
+
+    def _forget(self, request_id, finished):
+        # A queued callback from download must not discard a newer apply owner.
+        if self.jobs.get(request_id) is finished:
+            self.jobs.pop(request_id, None)
 
     async def _run(self, config, row):
         try:
@@ -215,6 +221,42 @@ class ConnectedDownloads:
                 row.phase, row.error = "blocked", str(error)
         return row.public()
 
+    async def apply(self, config, request_id):
+        """Only the local manager may finish its edit check and authorize saving.
+
+        Keep a single background owner across HTTP disconnect/repeated polling;
+        the original save handler rechecks role identity inside its mutation lock.
+        """
+        row = self.launches.get(request_id)
+        if row.phase in {"saved", "completed", "blocked", "failed", "cancelled"}:
+            return row.public()
+        if self.closed:
+            raise WorkshopError("model_workshop_closed")
+        _ready(config)
+        job = self.jobs.get(request_id)
+        if row.phase == "installed" and job is not None and not job.done():
+            # The download's final callback, or another save caller, still owns
+            # this row. Settle it before deciding whether a save is needed.
+            await asyncio.shield(job)
+            return await self.apply(config, request_id)
+        if row.phase == "installed" and (job is None or job.done()):
+            async def save():
+                try:
+                    await apply_installed(config, row)
+                except Exception as error:
+                    row.error = str(error) if isinstance(error, WorkshopError) else "model_market_apply_failed"
+                    # Persistence callbacks are authoritative even on refresh failure.
+                    if row.phase != "saved":
+                        row.phase = "blocked"
+            job = asyncio.create_task(save())
+            self.jobs[request_id] = job
+            job.add_done_callback(lambda finished: self._forget(request_id, finished))
+        elif row.phase not in {"installed", "applying"}:
+            raise WorkshopError("model_market_not_installed")
+        if job is not None:
+            await asyncio.shield(job)
+        return row.public()
+
     def cancel(self, request_id):
         row = self.launches.get(request_id)
         # Never claim cancellation rolled back a role-save commit.
@@ -227,7 +269,7 @@ class ConnectedDownloads:
     async def close(self):
         self.closed = True
         for row in list(self.launches.items.values()):
-            if row.phase in {"downloading", "installing"}:
+            if row.phase in {"downloading", "installing", "installed"}:
                 row.cancel.set()
         pending = asyncio.gather(*list(self.jobs.values()), return_exceptions=True)
         cancelled = False

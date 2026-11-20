@@ -7388,6 +7388,20 @@
     "committing": "インストールの最終処理中。キャンセルできません…",
     "uploadUnknown": "アップロード応答が中断し、受理されたか不明です。一覧を確認してから再アップロードしてください。",
     "previewRequested": "プレビューを要求しました。モデル表示を確認し、既存の保存ボタンで適用してください。",
-    "stateUnavailable": "モデルのインストール状態を確認できません。後で再試行してください。"
+    "stateUnavailable": "モデルのインストール状態を確認できません。後で再試行してください。",
+    "connectedBrowsing": "{{name}} のモデルを置き換えるモデルを選んでください。",
+    "connectedDownloading": "本体でモデルをダウンロード中…",
+    "connectedInstalling": "本体で検証してインストール中…",
+    "connectedApplying": "キャラクターのモデルを保存中…",
+    "connectedSaved": "モデルの変更を保存しました。NEKO に戻って確認してください。",
+    "connectedSavedWarning": "モデルは保存済みですが、実行中の更新が完了していません。再試行前に NEKO を確認してください。",
+    "connectedTargetChanged": "キャラクターまたは設定が変更されました。NEKO に戻って選び直してください。",
+    "connectedLogin": "NEKO でマーケットにログインし、工房を開き直してください。",
+    "connectedFailed": "モデルの変更は未完了です。NEKO を確認してください。既存のリソースは保持されています。",
+    "connectedEdited": "編集または保存中のため自動適用を停止しました。編集後に工房を開き直してください。",
+    "connectedPopup": "工房のウィンドウがブロックされました。ポップアップを許可して再試行してください。",
+    "connectedOpenFailed": "工房を開けません。接続を確認して再試行してください。",
+    "connectedIdle": "工房でモデルを選ぶと、現在のキャラクターのモデルを自動で置き換えます。",
+    "connectedHelp": "NEKO から工房を開くとダウンロードして適用できます。単独アクセスではファイルのダウンロードのみで、キャラクターは変更されません。"
   }
 }

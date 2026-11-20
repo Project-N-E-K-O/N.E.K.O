@@ -7388,6 +7388,20 @@
     "committing": "Finalizando instalação; não é possível cancelar…",
     "uploadUnknown": "A resposta do envio foi interrompida. Não se sabe se foi aceito. Confira a lista antes de enviar novamente.",
     "previewRequested": "Visualização solicitada. Confira o modelo e aplique com o botão de salvar existente.",
-    "stateUnavailable": "O estado de instalação do modelo está indisponível. Tente novamente mais tarde."
+    "stateUnavailable": "O estado de instalação do modelo está indisponível. Tente novamente mais tarde.",
+    "connectedBrowsing": "Escolha um modelo para substituir o de {{name}}.",
+    "connectedDownloading": "O NEKO está baixando o modelo…",
+    "connectedInstalling": "O NEKO está validando e instalando…",
+    "connectedApplying": "Salvando o modelo do personagem…",
+    "connectedSaved": "Troca de modelo salva. Volte ao NEKO para conferir.",
+    "connectedSavedWarning": "Modelo salvo, mas a atualização não terminou. Confira o NEKO antes de tentar novamente.",
+    "connectedTargetChanged": "O personagem ou a configuração mudou. Volte ao NEKO e escolha novamente.",
+    "connectedLogin": "Entre no mercado pelo NEKO e reabra a oficina.",
+    "connectedFailed": "A troca não terminou. Confira o NEKO; os recursos anteriores foram mantidos.",
+    "connectedEdited": "Há edições ou um salvamento em andamento. A troca automática foi pausada. Termine a edição e reabra a oficina.",
+    "connectedPopup": "O navegador bloqueou a janela. Permita pop-ups e tente novamente.",
+    "connectedOpenFailed": "Não foi possível abrir a oficina. Confira a conexão e tente novamente.",
+    "connectedIdle": "Abra a oficina para escolher um modelo e trocar o do personagem atual.",
+    "connectedHelp": "Abra a oficina pelo NEKO para baixar e usar. Visitas independentes apenas baixam um pacote, sem trocar o personagem."
   }
 }

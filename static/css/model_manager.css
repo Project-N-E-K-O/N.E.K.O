@@ -1,5 +1,5 @@
-/* The workshop inherits the existing manager artwork and popup tokens only;
-   its selectors never restyle legacy upload/save controls or lock the manager. */
+/* The connected workshop inherits manager artwork and popup tokens;
+   its selectors never restyle the original import or save controls. */
 .model-workshop-panel {
     box-sizing: border-box;
     width: min(100%, var(--model-manager-control-width));
@@ -12,13 +12,7 @@
     line-height: 1.65;
     overflow-wrap: anywhere;
 }
-.model-workshop-panel[open] {
-    padding: 12px;
-    border-color: var(--neko-popup-accent-border);
-    background: var(--neko-popup-bg);
-    box-shadow: var(--neko-popup-shadow);
-}
-.model-workshop-panel summary {
+.model-workshop-panel button[data-workshop="start"] {
     box-sizing: border-box;
     min-height: 50px;
     padding: 8px 12px;
@@ -31,24 +25,8 @@
     line-height: 30px;
     list-style-position: inside;
 }
-.model-workshop-panel[open] summary { margin: -12px -12px 12px; }
-.model-workshop-panel summary img { width: 28px; height: 28px; margin-right: 5px; vertical-align: middle; pointer-events: none; }
-.model-workshop-panel p, .model-workshop-panel dl { margin: 10px 0; }
-.model-workshop-panel > p, .model-workshop-panel [data-workshop="result"] > p { color: var(--neko-popup-text-sub); }
-.model-workshop-panel label { display: block; margin-top: 12px; font-weight: 700; }
-.model-workshop-panel input, .model-workshop-panel progress { width: 100%; min-width: 0; box-sizing: border-box; }
-.model-workshop-panel input[type="file"] { margin: 6px 0; padding: 3px 0; color: var(--neko-popup-text-sub); font: inherit; font-size: 12px; }
-.model-workshop-panel input::file-selector-button {
-    min-height: 34px;
-    margin-right: 6px;
-    padding: 6px 10px;
-    border: 1px solid var(--neko-popup-accent-border);
-    border-radius: var(--button-border-radius);
-    background: var(--neko-popup-accent-bg);
-    color: var(--neko-popup-active);
-    cursor: pointer;
-    font: inherit;
-}
+.model-workshop-panel button[data-workshop="start"] img { width: 28px; height: 28px; margin-right: 5px; vertical-align: middle; pointer-events: none; }
+.model-workshop-panel p { margin: 8px 0; color: var(--neko-popup-text-sub); }
 .model-workshop-panel button {
     width: 100%;
     min-height: 38px;
@@ -63,16 +41,12 @@
     cursor: pointer;
     overflow-wrap: anywhere;
 }
-.model-workshop-panel button[data-workshop="start"], .model-workshop-panel button[data-workshop="view"] { background: #44b7fe; color: #fff; }
-.model-workshop-panel button:hover:not(:disabled), .model-workshop-panel input::file-selector-button:hover { filter: brightness(0.96); }
+.model-workshop-panel button:hover:not(:disabled) { filter: brightness(0.96); }
 .model-workshop-panel button:disabled { opacity: 0.5; cursor: not-allowed; }
-.model-workshop-panel progress { height: 8px; margin: 10px 0 0; accent-color: #44b7fe; }
-.model-workshop-panel dt { font-weight: 700; color: var(--neko-popup-active); }
-.model-workshop-panel dd { margin: 0 0 8px; white-space: pre-wrap; }
-.model-workshop-panel [data-workshop="result"] { padding-top: 8px; border-top: 1px solid var(--neko-popup-separator); }
+.model-workshop-panel progress { width: 100%; height: 8px; margin: 10px 0 0; accent-color: #44b7fe; }
 .model-workshop-panel [hidden] { display: none !important; }
 /* Match the existing blue manager glass in dark mode; shared text tokens supply contrast. */
-[data-theme="dark"] .model-workshop-panel summary {
+[data-theme="dark"] .model-workshop-panel button[data-workshop="start"] {
     background-image: linear-gradient(180deg, rgba(29, 58, 77, 0.65), rgba(37, 37, 37, 0.55)), url('/static/icons/bar_bg_2.png');
     background-color: var(--neko-popup-accent-bg);
     color: var(--neko-popup-text);

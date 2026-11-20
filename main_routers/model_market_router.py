@@ -160,6 +160,18 @@ async def cancel_connected_download(request_id: str, request: Request, response:
         return _error(error)
 
 
+@router.post("/launch/{request_id}/apply")
+async def apply_connected_model(request_id: str, request: Request, response: Response):
+    # Deliberately absent from the remote bridge allowlist: only the native
+    # manager can authorize this step after checking its own unsaved edits.
+    await _command(request, set())
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return {"success": True, **await connected_downloads.apply(get_config_manager(), request_id)}
+    except (WorkshopError, OSError, MaintenanceModeError) as error:
+        return _error(error)
+
+
 class ModelImportBodyGuard:
     """Authorize, acquire ownership and bound simultaneous parsers before reading any body.
 

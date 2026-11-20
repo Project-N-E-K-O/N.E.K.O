@@ -7,7 +7,7 @@ from urllib.parse import quote
 import pytest
 
 from tests.frontend.test_model_workshop_apply_browser import (
-    NAME, MODEL_READY, full_manager_app as full_manager_app, owner as owner, real_package,
+    NAME, MODEL_READY, full_manager_app as full_manager_app, owner as owner, real_package, legacy_import_and_preview,
 )
 
 
@@ -70,12 +70,7 @@ def test_saved_workshop_model_reloads_the_opener(full_manager_app, tmp_path, kin
             with host.expect_console_message(predicate=lambda message: '拒绝来自不同源的消息' in message.text):
                 foreign.evaluate("name => window.opener.postMessage({action:'reload_model',lanlan_name:name,timestamp:Date.now()}, '*')", NAME)
             foreign.close()
-            manager.locator('#model-workshop-panel summary').click()
-            manager.locator('[data-workshop=file]').set_input_files(real_package(tmp_path, kind))
-            manager.locator('[data-workshop=start]').click()
-            manager.wait_for_function("!document.querySelector('[data-workshop=view]').hidden", timeout=60000)
-            installed = manager.request.get(url + '/api/model-market/installed').json()['items'][0]
-            manager.locator('[data-workshop=view]').click()
+            installed = legacy_import_and_preview(manager, url, real_package(tmp_path, kind), kind)
             manager.wait_for_function(MODEL_READY, arg={'kind':kind,'url':installed['url']}, timeout=90000)
             log('checkpoint: imported model visible')
             assert 'neko_model_' not in host.evaluate('window.live2dManager._lastLoadedModelPath')
@@ -134,5 +129,74 @@ def test_saved_workshop_model_reloads_the_opener(full_manager_app, tmp_path, kin
             assert not [text for text in logs if text.startswith('pageerror:') or text.startswith('manager pageerror:')]
             host.screenshot(path=str(tmp_path / 'host-reloaded.png'), timeout=10000)
             (tmp_path / 'result.json').write_text(json.dumps(installed), encoding='utf-8')
+        finally:
+            browser.close()
+
+
+def test_connected_native_owner_saves_and_reloads_host_without_manual_save(full_manager_app, tmp_path, monkeypatch):
+    """Actual native edit witness, HTTP apply, runtime and host renderer.
+
+    Pairing/Market selection is the sole substitute; the previous loopback and
+    React tests cover those hops separately. This is not a real Auth acceptance.
+    """
+    import time
+    from main_routers import model_market_router as api
+    from services.model_workshop.download import ConnectedDownloads
+    from playwright.sync_api import sync_playwright
+
+    url, cfg, applied = full_manager_app
+    driver = ConnectedDownloads()
+    monkeypatch.setattr(api, 'connected_downloads', driver)
+    launches = []
+
+    async def launch(config, origin):
+        assert config is cfg and origin == url
+        row = driver.launches.create(config); launches.append(row)
+        return {**row.public(), 'url':'https://market.example.test/#/models'}
+    monkeypatch.setattr(driver, 'launch', launch)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(channel='chromium')
+        context = browser.new_context(locale='zh-CN', viewport={'width':1280, 'height':900})
+        # Only suppress opening an external Market browser in this isolated test.
+        context.add_init_script('window.electronShell = {openExternal: async () => {}};')
+        host = context.new_page(); host.set_viewport_size({'width':800, 'height':600})
+        try:
+            host.goto(url + '/workshop-host?lanlan_name=' + quote(NAME))
+            host.wait_for_function("window.live2dManager?._modelLoadState === 'ready'", timeout=60000)
+            with host.expect_popup() as opened:
+                host.evaluate("url => window.open(url, 'connected-manager')", url + '/model_manager?lanlan_name=' + quote(NAME))
+            manager = opened.value
+            manager.wait_for_function("document.querySelector('#model-workshop-panel')?.dataset.mounted === 'true'", timeout=90000)
+            skip = manager.locator('#neko-page-tutorial-skip-btn')
+            if skip.is_visible(): skip.click()
+            manager.wait_for_function('!isModelManagerSettingsWaiting() && !window.hasUnsavedChanges')
+            # Emulate completed controlled download through the actual N2 HTTP installer.
+            package = real_package(tmp_path, 'live2d')
+            token = manager.request.get(url + '/api/config/page_config').json()['autostart_csrf_token']
+            accepted = manager.request.post(url + '/api/model-market/imports', headers={'Origin':url, 'X-CSRF-Token':token},
+                multipart={'file':{'name':package.name, 'mimeType':'application/zip', 'buffer':package.read_bytes()}})
+            assert accepted.status == 202
+            deadline = time.monotonic() + 60
+            while True:
+                state = manager.request.get(url + '/api/model-market/tasks/' + accepted.json()['task_id']).json()
+                if state['phase'] in {'completed','failed','cancelled'}: break
+                assert time.monotonic() < deadline
+                time.sleep(.02)
+            assert state['phase'] == 'completed'
+            manager.locator('[data-workshop=start]').click()
+            manager.wait_for_function("document.querySelector('[data-workshop=status]').textContent.includes('请选择模型')")
+            assert len(launches) == 1 and applied == []
+            launches[0].result = state['result']; launches[0].phase = 'installed'
+            # Saving must notify immediately, while the manager is still open.
+            host.bring_to_front()
+            host.wait_for_function(MODEL_READY, arg={'kind':'live2d','url':state['result']['url']}, timeout=90000)
+            assert applied == [NAME]
+            assert not manager.is_closed()
+            manager.wait_for_function(MODEL_READY, arg={'kind':'live2d','url':state['result']['url']}, timeout=90000)
+            assert driver.status(cfg, launches[0].request_id)['phase'] == 'saved'
+            reserved = cfg.load_characters()['猫娘'][NAME]['_reserved']
+            assert reserved['avatar']['asset_source'] == 'local_imported'
+            assert reserved['character_origin']['source'] == 'steam_workshop'
+            host.screenshot(path=str(tmp_path/'connected-host.png'))
         finally:
             browser.close()

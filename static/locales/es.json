@@ -7388,6 +7388,20 @@
     "committing": "Finalizando instalación; no se puede cancelar…",
     "uploadUnknown": "La respuesta de subida se interrumpió. No se sabe si fue aceptada. Revisa la lista antes de volver a subirla.",
     "previewRequested": "Vista previa solicitada. Comprueba el modelo y aplícalo con el botón de guardar existente.",
-    "stateUnavailable": "El estado de instalación del modelo no está disponible. Inténtalo más tarde."
+    "stateUnavailable": "El estado de instalación del modelo no está disponible. Inténtalo más tarde.",
+    "connectedBrowsing": "Elige un modelo para reemplazar el de {{name}}.",
+    "connectedDownloading": "NEKO está descargando el modelo…",
+    "connectedInstalling": "NEKO está validando e instalando…",
+    "connectedApplying": "Guardando el modelo del personaje…",
+    "connectedSaved": "Cambio de modelo guardado. Vuelve a NEKO para verlo.",
+    "connectedSavedWarning": "Modelo guardado, pero la actualización no terminó. Comprueba NEKO antes de reintentar.",
+    "connectedTargetChanged": "El personaje o la configuración cambió. Vuelve a NEKO y elige de nuevo.",
+    "connectedLogin": "Inicia sesión en el mercado desde NEKO y vuelve a abrir el taller.",
+    "connectedFailed": "El cambio no terminó. Comprueba NEKO; se conservan los recursos anteriores.",
+    "connectedEdited": "Hay cambios o un guardado en curso. El cambio automático está pausado. Termina de editar y abre el taller de nuevo.",
+    "connectedPopup": "El navegador bloqueó la ventana. Permite ventanas emergentes y reintenta.",
+    "connectedOpenFailed": "No se pudo abrir el taller. Comprueba la conexión y reintenta.",
+    "connectedIdle": "Abre el taller para elegir un modelo y cambiar el del personaje actual.",
+    "connectedHelp": "Abre el taller desde NEKO para descargar y usar. Las visitas independientes solo descargan un paquete y no cambian el personaje."
   }
 }

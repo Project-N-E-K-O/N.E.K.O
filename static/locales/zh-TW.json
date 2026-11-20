@@ -7388,6 +7388,20 @@
     "committing": "正在完成安裝，此時無法取消…",
     "uploadUnknown": "上傳回應中斷，無法確認是否已受理。請先檢查模型清單，勿立即重複上傳。",
     "previewRequested": "已要求預覽。請確認模型顯示正常後，使用原有儲存按鈕套用。",
-    "stateUnavailable": "模型安裝狀態暫時無法確認，請稍後重試。"
+    "stateUnavailable": "模型安裝狀態暫時無法確認，請稍後重試。",
+    "connectedBrowsing": "請選擇模型，將替換 {{name}} 的模型。",
+    "connectedDownloading": "本體正在下載模型…",
+    "connectedInstalling": "本體正在檢查並安裝…",
+    "connectedApplying": "正在儲存角色模型…",
+    "connectedSaved": "模型替換已儲存，請返回 NEKO 查看。",
+    "connectedSavedWarning": "模型已儲存，但執行更新未完成。請返回 NEKO 檢查，勿重複替換。",
+    "connectedTargetChanged": "角色或設定已變更，未替換。請返回 NEKO 重新選擇。",
+    "connectedLogin": "請在 NEKO 登入市場，再重新開啟工坊。",
+    "connectedFailed": "模型替換未完成，請返回 NEKO 查看；原資源仍保留。",
+    "connectedEdited": "頁面有編輯或正在儲存，已暫停自動替換。請處理編輯後重新開啟工坊。",
+    "connectedPopup": "瀏覽器封鎖了工坊視窗，請允許彈出視窗後重試。",
+    "connectedOpenFailed": "無法開啟工坊，請檢查連線後重試。",
+    "connectedIdle": "開啟工坊，選擇模型後自動替換目前角色。",
+    "connectedHelp": "從 NEKO 開啟工坊可下載並使用；獨立瀏覽只下載模型包，不會替換角色。"
   }
 }

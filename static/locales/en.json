@@ -7388,6 +7388,20 @@
     "committing": "Finishing installation; cancellation is unavailable…",
     "uploadUnknown": "Upload response interrupted. Acceptance is unknown. Check the model list before uploading again.",
     "previewRequested": "Preview requested. Check the displayed model, then apply it with the existing save button.",
-    "stateUnavailable": "Model installation state is unavailable. Please try again later."
+    "stateUnavailable": "Model installation state is unavailable. Please try again later.",
+    "connectedBrowsing": "Choose a model to replace the model for {{name}}.",
+    "connectedDownloading": "NEKO is downloading the model…",
+    "connectedInstalling": "NEKO is validating and installing…",
+    "connectedApplying": "Saving the character model…",
+    "connectedSaved": "Model replacement saved. Return to NEKO to view it.",
+    "connectedSavedWarning": "Model saved, but runtime refresh did not finish. Check NEKO before trying again.",
+    "connectedTargetChanged": "The character or configuration changed. Return to NEKO and choose again.",
+    "connectedLogin": "Sign in to the market in NEKO, then reopen the workshop.",
+    "connectedFailed": "Model replacement did not finish. Check NEKO; existing resources are retained.",
+    "connectedEdited": "The page has edits or a save in progress. Automatic replacement is paused. Finish editing and reopen the workshop.",
+    "connectedPopup": "The browser blocked the workshop window. Allow popups and try again.",
+    "connectedOpenFailed": "Could not open the workshop. Check the connection and try again.",
+    "connectedIdle": "Open the workshop to choose a model and replace the current character’s model.",
+    "connectedHelp": "Open the workshop from NEKO to download and use. Independent visits only download a package and do not replace a character."
   }
 }
