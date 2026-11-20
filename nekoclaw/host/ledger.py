@@ -896,7 +896,8 @@ class Ledger:
     @staticmethod
     def _add_columns(conn: sqlite3.Connection) -> None:
         """Give a ledger made by an earlier build the columns added since (``_ADDED_COLUMNS``, ``_ADDED_SESSION_COLUMNS``)."""
-        for table, added in (("commissions", _ADDED_COLUMNS), ("sessions", _ADDED_SESSION_COLUMNS)):
+        for table, added in (("commissions", _ADDED_COLUMNS), ("sessions", _ADDED_SESSION_COLUMNS),
+                             ("host_calls", (("grant_id", "TEXT"), ("scope_ref", "TEXT")))):
             present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             for name, kind in added:
                 if name not in present:

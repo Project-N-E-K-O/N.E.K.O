@@ -29,7 +29,7 @@ MCP server is a category of its own (``mcp_server`` plus the server's name).
 The defaults apply only while there is no file. A file that exists but cannot
 be read or parsed makes every category ``deny`` until it is repaired: the
 user's own settings are unknown then, and ``deny`` is the one mode every
-caller honours (the task brain's direct plugin calls check for ``deny`` only).
+caller honours.
 The file is read again on each use until it can be read, and nothing is
 written over it meanwhile.
 
@@ -55,8 +55,11 @@ permission.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import os
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,6 +85,7 @@ DEFAULT_MODES: dict[str, str] = {
     "keyboard_mouse": "first_ask",
     "browser": "first_ask",
     "plugin_entry": "allow",
+    "managed_delivery": "first_ask",
     MCP_SERVER_CATEGORY: "first_ask",
 }
 
@@ -124,6 +128,8 @@ class PermissionDecision:
     reason: str | None = None
     # Whether the user was asked for this very decision and approved.
     asked: bool = False
+    # Host-only audit reference. Never returned to the model as a credential.
+    grant_id: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {"allow": self.allow, "reason": self.reason}
@@ -181,6 +187,7 @@ class PermissionStore:
         # Grows with every change, so a decision can tell that the settings
         # it was based on changed meanwhile.
         self._version = 0
+        self._revisions: dict[tuple[str, str | None], int] = {}
         self._lock = asyncio.Lock()
 
     def _path(self) -> Path:
@@ -268,6 +275,9 @@ class PermissionStore:
             return self._categories.get(name, DEFAULT_MODES[name])
         return self._categories.get(name, DEFAULT_MODES.get(name, "always_ask"))
 
+    def revision(self, category: str, key: str | None = None) -> int:
+        return max(self._revisions.get((category, None), 0), self._revisions.get(_slot(category, key), 0))
+
     async def set_mode(
         self, category: str, mode: str, key: str | None = None, *, expected_version: int | None = None
     ) -> bool:
@@ -294,6 +304,7 @@ class PermissionStore:
             else:
                 self._categories[name] = mode
             self._version += 1
+            self._revisions[(name, slot if key is not None else None)] = self._version
             # A cancelled caller still waits for the write, so the lock is not
             # released while an older setting can land on disk after a newer one.
             await to_thread_through_cancellation(self._write, dict(self._categories), dict(self._mcp_servers))
@@ -307,6 +318,28 @@ class PermissionStore:
             return {"categories": categories, "mcp_servers": {}, "unreadable": True}
         categories = {name: self._categories.get(name, default) for name, default in DEFAULT_MODES.items()}
         return {"categories": categories, "mcp_servers": dict(self._mcp_servers), "unreadable": False}
+
+
+@dataclass(frozen=True, slots=True)
+class GrantScope:
+    """Verified provider, resource/purpose and recipient for one operation."""
+
+    provider: str
+    resource: str = ""
+    recipient: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _Loan:
+    id: str
+    owner: str
+    root: str
+    slot: tuple[str, str | None]
+    scope: GrantScope
+    revision: int
+    lifetime: str
+    parent_id: str | None = None
+    branch: tuple[str, ...] = ()
 
 
 class PermissionGate:
@@ -323,6 +356,13 @@ class PermissionGate:
         # commission id -> what the user allowed "once" for the run under way
         # (``RUN_SCOPED_CATEGORIES`` only).
         self._run_grants: dict[str, set[tuple[str, str | None]]] = {}
+        self._loans: dict[str, _Loan] = {}
+        self._shared: dict[tuple[str, tuple[str, str | None], GrantScope], _Loan] = {}
+        self._pending: dict[tuple[str, tuple[str, str | None], GrantScope], asyncio.Future[PermissionDecision]] = {}
+        # Lifetimes captured before an await; end_run/session invalidates late answers.
+        self._work: dict[str, object] = {}
+        self._lives: dict[str, object] = {}
+        self._ended = 0
 
     def set_asker(self, asker: Asker | None) -> None:
         self._asker = asker
@@ -332,22 +372,36 @@ class PermissionGate:
 
     def end_session(self, commission_id: str) -> None:
         """Forget what was allowed for a commission's session; call it when the commission is done, has failed or is stopped."""
+        self._ended += 1
+        self._lives.pop(commission_id, None)
         self._session_grants.pop(commission_id, None)
         self._run_grants.pop(commission_id, None)
+        self._work.pop(commission_id, None)
+        for loan in tuple(self._loans.values()):
+            if loan.owner == commission_id or loan.root == commission_id or commission_id in loan.branch:
+                self._discard_loan(loan.id)
 
     def end_run(self, commission_id: str) -> None:
         """Forget what was allowed "once" for a commission's run; call it when that run is over."""
         self._run_grants.pop(commission_id, None)
+        self._work.pop(commission_id, None)
+        for loan in tuple(self._loans.values()):
+            if loan.owner == commission_id and loan.lifetime != "session":
+                self._discard_loan(loan.id)
 
     def run_grants(self, commission_id: str) -> frozenset[tuple[str, str | None]]:
         """Return what the user allowed "once" for this commission's run under way."""
-        return frozenset(self._run_grants.get(commission_id, ()))
+        return frozenset(self._run_grants.get(commission_id, ())) | frozenset(
+            loan.slot for loan in self._loans.values() if loan.owner == commission_id and loan.lifetime == 'run'
+        )
 
     def session_grants(self, commission_id: str) -> frozenset[tuple[str, str | None]]:
         """Return what the user allowed for this commission's own session."""
-        return frozenset(self._session_grants.get(commission_id, ()))
+        return frozenset(self._session_grants.get(commission_id, ())) | frozenset(
+            loan.slot for loan in self._loans.values() if loan.owner == commission_id and loan.lifetime == 'session'
+        )
 
-    async def _lineage(self, commission_id: str) -> list[str]:
+    async def _lineage(self, commission_id: str, *, verified: bool = False) -> list[str]:
         """Return the commission and the commissions it descends from, nearest first."""
         chain = [commission_id]
         if self._parent_of is None:
@@ -360,9 +414,11 @@ class PermissionGate:
                 raise
             except Exception:  # noqa: BLE001 - without a known parent only its own grants count
                 logger.debug("looking up the parent of a commission failed", exc_info=True)
+                return [] if verified else chain
+            if not parent:
                 return chain
-            if not parent or parent in chain:
-                return chain
+            if parent in chain:
+                return [] if verified else chain
             chain.append(parent)
             current = parent
 
@@ -373,8 +429,14 @@ class PermissionGate:
         *,
         key: str | None = None,
         detail: dict[str, Any] | None = None,
+        scope: GrantScope | None = None,
+        hold_once: bool = False,
     ) -> PermissionDecision:
-        """Return whether the commission may do this, asking the user if the mode says so."""
+        """Check host-verified scope when available; older callers retain their category contract."""
+        if scope is not None:
+            return await self._check_scoped(commission_id, category, key, scope, detail, hold_once)
+        if category == "managed_delivery":
+            return PermissionDecision(False, DENIED_NO_ANSWER)
         mode = await self._store.mode(category, key)
         if mode == "allow":
             return PermissionDecision(True)
@@ -436,6 +498,207 @@ class PermissionGate:
         elif run is not None:
             run.add(slot)
         return PermissionDecision(True, asked=True)
+
+    async def check_builtin(
+        self, commission_id: str, category: str, *, detail: dict[str, Any], writes: bool
+    ) -> PermissionDecision:
+        """Scope a built-in file operation to its actual path, or a command to its shell and cwd."""
+        mode = await self._store.mode(category)
+        if mode in ("allow", "deny"):
+            return PermissionDecision(mode == "allow", DENIED_BY_SETTINGS if mode == "deny" else None)
+        tool = str(detail.get("tool") or "")
+        resource = tool
+        if category == "run_command":
+            command = [tool, detail.get("cwd"), detail.get("command")]
+            resource = hashlib.sha256(json.dumps(command).encode()).hexdigest()
+        elif isinstance(path := detail.get("path"), str) and path:
+            actual_path = os.path.normcase(await asyncio.to_thread(os.path.realpath, path))
+            resource = json.dumps(["write" if writes else "read", actual_path])
+        return await self.check(commission_id, category, detail=detail, scope=GrantScope("builtin-runtime", resource))
+
+    async def check_native(
+        self, commission_id: str, category: str, *, detail: dict[str, Any]
+    ) -> PermissionDecision:
+        """ACP knows the operation, not the native tool owner's registration identity."""
+        if category not in {"workdir_files", "outside_read", "outside_write", "run_command", "other"}:
+            return PermissionDecision(False, DENIED_BY_SETTINGS)
+        mode = await self._store.mode(category)
+        if mode in ("allow", "deny"):
+            return PermissionDecision(mode == "allow", DENIED_BY_SETTINGS if mode == "deny" else None)
+        revision = self._store.revision(category)
+        work = self._work.setdefault(commission_id, object())
+        decision = await self.ask_each_time(commission_id, category, detail=detail)
+        if self._work.get(commission_id) is not work or self._store.revision(category) != revision:
+            return PermissionDecision(False, DENIED_NO_ANSWER)
+        return decision
+
+    def authorization_ref(self, grant_id: str | None) -> str | None:
+        """Stable audit ID shared by operations using the same approval."""
+        loan = self._loans.get(grant_id) if grant_id else None
+        return (loan.parent_id or loan.id) if loan else None
+
+    def grant_active(self, grant_id: str | None) -> bool:
+        """Last synchronous check before crossing a host-owned boundary."""
+        loan = self._loans.get(grant_id) if grant_id else None
+        return bool(
+            loan and self._store.revision(*loan.slot) == loan.revision
+            and (loan.parent_id is None or loan.parent_id in self._loans)
+        )
+
+    def revoke_grant(self, grant_id: str | None) -> None:
+        """Withdraw this loan, including any queued operations relying on it."""
+        loan = self._loans.get(grant_id) if grant_id else None
+        if loan and loan.parent_id:
+            self._discard_loan(loan.parent_id)
+        self._discard_loan(grant_id)
+
+    def _discard_loan(self, grant_id: str | None) -> None:
+        loan = self._loans.pop(grant_id, None) if grant_id else None
+        if loan is not None:
+            shared = (loan.owner, loan.slot, loan.scope)
+            if self._shared.get(shared) is loan:
+                del self._shared[shared]
+
+    def release_grant(self, grant_id: str | None) -> None:
+        """Release the temporary receipt used across awaits for one operation."""
+        loan = self._loans.get(grant_id) if grant_id else None
+        if loan is not None and loan.lifetime == "once":
+            self._discard_loan(loan.id)
+
+    async def valid_grant(
+        self, commission_id: str, grant_id: str | None, category: str, *, key: str | None = None, scope: GrantScope
+    ) -> bool:
+        if not self.grant_active(grant_id):
+            return False
+        lineage = await self._lineage(commission_id, verified=True)
+        loan = self._loans.get(grant_id)
+        return bool(
+            loan and lineage and loan.scope == scope and loan.slot == _slot(category, key)
+            and loan.root == lineage[-1] and loan.owner in lineage and self.grant_active(grant_id)
+        )
+
+    def _record_loan(
+        self, owner: str, root: str, slot: tuple[str, str | None], scope: GrantScope, lifetime: str,
+        parent_id: str | None = None, branch: tuple[str, ...] = (),
+    ) -> str:
+        loan = _Loan(uuid.uuid4().hex, owner, root, slot, scope, self._store.revision(*slot), lifetime, parent_id, branch)
+        self._loans[loan.id] = loan
+        if lifetime != "once":
+            self._shared[(owner, slot, scope)] = loan
+        return loan.id
+
+    async def _check_scoped(
+        self, commission_id: str, category: str, key: str | None, scope: GrantScope,
+        detail: dict[str, Any] | None, hold_once: bool,
+    ) -> PermissionDecision:
+        if not scope.provider or (category == "managed_delivery" and not scope.recipient):
+            return PermissionDecision(False, DENIED_NO_ANSWER)
+        mode = await self._store.mode(category, key)
+        if mode == "deny":
+            return PermissionDecision(False, DENIED_BY_SETTINGS)
+        delivery = category == "managed_delivery"
+        if mode == "allow" and not delivery and not hold_once:
+            return PermissionDecision(True)
+        # A commission may end during a ledger lookup of its ancestors.
+        # Repeat only when a terminal transition overlapped that lookup.
+        while True:
+            ended = self._ended
+            lineage = await self._lineage(commission_id, verified=True)
+            if ended == self._ended:
+                break
+        if not lineage:
+            return PermissionDecision(False, DENIED_NO_ANSWER)
+        branch = tuple(lineage)
+        root = branch[-1]
+        slot = _slot(category, key)
+        lives = [(actor, self._lives.setdefault(actor, object())) for actor in branch]
+        work = self._work.setdefault(commission_id, object())
+
+        def live() -> bool:
+            return self._work.get(commission_id) is work and all(self._lives.get(actor) is life for actor, life in lives)
+
+        def receipt(loan_id: str) -> str:
+            if hold_once or delivery:
+                return self._record_loan(commission_id, root, slot, scope, "once", parent_id=loan_id, branch=branch)
+            return loan_id
+
+        while live():
+            mode = await self._store.mode(category, key)
+            if mode == "deny" or not live():
+                return PermissionDecision(False, DENIED_BY_SETTINGS)
+            if delivery and mode == "allow":
+                # A blanket setting is not approval to disclose data to every recipient.
+                mode = "first_ask"
+            if mode == "allow":
+                grant_id = self._record_loan(commission_id, root, slot, scope, "once", branch=branch) if hold_once else None
+                return PermissionDecision(True, grant_id=grant_id)
+            for owner in (root, commission_id):
+                loan = self._shared.get((owner, slot, scope))
+                if loan is None:
+                    continue
+                if not self.grant_active(loan.id):
+                    self.revoke_grant(loan.id)
+                elif (loan.lifetime == "session" and mode == "first_ask") or (
+                    loan.lifetime == "run" and loan.owner == commission_id
+                ):
+                    return PermissionDecision(True, grant_id=receipt(loan.id))
+            if self._asker is None:
+                return PermissionDecision(False, DENIED_NO_ANSWER)
+            pending_key = (root, slot, scope)
+            pending = self._pending.get(pending_key)
+            if pending is not None:
+                # One answer can cover the whole team. A one-time answer only
+                # covers the operation that asked, so other callers check again.
+                result = await asyncio.shield(pending)
+                if not result.allow:
+                    return result
+                continue
+            pending = asyncio.get_running_loop().create_future()
+            self._pending[pending_key] = pending
+            result = PermissionDecision(False, DENIED_NO_ANSWER)
+            try:
+                version = self._store.version
+                revision = self._store.revision(*slot)
+                options = CHOICES_ALWAYS_ASK if mode == "always_ask" else CHOICES
+                if delivery and mode != "always_ask":
+                    options = ("session", "once", "deny")
+                ask = PermissionAsk(category, key, dict(detail or {}), options)
+                choice = await self._asker(commission_id, ask)
+                if not live():
+                    pending.set_result(PermissionDecision(True))
+                    return result
+                if self._store.revision(*slot) != revision:
+                    return result
+                if choice in ("always", "session") and choice not in options:
+                    choice = "once"
+                if choice not in options or choice == "deny":
+                    result = PermissionDecision(False, DENIED_BY_USER)
+                    return result
+                if choice == "always":
+                    if not await self._store.set_mode(category, "allow", key, expected_version=version) or not live():
+                        return result
+                if choice == "session":
+                    grant_id = receipt(self._record_loan(root, root, slot, scope, "session"))
+                elif choice == "once" and category in RUN_SCOPED_CATEGORIES:
+                    grant_id = receipt(self._record_loan(commission_id, root, slot, scope, "run", branch=branch))
+                elif delivery or hold_once:
+                    grant_id = self._record_loan(commission_id, root, slot, scope, "once", branch=branch)
+                else:
+                    grant_id = None
+                result = PermissionDecision(True, asked=True, grant_id=grant_id)
+                return result
+            except asyncio.CancelledError:
+                # Peers with a live commission can still ask under their own identity.
+                pending.set_result(PermissionDecision(True))
+                raise
+            except Exception as exc:  # noqa: BLE001 - no answer is a refusal
+                logger.warning("asking for scoped permission failed: %s", type(exc).__name__)
+                return result
+            finally:
+                self._pending.pop(pending_key, None)
+                if not pending.done():
+                    pending.set_result(result)
+        return PermissionDecision(False, DENIED_NO_ANSWER)
 
     async def forbidden(self, category: str, key: str | None = None) -> bool:
         """Whether the settings forbid this as of now; nobody is asked.

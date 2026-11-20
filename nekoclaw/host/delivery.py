@@ -1,0 +1,366 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+# SPDX-License-Identifier: Apache-2.0
+"""Information delivery between trusted, registered host adapters (RFC #3859).
+
+The plugin owner implements the other end: authenticating local principals,
+labelling reads/derived outputs and enforcing delivery before exposing any
+result, callback, attachment or lookup handle. Legacy /runs has no such
+contract and is deliberately not registered. Never accept adapter identities,
+labels or these Python objects from a tool's JSON arguments.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import re
+from contextlib import ExitStack
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+from nekoclaw.host import call_audit
+from nekoclaw.host.ledger import Ledger
+from nekoclaw.host.permissions import GrantScope, PermissionGate
+
+
+class DeliveryDenied(PermissionError):
+    """Fixed host errors may cross the boundary; foreign exception bodies cannot."""
+
+
+@dataclass(frozen=True)
+class Parcel:
+    """An adapter must explicitly classify each payload, including public data (empty set)."""
+
+    data: Any
+    scopes: frozenset[str]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scopes, frozenset) or any(
+            not isinstance(scope, str) or not scope or not scope.isprintable()
+            for scope in self.scopes
+        ):
+            raise ValueError("expected an explicit set of trusted resource identifiers")
+
+
+@dataclass(frozen=True)
+class Answer:
+    value: Parcel | None = None
+    content: Parcel | None = None
+
+
+@dataclass(frozen=True)
+class Invocation:
+    commission_id: str
+    trace_id: str
+    call_id: str
+
+
+class DeliveryAdapter(Protocol):
+    identity: str
+
+    def permits(self, sender: str, *, one_way: bool) -> bool:
+        """Apply the target's native invocation policy and supported delivery modes."""
+        ...
+
+    def accepts(self, scopes: frozenset[str]) -> bool:
+        """Apply current, locally verified read rights to the entire set."""
+        ...
+
+    async def trigger(self, invocation: Invocation, arguments: Parcel) -> None:
+        """Accept a job at its source without creating a business return path."""
+        ...
+
+    async def call(self, invocation: Invocation, arguments: Parcel) -> Answer: ...
+
+
+@dataclass
+class _Processing:
+    endpoint: DeliveryAdapter
+    commission_id: str
+    scopes: frozenset[str]
+    grants: dict[tuple[str, GrantScope], str]
+
+
+class ManagedDelivery:
+    """Host-only interface. Each endpoint is bound by object identity at registration."""
+
+    def __init__(self, ledger: Ledger, permissions: PermissionGate) -> None:
+        self._ledger = ledger
+        self._permissions = permissions
+        self._adapters: dict[str, DeliveryAdapter] = {}
+        self._processing: ContextVar[_Processing | None] = ContextVar(
+            "managed_delivery_processing", default=None
+        )
+
+    def register(self, adapter: DeliveryAdapter) -> None:
+        identity = adapter.identity
+        if not re.fullmatch(
+            r"(?:neko|dsh|session|builtin):[a-zA-Z0-9_.:-]{1,120}", identity
+        ):
+            raise ValueError("invalid managed endpoint identity")
+        if identity in self._adapters:
+            raise ValueError("managed endpoint already registered")
+        self._adapters[identity] = adapter
+
+    def unregister(self, adapter: DeliveryAdapter) -> None:
+        if self._adapters.get(adapter.identity) is adapter:
+            del self._adapters[adapter.identity]
+
+    def _connected(self, sender: DeliveryAdapter, recipient: DeliveryAdapter) -> bool:
+        return (
+            self._adapters.get(sender.identity) is sender
+            and self._adapters.get(recipient.identity) is recipient
+        )
+
+    async def invoke(
+        self,
+        commission_id: str,
+        sender: DeliveryAdapter,
+        target: str,
+        arguments: Parcel,
+        *,
+        one_way: bool,
+    ) -> Answer | None:
+        # Strip both text and exception context. An adapter's native checks and
+        # driver errors can contain data the sender must never receive.
+        try:
+            return await self._invoke(
+                commission_id, sender, target, arguments, one_way=one_way
+            )
+        except asyncio.CancelledError:
+            failure = asyncio.CancelledError()
+        except call_audit.CommissionEnded:
+            failure = call_audit.CommissionEnded("this commission is no longer under way")
+        except call_audit.AuditFull:
+            failure = call_audit.AuditFull()
+        except Exception:
+            failure = DeliveryDenied("managed delivery refused or unavailable")
+        raise failure
+
+    async def _invoke(
+        self,
+        commission_id: str,
+        sender: DeliveryAdapter,
+        target: str,
+        arguments: Parcel,
+        *,
+        one_way: bool,
+    ) -> Answer | None:
+        recipient = self._adapters.get(target)
+        if recipient is None or not self._connected(sender, recipient):
+            raise DeliveryDenied("managed delivery is unavailable")
+        parent = self._processing.get()
+        if parent is not None:
+            if parent.endpoint is not sender or parent.commission_id != commission_id:
+                raise DeliveryDenied("invocation does not belong to this adapter")
+            # An adapter forwarding its input or a previous result cannot erase
+            # the source restrictions simply by constructing a new public parcel.
+            arguments = Parcel(arguments.data, arguments.scopes | parent.scopes)
+        # Keep once-only loans until the actual handoff, including across audit
+        # writes. Roll back every temporary handle on all exit paths.
+        with ExitStack() as cleanup:
+            grants = parent.grants.copy() if parent else {}
+            answer = None
+            return_scopes: frozenset[str] = frozenset()
+            async with call_audit.call(
+                self._ledger, commission_id, "trigger" if one_way else "invoke", target
+            ) as op:
+                try:
+                    if not recipient.permits(sender.identity, one_way=one_way):
+                        raise DeliveryDenied("invocation refused")
+                    invocation = Invocation(commission_id, op.trace_id, op.call_id)
+                    start_scope = GrantScope(
+                        provider=sender.identity,
+                        resource="trigger" if one_way else "call",
+                        recipient=target,
+                    )
+                    category = "plugin_entry" if target.startswith("neko:") else "other"
+                    await self._borrow(
+                        commission_id,
+                        category,
+                        start_scope,
+                        target,
+                        op,
+                        cleanup,
+                        grants,
+                    )
+                    await self._authorize_transfer(
+                        commission_id,
+                        sender,
+                        recipient,
+                        arguments.scopes,
+                        "send_arguments",
+                        cleanup,
+                        grants,
+                    )
+                    self._require_live(sender, recipient, arguments.scopes, grants)
+                    if not recipient.permits(sender.identity, one_way=one_way):
+                        raise DeliveryDenied("invocation refused")
+                    frame = _Processing(
+                        recipient, commission_id, arguments.scopes, grants.copy()
+                    )
+                    token = self._processing.set(frame)
+                    try:
+                        if one_way:
+                            await recipient.trigger(invocation, arguments)
+                        else:
+                            answer = await recipient.call(invocation, arguments)
+                    finally:
+                        self._processing.reset(token)
+                    if not one_way:
+                        self._require_live(sender, recipient, arguments.scopes, grants)
+                        answer, return_scopes = self._select_answer(
+                            sender, answer, frame.scopes
+                        )
+                        channels = [
+                            name
+                            for name in ("value", "content")
+                            if getattr(answer, name) is not None
+                        ]
+                        await self._authorize_transfer(
+                            commission_id,
+                            recipient,
+                            sender,
+                            return_scopes,
+                            "deliver_" + ("_".join(channels) or "empty"),
+                            cleanup,
+                            grants,
+                        )
+                except DeliveryDenied:
+                    op.status = "denied"
+                    op.reason = "managed_delivery_denied"
+                    raise
+            # Closing a call record awaited SQLite. Check again, with no await
+            # between this test and the caller receiving the actual payload.
+            if not one_way:
+                try:
+                    self._require_live(recipient, sender, return_scopes, grants)
+                except DeliveryDenied:
+                    # The target ran, but the caller never received the result.
+                    await self._ledger.run(
+                        lambda db: db.execute(
+                            "UPDATE host_calls SET status='denied',reason='delivery_revoked' WHERE call_id=?",
+                            (op.call_id,),
+                        )
+                    )
+                    raise
+                if parent is not None:
+                    parent.scopes |= return_scopes
+            return answer
+
+    @staticmethod
+    def _select_answer(
+        receiver: DeliveryAdapter, answer: Answer | None, inherited: frozenset[str]
+    ) -> tuple[Answer, frozenset[str]]:
+        if not isinstance(answer, Answer):
+            raise DeliveryDenied("unclassified response")
+
+        def allowed(parcel: Parcel | None) -> Parcel | None:
+            if parcel is None:
+                return None
+            if not isinstance(parcel, Parcel):
+                raise DeliveryDenied("unclassified response")
+            scopes = inherited | parcel.scopes
+            return Parcel(parcel.data, scopes) if receiver.accepts(scopes) else None
+
+        value, content = allowed(answer.value), allowed(answer.content)
+        if (answer.value or answer.content) and not (value or content):
+            raise DeliveryDenied("recipient cannot receive the result")
+        scopes = frozenset().union(
+            *(p.scopes for p in (value, content) if p is not None)
+        )
+        return Answer(value, content), scopes
+
+    def _require_live(
+        self,
+        sender: DeliveryAdapter,
+        receiver: DeliveryAdapter,
+        scopes: frozenset[str],
+        grants: dict[tuple[str, GrantScope], str],
+    ) -> None:
+        if (
+            not self._connected(sender, receiver)
+            or not sender.accepts(scopes)
+            or not receiver.accepts(scopes)
+            or not all(self._permissions.grant_active(ref) for ref in grants.values())
+        ):
+            raise DeliveryDenied("delivery authorization expired")
+
+    async def _borrow(
+        self,
+        commission_id: str,
+        category: str,
+        scope: GrantScope,
+        title: str,
+        record: call_audit.Call,
+        cleanup: ExitStack,
+        grants: dict[tuple[str, GrantScope], str],
+        direction: str | None = None,
+    ) -> None:
+        inherited = grants.get((category, scope))
+        if inherited:
+            if not await self._permissions.valid_grant(commission_id, inherited, category, scope=scope):
+                raise DeliveryDenied("authorization expired")
+            record.grant_id = self._permissions.authorization_ref(inherited)
+            return
+        decision = await self._permissions.check(
+            commission_id,
+            category,
+            scope=scope,
+            detail={"title": title, **({"direction": direction} if direction else {})},
+            hold_once=True,
+        )
+        grant = decision.grant_id
+        record.grant_id = self._permissions.authorization_ref(grant)
+        if not decision.allow or not grant:
+            raise DeliveryDenied("permission refused")
+        cleanup.callback(self._permissions.release_grant, grant)
+        if not await self._permissions.valid_grant(
+            commission_id, grant, category, scope=scope
+        ):
+            raise DeliveryDenied("authorization expired")
+        grants[(category, scope)] = grant
+
+    async def _authorize_transfer(
+        self,
+        commission_id: str,
+        sender: DeliveryAdapter,
+        receiver: DeliveryAdapter,
+        scopes: frozenset[str],
+        kind: str,
+        cleanup: ExitStack,
+        grants: dict[tuple[str, GrantScope], str],
+    ) -> None:
+        async with call_audit.call(
+            self._ledger, commission_id, kind, receiver.identity
+        ) as record:
+            try:
+                self._require_live(sender, receiver, scopes, grants)
+                if scopes:
+                    resources = json.dumps(
+                        sorted(scopes), ensure_ascii=False, separators=(",", ":")
+                    )
+                    record.scope_ref = hashlib.sha256(resources.encode()).hexdigest()
+                    direction = "arguments" if kind == "send_arguments" else "result"
+                    scope = GrantScope(
+                        provider=sender.identity,
+                        resource=f"{direction}:{record.scope_ref}",
+                        recipient=receiver.identity,
+                    )
+                    title = f"{sender.identity} → {receiver.identity} ({', '.join(sorted(scopes))})"
+                    await self._borrow(
+                        commission_id,
+                        "managed_delivery",
+                        scope,
+                        title,
+                        record,
+                        cleanup,
+                        grants,
+                        direction=direction,
+                    )
+            except DeliveryDenied:
+                record.status = "denied"
+                record.reason = "managed_delivery_denied"
+                raise

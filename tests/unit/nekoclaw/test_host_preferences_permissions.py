@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from typing import Any
@@ -28,6 +29,7 @@ from nekoclaw.host.permissions import (
     DENIED_BY_SETTINGS,
     DENIED_BY_USER,
     DENIED_NO_ANSWER,
+    GrantScope,
     PermissionGate,
     PermissionStore,
 )
@@ -319,6 +321,86 @@ def store(tmp_path: Any) -> PermissionStore:
     return PermissionStore(tmp_path / "nekoclaw" / "permissions.json")
 
 
+async def test_scoped_loan_is_shared_by_the_root_but_bound_to_each_actual_delivery(store):
+    parents = {"first": "root", "second": "root"}
+
+    async def parent_of(actor):
+        return parents.get(actor)
+
+    waiting, answer = asyncio.Event(), asyncio.Event()
+    asked = []
+
+    async def ask(actor, question):
+        asked.append((actor, question))
+        waiting.set()
+        await answer.wait()
+        return "session"
+
+    gate = PermissionGate(store, ask, parent_of)
+    scope = GrantScope("daily", "work-summary", "owner")
+
+    async def deliver(actor, selected=scope):
+        return await gate.check(actor, "managed_delivery", scope=selected, hold_once=True)
+
+    first = asyncio.create_task(deliver("first"))
+    await waiting.wait()
+    second = asyncio.create_task(deliver("second"))
+    await asyncio.sleep(0)
+    answer.set()
+    a, b = await asyncio.gather(first, second)
+    assert a.allow and b.allow and len(asked) == 1
+    assert asked[0][1].options == ("session", "once", "deny")
+    assert a.grant_id != b.grant_id
+    shared = gate.authorization_ref(a.grant_id)
+    assert shared == gate.authorization_ref(b.grant_id)
+    gate.end_session("first")
+    assert not gate.grant_active(a.grant_id) and gate.grant_active(b.grant_id)
+    c = await deliver("root")
+    assert gate.authorization_ref(c.grant_id) == shared and len(asked) == 1
+    gate.release_grant(c.grant_id)
+    assert not gate.grant_active(c.grant_id) and gate.grant_active(shared)
+    assert not await gate.valid_grant("other", b.grant_id, "managed_delivery", scope=scope)
+    assert not await gate.valid_grant("second", b.grant_id, "managed_delivery", scope=GrantScope("daily"))
+    for expanded in [GrantScope("daily", "private-summary", "owner"), GrantScope("daily", "work-summary", "group")]:
+        assert (await deliver("second", expanded)).allow
+    assert (await deliver("new-commission")).allow
+    assert len(asked) == 4
+    gate.revoke_grant(shared)
+    assert not gate.grant_active(b.grant_id)
+    assert (await deliver("second")).allow and len(asked) == 5
+
+
+async def test_expanded_settings_do_not_silently_approve_every_data_recipient(store):
+    await store.set_mode("managed_delivery", "allow")
+    gate = PermissionGate(store, Asker("once"))
+    scope = GrantScope("daily", "work-summary", "owner")
+    assert not (await gate.check("commission", "managed_delivery")).allow
+    checked = await gate.check("commission", "managed_delivery", scope=scope)
+    assert checked.asked and checked.allow and gate.grant_active(checked.grant_id)
+    await store.set_mode("browser", "deny")
+    assert gate.grant_active(checked.grant_id)
+    await store.set_mode("managed_delivery", "deny")
+    await store.set_mode("managed_delivery", "first_ask")
+    assert not gate.grant_active(checked.grant_id)
+
+
+@pytest.mark.parametrize("ends", ["root", "child"])
+async def test_late_scoped_confirmation_does_not_authorize_a_cancelled_operation(store, ends):
+    gate = PermissionGate(store)
+
+    async def parent_of(actor):
+        return "root" if actor == "child" else None
+
+    async def ask(actor, question):
+        gate.end_session(ends)
+        return "session"
+
+    gate.set_parent_lookup(parent_of)
+    gate.set_asker(ask)
+    result = await gate.check("child", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+    assert not result.allow and not result.grant_id
+
+
 async def test_defaults_of_the_design(store):
     assert DEFAULT_MODES == {
         "workdir_files": "allow",
@@ -329,6 +411,7 @@ async def test_defaults_of_the_design(store):
         "keyboard_mouse": "first_ask",
         "browser": "first_ask",
         "plugin_entry": "allow",
+        "managed_delivery": "first_ask",
         "mcp_server": "first_ask",
     }
     for category, mode in DEFAULT_MODES.items():

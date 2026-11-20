@@ -446,7 +446,8 @@ class CapabilityRegistry:
             return []
 
     async def run_builtin(
-        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any], reopen_agreement: Any = None
+        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any], reopen_agreement: Any = None,
+        still_allowed: Callable[[], bool] | None = None,
     ) -> BuiltinOutcome:
         """Carry out one call of a built-in tool through the provider.
 
@@ -457,6 +458,10 @@ class CapabilityRegistry:
         """
         if self._builtins is None:
             return BuiltinOutcome(False, "this capability is not offered by this process")
+        guarded = getattr(self._builtins, "run_guarded", None)
+        if guarded is not None:
+            return await guarded(capability, commission_id=commission_id, arguments=arguments,
+                                 reopen_agreement=reopen_agreement, still_allowed=still_allowed)
         if reopen_agreement is None:
             return await self._builtins.run(capability, commission_id=commission_id, arguments=arguments)
         return await self._builtins.run(

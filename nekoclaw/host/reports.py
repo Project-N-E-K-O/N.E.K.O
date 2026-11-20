@@ -113,6 +113,8 @@ def _permission_subject(question: dict[str, Any], lang: str, max_tokens: int) ->
     categories = _loc(PERMISSION_CATEGORY_TEXTS, lang)
     detail = question.get("detail") if isinstance(question.get("detail"), dict) else {}
     category = str(question.get("category") or "other")
+    if category == "managed_delivery" and detail.get("direction") in ("arguments", "result"):
+        category += "_" + detail["direction"]
     specific = str(
         detail.get("command")
         or detail.get("path")

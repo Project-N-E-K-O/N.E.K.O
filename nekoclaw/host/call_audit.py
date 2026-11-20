@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS host_calls (
     seq INTEGER PRIMARY KEY AUTOINCREMENT, call_id TEXT NOT NULL UNIQUE, trace_id TEXT NOT NULL,
     parent_call_id TEXT, commission_id TEXT NOT NULL, session_id TEXT, kind TEXT NOT NULL,
     target TEXT NOT NULL, source_message_ref TEXT, run_id TEXT, status TEXT NOT NULL,
-    started_at REAL NOT NULL, ended_at REAL, reason TEXT
+    started_at REAL NOT NULL, ended_at REAL, reason TEXT, grant_id TEXT, scope_ref TEXT
 );
 CREATE INDEX IF NOT EXISTS host_calls_by_trace ON host_calls(trace_id, seq);
 CREATE TABLE IF NOT EXISTS host_call_budget (
@@ -220,6 +220,9 @@ class Call:
     call_id: str
     status: str = "completed"
     reason: str | None = None
+    # Correlation only. The audit token cannot be used to claim a grant.
+    grant_id: str | None = None
+    scope_ref: str | None = None
 
     async def bind_run(self, run_id: str, target: str) -> None:
         opaque_id = (
@@ -294,8 +297,9 @@ async def _finish(started: asyncio.Task[Call], status: str) -> None:
         try:
             await record.ledger.run(
                 lambda db: db.execute(
-                    "UPDATE host_calls SET status=?,reason=?,ended_at=? WHERE call_id=? AND status='running'",
-                    (status, record.reason, record.ledger._clock(), record.call_id),
+                    "UPDATE host_calls SET status=?,reason=?,grant_id=?,scope_ref=?,ended_at=? "
+                    "WHERE call_id=? AND status='running'",
+                    (status, record.reason, record.grant_id, record.scope_ref, record.ledger._clock(), record.call_id),
                 )
             )
         except (sqlite3.Error, OSError, RuntimeError) as exc:
@@ -326,8 +330,12 @@ def read_trace(
     closed = _closed_trees(db, root=root).fetchone()
     if closed and closed["closed_at"] <= now - RETENTION:
         return []
+    # The read-only CLI can be the first process to open an older database.
+    fields = {item[1] for item in db.execute("PRAGMA table_info(host_calls)")}
+    grant_fields = ", ".join(("a." + field if field in fields else "NULL AS " + field)
+                             for field in ("grant_id", "scope_ref"))
     rows = db.execute(
-        "SELECT a.seq,a.call_id,a.trace_id,a.parent_call_id,a.commission_id,a.kind,a.target,a.source_message_ref,"
+        f"SELECT a.seq,a.call_id,a.trace_id,a.parent_call_id,a.commission_id,a.kind,a.target,a.source_message_ref,{grant_fields},"
         "a.run_id,a.started_at,a.reason, CASE WHEN a.kind='commission' THEN c.session_id ELSE a.session_id END AS session_id,"
         "CASE WHEN a.kind='commission' THEN c.status ELSE a.status END AS status,"
         "CASE WHEN a.kind='commission' THEN c.ended_at ELSE a.ended_at END AS ended_at "

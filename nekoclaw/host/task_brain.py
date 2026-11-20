@@ -55,11 +55,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
 from nekoclaw.host import call_audit
-from nekoclaw.host.capabilities import CapabilityRegistry, McpDenial, mcp_entry_forbidden
+from nekoclaw.host.capabilities import CapabilityRegistry, McpDenial, capabilities_of_plugin, mcp_entry_forbidden
 from nekoclaw.host.decision import (
     DecisionModel,
     DecisionRequest,
@@ -71,7 +72,7 @@ from nekoclaw.host.decision import (
     looks_like_a_task,
 )
 from nekoclaw.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger
-from nekoclaw.host.permissions import PermissionStore
+from nekoclaw.host.permissions import DENIED_BY_USER, GrantScope, PermissionGate, PermissionStore
 from nekoclaw.host.plugin_runs import (
     PluginRunner,
     RunOutcome,
@@ -278,6 +279,7 @@ class TaskBrain:
         decision: DecisionModel,
         reporter: Reporter,
         permission_store: PermissionStore,
+        permissions: PermissionGate,
         task_agents: Any = None,
         enabled: Callable[[], bool] | None = None,
         on_progress: ProgressListener | None = None,
@@ -290,6 +292,7 @@ class TaskBrain:
         self._decision = decision
         self._reporter = reporter
         self._permission_store = permission_store
+        self._permissions = permissions
         self._task_agents = task_agents
         self._enabled = enabled
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -387,10 +390,8 @@ class TaskBrain:
         answerable = [item for item in under_way if item.parent_id is not None and item.status == "waiting_user"]
         # Plugin entries forbidden in the permission settings are not offered
         # to the decision model at all, so none is called directly either.
-        # Only "deny" counts here, on purpose: a direct call is one she
-        # dispatched and the model chose, called without asking as the
-        # analyzer does today. The asking modes apply where the design puts
-        # the questions: a task agent's tool calls and the capability gateway.
+        # Asking modes keep the entry discoverable; direct execution obtains
+        # the same approval as a tool call through the gateway.
         plugins_forbidden = await self._permission_store.mode("plugin_entry") == "deny"
         return DecisionRequest(
             dispatch_text=text,
@@ -863,18 +864,44 @@ class TaskBrain:
         # list of plugins are waited for since NekoClaw was seen to be
         # on, and it may have been switched off meanwhile.
         still_on, turned_away = self._asks_whether_on()
-        outcome = await audited_run_entry(
-            self._ledger, self._runner, commission_id=commission.id,
-            plugin_id=selection.plugin_id,
-            entry_id=selection.entry_id,
-            args=selection.plugin_args,
-            lanlan_name=commission.lanlan_name,
-            conversation_id=commission.conversation_id,
-            latest_user_request=commission.user_text,
-            on_progress=progress,
-            on_run_created=run_created,
-            still_wanted=still_on,
+        capability = next(
+            (item for item in capabilities_of_plugin(_plugin or {}) if item.entry_id == selection.entry_id), None
         )
+        if capability is None or not capability.available:
+            direct.status, direct.reason = "denied", "settings"
+            await self._overturn_no_capability(commission, "unverified plugin capability", reason="denied")
+            return
+        with ExitStack() as cleanup:
+            grants = []
+            scope = GrantScope(capability.kind, capability.id)
+            checks = [("plugin_entry", None)]
+            if capability.permission != "plugin_entry":
+                checks.append((capability.permission, capability.permission_key))
+            for category, key in checks:
+                decision = await self._permissions.check(
+                    commission.id, category, key=key, scope=scope, hold_once=True,
+                    detail={"tool": capability.tool_name, "title": capability.title, "capability": capability.id},
+                )
+                if not decision.allow or not decision.grant_id:
+                    direct.status = "denied"
+                    direct.reason = "user" if decision.reason == DENIED_BY_USER else "settings"
+                    await self._overturn_no_capability(commission, "permission refused", reason="denied")
+                    return
+                grants.append(decision.grant_id)
+                cleanup.callback(self._permissions.release_grant, decision.grant_id)
+            direct.grant_id = self._permissions.authorization_ref(grants[-1])
+            outcome = await audited_run_entry(
+                self._ledger, self._runner, commission_id=commission.id,
+                plugin_id=selection.plugin_id,
+                entry_id=selection.entry_id,
+                args=selection.plugin_args,
+                lanlan_name=commission.lanlan_name,
+                conversation_id=commission.conversation_id,
+                latest_user_request=commission.user_text,
+                on_progress=progress,
+                on_run_created=run_created,
+                still_wanted=lambda: still_on() and all(self._permissions.grant_active(ref) for ref in grants),
+            )
         direct.status = plugin_terminal_status(outcome.success, outcome.data)
         if turned_away:
             direct.status = "cancelled"

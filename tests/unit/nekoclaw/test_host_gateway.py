@@ -1240,7 +1240,8 @@ async def test_registered_browser_is_discovered_called_and_released_through_the_
         assert len(asker.asked) == 1
         registration.open_driver.assert_called_once_with(own_ports=ports)
         assert driver.call.await_args.args == ("browser_fixture", arguments["arguments"])
-        assert driver.call.await_args.kwargs["refused"]() is None
+        # Its operation receipt is released when the driver returns.
+        assert driver.call.await_args.kwargs["refused"]() == "permission denied"
         assert host.leases.release(commission.id) == [BUILTIN_GROUP_BROWSER]
         await host.leases.settle()
         driver.released.assert_awaited_once_with()
@@ -2736,6 +2737,21 @@ async def test_a_commission_that_stopped_working_while_it_waited_for_a_group_doe
     assert result["isError"] is True and "no longer under way" in _text(result)
     assert [cid for _name, cid, _args in builtin_host.provider.calls] == [first.id]
     # The browser it was handed is given straight back.
+    assert builtin_host.leases.occupied() == {}
+
+
+async def test_revoking_browser_approval_while_queued_keeps_the_next_provider_call_from_running(builtin_host):
+    builtin_host.permissions.set_asker(Asker("session"))
+    holder = await _commission(builtin_host)
+    other = await _commission(builtin_host, title="second browser task")
+    await _call(builtin_host, _grant(builtin_host, holder), "browser_navigate_page")
+    waiting = asyncio.create_task(_call(builtin_host, _grant(builtin_host, other), "browser_navigate_page"))
+    await wait_until(lambda: builtin_host.leases._waiters, what="second task waiting at the device")
+    await builtin_host.permission_store.set_mode("browser", "deny")
+    await builtin_host.ledger.transition(holder.id, "done", reason="test")
+    result = await asyncio.wait_for(waiting, 10)
+    assert result["isError"] and "permission denied" in _text(result)
+    assert [cid for _, cid, _ in builtin_host.provider.calls] == [holder.id]
     assert builtin_host.leases.occupied() == {}
 
 
