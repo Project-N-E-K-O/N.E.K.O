@@ -24,7 +24,11 @@ from nekoclaw.host.capabilities import BUILTIN_GROUP_KEYBOARD_MOUSE as DESKTOP
 from nekoclaw.host.device_intent import select_device_groups
 
 
-@pytest.mark.parametrize(("value", "enabled"), [(None, True), ("0", False), ("1", True)])
+@pytest.mark.parametrize(
+    ("value", "enabled"),
+    [(None, True), ("0", False), ("OFF", False), ("no", False), ("false", False), ("1", True), (" true ", True),
+     ("yes", True), ("on", True), ("typo", False)],
+)
 def test_device_tools_default_and_override(monkeypatch, value, enabled):
     if value is None:
         monkeypatch.delenv("NEKOCLAW_FIRST_TURN_DEVICE_TOOLS", raising=False)
@@ -44,6 +48,10 @@ def test_device_tools_default_and_override(monkeypatch, value, enabled):
         ("打开https://example.com，点击桌面上的图标", (DESKTOP, BROWSER)),
         ("打开 https://example.com;点击桌面上的图标", (DESKTOP, BROWSER)),
         ("Summarize https://example.com?q=click", ()),
+        ("Open the browser and go to example.com without logging in", (BROWSER,)),
+        ("Read README.md without opening the browser", ()),
+        ("Refresh the cache and fix the edge case", ()),
+        ("Open Edge", (BROWSER,)),
         ("列出浏览器标签页", (BROWSER,)),
         ("List open tabs", (BROWSER,)),
         ("List browser tabs", (BROWSER,)),

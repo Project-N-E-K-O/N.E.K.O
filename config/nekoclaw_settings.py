@@ -966,7 +966,7 @@ GATEWAY_TOOL_LIST_MAX_TOKENS = 3000
 beyond it stay reachable through the gateway's search tool."""
 
 # Explicit device tasks start with the matching tools; set 0 to keep discovery-only routing.
-FIRST_TURN_DEVICE_TOOLS = os.getenv("NEKOCLAW_FIRST_TURN_DEVICE_TOOLS", "1") == "1"
+FIRST_TURN_DEVICE_TOOLS = os.getenv("NEKOCLAW_FIRST_TURN_DEVICE_TOOLS", "1").strip().lower() in {"1", "true", "yes", "on"}
 GATEWAY_COMMISSION_TOOL_META_KEY = "nekoclaw/commissionTool"
 """MCP metadata marking tools declared for this commission only."""
 

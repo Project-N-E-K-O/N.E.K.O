@@ -414,8 +414,8 @@ BUILTIN_GROUP_FIRST_CALLS: dict[str, dict] = {
 # Put in front of the lines about the groups, in the description of the
 # gateway's search tool. Rendered with str.format.
 TOOL_GROUPS_INTRO = (
-    "Tool groups, not among your tools until used. To use one, make its first call below through "
-    "{call_tool}: the answer also brings the group's other tools and how to use them."
+    "Use listed device tools directly. For an unlisted group, its first call below through "
+    "{call_tool} also returns the group's tools and guidance."
 )
 
 # What the search tool's ``group`` argument is said to be: the way to a

@@ -37,7 +37,7 @@ _QUOTED = re.compile(
     r"“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』"
 )
 _CLAUSE = re.compile(
-    r"[，,。；;！？!?\n]|\.(?:\s+|$)|\b(?:but|then|instead|however)\b|"
+    r"[，,。；;！？!?\n]|\.(?:\s+|$)|\b(?:but|then|instead|however)\b|(?=\bwithout\b)|"
     r"但是|不过|不過|然后|然後|接着|接著|改为|改為|改用|再(?=打开|打開|点击|點擊|截|按|用)"
 )
 # A mention in prose, code, help or a prohibition is a poor reason to load
@@ -51,7 +51,7 @@ _NON_ACTION = re.compile(
 )
 _WEB_TARGET = (
     r"(?:网页|網頁|页面|頁面|网站|網站|网址|網址|链接|連結|鏈接|浏览器|瀏覽器|标签页|分頁|"
-    r"\b(?:browser|web\s?page|page|website|site|urls?|link|tabs?|chrome|edge|firefox)\b|https?://|"
+    r"\b(?:browser|web\s?page|page|website|site|urls?|link|tabs?|chrome|edge(?!\s+cases?\b)|firefox)\b|https?://|"
     r"\b[\w-]+\.(?:com|org|net|cn|io|dev)\b)"
 )
 _WEB_CONTEXT = re.compile(_WEB_TARGET)
