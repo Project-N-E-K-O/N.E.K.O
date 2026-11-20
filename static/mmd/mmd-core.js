@@ -879,6 +879,8 @@ class MMDCore {
      * '#', '?' and '%' must be escaped here or the browser reads them as URL
      * syntax (#3379). Valid %XX runs are decoded once first, the same rule as
      * getConfigName, so an already-encoded path is not encoded twice.
+     * Trade-off: a file literally named with a valid escape (e.g. 'a%23b.pmx')
+     * is read as that escape; such names did not load before this either.
      */
     static toRequestUrl(modelUrl) {
         if (typeof modelUrl !== 'string') return modelUrl;

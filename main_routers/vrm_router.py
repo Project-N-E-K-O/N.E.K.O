@@ -699,7 +699,7 @@ def _iter_workshop_vrm_dirs():
     if not workshop_root:
         return
     try:
-        item_dirs = sorted(p for p in Path(workshop_root).iterdir() if p.name.isdigit() and p.is_dir())
+        item_dirs = sorted(p for p in Path(workshop_root).iterdir() if p.name.isascii() and p.name.isdigit() and p.is_dir())
     except OSError as e:
         logger.warning(f"读取创意工坊目录失败: {e}")
         return

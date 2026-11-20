@@ -28,7 +28,6 @@ def encode_url_path(path: str) -> str:
     return '/'.join(encoded_parts)
 
 
-
 def is_utf8_text(value: str) -> bool:
     """Whether ``value`` can be encoded as UTF-8.
 
