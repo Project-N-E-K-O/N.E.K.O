@@ -11,9 +11,9 @@ import pytest
 import pytest_asyncio
 
 from nekoclaw.host import call_audit
-from nekoclaw.host.delivery import Answer, DeliveryDenied, Parcel
+from nekoclaw.host.delivery import Answer, DeliveryAuditFull, DeliveryDenied, Parcel, ScopeTooLarge
 from nekoclaw.host.ledger import Ledger
-from nekoclaw.host.reports import describe_permission
+from nekoclaw.host.reports import describe_permission, render_question
 from tests.unit.nekoclaw.host_fakes import make_host
 
 WORK = frozenset({"conversations:work"})
@@ -66,6 +66,25 @@ def test_question_distinguishes_arguments_from_results_in_the_session_language(l
 
     assert message("arguments") != message("result")
     assert "A → B (work)" in message("result")
+    assert len({message(kind) for kind in ("arguments", "value", "content")}) == 3
+    assert all("A → B (work)" in message(kind) for kind in ("value", "content"))
+
+
+def test_compact_report_points_to_full_question_without_offering_a_truncated_approval():
+    title = "dsh:timer → neko:report " + ", ".join(f"resource-{n}" for n in range(20))
+    question = {"kind": "permission", "category": "managed_delivery", "options": ["once", "deny"],
+                "detail": {"direction": "value", "title": title}}
+    assert title in render_question("任务" * 400, question, "zh")
+    assert describe_permission(question, "zh", max_tokens=24) == "请查看这项任务的完整授权请求。"
+
+
+@pytest.mark.asyncio
+async def test_undisplayable_scope_requires_smaller_request_before_asking(env):
+    host, cid, timer, report, questions = env
+    timer.readable = report.readable = frozenset(f"resource-{n}" for n in range(300))
+    with pytest.raises(ScopeTooLarge, match="fewer resources"):
+        await host.delivery.invoke(cid, timer, report.identity, Parcel(None, timer.readable), one_way=True)
+    assert questions == [] and not report.inputs
 
 
 @pytest_asyncio.fixture
@@ -154,13 +173,72 @@ async def test_each_channel_has_its_own_recipient_check_and_derived_data_inherit
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("available", [1, 2])
+async def test_audit_exhaustion_reports_whether_the_target_ran(env, monkeypatch, available):
+    host, cid, timer, report, _ = env
+    # Allow the root and invoke. One more slot admits arguments but not the reply.
+    monkeypatch.setattr(call_audit, "BUDGET_BYTES", (1 + available) * call_audit.RECORD_BYTES)
+    expected = call_audit.AuditFull if available == 1 else DeliveryAuditFull
+    with pytest.raises(expected) as failure:
+        await host.delivery.invoke(cid, timer, report.identity, Parcel(None, PUBLIC), one_way=False)
+    assert bool(report.inputs) == (available == 2)
+    assert ("No new action" in str(failure.value)) == (available == 1)
+    assert failure.value.__context__ is None
+
+
+@pytest.mark.asyncio
+async def test_payload_is_detached_before_each_permission_wait(env):
+    host, cid, timer, report, _ = env
+    timer.readable = WORK
+    source = {"list": ["original input"]}
+    result = {"list": ["original output"]}
+    report.response = Answer(content=Parcel(result, WORK))
+
+    async def allow(_cid, ask):
+        source["list"][0] = "edited input"
+        result["list"][0] = "edited output" if ask.detail["direction"] == "content" else "original output"
+        return "once"
+
+    host.permissions.set_asker(allow)
+    answer = await host.delivery.invoke(cid, timer, report.identity, Parcel(source, WORK), one_way=False)
+    assert report.inputs[0].data == {"list": ["original input"]}
+    assert answer.content.data == {"list": ["original output"]}
+    assert source["list"] == ["edited input"] and result["list"] == ["edited output"]
+
+
+@pytest.mark.asyncio
+async def test_model_content_requires_its_own_approval_after_program_value(env):
+    host, cid, timer, report, questions = env
+    timer.readable = WORK
+    arguments = Parcel(None, PUBLIC)
+    report.response = Answer(value=Parcel("program", WORK))
+    for _ in range(2):
+        assert await host.delivery.invoke(cid, timer, report.identity, arguments, one_way=False) == report.response
+
+    async def deny_model(_cid, ask):
+        questions.append(ask)
+        return "deny"
+
+    host.permissions.set_asker(deny_model)
+    report.response = Answer(content=Parcel("model", WORK))
+    with pytest.raises(DeliveryDenied):
+        await host.delivery.invoke(cid, timer, report.identity, arguments, one_way=False)
+    assert [ask.detail["direction"] for ask in questions] == ["value", "content"]
+    rows = await host.ledger.run(lambda db: call_audit.read_trace(db, cid, now=0))
+    assert any(row["kind"] == "deliver_content" and row["status"] == "denied" for row in rows)
+
+
+@pytest.mark.asyncio
 async def test_native_denial_unknown_adapter_and_forged_sender_never_reach_legacy_runs(
     env,
 ):
     host, cid, timer, report, _ = env
     report.native_allow = False
+    with pytest.raises(DeliveryDenied):
+        await host.delivery.invoke(cid, timer, report.identity, Parcel({}, PUBLIC), one_way=True)
+    assert not report.inputs
+    report.native_allow = True
     for sender, target in (
-        (timer, report.identity),
         (Endpoint(timer.identity, PRIVATE), report.identity),
         (timer, "neko:legacy_without_delivery_contract"),
     ):

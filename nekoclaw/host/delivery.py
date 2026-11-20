@@ -29,6 +29,18 @@ class DeliveryDenied(PermissionError):
     """Fixed host errors may cross the boundary; foreign exception bodies cannot."""
 
 
+class ScopeTooLarge(DeliveryDenied):
+    def __init__(self) -> None:
+        super().__init__("The full scope must fit in the permission request. Request fewer resources at a time.")
+
+
+class DeliveryAuditFull(RuntimeError):
+    """The request reached its target, but the host could not audit the remaining work."""
+
+    def __init__(self) -> None:
+        super().__init__("The target was invoked. Its result could not be delivered because the audit is full.")
+
+
 @dataclass(frozen=True)
 class Parcel:
     """An adapter must explicitly classify each payload, including public data (empty set)."""
@@ -42,6 +54,11 @@ class Parcel:
             for scope in self.scopes
         ):
             raise ValueError("expected an explicit set of trusted resource identifiers")
+
+    def snapshot(self, inherited: frozenset[str]) -> Parcel:
+        """Detach the JSON payload before any asynchronous permission or audit work."""
+        data = json.loads(json.dumps(self.data, allow_nan=False, ensure_ascii=False))
+        return Parcel(data, self.scopes | inherited)
 
 
 @dataclass(frozen=True)
@@ -138,6 +155,10 @@ class ManagedDelivery:
             failure = call_audit.CommissionEnded("this commission is no longer under way")
         except call_audit.AuditFull:
             failure = call_audit.AuditFull()
+        except DeliveryAuditFull:
+            failure = DeliveryAuditFull()
+        except ScopeTooLarge:
+            failure = ScopeTooLarge()
         except Exception:
             failure = DeliveryDenied("managed delivery refused or unavailable")
         raise failure
@@ -159,14 +180,15 @@ class ManagedDelivery:
         if parent is not None:
             if parent.endpoint is not sender or parent.commission_id != commission_id:
                 raise DeliveryDenied("invocation does not belong to this adapter")
-            # An adapter forwarding its input or a previous result cannot erase
-            # the source restrictions simply by constructing a new public parcel.
-            arguments = Parcel(arguments.data, arguments.scopes | parent.scopes)
+        # Forwarded inputs and results retain their source restrictions even if
+        # an adapter constructs a new public parcel around a derived value.
+        arguments = arguments.snapshot(parent.scopes if parent else frozenset())
         # Keep once-only loans until the actual handoff, including across audit
         # writes. Roll back every temporary handle on all exit paths.
         with ExitStack() as cleanup:
             grants = parent.grants.copy() if parent else {}
             answer = None
+            invoked = False
             return_scopes: frozenset[str] = frozenset()
             async with call_audit.call(
                 self._ledger, commission_id, "trigger" if one_way else "invoke", target
@@ -208,6 +230,7 @@ class ManagedDelivery:
                     )
                     token = self._processing.set(frame)
                     try:
+                        invoked = True
                         if one_way:
                             await recipient.trigger(invocation, arguments)
                         else:
@@ -219,20 +242,21 @@ class ManagedDelivery:
                         answer, return_scopes = self._select_answer(
                             sender, answer, frame.scopes
                         )
-                        channels = [
-                            name
-                            for name in ("value", "content")
-                            if getattr(answer, name) is not None
-                        ]
-                        await self._authorize_transfer(
-                            commission_id,
-                            recipient,
-                            sender,
-                            return_scopes,
-                            "deliver_" + ("_".join(channels) or "empty"),
-                            cleanup,
-                            grants,
-                        )
+                        for channel, parcel in (("value", answer.value), ("content", answer.content)):
+                            if parcel is not None:
+                                await self._authorize_transfer(
+                                    commission_id, recipient, sender, parcel.scopes,
+                                    "deliver_" + channel, cleanup, grants,
+                                )
+                        if answer.value is None and answer.content is None:
+                            await self._authorize_transfer(
+                                commission_id, recipient, sender, frozenset(), "deliver_empty", cleanup, grants
+                            )
+                except call_audit.AuditFull:
+                    if invoked:
+                        op.reason = "audit_full_after_invocation"
+                        raise DeliveryAuditFull() from None
+                    raise
                 except DeliveryDenied:
                     op.status = "denied"
                     op.reason = "managed_delivery_denied"
@@ -268,7 +292,7 @@ class ManagedDelivery:
             if not isinstance(parcel, Parcel):
                 raise DeliveryDenied("unclassified response")
             scopes = inherited | parcel.scopes
-            return Parcel(parcel.data, scopes) if receiver.accepts(scopes) else None
+            return parcel.snapshot(inherited) if receiver.accepts(scopes) else None
 
         value, content = allowed(answer.value), allowed(answer.content)
         if (answer.value or answer.content) and not (value or content):
@@ -344,18 +368,23 @@ class ManagedDelivery:
             try:
                 self._require_live(sender, receiver, scopes, grants)
                 if scopes:
+                    from config.nekoclaw_settings import PERMISSION_SUBJECT_MAX_TOKENS
+                    from utils.tokenize import count_tokens
+
                     resources = json.dumps(
                         sorted(scopes), ensure_ascii=False, separators=(",", ":")
                     )
                     record.scope_ref = hashlib.sha256(resources.encode()).hexdigest()
-                    direction = "arguments" if kind == "send_arguments" else "result"
+                    direction = kind.split("_", 1)[1]
                     scope = GrantScope(
                         provider=sender.identity,
                         resource=f"{direction}:{record.scope_ref}",
                         recipient=receiver.identity,
                         bindings=(self._bindings[sender.identity], self._bindings[receiver.identity]),
                     )
-                    title = f"{sender.identity} → {receiver.identity} ({', '.join(sorted(scopes))})"
+                    title = f"{sender.identity} → {receiver.identity} {resources}"
+                    if count_tokens(title) > PERMISSION_SUBJECT_MAX_TOKENS:
+                        raise ScopeTooLarge()
                     await self._borrow(
                         commission_id,
                         "managed_delivery",

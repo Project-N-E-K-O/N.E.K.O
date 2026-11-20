@@ -182,8 +182,11 @@ class BuiltinCapabilities(Protocol):
     def available(self) -> list[Capability]:
         """Return the built-in tools, each with its availability as of now. Must not block."""
 
-    async def run(self, capability: Capability, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
-        """Carry out one call. Cancelling it must stop what it started."""
+    async def run(
+        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any],
+        still_allowed: Callable[[], bool] | None = None,
+    ) -> BuiltinOutcome:
+        """Recheck still_allowed after queueing and before the device action. Cancellation stops work."""
 
     async def released(self, group: str, commission_id: str) -> None:
         """A commission no longer occupies a group: drop what was kept for it."""
@@ -458,15 +461,12 @@ class CapabilityRegistry:
         """
         if self._builtins is None:
             return BuiltinOutcome(False, "this capability is not offered by this process")
-        guarded = getattr(self._builtins, "run_guarded", None)
-        if guarded is not None:
-            return await guarded(capability, commission_id=commission_id, arguments=arguments,
-                                 reopen_agreement=reopen_agreement, still_allowed=still_allowed)
-        if reopen_agreement is None:
-            return await self._builtins.run(capability, commission_id=commission_id, arguments=arguments)
-        return await self._builtins.run(
-            capability, commission_id=commission_id, arguments=arguments, reopen_agreement=reopen_agreement
-        )
+        options: dict[str, Any] = {}
+        if still_allowed is not None:
+            options["still_allowed"] = still_allowed
+        if reopen_agreement is not None:
+            options["reopen_agreement"] = reopen_agreement
+        return await self._builtins.run(capability, commission_id=commission_id, arguments=arguments, **options)
 
     def browser_closed_by_user(self) -> bool:
         """Whether the user closed the browser the built-in tools started and it has no window since. Must not block."""

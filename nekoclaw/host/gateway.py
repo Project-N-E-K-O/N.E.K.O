@@ -1323,7 +1323,7 @@ class CapabilityGateway:
                 return _text("this commission is no longer under way", error=True)
         if not self._permissions.grant_active(grant_id):
             if self._leases is not None:
-                self._leases.release(commission.id)
+                self._leases.release(commission.id, only_group=group)
             record.status, record.reason = "denied", "settings"
             return _text(DENIED_BY_SETTINGS, error=True)
         try:
@@ -1337,6 +1337,8 @@ class CapabilityGateway:
             logger.exception("built-in tool %s failed", capability.id)
             return _text(f"{capability.tool_name} failed: {type(exc).__name__}", error=True)
         if not outcome.success and outcome.text == "permission denied":
+            if self._leases is not None:
+                self._leases.release(commission.id, only_group=group)
             record.status, record.reason = "denied", "settings"
         text = truncate_to_tokens(outcome.text or ("done" if outcome.success else "failed"), GATEWAY_RESULT_MAX_TOKENS)
         if not outcome.images:

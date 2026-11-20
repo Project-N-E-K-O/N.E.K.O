@@ -191,20 +191,13 @@ class BuiltinToolProvider:
         commission_id: str,
         arguments: dict[str, Any],
         reopen_agreement: int | None = None,
+        still_allowed: Callable[[], bool] | None = None,
     ) -> BuiltinOutcome:
-        """Carry out one call. Cancelling it stops what it started.
+        """Carry out one call, rechecking authorization inside the device queue. Cancelling it stops work.
 
         ``reopen_agreement``: the user's agreement to this call opening a
         browser they closed (``browser_reopen_agreed``).
         """
-        return await self.run_guarded(capability, commission_id=commission_id, arguments=arguments,
-                                      reopen_agreement=reopen_agreement)
-
-    async def run_guarded(
-        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any],
-        reopen_agreement: int | None = None, still_allowed: Callable[[], bool] | None = None,
-    ) -> BuiltinOutcome:
-        """Recheck host approval after a wait inside either registered device."""
         group = capability.group
         ready, reason = self._ready(group or "")
         if not ready:

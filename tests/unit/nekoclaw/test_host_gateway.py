@@ -1054,8 +1054,11 @@ class Builtins:
         ]
 
     async def run(
-        self, capability: Any, *, commission_id: str, arguments: dict[str, Any], reopen_agreement: Any = None
+        self, capability: Any, *, commission_id: str, arguments: dict[str, Any], reopen_agreement: Any = None,
+        still_allowed: Any = None,
     ) -> Any:
+        if still_allowed is not None and not still_allowed():
+            return BuiltinOutcome(False, "permission denied")
         self.calls.append((capability.tool_name, commission_id, dict(arguments)))
         self.reopened = [*self.reopened, reopen_agreement]
         if reopen_agreement is not None:
@@ -2745,14 +2748,16 @@ async def test_revoking_browser_approval_while_queued_keeps_the_next_provider_ca
     holder = await _commission(builtin_host)
     other = await _commission(builtin_host, title="second browser task")
     await _call(builtin_host, _grant(builtin_host, holder), "browser_navigate_page")
-    waiting = asyncio.create_task(_call(builtin_host, _grant(builtin_host, other), "browser_navigate_page"))
+    other_grant = _grant(builtin_host, other, images=True)
+    await _call(builtin_host, other_grant, "computer", {"action": "screenshot"})
+    waiting = asyncio.create_task(_call(builtin_host, other_grant, "browser_navigate_page"))
     await wait_until(lambda: builtin_host.leases._waiters, what="second task waiting at the device")
     await builtin_host.permission_store.set_mode("browser", "deny")
     await builtin_host.ledger.transition(holder.id, "done", reason="test")
     result = await asyncio.wait_for(waiting, 10)
     assert result["isError"] and "permission denied" in _text(result)
-    assert [cid for _, cid, _ in builtin_host.provider.calls] == [holder.id]
-    assert builtin_host.leases.occupied() == {}
+    assert [cid for _, cid, _ in builtin_host.provider.calls] == [holder.id, other.id]
+    assert builtin_host.leases.occupied() == {"keyboard_mouse": other.id}
 
 
 async def test_stopping_a_commission_stops_its_call_that_waits_for_a_group(builtin_host):

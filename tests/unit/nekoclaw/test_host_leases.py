@@ -411,7 +411,9 @@ class Provider:
     def available(self) -> list[Any]:
         return [builtin_tool(BROWSER, {"name": "browser_list_pages", "description": "List the open pages."})]
 
-    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any], still_allowed=None) -> BuiltinOutcome:
+        if still_allowed is not None and not still_allowed():
+            return BuiltinOutcome(False, "permission denied")
         return BuiltinOutcome(True, "done")
 
     async def released(self, group: str, commission_id: str) -> None:

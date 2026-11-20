@@ -342,12 +342,16 @@ async def test_scoped_loan_is_shared_by_the_root_but_bound_to_each_actual_delive
     async def deliver(actor, selected=scope):
         return await gate.check(actor, "managed_delivery", scope=selected, hold_once=True)
 
-    first = asyncio.create_task(deliver("first"))
-    await waiting.wait()
-    second = asyncio.create_task(deliver("second"))
-    await asyncio.sleep(0)
-    answer.set()
-    a, b = await asyncio.gather(first, second)
+    async with asyncio.timeout(5), asyncio.TaskGroup() as group:
+        first = group.create_task(deliver("first"))
+        question = group.create_task(waiting.wait())
+        done, _ = await asyncio.wait((first, question), return_when=asyncio.FIRST_COMPLETED)
+        if first in done:
+            pytest.fail(f"first request ended before asking: {first.result()!r}")
+        second = group.create_task(deliver("second"))
+        await asyncio.sleep(0)
+        answer.set()
+    a, b = first.result(), second.result()
     assert a.allow and b.allow and len(asked) == 1
     assert asked[0][1].options == ("session", "once", "deny")
     assert a.grant_id != b.grant_id

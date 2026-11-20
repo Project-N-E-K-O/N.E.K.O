@@ -279,7 +279,8 @@ async def call(ledger: Ledger, commission_id: str, kind: str, target: str):
         record.status = "cancelled"
         raise
     except BaseException:
-        record.status = "failed"
+        if record.status != "denied":
+            record.status = "failed"
         raise
     finally:
         _CURRENT.reset(token)

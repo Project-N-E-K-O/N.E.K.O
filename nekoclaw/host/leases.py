@@ -144,15 +144,15 @@ class BuiltinLeases:
             finally:
                 self._waiters.discard(waiter)
 
-    def release(self, commission_id: str) -> list[str]:
-        """Let go of everything a commission occupies; return the groups that came free.
+    def release(self, commission_id: str, *, only_group: str | None = None) -> list[str]:
+        """Release this commission from the requested group, or from all of them. Return the groups freed.
 
         A group stays occupied while another commission of the same team
         still uses it.
         """
         freed: list[tuple[str, Occupation]] = []
         for group, held in list(self._held.items()):
-            if commission_id not in held.members:
+            if (only_group is not None and group != only_group) or commission_id not in held.members:
                 continue
             held.members.discard(commission_id)
             if not held.members:

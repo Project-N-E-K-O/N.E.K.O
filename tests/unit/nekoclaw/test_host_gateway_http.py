@@ -210,7 +210,9 @@ class Desk:
             builtin_tool(BUILTIN_GROUP_BROWSER, self.SNAPSHOT),
         ]
 
-    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any], still_allowed=None) -> BuiltinOutcome:
+        if still_allowed is not None and not still_allowed():
+            return BuiltinOutcome(False, "permission denied")
         self.calls.append((capability.tool_name, commission_id, dict(arguments)))
         if self.observe is not None:
             self.observed.append(self.observe())
@@ -275,7 +277,9 @@ class ShippedBrowser:
     def available(self) -> list[Any]:
         return [builtin_tool(BUILTIN_GROUP_BROWSER, definition) for definition in BROWSER_TOOLS]
 
-    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any], still_allowed=None) -> BuiltinOutcome:
+        if still_allowed is not None and not still_allowed():
+            return BuiltinOutcome(False, "permission denied")
         if self.error is not None:
             return BuiltinOutcome(False, self.error)
         return BuiltinOutcome(True, self.page)

@@ -932,6 +932,17 @@ TURN_CHECK_TEXTS = {
 # A commission that waits for the user reaches her as one sentence she passes
 # on. ``{options}`` lists the answers by their ``PERMISSION_OPTION_NAMES``.
 
+MANAGED_DELIVERY_FULL_QUESTION = {
+    "zh": "请查看这项任务的完整授权请求。",
+    "zh-TW": "請查看這項工作的完整授權請求。",
+    "en": "See the full permission request for this task.",
+    "ja": "この作業の権限確認メッセージ全文をご覧ください。",
+    "ko": "이 작업의 전체 권한 요청을 확인하세요.",
+    "ru": "Откройте полный запрос разрешения для этой задачи.",
+    "es": "Consulta la solicitud de permiso completa de esta tarea.",
+    "pt": "Consulte o pedido de permissão completo desta tarefa.",
+}
+
 QUESTION_TEXTS = {
     'zh': {
         "permission": "「{title}」要先得到用户批准才能继续：{what}。请转告用户，可以回答：{options}。用户回答后，用任务派发工具把回答交回来。",
@@ -1010,12 +1021,14 @@ PERMISSION_CATEGORY_TEXTS = {
            "outside_read": "读取工作目录以外的文件 {detail}", "workdir_files": "读写工作目录里的文件 {detail}",
            "keyboard_mouse": "操作键盘和鼠标", "browser": "操作浏览器", "browser_reopen": "重新打开浏览器（之前开的那个被关掉了）", "space_command": "运行命令 {detail}（这条命令会碰到使魔的长期记忆文件）", "mcp_server": "使用 MCP 服务 {detail}",
            "managed_delivery_arguments": "传递任务输入 {detail}", "managed_delivery_result": "交付任务结果 {detail}",
+           "managed_delivery_value": "交付给程序的结果 {detail}", "managed_delivery_content": "交付给模型看的内容 {detail}",
            "usage_limit": "再用约 {more} token 接着办，用到了会再问一次（这件事已经用了 {used} token，到了一件事的用量上限）",
            "plugin_entry": "调用 {detail}", "other": "使用 {detail}"},
     'zh-TW': {"run_command": "執行命令 {detail}", "outside_write": "在工作目錄以外寫檔案 {detail}",
               "outside_read": "讀取工作目錄以外的檔案 {detail}", "workdir_files": "讀寫工作目錄裡的檔案 {detail}",
               "keyboard_mouse": "操作鍵盤和滑鼠", "browser": "操作瀏覽器", "browser_reopen": "重新開啟瀏覽器（之前開的那個被關掉了）", "space_command": "執行命令 {detail}（這條命令會碰到使魔的長期記憶檔案）", "mcp_server": "使用 MCP 服務 {detail}",
               "managed_delivery_arguments": "傳遞工作輸入 {detail}", "managed_delivery_result": "交付工作結果 {detail}",
+              "managed_delivery_value": "交付給程式的結果 {detail}", "managed_delivery_content": "交付給模型看的內容 {detail}",
               "usage_limit": "再用約 {more} token 接著辦，用到了會再問一次（這件事已經用了 {used} token，到了一件事的用量上限）",
               "plugin_entry": "呼叫 {detail}", "other": "使用 {detail}"},
     'en': {"run_command": "run the command {detail}", "outside_write": "write the file {detail} outside the working directory",
@@ -1025,18 +1038,21 @@ PERMISSION_CATEGORY_TEXTS = {
            "browser_reopen": "open the browser again (the one that was open has been closed)",
            "space_command": "run the command {detail}, which touches the familiars' long-term memory files",
            "managed_delivery_arguments": "send task input {detail}", "managed_delivery_result": "deliver a task result {detail}",
+           "managed_delivery_value": "deliver a result to the program {detail}", "managed_delivery_content": "deliver content to the model {detail}",
            "usage_limit": "go on with about {more} more tokens, after which it asks again (it has used {used} tokens, the limit set for one task)",
            "mcp_server": "use the MCP server {detail}", "plugin_entry": "call {detail}", "other": "use {detail}"},
     'ja': {"run_command": "コマンド {detail} の実行", "outside_write": "作業ディレクトリ外のファイル {detail} への書き込み",
            "outside_read": "作業ディレクトリ外のファイル {detail} の読み取り", "workdir_files": "作業ディレクトリ内の {detail} の読み書き",
            "keyboard_mouse": "キーボードとマウスの操作", "browser": "ブラウザの操作", "browser_reopen": "ブラウザをもう一度開くこと（開いていたブラウザは閉じられました）", "space_command": "コマンド {detail} の実行（このコマンドは使い魔の長期記憶ファイルに触れます）", "mcp_server": "MCP サーバー {detail} の利用",
            "managed_delivery_arguments": "作業の入力を渡す {detail}", "managed_delivery_result": "作業の結果を渡す {detail}",
+           "managed_delivery_value": "プログラムに結果を渡す {detail}", "managed_delivery_content": "モデルに内容を渡す {detail}",
            "usage_limit": "さらに約 {more} token を使って続けること（使い切ったらもう一度確認します。この用件はすでに {used} token を使い、1 件あたりの使用量の上限に達しました）",
            "plugin_entry": "{detail} の呼び出し", "other": "{detail} の利用"},
     'ko': {"run_command": "명령 {detail} 실행", "outside_write": "작업 디렉터리 밖의 파일 {detail} 쓰기",
            "outside_read": "작업 디렉터리 밖의 파일 {detail} 읽기", "workdir_files": "작업 디렉터리 안의 {detail} 읽기/쓰기",
            "keyboard_mouse": "키보드와 마우스 조작", "browser": "브라우저 조작", "browser_reopen": "브라우저 다시 열기(열려 있던 브라우저가 닫혔습니다)", "space_command": "명령 {detail} 실행(이 명령은 사역마의 장기 기억 파일을 건드립니다)", "mcp_server": "MCP 서버 {detail} 사용",
            "managed_delivery_arguments": "작업 입력 전달 {detail}", "managed_delivery_result": "작업 결과 전달 {detail}",
+           "managed_delivery_value": "프로그램에 결과 전달 {detail}", "managed_delivery_content": "모델에 내용 전달 {detail}",
            "usage_limit": "약 {more} token을 더 써서 계속하기(다 쓰면 다시 묻습니다. 이 일은 이미 {used} token을 써서 한 건의 사용량 한도에 이르렀습니다)",
            "plugin_entry": "{detail} 호출", "other": "{detail} 사용"},
     'ru': {"run_command": "выполнить команду {detail}", "outside_write": "записать файл {detail} вне рабочего каталога",
@@ -1045,6 +1061,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "browser_reopen": "снова открыть браузер (открытый ранее был закрыт)",
            "space_command": "выполнить команду {detail}, которая затрагивает файлы долговременной памяти фамильяров",
            "managed_delivery_arguments": "передать входные данные задачи {detail}", "managed_delivery_result": "передать результат задачи {detail}",
+           "managed_delivery_value": "передать результат программе {detail}", "managed_delivery_content": "передать данные модели {detail}",
            "usage_limit": "продолжить, израсходовав ещё около {more} токенов, после чего будет новый запрос (на задачу уже ушло {used} токенов, это предел для одной задачи)",
            "mcp_server": "использовать MCP-сервер {detail}", "plugin_entry": "вызвать {detail}", "other": "использовать {detail}"},
     'es': {"run_command": "ejecutar el comando {detail}", "outside_write": "escribir el archivo {detail} fuera del directorio de trabajo",
@@ -1054,6 +1071,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "browser_reopen": "volver a abrir el navegador (el que estaba abierto se cerró)",
            "space_command": "ejecutar el comando {detail}, que toca los archivos de memoria a largo plazo de los familiares",
            "managed_delivery_arguments": "enviar los datos de entrada de la tarea {detail}", "managed_delivery_result": "entregar el resultado de la tarea {detail}",
+           "managed_delivery_value": "entregar el resultado al programa {detail}", "managed_delivery_content": "entregar contenido al modelo {detail}",
            "usage_limit": "seguir gastando unos {more} tokens más, tras lo cual volverá a preguntar (ya ha gastado {used} tokens, el límite fijado para una tarea)",
            "mcp_server": "usar el servidor MCP {detail}", "plugin_entry": "llamar a {detail}", "other": "usar {detail}"},
     'pt': {"run_command": "executar o comando {detail}", "outside_write": "gravar o arquivo {detail} fora do diretório de trabalho",
@@ -1063,6 +1081,7 @@ PERMISSION_CATEGORY_TEXTS = {
            "browser_reopen": "abrir o navegador de novo (o que estava aberto foi fechado)",
            "space_command": "executar o comando {detail}, que mexe nos arquivos de memória de longo prazo dos familiares",
            "managed_delivery_arguments": "enviar os dados de entrada da tarefa {detail}", "managed_delivery_result": "entregar o resultado da tarefa {detail}",
+           "managed_delivery_value": "entregar o resultado ao programa {detail}", "managed_delivery_content": "entregar conteúdo ao modelo {detail}",
            "usage_limit": "continuar gastando cerca de mais {more} tokens, e depois perguntará de novo (já gastou {used} tokens, o limite definido para uma tarefa)",
            "mcp_server": "usar o servidor MCP {detail}", "plugin_entry": "chamar {detail}", "other": "usar {detail}"},
 }
