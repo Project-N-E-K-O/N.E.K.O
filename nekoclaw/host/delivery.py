@@ -22,7 +22,7 @@ from typing import Any, Protocol
 
 from nekoclaw.host import call_audit
 from nekoclaw.host.ledger import Ledger
-from nekoclaw.host.permissions import GrantScope, PermissionGate
+from nekoclaw.host.permissions import GrantBinding, GrantScope, PermissionGate
 
 
 class DeliveryDenied(PermissionError):
@@ -90,6 +90,7 @@ class ManagedDelivery:
         self._ledger = ledger
         self._permissions = permissions
         self._adapters: dict[str, DeliveryAdapter] = {}
+        self._bindings: dict[str, GrantBinding] = {}
         self._processing: ContextVar[_Processing | None] = ContextVar(
             "managed_delivery_processing", default=None
         )
@@ -103,9 +104,11 @@ class ManagedDelivery:
         if identity in self._adapters:
             raise ValueError("managed endpoint already registered")
         self._adapters[identity] = adapter
+        self._bindings[identity] = GrantBinding()
 
     def unregister(self, adapter: DeliveryAdapter) -> None:
         if self._adapters.get(adapter.identity) is adapter:
+            self._bindings.pop(adapter.identity).active = False
             del self._adapters[adapter.identity]
 
     def _connected(self, sender: DeliveryAdapter, recipient: DeliveryAdapter) -> bool:
@@ -151,6 +154,7 @@ class ManagedDelivery:
         recipient = self._adapters.get(target)
         if recipient is None or not self._connected(sender, recipient):
             raise DeliveryDenied("managed delivery is unavailable")
+        registrations = (self._bindings[sender.identity], self._bindings[target])
         parent = self._processing.get()
         if parent is not None:
             if parent.endpoint is not sender or parent.commission_id != commission_id:
@@ -175,6 +179,7 @@ class ManagedDelivery:
                         provider=sender.identity,
                         resource="trigger" if one_way else "call",
                         recipient=target,
+                        bindings=registrations,
                     )
                     category = "plugin_entry" if target.startswith("neko:") else "other"
                     await self._borrow(
@@ -348,6 +353,7 @@ class ManagedDelivery:
                         provider=sender.identity,
                         resource=f"{direction}:{record.scope_ref}",
                         recipient=receiver.identity,
+                        bindings=(self._bindings[sender.identity], self._bindings[receiver.identity]),
                     )
                     title = f"{sender.identity} → {receiver.identity} ({', '.join(sorted(scopes))})"
                     await self._borrow(

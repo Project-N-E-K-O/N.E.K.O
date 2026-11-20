@@ -172,6 +172,51 @@ async def test_native_denial_unknown_adapter_and_forged_sender_never_reach_legac
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["sender", "recipient"])
+async def test_replacement_must_obtain_its_own_session_approval(env, role):
+    host, cid, timer, report, questions = env
+    timer.readable = WORK
+    await host.delivery.invoke(cid, timer, report.identity, Parcel("first", WORK), one_way=True)
+    assert len(questions) == 1
+    old = timer if role == "sender" else report
+    host.delivery.unregister(old)
+    new = Endpoint(old.identity, WORK)
+    host.delivery.register(new)
+
+    async def decline(_cid, ask):
+        questions.append(ask)
+        return "deny"
+
+    host.permissions.set_asker(decline)
+    with pytest.raises(DeliveryDenied):
+        await host.delivery.invoke(cid, new if role == "sender" else timer, report.identity,
+                                   Parcel("second", WORK), one_way=True)
+    assert len(questions) == 2 and not new.inputs and len(report.inputs) == 1
+
+
+@pytest.mark.asyncio
+async def test_reregistering_same_object_while_asking_discards_late_answer(env):
+    host, cid, timer, report, _ = env
+    timer.readable = WORK
+    asked, answer = asyncio.Event(), asyncio.Event()
+
+    async def wait(_cid, ask):
+        asked.set()
+        await answer.wait()
+        return "session"
+
+    host.permissions.set_asker(wait)
+    pending = asyncio.create_task(host.delivery.invoke(cid, timer, report.identity, Parcel("work", WORK), one_way=True))
+    await asyncio.wait_for(asked.wait(), 5)
+    host.delivery.unregister(report)
+    host.delivery.register(report)
+    answer.set()
+    with pytest.raises(DeliveryDenied):
+        await pending
+    assert not report.inputs
+
+
+@pytest.mark.asyncio
 async def test_replacement_during_execution_cannot_receive_result_or_error_details(env):
     host, cid, timer, report, _ = env
     report.wait = asyncio.Event()

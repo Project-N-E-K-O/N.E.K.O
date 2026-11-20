@@ -320,6 +320,13 @@ class PermissionStore:
         return {"categories": categories, "mcp_servers": dict(self._mcp_servers), "unreadable": False}
 
 
+@dataclass(eq=False, slots=True)
+class GrantBinding:
+    """One host registration lifetime, compared by identity."""
+
+    active: bool = True
+
+
 @dataclass(frozen=True, slots=True)
 class GrantScope:
     """Verified provider, resource/purpose and recipient for one operation."""
@@ -327,6 +334,10 @@ class GrantScope:
     provider: str
     resource: str = ""
     recipient: str = ""
+    bindings: tuple[GrantBinding, ...] = ()
+
+    def registered(self) -> bool:
+        return all(binding.active for binding in self.bindings)
 
 
 @dataclass(frozen=True, slots=True)
@@ -541,7 +552,7 @@ class PermissionGate:
         """Last synchronous check before crossing a host-owned boundary."""
         loan = self._loans.get(grant_id) if grant_id else None
         return bool(
-            loan and self._store.revision(*loan.slot) == loan.revision
+            loan and loan.scope.registered() and self._store.revision(*loan.slot) == loan.revision
             and (loan.parent_id is None or loan.parent_id in self._loans)
         )
 
@@ -591,7 +602,7 @@ class PermissionGate:
         self, commission_id: str, category: str, key: str | None, scope: GrantScope,
         detail: dict[str, Any] | None, hold_once: bool,
     ) -> PermissionDecision:
-        if not scope.provider or (category == "managed_delivery" and not scope.recipient):
+        if not scope.registered() or not scope.provider or (category == "managed_delivery" and not scope.recipient):
             return PermissionDecision(False, DENIED_NO_ANSWER)
         mode = await self._store.mode(category, key)
         if mode == "deny":
@@ -615,7 +626,9 @@ class PermissionGate:
         work = self._work.setdefault(commission_id, object())
 
         def live() -> bool:
-            return self._work.get(commission_id) is work and all(self._lives.get(actor) is life for actor, life in lives)
+            return scope.registered() and self._work.get(commission_id) is work and all(
+                self._lives.get(actor) is life for actor, life in lives
+            )
 
         def receipt(loan_id: str) -> str:
             if hold_once or delivery:
