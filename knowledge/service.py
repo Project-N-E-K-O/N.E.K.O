@@ -246,29 +246,34 @@ class _SelectionChanged(Exception):
     """The active source selection changed before a last-source removal."""
 
 
-def _budgeted_plan(pack: KnowledgePack, options: dict[str, Any], others: int) -> tuple[dict[str, Any], int]:
+def _budgeted_plan(pack: KnowledgePack, options: dict[str, Any], others: int) -> tuple[dict[str, Any], int] | None:
     """Pick the rebuild plan that fits the chunk budgets, preferring vectors.
 
     Try the token plan with verified archive rows, then without the token
-    plan, then the admitted local (legacy) layout. A rebuild must never grow a
-    pack past the per-pack or total limits; a later replan is refused before
-    native inference instead of truncating text or overfilling.
+    plan, then the local (legacy) layout. A rebuild must never grow a pack
+    past the per-pack or total limits: when no plan fits (e.g. a pack admitted
+    with its archive layout whose retained ZIP is now gone), return None and
+    let the caller refuse the rebuild before writing anything.
     """
     for dropped in ((), ("fit",), ("fit", "seed_vectors")):
         trial = {key: value for key, value in options.items() if key not in dropped}
         chunks = count_pack_chunks(pack, fit=trial.get("fit"), seed_vectors=trial.get("seed_vectors", ()))
         if chunks <= MAX_CHUNKS_PER_PACK and others + chunks <= MAX_TOTAL_CHUNKS:
-            break
-    return trial, chunks
+            return trial, chunks
+    return None
 
 
-def _file_identity(path: Path) -> tuple[int, int] | None:
-    """Size and modification time, or None when the file cannot be read."""
+def _file_identity(path: Path) -> tuple[int, ...] | None:
+    """Cache key for a file's state, or None when it cannot be read.
+
+    Inode and change time are included, so restoring a same-size file with a
+    preserved mtime (``cp -p``, ``rsync -a``) still counts as a change.
+    """
     try:
         info = path.stat()
     except OSError:
         return None
-    return info.st_size, info.st_mtime_ns
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
 def _job_files(jobs: Sequence[ImportJob], *, installing: Registry | None) -> frozenset[str]:
@@ -396,7 +401,7 @@ class KnowledgeService:
         self._seeded_artifacts: set[tuple[str, str]] = set()
         # (archive, spec) -> file identity of a retained ZIP that failed to
         # seed; re-read only after the file itself changes.
-        self._seed_failures: dict[tuple[str, str], tuple[int, int] | None] = {}
+        self._seed_failures: dict[tuple[str, str], tuple[int, ...] | None] = {}
         # A replan can commit SQLite before registry persistence fails. Block
         # further capacity decisions/encoding until their counts agree again.
         self._pending_chunk_reconcile = False
@@ -598,7 +603,16 @@ class KnowledgeService:
                 broken.append(pack_id)
                 continue
             others = sum(value.chunks for key, value in registry.packs.items() if key != pack_id)
-            options, chunks = _budgeted_plan(pack, self._rebuild_options(record), others)
+            plan = _budgeted_plan(pack, self._rebuild_options(record), others)
+            if plan is None:
+                # No layout fits the budgets now. Keep the registry record and
+                # the pack file (recoverable, e.g. once the retained ZIP is
+                # back) but serve no rows, like any pack that cannot be rebuilt.
+                logger.warning("[Knowledge] pack %s cannot be rebuilt within the chunk budget", pack_id)
+                self._store.delete_pack(pack_id)
+                broken.append(pack_id)
+                continue
+            options, chunks = plan
             self._store.replace_pack(pack, pack_sha256=record.pack_sha256,
                                      disabled_keys=record.disabled_titles, **options)
             if chunks != record.chunks:
@@ -2337,7 +2351,15 @@ class KnowledgeService:
             pack = decode_pack_bytes(raw)
             # Same rule as the startup reconcile.
             others = sum(item.chunks for key, item in self._registry.packs.items() if key != pack_id)
-            options, _chunks = _budgeted_plan(pack, self._rebuild_options(previous), others)
+            plan = _budgeted_plan(pack, self._rebuild_options(previous), others)
+            if plan is None:
+                # Never write an over-budget index. The failed update may have
+                # left new rows: drop them so nothing inconsistent with the
+                # registry is served; the startup reconcile marks it broken.
+                logger.warning("[Knowledge] old version of %s does not fit the chunk budget; not restoring", pack_id)
+                self._store.delete_pack(pack_id)
+                return
+            options, _chunks = plan
             restored = self._store.replace_pack(
                 pack,
                 pack_sha256=previous.pack_sha256,

@@ -278,3 +278,56 @@ async def test_index_rebuild_never_grows_an_archive_pack_past_the_total_budget(t
         assert sum(record.chunks for record in rebuilt._registry.packs.values()) <= others + legacy
     finally:
         await rebuilt.stop()
+
+
+async def test_rebuild_and_rollback_refuse_when_no_plan_fits_and_keep_the_pack_recoverable(tmp_path, monkeypatch):
+    """Archive layout at the per-pack limit, retained ZIP lost: only an over-limit local split remains."""
+    pack, path, _checked, spec = _archive(tmp_path)
+
+    class ArchiveProvider(TokenProvider):
+        def count_tokens(self, texts):
+            return [(len(text) + 1) // 2 for text in texts]
+
+    provider = ArchiveProvider()
+    root = tmp_path / "library"
+    monkeypatch.setattr(module, "MAX_CHUNKS_PER_PACK", 97)
+    service = KnowledgeService(root, embedder=provider)
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        assert (await _finished(service, await service.import_pack(path)))["state"] == "active"
+        record = service._registry.packs[pack.pack_id]
+        assert record.chunks == 97
+        artifact = service.artifact_path(record.archive_sha256)
+        kept = artifact.read_bytes()
+        artifact.unlink()
+        # Without the product only local layouts remain (97 legacy, 101 token
+        # rows); a tighter budget leaves no plan that fits at all.
+        monkeypatch.setattr(module, "MAX_CHUNKS_PER_PACK", 96)
+        # Rollback of a failed update: never writes an over-budget split, drops inconsistent rows.
+        await asyncio.to_thread(service._restore_index_blocking, pack.pack_id, record)
+        assert pack.pack_id not in service._store.chunk_stats(None)
+    finally:
+        await service.stop()
+    # Startup rebuild of a lost index: refused without deleting the database or the record.
+    service._store.remove_files()
+    rebuilt = KnowledgeService(root, embedder=provider)
+    await rebuilt.start()
+    try:
+        assert pack.pack_id in rebuilt._broken_packs
+        assert rebuilt._registry.packs[pack.pack_id].chunks == 97
+        assert pack.pack_id not in rebuilt._store.chunk_stats(None)
+        assert (root / "packs" / record.file_name).is_file()
+    finally:
+        await rebuilt.stop()
+    # Once the retained product is back and the budget allows it, the pack recovers.
+    monkeypatch.setattr(module, "MAX_CHUNKS_PER_PACK", 97)
+    artifact.write_bytes(kept)
+    recovered = KnowledgeService(root, embedder=provider)
+    await recovered.start()
+    try:
+        assert pack.pack_id not in recovered._broken_packs
+        assert recovered._store.chunk_stats(spec["model_id"], specification=spec)[pack.pack_id] == {
+            "total": 97, "ready": 97, "failed": 0}
+    finally:
+        await recovered.stop()

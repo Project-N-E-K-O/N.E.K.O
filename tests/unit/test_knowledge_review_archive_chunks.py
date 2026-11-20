@@ -151,8 +151,12 @@ def test_a_zero_prefix_vector_disables_archive_reuse_for_the_whole_package(tmp_p
     assert checked["seed_vectors"] == []
     store = KnowledgeStore(tmp_path / "knowledge.db")
     store.initialize()
-    store.replace_pack(pack, pack_sha256=pack_sha256(canonical_pack_bytes(pack)), fit=lambda text: True,
+    # Install with the same split: a partial archive plan for "Split" (head
+    # only) would leave no row carrying its tail paragraph.
+    store.replace_pack(pack, pack_sha256=pack_sha256(canonical_pack_bytes(pack)), fit=fit,
                        seed_vectors=checked["seed_vectors"])
     texts = [text for _id, _hash, text in store.pending_chunks(model_id=local["model_id"], specification=local,
                                                                  pack_ids=[pack.pack_id], limit=50)]
-    assert any("Tail paragraph that must stay searchable." in text for text in texts)
+    split = [text for text in texts if text.startswith("Split\n")]
+    assert len(split) >= 2 and "".join(text.split("\n", 1)[1] for text in split).replace(" ", "").endswith(
+        "searchable.")
