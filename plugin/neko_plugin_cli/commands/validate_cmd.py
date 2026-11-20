@@ -27,6 +27,8 @@ from plugin.sdk.shared.core.push_message_schema import (
     LEGACY_PUSH_MESSAGE_TRUTHY_ONLY_FIELDS,
     format_push_message_v1_static_diagnostic,
 )
+from plugin.sdk.shared.storage.database import PluginDatabase
+from plugin.sdk.shared.storage.state import PluginStatePersistence
 
 from plugin.utils.source_paths import iter_plugin_python_files
 from ..core.build_rules import reraise_walk_error
@@ -39,6 +41,9 @@ _PLUGIN_ENTRY_FIELDS_MAX = 64
 _PLUGIN_ENTRY_KEY_LENGTH_MAX = 256
 # Fields the registry coerces with bool(), so "false" would read as True.
 _PLUGIN_ENTRY_BOOL_FIELDS = ENTRY_CONTRACT_BOOL_FIELDS
+# [plugin_state].persist_mode values the host applies (plugin/core/host.py);
+# any other value is silently ignored there, so check reports it.
+_PLUGIN_STATE_PERSIST_MODES = frozenset({"auto", "manual", "off"})
 
 
 def validate_plugin_dir(
@@ -183,6 +188,7 @@ def _check_plugin_toml_schema(
         "install",
         "safety",
         "config_profiles",
+        "database",
         "dependency",
         "dependencies",
         "previous_ids",
@@ -211,6 +217,7 @@ def _check_plugin_toml_schema(
     _check_author_table(plugin_table.get("author"), issues)
     _check_sdk_table(plugin_table.get("sdk"), issues)
     _check_store_table(plugin_table.get("store"), issues)
+    _check_database_table(plugin_table.get("database"), issues)
     _check_shared_table(plugin_table.get("shared"), issues)
     _check_i18n_table(plugin_dir, plugin_table.get("i18n"), issues)
     _check_install_table(plugin_dir, plugin_table.get("install"), issues)
@@ -421,6 +428,27 @@ def _check_store_table(value: object, issues: list[tuple[str, str]]) -> None:
     backend = value.get("backend")
     if backend is not None:
         _check_enum(backend, "[plugin.store].backend", {"file", "sqlite", "memory"}, issues)
+
+
+def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
+    """Check ``[plugin.database]``: the keys the SDK reads to open the plugin database."""
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.database] must be a table"))
+        return
+    _warn_unknown_keys(value, {"enabled", "name"}, "[plugin.database]", issues)
+    _check_optional_bool(value, "enabled", "[plugin.database].enabled", issues)
+    name = value.get("name")
+    if name is None:
+        return
+    if not isinstance(name, str):
+        issues.append(("error", "[plugin.database].name must be a string"))
+        return
+    try:
+        PluginDatabase._normalize_db_name(name)
+    except ValueError as exc:
+        issues.append(("error", f"[plugin.database].name is invalid: {exc}"))
 
 
 def _check_shared_table(value: object, issues: list[tuple[str, str]]) -> None:
@@ -948,10 +976,16 @@ def _check_plugin_state_table(value: object, issues: list[tuple[str, str]]) -> N
     _warn_unknown_keys(value, {"backend", "persist_mode"}, "[plugin_state]", issues)
     backend = value.get("backend")
     if backend is not None:
-        _check_enum(backend, "[plugin_state].backend", {"file", "sqlite", "memory"}, issues)
+        # The SDK lower-cases the backend before matching (PluginStatePersistence.normalize_backend).
+        _check_enum(
+            backend.lower() if isinstance(backend, str) else backend,
+            "[plugin_state].backend",
+            set(PluginStatePersistence.VALID_BACKENDS),
+            issues,
+        )
     persist_mode = value.get("persist_mode")
     if persist_mode is not None:
-        _check_enum(persist_mode, "[plugin_state].persist_mode", {"auto", "always", "manual", "disabled"}, issues)
+        _check_enum(persist_mode, "[plugin_state].persist_mode", set(_PLUGIN_STATE_PERSIST_MODES), issues)
 
 
 def _check_entry_target(

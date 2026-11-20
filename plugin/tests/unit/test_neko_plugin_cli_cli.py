@@ -2941,3 +2941,84 @@ def test_external_test_import_hook_does_not_require_a_checkout_pytest_ini(tmp_pa
     assert "-c" not in command
     assert command[command.index("-p") + 1] == "plugin.neko_plugin_cli.plugin_import_alias"
     assert kwargs["env"][release_cmd.PLUGIN_SOURCE_ENV] == str(source)
+
+
+def _validate_with_extra_toml(tmp_path: Path, extra: str) -> list[tuple[str, str]]:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            "[plugin_runtime]",
+            f"{extra}\n\n[plugin_runtime]",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    return validate_plugin_dir(plugin_dir, strict=True)
+
+
+@pytest.mark.parametrize("backend", ["file", "memory", "off", "File"])
+def test_validate_plugin_dir_accepts_runtime_plugin_state_backends(tmp_path: Path, backend: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\nbackend = "{backend}"')
+
+    assert not any("[plugin_state].backend" in message for _level, message in issues)
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "disabled"])
+def test_validate_plugin_dir_rejects_plugin_state_backend_runtime_refuses(tmp_path: Path, backend: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\nbackend = "{backend}"')
+
+    assert ("error", "[plugin_state].backend must be one of: file, memory, off") in issues
+
+
+def test_plugin_state_backends_match_sdk_runtime() -> None:
+    from plugin.sdk.shared.models.exceptions import InvalidArgumentError
+    from plugin.sdk.shared.storage.state import PluginStatePersistence
+
+    for backend in ("file", "memory", "off", "File"):
+        PluginStatePersistence.normalize_backend(backend)
+    for backend in ("sqlite", "disabled"):
+        with pytest.raises(InvalidArgumentError):
+            PluginStatePersistence.normalize_backend(backend)
+
+
+@pytest.mark.parametrize("persist_mode", ["auto", "manual", "off"])
+def test_validate_plugin_dir_accepts_runtime_plugin_state_persist_modes(tmp_path: Path, persist_mode: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\npersist_mode = "{persist_mode}"')
+
+    assert not any("[plugin_state].persist_mode" in message for _level, message in issues)
+
+
+@pytest.mark.parametrize("persist_mode", ["always", "disabled", "Auto"])
+def test_validate_plugin_dir_rejects_plugin_state_persist_mode_runtime_ignores(
+    tmp_path: Path, persist_mode: str
+) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\npersist_mode = "{persist_mode}"')
+
+    assert ("error", "[plugin_state].persist_mode must be one of: auto, manual, off") in issues
+
+
+def test_validate_plugin_dir_accepts_plugin_database_table(tmp_path: Path) -> None:
+    issues = _validate_with_extra_toml(tmp_path, '[plugin.database]\nenabled = true\nname = "notes.db"')
+
+    assert not any("database" in message for _level, message in issues)
+
+
+@pytest.mark.parametrize("name", ["../escape.db", "sub/notes.db", "."])
+def test_validate_plugin_dir_rejects_plugin_database_name_runtime_refuses(tmp_path: Path, name: str) -> None:
+    from plugin.sdk.shared.storage.database import PluginDatabase
+
+    with pytest.raises(ValueError):
+        PluginDatabase._normalize_db_name(name)
+
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin.database]\nname = "{name}"')
+
+    assert any(
+        level == "error" and message.startswith("[plugin.database].name is invalid:") for level, message in issues
+    )
+
+
+def test_validate_plugin_dir_warns_unknown_plugin_database_key(tmp_path: Path) -> None:
+    issues = _validate_with_extra_toml(tmp_path, '[plugin.database]\nenabled = true\npath = "x.db"')
+
+    assert ("warning", "[plugin.database].path is not a recognized plugin.toml field") in issues
