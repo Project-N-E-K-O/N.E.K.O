@@ -630,6 +630,52 @@ class _ToolingMixin(_TurnContextMixin):
         )
         return executed
 
+    async def _revalidate_screen_capture_slots(self, tool_image_slots, tool_bus_frames=None) -> bool:
+        """Recheck screen consent at every provider-request boundary.
+
+        A tool-round sentinel yields control to the outer stream consumer. The
+        user can revoke consent while that consumer flushes pre-tool text, so a
+        check only inside _run_tool_round is not sufficient for the next model
+        request. Keep this check immediately before request construction too.
+        """
+        callback = getattr(self, "screen_capture_still_valid", None)
+        if not callable(callback) or not tool_image_slots:
+            return True
+        invalid = False
+        for slot in tuple(tool_image_slots):
+            if len(slot) < 5 or slot[4] is None:
+                continue
+            try:
+                if not await callback(slot[4]):
+                    invalid = True
+                    break
+            except Exception:
+                logger.warning(
+                    "Screen capture consent revalidation failed before provider request",
+                    exc_info=True,
+                )
+                invalid = True
+                break
+        if not invalid:
+            return True
+        revoked = []
+        retained = []
+        for slot in tool_image_slots:
+            message = slot[2]
+            if _is_screen_image_message(message) or (
+                isinstance(message, dict) and message.get("name") == "read_current_screen"
+            ):
+                revoked.append(slot)
+            else:
+                retained.append(slot)
+        tool_image_slots[:] = retained
+        if tool_bus_frames is not None:
+            tool_bus_frames[:] = [
+                frame for frame in tool_bus_frames if frame[2] != "read_current_screen"
+            ]
+        self._release_tool_image_slots(revoked)
+        return False
+
     async def _run_tool_round(
         self,
         messages,
@@ -1384,6 +1430,9 @@ class _ToolingMixin(_TurnContextMixin):
         # cap logs must not falsely claim iterations exhausted.
         zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
+            if not generation_is_active():
+                return
+            await self._revalidate_screen_capture_slots(tool_image_slots, tool_bus_frames)
             if not generation_is_active():
                 return
             deltas_per_chunk: list = []

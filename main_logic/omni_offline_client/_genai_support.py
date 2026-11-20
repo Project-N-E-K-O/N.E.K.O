@@ -430,6 +430,9 @@ class _GenaiMixin:
         for tool_iter in range(self.max_tool_iterations):
             if not generation_is_active():
                 return
+            await self._revalidate_screen_capture_slots(tool_image_slots, tool_bus_frames)
+            if not generation_is_active():
+                return
             self._ensure_genai_client()
             system_instruction, contents = _genai_messages_to_contents(
                 _slop_reduced_for_genai(request_view(messages))

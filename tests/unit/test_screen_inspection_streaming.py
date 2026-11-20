@@ -488,6 +488,50 @@ async def test_mixed_tool_batch_revalidates_screen_consent_after_slow_tool(provi
 
 
 @pytest.mark.parametrize("provider", ["openai", "gemini"])
+@pytest.mark.parametrize("reenable", [False, True])
+async def test_screen_consent_is_rechecked_after_tool_round_yields(provider, reenable, monkeypatch):
+    from main_logic.core.proactive import ProactiveMixin
+
+    manager, client, captures, requests = _screen_routing_client(provider, monkeypatch)
+    client.prepare_for_tool_images = AsyncMock(return_value=True)
+    client.switch_model = AsyncMock(return_value=None)
+    original_revalidate = client._revalidate_screen_capture_slots
+    revoked = False
+    captured_snapshot_id = None
+
+    async def revoke_between_rounds(slots, bus_frames):
+        nonlocal revoked, captured_snapshot_id
+        if not revoked and any(len(slot) >= 5 and slot[4] is not None for slot in slots):
+            captured_snapshot_id = next(iter(manager._screen_inspection_state["images"]))
+            # This hook runs at the top of the next provider iteration, after
+            # the previous tool-round sentinel yielded to the outer stream.
+            ProactiveMixin.update_proactive_vision_consent(manager, False)
+            if reenable:
+                ProactiveMixin.update_proactive_vision_consent(manager, True)
+            revoked = True
+        return await original_revalidate(slots, bus_frames)
+
+    client._revalidate_screen_capture_slots = revoke_between_rounds
+    task = asyncio.create_task(client.stream_text("Read the current screen"))
+    try:
+        await asyncio.wait_for(task, 5)
+        assert revoked
+        assert len(captures) == 1
+        assert len(requests) == 2
+        images, outputs, text = _screen_routing_request(requests[-1], provider)
+        assert images == []
+        assert "Test APP" not in text
+        assert captured_snapshot_id not in text
+        assert len(outputs) == 1 and outputs[0]["status"] == "released"
+        assert manager._screen_inspection_state["images"] == {}
+        assert not client._publish_provider_frames.call_args_list
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("provider", ["openai", "gemini"])
 async def test_cancellation_during_image_route_never_sends_capture(provider, monkeypatch):
     manager, client, captures, requests = _screen_routing_client(provider, monkeypatch)
     preparing, release = asyncio.Event(), asyncio.Event()
