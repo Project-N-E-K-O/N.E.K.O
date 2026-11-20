@@ -4,3 +4,64 @@
 
 .history-results[hidden]{display:none}.history-results{overflow-anchor:none}.history-load-state{text-align:center;color:#718178;font-size:12px;min-height:24px;padding:12px 0}
 .history-playback{padding:10px 24px;border-bottom:1px solid #dbe6da;background:#f0f6f3}.history-playback-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.history-playback-controls button{display:inline-flex;align-items:center;gap:7px}.history-playback-controls [role=status],.history-playback-note{font-size:12px;color:#667c74}.history-now-playing{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12px}.history-now-playing time{flex-shrink:0;color:#788980}.history-now-playing span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;flex:1}.history-now-playing button{flex-shrink:0}.history-results article.history-playing{box-shadow:inset 3px 0 #00c5ff;background:#edf8fa;padding-inline:12px}.history-results .message-voice-replay{margin:0 10px 0 0;vertical-align:middle}.history-results .message-voice-replay-button{width:28px;height:28px;padding:0;border-radius:50%;color:#4088a8}.history-dialog button:disabled{opacity:.45;cursor:default}@media(max-width:520px){.history-playback{padding:10px 12px}.history-now-playing{flex-wrap:wrap}.history-now-playing time{width:100%}}
+
+/* The global dark dialog overlay changes this dialog's backdrop only. Keep the
+   history content self-themed so its foreground never inherits dark text on a
+   translucent black surface. */
+[data-theme="dark"] .history-dialog {
+  --history-ink: #e6eee9;
+  color-scheme: dark;
+  color: #e6eee9;
+  background: #202a27;
+  border-color: #465a52;
+  box-shadow: 0 24px 80px #0009;
+}
+[data-theme="dark"] .history-dialog header p,
+[data-theme="dark"] .history-dialog .history-meta,
+[data-theme="dark"] .history-dialog footer,
+[data-theme="dark"] .history-dialog .history-state,
+[data-theme="dark"] .history-dialog .history-load-state,
+[data-theme="dark"] .history-dialog .history-playback-controls [role="status"],
+[data-theme="dark"] .history-dialog .history-playback-note,
+[data-theme="dark"] .history-dialog .history-now-playing time {
+  color: #aebfb6;
+}
+[data-theme="dark"] .history-dialog nav {
+  background: #293833;
+  border-color: #465a52;
+}
+[data-theme="dark"] .history-dialog button,
+[data-theme="dark"] .history-dialog input,
+[data-theme="dark"] .history-dialog select,
+[data-theme="dark"] .history-settings {
+  color: #e6eee9;
+  background: #293833;
+  border-color: #52685e;
+}
+[data-theme="dark"] .history-dialog button:hover {
+  background: #354a41;
+}
+[data-theme="dark"] .history-settings p {
+  color: #aebfb6;
+}
+[data-theme="dark"] .history-results article {
+  border-color: #40534a;
+}
+[data-theme="dark"] .history-results article.history-hit {
+  background: #51452a;
+}
+[data-theme="dark"] .history-results article.history-playing {
+  background: #263e43;
+}
+[data-theme="dark"] .history-dialog mark {
+  background: #735d26;
+  color: #fff1c2;
+}
+[data-theme="dark"] .history-playback {
+  background: #293833;
+  border-color: #465a52;
+}
+[data-theme="dark"] .history-dialog footer {
+  border-color: #465a52;
+}
+
