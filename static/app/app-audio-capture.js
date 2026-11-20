@@ -265,6 +265,20 @@
         return hasLiveCommittedMicrophonePipeline();
     }
 
+    // A host capture that is being reopened: the recording intent stands but
+    // the old graph has been released and the replacement has not committed
+    // (a device switch drops S.stream first). Not a reopen: a fail-closed
+    // route, or a live graph whose device went away (its track ended, S.stream
+    // still set) -- nothing is going to bring either back on its own.
+    function hostMicrophoneCaptureReopening() {
+        return (
+            S.isRecording === true
+            && S.voiceInputRouteBlocked !== true
+            && !S.stream
+            && !hasLiveCommittedMicrophonePipeline()
+        );
+    }
+
     function micStartTokenOwnsLiveCapture(token) {
         return (
             typeof token === 'number'
@@ -3272,6 +3286,7 @@
     window.takeVoiceStartReceipt = takeVoiceStartReceipt;
     window.micStartTokenOwnsLiveCapture = micStartTokenOwnsLiveCapture;
     window.hostMicrophoneCaptureLive = hostMicrophoneCaptureLive;
+    window.hostMicrophoneCaptureReopening = hostMicrophoneCaptureReopening;
     window.stopRecording = stopRecording;
     // Only same-origin, same-Session storage events carry device preferences.
     // Electron partitions retain their separately salted device identifiers.
@@ -3412,6 +3427,7 @@
     mod.takeVoiceStartReceipt = takeVoiceStartReceipt;
     mod.micStartTokenOwnsLiveCapture = micStartTokenOwnsLiveCapture;
     mod.hostMicrophoneCaptureLive = hostMicrophoneCaptureLive;
+    mod.hostMicrophoneCaptureReopening = hostMicrophoneCaptureReopening;
     mod.stopRecording = stopRecording;
     mod.sampleMicVolumeLevel = sampleMicVolumeLevel;
     mod.startSettingsMicVolumeTest = startSettingsMicVolumeTestFromSettings;

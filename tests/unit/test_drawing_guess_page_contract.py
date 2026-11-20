@@ -595,6 +595,11 @@ def test_drawing_guess_static_route_contract():
     apply_at = toggle_reply.index("handleSdkVoiceState(voiceState);")
     failure_at = toggle_reply.index("drawingGuess.voice.controlFailed")
     assert superseded_at < apply_at < pending_at < failure_at
+    # While the host is still starting (e.g. after start_pending) the voice
+    # button is held like a pending command: a click would toggle it off.
+    assert "var pending = !!state.voiceControlPending || !!state.voiceRouteStarting;" in script
+    sdk_state = script.split("function handleSdkVoiceState(voiceState) {", 1)[1].split("\n  }\n", 1)[0]
+    assert "state.voiceRouteStarting = detail.route_active !== false && detail.starting;" in sdk_state
     assert "client.voice.handoff(" not in script
     assert "voiceHandoff" not in script
     assert "function handleSdkVoiceTranscript" in script

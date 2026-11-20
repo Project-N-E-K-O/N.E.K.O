@@ -1155,11 +1155,51 @@ async function testVoiceToggleUsesOfficialSdkControl() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assertEqual(toggleCalls.length, 1, 'voice toggle did not use the SDK voice facade');
-  assertEqual(toggleCalls[0].timeoutMs, 12000, 'voice toggle lost its bounded timeout');
+  assertEqual(toggleCalls[0].timeoutMs, 15000, 'voice toggle lost its bounded timeout');
   assertEqual(api.state.voiceRouteActive, true, 'successful SDK toggle did not update route voice state');
   assertEqual(api.state.voiceControlPending, false, 'successful SDK toggle did not release its request fence');
   assert(events.includes('drawingGuess.voice.connectedNotice'),
     'successful SDK toggle did not publish the connected notice');
+}
+
+async function testVoiceTogglePendingAndSupersededRepliesAreNotFailures() {
+  // #3003. A start_pending reply means the host is still starting; a
+  // route_superseded reply describes a route that is gone. Neither may be
+  // reported as a failure, and the superseded one must not touch this route.
+  const harness = loadHarness();
+  const api = harness.api;
+  const events = [];
+  let reply = null;
+  const client = {
+    disposed: false,
+    capabilities: { has(name) { return name === 'voice-input'; } },
+    voice: { connected: true, toggle() { return Promise.resolve(reply); } },
+  };
+  api.installVoiceUiSpy(events);
+  api.state.sdkClient = client;
+  api.state.routeActive = true;
+  api.state.routeEnding = false;
+
+  reply = { ok: false, reason: 'start_pending', route_active: true, active: false, starting: true,
+    start_outcome: 'pending' };
+  api.handleVoiceRouteButton();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert(!events.includes('drawingGuess.voice.controlFailed'),
+    'a start still pending at the host deadline was reported as a failure');
+  assertEqual(api.state.voiceRouteStarting, true,
+    'a pending host start must hold the voice button until the state stream settles');
+  assertEqual(api.state.voiceControlPending, false, 'the request fence must still be released');
+  api.handleSdkVoiceState({ route_active: true, active: true, starting: false });
+  assertEqual(api.state.voiceRouteStarting, false, 'the settled state did not release the button');
+  assertEqual(api.state.voiceRouteActive, true, 'the settled state did not turn voice on');
+
+  reply = { ok: false, reason: 'route_superseded', route_active: false, active: false, starting: false };
+  api.handleVoiceRouteButton();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert(!events.includes('drawingGuess.voice.controlFailed'),
+    'a reply for a route that already ended was reported as a failure');
+  assertEqual(api.state.voiceRouteActive, true,
+    'a reply for a route that already ended overwrote the current route voice state');
 }
 
 async function testCharacterBindingIsSharedRetiredAndRebound() {
@@ -2924,6 +2964,7 @@ async function main() {
   await testVoiceStateCannotClearAnActiveControlRequest();
   await testBackgroundVoiceQueryCannotClearANewerToggle();
   await testVoiceToggleUsesOfficialSdkControl();
+  await testVoiceTogglePendingAndSupersededRepliesAreNotFailures();
   await testRouteStartQueriesVoiceWithoutTakingOverMicrophone();
   await testCharacterBindingIsSharedRetiredAndRebound();
   await testBucketFillTreatsCanvasDisplayEdgeAsBoundary();

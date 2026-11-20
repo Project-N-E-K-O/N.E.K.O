@@ -1317,10 +1317,23 @@ async function attributedCommitCase() {
   const keptStream = env.S.stream;
   const keptWorklet = env.S.workletNode;
   env.S.workletNode = null;
+  env.S.stream = null;
   assert(env.S.isRecording === true && env.mod.hostMicrophoneCaptureLive() === false,
          'a recording flag without a live pipeline is not a live host capture');
+  assert(env.mod.hostMicrophoneCaptureReopening() === true,
+         'a released graph under a standing recording intent is a reopen');
+  env.S.voiceInputRouteBlocked = true;
+  assert(env.mod.hostMicrophoneCaptureReopening() === false,
+         'a fail-closed route is not reopening anything');
+  env.S.voiceInputRouteBlocked = false;
   env.S.workletNode = keptWorklet;
   env.S.stream = keptStream;
+  // The device goes away: the graph is still published but its track ended.
+  keptStream.getTracks()[0].readyState = 'ended';
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.hostMicrophoneCaptureReopening() === false,
+         'an ended device is neither live nor reopening');
+  keptStream.getTracks()[0].readyState = 'live';
 
   // Turning the microphone off keeps the history but not the liveness.
   env.mod.stopRecording({ notifyServer: false });

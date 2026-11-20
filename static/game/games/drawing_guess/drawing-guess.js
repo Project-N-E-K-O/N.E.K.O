@@ -173,6 +173,7 @@
     nekoVoiceInFlight: false,
     nekoVoiceController: null,
     voiceRouteActive: false,
+    voiceRouteStarting: false,
     voiceControlPending: false,
     voiceControlRequestSequence: 0,
     lastVoiceTranscriptRequestId: '',
@@ -976,7 +977,10 @@
   function syncVoiceRouteButton() {
     if (!els.voiceRouteButton) return;
     var active = !!state.voiceRouteActive;
-    var pending = !!state.voiceControlPending;
+    // The host may still be starting after a command reply (start_pending):
+    // a click then would toggle it off mid-start, so hold the button like a
+    // pending command until the state stream settles. Soccer does the same.
+    var pending = !!state.voiceControlPending || !!state.voiceRouteStarting;
     var available = hasVoiceInputCapability();
     els.voiceRouteButton.disabled = !state.routeActive || state.routeEnding || pending || !available;
     els.voiceRouteButton.classList.toggle('is-active', active);
@@ -1644,6 +1648,7 @@
     stopThinkingEventMessage();
     clearNekoVoiceQueue();
     state.voiceRouteActive = false;
+    state.voiceRouteStarting = false;
     state.voiceControlPending = false;
     state.voiceControlRequestSequence += 1;
     state.lastVoiceTranscriptRequestId = '';
@@ -1708,8 +1713,14 @@
 
   function handleSdkVoiceState(voiceState) {
     var detail = voiceState && typeof voiceState === 'object' ? voiceState : {};
-    if (detail.route_active === false) state.voiceRouteActive = false;
+    if (detail.route_active === false) {
+      state.voiceRouteActive = false;
+      state.voiceRouteStarting = false;
+    }
     if (typeof detail.active === 'boolean') state.voiceRouteActive = detail.active;
+    if (typeof detail.starting === 'boolean') {
+      state.voiceRouteStarting = detail.route_active !== false && detail.starting;
+    }
     updateControls();
   }
 
@@ -2908,6 +2919,7 @@
       }
       state.routeActive = true;
       state.voiceRouteActive = false;
+      state.voiceRouteStarting = false;
       state.voiceControlPending = false;
       state.lastVoiceTranscriptRequestId = '';
       state.sessionId = client.runtime.session.id || state.sessionId;

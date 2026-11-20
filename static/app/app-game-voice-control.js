@@ -284,7 +284,9 @@
             host_capture_starting: !hostActive
                 && (S.voiceStartPending === true
                     || window.isMicStarting === true
-                    || S.isRecording === true)
+                    || (typeof window.hostMicrophoneCaptureReopening === 'function'
+                        ? window.hostMicrophoneCaptureReopening() === true
+                        : (S.isRecording === true && S.voiceInputRouteBlocked !== true)))
         };
     }
 

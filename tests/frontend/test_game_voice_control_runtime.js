@@ -54,6 +54,9 @@ async function main() {
   // A device switch: the old graph is gone, S.isRecording stays true until the
   // replacement commits.
   let pipelineReopening = false;
+  // The device went away (track ended) or the route failed closed: the flag
+  // still says recording, nothing is live, and nothing is reopening it.
+  let pipelineGone = false;
   function commitReceipt(receipt) {
     nextCaptureToken += 1;
     receipt.captureToken = nextCaptureToken;
@@ -125,7 +128,10 @@ async function main() {
       return receipt;
     },
     hostMicrophoneCaptureLive() {
-      return appState.isRecording === true && !pipelineReopening;
+      return appState.isRecording === true && !pipelineReopening && !pipelineGone;
+    },
+    hostMicrophoneCaptureReopening() {
+      return appState.isRecording === true && pipelineReopening;
     },
     micStartTokenOwnsLiveCapture(token) {
       return token > 0 && token === liveCaptureToken && appState.isRecording === true;
@@ -612,6 +618,15 @@ async function main() {
     && reopeningReply.host_capture_active === false
     && reopeningReply.host_capture_starting === true,
   `a host reopening its capture was reported as live: ${JSON.stringify(reopeningReply)}`);
+  // A dead capture nobody is reopening is neither live nor starting.
+  resetMicrophone();
+  appState.isRecording = true;
+  pipelineGone = true;
+  sendStart('gone-start', 'route-instance-h');
+  const goneReply = await finalReply('gone-start');
+  pipelineGone = false;
+  assert(goneReply.host_capture_active === false && goneReply.host_capture_starting === false,
+    `a dead capture was reported as starting forever: ${JSON.stringify(goneReply)}`);
   resetMicrophone();
 
   // The handler still awaits after its capture commits (proactive vision, the
