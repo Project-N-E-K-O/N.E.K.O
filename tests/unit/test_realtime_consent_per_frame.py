@@ -340,7 +340,20 @@ async def test_send_event_keeps_the_shrunk_payload_when_the_recheck_changes_noth
     await client.close()
 
 
-async def _submit_websocket_shrink_fails(monkeypatch, *, revoke_during_shrink):
+def _shrink_drops_oldest_then_fails(event, _payload):
+    """Like _shrink_multi_image_item giving up: every image recompressed in
+    place, the oldest removed, then None."""
+    content = event["item"]["content"]
+    images = [part for part in content if part.get("type") == "input_image"]
+    for index, part in enumerate(images):
+        part["image_url"] = f"data:image/jpeg;base64,Q20-{index}"
+    content.remove(images[0])
+    return None
+
+
+async def _submit_websocket_shrink_fails(
+    monkeypatch, *, revoke_during_shrink, images=None, request_ids=None, shrink=None,
+):
     """The item is over the frame limit and its recompression fails; screen
     consent may go while that recompression runs on the worker thread."""
     client = _make_client("openai", "gpt-4o-realtime-preview")
@@ -350,10 +363,10 @@ async def _submit_websocket_shrink_fails(monkeypatch, *, revoke_during_shrink):
     monkeypatch.setattr(responses_module, "OMNI_WS_FRAME_LIMIT_BYTES", len(LIVE) + len(USER))
     consent = [True]
 
-    def _shrink_fails(_event, _payload):
+    def _shrink_fails(event, payload):
         if revoke_during_shrink:
             consent[0] = False
-        return None
+        return None if shrink is None else shrink(event, payload)
 
     client._try_shrink_image_payload = _shrink_fails
     captured: list = []
@@ -380,10 +393,10 @@ async def _submit_websocket_shrink_fails(monkeypatch, *, revoke_during_shrink):
     await client.prepare_external_voice_turn(turn_id="turn-1")
     await client.submit_multimodal_turn(
         "看一下这张图",
-        (LIVE, USER),
+        images or (LIVE, USER),
         turn_id="turn-1",
         screen_consent_holds=lambda: consent[0],
-        image_request_ids=(None, "req-1"),
+        image_request_ids=request_ids or (None, "req-1"),
     )
     content = captured[0]["item"]["content"]
     assert any(part.get("text") == "看一下这张图" for part in content)
@@ -462,3 +475,56 @@ async def test_send_event_failed_shrink_still_drops_an_oversized_event():
     result, written = await _send_with_failed_shrink(strip=False)
     assert result is False
     assert written == []
+
+
+@pytest.mark.asyncio
+async def test_failed_recompression_that_dropped_the_user_screenshot_restores_it(monkeypatch):
+    """(user, live): the giving-up shrink removed the user's screenshot first;
+    after the revocation it is put back and goes, recompressed."""
+    sent = await _submit_websocket_shrink_fails(
+        monkeypatch, revoke_during_shrink=True,
+        images=(USER, LIVE), request_ids=("req-1", None),
+        shrink=_shrink_drops_oldest_then_fails,
+    )
+    assert sent == ["Q20-0"]
+
+
+@pytest.mark.asyncio
+async def test_send_event_failed_shrink_restores_removed_parts_for_the_hook():
+    client = _make_client("openai", "gpt-4o-realtime-preview")
+    written: list = []
+
+    class _Sock:
+        async def send(self, payload):
+            written.append(payload)
+
+        async def close(self):
+            pass
+
+    client.ws = _Sock()
+    user_part = {"type": "input_image", "image_url": "data:image/jpeg;base64," + "U" * 10}
+    live_part = {"type": "input_image", "image_url": "data:image/jpeg;base64," + "A" * 400_000}
+    event = {
+        "type": "conversation.item.create",
+        "item": {"role": "user", "content": [user_part, live_part, {"type": "input_text", "text": "look"}]},
+    }
+    consent = [True]
+
+    def _shrink(ev, payload):
+        consent[0] = False
+        ev["item"]["content"].remove(user_part)
+        return None
+
+    client._try_shrink_image_payload = _shrink
+
+    def _keep_user_only(ev):
+        if not consent[0]:
+            ev["item"]["content"] = [
+                part for part in ev["item"]["content"]
+                if part.get("type") != "input_image" or part is user_part
+            ]
+
+    assert await client.send_event(event, pre_send=_keep_user_only) is True
+    content = json.loads(written[0])["item"]["content"]
+    assert [part["type"] for part in content] == ["input_image", "input_text"]
+    await client.close()

@@ -1050,13 +1050,25 @@ class _TransportMixin:
                 # is CPU-heavy (50-150ms on a 4K screenshot), so off-load to
                 # a thread to keep the event loop responsive.
                 if len(payload) > OMNI_WS_FRAME_LIMIT_BYTES:
+                    # An item shrink drops the oldest parts before it gives
+                    # up; keep the part list to undo that if it fails.
+                    _item = event.get("item")
+                    parts_before_shrink = (
+                        list(_item["content"])
+                        if isinstance(_item, dict)
+                        and isinstance(_item.get("content"), list)
+                        else None
+                    )
                     payload = await asyncio.to_thread(
                         self._try_shrink_image_payload, event, payload
                     )
                     if payload is None and pre_send is not None:
                         # The hook may now remove what did not fit (it runs
                         # after the worker-thread yield); give up only if the
-                        # rest is still too large.
+                        # rest is still too large. Put back what the failed
+                        # shrink removed first, so the hook decides on it.
+                        if parts_before_shrink is not None:
+                            _item["content"] = parts_before_shrink
                         pre_send(event)
                         rechecked = json.dumps(event)
                         if len(rechecked) <= OMNI_WS_FRAME_LIMIT_BYTES:

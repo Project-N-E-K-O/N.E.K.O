@@ -685,6 +685,9 @@ class _ResponseMixin:
 
         item_payload = json.dumps(item_event)
         if len(item_payload) > OMNI_WS_FRAME_LIMIT_BYTES:
+            # The shrink drops the oldest parts (a user screenshot included)
+            # before it gives up; keep the part list to undo that if it fails.
+            parts_before_shrink = list(item_event["item"]["content"])
             shrunk = await asyncio.to_thread(
                 self._try_shrink_image_payload,
                 item_event,
@@ -693,8 +696,10 @@ class _ResponseMixin:
             if shrunk is None:
                 # The recompression yielded to a worker thread: a revocation
                 # or ownership loss meanwhile may remove the frames that did
-                # not fit. Re-run the downgrade; only fail the turn when what
-                # is left still exceeds the limit.
+                # not fit. Put back what the failed shrink removed (the parts
+                # keep their recompressed data), re-run the downgrade, and
+                # only fail the turn when what is left still exceeds the limit.
+                item_event["item"]["content"] = parts_before_shrink
                 _downgrade_if_visual_ownership_lost(item_event)
                 if len(json.dumps(item_event)) > OMNI_WS_FRAME_LIMIT_BYTES:
                     from ._transport import RealtimeImagePayloadTooLargeError
