@@ -108,7 +108,7 @@ describe('source import privacy and identity', () => {
     expect(api.discardSourcePreview).toHaveBeenCalledWith({ preview_id: 'preview-1' })
   })
 
-  it('discards only the preview whose own commit settled when commits overlap', async () => {
+  it('never overlaps commits and an old success keeps a newer preview open', async () => {
     const state = await mount()
     button('Preview document').click()
     await flush()
@@ -123,18 +123,26 @@ describe('source import privacy and identity', () => {
       doc_id: 'doc-2', sha256: 'second', name: 'other.txt', chars: 10, content: 'other text', sections: [] } })
     button('Preview document').click()
     await flush()
+    // The dialog stays busy until the first commit settles: no second commit starts.
+    button('Confirm import').click()
+    await flush()
+    expect(api.commitSource).toHaveBeenCalledTimes(1)
+    settle[0]!({ ok: true, pack_id: 'imp.test', job_id: 'job-1', state: 'queued' })
+    await flush()
+    // Only the settled commit's own preview is discarded; the newer preview stays open.
+    expect(api.discardSourcePreview).toHaveBeenCalledTimes(1)
+    expect(api.discardSourcePreview).toHaveBeenCalledWith({ preview_id: 'preview-1' })
+    expect(state.modelValue).toBe(true)
+    expect(document.querySelector('[data-testid="source-preview"]')?.textContent).toContain('other text')
+    // Once settled, the newer preview can be committed normally.
     button('Confirm import').click()
     await flush()
     expect(api.commitSource).toHaveBeenCalledTimes(2)
-    settle[0]!({ ok: true, pack_id: 'imp.test', job_id: 'job-1', state: 'queued' })
-    await flush()
-    expect(api.discardSourcePreview).toHaveBeenCalledTimes(1)
-    expect(api.discardSourcePreview).toHaveBeenCalledWith({ preview_id: 'preview-1' })
-    // preview-2 is never discarded while its own commit is still in flight;
-    // a request after it settles is safe because the server keeps frozen previews.
+    expect(api.commitSource.mock.calls[1]![0].preview_id).toBe('preview-2')
     settle[1]!({ ok: true, pack_id: 'imp.test', job_id: 'job-2', state: 'queued' })
     await flush()
-    expect(api.discardSourcePreview.mock.calls.slice(1).every(([value]) => value.preview_id === 'preview-2')).toBe(true)
+    expect(state.modelValue).toBe(false)
+    expect(api.discardSourcePreview).toHaveBeenCalledTimes(1)
   })
 
   it('deletes an open preview when the component unmounts', async () => {

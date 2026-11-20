@@ -80,7 +80,8 @@ watch([() => props.modelValue, () => props.file, () => props.pack?.pack_id, () =
   generation += 1
   dropPreview()
   loading.value = false
-  saving.value = false
+  // A commit still in flight keeps the dialog busy: never start an overlapping one.
+  saving.value = committing.size > 0
   targetId.value = props.pack?.pack_id ?? ''
   packName.value = props.file?.name.replace(/\.[^.]+$/, '') ?? ''
   enableAfterImport.value = false
@@ -141,8 +142,11 @@ async function prepare() {
 }
 
 async function commit() {
-  if (!preview.value || saving.value || (requiresAcknowledgment.value && !acknowledged.value)) return
+  if (!preview.value || saving.value || committing.size > 0 || (requiresAcknowledgment.value && !acknowledged.value)) return
   const previewId = preview.value.preview_id
+  // File or destination changes advance the generation; this dialog then no
+  // longer belongs to the commit and must not be closed by its success.
+  const started = generation
   committing.add(previewId)
   saving.value = true
   try {
@@ -158,12 +162,12 @@ async function commit() {
     if (preview.value?.preview_id === previewId) preview.value = null
     ElMessage.success(t('knowledge.sourceQueued'))
     emit('committed')
-    emit('update:modelValue', false)
+    if (generation === started) emit('update:modelValue', false)
   } catch (error) {
     ElMessage.error(t(`knowledge.reasons.${knowledgeFailureReason(error)}`))
   } finally {
-    saving.value = false
     committing.delete(previewId)
+    saving.value = committing.size > 0
     if (discardAfterCommit.delete(previewId)) discardPreview(previewId)
   }
 }
