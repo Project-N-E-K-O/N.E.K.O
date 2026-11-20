@@ -55,6 +55,17 @@ def test_located_docx_skips_fallback_and_distinguishes_note_positions():
     assert [s['location']['paragraph'] for s in parsed['sections'][-2:]] == [1, 2]
 
 
+def test_located_docx_skips_text_boxes_inside_hidden_runs():
+    def text_box(text, hidden):
+        properties = '<w:rPr><w:vanish/></w:rPr>' if hidden else ''
+        return (f'<w:p><w:r>{properties}<w:pict><w:txbxContent>{_paragraph(text)}'
+                '</w:txbxContent></w:pict></w:r></w:p>')
+
+    body = _paragraph('Body') + text_box('Hidden box', True) + text_box('Visible box', False)
+    parsed = documents.parse_source('boxes.docx', _docx(body), documents.SourceLimits())
+    assert parsed['content'] == 'Body\n\nVisible box'
+
+
 def test_docx_rejects_oversize_during_extraction(monkeypatch):
     original = office._extract_word_paragraph_text
     calls = []

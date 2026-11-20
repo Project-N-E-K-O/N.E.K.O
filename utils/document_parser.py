@@ -282,13 +282,21 @@ def _pdf_has_unreadable_content(contents, resources, reader) -> bool:
                 "fonts": fonts if isinstance(fonts, dict) else {}, "font": font, "saved": []}
 
     def space_is_blank(font) -> bool:
-        # Only a non-embedded simple font whose encoding keeps code 32 as the
-        # standard space is known to draw nothing for 0x20. Composite, Type3,
-        # embedded (built-in encoding) and remapped fonts stay painting.
+        # Only a non-embedded, non-symbolic simple font whose encoding keeps
+        # code 32 as the standard space is known to draw nothing for 0x20.
+        # Composite, Type3, embedded, symbolic and remapped fonts stay painting.
         if not isinstance(font, dict) or font.get("/Subtype") not in {"/Type1", "/MMType1", "/TrueType"}:
             return False
         descriptor = _resolve_pdf_object(font.get("/FontDescriptor"))
-        if isinstance(descriptor, dict) and any(key in descriptor for key in ("/FontFile", "/FontFile2", "/FontFile3")):
+        if isinstance(descriptor, dict):
+            if any(key in descriptor for key in ("/FontFile", "/FontFile2", "/FontFile3")):
+                return False
+            # Symbolic fonts (flag bit 3, value 4) may ignore the named
+            # encoding, so code 32 is not proven to be a space.
+            flags = _resolve_pdf_object(descriptor.get("/Flags"))
+            if not isinstance(flags, int) or flags & 4:
+                return False
+        elif descriptor is not None:
             return False
         encoding = _resolve_pdf_object(font.get("/Encoding"))
         if encoding is None:
@@ -760,8 +768,14 @@ def _extract_word_notes_text(xml_bytes: bytes, note_tag: str, note_ids: set[str]
 
 
 def _iter_word_paragraphs(root: ET.Element):
-    """Traverse once while excluding complete compatibility fallback subtrees."""
+    """Traverse once while excluding fallback subtrees and hidden runs.
+
+    A text box inside a hidden run is hidden too; its paragraphs cannot see
+    the outer run, so the whole run subtree is skipped here.
+    """
     if root.tag == _MC_NS + "Fallback":
+        return
+    if root.tag == _WORD_NS + "r" and _word_run_is_hidden(root):
         return
     if root.tag == _WORD_NS + "p":
         yield root

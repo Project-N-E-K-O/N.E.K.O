@@ -95,6 +95,75 @@ async def test_sources_share_existing_pack_search_and_retain_all_versions(tmp_pa
         await service.stop()
 
 
+@pytest.mark.parametrize("restart", [False, True])
+async def test_finished_exports_outlive_the_bounded_task_window(tmp_path, restart):
+    from knowledge.service import MAX_TRACKED_JOBS, ImportJob
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        export = ImportJob("e" * 32, "demo-memes", "active", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z",
+                           kind="pack_export", result={"artifact_id": "b" * 64, "format_version": 2})
+        failed_export = ImportJob("f" * 32, "demo-memes", "failed", "2026-01-01T00:00:01Z",
+                                  "2026-01-01T00:00:01Z", kind="pack_export")
+        for job in (export, failed_export):
+            service._remember_job(job)
+            await service._persist_job(job)
+        for index in range(MAX_TRACKED_JOBS + 5):
+            stamp = f"2026-01-02T00:00:{index:02d}Z"
+            job = ImportJob(f"{index:032x}", "demo-memes", "active", stamp, stamp)
+            service._remember_job(job)
+            await service._persist_job(job)
+        if restart:
+            await service.stop()
+            service = KnowledgeService(tmp_path)
+            await service.start()
+        ids = [job["job_id"] for job in service.list_jobs()]
+        assert export.job_id in ids and failed_export.job_id not in ids
+        assert len(ids) == MAX_TRACKED_JOBS
+    finally:
+        await service.stop()
+
+
+@pytest.mark.parametrize("pending", ["queued", "admitting", "export"])
+async def test_removing_the_last_source_does_not_cancel_a_waiting_append(tmp_path, pending):
+    from knowledge.models import KnowledgePackError
+    from knowledge.service import ImportJob
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        value = (await service.preview_source("notes.txt", b"Lighthouse reference."))["preview"]
+        await _finished(service, await service.commit_source(value["preview_id"], value["sha256"]))
+        pack_id = (await service.list_packs())[0]["pack_id"]
+        if pending == "export":
+            stamp = "2026-01-01T00:00:00Z"
+            service._jobs["export"] = ImportJob("export", pack_id, "queued", stamp, stamp, kind="pack_export")
+            try:
+                # An export does not install anything the removal could cancel.
+                assert (await service.remove_source(pack_id, value["doc_id"]))["state"] == "active"
+            finally:
+                service._jobs.pop("export")
+            return
+        if pending == "queued":
+            stamp = "2026-01-01T00:00:00Z"
+            service._jobs["waiting-append"] = ImportJob("waiting-append", pack_id, "queued", stamp, stamp)
+        else:
+            service._admitting[pack_id] = 1
+        with pytest.raises(KnowledgePackError) as error:
+            await service.remove_source(pack_id, value["doc_id"])
+        assert error.value.reason == "job_in_progress"
+        assert [row["pack_id"] for row in await service.list_packs()] == [pack_id]
+        if pending == "queued":
+            assert service._jobs["waiting-append"].state == "queued"
+            service._jobs.pop("waiting-append")
+        else:
+            service._admitting.pop(pack_id)
+        assert (await service.remove_source(pack_id, value["doc_id"]))["state"] == "active"
+    finally:
+        await service.stop()
+
+
 @pytest.mark.parametrize("restore_last_source_first", [False, True])
 async def test_removed_source_pack_stays_absent_after_refresh_and_restart_without_deleting_history(tmp_path, restore_last_source_first):
     """Pack removal hides its row; last-document history remains a separate choice."""

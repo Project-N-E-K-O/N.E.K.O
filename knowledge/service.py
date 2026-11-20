@@ -1104,6 +1104,12 @@ class KnowledgeService:
             retained = [row for row in documents if row["doc_id"] != doc_id]
             if len(retained) == len(documents):
                 raise KnowledgePackError("source_not_found")
+            if not retained and (pack_id in self._admitting or any(
+                    job.pack_id == pack_id and job.kind != "pack_export" and job.state in ACTIVE_JOB_STATES
+                    for job in self._jobs.values())):
+                # Removing the last active document removes the pack, which
+                # would cancel an append of another document still waiting.
+                raise KnowledgePackError("job_in_progress")
             return await self._project_sources(pack_id, pack.source.name, retained) if retained else None
         result = await self._locked(run)
         if result is not None:
@@ -1840,8 +1846,11 @@ class KnowledgeService:
     def _remember_job(self, job: ImportJob) -> None:
         self._jobs[job.job_id] = job
         while len(self._jobs) > MAX_TRACKED_JOBS:
+            # A finished export is the only handle to its artifact (download,
+            # publish, delete); the bounded window must not orphan it.
             oldest = next(
-                (job_id for job_id, item in self._jobs.items() if item.state in TERMINAL_JOB_STATES),
+                (job_id for job_id, item in self._jobs.items() if item.state in TERMINAL_JOB_STATES
+                 and not (item.kind == "pack_export" and item.state == "active" and item.result)),
                 None,
             )
             if oldest is None:

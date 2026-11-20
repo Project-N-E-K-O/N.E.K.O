@@ -185,11 +185,16 @@ def _font_variants():
         ({"Encoding": NameObject("/Custom")}, True),
         ({"Encoding": DictionaryObject({NameObject("/BaseEncoding"): NameObject("/Custom")})}, True),
         ({"FontDescriptor": DictionaryObject({NameObject("/FontFile2"): NumberObject(0)})}, True),
-        ({"FontDescriptor": DictionaryObject({NameObject("/FontName"): NameObject("/Helvetica")})}, False),
+        ({"FontDescriptor": DictionaryObject({NameObject("/FontName"): NameObject("/Helvetica"),
+                                              NameObject("/Flags"): NumberObject(32)})}, False),
+        ({"FontDescriptor": DictionaryObject({NameObject("/Flags"): NumberObject(4)}),
+          "Encoding": NameObject("/WinAnsiEncoding")}, True),
+        ({"FontDescriptor": DictionaryObject({NameObject("/Flags"): NumberObject(36)})}, True),
+        ({"FontDescriptor": DictionaryObject({NameObject("/FontName"): NameObject("/Helvetica")})}, True),
     ]
 
 
-@pytest.mark.parametrize("index", range(8))
+@pytest.mark.parametrize("index", range(11))
 def test_space_exemption_requires_a_standard_space_in_a_non_embedded_font(index):
     entries, painted = _font_variants()[index]
     assert document_parser._pdf_has_unreadable_content(
