@@ -6,6 +6,18 @@ will automatically invoke it when the user asks "what's the weather in
 Beijing", wait for the result, then use the returned value to generate
 its final reply.
 
+## Choosing between `@plugin_entry` and `@llm_tool` {#choosing-an-entry-type}
+
+- **`@plugin_entry` is the default, recommended way to expose a plugin's
+  capabilities.** Plugin entries are listed in the Plugin Manager and can be
+  called by other plugins, by Hosted UI actions, and through the Agent
+  (NekoClaw) route.
+- **Use `@llm_tool` sparingly**, only for the few capabilities the main
+  dialogue model must call directly during a conversation. The schema of every
+  registered tool is sent to the model with its requests, so each extra tool
+  lengthens the model's tool list. A plugin usually needs only a few LLM tools;
+  if a capability can be expressed as a `@plugin_entry`, keep it one.
+
 ::: warning Different from a plugin entry
 `@llm_tool(name="get_weather")` registers a conversation-time tool in main_server's `/api/tools` registry. `@plugin_entry(id="get_weather")` declares a runtime entry for Plugin Manager, cross-plugin calls, and the separate Agent (NekoClaw) route. The SDK implements an LLM tool handler internally as a reserved dynamic entry (`__llm_tool__...`) for IPC reuse, but that implementation detail does not merge the two public APIs: entries with this prefix are called only by the main dialogue model and are never offered to the Agent's plugin selection or to task agents.
 :::
@@ -14,10 +26,10 @@ This mechanism is backed by `ToolRegistry` in
 `main_logic/tool_calling.py` and unified across every provider that
 supports tool calling (OpenAI / Gemini / GLM / Qwen Omni / StepFun, etc.).
 
-## TL;DR — Recommended Path: `@llm_tool`
+## When exposing a tool to the model: use `@llm_tool` (not raw HTTP registration)
 
-If you're building a regular `NekoPluginBase` plugin, **use the
-`@llm_tool` decorator from the SDK**. It handles registration,
+When a regular `NekoPluginBase` plugin needs to expose a tool to the
+dialogue model, **use the `@llm_tool` decorator from the SDK**. It handles registration,
 unregistration, callback routing, and shutdown cleanup for you, with
 zero boilerplate:
 

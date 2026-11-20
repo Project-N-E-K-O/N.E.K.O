@@ -5,6 +5,17 @@ LLM が会話中にプラグインの機能を「呼び出せる」ようにし�
 天気は？」と聞いたときに LLM が自動的に呼び出し、結果を待って最終
 応答を生成します。
 
+## `@plugin_entry` と `@llm_tool` の選び方 {#choosing-an-entry-type}
+
+- **`@plugin_entry` がプラグインの機能を公開する既定の、推奨される形です。**
+  plugin entry は Plugin Manager に表示され、他のプラグインや Hosted UI の
+  アクションから、また Agent（ネコクロー、NekoClaw）route 経由で呼び出せます。
+- **`@llm_tool` は控えめに使ってください。** メインの対話モデルが会話中に直接
+  呼び出す必要がある、少数の機能だけに使います。登録されたツールの schema は
+  すべてリクエストと一緒にモデルへ送られるため、ツールが増えるほどモデルの
+  ツール一覧が長くなります。1 つのプラグインに必要な LLM tool は通常ごく少数です。
+  `@plugin_entry` で表現できる機能は plugin entry のままにしてください。
+
 ::: warning plugin entry とは別です
 `@llm_tool(name="get_weather")` は conversation-time tool を main_server の `/api/tools` registry に登録します。`@plugin_entry(id="get_weather")` は Plugin Manager、cross-plugin call、別系統の Agent（ネコクロー、NekoClaw）route 用 runtime entry です。SDK 内部は IPC reuse のため LLM tool handler を reserved dynamic entry（`__llm_tool__...`）として保持しますが、この実装詳細によって 2 つの public API が同じになるわけではありません。この prefix を持つ entry を呼ぶのはメインの対話モデルだけで、Agent の plugin 選択にも task agent にも渡されません。
 :::
@@ -14,9 +25,9 @@ LLM が会話中にプラグインの機能を「呼び出せる」ようにし�
 （OpenAI / Gemini / GLM / Qwen Omni / StepFun など）に対して統一的に
 抽象化されています。
 
-## TL;DR — 推奨パス：`@llm_tool`
+## ツールをモデルに公開するとき：`@llm_tool` を使う（生の HTTP 登録は使わない）
 
-通常の `NekoPluginBase` プラグインを書いているなら、**SDK の `@llm_tool`
+通常の `NekoPluginBase` プラグインがツールを対話モデルに公開するときは、**SDK の `@llm_tool`
 デコレーターを使ってください**。登録 / 解除 / コールバックルーティング /
 shutdown クリーンアップを SDK が肩代わりするので、ボイラープレートはゼロ：
 

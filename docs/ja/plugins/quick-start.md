@@ -230,7 +230,7 @@ class HelloWorldPlugin(NekoPluginBase):
 `plugin_id` は `hello_world`、この機能の `entry_id` は `hello` です。別の identity なので混同しないでください。
 
 ::: tip プラグイン entry と LLM tool は別のものです
-`@plugin_entry` は runtime のプラグイン entry を宣言します。`@llm_tool` は会話中に使う tool を登録します。最初の実行では `@plugin_entry` だけでよく、LLM tool の設定は不要です。
+`@plugin_entry` は runtime のプラグイン entry を宣言します。`@llm_tool` は会話中に使う tool を登録します。最初の実行では `@plugin_entry` だけでよく、LLM tool の設定は不要です。どちらを使うかは [`@plugin_entry` と `@llm_tool` の選び方](/ja/plugins/tool-calling#choosing-an-entry-type)を参照してください。
 :::
 
 最後の行を変更します：

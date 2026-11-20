@@ -4,6 +4,15 @@
 LLM 在用户问"北京天气怎么样"时会自动调用，等待返回结果，再用返回值生成
 最终回复。
 
+## 选择 `@plugin_entry` 还是 `@llm_tool` {#choosing-an-entry-type}
+
+- **`@plugin_entry` 是插件对外提供能力的默认形式，也是推荐的形式**。插件入口会列在
+  插件管理器里，可以被其他插件、Hosted UI 动作调用，也可以经由 Agent（猫爪，NekoClaw）
+  路由调用。
+- **`@llm_tool` 要克制使用**，只用在少数必须让主对话模型在对话中直接调用的能力上。
+  每个已注册工具的 schema 都会随请求发给模型，多一个工具，模型的工具列表就长一截。
+  一个插件通常只需要很少几个 LLM 工具；能用 `@plugin_entry` 表达的，就保持为插件入口。
+
 ::: warning 它不同于插件入口
 `@llm_tool(name="get_weather")` 把对话期工具注册到 main_server 的 `/api/tools` registry。`@plugin_entry(id="get_weather")` 声明的是供插件管理器、跨插件调用和独立的 Agent（猫爪，NekoClaw）路由使用的运行时入口。SDK 内部为了复用 IPC，会把 LLM tool handler 存成保留前缀的动态入口（`__llm_tool__...`），但这项实现细节不会把两套公开 API 合并成一套：带这个前缀的入口只由主对话模型调用，不会进入 Agent 的插件筛选，也不会提供给 task agent。
 :::
@@ -11,9 +20,9 @@ LLM 在用户问"北京天气怎么样"时会自动调用，等待返回结果�
 本机制由 `main_logic/tool_calling.py` 的 `ToolRegistry` 支撑，对所有支持工具
 调用的 provider（OpenAI / Gemini / GLM / Qwen Omni / StepFun 等）统一抽象。
 
-## TL;DR —— 推荐路径：`@llm_tool`
+## 需要把工具暴露给模型时：用 `@llm_tool`（不要走原生 HTTP 注册）
 
-如果你写的就是常规 `NekoPluginBase` 插件，**直接用 SDK 的 `@llm_tool` 装饰器**。
+常规 `NekoPluginBase` 插件需要把工具暴露给对话模型时，**直接用 SDK 的 `@llm_tool` 装饰器**。
 注册、注销、回调路由、shutdown 清理它全都帮你做了，零样板：
 
 ```python

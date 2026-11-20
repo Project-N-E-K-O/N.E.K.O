@@ -253,7 +253,7 @@ class HelloWorldPlugin(NekoPluginBase):
 `plugin_id` 是 `hello_world`，这个功能自己的 `entry_id` 是 `hello`。前者用来找到插件，后者用来找到插件中的具体功能，两者不要互换。
 
 ::: tip 插件入口和 LLM 工具不是一回事
-`@plugin_entry` 声明的是插件运行时入口。`@llm_tool` 注册的是对话期间使用的工具。第一次运行插件时只需要使用 `@plugin_entry`，不需要先配置 LLM 工具。
+`@plugin_entry` 声明的是插件运行时入口。`@llm_tool` 注册的是对话期间使用的工具。第一次运行插件时只需要使用 `@plugin_entry`，不需要先配置 LLM 工具。两者怎么选，见[选择 `@plugin_entry` 还是 `@llm_tool`](/zh-CN/plugins/tool-calling#choosing-an-entry-type)。
 :::
 
 现在把最后一行改成：

@@ -232,7 +232,7 @@ class HelloWorldPlugin(NekoPluginBase):
 The `plugin_id` is `hello_world`; this feature's `entry_id` is `hello`. They identify different things and are not interchangeable.
 
 ::: tip Plugin entries and LLM tools are different
-`@plugin_entry` declares a runtime plugin entry. `@llm_tool` registers a tool used during a conversation. The first run only needs `@plugin_entry`; no LLM tool setup is required.
+`@plugin_entry` declares a runtime plugin entry. `@llm_tool` registers a tool used during a conversation. The first run only needs `@plugin_entry`; no LLM tool setup is required. To choose between them, see [Choosing between `@plugin_entry` and `@llm_tool`](/plugins/tool-calling#choosing-an-entry-type).
 :::
 
 Change the final line to:
