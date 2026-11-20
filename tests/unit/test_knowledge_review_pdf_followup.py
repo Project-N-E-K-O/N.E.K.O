@@ -258,3 +258,47 @@ def test_malformed_font_state_is_treated_as_painting(operations, fonts):
     resources = _font_resources("/Type1") if fonts is None else DictionaryObject(
         {NameObject("/Font"): NumberObject(fonts)})
     assert document_parser._pdf_has_unreadable_content(_stream(operations), resources, None)
+
+
+def _with_ext_states(resources, **states):
+    from pypdf.generic import DictionaryObject, NameObject
+
+    resources[NameObject("/ExtGState")] = DictionaryObject({NameObject("/" + key): value for key, value in states.items()})
+    return resources
+
+
+@pytest.mark.parametrize("operations,painted", [
+    (b"BT /F1 12 Tf /Plain gs ( ) Tj ET", False),     # a state without /Font keeps Helvetica
+    (b"BT /F1 12 Tf /Glyphs gs ( ) Tj ET", True),     # gs switches to a Type3 font drawing 0x20
+    (b"BT /F1 12 Tf /Missing gs ( ) Tj ET", True),    # an unresolvable state leaves the font unknown
+    (b"BT /F1 12 Tf /BadFont gs ( ) Tj ET", True),    # a /Font entry without a usable font
+])
+def test_fonts_selected_through_ext_g_state_are_respected(operations, painted):
+    from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject
+
+    type3 = DictionaryObject({NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type3")})
+    resources = _with_ext_states(
+        _font_resources("/Type1"),
+        Plain=DictionaryObject({NameObject("/LW"): NumberObject(1)}),
+        Glyphs=DictionaryObject({NameObject("/Font"): ArrayObject([type3, NumberObject(12)])}),
+        BadFont=DictionaryObject({NameObject("/Font"): NumberObject(3)}),
+    )
+    assert document_parser._pdf_has_unreadable_content(_stream(operations), resources, None) is painted
+
+
+def test_a_page_whose_ext_g_state_switches_to_a_type3_font_is_rejected():
+    from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject
+
+    from pypdf import PdfReader, PdfWriter
+
+    raw = _mixed_pdf_with_font(b"BT /F1 12 Tf /Glyphs gs ( ) Tj ET", "/Type1")
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(raw)))
+    type3 = DictionaryObject({NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type3")})
+    resources = writer.pages[1]["/Resources"]
+    resources[NameObject("/ExtGState")] = DictionaryObject({NameObject("/Glyphs"): DictionaryObject(
+        {NameObject("/Font"): ArrayObject([writer._add_object(type3), NumberObject(12)])})})
+    output = io.BytesIO()
+    writer.write(output)
+    with pytest.raises(SourceError) as error:
+        parse_source("glyphs.pdf", output.getvalue(), SourceLimits())
+    assert error.value.reason == "scan_unsupported"

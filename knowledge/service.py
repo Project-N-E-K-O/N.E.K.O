@@ -246,6 +246,22 @@ class _SelectionChanged(Exception):
     """The active source selection changed before a last-source removal."""
 
 
+def _budgeted_plan(pack: KnowledgePack, options: dict[str, Any], others: int) -> tuple[dict[str, Any], int]:
+    """Pick the rebuild plan that fits the chunk budgets, preferring vectors.
+
+    Try the token plan with verified archive rows, then without the token
+    plan, then the admitted local (legacy) layout. A rebuild must never grow a
+    pack past the per-pack or total limits; a later replan is refused before
+    native inference instead of truncating text or overfilling.
+    """
+    for dropped in ((), ("fit",), ("fit", "seed_vectors")):
+        trial = {key: value for key, value in options.items() if key not in dropped}
+        chunks = count_pack_chunks(pack, fit=trial.get("fit"), seed_vectors=trial.get("seed_vectors", ()))
+        if chunks <= MAX_CHUNKS_PER_PACK and others + chunks <= MAX_TOTAL_CHUNKS:
+            break
+    return trial, chunks
+
+
 def _file_identity(path: Path) -> tuple[int, int] | None:
     """Size and modification time, or None when the file cannot be read."""
     try:
@@ -581,15 +597,8 @@ class KnowledgeService:
                 self._store.delete_pack(pack_id)
                 broken.append(pack_id)
                 continue
-            options = self._rebuild_options(record)
-            chunks = count_pack_chunks(pack, fit=options.get("fit"), seed_vectors=options.get("seed_vectors", ()))
             others = sum(value.chunks for key, value in registry.packs.items() if key != pack_id)
-            if chunks > MAX_CHUNKS_PER_PACK or others + chunks > MAX_TOTAL_CHUNKS:
-                # Preserve keyword availability within the original admitted
-                # budget. A later token replan is explicitly refused before
-                # native inference, rather than truncating text or overfilling.
-                options.pop("fit", None)
-                chunks = count_pack_chunks(pack, seed_vectors=options.get("seed_vectors", ()))
+            options, chunks = _budgeted_plan(pack, self._rebuild_options(record), others)
             self._store.replace_pack(pack, pack_sha256=record.pack_sha256,
                                      disabled_keys=record.disabled_titles, **options)
             if chunks != record.chunks:
@@ -1916,17 +1925,22 @@ class KnowledgeService:
 
     def _remember_job(self, job: ImportJob) -> None:
         self._jobs[job.job_id] = job
-        # The bounded window applies to ordinary tasks only, so retained
-        # exports can neither be evicted nor crowd out recent failed imports.
-        while sum(not self._holds_artifact(item) for item in self._jobs.values()) > MAX_TRACKED_JOBS:
-            oldest = next(
-                (job_id for job_id, item in self._jobs.items() if item.state in TERMINAL_JOB_STATES
-                 and not self._holds_artifact(item)),
-                None,
-            )
-            if oldest is None:
-                break
-            del self._jobs[oldest]
+        # Imports and exports keep separate bounded windows from admission
+        # on, so a queued export can never evict a retryable failed import.
+        # Finished exports holding an artifact are never evicted.
+        for is_export in (False, True):
+            def windowed(item: ImportJob) -> bool:
+                return (item.kind == "pack_export") is is_export and not self._holds_artifact(item)
+
+            while sum(windowed(item) for item in self._jobs.values()) > MAX_TRACKED_JOBS:
+                oldest = next(
+                    (job_id for job_id, item in self._jobs.items()
+                     if windowed(item) and item.state in TERMINAL_JOB_STATES),
+                    None,
+                )
+                if oldest is None:
+                    break
+                del self._jobs[oldest]
 
     def list_jobs(self) -> list[dict[str, Any]]:
         return [job.to_json() for job in reversed(self._jobs.values())]
@@ -2190,11 +2204,14 @@ class KnowledgeService:
                 # and chunk count were for other bytes.
                 raise KnowledgeUnavailable("knowledge_error")
             pack = decode_pack_bytes(raw)
-            if job.kind == "import_commit" and previous is not None and not self._sources_managed(job.pack_id):
+            if (job.kind == "import_commit" and previous is not None and sha != previous.pack_sha256
+                    and not self._sources_managed(job.pack_id)):
                 # A source task (including a retry of its frozen input) may
                 # only replace a pack that is still the projection of its local
                 # sources; an unrelated pack that took the id since is not its
                 # target, even though the old source history is still on disk.
+                # Input with the registered digest is that same pack: it may
+                # rewrite a missing or unreadable active file.
                 raise KnowledgePackError("pack_changed")
             if (job.frozen_input.get("source_confirmation_required")
                     and (previous.enabled if previous else bool(job.initial_enabled))
@@ -2318,23 +2335,20 @@ class KnowledgeService:
                 self._store.delete_pack(pack_id)
                 return
             pack = decode_pack_bytes(raw)
-            options = self._rebuild_options(previous)
-            if "fit" in options:
-                # Same rule as the startup reconcile: a token plan that would
-                # exceed the budgets keeps the admitted (legacy) layout.
-                chunks = count_pack_chunks(pack, fit=options["fit"], seed_vectors=options.get("seed_vectors", ()))
-                others = sum(item.chunks for key, item in self._registry.packs.items() if key != pack_id)
-                if chunks > MAX_CHUNKS_PER_PACK or others + chunks > MAX_TOTAL_CHUNKS:
-                    options.pop("fit")
+            # Same rule as the startup reconcile.
+            others = sum(item.chunks for key, item in self._registry.packs.items() if key != pack_id)
+            options, _chunks = _budgeted_plan(pack, self._rebuild_options(previous), others)
             restored = self._store.replace_pack(
                 pack,
                 pack_sha256=previous.pack_sha256,
                 disabled_keys=previous.disabled_titles,
                 **options,
             )
-            if restored != previous.chunks:
-                # The registry still holds the old count; repair it before any
-                # further admission or encoding relies on it.
+            current = self._registry.packs.get(pack_id)
+            if current is None or restored != current.chunks:
+                # Compare with the registry as it is now (a queued commit may
+                # have reconciled it since): repair it before any further
+                # admission or encoding relies on it.
                 self._pending_chunk_reconcile = True
         except Exception as exc:
             # Startup reconcile repairs the index from the registry anyway.
@@ -2557,8 +2571,10 @@ class KnowledgeService:
             relevant = slice(None) if reason == "capacity_chunks" else slice(0, 2)
             if current[relevant] == key[relevant]:
                 continue
-            self._refused_replans.pop(pack_id, None)
             await self._locked(lambda pack_id=pack_id: self._thread(self._store.reset_attempts, pack_id), wait=True)
+            # Only after the reset succeeded: a failed write keeps the record
+            # so the next batch tries to reopen the rows again.
+            self._refused_replans.pop(pack_id, None)
 
     def _replan_key(self, pack_id: str, specification: Mapping | None) -> tuple[str, str, int] | None:
         """Identify the inputs a limit-refused token replan depended on."""

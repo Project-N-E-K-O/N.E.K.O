@@ -1,11 +1,14 @@
 """Exercise recovery and row identity across deferred knowledge backfill."""
 
 import asyncio
+import struct
 
 import pytest
 
 from knowledge import service as module
-from knowledge.models import KnowledgePackError, decode_pack_bytes
+from knowledge.archive import export_archive
+from knowledge.chunking import derive_chunks
+from knowledge.models import KnowledgePackError, decode_pack_bytes, parse_pack
 from knowledge.service import KnowledgeService
 from knowledge.store import count_pack_chunks
 from tests.unit.test_knowledge_archive_v2 import make_archive, specification
@@ -221,3 +224,57 @@ async def test_rollback_restore_keeps_the_installed_archive_plan_and_its_vectors
         assert stats == {"total": 97, "ready": 97, "failed": 0}
     finally:
         await service.stop()
+
+
+async def test_index_rebuild_never_grows_an_archive_pack_past_the_total_budget(tmp_path, monkeypatch):
+    """A product installed while assets were missing keeps its admitted size when rebuilt later."""
+    spec = specification()
+    payload = {
+        "schema_version": 1, "pack_id": "archive-fine", "material_type": "knowledge",
+        "source": {"name": "Fine", "homepage": "", "license": "CC0"},
+        "entries": [{"title": "Reference", "content": "\n\n".join(f"{index:03d} " + "y" * 280 for index in range(40))}],
+    }
+    pack = parse_pack(payload)
+    blob = struct.pack("<64f", 1.0, *([0.0] * 63))
+    # The sender's tokenizer split finely: far more rows than the local legacy plan.
+    rows = [{"entry_title": entry.title, "chunk_index": chunk.chunk_index, "text_hash": chunk.text_hash,
+             "embedding_text": chunk.embed_text, "vector": blob}
+            for entry in pack.entries for chunk in derive_chunks(entry, fit=lambda text: len(text) <= 300)]
+    artifact = export_archive(tmp_path / "exports", payload, specification=spec, vectors=rows)
+    path = tmp_path / "exports" / (artifact["sha256"] + ".neko-knowledge.zip")
+    legacy = count_pack_chunks(pack)
+    assert len(rows) > legacy
+
+    class LateAssets(TokenProvider):
+        ready = False
+
+        def spec(self):
+            return specification() if self.ready else None
+
+        def count_tokens(self, texts):
+            return [1 for _ in texts] if self.ready else None
+
+    provider = LateAssets()
+    root = tmp_path / "library"
+    service = KnowledgeService(root, embedder=provider)
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        assert (await _finished(service, await service.import_pack(path)))["state"] == "active"
+        assert service._registry.packs[pack.pack_id].chunks == legacy
+        assert (await _import(service, _pack("imp.other")))["state"] == "active"
+        others = service._registry.packs["imp.other"].chunks
+    finally:
+        await service.stop()
+    service._store.remove_files()
+    # Assets arrive, and the remaining total budget only fits the admitted size.
+    provider.ready = True
+    monkeypatch.setattr(module, "MAX_TOTAL_CHUNKS", others + legacy)
+    rebuilt = KnowledgeService(root, embedder=provider)
+    await rebuilt.start()
+    try:
+        assert rebuilt._registry.packs[pack.pack_id].chunks == legacy
+        assert rebuilt._store.chunk_stats(None)[pack.pack_id]["total"] == legacy
+        assert sum(record.chunks for record in rebuilt._registry.packs.values()) <= others + legacy
+    finally:
+        await rebuilt.stop()

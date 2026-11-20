@@ -415,3 +415,51 @@ async def test_rollback_restore_keeps_capacity_counts_consistent(tmp_path, monke
             assert service._registry.packs["imp.old"].chunks == actual
     finally:
         await service.stop()
+
+
+async def test_rollback_compares_with_the_registry_count_at_restore_time(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        assert (await _import(service, _pack("imp.old", entries=[{"title": "Old", "content": "Short reference."}])))["state"] == "active"
+        previous = service._registry.packs["imp.old"]
+        # A queued commit reconciled the registry to another count before this rollback.
+        service._registry = service._registry.with_pack(replace(previous, chunks=previous.chunks + 5))
+        await asyncio.to_thread(service._restore_index_blocking, "imp.old", previous)
+        assert service._pending_chunk_reconcile
+        # Conversely, a stale captured count does not flag a registry that already matches.
+        service._pending_chunk_reconcile = False
+        service._registry = service._registry.with_pack(previous)
+        await asyncio.to_thread(service._restore_index_blocking, "imp.old", replace(previous, chunks=previous.chunks + 5))
+        assert not service._pending_chunk_reconcile
+    finally:
+        await service.stop()
+
+
+async def test_refused_replan_record_survives_a_failed_reset(tmp_path, monkeypatch):
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        assert (await _import(service, _pack("imp.one", entries=[{"title": "One", "content": "Short reference."}])))["state"] == "active"
+        service._refused_replans["imp.one"] = (("other-digest", "spec", 0), "too_many_chunks")
+        reset = service._store.reset_attempts
+        calls = []
+
+        def flaky(pack_id=""):
+            calls.append(pack_id)
+            if len(calls) == 1:
+                raise OSError("synthetic write failure")
+            return reset(pack_id)
+
+        monkeypatch.setattr(service._store, "reset_attempts", flaky)
+        with pytest.raises(OSError):
+            await service._reopen_refused_replans(specification())
+        assert "imp.one" in service._refused_replans
+        await service._reopen_refused_replans(specification())
+        assert "imp.one" not in service._refused_replans and calls == ["imp.one", "imp.one"]
+    finally:
+        await service.stop()

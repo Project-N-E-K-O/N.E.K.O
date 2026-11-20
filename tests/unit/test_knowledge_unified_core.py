@@ -119,12 +119,36 @@ async def test_finished_exports_outlive_the_bounded_task_window(tmp_path, restar
             service = KnowledgeService(tmp_path)
             await service.start()
         ids = [job["job_id"] for job in service.list_jobs()]
-        assert export.job_id in ids and failed_export.job_id not in ids
-        # The window bounds ordinary tasks; the retained export is extra.
-        assert len(ids) == MAX_TRACKED_JOBS + 1
+        # Imports no longer evict exports: the failed export lives in the
+        # export window, and the retained export is never evicted.
+        assert export.job_id in ids and failed_export.job_id in ids
+        assert len(ids) == MAX_TRACKED_JOBS + 2
         # Discarding is not a way to drop a finished export and orphan its ZIP.
         assert service.discard_job(export.job_id) is False
         assert export.job_id in [job["job_id"] for job in service.list_jobs()]
+    finally:
+        await service.stop()
+
+
+async def test_a_real_export_from_a_full_window_keeps_the_oldest_failed_import_retryable(tmp_path):
+    from knowledge.service import MAX_TRACKED_JOBS, ImportJob
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _import(service, _pack())
+        _prepare_export_vectors(service, "demo-memes")
+        service._jobs.clear()
+        # A full ordinary window whose oldest task is a retryable failed import.
+        failed = ImportJob("f" * 32, "demo-memes", "failed", "2000-01-01T00:00:00Z", "2000-01-01T00:00:00Z")
+        service._remember_job(failed)
+        for index in range(MAX_TRACKED_JOBS - 1):
+            stamp = f"2001-01-01T00:{index // 60:02d}:{index % 60:02d}Z"
+            service._remember_job(ImportJob(f"a{index:031x}", "demo-memes", "active", stamp, stamp))
+        assert len(service._jobs) == MAX_TRACKED_JOBS
+        exported = await _finished(service, await service.export_pack("demo-memes"))
+        assert exported["state"] == "active"
+        assert failed.job_id in [job["job_id"] for job in service.list_jobs()]
     finally:
         await service.stop()
 
@@ -241,6 +265,25 @@ async def test_last_source_removal_that_finds_a_committed_append_removes_only_th
         sources = {row["name"]: row for row in (await service.list_sources(pack_id))["sources"]}
         assert sources["a.txt"]["removed"] is True and sources["b.txt"]["removed"] is False
         assert [row["pack_id"] for row in await service.list_packs()] == [pack_id]
+    finally:
+        await service.stop()
+
+
+async def test_frozen_source_input_with_the_registered_digest_repairs_a_missing_pack_file(tmp_path):
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        value = (await service.preview_source("notes.txt", b"Lighthouse reference."))["preview"]
+        await _finished(service, await service.commit_source(value["preview_id"], value["sha256"]))
+        pack_id = (await service.list_packs())[0]["pack_id"]
+        record = service._registry.packs[pack_id]
+        frozen = [service._sources.version(pack_id, value["doc_id"], 1)]
+        (tmp_path / "packs" / record.file_name).unlink()
+        assert not service._sources_managed(pack_id)
+        repaired = await _finished(service, await service._project_sources(pack_id, frozen[0]["pack_name"], frozen))
+        assert repaired["state"] == "active"
+        assert service._registry.packs[pack_id].pack_sha256 == record.pack_sha256
+        assert service._sources_managed(pack_id)
     finally:
         await service.stop()
 

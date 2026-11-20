@@ -358,6 +358,18 @@ def _pdf_has_unreadable_content(contents, resources, reader) -> bool:
             elif operator == b"Q":
                 if frame["saved"]:
                     frame["font"] = frame["saved"].pop()
+            elif operator == b"gs":
+                # An ExtGState may select a font too. A state that cannot be
+                # resolved, or a /Font entry without a usable font, leaves the
+                # font unknown; a state without /Font keeps the current one.
+                states = frame["resources"].get("/ExtGState", {}) if isinstance(frame["resources"], dict) else {}
+                state = _resolve_pdf_object(_resolve_pdf_object(states).get(operands[0])) if (
+                    operands and isinstance(_resolve_pdf_object(states), dict)) else None
+                if not isinstance(state, dict):
+                    frame["font"] = None
+                elif "/Font" in state:
+                    selected = _resolve_pdf_object(state["/Font"])
+                    frame["font"] = _resolve_pdf_object(selected[0]) if isinstance(selected, list) and selected else None
             elif operator == b"Tf":
                 # A malformed Tf leaves the font unknown, never the previous
                 # font's space exemption.
