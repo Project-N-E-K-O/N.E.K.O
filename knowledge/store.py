@@ -35,7 +35,7 @@ from typing import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 
-from .chunking import derive_chunks
+from .chunking import MAX_EMBED_CHARS, MAX_HEADER_CHARS, KnowledgeChunk, derive_chunks
 from .models import KnowledgeEntry, KnowledgePack
 from .text import fts_match_expression, loose_surface, search_tokens, strict_surface, title_key
 
@@ -200,8 +200,42 @@ def _is_unit_vector(blob: bytes) -> bool:
     return abs(float(np.linalg.norm(vector)) - 1.0) <= _UNIT_NORM_TOLERANCE
 
 
-def count_pack_chunks(pack: KnowledgePack, *, fit: Callable[[str], bool] | None = None) -> int:
-    return sum(len(derive_chunks(entry, fit=fit)) for entry in pack.entries)
+def _plan_pack_chunks(
+    pack: KnowledgePack, *, fit: Callable[[str], bool] | None = None,
+    seed_vectors: Sequence[Mapping] = (), should_cancel: Callable[[], bool] | None = None,
+) -> Iterator[tuple[KnowledgeEntry, tuple[KnowledgeChunk, ...]]]:
+    """Share admission/install inputs; seeds must come from a validated archive."""
+    archived: dict[str, list[Mapping]] = {}
+    for row in seed_vectors:
+        archived.setdefault(row["entry_title"], []).append(row)
+    for entry in pack.entries:
+        if should_cancel is not None and should_cancel():
+            raise InterruptedError("cancelled")
+        rows = sorted(archived.get(entry.title, ()), key=lambda row: row["chunk_index"])
+        header = entry.title + ("\n" + entry.summary if entry.summary else "")
+        # read_archive already proves complete source coverage. Keep its exact
+        # inputs when they fit locally, rather than invalidating proven vectors
+        # through a different paragraph plan. Replan the whole entry otherwise.
+        if (rows and [row["chunk_index"] for row in rows] == list(range(len(rows)))
+                and all(
+                    len(row["embedding_text"]) <= MAX_EMBED_CHARS
+                    and row["embedding_text"].startswith(
+                        (header if row["chunk_index"] == 0 else entry.title)[:MAX_HEADER_CHARS] + "\n")
+                    and hashlib.sha256(row["embedding_text"].encode("utf-8")).hexdigest() == row["text_hash"]
+                    and (fit is None or fit(row["embedding_text"])) for row in rows)):
+            chunks = tuple(KnowledgeChunk(row["chunk_index"], row["embedding_text"], row["text_hash"])
+                           for row in rows)
+        else:
+            chunks = derive_chunks(entry, fit=fit)
+        yield entry, chunks
+
+
+def count_pack_chunks(
+    pack: KnowledgePack, *, fit: Callable[[str], bool] | None = None,
+    seed_vectors: Sequence[Mapping] = (),
+) -> int:
+    """Count the same verified archive/local plan that replace_pack installs."""
+    return sum(len(chunks) for _entry, chunks in _plan_pack_chunks(pack, fit=fit, seed_vectors=seed_vectors))
 
 
 class KnowledgeStore:
@@ -379,13 +413,13 @@ class KnowledgeStore:
 
         Vectors of chunks whose embedding text did not change are carried over,
         so updating a pack only re-embeds what actually changed.
+        Verified archive seeds retain their original inputs when they fit locally.
         """
         disabled = set(disabled_keys)
         prepared = []
-        for entry in pack.entries:
-            if should_cancel is not None and should_cancel():
-                raise InterruptedError("cancelled")
-            prepared.append((entry, _entry_tokens(entry), _entry_surfaces(entry), derive_chunks(entry, fit=fit)))
+        for entry, chunks in _plan_pack_chunks(pack, fit=fit, seed_vectors=seed_vectors,
+                                              should_cancel=should_cancel):
+            prepared.append((entry, _entry_tokens(entry), _entry_surfaces(entry), chunks))
         if should_cancel is not None and should_cancel():
             raise InterruptedError("cancelled")
         with self._write(names=True) as conn:
@@ -950,15 +984,18 @@ class KnowledgeStore:
                 cursor = conn.execute("UPDATE chunks SET attempts=0 WHERE attempts > 0")
             return cursor.rowcount
 
-    def exhaust_attempts(self, chunk_ids: Sequence[int]) -> int:
-        """Count rows that cannot be encoded as failed until the next reset."""
-        if not chunk_ids:
-            return 0
+    def exhaust_attempts(self, rows: Sequence[tuple[int, str, str]]) -> int:
+        """Fail unchanged (chunk ID, text hash, pack ID) inputs only."""
+        marked = 0
         with self._write() as conn:
-            return conn.execute(
-                "UPDATE chunks SET attempts=? WHERE attempts < ? AND id IN (SELECT value FROM json_each(?))",
-                (MAX_EMBED_ATTEMPTS, MAX_EMBED_ATTEMPTS, json.dumps(list(chunk_ids))),
-            ).rowcount
+            # A replacement/replan can reuse SQLite chunk IDs while the indexer
+            # awaits token planning. Never apply its old verdict to new text.
+            for chunk_id, text_hash, pack_id in rows:
+                marked += conn.execute(
+                    "UPDATE chunks SET attempts=? WHERE attempts < ? AND id=? AND text_hash=? AND pack_id=?",
+                    (MAX_EMBED_ATTEMPTS, MAX_EMBED_ATTEMPTS, chunk_id, text_hash, pack_id),
+                ).rowcount
+        return marked
 
     def chunk_pack_ids(self, chunk_ids: Sequence[int]) -> dict[int, str]:
         """Resolve batch ownership without exposing SQLite to the index runner."""

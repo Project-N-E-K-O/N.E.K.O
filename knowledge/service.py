@@ -572,14 +572,14 @@ class KnowledgeService:
                 broken.append(pack_id)
                 continue
             options = self._rebuild_options(record)
-            chunks = count_pack_chunks(pack, fit=options.get("fit"))
+            chunks = count_pack_chunks(pack, fit=options.get("fit"), seed_vectors=options.get("seed_vectors", ()))
             others = sum(value.chunks for key, value in registry.packs.items() if key != pack_id)
             if chunks > MAX_CHUNKS_PER_PACK or others + chunks > MAX_TOTAL_CHUNKS:
                 # Preserve keyword availability within the original admitted
                 # budget. A later token replan is explicitly refused before
                 # native inference, rather than truncating text or overfilling.
                 options.pop("fit", None)
-                chunks = count_pack_chunks(pack)
+                chunks = count_pack_chunks(pack, seed_vectors=options.get("seed_vectors", ()))
             self._store.replace_pack(pack, pack_sha256=record.pack_sha256,
                                      disabled_keys=record.disabled_titles, **options)
             if chunks != record.chunks:
@@ -1556,7 +1556,10 @@ class KnowledgeService:
                 # answer is that job, not "another import is in progress".
                 return {"ok": True, **staged.to_json(), "existing": True}
         try:
-            pack, canonical, chunks = await self._parse_thread(parse_work, self._prepare_import, raw)
+            # Admission must count the same validated archive inputs that the
+            # commit will install, rather than count a fresh local split.
+            prepare_options = {"seed_vectors": options["seed_vectors"]} if options and options.get("seed_vectors") else {}
+            pack, canonical, chunks = await self._parse_thread(parse_work, self._prepare_import, raw, **prepare_options)
         except KnowledgePackError as exc:
             return {"ok": False, "reason": exc.reason}
         if subscription is not None:
@@ -1755,13 +1758,15 @@ class KnowledgeService:
         fn: Callable[..., _T],
         /,
         *args: Any,
+        **kwargs: Any,
     ) -> _T:
         """Run an import request's thread work; its slot stays held until it ends."""
         if self._parse_pool is None:
             self._parse_pool = concurrent.futures.ThreadPoolExecutor(
                 max_workers=MAX_PENDING_IMPORTS, thread_name_prefix="knowledge-parse"
             )
-        future = self._parse_pool.submit(fn, *args)
+        # Archive admission passes its verified seed plan as keyword input.
+        future = self._parse_pool.submit(fn, *args, **kwargs)
         parse_work.append(future)
         self._track_thread_work(future)
         return await asyncio.wrap_future(future)
@@ -1802,9 +1807,9 @@ class KnowledgeService:
         with self._thread_work_lock:
             self._thread_work.discard(future)
 
-    def _prepare_import(self, raw: bytes) -> tuple[KnowledgePack, bytes, int]:
+    def _prepare_import(self, raw: bytes, *, seed_vectors: Sequence[Mapping] = ()) -> tuple[KnowledgePack, bytes, int]:
         pack = decode_pack_bytes(raw)
-        return pack, canonical_pack_bytes(pack), count_pack_chunks(pack, fit=self._chunk_fit())
+        return pack, canonical_pack_bytes(pack), count_pack_chunks(pack, fit=self._chunk_fit(), seed_vectors=seed_vectors)
 
     def _chunk_fit(self) -> Callable[[str], bool] | None:
         """Called only in workers; token counting never loads an ONNX session."""
@@ -2129,7 +2134,7 @@ class KnowledgeService:
             # Assets may become available between admission and commit. Use
             # this single fit for capacity, registry metadata and SQLite.
             fit = self._chunk_fit()
-            chunks = count_pack_chunks(pack, fit=fit)
+            chunks = count_pack_chunks(pack, fit=fit, seed_vectors=job.seed_vectors)
             if chunks > MAX_CHUNKS_PER_PACK:
                 raise KnowledgePackError("too_many_chunks")
             # Admission checked capacity without the lock; two imports racing
@@ -2490,11 +2495,14 @@ class KnowledgeService:
             key = (record.archive_sha256, identity)
             if key in self._seeded_artifacts:
                 continue
-            path = self.artifact_path(record.archive_sha256)
-            stamp = await self._thread(_file_identity, path)
-            if key in self._seed_failures and self._seed_failures[key] == stamp:
-                continue  # A damaged ZIP is not re-hashed and re-validated every batch.
+            stamp = None
             try:
+                # A retained ZIP is optional after text installation. A missing
+                # archive must not abort ordinary backfill of this or other packs.
+                path = self.artifact_path(record.archive_sha256)
+                stamp = await self._thread(_file_identity, path)
+                if key in self._seed_failures and self._seed_failures[key] == stamp:
+                    continue  # A damaged ZIP is not re-hashed and re-validated every batch.
                 checked = await self._thread(read_archive, path, expected_spec=specification)
                 if checked["artifact_sha256"] != record.archive_sha256:
                     self._seed_failures[key] = stamp
@@ -2552,6 +2560,28 @@ class KnowledgeService:
                 # must wait, rather than emit uncertified/truncated vectors.
                 break
             if specification is not None:
+                for pack_id in pack_ids:
+                    previous = self._refused_replans.get(pack_id)
+                    key = self._replan_key(pack_id, specification)
+                    if previous is None or key is None or previous == key:
+                        continue
+                    # Failed rows are excluded from pending_chunks. Reopen a
+                    # refused plan when its inputs/capacity change, without
+                    # resetting unrelated encoding failures in this pack.
+                    try:
+                        await self._replan_vector_inputs([pack_id])
+                    except KnowledgePackError as exc:
+                        if exc.reason in {"too_many_chunks", "capacity_chunks"}:
+                            self._refused_replans[pack_id] = key
+                        else:
+                            deferred_packs.add(pack_id)
+                    except (OSError, ValueError):
+                        deferred_packs.add(pack_id)
+                    else:
+                        self._refused_replans.pop(pack_id, None)
+                    if self._pending_chunk_reconcile:
+                        return processed
+                pack_ids = [pack_id for pack_id in pack_ids if pack_id not in deferred_packs]
                 await self._seed_retained_packages(pack_ids, specification)
             rows = await self._thread(
                 self._store.pending_chunks, model_id=model_id, pack_ids=pack_ids, limit=INDEX_BATCH_SIZE,
@@ -2599,8 +2629,9 @@ class KnowledgeService:
                     if refused:
                         # Over-long rows of a refused pack stay keyword-only and
                         # show as failed, so progress can finish; its other rows
-                        # still get vectors. A new model or restart retries once.
-                        over_long = [row[0] for row, size in zip(rows, counts)
+                        # still get vectors. Changed planning inputs reopen the
+                        # plan above; a new model or restart also retries once.
+                        over_long = [(row[0], row[1], owners[row[0]]) for row, size in zip(rows, counts)
                                      if size > specification["max_length"] and owners.get(row[0]) in refused]
                         marked = await self._locked(
                             lambda ids=over_long: self._thread(self._store.exhaust_attempts, ids), wait=True)

@@ -108,9 +108,30 @@ def test_shading_and_glyph_painting_require_nonempty_drawn_content(operations, p
 
 
 def _font_resources(subtype):
-    from pypdf.generic import DictionaryObject, NameObject
+    from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject, TextStringObject
 
     font = DictionaryObject({NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject(subtype)})
+    if subtype == "/Type0":
+        # A real composite font needs its descendant and encoding before text
+        # extraction; this CMap also keeps the existing one-byte space valid.
+        base_font = NameObject("/HeiseiMin-W3")
+        descriptor = DictionaryObject({
+            NameObject("/Type"): NameObject("/FontDescriptor"), NameObject("/FontName"): base_font,
+            NameObject("/FontBBox"): ArrayObject([NumberObject(value) for value in (-123, -257, 1001, 910)]),
+            **{NameObject("/" + key): NumberObject(value) for key, value in {
+                "Flags": 6, "ItalicAngle": 0, "Ascent": 723, "Descent": -241, "CapHeight": 709, "StemV": 69,
+            }.items()},
+        })
+        descendant = DictionaryObject({
+            NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/CIDFontType0"),
+            NameObject("/BaseFont"): base_font, NameObject("/FontDescriptor"): descriptor,
+            NameObject("/CIDSystemInfo"): DictionaryObject({
+                NameObject("/Registry"): TextStringObject("Adobe"), NameObject("/Ordering"): TextStringObject("Japan1"),
+                NameObject("/Supplement"): NumberObject(2),
+            }),
+        })
+        font.update({NameObject("/BaseFont"): base_font, NameObject("/Encoding"): NameObject("/90ms-RKSJ-H"),
+                     NameObject("/DescendantFonts"): ArrayObject([descendant])})
     return DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})})
 
 
