@@ -29,8 +29,10 @@ from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER, BUILTIN_GROUP_KEYB
 # navigation target. Other quoted instructions are examples or button labels.
 # After NFKC a Chinese comma looks like an ASCII comma. Keep punctuation
 # inside URL paths/queries (e.g. ?q=click), but stop before a Chinese clause.
+_DOMAIN = r"(?a:(?<![\w./\\-])(?:[a-z0-9-]+\.)+(?:com|org|net|cn|io|dev)\b)"
 _URL = re.compile(
-    r"(?:https?://|www\.)(?:[^\s。,;!?<>\"'“”‘’「」『』`]|[,;!?](?=[a-z0-9%_~./&=+\-]))+", re.I
+    rf"(?:https?://|www\.|{_DOMAIN}(?=[/?#]))"
+    r"(?:[^\s。,;!?<>\"'“”‘’「」『』`]|[,;!?](?=[a-z0-9%_~./&=+\-]))+", re.I
 )
 _QUOTED = re.compile(
     r"```[\s\S]*?(?:```|$)|`[^`\n]*`|\"[^\"\n]*\"|(?<!\w)'[^'\n]+'(?!\w)|"
@@ -52,7 +54,7 @@ _NON_ACTION = re.compile(
 )
 _EXPLICIT_WEB = re.compile(
     r"浏览器|瀏覽器|\b(?:browser|chrome|edge(?!\s+cases?\b)|firefox)\b|https?://|"
-    r"\b[\w-]+\.(?:com|org|net|cn|io|dev)\b"
+    + _DOMAIN
 )
 _WEB_OBJECT = re.compile(
     r"网页|網頁|页面|頁面|网站|網站|网址|網址|链接|連結|鏈接|标签页|分頁|"
@@ -118,7 +120,8 @@ def select_device_groups(text: str) -> tuple[str, ...]:
         without_files = _CODE_FILE.sub(" ", clause)
         code = without_files != clause or bool(_CODE_CONTEXT.search(clause))
         explicit_web = bool(_EXPLICIT_WEB.search(without_files))
-        web_target = explicit_web or (not code and not _FILE_OBJECT.search(clause) and _WEB_OBJECT.search(without_files))
+        web_object = bool(_WEB_OBJECT.search(without_files))
+        web_target = explicit_web or (web_object and not code and not _FILE_OBJECT.search(clause))
         screenshot = bool(_SCREENSHOT_ACTION.search(clause))
         click = bool(_CLICK.search(without_files))
         web_action = _WEB_ACTION.search(without_files) or (not code and _WEB_USE.search(without_files))
@@ -131,8 +134,11 @@ def select_device_groups(text: str) -> tuple[str, ...]:
             browser = True
         if browser:
             groups.add(BUILTIN_GROUP_BROWSER)
-        if _DESKTOP_ACTION.search(clause) or (screenshot and (not browser or desktop_target)):
+        # An ambiguous web object can fall back to discovery. Do not turn a
+        # page click or screenshot into input or capture on the real desktop.
+        desktop_fallback = desktop_target or not (browser or web_object)
+        if _DESKTOP_ACTION.search(clause) or (screenshot and desktop_fallback):
             groups.add(BUILTIN_GROUP_KEYBOARD_MOUSE)
-        if click and (desktop_target or (not code and not browser)):
+        if click and desktop_fallback and (desktop_target or not code):
             groups.add(BUILTIN_GROUP_KEYBOARD_MOUSE)
     return tuple(group for group in BUILTIN_GROUPS if group in groups)
