@@ -500,7 +500,13 @@ async def test_public_path_check_runs_off_the_event_loop(tmp_path, monkeypatch):
     (StaticRootFiles, 'application/javascript'),
 ])
 async def test_game_modules_revalidate_relative_imports(tmp_path, query, monkeypatch, static_type, expected_mime):
-    mimetypes.init()
+    # Make sure mimetypes.types_map is the live table before patching it, but
+    # never re-run init() once it is: init() rebuilds the process-wide table
+    # from the host's MIME sources and drops types the app registered at import
+    # time (utils.static_asset_aliases adds .webp, which the Windows registry
+    # lacks), breaking later tests in the same worker.
+    if not mimetypes.inited:
+        mimetypes.init()
     monkeypatch.setitem(mimetypes.types_map, '.mjs', 'text/plain')
     folder = tmp_path / 'game' / 'sdk'
     folder.mkdir(parents=True)

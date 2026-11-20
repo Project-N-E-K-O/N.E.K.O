@@ -21,15 +21,17 @@ when nothing in the watched folders changed, this script is a no-op.
 
 Group 1 — static/locales/*.json
    When ANY file in static/locales/ changes, ALL 8 language files must
-   change AND every hunk header (``@@ -OLD,COUNT +NEW,COUNT @@``) must
-   match across all 8. The locale JSONs are line-aligned by convention
-   (the same key sits on the same line across languages); strict alignment
-   catches "added a key in zh-CN but forgot the others" at the diff stage.
+   change. After the change, every file must have the same JSON structure
+   (same key paths, value types, and array lengths). The locale JSONs are
+   line-aligned by convention; comparing the resulting shape catches
+   "added a key in zh-CN but forgot the others" while still allowing a
+   single language to receive translation-only value updates.
 
 Group 2 — frontend/plugin-manager/src/i18n/locales/*.ts
-   Same rule but for plugin-manager TS locales. ``yuiGuide.ts`` is
-   excluded from the group because it's a domain-scoped guide that
-   intentionally ships single-language only.
+   Same rule but for plugin-manager TS locales: all 8 files must change and
+   every hunk header (``@@ -OLD,COUNT +NEW,COUNT @@``) must match.
+   ``yuiGuide.ts`` is excluded from the group because it's a domain-scoped
+   guide that intentionally ships single-language only.
 
 Suppression
 -----------
@@ -47,6 +49,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -59,6 +62,7 @@ GROUPS: list[dict[str, object]] = [
     {
         "name": "static/locales",
         "dir": "static/locales",
+        "format": "json",
         "files": [
             "en.json", "es.json", "ja.json", "ko.json",
             "pt.json", "ru.json", "zh-CN.json", "zh-TW.json",
@@ -120,6 +124,64 @@ def _file_diff(base: str, path: str) -> str:
     return _git("diff", "--unified=0", f"{base}...HEAD", "--", path)
 
 
+def _json_shape(value, prefix: str = "$") -> dict[str, str]:
+    """Map every JSON path to its type/array length, ignoring scalar values."""
+    shape: dict[str, str] = {}
+    if isinstance(value, dict):
+        shape[prefix] = "object"
+        for key in sorted(value):
+            shape.update(_json_shape(value[key], f"{prefix}.{key}"))
+    elif isinstance(value, list):
+        shape[prefix] = f"list[{len(value)}]"
+        for index, item in enumerate(value):
+            shape.update(_json_shape(item, f"{prefix}[{index}]"))
+    elif isinstance(value, bool):
+        shape[prefix] = "bool"
+    elif isinstance(value, str):
+        shape[prefix] = "string"
+    elif isinstance(value, (int, float)):
+        shape[prefix] = "number"
+    elif value is None:
+        shape[prefix] = "null"
+    else:
+        shape[prefix] = type(value).__name__
+    return shape
+
+
+def _head_json_shape(path: str) -> dict[str, str]:
+    try:
+        return _json_shape(json.loads(_git("show", f"HEAD:{path}")))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: invalid JSON at HEAD: {exc}") from exc
+
+
+def _compare_json_shapes(files: list[str]) -> list[str]:
+    errors: list[str] = []
+    try:
+        shapes = {path: _head_json_shape(path) for path in files}
+    except ValueError as exc:
+        return [f"[static/locales] {exc}"]
+
+    ref_file = files[0]
+    ref_shape = shapes[ref_file]
+    for path in files[1:]:
+        shape = shapes[path]
+        if shape != ref_shape:
+            diffs = sorted(
+                key for key in set(ref_shape) | set(shape)
+                if ref_shape.get(key) != shape.get(key)
+            )[:5]
+            detail = ", ".join(
+                f"{key}: {ref_shape.get(key, 'missing')} != {shape.get(key, 'missing')}"
+                for key in diffs
+            )
+            errors.append(
+                f"[static/locales] JSON structure in {path} differs from "
+                f"{ref_file}: {detail}"
+            )
+    return errors
+
+
 def _check_group(group: dict, base: str, changed: set[str]) -> list[str]:
     errors: list[str] = []
     dir_prefix = str(group["dir"]).rstrip("/") + "/"
@@ -138,6 +200,10 @@ def _check_group(group: dict, base: str, changed: set[str]) -> list[str]:
             f"All locales in the group must be edited together."
         )
         return errors  # alignment check is meaningless when files are missing
+
+    if group.get("format") == "json":
+        errors.extend(_compare_json_shapes(files_in_group))
+        return errors
 
     hunks_by_file: dict[str, list[tuple[int, int, int, int]]] = {}
     for f in files_in_group:

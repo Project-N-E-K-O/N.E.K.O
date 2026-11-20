@@ -7,7 +7,7 @@
 | Python | exactly 3.11.x | `pyproject.toml` |
 | uv | a current compatible release | `uv.lock` and workflows |
 | Git | a maintained release | repository operations |
-| Node.js + npm | `^20.19.0 || >=22.12.0` for plugin manager | `frontend/plugin-manager/package.json` |
+| Node.js + npm | `>=22.12.0` for plugin manager | `frontend/plugin-manager/package.json` |
 
 Install Python dependencies with `uv sync`; do not use a hand-maintained `pip install -r requirements.txt` flow. Frontend and docs builds use committed lockfiles and `npm ci`.
 

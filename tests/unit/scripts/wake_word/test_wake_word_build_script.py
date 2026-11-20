@@ -12,8 +12,13 @@ import pytest
 
 # These tests launch real Windows PowerShell / pwsh processes. Keep them in
 # the existing serial subprocess shard instead of the bulk xdist unit gate;
-# the 20-second timeout remains a guard, not a startup performance assertion.
+# the timeout remains a guard, not a startup performance assertion.
 pytestmark = pytest.mark.integration_serial
+
+# Hang guard for one PowerShell run. 20 s was hit three times in two weeks on
+# the Windows serial shard by a run that normally takes a few seconds (cold
+# PowerShell start on a busy runner); a hung script still fails here.
+_POWERSHELL_GUARD_S = 60
 
 
 BUILD_SCRIPT = Path(__file__).resolve().parents[4] / "scripts" / "wake_word" / "build_wake_word_runtime.ps1"
@@ -52,7 +57,7 @@ def preflight(request, tmp_path):
             [request.param, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-File", str(wrapper), "-BuildScript", str(BUILD_SCRIPT),
              "-OutputPath", str(output), "-PythonPath", sys.executable],
-            env=env, capture_output=True, text=True, timeout=20,
+            env=env, capture_output=True, text=True, timeout=_POWERSHELL_GUARD_S,
         )
         return result, marker
 
@@ -184,7 +189,7 @@ try {
         [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(wrapper),
          "-BuildScript", str(BUILD_SCRIPT), "-OutputPath", str(output), "-PythonPath", sys.executable,
          "-Variant", variant],
-        env=env, capture_output=True, text=True, timeout=20,
+        env=env, capture_output=True, text=True, timeout=_POWERSHELL_GUARD_S,
     )
     assert result.returncode == 91
     assert "NATIVE_BUILD_REACHED" in result.stdout, result.stdout + result.stderr

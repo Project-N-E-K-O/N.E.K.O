@@ -136,7 +136,10 @@ function harness(randomAt = () => 0, options = {}) {
     _clearNekoIdleHoverPlayback: () => {},
     _cleanupNekoIdleArtTransition: () => {},
     _clearNekoIdleGifPlaybackSource: () => {},
-    _beginNekoCatMindStateAction: () => ({ runId: 'eat-run' }),
+    _beginNekoCatMindStateAction(state, actionId, _tier, { requestId }) {
+      state.catMindActionId = actionId;
+      return { runId: 'eat-run', requestId };
+    },
     _notifyNekoCatMindRunnerAccepted: () => {},
     _notifyNekoCatMindRunnerStarted: () => {},
     _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton: () => {},
@@ -157,7 +160,10 @@ function harness(randomAt = () => 0, options = {}) {
     _getNekoCatVoiceUrl: () => 'eat.mp3?v=1',
     _stopNekoIdleSoundAudio: () => {},
     _getNekoCatMindCancelResult: (reason, finished) => reason === finished ? 'done' : 'interrupted',
-    _reportNekoCatMindStateActionResult: (_state, result, detail) => results.push({ result, detail }),
+    _reportNekoCatMindStateActionResult(state, result, detail) {
+      if (state.catMindActionId) results.push({ result, detail });
+      state.catMindActionId = '';
+    },
     _syncNekoIdleCat1AmbientSoundForTier: () => {},
     _getNekoIdleReturnCurrentArtUrl: () => 'idle.gif?v=1',
     _resumeNekoIdleCat1Journey: () => {},
@@ -239,7 +245,9 @@ test('eat finishes only after both the selected animation and audio complete', a
   for (const firstCompletion of ['audio', 'animation']) {
     const audio = createEventedAudio();
     const h = harness(() => 0.5, { audio, durationMs: 5000 });
-    assert.equal(h.context._playNekoIdleCat1EatAction(h.button), true);
+    assert.equal(h.context._playNekoIdleCat1EatAction(h.button, {
+      source: 'cat_mind', requestId: 'eat-request',
+    }), true);
     await Promise.resolve();
     await Promise.resolve();
     const state = h.button.__nekoIdleCat1EatActionState;

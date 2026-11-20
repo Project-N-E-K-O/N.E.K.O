@@ -270,6 +270,25 @@ def _widen_write_window(monkeypatch, seconds: float = 0.02):
     monkeypatch.setattr(recent_file, "atomic_write_json", _slow)
 
 
+def _run_on_private_loop(coro, executor: ThreadPoolExecutor | None = None):
+    """Run *coro* on a throwaway event loop, optionally with its own default executor.
+
+    tests/conftest.py applies nest_asyncio, whose ``asyncio.run()`` reuses the
+    process-wide loop instead of creating one. A default executor installed on
+    that loop would outlive the test, and once shut down it makes every later
+    ``run_in_executor``/``to_thread`` in the same worker fail with "cannot
+    schedule new futures after shutdown". The runner's teardown cancels
+    leftover tasks, closes async generators and waits for the executor's
+    threads before closing the loop, so nothing keeps running after the test.
+    ``loop_factory`` keeps the runner from replacing (and later clearing) the
+    thread's current event loop.
+    """
+    with asyncio.Runner(loop_factory=asyncio.new_event_loop) as runner:
+        if executor is not None:
+            runner.get_loop().set_default_executor(executor)
+        return runner.run(coro)
+
+
 def _run_with_wide_pool(coro_factory, workers: int = 8):
     """Run a coroutine with a default executor big enough for real concurrency.
 
@@ -277,12 +296,7 @@ def _run_with_wide_pool(coro_factory, workers: int = 8):
     runner that is 6 workers, and queueing would hide the very interleaving
     these tests are about.
     """
-    async def _main():
-        loop = asyncio.get_running_loop()
-        loop.set_default_executor(ThreadPoolExecutor(max_workers=workers))
-        return await coro_factory()
-
-    return asyncio.run(_main())
+    return _run_on_private_loop(coro_factory(), ThreadPoolExecutor(max_workers=workers))
 
 
 # ─────────────── T1: concurrent update_history keeps every batch ───────────────
@@ -1858,8 +1872,6 @@ def test_main_server_recent_writers_share_the_memory_server_lock(tmp_path, monke
             errors.append(exc)
 
     async def _go():
-        loop = asyncio.get_running_loop()
-        loop.set_default_executor(ThreadPoolExecutor(max_workers=16))
         await asyncio.gather(
             mgr.update_history([HumanMessage(content="w0")], name, compress=False),
             mgr.update_history([HumanMessage(content="w1")], name, compress=False),
@@ -1867,7 +1879,7 @@ def test_main_server_recent_writers_share_the_memory_server_lock(tmp_path, monke
             asyncio.to_thread(_hammer_read),
         )
 
-    asyncio.run(_go())
+    _run_on_private_loop(_go(), ThreadPoolExecutor(max_workers=16))
 
     assert errors == [], f"并发路径不得抛异常，实际 {errors}"
     contents = [m.content for m in _read_disk(path)]

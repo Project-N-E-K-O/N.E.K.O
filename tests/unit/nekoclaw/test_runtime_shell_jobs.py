@@ -251,7 +251,15 @@ async def test_abort_on_an_idle_session_stops_its_background_jobs_for_good(tmp_p
     try:
         session.prompt("start the server")
         await events.wait_ended(timeout=60)
+        # The run's end says that a job is still running: a session with one is not closed to rest.
+        assert events.of("ended")[0]["jobs"] == 1
         job = session.jobs.get("job-1")
+        # And that its end will start the next run. One that is being stopped by whoever
+        # knows about it does not: nothing follows its end, so it keeps no session open.
+        assert events.of("ended")[0]["waking_jobs"] == 1 and session.jobs.waking() == [job]
+        job.notice_suppressed = True
+        assert session.jobs.waking() == [] and session.jobs.running() == [job]
+        job.notice_suppressed = False
         for _ in range(100):
             if "pid" in job.process.stdout.read_from(0)[0]:
                 break

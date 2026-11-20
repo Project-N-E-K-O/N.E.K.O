@@ -11,7 +11,7 @@ This historical path name is retained for inbound links. The page is a current m
 | Bus `where_*` helpers and list set operators | Removed | Compose `get()`, `filter()` / `where()`, `sort()`, `limit()`, and `watch()` |
 | `get_message_plane_all` | Removed | Use bounded `await self.bus.messages.get(...)` queries |
 | Bus incremental/local fast paths | Removed | Use the canonical bounded, replayable read/watch pipeline |
-| High-level `self.memory` / SDK `MemoryClient` | Removed | Use `self.bus.memory.get(...)` only for recent in-memory user-context records; there is no plugin SDK replacement for persistent semantic recall |
+| High-level `self.memory` / old SDK `MemoryClient` facade | Removed | Use `self.bus.memory.get(...)` only for recent in-memory user-context records. For persistent memory recall use `ctx.query_memory(...)` (rendered text) or the newer `MemoryClient(self.ctx).search(...)` from `plugin.sdk.plugin` (structured hits) |
 | Extension package type, `[plugin.host]`, and `plugin.sdk.extension` | Removed, no compatibility path | Merge the Router into its owning normal Plugin, or convert the package into a standalone Plugin |
 | `push_message` v1 fields | Deprecated but still translated in current source | Use `parts`, `visibility`, and `ai_behavior`; do not rely on an exact removal release |
 
@@ -91,7 +91,7 @@ The old SDK `MemoryClient` mixed two different concepts. The supported replaceme
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-These records are bounded, in-memory user-utterance events with a one-hour TTL. They are not the character's persistent facts, reflections, or persona. Memory record reads and typed records remain available through `self.bus.memory`; the removed surfaces are the high-level `self.memory` property and the SDK/runtime `MemoryClient` facade. `ctx.query_memory(...)` still exists for compatibility, but it reaches a deprecated placeholder endpoint and does not provide semantic recall. There is currently no public plugin SDK operation for structured persistent-memory recall.
+These records are bounded, in-memory user-utterance events with a one-hour TTL. They are not the character's persistent facts, reflections, or persona. Memory record reads and typed records remain available through `self.bus.memory`; the removed surfaces are the high-level `self.memory` property and the old SDK/runtime `MemoryClient` facade (the `MemoryClient` now exported from `plugin.sdk.plugin` is a different, newer search client). `ctx.query_memory(...)` runs the same hybrid recall as the built-in `recall_memory` tool and returns the hits as rendered text (an empty string when nothing matches). For structured hits use `MemoryClient(self.ctx).search(target=MemoryTarget.private(...), query=...)`, which returns `Ok` / `Err`.
 
 ## `push_message` v2
 

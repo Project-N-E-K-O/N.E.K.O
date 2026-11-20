@@ -60,7 +60,7 @@ N.E.K.O_0.8.3_mac_arm64.zip
 
 - Python **3.11**；
 - 使用 [`uv`](https://docs.astral.sh/uv/) 管理 Python 环境和执行命令；
-- 与仓库 Lockfile 兼容的 Node；Plugin Manager 当前要求 `^20.19.0 || >=22.12.0`；
+- 与仓库 Lockfile 兼容的 Node；Plugin Manager 当前要求 `>=22.12.0`；
 - 你所启用功能对应的平台依赖。
 
 请从[前置条件](./prerequisites)、[开发环境搭建](./dev-setup)和[快速开始](./quick-start)开始。

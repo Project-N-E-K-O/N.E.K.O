@@ -410,6 +410,33 @@ async def test_a_commission_whose_session_dsh_cannot_take_up_is_told_what_it_is_
         assert _last_user_message(llm.requests[-1]) == "it is on drive D"
 
 
+@pytest.mark.parametrize("log_gone", [True, False])
+async def test_a_commission_told_once_more_what_it_is_has_the_list_of_its_repository_again(
+    hosts, tmp_path, tmp_path_factory, log_gone
+):
+    # A repository, outside the folder the host keeps its data in.
+    root = tmp_path_factory.mktemp("repo")
+    (root / ".git").mkdir()
+    (root / "AGENTS.md").write_text("a", encoding="utf-8", newline="\n")
+    llm = ScriptedLLM([_report("failed", "the folder is missing"), _report("ready", "found it")])
+    host = _host(hosts, tmp_path, llm, Installation())
+    await host.space.touch_project("Budget app", workdir=str(root))
+    commission_id = await _dispatch(host, "add an export to the Budget app")
+    await wait_status(host, commission_id, "failed")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    assert "- AGENTS.md (1 B)" in _last_user_message(llm.requests[0])
+    host.fake.behaviour["log_gone"] = log_gone
+
+    assert await host.tell(commission_id, "it is on drive D")
+    done = await wait_status(host, commission_id, "done")
+
+    assert done.runtime == RUNTIME_DSH and done.workdir == str(root)
+    # Whether dsh takes its session up is known only once it was started. Where it does not, the
+    # commission is opened in a session that holds nothing, and what its repository keeps for agents
+    # is listed again; where it does, nothing of that is said a second time.
+    assert ("- AGENTS.md (1 B)" in _last_user_message(llm.requests[-1])) is log_gone
+
+
 async def test_a_commission_whose_session_is_gone_starts_over_knowing_what_it_is(hosts, tmp_path):
     llm = ScriptedLLM([_report("failed", "the folder is missing"), _report("ready", "found it")])
     host = _host(hosts, tmp_path, llm, Installation())
@@ -840,6 +867,10 @@ async def test_the_session_of_an_old_commission_that_ran_in_dsh_is_cleaned_in_ds
     host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]), installation)
     done = await wait_status(host, await _dispatch(host, "sort the photos"), "done")
     await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    # And let go of by the commission that held it, which takes two more looks at the ledger
+    # once it has left the runtime: until then the session counts as in use, and its files
+    # are not removed (the tidying comes by again, as it would here).
+    await wait_until(lambda: done.session_id not in host.task_agents._held_by, what="the session being let go")
     session_dir = Path(done.session_dir)
     assert (session_dir / DSH_SESSION_NAME).is_file()
 

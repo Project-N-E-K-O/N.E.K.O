@@ -171,6 +171,7 @@
           <template #item="{ item }">
             <MarketPluginCard
               :plugin="item"
+              :awaiting-reply="awaitingReplyByPlugin.get(Number(item.rawId))"
               :installed="isInstalled(item)"
               :installing="installingId === item.id"
               :local-version="getLocalInstalledVersion(item)"
@@ -245,6 +246,7 @@
       :upgrading="upgradingId === selectedPlugin.id"
       @install="handleInstall"
       @upgrade="handleUpgrade"
+      @feedback-changed="refreshFeedbackBadges"
     />
   </div>
 </template>
@@ -276,7 +278,8 @@ import type {
   GroupChoiceDescriptor,
   LayoutChoiceDescriptor,
 } from '@/composables/workbenchDescriptors'
-import { fetchBridge, ensureBridgeToken, readErrorCode } from '@/api/marketBridge'
+import { fetchBridge, ensureBridgeToken, MARKET_AUTH_CHANGED_EVENT, readErrorCode } from '@/api/marketBridge'
+import { fetchMarketFeedback } from '@/api/marketFeedback'
 import {
   useMarketInstallTaskStore,
   type MarketInstallContext,
@@ -346,6 +349,24 @@ const { ensureDownloadPreferences } = useGithubMirrorSource()
 const TRANSPORT_THROWS = { throwOnTransportError: true } as const
 const detailDialogVisible = ref(false)
 const selectedPlugin = ref<MarketWorkbenchItem | null>(null)
+const awaitingReplyByPlugin = ref(new Map<number, number>())
+let feedbackRequest: AbortController | undefined
+let badgesMounted = false
+
+async function refreshFeedbackBadges() {
+  feedbackRequest?.abort()
+  awaitingReplyByPlugin.value = new Map()
+  if (!badgesMounted || !props.active || !marketAvailable.value) return
+  const request = new AbortController()
+  feedbackRequest = request
+  try {
+    const feedback = await fetchMarketFeedback({ kind: 'all', status: 'all', limit: 1 }, request.signal)
+    if (request.signal.aborted) return
+    awaitingReplyByPlugin.value = new Map(feedback.by_plugin.map(row => [row.plugin_id, row.awaiting_reply_total]))
+  } catch {
+    // Guest catalog browsing is independent of the signed-in feedback summary.
+  }
+}
 
 const installTask = useMarketInstallTaskStore()
 const installTaskDialogVisible = ref(false)
@@ -1131,6 +1152,7 @@ async function initialize() {
   marketBaseUrl.value = await getMarketUrl()
   await ensureBridgeToken()
   if (marketAvailable.value) {
+    void refreshFeedbackBadges()
     await loadPlugins()
     yankSweep().catch(() => {})
   }
@@ -1140,22 +1162,33 @@ async function initialize() {
 }
 
 onMounted(() => {
+  badgesMounted = true
+  window.addEventListener('focus', refreshFeedbackBadges)
+  window.addEventListener(MARKET_AUTH_CHANGED_EVENT, refreshFeedbackBadges)
   if (props.active !== false) initialize()
 })
 
 onBeforeUnmount(() => {
+  badgesMounted = false
   // 让在途 loadPlugins 的 mySeq 全部失效
   loadSeq++
+  feedbackRequest?.abort()
+  window.removeEventListener('focus', refreshFeedbackBadges)
+  window.removeEventListener(MARKET_AUTH_CHANGED_EVENT, refreshFeedbackBadges)
 })
 
 watch(
   () => props.active,
   (active) => {
-    if (!active) return
+    if (!active) {
+      void refreshFeedbackBadges()
+      return
+    }
     if (plugins.value.length === 0 && !loading.value) {
       void initialize()
-    } else if (marketInstalled.stale) {
-      void yankSweep().catch(() => undefined)
+    } else {
+      void refreshFeedbackBadges()
+      if (marketInstalled.stale) void yankSweep().catch(() => undefined)
     }
   },
 )

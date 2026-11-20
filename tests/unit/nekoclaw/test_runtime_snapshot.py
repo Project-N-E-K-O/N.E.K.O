@@ -32,11 +32,13 @@ import pytest
 from config.prompts import prompts_nekoclaw as texts
 from nekoclaw.runtime.model import is_context_overflow, window_from_overflow
 from nekoclaw.runtime.protocol import ModelConfig
+from nekoclaw.runtime import snapshot as snapshots
 from nekoclaw.runtime.snapshot import (
     REASON_COMPACTED,
     REASON_MOVED,
     REASON_OPENED,
     SYSTEM_FILE,
+    _VERSION,
     SystemSnapshot,
     ToolDefinition,
     read_snapshot,
@@ -119,15 +121,22 @@ def test_a_snapshot_is_read_back_as_it_was_written(tmp_path: Path) -> None:
     [
         "{not json",
         "[]",
+        # Of another version. Version 1 named the language of the commission a
+        # session was opened for in its system prompt, and its report tool told
+        # the model to use the language of the user's request; version 2 had no
+        # tools that reach other sessions. A session takes up what its version
+        # brought when it is next opened.
+        json.dumps({"version": snapshots._VERSION + 1, "system": "s", "tools": []}),
+        json.dumps({"version": 1, "system": "s", "tools": []}),
         json.dumps({"version": 2, "system": "s", "tools": []}),
-        json.dumps({"version": 1, "system": "", "tools": []}),
-        json.dumps({"version": 1, "system": "s", "tools": "read"}),
-        json.dumps({"version": 1, "system": "s", "tools": ["read"]}),
-        json.dumps({"version": 1, "system": "s", "tools": [{"name": "read", "description": "d"}]}),
-        json.dumps({"version": 1, "system": "s", "tools": [{"name": "", "description": "d", "parameters": {}}]}),
+        json.dumps({"version": snapshots._VERSION, "system": "", "tools": []}),
+        json.dumps({"version": snapshots._VERSION, "system": "s", "tools": "read"}),
+        json.dumps({"version": snapshots._VERSION, "system": "s", "tools": ["read"]}),
+        json.dumps({"version": snapshots._VERSION, "system": "s", "tools": [{"name": "read", "description": "d"}]}),
+        json.dumps({"version": snapshots._VERSION, "system": "s", "tools": [{"name": "", "description": "d", "parameters": {}}]}),
         json.dumps(
             {
-                "version": 1,
+                "version": snapshots._VERSION,
                 "system": "s",
                 "tools": [{"name": "a", "description": "d", "parameters": {}}] * 2,
             }
@@ -137,6 +146,13 @@ def test_a_snapshot_is_read_back_as_it_was_written(tmp_path: Path) -> None:
 def test_a_file_that_is_not_a_snapshot_counts_as_none(tmp_path: Path, content: str) -> None:
     (tmp_path / SYSTEM_FILE).write_text(content, encoding="utf-8")
     assert read_snapshot(tmp_path) is None
+
+
+def test_a_file_of_this_version_is_a_snapshot(tmp_path: Path) -> None:
+    # What the cases above leave out, one thing each, is all here: it is
+    # for what they leave out that they count as none.
+    (tmp_path / SYSTEM_FILE).write_text(json.dumps({"version": _VERSION, "system": "s", "tools": []}), encoding="utf-8")
+    assert read_snapshot(tmp_path) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -152,15 +168,15 @@ async def test_a_session_keeps_what_it_was_opened_with_and_begins_its_requests_t
     await _ask(session, events, "First commission.")
     await session.close()
 
-    spec = make_spec(tmp_path, instructions="Space index: three entries by now.", reply_language="Japanese")
+    spec = make_spec(tmp_path, instructions="Space index: three entries by now.")
     saved = _saved(spec)
-    assert saved["version"] == 1 and saved["reason"] == REASON_OPENED
+    assert saved["version"] == snapshots._VERSION and saved["reason"] == REASON_OPENED
     assert saved["system"] == _system_of(first_llm.requests[0])
     assert "Space index: nothing yet." in saved["system"]
     assert [tool["name"] for tool in saved["tools"]] == _tool_names(first_llm.overrides[0])
 
-    # Opened for the next commission, with other instructions and another
-    # language by now: the system prompt and the tools are those of before.
+    # Opened for the next commission, with other instructions by now: the
+    # system prompt and the tools are those of before.
     second_llm = ScriptedLLM([[say("Done again."), finish()]])
     session, events = await open_session(spec, second_llm)
     try:
@@ -174,6 +190,41 @@ async def test_a_session_keeps_what_it_was_opened_with_and_begins_its_requests_t
         await session.close()
     # Nothing was written anew.
     assert _saved(spec) == saved
+
+
+async def test_a_snapshot_written_before_the_session_tools_is_put_together_anew_when_its_session_is_opened(
+    tmp_path: Path,
+) -> None:
+    from nekoclaw.runtime.host import HostCallbacks
+
+    async def answer(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"text": "", "message": ""}
+
+    host = HostCallbacks(session_list=answer, session_read=answer, session_send=answer, wake_schedule=answer)
+    first_llm = ScriptedLLM([[say("Done."), finish()]])
+    session, events = await open_session(make_spec(tmp_path), first_llm, host)
+    try:
+        await _ask(session, events, "First commission.")
+    finally:
+        await session.close()
+    spec = make_spec(tmp_path)
+    # As a host of the version before left it: version 1, by its number and not by one counted
+    # from this version, and none of the tools that came with the next.
+    new = {"list_sessions", "read_session", "message_session", "schedule_wake"}
+    saved = _saved(spec)
+    assert new <= {tool["name"] for tool in saved["tools"]}
+    left = {**saved, "version": 1, "tools": [tool for tool in saved["tools"] if tool["name"] not in new]}
+    (Path(spec.session_dir) / SYSTEM_FILE).write_text(json.dumps(left), encoding="utf-8")
+    assert read_snapshot(Path(spec.session_dir)) is None
+
+    second_llm = ScriptedLLM([[say("Done again."), finish()]])
+    session, events = await open_session(spec, second_llm, host)
+    try:
+        await _ask(session, events, "Second commission.")
+        assert new <= set(_tool_names(second_llm.overrides[0]))
+    finally:
+        await session.close()
+    assert _saved(spec)["version"] > 1 and new <= {tool["name"] for tool in _saved(spec)["tools"]}
 
 
 async def test_the_goal_a_session_is_started_with_is_the_goal_of_the_commission_that_is_opened(tmp_path: Path) -> None:

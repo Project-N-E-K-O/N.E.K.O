@@ -3,7 +3,7 @@
   "model_id": "iic/speech_campplus_sv_zh_en_16k-common_advanced",
   "revision": "v1.0.0",
   "license": "Apache-2.0",
-  "source": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+  "source": "https://huggingface.co/csukuangfj/speaker-embedding-models/resolve/0743f301363dec56491a490f6d6cbc9d67f9a3bf/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
   "export_source": "k2-fsa/sherpa-onnx",
   "size_bytes": 28281164,
   "sha256": "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",

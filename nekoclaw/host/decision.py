@@ -81,12 +81,18 @@ TIER_TURN_CHECK = "turn_check"
 # once per plugin and description, in the background.
 TIER_SHORT_DESCRIPTION = "short_description"
 # The task agent space (``space_keeper.py``): the review of a finished
-# commission, and the summary of a project that is archived. Both run in the
-# background on the summary model and are metered under names of their own.
+# commission, the summary of a project that is archived, and the tidying of
+# the entries of one layer. All run in the background on the summary model
+# and are metered under names of their own.
 TIER_REVIEW = "review"
 TIER_ARCHIVE = "archive"
-_SUMMARY_TIERS = frozenset({TIER_FINE, TIER_REVIEW, TIER_ARCHIVE})
-_CALL_TYPES = {TIER_REVIEW: "task_agent_review", TIER_ARCHIVE: "task_agent_archive"}
+TIER_CONSOLIDATE = "consolidate"
+_SUMMARY_TIERS = frozenset({TIER_FINE, TIER_REVIEW, TIER_ARCHIVE, TIER_CONSOLIDATE})
+_CALL_TYPES = {
+    TIER_REVIEW: "task_agent_review",
+    TIER_ARCHIVE: "task_agent_archive",
+    TIER_CONSOLIDATE: "task_agent_consolidate",
+}
 _FINE_ATTEMPTS = 3
 _FINE_RETRY_DELAYS = (1.0, 2.0)
 
@@ -187,7 +193,7 @@ class DecisionLLM(Protocol):
     """The model tiers the lexical decision model uses."""
 
     async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
-        """Return the text of one completion of a tier (``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK``, ``TIER_SHORT_DESCRIPTION``, ``TIER_REVIEW``, ``TIER_ARCHIVE``)."""
+        """Return the text of one completion of a tier (``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK``, ``TIER_SHORT_DESCRIPTION``, ``TIER_REVIEW``, ``TIER_ARCHIVE``, ``TIER_CONSOLIDATE``)."""
 
 
 class DecisionModel(Protocol):
@@ -228,8 +234,8 @@ class ConfiguredDecisionLLM:
 
     The coarse screen, the turn check and short descriptions run on the small
     latency-sensitive tier (``emotion``); the fine selection, the reviews of
-    finished commissions and the summaries of archived projects on the
-    ``summary`` tier. Endpoints come from the user's configuration as they
+    finished commissions, the summaries of archived projects and the tidying
+    of the task agent space on the ``summary`` tier. Endpoints come from the user's configuration as they
     are, ``http://`` addresses included.
     """
 
@@ -240,13 +246,19 @@ class ConfiguredDecisionLLM:
         from utils.config_manager import get_config_manager
         from utils.llm_client import create_chat_llm_async
 
-        from config.nekoclaw_settings import SPACE_ARCHIVE_MODEL_SLOT, TASK_AGENT_REVIEW_MODEL_SLOT
-
-        # The two tiers of the task agent space say in the settings which
-        # model they use, so that it is changed there and nowhere else.
-        slot = {TIER_REVIEW: TASK_AGENT_REVIEW_MODEL_SLOT, TIER_ARCHIVE: SPACE_ARCHIVE_MODEL_SLOT}.get(
-            tier, "summary" if tier in _SUMMARY_TIERS else "emotion"
+        from config.nekoclaw_settings import (
+            SPACE_ARCHIVE_MODEL_SLOT,
+            SPACE_CONSOLIDATE_MODEL_SLOT,
+            TASK_AGENT_REVIEW_MODEL_SLOT,
         )
+
+        # The tiers of the task agent space say in the settings which model
+        # they use, so that it is changed there and nowhere else.
+        slot = {
+            TIER_REVIEW: TASK_AGENT_REVIEW_MODEL_SLOT,
+            TIER_ARCHIVE: SPACE_ARCHIVE_MODEL_SLOT,
+            TIER_CONSOLIDATE: SPACE_CONSOLIDATE_MODEL_SLOT,
+        }.get(tier, "summary" if tier in _SUMMARY_TIERS else "emotion")
         config = await asyncio.to_thread(get_config_manager(migrate=False).get_model_api_config, slot)
         key = (slot, config.get("api_key"), config.get("base_url"), config.get("model"), config.get("provider_type"), budget)
         client = self._clients.get(key)
@@ -273,6 +285,7 @@ class ConfiguredDecisionLLM:
         set_call_type(_CALL_TYPES.get(tier, "agent"))
         from config.nekoclaw_settings import (
             SPACE_ARCHIVE_OUTPUT_MAX_TOKENS,
+            SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS,
             TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS,
             TURN_CHECK_OUTPUT_MAX_TOKENS,
         )
@@ -283,6 +296,7 @@ class ConfiguredDecisionLLM:
             TIER_SHORT_DESCRIPTION: AGENT_PLUGIN_SHORTDESC_MAX_TOKENS,
             TIER_REVIEW: TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS,
             TIER_ARCHIVE: SPACE_ARCHIVE_OUTPUT_MAX_TOKENS,
+            TIER_CONSOLIDATE: SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS,
         }.get(tier, AGENT_PLUGIN_FULL_MAX_TOKENS)
         client = await self._client(tier, budget)
         response = await client.ainvoke(messages)

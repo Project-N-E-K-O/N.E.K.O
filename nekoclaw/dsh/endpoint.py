@@ -44,7 +44,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from nekoclaw.dsh.forward import ModelForwarder, respond_json
-from nekoclaw.dsh.host_tools import HostTools
+from nekoclaw.dsh.host_tools import ON_ANSWERED, Answered, HostTools
 
 logger = logging.getLogger(__name__)
 
@@ -270,29 +270,70 @@ class LocalEndpoint:
         # What the session is offered as of the look at the token, nothing
         # awaited in between: a session closed and opened again under the
         # same id before the call is carried out is not this one.
-        work = asyncio.ensure_future(self._tools.handle(session_id, payload, offer=self._tools.offer(session_id)))
-        gone = asyncio.ensure_future(_wait_disconnect(receive))
+        # What the work hands dsh that must not be lost with an answer that
+        # never gets there (the texts a ``wait_agent`` takes): whoever
+        # handed it over is told below whether the answer was sent to a dsh
+        # that was still listening.
+        told = Answered()
+        marked = ON_ANSWERED.set(told)
         try:
-            await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
-            if not work.done():
-                # dsh gave this call up: its turn was stopped, or the call took
-                # longer than dsh waits. The work is stopped with it.
-                work.cancel()
-                await asyncio.gather(work, return_exceptions=True)
-                return
-            try:
-                answer = work.result()
-            except asyncio.CancelledError:
-                return
+            work = asyncio.ensure_future(self._tools.handle(session_id, payload, offer=self._tools.offer(session_id)))
         finally:
-            gone.cancel()
-            if not work.done():
-                work.cancel()
-        if answer is None:
-            await send({"type": "http.response.start", "status": 202, "headers": [(b"content-length", b"0")]})
-            await send({"type": "http.response.body", "body": b""})
-        else:
-            await respond_json(send, 200, answer)
+            ON_ANSWERED.reset(marked)
+        gone = asyncio.ensure_future(_wait_disconnect(receive))
+        delivered = False
+        try:
+            try:
+                await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
+                if not work.done():
+                    # dsh gave this call up: its turn was stopped, or the call took
+                    # longer than dsh waits. The work is stopped with it.
+                    work.cancel()
+                    await asyncio.gather(work, return_exceptions=True)
+                    return
+                try:
+                    answer = work.result()
+                except asyncio.CancelledError:
+                    return
+                # A dsh that hung up as the work finished may be known to the
+                # server and not yet to the watcher: the watcher is given the
+                # turns of the loop it takes to hear of it, before the answer
+                # is written and looked at below.
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                if answer is None:
+                    await send({"type": "http.response.start", "status": 202, "headers": [(b"content-length", b"0")]})
+                    await send({"type": "http.response.body", "body": b""})
+                else:
+                    await respond_json(send, 200, answer)
+                # Looked at as the last of the answer is handed to the
+                # server, nothing awaited since. A server that finds the
+                # connection gone writes nothing and says nothing, so that
+                # the write went through does not show that it was sent;
+                # what shows is the watcher, which the server tells before
+                # it lets a write go on. (One that is told only because the
+                # answer is complete hears of it a turn of the loop later.)
+                # It is not proof: a dsh that hangs up in the last turn of
+                # the loop before this look is known to the server and not
+                # yet to the watcher, and nothing here can tell. So this
+                # says that the answer was written to a dsh that was still
+                # listening as far as could be seen, and no more.
+                delivered = not gone.done()
+            finally:
+                gone.cancel()
+                if not work.done():
+                    work.cancel()
+        finally:
+            # Whoever handed dsh something with this answer is told whether
+            # it got there, the last to hand over first. And whoever hands
+            # something over from here on (the work of a call dsh gave up
+            # may still be at it) is told the same as it does.
+            telling, told.outcome = list(reversed(told)), delivered
+            for tell in telling:
+                try:
+                    tell(delivered)
+                except Exception:  # noqa: BLE001 - the others are still told
+                    logger.exception("telling whether an answer reached dsh failed")
 
 
 async def _close_listener(server: Any, task: "asyncio.Task[Any] | None") -> None:

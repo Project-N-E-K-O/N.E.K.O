@@ -34,6 +34,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Body, HTTPException
 
+from plugin.core.call_registry import CallLink, Origin, delivery_link
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.messaging.llm_tool_registry import (
@@ -81,11 +82,12 @@ async def reply_completed_callback(
     # Callback return values are deliberately not fed into the conversation.
     # Images go through reply_tail.register with the host-issued context.
     try:
-        await host.trigger(entry_id, {
-            "text": body["text"], "user_text": body["user_text"],
-            "has_attachments": body.get("has_attachments") is True,
-            "_ctx": {"host_reply": dict(context), "lanlan_name": context.get("role")},
-        }, float(timeout))
+        with delivery_link(CallLink(Origin.of("chat_hook", context.get("call_id")))):
+            await host.trigger(entry_id, {
+                "text": body["text"], "user_text": body["user_text"],
+                "has_attachments": body.get("has_attachments") is True,
+                "_ctx": {"host_reply": dict(context), "lanlan_name": context.get("role")},
+            }, float(timeout))
     except Exception:
         if not host.is_alive():
             raise HTTPException(status_code=404, detail={"code": "PLUGIN_NOT_RUNNING"}) from None
@@ -197,7 +199,8 @@ async def llm_tool_callback(
     # ``**arguments`` directly (see ``register_llm_tool`` in
     # ``plugin/sdk/plugin/llm_tool.py``).
     try:
-        result = await trigger(entry_id, arguments, timeout_seconds)
+        with delivery_link(CallLink(Origin.of("chat_tool", call_id))):
+            result = await trigger(entry_id, arguments, timeout_seconds)
     except TimeoutError as exc:
         # comm_manager.trigger raises plain TimeoutError on no-response
         # within `timeout`; surface as a tool error so the LLM can retry

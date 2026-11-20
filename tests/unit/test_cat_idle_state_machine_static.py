@@ -389,16 +389,16 @@ def test_cat_mind_runners_report_results_without_legacy_entries():
     assert sleep_stop_block.index("_stopNekoIdleSoundAudio(_nekoIdleSleepSoundState);") < sleep_stop_block.index(
         "_reportNekoCatMindStateActionResult("
     )
-    assert "_clearNekoIdleThoughtBubbleForTier(tier);" in sleep_stop_block
+    assert "_clearNekoIdleThoughtBubbleForTier(tier, options.poppingAudio);" in sleep_stop_block
     social_ended_block = social_block.split("audio.addEventListener('ended', () => {", 1)[1].split(
         "}, { once: true });",
         1,
     )[0]
     assert "_isNekoCatMindStateActionRunCurrent(_nekoIdleCat1AmbientSoundState, run, audio)" in social_ended_block
     assert social_ended_block.index("_isNekoCatMindStateActionRunCurrent") < social_ended_block.index(
-        "_clearNekoIdleThoughtBubbleForTier(_NEKO_IDLE_TIER_CAT1);"
+        "_clearNekoIdleThoughtBubbleForTier(_NEKO_IDLE_TIER_CAT1, audio);"
     )
-    assert social_ended_block.index("_clearNekoIdleThoughtBubbleForTier(_NEKO_IDLE_TIER_CAT1);") < social_ended_block.index(
+    assert social_ended_block.index("_clearNekoIdleThoughtBubbleForTier(_NEKO_IDLE_TIER_CAT1, audio);") < social_ended_block.index(
         "_reportNekoCatMindStateActionRunResult("
     )
 

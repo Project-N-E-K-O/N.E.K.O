@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import socket
 import sys
 from pathlib import Path
@@ -34,8 +35,8 @@ def _manifest_payload(*, payload: bytes) -> dict[str, object]:
         "revision": "v1.0.0",
         "license": "Apache-2.0",
         "source": (
-            "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
-            "speaker-recongition-models/"
+            "https://huggingface.co/csukuangfj/speaker-embedding-models/resolve/"
+            "0743f301363dec56491a490f6d6cbc9d67f9a3bf/"
             "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
         ),
         "export_source": "k2-fsa/sherpa-onnx",
@@ -81,6 +82,17 @@ def test_repository_manifest_pins_reviewed_model_identity() -> None:
     assert manifest.preprocessing == "kaldi-native-fbank-sniped-global-mean-v1"
     assert manifest.input_contract == "float32[batch,time,80]"
     assert manifest.output_contract == "float32[batch,192]"
+
+
+def test_repository_manifest_source_is_an_immutable_revision() -> None:
+    """Mutable release tags were silently re-exported upstream; pin a commit."""
+
+    manifest = load_campplus_manifest(MODELS)
+
+    assert re.fullmatch(
+        r"https://huggingface\.co/[\w.-]+/[\w.-]+/resolve/[0-9a-f]{40}/[\w.-]+\.onnx",
+        manifest.source,
+    )
 
 
 @pytest.mark.parametrize(

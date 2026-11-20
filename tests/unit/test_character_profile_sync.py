@@ -1071,10 +1071,18 @@ async def test_current_role_profile_waiting_lock_rechecks_selection(tmp_path, co
 
 
 @pytest.mark.asyncio
-async def test_current_role_profile_waiting_config_lock_defers_automatic_apply(tmp_path, config):
+async def test_current_role_profile_waiting_config_lock_defers_automatic_apply(tmp_path, config, monkeypatch):
     """The character selection and automatic settings apply share the existing lock."""
     from tests.unit.test_chat_sync_runtime import select_runtime_current, wait_notification
-    from utils.character_memory import character_config_mutation_lock
+    from utils import character_memory
+
+    # Making the apply wait on the process-wide asyncio.Lock binds that lock to
+    # this test's event loop for good; a later test that contends it on its own
+    # loop then fails with "bound to a different event loop" (seen in
+    # test_chat_avatar_router under random order). profile_sync looks the lock
+    # up at call time, so a test-local lock keeps the shared-lock contract.
+    character_config_mutation_lock = asyncio.Lock()
+    monkeypatch.setattr(character_memory, "character_config_mutation_lock", character_config_mutation_lock)
     runtime, service, _ = await bound(tmp_path, config)
     try:
         config.data["当前猫娘"] = "Synthetic"

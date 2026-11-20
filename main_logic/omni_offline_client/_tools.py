@@ -1052,7 +1052,13 @@ class _ToolingMixin(_TurnContextMixin):
           ``_genai_tools_unsupported`` so subsequent calls degrade to the
           OpenAI-compat path, which carries ``tools`` too.
         - Otherwise: ``_astream_openai_with_tools``.
+
+        ``_before_fallback_request`` (optional, synchronous) runs right before
+        a failed Gemini attempt falls back to OpenAI-compat within the same
+        call. The caller already checked its request before this call; the
+        fallback is a fresh request that may be the first to reach a provider.
         """
+        before_fallback_request = overrides.pop("_before_fallback_request", None)
         tool_leak_filter = overrides.pop("_tool_leak_filter", None)
         tool_leak_provider = overrides.pop("_tool_leak_provider", None)
         tool_image_slots = overrides.pop("_tool_image_slots", None)
@@ -1111,6 +1117,8 @@ class _ToolingMixin(_TurnContextMixin):
                     raise
                 if tool_leak_filter is not None:
                     tool_leak_filter.reset()
+            if callable(before_fallback_request):
+                before_fallback_request()
         async for chunk in self._astream_openai_with_tools(
             messages,
             _tool_leak_filter=tool_leak_filter,

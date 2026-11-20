@@ -16,6 +16,7 @@
 
 from functools import partial
 from inspect import signature
+from urllib.parse import urlparse
 
 import httpx
 import numpy as np
@@ -32,13 +33,13 @@ from .._telemetry import _record_tts_telemetry
 from utils.config_manager import _as_bool
 from utils.logger_config import get_module_logger
 from utils.openai_tts import (
-    OPENAI_TTS_DEFAULT_BASE_URL,
     OPENAI_TTS_DEFAULT_MODEL,
     OPENAI_TTS_DEFAULT_VOICE,
     OPENAI_TTS_PCM_SAMPLE_RATE,
     build_openai_tts_payload,
     openai_tts_base_url,
     openai_tts_extra_body,
+    openai_tts_pcm_format,
     openai_tts_sdk_options,
 )
 
@@ -78,6 +79,16 @@ def _openai_endpoint_query_http_client(client_type, endpoint_query):
         request.url = request.url.copy_with(query=combined_query)
 
     return client_type(event_hooks={"request": [inject_endpoint_query]})
+
+
+def _openai_pcm_to_mono(pcm: bytes, channels: int, *, big_endian: bool = False) -> np.ndarray:
+    """Decode whole int16 frames and downmix them to mono."""
+
+    audio = np.frombuffer(pcm, dtype=">i2" if big_endian else "<i2")
+    if channels <= 1:
+        return audio.astype(np.int16, copy=False)
+    mixed = audio.reshape(-1, channels).astype(np.int32).mean(axis=1)
+    return np.round(mixed).astype(np.int16)
 
 
 def openai_tts_worker(
@@ -134,8 +145,52 @@ def openai_tts_worker(
                     endpoint_query,
                 )
         client = AsyncOpenAI(**client_kwargs)
-        extra_body = openai_tts_extra_body(base_url or OPENAI_TTS_DEFAULT_BASE_URL)
+        # Derive vendor extensions and the log host from the URL the SDK will
+        # actually call: without ``base_url`` the SDK honors ``OPENAI_BASE_URL``.
+        effective_base_url = str(client.base_url)
+        extra_body = openai_tts_extra_body(effective_base_url)
         base_payload = build_openai_tts_payload("", effective_model, effective_voice)
+        # Only the hostname is logged: the configured URL may carry signed query values.
+        endpoint_host = (urlparse(effective_base_url).hostname or "").lower() or "unknown"
+        logged_formats = set()
+        requested_rate = extra_body.get("sample_rate")
+
+        def resolve_pcm_format(response):
+            sample_rate, channels, big_endian = openai_tts_pcm_format(
+                response.headers.get("content-type")
+            )
+            from_header = sample_rate is not None
+            if not from_header:
+                sample_rate = OPENAI_TTS_PCM_SAMPLE_RATE
+            format_key = (sample_rate, channels, big_endian, from_header)
+            if format_key not in logged_formats:
+                # Log once per distinct format so per-sentence requests do not flood the log.
+                logged_formats.add(format_key)
+                if from_header and requested_rate and sample_rate != requested_rate:
+                    # The header wins, but a pinned host contradicting its own request is worth
+                    # surfacing when a maintainer investigates odd playback speed.
+                    logger.warning(
+                        "OpenAI TTS PCM Content-Type rate differs from requested sample_rate: "
+                        "host=%s rate=%d requested=%d",
+                        endpoint_host,
+                        sample_rate,
+                        requested_rate,
+                    )
+                if from_header:
+                    logger.info(
+                        "OpenAI TTS PCM format from Content-Type: host=%s rate=%d channels=%d",
+                        endpoint_host,
+                        sample_rate,
+                        channels,
+                    )
+                else:
+                    logger.info(
+                        "OpenAI TTS PCM Content-Type has no rate; using the OpenAI 24 kHz contract: host=%s rate=%d channels=%d",
+                        endpoint_host,
+                        sample_rate,
+                        channels,
+                    )
+            return sample_rate, channels, big_endian
 
         async def synthesize(text: str, speech_id: str) -> None:
             request_kwargs = {**base_payload, "input": text}
@@ -151,10 +206,14 @@ def openai_tts_worker(
                 **request_kwargs,
             ) as response:
                 _record_tts_telemetry(effective_model, len(text))
+                # Providers that ignore the 24 kHz contract usually say so in
+                # Content-Type (e.g. ``audio/pcm; rate=44100``); trust that over the default.
+                source_rate, channels, big_endian = resolve_pcm_format(response)
+                frame_bytes = 2 * channels
                 pending = b""
                 received_samples = False
                 resampler = soxr.ResampleStream(
-                    OPENAI_TTS_PCM_SAMPLE_RATE,
+                    source_rate,
                     48000,
                     1,
                     dtype="float32",
@@ -162,15 +221,19 @@ def openai_tts_worker(
                 async for chunk in response.iter_bytes(chunk_size=4096):
                     if chunk:
                         pcm = pending + chunk
-                        even_length = len(pcm) - (len(pcm) % 2)
-                        pending = pcm[even_length:]
-                        if not even_length:
+                        whole_length = len(pcm) - (len(pcm) % frame_bytes)
+                        pending = pcm[whole_length:]
+                        if not whole_length:
                             continue
-                        audio_array = np.frombuffer(pcm[:even_length], dtype="<i2")
+                        audio_array = _openai_pcm_to_mono(
+                            pcm[:whole_length],
+                            channels,
+                            big_endian=big_endian,
+                        )
                         received_samples = True
                         resampled = _resample_audio(
                             audio_array,
-                            OPENAI_TTS_PCM_SAMPLE_RATE,
+                            source_rate,
                             48000,
                             resampler,
                         )
@@ -184,7 +247,7 @@ def openai_tts_worker(
 
                 tail = _resample_audio(
                     np.empty(0, dtype=np.int16),
-                    OPENAI_TTS_PCM_SAMPLE_RATE,
+                    source_rate,
                     48000,
                     resampler,
                     last=True,
