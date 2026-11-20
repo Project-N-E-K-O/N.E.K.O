@@ -54,6 +54,8 @@ _WEB_CONTEXT = re.compile(_WEB_TARGET)
 _WEB_ACTION = re.compile(
     r"打开|打開|访问|訪問|浏览(?!器)|瀏覽(?!器)|刷新|切换|切換|关闭|關閉|查看|检查|檢查|阅读|閱讀|"
     r"点击(?!率|量)|點擊(?!率|量)|填写|填寫|搜索|搜尋|用.{0,5}(?:浏览器|瀏覽器)|"
+    r"列出(?:当前|目前|當前|所有|全部|浏览器|瀏覽器|打开|打開|的|中)*(?:标签页|標籤頁|分頁)|"
+    r"\b(?:list|show)\s+(?:(?:the|my|all|current|open|browser)\s+)*tabs?\b|"
     r"\b(?:open|visit|browse|navigate|go to|load|reload|refresh|switch|close|read|inspect|click(?!-through)|fill|use)\b"
 )
 _OTHER_WEB = re.compile(

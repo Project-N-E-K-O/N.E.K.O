@@ -14,11 +14,23 @@
 
 """First-turn device selection from the current commission's own instructions."""
 
+import runpy
+
 import pytest
 
+from config import nekoclaw_settings
 from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER as BROWSER
 from nekoclaw.host.capabilities import BUILTIN_GROUP_KEYBOARD_MOUSE as DESKTOP
 from nekoclaw.host.device_intent import select_device_groups
+
+
+@pytest.mark.parametrize(("value", "enabled"), [(None, True), ("0", False), ("1", True)])
+def test_device_tools_default_and_override(monkeypatch, value, enabled):
+    if value is None:
+        monkeypatch.delenv("NEKOCLAW_FIRST_TURN_DEVICE_TOOLS", raising=False)
+    else:
+        monkeypatch.setenv("NEKOCLAW_FIRST_TURN_DEVICE_TOOLS", value)
+    assert runpy.run_path(nekoclaw_settings.__file__)["FIRST_TURN_DEVICE_TOOLS"] is enabled
 
 
 @pytest.mark.parametrize(
@@ -28,6 +40,11 @@ from nekoclaw.host.device_intent import select_device_groups
         ("在瀏覽器打開這個網址", (BROWSER,)),
         ('Open "https://example.org" and inspect the page.', (BROWSER,)),
         ("Open example.com", (BROWSER,)),
+        ("列出浏览器标签页", (BROWSER,)),
+        ("List open tabs", (BROWSER,)),
+        ("List browser tabs", (BROWSER,)),
+        ("列出浏览器的优缺点", ()),
+        ("List the pros and cons of a browser", ()),
         ("Please take a screenshot of the current browser tab.", (BROWSER,)),
         ("请截个图。", (DESKTOP,)),
         ("截一张网页截图", (BROWSER,)),

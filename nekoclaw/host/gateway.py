@@ -28,7 +28,7 @@ What the gateway serves:
 * MCP tools of the servers the user configured (through the ``mcp_adapter``
   plugin, see ``capabilities.py``);
 * the built-in tools (keyboard and mouse, browser) while they are available.
-  An opt-in route lists the groups relevant to a commission up front, with
+  The host lists the groups relevant to a commission up front, with
   their usage guidance. Other groups remain discoverable and load on demand.
   The search tool's description carries one line about each
   group on offer, with the group's first call. A group is handed over, how

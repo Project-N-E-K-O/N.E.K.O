@@ -965,8 +965,8 @@ GATEWAY_TOOL_LIST_MAX_TOKENS = 3000
 """Budget for the tool definitions one commission is handed up front. Entries
 beyond it stay reachable through the gateway's search tool."""
 
-# Opt-in measurement until the extra per-request input has been approved.
-FIRST_TURN_DEVICE_TOOLS = os.getenv("NEKOCLAW_FIRST_TURN_DEVICE_TOOLS") == "1"
+# Explicit device tasks start with the matching tools; set 0 to keep discovery-only routing.
+FIRST_TURN_DEVICE_TOOLS = os.getenv("NEKOCLAW_FIRST_TURN_DEVICE_TOOLS", "1") == "1"
 GATEWAY_COMMISSION_TOOL_META_KEY = "nekoclaw/commissionTool"
 """MCP metadata marking tools declared for this commission only."""
 
