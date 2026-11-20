@@ -267,6 +267,18 @@ def parse_document_sections(filename: str, data: bytes, *, limits: DocumentLimit
     return sections
 
 
+_PDF_SPACE_ENCODINGS = frozenset({"/StandardEncoding", "/WinAnsiEncoding", "/MacRomanEncoding"})
+# The standard 14 fonts minus Symbol and ZapfDingbats, whose built-in
+# encodings are not text encodings.
+_PDF_STANDARD_TEXT_FONTS = frozenset(
+    "/" + name for name in (
+        "Times-Roman", "Times-Bold", "Times-Italic", "Times-BoldItalic",
+        "Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Helvetica-BoldOblique",
+        "Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique",
+    )
+)
+
+
 def _pdf_has_unreadable_content(contents, resources, reader) -> bool:
     """Recognize actual painting, using a stack for arbitrarily deep Form calls."""
     if contents is None:
@@ -299,12 +311,19 @@ def _pdf_has_unreadable_content(contents, resources, reader) -> bool:
         elif descriptor is not None:
             return False
         encoding = _resolve_pdf_object(font.get("/Encoding"))
+        if not isinstance(encoding, dict) and encoding is not None:
+            return encoding in _PDF_SPACE_ENCODINGS
+        base = encoding.get("/BaseEncoding") if isinstance(encoding, dict) else None
+        if base is None:
+            # Without an explicit base, codes follow the font's built-in
+            # encoding. Only the standard non-symbolic fonts are known to keep
+            # 32 as the space there.
+            if _resolve_pdf_object(font.get("/BaseFont")) not in _PDF_STANDARD_TEXT_FONTS:
+                return False
+        elif base not in _PDF_SPACE_ENCODINGS:
+            return False
         if encoding is None:
             return True
-        if not isinstance(encoding, dict):
-            return encoding in {"/StandardEncoding", "/WinAnsiEncoding", "/MacRomanEncoding"}
-        if encoding.get("/BaseEncoding") not in {None, "/StandardEncoding", "/WinAnsiEncoding", "/MacRomanEncoding"}:
-            return False
         code = None
         for entry in _resolve_pdf_object(encoding.get("/Differences")) or []:
             entry = _resolve_pdf_object(entry)
@@ -339,8 +358,11 @@ def _pdf_has_unreadable_content(contents, resources, reader) -> bool:
             elif operator == b"Q":
                 if frame["saved"]:
                     frame["font"] = frame["saved"].pop()
-            elif operator == b"Tf" and operands:
-                frame["font"] = _resolve_pdf_object(frame["fonts"].get(operands[0]))
+            elif operator == b"Tf":
+                # A malformed Tf leaves the font unknown, never the previous
+                # font's space exemption.
+                name = operands[0] if len(operands) == 2 else None
+                frame["font"] = _resolve_pdf_object(frame["fonts"].get(name)) if isinstance(name, str) else None
             elif operator in {b"l", b"c", b"v", b"y", b"re"}:
                 frame["path"] = True
             elif operator == b"n":

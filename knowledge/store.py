@@ -985,15 +985,20 @@ class KnowledgeStore:
             return cursor.rowcount
 
     def exhaust_attempts(self, rows: Sequence[tuple[int, str, str]]) -> int:
-        """Fail unchanged (chunk ID, text hash, pack ID) inputs only."""
+        """Count rows that cannot be encoded as failed until the next reset.
+
+        ``rows`` are (chunk id, text hash, pack id) from an earlier read; like
+        ``store_vectors``, a row replaced since then (its id reused by new
+        text or another pack) is left untouched.
+        """
+        if not rows:
+            return 0
         marked = 0
         with self._write() as conn:
-            # A replacement/replan can reuse SQLite chunk IDs while the indexer
-            # awaits token planning. Never apply its old verdict to new text.
             for chunk_id, text_hash, pack_id in rows:
                 marked += conn.execute(
-                    "UPDATE chunks SET attempts=? WHERE attempts < ? AND id=? AND text_hash=? AND pack_id=?",
-                    (MAX_EMBED_ATTEMPTS, MAX_EMBED_ATTEMPTS, chunk_id, text_hash, pack_id),
+                    "UPDATE chunks SET attempts=? WHERE id=? AND text_hash=? AND pack_id=? AND attempts < ?",
+                    (MAX_EMBED_ATTEMPTS, chunk_id, text_hash, pack_id, MAX_EMBED_ATTEMPTS),
                 ).rowcount
         return marked
 

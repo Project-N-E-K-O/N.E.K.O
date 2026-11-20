@@ -277,9 +277,11 @@ async def test_refused_replan_is_retried_only_when_its_inputs_change(tmp_path, m
         assert replanned == [["imp.oversized"]]
         stats = service._store.chunk_stats(provider.model_id(), specification=provider.spec())
         assert stats["imp.oversized"]["failed"] == stats["imp.oversized"]["total"]
-        # A changed key (here: a new pack revision digest) allows one new attempt.
-        service._refused_replans["imp.oversized"] = ("other-digest",) + service._refused_replans["imp.oversized"][1:]
-        service._store.reset_attempts()
+        # A changed key (here: a new pack revision digest) reopens the rows
+        # and allows one new attempt, without a restart.
+        key, reason = service._refused_replans["imp.oversized"]
+        assert reason == "too_many_chunks"
+        service._refused_replans["imp.oversized"] = (("other-digest",) + key[1:], reason)
         await service._index_round()
         assert replanned == [["imp.oversized"], ["imp.oversized"]]
     finally:
@@ -321,5 +323,95 @@ async def test_refused_pack_marks_every_over_long_row_and_embeds_its_short_rows_
         assert stats["ready"] == 1 and stats["ready"] + stats["failed"] == stats["total"]
         assert stats["failed"] > module.INDEX_BATCH_SIZE
         assert [text.split("\n", 1)[0] for text in provider.texts] == ["Short note"]
+    finally:
+        await service.stop()
+
+
+async def test_capacity_refused_replan_reopens_when_other_packs_free_capacity(tmp_path, monkeypatch):
+    """Waiting for total capacity is not a permanent encoding failure."""
+    class TokenProvider(FakeEmbedder):
+        def __init__(self):
+            super().__init__(model_id=specification()["model_id"])
+
+        def spec(self):
+            return specification()
+
+        def count_tokens(self, texts):
+            return [len(text) * 8 for text in texts]
+
+        async def embed_batch(self, texts):
+            return [[1.0] + [0.0] * 63 for _ in texts]
+
+        embed_documents = embed_batch
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        assert (await _import(service, _pack("imp.oversized", entries=[{"title": "Oversized", "content": "a" * 2500}])))["state"] == "active"
+        assert (await _import(service, _pack("imp.other", entries=[{"title": "Other", "content": "Short reference."}])))["state"] == "active"
+        provider = TokenProvider()
+        service.embedder = provider
+        registry = service._registry.packs
+        planned = module.count_pack_chunks(module.decode_pack_bytes(
+            (tmp_path / "packs" / registry["imp.oversized"].file_name).read_bytes()), fit=service._chunk_fit())
+        # Room for the replanned pack only once the other pack is gone.
+        monkeypatch.setattr(module, "MAX_TOTAL_CHUNKS", planned)
+        monkeypatch.setattr(module, "INDEX_BATCH_PAUSE_SECONDS", 0.0)
+        service._vector_pack_ids = lambda: ["imp.oversized"]
+        await service._index_round()
+        assert service._refused_replans["imp.oversized"][1] == "capacity_chunks"
+        stats = service._store.chunk_stats(provider.model_id(), specification=provider.spec())["imp.oversized"]
+        assert stats["failed"] == stats["total"] > 0
+        await service.remove_pack("imp.other")
+        await service._index_round()
+        assert "imp.oversized" not in service._refused_replans
+        stats = service._store.chunk_stats(provider.model_id(), specification=provider.spec())["imp.oversized"]
+        assert stats["failed"] == 0 and stats["total"] == planned
+    finally:
+        await service.stop()
+
+
+async def test_exhausting_attempts_ignores_rows_replaced_since_they_were_read(tmp_path):
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        assert (await _import(service, _pack("imp.one", entries=[{"title": "One", "content": "First reference."}])))["state"] == "active"
+        store = service._store
+        (chunk_id, text_hash, _text), = store.pending_chunks(model_id="m", pack_ids=["imp.one"], limit=10)
+        assert store.exhaust_attempts([(chunk_id, "0" * 64, "imp.one")]) == 0
+        assert store.exhaust_attempts([(chunk_id, text_hash, "imp.other")]) == 0
+        assert store.chunk_stats(None)["imp.one"]["failed"] == 0
+        assert store.exhaust_attempts([(chunk_id, text_hash, "imp.one")]) == 1
+        assert store.chunk_stats(None)["imp.one"]["failed"] == 1
+    finally:
+        await service.stop()
+
+
+@pytest.mark.parametrize("over_budget", [False, True])
+async def test_rollback_restore_keeps_capacity_counts_consistent(tmp_path, monkeypatch, over_budget):
+    """Restoring the old version with a newer tokenizer cannot silently change its counted chunks."""
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        entries = [{"title": "Long", "content": "word " * 400}]
+        assert (await _import(service, _pack("imp.old", entries=entries)))["state"] == "active"
+        previous = service._registry.packs["imp.old"]
+        monkeypatch.setattr(service, "_chunk_fit", lambda: (lambda text: len(text) <= 120))
+        if over_budget:
+            monkeypatch.setattr(module, "MAX_CHUNKS_PER_PACK", previous.chunks)
+        assert not service._pending_chunk_reconcile
+        await asyncio.to_thread(service._restore_index_blocking, "imp.old", previous)
+        actual = service._store.chunk_stats(None)["imp.old"]["total"]
+        if over_budget:
+            # Kept the admitted layout: nothing to reconcile.
+            assert actual == previous.chunks and not service._pending_chunk_reconcile
+        else:
+            # A different layout is flagged so admission and encoding repair the count first.
+            assert actual != previous.chunks and service._pending_chunk_reconcile
+            await service._index_round()
+            assert service._registry.packs["imp.old"].chunks == actual
     finally:
         await service.stop()

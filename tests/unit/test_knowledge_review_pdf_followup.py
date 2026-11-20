@@ -110,7 +110,8 @@ def test_shading_and_glyph_painting_require_nonempty_drawn_content(operations, p
 def _font_resources(subtype):
     from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject, TextStringObject
 
-    font = DictionaryObject({NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject(subtype)})
+    font = DictionaryObject({NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject(subtype),
+                             NameObject("/BaseFont"): NameObject("/Helvetica")})
     if subtype == "/Type0":
         # A real composite font needs its descendant and encoding before text
         # extraction; this CMap also keeps the existing one-byte space valid.
@@ -177,7 +178,8 @@ def test_restored_graphics_state_brings_back_the_outer_font():
 
     resources = _font_resources("/Type0")
     resources[NameObject("/Font")][NameObject("/F2")] = DictionaryObject(
-        {NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1")})
+        {NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1"),
+         NameObject("/BaseFont"): NameObject("/Helvetica")})
     assert document_parser._pdf_has_unreadable_content(
         _stream(b"BT /F1 12 Tf q /F2 12 Tf Q ( ) Tj ET"), resources, None)
     assert not document_parser._pdf_has_unreadable_content(
@@ -187,8 +189,11 @@ def test_restored_graphics_state_brings_back_the_outer_font():
 def _simple_font(**entries):
     from pypdf.generic import DictionaryObject, NameObject
 
-    font = DictionaryObject({NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1")})
-    font.update({NameObject("/" + key): value for key, value in entries.items()})
+    font = DictionaryObject({NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1"),
+                             NameObject("/BaseFont"): NameObject("/Helvetica")})
+    font.update({NameObject("/" + key): value for key, value in entries.items() if value is not None})
+    if entries.get("BaseFont", "") is None:
+        del font[NameObject("/BaseFont")]
     return DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})})
 
 
@@ -212,10 +217,17 @@ def _font_variants():
           "Encoding": NameObject("/WinAnsiEncoding")}, True),
         ({"FontDescriptor": DictionaryObject({NameObject("/Flags"): NumberObject(36)})}, True),
         ({"FontDescriptor": DictionaryObject({NameObject("/FontName"): NameObject("/Helvetica")})}, True),
+        # Without an explicit encoding only the standard text fonts prove 32 is a space.
+        ({"BaseFont": None}, True),
+        ({"BaseFont": NameObject("/Arial")}, True),
+        ({"BaseFont": NameObject("/Symbol")}, True),
+        ({"BaseFont": NameObject("/Arial"), "Encoding": NameObject("/WinAnsiEncoding")}, False),
+        ({"BaseFont": NameObject("/Arial"), "Encoding": differences(NumberObject(65), NameObject("/A"))}, True),
+        ({"BaseFont": NameObject("/Times-Roman")}, False),
     ]
 
 
-@pytest.mark.parametrize("index", range(11))
+@pytest.mark.parametrize("index", range(17))
 def test_space_exemption_requires_a_standard_space_in_a_non_embedded_font(index):
     entries, painted = _font_variants()[index]
     assert document_parser._pdf_has_unreadable_content(
@@ -235,7 +247,11 @@ def test_forms_inherit_the_caller_font_per_scope():
 
 
 @pytest.mark.parametrize("operations,fonts", [(b"BT Tf ( ) Tj ET", None), (b"BT 12 Tf ( ) Tj ET", None),
-                                              (b"BT /F1 12 Tf ( ) Tj ET", 7)])
+                                              (b"BT /F1 12 Tf ( ) Tj ET", 7),
+                                              # A malformed Tf after a valid one resets the font.
+                                              (b"BT /F1 12 Tf Tf ( ) Tj ET", None),
+                                              (b"BT /F1 12 Tf /F1 Tf ( ) Tj ET", None),
+                                              (b"BT /F1 12 Tf 12 /F1 Tf ( ) Tj ET", None)])
 def test_malformed_font_state_is_treated_as_painting(operations, fonts):
     from pypdf.generic import DictionaryObject, NameObject, NumberObject
 
