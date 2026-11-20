@@ -255,6 +255,7 @@ export default {
     exportDeleted: "Local export deleted.",
     exportDeletedRetained: "Export record removed. The file was retained because the knowledge base still uses it.",
     exportVectorWaiting: "The data package can be exported once all its vectors are ready.",
+    exportLocalVectorsOff: "Local vectors are off. Enable them and finish building the vectors before exporting this data pack.",
     exportQueued: "Export queued",
     downloadExport: "Download",
     exportReady: "Export of {name} is ready",

@@ -255,6 +255,7 @@ export default {
     exportDeleted: "已刪除本機匯出。",
     exportDeletedRetained: "已移除匯出記錄；知識庫仍在使用該檔案，因此已保留。",
     exportVectorWaiting: "等待此資料包的所有向量建立完成後，即可匯出資料包。",
+    exportLocalVectorsOff: "本機向量已關閉，請開啟並完成向量建立後再匯出資料包。",
     exportQueued: "匯出已加入工作佇列",
     downloadExport: "下載",
     exportReady: "{name} 的匯出已就緒",

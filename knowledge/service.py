@@ -654,7 +654,14 @@ class KnowledgeService:
             try:
                 spec = getattr(self.embedder, "spec", lambda: None)()
                 path = self.artifact_path(record.archive_sha256)
-                checked = read_archive(path, expected_spec=spec)
+                started = time.monotonic()
+                try:
+                    checked = read_archive(path, expected_spec=spec)
+                finally:
+                    # Time actual validation on both success and failure;
+                    # diagnostics must not include private paths or contents.
+                    logger.info("[Knowledge] rebuild archive validation pack=%s elapsed_ms=%.1f",
+                                record.pack_id, (time.monotonic() - started) * 1000)
                 if checked["artifact_sha256"] != record.archive_sha256:
                     raise KnowledgePackError("artifact_hash_mismatch")
                 if checked["seed_vectors"]:
@@ -1421,6 +1428,11 @@ class KnowledgeService:
             if record is None or record.pack_sha256 != job.staged_sha256:
                 raise KnowledgePackError("pack_changed")
             def read():
+                # Direct exports and retries must snapshot the registered,
+                # healthy revision, just like the list's export-ready flag.
+                if (job.pack_id in self._broken_packs
+                        or self._store.pack_versions().get(job.pack_id) != record.pack_sha256):
+                    raise KnowledgePackError("vectors_not_ready")
                 payload = json.loads(_read_bounded(self.root / PACKS_DIR / record.file_name))
                 # Export the unique stored identity, even when another encoder
                 # is loaded or local inference is unavailable or switched off.

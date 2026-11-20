@@ -255,6 +255,7 @@ export default {
     exportDeleted: "已删除本地导出。",
     exportDeletedRetained: "已移除导出记录；文件仍被知识库使用，已保留。",
     exportVectorWaiting: "等待该数据包的全部向量构建完成后，即可导出数据包。",
+    exportLocalVectorsOff: "本机向量已关闭，请开启并完成向量构建后再导出数据包。",
     exportQueued: "导出已加入任务队列",
     downloadExport: "下载",
     exportReady: "{name} 的导出已就绪",

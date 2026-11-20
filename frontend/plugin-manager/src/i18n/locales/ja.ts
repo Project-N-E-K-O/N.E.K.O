@@ -255,6 +255,7 @@ export default {
     exportDeleted: "ローカルの書き出しを削除しました。",
     exportDeletedRetained: "記録を削除しました。ナレッジベースで使用中のファイルは保持しました。",
     exportVectorWaiting: "すべてのベクトルの準備が完了すると、データパックを書き出せます。",
+    exportLocalVectorsOff: "ローカルベクトルはオフです。有効にしてベクトルの構築を完了してから、このデータパックを書き出してください。",
     exportQueued: "書き出しをキューに追加しました",
     downloadExport: "ダウンロード",
     exportReady: "{name} の書き出しが完了しました",

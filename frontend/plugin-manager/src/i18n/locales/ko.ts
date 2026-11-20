@@ -255,6 +255,7 @@ export default {
     exportDeleted: "로컬 내보내기를 삭제했습니다.",
     exportDeletedRetained: "내보내기 기록을 삭제했습니다. 지식 베이스에서 사용 중인 파일은 보관했습니다.",
     exportVectorWaiting: "모든 벡터가 준비되면 데이터 팩을 내보낼 수 있습니다.",
+    exportLocalVectorsOff: "로컬 벡터가 꺼져 있습니다. 로컬 벡터를 켜고 벡터 생성을 완료한 후 이 데이터 팩을 내보내세요.",
     exportQueued: "내보내기를 대기열에 추가했습니다",
     downloadExport: "다운로드",
     exportReady: "{name} 내보내기가 준비되었습니다",

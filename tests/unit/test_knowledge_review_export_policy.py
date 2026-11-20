@@ -3,8 +3,11 @@
 import sqlite3
 from contextlib import closing
 
+from fastapi import FastAPI
+import httpx
 import pytest
 
+from app.memory_server import knowledge_routes
 from knowledge.service import KnowledgeService
 from tests.unit.test_knowledge_archive_v2 import make_archive, specification
 from tests.unit.test_knowledge_subsystem import _import, _pack
@@ -61,7 +64,7 @@ async def test_stored_export_readiness_does_not_require_local_inference(tmp_path
 
 
 @pytest.mark.parametrize("unavailable", ["other_revision", "broken"])
-async def test_complete_vectors_are_not_export_ready_for_an_unavailable_revision(tmp_path, unavailable):
+async def test_complete_vectors_are_not_export_ready_for_an_unavailable_revision(tmp_path, monkeypatch, unavailable):
     service = KnowledgeService(tmp_path / "library", embedder=_PackageEmbedder())
     await service.start()
     await _manual_index(service)
@@ -78,6 +81,22 @@ async def test_complete_vectors_are_not_export_ready_for_an_unavailable_revision
             service._broken_packs = ("imp.example",)
         assert service._store.chunk_stats(None, include_export_readiness=True)["imp.example"]["export_ready"] == 1
         assert (await service.list_packs())[0]["export_ready"] is False
+        # Direct callers and failed-task retries can bypass the disabled UI.
+        # Both must receive the same actionable worker reason as list readiness.
+        monkeypatch.setattr(knowledge_routes, "_service", service)
+        app = FastAPI()
+        app.include_router(knowledge_routes.router)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as http:
+            response = await http.post("/internal/knowledge/packs/export", json={"pack_id": "imp.example"})
+            assert response.status_code == 200 and response.json()["ok"]
+            failed = await _finished(service, response.json())
+            assert failed["state"] == "failed" and failed["reason"] == "vectors_not_ready"
+            assert not failed.get("result")
+            response = await http.post("/internal/knowledge/packs/jobs/retry", json={"job_id": failed["job_id"]})
+            assert response.status_code == 200 and response.json()["ok"]
+            retried = await _finished(service, response.json())
+            assert retried["state"] == "failed" and retried["reason"] == "vectors_not_ready"
+            assert not retried.get("result")
     finally:
         await service.stop()
 

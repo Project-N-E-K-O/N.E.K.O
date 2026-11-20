@@ -180,8 +180,21 @@ describe('pack documents, versions and publication', () => {
     await mount([], { local_embedding: false, vector_state: 'off', export_ready: false, chunks_ready: ready, chunks_total: total })
     const button = buttons('Export data package')[0]!
     expect(button.disabled).toBe(true)
-    expect(document.body.textContent).toContain(enUS.knowledge.exportVectorWaiting)
+    expect(document.body.textContent).toContain(enUS.knowledge.exportLocalVectorsOff)
     button.click()
+    expect(api.exportPack).not.toHaveBeenCalled()
+  })
+
+  it.each(['paused', 'waiting', 'building'] as const)('keeps the existing readiness hint when local vectors are on and the state is %s', async vector_state => {
+    await mount([], { local_embedding: true, vector_state, export_ready: false, chunks_ready: 1 })
+    expect(document.querySelector('.export-readiness')?.textContent).toContain(enUS.knowledge.exportVectorWaiting)
+    expect(buttons('Export data package')[0]!.disabled).toBe(true)
+  })
+
+  it('explains an unavailable pack before suggesting that local vectors be enabled', async () => {
+    await mount([], { broken: true, local_embedding: false, vector_state: 'off', export_ready: false })
+    expect(document.querySelector('.export-readiness')?.textContent).toContain(enUS.knowledge.brokenHint)
+    expect(buttons('Export data package')[0]!.disabled).toBe(true)
     expect(api.exportPack).not.toHaveBeenCalled()
   })
 

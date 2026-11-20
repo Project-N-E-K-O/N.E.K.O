@@ -255,6 +255,7 @@ export default {
     exportDeleted: "Exportación local eliminada.",
     exportDeletedRetained: "Registro eliminado. El archivo se conserva porque la base de conocimientos aún lo utiliza.",
     exportVectorWaiting: "Podrás exportar el paquete de datos cuando todos sus vectores estén listos.",
+    exportLocalVectorsOff: "Los vectores locales están desactivados. Actívalos y completa la generación de los vectores antes de exportar este paquete de datos.",
     exportQueued: "Exportación en cola",
     downloadExport: "Descargar",
     exportReady: "La exportación de {name} está lista",

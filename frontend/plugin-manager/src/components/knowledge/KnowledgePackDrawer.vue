@@ -41,7 +41,7 @@
           <template v-if="!pack.retained">
             <div class="export-readiness" :class="{ 'is-ready': exportReady }" role="status">
               <el-icon><CircleCheck v-if="exportReady" /><Clock v-else /></el-icon>
-              <span>{{ t(exportReady ? 'knowledge.exportReadyHint' : 'knowledge.exportVectorWaiting') }}</span>
+              <span>{{ t(exportReadinessHint) }}</span>
             </div>
             <p class="export-version-hint">{{ t('knowledge.exportAutoVersionHint') }}</p>
           </template>
@@ -134,6 +134,12 @@ const exporting = ref(false)
 // Stored-vector provenance, rather than local indexing policy or the current
 // encoder's ready count, determines whether a complete package can be exported.
 const exportReady = computed(() => props.pack?.export_ready === true)
+// A disabled local policy needs an explicit action; a broken pack needs repair instead.
+const exportReadinessHint = computed(() => {
+  if (exportReady.value) return 'knowledge.exportReadyHint'
+  if (props.pack?.broken) return 'knowledge.brokenHint'
+  return props.pack?.local_embedding === false ? 'knowledge.exportLocalVectorsOff' : 'knowledge.exportVectorWaiting'
+})
 const downloading = ref('')
 const deleting = ref('')
 // A successful durable deletion must not reappear while parent polling catches up.
