@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from main_routers.system_router import steam as system_router_module
 from main_routers.system_router import _shared as system_router_shared
+from utils import steam_state
 
 
 class _FakeUserStats:
@@ -160,16 +163,32 @@ def test_update_playtime_requires_steamworks(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(system_router_module, "get_steamworks", lambda: None)
+    initializer = Mock(return_value=None)
+    monkeypatch.setattr(steam_state, "_steamworks", None)
+    monkeypatch.setattr(steam_state, "_steamworks_initializer", initializer)
+    monkeypatch.setattr(steam_state, "_last_init_attempt_monotonic", 0.0)
 
+    for _ in range(2):
+        response = client.post(
+            "/api/steam/update-playtime",
+            headers=_auth_headers(),
+            json={"seconds": 10},
+        )
+
+        assert response.status_code == 503
+        assert response.json()["error"] == "Steamworks未初始化"
+    initializer.assert_not_called()
+
+    stats = _FakeUserStats()
+    steam_state.set_steamworks(_FakeSteamworks(stats))
     response = client.post(
         "/api/steam/update-playtime",
         headers=_auth_headers(),
         json={"seconds": 10},
     )
-
-    assert response.status_code == 503
-    assert response.json()["error"] == "Steamworks未初始化"
+    assert response.status_code == 200
+    assert stats.set_stat_calls == [("PLAY_TIME_SECONDS", 10)]
+    assert stats.store_count == 1
 
 
 @pytest.mark.unit
@@ -179,7 +198,7 @@ def test_update_playtime_sets_progress_stat_without_set_achievement(
 ) -> None:
     stats = _FakeUserStats(playtime=100)
     steamworks = _FakeSteamworks(stats)
-    monkeypatch.setattr(system_router_module, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(system_router_module, "get_cached_steamworks", lambda: steamworks)
 
     response = client.post(
         "/api/steam/update-playtime",
@@ -206,7 +225,7 @@ def test_update_playtime_reports_progress_unlocked_after_threshold(
 ) -> None:
     stats = _FakeUserStats(playtime=280)
     steamworks = _FakeSteamworks(stats)
-    monkeypatch.setattr(system_router_module, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(system_router_module, "get_cached_steamworks", lambda: steamworks)
 
     response = client.post(
         "/api/steam/update-playtime",
@@ -229,7 +248,7 @@ def test_update_playtime_caps_single_report_to_one_hour(
 ) -> None:
     stats = _FakeUserStats(playtime=0)
     steamworks = _FakeSteamworks(stats)
-    monkeypatch.setattr(system_router_module, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(system_router_module, "get_cached_steamworks", lambda: steamworks)
 
     response = client.post(
         "/api/steam/update-playtime",
@@ -251,7 +270,7 @@ def test_update_playtime_rejects_negative_seconds(
 ) -> None:
     stats = _FakeUserStats()
     steamworks = _FakeSteamworks(stats)
-    monkeypatch.setattr(system_router_module, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(system_router_module, "get_cached_steamworks", lambda: steamworks)
 
     response = client.post(
         "/api/steam/update-playtime",
@@ -274,7 +293,7 @@ def test_update_playtime_rejects_non_finite_seconds(
     (Infinity) or ValueError (NaN) — both must surface as 400, not 500."""
     stats = _FakeUserStats()
     steamworks = _FakeSteamworks(stats)
-    monkeypatch.setattr(system_router_module, "get_steamworks", lambda: steamworks)
+    monkeypatch.setattr(system_router_module, "get_cached_steamworks", lambda: steamworks)
 
     response = client.post(
         "/api/steam/update-playtime",

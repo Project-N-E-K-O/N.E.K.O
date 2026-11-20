@@ -27,6 +27,7 @@ from urllib.parse import unquote
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from ..shared_state import ensure_steamworks as get_steamworks
+from ..shared_state import get_steamworks as get_cached_steamworks
 from utils.workshop_utils import get_workshop_path_async
 
 
@@ -144,7 +145,7 @@ async def update_playtime(request: Request):
     if validation_error is not None:
         return validation_error
 
-    steamworks = get_steamworks()
+    steamworks = get_cached_steamworks()
     if steamworks is None:
         return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)
 
