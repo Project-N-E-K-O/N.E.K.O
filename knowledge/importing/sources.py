@@ -83,6 +83,25 @@ class SourceStore:
             return self.read(path)
         raise KnowledgePackError("preview_not_found")
 
+    def discard_preview(self, preview_id: str) -> bool:
+        """Delete one cancelled/replaced preview's own two files.
+
+        A preview already frozen into a version stays: retries of that commit
+        still resolve it. Callers serialize this with ``retain_preview``.
+        """
+        identity = _id(preview_id)
+        for path in self.root.glob(f"*/previews/{identity}.json"):
+            preview = self.read(path)
+            if any(value.get("preview_id") == identity
+                   for value in self.versions(preview["pack_id"], preview["doc_id"])):
+                return False
+            # The descriptive JSON goes last, so an interrupted delete can be
+            # repeated by the same identity instead of orphaning the original.
+            path.with_suffix(".original").unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            return True
+        return False
+
     def retain_preview(self, preview_id: str, sha256: str) -> dict:
         """Write an immutable version before scheduling its ordinary pack import."""
         preview = self.find_preview(preview_id)
@@ -100,8 +119,12 @@ class SourceStore:
                 return existing
         version = max((value["version"] for value in versions), default=0) + 1
         original = folder / "previews" / (preview_id + ".original")
-        with original.open("rb") as stream:
-            raw = stream.read(SourceLimits().max_document_bytes + 1)
+        try:
+            with original.open("rb") as stream:
+                raw = stream.read(SourceLimits().max_document_bytes + 1)
+        except FileNotFoundError as error:
+            # An interrupted discard removes the original before its JSON.
+            raise KnowledgePackError("preview_not_found") from error
         if hashlib.sha256(raw).hexdigest() != sha256:
             raise KnowledgePackError("preview_changed")
         value = {**preview, "version": version}

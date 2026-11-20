@@ -231,7 +231,6 @@ export default {
     newSourcePack: "Crear un paquete",
     sourcePackName: "Nombre del paquete",
     previewDocument: "Vista previa",
-    sourcePreviewRetention: "La vista previa guarda el archivo original y el texto extraído en este dispositivo. Cancelar la importación no los elimina.",
     sourcePreviewMeta: "{name} · {chars} caracteres",
     enableImported: "Activar las búsquedas del nuevo paquete tras importar",
     cloudDisclosure: "Al activar un paquete, los fragmentos coincidentes pueden enviarse al modelo en la nube configurado. Los nuevos paquetes de documentos y el contexto automático están desactivados por defecto.",

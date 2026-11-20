@@ -138,7 +138,12 @@ const exportReady = computed(() => props.pack?.export_ready === true)
 const exportReadinessHint = computed(() => {
   if (exportReady.value) return 'knowledge.exportReadyHint'
   if (props.pack?.broken) return 'knowledge.brokenHint'
-  return props.pack?.local_embedding === false ? 'knowledge.exportLocalVectorsOff' : 'knowledge.exportVectorWaiting'
+  // Only missing vectors can be filled by turning local vectors on; other
+  // readiness gaps (a stale revision or mixed specs) keep the waiting hint.
+  const pack = props.pack
+  const missing = typeof pack?.chunks_ready === 'number' && typeof pack?.chunks_total === 'number'
+    && pack.chunks_ready < pack.chunks_total
+  return pack?.local_embedding === false && missing ? 'knowledge.exportLocalVectorsOff' : 'knowledge.exportVectorWaiting'
 })
 const downloading = ref('')
 const deleting = ref('')

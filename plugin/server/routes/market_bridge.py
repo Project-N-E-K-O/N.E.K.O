@@ -16,6 +16,7 @@ import dataclasses
 import errno
 import hashlib
 import hmac
+import ipaddress
 import json
 import re
 import secrets
@@ -223,6 +224,30 @@ def _main_server_port() -> int:
 def _is_loopback_host(host: str) -> bool:
     normalized = host.strip().strip("[]").lower()
     return normalized in {"localhost", "127.0.0.1", "::1"}
+
+
+def market_uses_environment_proxy(url: str) -> bool:
+    """Route the configured market through environment proxies only when public.
+
+    Loopback HTTP, ``localhost`` and non-global addresses (a self-hosted LAN or
+    CGNAT/VPN market) stay direct, as they did before HTTPS proxy support; publication
+    and subscription download share this one rule.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").strip("[]").lower().rstrip(".")
+    if parsed.scheme != "https" or not host:
+        return False
+    if _is_loopback_host(host) or host.endswith(".localhost"):
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    # ``is_global`` also excludes shared CGNAT space (100.64/10, e.g. Tailscale).
+    return address.is_global
 
 
 def _is_local_bridge_origin(origin: str, expected_ports: set[int]) -> bool:

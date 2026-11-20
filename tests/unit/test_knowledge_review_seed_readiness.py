@@ -74,6 +74,20 @@ async def test_complete_current_packs_skip_zip_with_aggregate_queries(installed,
     assert calls == ["stats", "versions"] * 2
     # Skipping is a current readiness observation, not a permanent seed verdict.
     assert not service._seeded_artifacts
+    # Within one index round, complete packs are aggregated once, not per batch.
+    calls.clear()
+    observed = set()
+    for _ in range(3):
+        await service._seed_retained_packages(["imp.example", "imp.other"], specification(), observed)
+    assert calls == ["stats", "versions"] and len(observed) == 2 and reads == []
+    # A replaced revision is not hidden by the previous observation.
+    record = service._registry.packs["imp.other"]
+    service._registry = service._registry.with_pack(replace(record, pack_sha256="0" * 64))
+    try:
+        await service._seed_retained_packages(["imp.example", "imp.other"], specification(), observed)
+    finally:
+        service._registry = service._registry.with_pack(record)
+    assert calls == ["stats", "versions"] * 2
 
 
 async def test_startup_rebuilt_vectors_do_not_revalidate_the_zip_again(installed):

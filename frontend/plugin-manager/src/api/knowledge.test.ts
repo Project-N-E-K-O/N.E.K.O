@@ -284,6 +284,7 @@ describe('knowledge API client', () => {
     ['setEnabled', [false], 'settings', { enabled: false }],
     ['setPackEnabled', [{ pack_id: 'p1', enabled: false }], 'packs/enabled', { pack_id: 'p1', enabled: false }],
     ['commitSource', [{ preview_id: 'preview-1', sha256: 'digest', enabled: false, enabled_confirmed: false }], 'sources/commit', { preview_id: 'preview-1', sha256: 'digest', enabled: false, enabled_confirmed: false }],
+    ['discardSourcePreview', [{ preview_id: 'preview-1' }], 'sources/preview/discard', { preview_id: 'preview-1' }],
     ['removeSource', [{ pack_id: 'p1', doc_id: 'doc-1' }], 'sources/remove', { pack_id: 'p1', doc_id: 'doc-1' }],
     ['restoreSource', [{ pack_id: 'p1', doc_id: 'doc-1', version: 1 }], 'sources/restore', { pack_id: 'p1', doc_id: 'doc-1', version: 1 }],
     ['exportPack', [{ pack_id: 'p1' }], 'packs/export', { pack_id: 'p1', format_version: 2 }],

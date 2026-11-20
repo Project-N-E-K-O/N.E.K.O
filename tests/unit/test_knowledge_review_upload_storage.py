@@ -64,3 +64,32 @@ async def test_spool_storage_failures_are_server_errors(tmp_path, monkeypatch, c
         assert "private filename and document contents" not in caplog.text
     finally:
         await service.stop()
+
+
+@pytest.mark.parametrize("upload", ["json", "source"])
+async def test_reset_client_streams_are_request_failures_not_storage_faults(tmp_path, monkeypatch, upload):
+    """ConnectionError subclasses OSError, but a reset caller is not a server fault."""
+    service = KnowledgeService(tmp_path / "library")
+    await service.start()
+    try:
+        monkeypatch.setattr(knowledge_routes, "_service", service)
+        monkeypatch.setattr(knowledge_routes, "_import_slots", asyncio.Semaphore(2))
+
+        async def reset(_request, _limit):
+            raise ConnectionResetError(errno.ECONNRESET, "peer reset")
+            yield b""
+
+        monkeypatch.setattr(knowledge_routes, "capped_body", reset)
+        app = FastAPI()
+        app.include_router(knowledge_routes.router)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://local") as client:
+            if upload == "source":
+                response = await client.post("/internal/knowledge/sources/preview", content=b"private input",
+                                             headers={"Content-Type": "application/octet-stream", "X-Knowledge-Filename": "private.txt"})
+            else:
+                response = await client.post("/internal/knowledge/packs/import", content=b"{}", headers={"Content-Type": "application/json"})
+        assert response.status_code == 400
+        assert response.json() == {"ok": False, "reason": "invalid_request"}
+        assert not list((service.root / ".staging").glob("*"))
+    finally:
+        await service.stop()

@@ -231,7 +231,6 @@ export default {
     newSourcePack: "Criar pacote",
     sourcePackName: "Nome do pacote",
     previewDocument: "Prévia do documento",
-    sourcePreviewRetention: "A prévia salva o arquivo original e o texto extraído neste dispositivo. Cancelar a importação não os exclui.",
     sourcePreviewMeta: "{name} · {chars} caracteres",
     enableImported: "Ativar a busca no novo pacote após importar",
     cloudDisclosure: "Ao ativar um pacote, trechos encontrados podem ser enviados ao modelo em nuvem configurado. Novos pacotes de documentos e o contexto automático ficam desativados por padrão.",

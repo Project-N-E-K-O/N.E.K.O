@@ -511,6 +511,10 @@ async def _streamed_pack_import(request: Request, service: KnowledgeService, *, 
             return await _call(lambda svc: svc.import_pack(path, subscription=subscription, _options=options))
         except BodyTooLarge:
             return _failure("pack_too_large", 413)
+        except ConnectionError:
+            # A reset or broken client stream is a request failure, not a
+            # storage fault, even though Python models it as an OSError.
+            return _failure("invalid_request", 400)
         except OSError as exc:
             # Scratch I/O failures are server faults; never expose a private
             # path from the exception or misreport a valid file as bad input.
@@ -683,6 +687,8 @@ async def knowledge_source_preview(request: Request, pack_id: str = "", doc_id: 
             return await _call(lambda svc: svc.preview_source(filename, path, pack_id=pack_id, doc_id=doc_id, name=name))
         except BodyTooLarge:
             return _failure("document_too_large", 413)
+        except ConnectionError:
+            return _failure("invalid_request", 400)
         except OSError as exc:
             # Match the package spool's storage-error and privacy boundary.
             logger.warning("[Knowledge] source upload storage failed: %s", type(exc).__name__)
@@ -706,6 +712,14 @@ async def knowledge_source_commit(request: Request):
         return _failure("invalid_request", 400)
     return await _call(lambda svc: svc.commit_source(payload["preview_id"], payload["sha256"], enabled=payload.get("enabled", False),
                                                        enabled_confirmed=payload.get("enabled_confirmed", False)))
+
+
+@router.post("/sources/preview/discard")
+async def knowledge_source_preview_discard(request: Request):
+    payload = await _json_object(request)
+    if payload is None or not isinstance(payload.get("preview_id"), str):
+        return _failure("invalid_request", 400)
+    return await _call(lambda svc: svc.discard_preview(payload["preview_id"]))
 
 
 @router.post("/sources/remove")

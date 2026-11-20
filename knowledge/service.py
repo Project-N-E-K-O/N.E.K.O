@@ -133,6 +133,9 @@ MAX_QUERY_CHARS = 2_000
 MAX_QUERY_LIMIT = 10
 PASSIVE_DIAGNOSTIC_RESULTS = frozenset({"matched", "timeout", "busy", "error"})
 MAX_TRACKED_JOBS = 50
+# One bound for every durable task-record reader. Records hold only bounded
+# metadata; a source selection is frozen in the job's own ``.pack.json``.
+MAX_JOB_RECORD_BYTES = 128 * 1024
 MAX_PENDING_IMPORTS = 3
 # Packs are listed whole on the management page; keep that list small.
 MAX_PACKS = 200
@@ -515,8 +518,10 @@ class KnowledgeService:
                 continue
             try:
                 with path.open("rb") as stream:
-                    raw = stream.read(128 * 1024 + 1)
-                if len(raw) > 128 * 1024:
+                    raw = stream.read(MAX_JOB_RECORD_BYTES + 1)
+                if len(raw) > MAX_JOB_RECORD_BYTES:
+                    # The UUID filename is the only diagnostic; never log content.
+                    logger.warning("[Knowledge] skipped oversized job record job=%s", path.stem)
                     continue
                 data = json.loads(raw)
                 if not isinstance(data, dict):
@@ -615,7 +620,7 @@ class KnowledgeService:
                 reserved[pack_id] = record.chunks  # Rows dropped; the registry count still stands.
                 continue
             others = sum(value for key, value in reserved.items() if key != pack_id)
-            plan = _budgeted_plan(pack, self._rebuild_options(record), others)
+            plan = _budgeted_plan(pack, self._rebuild_options(record, "startup"), others)
             if plan is None:
                 # A capacity refusal is not SQLite corruption: keep the old
                 # rows/record and use the existing reimport repair path. Do not
@@ -642,7 +647,7 @@ class KnowledgeService:
             save_registry(self.root, registry)
         return broken, registry
 
-    def _rebuild_options(self, record: PackRecord) -> dict[str, Any]:
+    def _rebuild_options(self, record: PackRecord, scenario: str) -> dict[str, Any]:
         """Recover verified package vectors without loading or invoking a model."""
         options: dict[str, Any] = {}
         fit = self._chunk_fit()
@@ -660,8 +665,8 @@ class KnowledgeService:
                 finally:
                     # Time actual validation on both success and failure;
                     # diagnostics must not include private paths or contents.
-                    logger.info("[Knowledge] rebuild archive validation pack=%s elapsed_ms=%.1f",
-                                record.pack_id, (time.monotonic() - started) * 1000)
+                    logger.info("[Knowledge] %s archive validation pack=%s elapsed_ms=%.1f",
+                                scenario, record.pack_id, (time.monotonic() - started) * 1000)
                 if checked["artifact_sha256"] != record.archive_sha256:
                     raise KnowledgePackError("artifact_hash_mismatch")
                 if checked["seed_vectors"]:
@@ -1151,13 +1156,25 @@ class KnowledgeService:
         # v1 validation is reused before staging; no source-specific bypass of
         # entry, chunk or total pack budgets is admitted.
         canonical = await self._thread(lambda: canonical_pack_bytes(parse_pack(json.loads(canonical_pack_bytes(pack)))))
-        frozen = {"documents": [{"doc_id": row["doc_id"], "version": row["version"]} for row in documents]}
+        # The canonical pack's doc:/ver: tags already freeze the exact selection
+        # in the job's .pack.json. Repeating it here made task records grow
+        # with the document count beyond what restart recovery reads back.
+        frozen: dict[str, Any] = {}
         if source_confirmation is not None:
             # Consent is independent of the requested initial enabled flag;
             # another window can change that flag before this task activates.
             frozen.update(source_confirmation_required=True, enabled_confirmed=source_confirmation)
         return await self.import_pack(canonical, _options={"kind": "import_commit", "origin": "imported", "enabled": enabled,
                                                            "frozen_input": frozen})
+
+    async def discard_preview(self, preview_id: str) -> dict[str, Any]:
+        """Delete a cancelled or replaced preview; committed ones are kept.
+
+        Shares the write lock with ``commit_source`` so a concurrent commit
+        either froze the preview first (kept) or finds it already gone.
+        """
+        deleted = await self._locked(lambda: self._thread(self._sources.discard_preview, preview_id))
+        return {"deleted": deleted}
 
     async def commit_source(
         self, preview_id: str, sha256: str, *, enabled: bool = False, enabled_confirmed: bool = False,
@@ -2104,8 +2121,9 @@ class KnowledgeService:
             if path.name.endswith(".pack.json") or path.stem == exclude_job_id:
                 continue
             with path.open("rb") as stream:
-                raw = stream.read(128 * 1024 + 1)
-            if len(raw) > 128 * 1024:
+                raw = stream.read(MAX_JOB_RECORD_BYTES + 1)
+            if len(raw) > MAX_JOB_RECORD_BYTES:
+                logger.warning("[Knowledge] skipped oversized job record job=%s", path.stem)
                 continue
             try:
                 value = json.loads(raw)
@@ -2387,7 +2405,7 @@ class KnowledgeService:
             pack = decode_pack_bytes(raw)
             # Same rule as the startup reconcile.
             others = sum(item.chunks for key, item in self._registry.packs.items() if key != pack_id)
-            plan = _budgeted_plan(pack, self._rebuild_options(previous), others)
+            plan = _budgeted_plan(pack, self._rebuild_options(previous, "rollback"), others)
             if plan is None:
                 current = self._registry.packs.get(pack_id)
                 if (current is not None and self._store.pack_versions().get(pack_id) != current.pack_sha256
@@ -2660,8 +2678,14 @@ class KnowledgeService:
         self._publish_registry(registry)
         self._pending_chunk_reconcile = False
 
-    async def _seed_retained_packages(self, pack_ids: list[str], specification: dict) -> None:
-        """Recover product-package vectors when assets arrive after text install."""
+    async def _seed_retained_packages(
+        self, pack_ids: list[str], specification: dict, observed_ready: set[tuple[str, str, str, str]] | None = None,
+    ) -> None:
+        """Recover product-package vectors when assets arrive after text install.
+
+        ``observed_ready`` lives for one index round: complete packs are not
+        re-aggregated every batch, yet the next round observes them afresh.
+        """
         from .archive import read_archive
 
         identity = self._store._spec_hash(specification)
@@ -2672,6 +2696,9 @@ class KnowledgeService:
                 continue
             key = (record.archive_sha256, identity)
             if key in self._seeded_artifacts:
+                continue
+            ready_key = (pack_id, record.pack_sha256, record.archive_sha256, identity)
+            if observed_ready is not None and ready_key in observed_ready:
                 continue
             if readiness is None:
                 # One aggregate scan for all candidates, without loading each
@@ -2686,8 +2713,11 @@ class KnowledgeService:
             stats = counts.get(pack_id, {})
             if (indexed.get(pack_id) == record.pack_sha256 and record.chunks > 0
                     and stats.get("ready") == stats.get("total") == record.chunks):
-                # Do not cache this observation: missing vectors, changed
-                # resources or shared snapshot damage cleanup must reopen it.
+                # Do not cache this observation beyond the round: missing
+                # vectors, changed resources or shared snapshot damage cleanup
+                # must reopen it.
+                if observed_ready is not None:
+                    observed_ready.add(ready_key)
                 continue
             # Identity of the expected location: a missing optional ZIP is
             # remembered as None and retried once a file appears there.
@@ -2743,6 +2773,7 @@ class KnowledgeService:
             self._index_model_id = model_id
         processed = 0
         deferred_packs: set[str] = set()
+        observed_ready: set[tuple[str, str, str, str]] = set()
         while processed < INDEX_ROUND_CHUNKS and not self._stopping:
             # Re-read the switches every batch: the user may turn knowledge or
             # a pack's vectors off while a batch is embedding.
@@ -2758,7 +2789,7 @@ class KnowledgeService:
             if specification is not None:
                 if self._refused_replans:
                     await self._reopen_refused_replans(specification)
-                await self._seed_retained_packages(pack_ids, specification)
+                await self._seed_retained_packages(pack_ids, specification, observed_ready)
             rows = await self._thread(
                 self._store.pending_chunks, model_id=model_id, pack_ids=pack_ids, limit=INDEX_BATCH_SIZE,
                 require_spec=specification is not None,

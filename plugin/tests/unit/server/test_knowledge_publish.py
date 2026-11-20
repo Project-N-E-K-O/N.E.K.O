@@ -90,6 +90,9 @@ async def test_publication_streams_the_confirmed_artifact_to_existing_shares(set
     ("http://127.0.0.1:8000", "", False),
     ("http://localhost:8000", "", False),
     ("http://[::1]:8000", "", False),
+    ("https://localhost:8443", "", False),
+    ("https://192.168.1.20", "", False),
+    ("https://[fe80::1]:8443", "", False),
 ])
 async def test_publication_uses_real_proxy_routing_only_for_remote_market(
     setup, tmp_path, monkeypatch, market_base, no_proxy, proxied,
@@ -171,6 +174,27 @@ async def test_publication_uses_real_proxy_routing_only_for_remote_market(
     else:
         assert all(host != "env-proxy.test" for host, _port in connections)
     assert response.json()["share"]["id"] == 7
+
+
+@pytest.mark.parametrize("url,proxied", [
+    ("https://market.example", True),
+    ("https://8.8.8.8/api", True),
+    ("https://localhost:8443", False),
+    ("https://dev.localhost", False),
+    ("https://10.0.0.5", False),
+    ("https://172.16.4.1", False),
+    ("https://[fd00::1]", False),
+    ("https://100.100.1.2", False),
+    ("https://localhost.:8443", False),
+    ("http://127.0.0.1:8000", False),
+    ("http://market.example", False),
+])
+def test_publication_and_download_share_one_market_proxy_rule(url, proxied):
+    from plugin.server.routes import knowledge_market, market_bridge
+
+    assert market_bridge.market_uses_environment_proxy(url) is proxied
+    # Subscription downloads select their transport with the same function.
+    assert knowledge_market.market_uses_environment_proxy is market_bridge.market_uses_environment_proxy
 
 
 async def test_publication_confirmation_precedes_account_or_artifact_reads(setup):

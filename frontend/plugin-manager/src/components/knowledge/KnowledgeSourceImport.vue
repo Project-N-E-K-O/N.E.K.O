@@ -1,8 +1,6 @@
 <template>
   <el-dialog :model-value="modelValue" :title="t('knowledge.importDocumentTitle')" width="min(720px, 94vw)" :close-on-click-modal="!saving" :close-on-press-escape="!saving" :show-close="!saving" @close="close">
     <template v-if="file">
-      <!-- Preview itself retains local data, even before an import is committed. -->
-      <el-alert :title="t('knowledge.sourcePreviewRetention')" type="info" :closable="false" show-icon data-testid="source-retention-disclosure" />
       <el-form v-if="!preview" label-position="top" @submit.prevent="prepare">
         <el-form-item :label="t('knowledge.sourceName')"><span>{{ file.name }}</span></el-form-item>
         <el-form-item v-if="!pack" :label="t('knowledge.sourceTarget')">
@@ -52,6 +50,19 @@ const saving = ref(false)
 const enableAfterImport = ref(false)
 const acknowledged = ref(false)
 let generation = 0
+
+// Cancelling or replacing a preview deletes that preview's own server files.
+// Best effort: a failure keeps the files, exactly as before this request.
+function discardPreview(previewId: string) {
+  void knowledgeApi.discardSourcePreview({ preview_id: previewId }).catch(() => undefined)
+}
+
+function dropPreview() {
+  const previous = preview.value
+  preview.value = null
+  // A commit in flight owns this preview; the server keeps it once frozen.
+  if (previous && !saving.value) discardPreview(previous.preview_id)
+}
 // A finished offline pack has no originals to append to, even when its origin is imported.
 const importedPacks = computed(() => (props.packs ?? []).filter(row => row.sources_managed === true && !row.broken && !row.retained))
 const targetPack = computed(() => props.pack ?? importedPacks.value.find(row => row.pack_id === targetId.value))
@@ -61,7 +72,7 @@ const requiresAcknowledgment = computed(() => Boolean(targetPack.value && target
 watch([() => props.modelValue, () => props.file, () => props.pack?.pack_id, () => props.docId], () => {
   // A slow preview for a previously selected file must not replace this dialog.
   generation += 1
-  preview.value = null
+  dropPreview()
   loading.value = false
   saving.value = false
   targetId.value = props.pack?.pack_id ?? ''
@@ -74,7 +85,7 @@ watch([targetId, packName], () => {
   // Destination edits invalidate the preview already in flight, including its
   // disclosure and eventual commit identity.
   generation += 1
-  preview.value = null
+  dropPreview()
   loading.value = false
   acknowledged.value = false
 })
@@ -83,7 +94,7 @@ watch(() => targetPack.value?.pack_id, () => {
   // A missing destination invalidates the server-frozen identity, not just its label.
   // Ordinary polling updates of the same pack keep the preview intact.
   generation += 1
-  preview.value = null
+  dropPreview()
   loading.value = false
   acknowledged.value = false
 })
@@ -92,6 +103,7 @@ watch(requiresAcknowledgment, () => { acknowledged.value = false })
 function close() {
   if (saving.value) return
   generation += 1
+  dropPreview()
   emit('update:modelValue', false)
 }
 
@@ -106,6 +118,8 @@ async function prepare() {
       ...(props.docId ? { doc_id: props.docId } : {}),
     })
     if (request === generation) preview.value = response.preview
+    // A preview that finished after cancel/replace was never shown; delete it too.
+    else discardPreview(response.preview.preview_id)
   } catch (error) {
     if (request === generation) ElMessage.error(t(`knowledge.reasons.${knowledgeFailureReason(error)}`))
   } finally {
@@ -125,6 +139,8 @@ async function commit() {
       // This is consent for this document, distinct from the pack's mutable switch.
       enabled_confirmed: targetPack.value ? requiresAcknowledgment.value && acknowledged.value : enableAfterImport.value,
     })
+    // The committed preview is frozen server-side; closing must not discard it.
+    preview.value = null
     ElMessage.success(t('knowledge.sourceQueued'))
     emit('committed')
     emit('update:modelValue', false)

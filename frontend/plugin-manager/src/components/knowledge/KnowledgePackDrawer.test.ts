@@ -175,12 +175,14 @@ describe('pack documents, versions and publication', () => {
     expect(api.exportPack).toHaveBeenCalledWith({ pack_id: 'imp.test' })
   })
 
-  it.each([[1, 2], [0, 2], [0, 0], [2, 2]])('keeps unverified exports unavailable independently of current-model counts (%s/%s)', async (ready, total) => {
+  it.each([[1, 2, true], [0, 2, true], [0, 0, false], [2, 2, false]])('keeps unverified exports unavailable independently of current-model counts (%s/%s)', async (ready, total, missing) => {
     // Current-model counts alone cannot certify one complete stored provenance specification.
     await mount([], { local_embedding: false, vector_state: 'off', export_ready: false, chunks_ready: ready, chunks_total: total })
     const button = buttons('Export data package')[0]!
     expect(button.disabled).toBe(true)
-    expect(document.body.textContent).toContain(enUS.knowledge.exportLocalVectorsOff)
+    // Turning local vectors on only helps when vectors are actually missing.
+    const hint = document.querySelector('.export-readiness')?.textContent
+    expect(hint).toContain(missing ? enUS.knowledge.exportLocalVectorsOff : enUS.knowledge.exportVectorWaiting)
     button.click()
     expect(api.exportPack).not.toHaveBeenCalled()
   })

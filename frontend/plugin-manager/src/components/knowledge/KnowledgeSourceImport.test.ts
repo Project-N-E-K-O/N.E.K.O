@@ -6,7 +6,7 @@ import ElementPlus from 'element-plus'
 import enUS from '@/i18n/locales/en-US'
 import type { KnowledgePack } from '@/api/knowledge'
 
-const api = vi.hoisted(() => ({ previewSource: vi.fn(), commitSource: vi.fn() }))
+const api = vi.hoisted(() => ({ previewSource: vi.fn(), commitSource: vi.fn(), discardSourcePreview: vi.fn() }))
 vi.mock('@/api/knowledge', async (original) => ({
   ...(await original<typeof import('@/api/knowledge')>()), knowledgeApi: api,
 }))
@@ -45,22 +45,73 @@ beforeEach(() => {
     chars: 12, content: 'private text', sections: [],
   } })
   api.commitSource.mockResolvedValue({ ok: true, pack_id: 'imp.test', job_id: 'job-1', state: 'queued' })
+  api.discardSourcePreview.mockResolvedValue({ ok: true, deleted: true })
 })
 afterEach(() => { cleanup?.(); cleanup = undefined; document.body.innerHTML = ''; vi.unstubAllGlobals() })
 
 describe('source import privacy and identity', () => {
-  it('discloses retained local originals before preview and when cancelling import', async () => {
+  it('deletes the preview files when the preview is cancelled', async () => {
     const state = await mount()
-    const disclosure = 'Preview saves the original file and extracted text on this device. Cancelling the import does not delete them.'
-    expect(document.querySelector('[data-testid="source-retention-disclosure"]')?.textContent).toContain(disclosure)
     expect(api.previewSource).not.toHaveBeenCalled()
+    button('Cancel').click()
+    await flush()
+    // Nothing was previewed, so there is nothing to delete.
+    expect(api.discardSourcePreview).not.toHaveBeenCalled()
+    state.modelValue = true
+    await flush()
     button('Preview document').click()
     await flush()
-    expect(document.querySelector('[data-testid="source-retention-disclosure"]')?.textContent).toContain(disclosure)
     button('Cancel').click()
     await flush()
     expect(state.modelValue).toBe(false)
     expect(api.commitSource).not.toHaveBeenCalled()
+    expect(api.discardSourcePreview).toHaveBeenCalledTimes(1)
+    expect(api.discardSourcePreview).toHaveBeenCalledWith({ preview_id: 'preview-1' })
+  })
+
+  it('deletes a replaced preview and one that finishes after cancellation', async () => {
+    const state = await mount()
+    button('Preview document').click()
+    await flush()
+    // Choosing another file replaces the shown preview.
+    state.file = new File(['other text'], 'other.txt')
+    await flush()
+    expect(api.discardSourcePreview).toHaveBeenCalledWith({ preview_id: 'preview-1' })
+    let finish!: (value: unknown) => void
+    api.previewSource.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    button('Preview document').click()
+    await flush()
+    button('Cancel').click()
+    finish({ ok: true, pack_id: 'imp.test', preview: { preview_id: 'preview-late', doc_id: 'doc-2', sha256: 'late',
+      name: 'other.txt', chars: 10, content: 'other text', sections: [] } })
+    await flush()
+    expect(api.discardSourcePreview).toHaveBeenCalledWith({ preview_id: 'preview-late' })
+  })
+
+  it('does not discard a preview whose commit is still in flight', async () => {
+    const state = await mount()
+    button('Preview document').click()
+    await flush()
+    let finish!: (value: unknown) => void
+    api.commitSource.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    button('Confirm import').click()
+    await flush()
+    state.file = new File(['other text'], 'other.txt')
+    await flush()
+    finish({ ok: true, pack_id: 'imp.test', job_id: 'job-1', state: 'queued' })
+    await flush()
+    expect(api.discardSourcePreview).not.toHaveBeenCalled()
+  })
+
+  it('keeps a committed preview when the dialog closes', async () => {
+    const state = await mount()
+    button('Preview document').click()
+    await flush()
+    button('Confirm import').click()
+    await flush()
+    expect(api.commitSource).toHaveBeenCalledTimes(1)
+    expect(state.modelValue).toBe(false)
+    expect(api.discardSourcePreview).not.toHaveBeenCalled()
   })
 
   it('offers only packs with local source provenance as append destinations', async () => {

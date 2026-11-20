@@ -211,13 +211,13 @@ async def _publish_owned(data: dict):
                        "Content-Length": str(len(prefix) + checked.size + len(suffix))}
             # An early upstream response may leave the body iterator suspended
             # with an open file. Close it explicitly before reclaiming scratch.
-            # Remote HTTPS follows normal environment proxy/NO_PROXY rules.
-            # Explicit loopback HTTP markets stay direct, just like the local
-            # artifact download, even when NO_PROXY is not configured.
+            # Public HTTPS follows normal environment proxy/NO_PROXY rules.
+            # Loopback and LAN markets stay direct, matching subscription
+            # downloads, even when NO_PROXY is not configured.
             async with (
                 aclosing(body()) as upload,
                 httpx.AsyncClient(timeout=180.0, follow_redirects=False,
-                                  trust_env=urlparse(base).scheme == "https") as market_client,
+                                  trust_env=account.market_uses_environment_proxy(base)) as market_client,
             ):
                 async with market_client.stream("POST", base + "/api/v1/shares", content=upload, headers=headers) as response:
                     if response.status_code == 401:

@@ -68,6 +68,7 @@ from plugin.server.routes.market_bridge import (
     _measure_github_proxy_sources,
     _main_server_port,
     _verify_token,
+    market_uses_environment_proxy,
 )
 from plugin.server.infrastructure.package_sources import GITHUB_DOWNLOAD_SOURCES
 from plugin.settings import MARKET_API_URL, NEKO_AUTH_CLIENT_ID
@@ -833,10 +834,10 @@ async def _download(url: str, httpx: Any) -> bytes:
     async with AsyncExitStack() as stack:
         clients = {}
         while True:
-            # A loopback HTTP bearer must never reach an environment proxy.
-            # Select per hop so normal HTTPS mirrors retain proxy support even
-            # when a redirect crosses between the two transport policies.
-            private = _market_artifact_url(current) and urlparse(current).scheme == "http"
+            # A loopback or LAN market bearer must never reach an environment
+            # proxy. Select per hop so normal HTTPS mirrors retain proxy support
+            # even when a redirect crosses between the two transport policies.
+            private = _market_artifact_url(current) and not market_uses_environment_proxy(current)
             if private not in clients:
                 clients[private] = await stack.enter_async_context(httpx.AsyncClient(
                     timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False, trust_env=not private,

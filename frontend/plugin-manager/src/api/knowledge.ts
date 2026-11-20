@@ -577,6 +577,9 @@ export const knowledgeApi = {
       },
     })
   },
+  // Deletes only this uncommitted preview's own files; committed previews are kept.
+  discardSourcePreview: (data: { preview_id: string }) =>
+    post<KnowledgeEnvelope & { deleted: boolean }>('sources/preview/discard', { preview_id: data.preview_id }),
   commitSource: (data: { preview_id: string; sha256: string; enabled: boolean; enabled_confirmed: boolean }) =>
     post<KnowledgeImportResponse>('sources/commit', data),
   removeSource: (data: { pack_id: string; doc_id: string }) => post<KnowledgeImportResponse>('sources/remove', data),
