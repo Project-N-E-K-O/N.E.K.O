@@ -26,9 +26,11 @@ COPY frontend/react-neko-chat /src/frontend/react-neko-chat
 # yui-guide-runtime.ts imports tutorial PNGs and shared icons via
 # `../../../static/...`; keep these COPY paths in sync with that file
 # (currently: static/assets/tutorial/{ghost-cursor,highlight}, static/icons).
+# hosted/uiKitBundle.ts inlines static/plugin-ui-sdk/display.js via `?raw`.
 COPY static/assets/tutorial /src/static/assets/tutorial
 COPY static/icons /src/static/icons
 COPY static/locales /src/static/locales
+COPY static/plugin-ui-sdk /src/static/plugin-ui-sdk
 
 WORKDIR /src/frontend/plugin-manager
 RUN npm ci && npm run build-only
