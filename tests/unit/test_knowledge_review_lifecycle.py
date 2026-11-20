@@ -9,6 +9,8 @@ import sqlite3
 import threading
 import zipfile
 
+from pathlib import Path
+
 import pytest
 
 from knowledge import archive, service as module
@@ -199,6 +201,52 @@ async def test_discarded_job_cannot_be_recreated_by_a_late_flush(tmp_path):
         await service._persist_job(job)
         assert not (tmp_path / "jobs" / (job.job_id + ".json")).exists()
         assert not service.list_jobs()
+    finally:
+        await service.stop()
+
+
+@pytest.mark.parametrize("unlink_fails", [False, True])
+async def test_discarding_a_job_deletes_only_its_own_frozen_retry_input(tmp_path, monkeypatch, unlink_fails):
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        discarded = service._jobs[(await _import(service, _pack()))["job_id"]]
+        kept = service._jobs[(await _import(service, _pack("other-pack")))["job_id"]]
+        jobs = tmp_path / "jobs"
+        assert (jobs / (discarded.job_id + ".pack.json")).exists()
+        assert (jobs / (kept.job_id + ".pack.json")).exists()
+        if unlink_fails:
+            original = Path.unlink
+
+            def refuse(self, *args, **kwargs):
+                if self.name.endswith(".pack.json"):
+                    raise OSError("synthetic delete failure")
+                return original(self, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "unlink", refuse)
+        assert service.discard_job(discarded.job_id) is True
+        await asyncio.gather(*tuple(service._detached))
+        assert not (jobs / (discarded.job_id + ".json")).exists()
+        # A failed delete is logged, never turned into a failed discard.
+        assert (jobs / (discarded.job_id + ".pack.json")).exists() is unlink_fails
+        assert (jobs / (kept.job_id + ".pack.json")).exists()
+        assert [job["job_id"] for job in service.list_jobs()] == [kept.job_id]
+    finally:
+        await service.stop()
+
+
+async def test_retry_whose_frozen_input_was_discarded_is_not_retryable(tmp_path):
+    from knowledge.service import ImportJob
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        stamp = "2026-01-01T00:00:00Z"
+        job = ImportJob("c" * 32, "demo-memes", "failed", stamp, stamp, staged_sha256="0" * 64)
+        service._remember_job(job)
+        with pytest.raises(KnowledgePackError) as error:
+            await service.retry_job(job.job_id)
+        assert error.value.reason == "job_not_retryable"
     finally:
         await service.stop()
 

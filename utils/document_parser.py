@@ -740,14 +740,18 @@ def _extract_word_text_from_root(root: ET.Element) -> str:
 
 def _collect_word_note_reference_ids(root: ET.Element, reference_tag: str) -> set[str]:
     references = set()
-    # Reference selection must obey the same compatibility visibility as
-    # paragraph extraction; hidden fallback notes are not source content.
+    # Reference selection must obey the same visibility as paragraph
+    # extraction; fallback and hidden notes are not source content.
     # An explicit stack keeps deeply nested XML a parse result, not a
     # RecursionError.
     stack = [root]
     while stack:
         node = stack.pop()
         if node.tag == _MC_NS + "Fallback":
+            continue
+        # A reference inside hidden text is hidden too, like the paragraph
+        # traversal: its note must not enter visible content.
+        if node.tag == _WORD_NS + "r" and _word_run_is_hidden(node):
             continue
         if node.tag == reference_tag and (value := node.attrib.get(_WORD_NS + "id", "")):
             references.add(value)

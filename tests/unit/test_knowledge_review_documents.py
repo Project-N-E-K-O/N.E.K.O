@@ -254,6 +254,16 @@ def test_inline_image_page_without_xobject_is_not_silently_skipped():
     assert error.value.reason == 'scan_unsupported'
 
 
+def test_notes_referenced_only_from_hidden_text_stay_hidden():
+    body = ('<w:p><w:r><w:t>Body</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r>'
+            '<w:r><w:rPr><w:vanish/></w:rPr><w:footnoteReference w:id="3"/></w:r></w:p>')
+    notes = '<w:footnote w:id="2">' + _paragraph('Visible note') + '</w:footnote><w:footnote w:id="3">' + _paragraph('Hidden note') + '</w:footnote>'
+    parsed = documents.parse_source('notes.docx', _docx(body, **{'word/footnotes.xml': notes}), documents.SourceLimits())
+    assert parsed['content'] == 'Body\n\nVisible note'
+    attachment = office.parse_document('notes.docx', '', _docx(body, **{'word/footnotes.xml': notes}))
+    assert 'Visible note' in attachment['content'] and 'Hidden note' not in attachment['content']
+
+
 def test_word_traversals_do_not_depend_on_the_python_recursion_limit():
     import sys
     import xml.etree.ElementTree as ET
