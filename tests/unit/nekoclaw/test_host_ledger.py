@@ -111,17 +111,48 @@ async def test_call_budget_preserves_active_descendants_and_can_finish_in_place(
     assert (await ledger.get(pending.id)).status == "queued"
 
 
-async def test_resuming_an_expired_failure_starts_with_no_old_calls(ledger):
+@pytest.mark.parametrize("status", ["failed", "blocked"])
+async def test_resuming_an_expired_commission_starts_with_no_old_calls(ledger, status):
     from nekoclaw.host import call_audit
 
     item = await _file(ledger, source_message_ref="conversation_input:" + "a" * 32)
-    await _walk(ledger, item.id, "failed")
+    await _walk(ledger, item.id, status)
     ledger.clock.now += call_audit.RETENTION
     assert (await ledger.transition(item.id, "working")).applied
     async with call_audit.call(ledger, item.id, "device", "browser"):
         pass
     data = await ledger.run(lambda db: call_audit.read_trace(db, item.id, now=ledger.clock()))
     assert len(data) == 2 and data[0]["source_message_ref"] is None
+
+
+async def test_losing_the_ledger_after_execution_preserves_the_action_result(ledger, caplog):
+    from nekoclaw.host import call_audit
+
+    item = await _file(ledger)
+    async with call_audit.call(ledger, item.id, "plugin", "weather") as attempt:
+        await ledger.close()
+    assert f"could not close host call {attempt.call_id} (RuntimeError)" in caplog.text
+
+
+async def test_blocked_chain_expires_and_releases_its_budget(ledger, monkeypatch):
+    from nekoclaw.host import call_audit
+
+    monkeypatch.setattr(call_audit, "BUDGET_BYTES", 3 * call_audit.RECORD_BYTES)
+    root = await _file(ledger)
+    child = await _file(ledger, parent_id=root.id, source="task_agent")
+    async with call_audit.call(ledger, child.id, "device", "browser"):
+        pass
+    await _walk(ledger, child.id, "blocked")
+    with pytest.raises(call_audit.CommissionEnded):
+        async with call_audit.call(ledger, child.id, "device", "browser"):
+            pytest.fail("blocked work must first be resumed")
+    await _walk(ledger, root.id, "done")
+    ledger.clock.now += call_audit.RETENTION
+    assert await ledger.run(lambda db: call_audit.read_trace(db, child.id, now=ledger.clock())) == []
+    fresh = await _file(ledger)
+    async with call_audit.call(ledger, fresh.id, "device", "browser"):
+        pass
+    assert await ledger.run(lambda db: db.execute("SELECT DISTINCT trace_id FROM host_calls").fetchone()[0]) == fresh.id
 
 
 async def test_expired_trace_hidden_before_maintenance_and_unknown_source_stays_unknown(ledger):

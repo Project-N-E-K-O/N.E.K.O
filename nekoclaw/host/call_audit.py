@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 import time
@@ -23,6 +24,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from nekoclaw.host.ledger import Ledger
+
+logger = logging.getLogger(__name__)
 
 RETENTION = 30 * 24 * 3600
 # Identifiers are bounded below. Reserve the whole record (including a later
@@ -66,7 +69,7 @@ WITH RECURSIVE tree(root, id, status, ended_at) AS (
     SELECT t.root,c.id,c.status,c.ended_at FROM tree t JOIN commissions c ON c.parent_id=t.id
 )
 SELECT root, MAX(ended_at) AS closed_at FROM tree GROUP BY root
-HAVING COUNT(*) = COUNT(ended_at) AND MIN(status IN ('done','failed','cancelled')) = 1
+HAVING COUNT(*) = COUNT(ended_at) AND MIN(status IN ({ended})) = 1
 AND NOT EXISTS (SELECT 1 FROM host_calls a WHERE a.trace_id=tree.root AND a.status='running')
 """
 
@@ -94,6 +97,18 @@ def _identifier(value: str) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+def _closed_trees(conn: sqlite3.Connection, *, root: str | None = None) -> sqlite3.Cursor:
+    from nekoclaw.host.ledger import ENDED_STATUSES
+
+    ended = tuple(sorted(ENDED_STATUSES))
+    query = _CLOSED.format(
+        root_filter="WHERE a.call_id=?" if root is not None else "",
+        ended=", ".join("?" for _ in ended),
+    )
+    params = (root, *ended) if root is not None else ended
+    return conn.execute(query + " ORDER BY closed_at,root", params)
+
+
 def reclaim(conn: sqlite3.Connection, now: float, *, reserve: int = 0, force: bool = False) -> None:
     count, swept = conn.execute(
         "SELECT records,swept_at FROM host_call_budget"
@@ -101,7 +116,7 @@ def reclaim(conn: sqlite3.Connection, now: float, *, reserve: int = 0, force: bo
     limit = BUDGET_BYTES // RECORD_BYTES
     if not force and count + reserve <= limit and swept is not None and 0 <= now - swept < 3600:
         return
-    closed = conn.execute(_CLOSED.format(root_filter="") + " ORDER BY closed_at,root").fetchall()
+    closed = _closed_trees(conn).fetchall()
     for root, ended_at in closed:
         if ended_at > now - RETENTION and count + reserve <= limit:
             break
@@ -136,10 +151,12 @@ def _ensure_commissions(
     ref: str | None = None,
     reserve: int = 0,
 ) -> str:
+    from nekoclaw.host.ledger import ENDED_STATUSES
+
     chain = _ancestry(conn, commission_id)
     if not chain:
         raise ValueError("unknown commission")
-    if reserve and chain[0]["status"] in {"done", "failed", "cancelled"}:
+    if reserve and chain[0]["status"] in ENDED_STATUSES:
         raise CommissionEnded("this commission is no longer under way")
     root = chain[-1]["id"]
     missing = [
@@ -274,12 +291,17 @@ async def _finish(started: asyncio.Task[Call], status: str) -> None:
             record = await started
         except Exception:  # insertion rolled back; there is no record to close
             return
-        await record.ledger.run(
-            lambda db: db.execute(
-                "UPDATE host_calls SET status=?,reason=?,ended_at=? WHERE call_id=? AND status='running'",
-                (status, record.reason, record.ledger._clock(), record.call_id),
+        try:
+            await record.ledger.run(
+                lambda db: db.execute(
+                    "UPDATE host_calls SET status=?,reason=?,ended_at=? WHERE call_id=? AND status='running'",
+                    (status, record.reason, record.ledger._clock(), record.call_id),
+                )
             )
-        )
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
+            # The effect already happened. Preserve its result so it is not
+            # retried as a failed action. Reconciliation marks unfinished rows.
+            logger.warning("could not close host call %s (%s)", record.call_id, type(exc).__name__)
 
     closing = asyncio.create_task(close_record())
     cancelled = False
@@ -301,11 +323,8 @@ def read_trace(
     if not tree:
         return []
     root = tree[-1]["id"]
-    expired = db.execute(
-        "SELECT 1 FROM (" + _CLOSED.format(root_filter="WHERE a.call_id=?") + ") WHERE closed_at<=?",
-        (root, now - RETENTION),
-    ).fetchone()
-    if expired:
+    closed = _closed_trees(db, root=root).fetchone()
+    if closed and closed["closed_at"] <= now - RETENTION:
         return []
     rows = db.execute(
         "SELECT a.seq,a.call_id,a.trace_id,a.parent_call_id,a.commission_id,a.kind,a.target,a.source_message_ref,"

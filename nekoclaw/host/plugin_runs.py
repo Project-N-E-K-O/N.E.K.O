@@ -421,7 +421,8 @@ async def audited_run_entry(
         outcome = await runner.run_entry(
             commission_id=commission_id, plugin_id=plugin_id, entry_id=entry_id, audit_call=record, **kwargs
         )
-        record.status = plugin_terminal_status(outcome.success, outcome.data)
+        record.status = ("cancelled" if getattr(outcome, "reason", None) == "not_wanted"
+                         else plugin_terminal_status(outcome.success, outcome.data))
         return outcome
 
 

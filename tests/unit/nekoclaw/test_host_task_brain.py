@@ -824,6 +824,10 @@ async def test_nekoclaw_switched_off_after_a_plugin_was_chosen_and_before_it_is_
     # No request for a run is sent, and the commission is put down as not started because
     # NekoClaw is off: not as a call that failed.
     assert calling == [True] and server.calls == [] and server.run_requests == []
+    _root, direct, plugin_call = await host.ledger.run(
+        lambda db: call_audit.read_trace(db, receipt.commission_id, now=host.ledger._clock())
+    )
+    assert direct["status"] == plugin_call["status"] == "cancelled" and plugin_call["run_id"] is None
     failed = await host.ledger.get(receipt.commission_id)
     assert failed.status == "failed" and "switched off" in failed.status_reason
     (correction,) = await outbox(host, "correction")
@@ -1174,6 +1178,16 @@ async def test_a_new_dispatch_is_not_taken_for_a_repeat_of_a_child_task_agent(se
 # ---------------------------------------------------------------------------
 # Deferred results
 # ---------------------------------------------------------------------------
+
+
+async def test_deferred_binding_skipped_when_audit_is_full(server, hosts, tmp_path, monkeypatch, caplog):
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    item, _ = await host.ledger.create(lanlan_name="Lan", title="reminder", dispatch_text="later", source="dispatch")
+    await host.ledger.transition(item.id, "working")
+    monkeypatch.setattr(call_audit, "BUDGET_BYTES", call_audit.RECORD_BYTES)
+    await host.brain._bind_deferred(item, "reminder", "reminder-id")
+    assert "deferred binding skipped" in caplog.text
+    assert server.run_requests == []
 
 
 async def test_deferred_work_stopped_before_it_is_bound_does_not_call_the_plugin(server, hosts, tmp_path):

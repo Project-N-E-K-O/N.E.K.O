@@ -968,15 +968,19 @@ class TaskBrain:
         if current is None or current.status != "working":
             # Stopped or ended before the plugin was told: it is not called.
             return
-        outcome = await audited_run_entry(
-            self._ledger, self._runner, commission_id=commission.id,
-            plugin_id=plugin_id,
-            entry_id=BIND_TASK_ENTRY,
-            args={"reminder_id": reminder_id, "agent_task_id": commission.id},
-            # Not chosen by a model: a plugin may well hide this entry from
-            # selection, and it has to be reachable all the same.
-            housekeeping=True,
-        )
+        try:
+            outcome = await audited_run_entry(
+                self._ledger, self._runner, commission_id=commission.id,
+                plugin_id=plugin_id,
+                entry_id=BIND_TASK_ENTRY,
+                args={"reminder_id": reminder_id, "agent_task_id": commission.id},
+                # Not chosen by a model: a plugin may well hide this entry from
+                # selection, and it has to be reachable all the same.
+                housekeeping=True,
+            )
+        except (call_audit.AuditFull, call_audit.CommissionEnded) as exc:
+            logger.warning("deferred binding skipped for commission %s (%s)", commission.id, type(exc).__name__)
+            return
         if not outcome.success:
             logger.warning("binding deferred work of commission %s failed: %s", commission.id, outcome.error)
 
