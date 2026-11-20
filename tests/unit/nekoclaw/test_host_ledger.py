@@ -125,6 +125,21 @@ async def test_resuming_an_expired_commission_starts_with_no_old_calls(ledger, s
     assert len(data) == 2 and data[0]["source_message_ref"] is None
 
 
+@pytest.mark.parametrize("next_status", ["failed", "cancelled"])
+async def test_ending_an_expired_blocked_commission_again_does_not_restore_old_calls(ledger, next_status):
+    from nekoclaw.host import call_audit
+
+    item = await _file(ledger, source_message_ref="conversation_input:" + "a" * 32)
+    await _walk(ledger, item.id, "blocked")
+    ledger.clock.now += call_audit.RETENTION
+    def read(db):
+        return call_audit.read_trace(db, item.id, now=ledger.clock())
+
+    assert await ledger.run(read) == []
+    assert (await ledger.transition(item.id, next_status)).applied
+    assert await ledger.run(read) == []
+
+
 async def test_losing_the_ledger_after_execution_preserves_the_action_result(ledger, caplog):
     from nekoclaw.host import call_audit
 

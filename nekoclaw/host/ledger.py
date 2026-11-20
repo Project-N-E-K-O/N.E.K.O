@@ -1378,9 +1378,9 @@ class Ledger:
             return Transition(False, current, current.status, refusal)
 
         now = self._clock()
-        if (current.status in ENDED_STATUSES and status in {"queued", "working"}
-                and current.ended_at is not None and current.ended_at <= now - call_audit.RETENTION):
-            # An old failure or blocked commission may be resumed. Its expired calls stay expired.
+        if (current.status in ENDED_STATUSES and current.ended_at is not None
+                and current.ended_at <= now - call_audit.RETENTION):
+            # Resuming it or setting a later end time must not bring expired calls back.
             call_audit.reclaim(conn, now, force=True)
         changes: dict[str, Any] = dict(values)
         changes.update(status=status, status_reason=reason, updated_at=now, host_instance=self.instance)
