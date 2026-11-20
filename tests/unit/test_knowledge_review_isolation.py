@@ -214,12 +214,112 @@ async def test_one_overcapacity_replan_does_not_starve_a_normal_pack(tmp_path, m
 
         monkeypatch.setattr(service, "_replan_vector_inputs", observed_replan)
         monkeypatch.setattr(service._store, "chunk_pack_ids", observed_owners)
-        assert await service._index_round() == 1
+        processed = await service._index_round()
         assert replanned == [["imp.oversized"]]
         assert mapped == [{"imp.oversized"}]
         assert len(provider.texts) == 1 and provider.texts[0].startswith("Normal\n")
         stats = service._store.chunk_stats(provider.model_id(), specification=provider.spec())
         assert stats["imp.normal"]["ready"] == 1
-        assert stats["imp.oversized"]["ready"] == stats["imp.oversized"]["failed"] == 0
+        # The refused rows stay keyword-only and finish as failed rather than pending forever.
+        assert stats["imp.oversized"]["ready"] == 0
+        assert stats["imp.oversized"]["failed"] == stats["imp.oversized"]["total"] > 0
+        # The round counts the one encoded row and the rows marked as failed.
+        assert processed == 1 + stats["imp.oversized"]["failed"]
+        # A later round neither re-reads them nor re-tokenizes the whole pack.
+        assert await service._index_round() == 0
+        assert replanned == [["imp.oversized"]]
+    finally:
+        await service.stop()
+
+
+async def test_refused_replan_is_retried_only_when_its_inputs_change(tmp_path, monkeypatch):
+    """Rows still over the limit trigger no whole-pack replan until the pack, spec or capacity changes."""
+    class TokenProvider(FakeEmbedder):
+        def __init__(self):
+            super().__init__(model_id=specification()["model_id"])
+            self.counted = 0
+
+        def spec(self):
+            return specification()
+
+        def count_tokens(self, texts):
+            self.counted += 1
+            return [len(text) * 8 for text in texts]
+
+        async def embed_batch(self, texts):
+            return [[1.0] + [0.0] * 63 for _ in texts]
+
+        embed_documents = embed_batch
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        assert (await _import(service, _pack("imp.oversized", entries=[{"title": "Oversized", "content": "a" * 2500}])))["state"] == "active"
+        provider = TokenProvider()
+        service.embedder = provider
+        monkeypatch.setattr(module, "MAX_CHUNKS_PER_PACK", 3)
+        monkeypatch.setattr(module, "INDEX_BATCH_PAUSE_SECONDS", 0.0)
+        replanned = []
+        replan = service._replan_vector_inputs
+
+        async def observed_replan(pack_ids):
+            replanned.append(pack_ids)
+            return await replan(pack_ids)
+
+        monkeypatch.setattr(service, "_replan_vector_inputs", observed_replan)
+        await service._index_round()
+        assert replanned == [["imp.oversized"]]
+        # A new process/model resets attempts; the remembered refusal still
+        # skips the whole-pack tokenize and only re-marks the rows.
+        service._store.reset_attempts()
+        await service._index_round()
+        assert replanned == [["imp.oversized"]]
+        stats = service._store.chunk_stats(provider.model_id(), specification=provider.spec())
+        assert stats["imp.oversized"]["failed"] == stats["imp.oversized"]["total"]
+        # A changed key (here: a new pack revision digest) allows one new attempt.
+        service._refused_replans["imp.oversized"] = ("other-digest",) + service._refused_replans["imp.oversized"][1:]
+        service._store.reset_attempts()
+        await service._index_round()
+        assert replanned == [["imp.oversized"], ["imp.oversized"]]
+    finally:
+        await service.stop()
+
+
+async def test_refused_pack_marks_every_over_long_row_and_embeds_its_short_rows_in_one_round(tmp_path, monkeypatch):
+    """More over-long rows than one batch must not take one idle round per batch."""
+    class TokenProvider(FakeEmbedder):
+        def __init__(self):
+            super().__init__(model_id=specification()["model_id"])
+            self.texts = []
+
+        def spec(self):
+            return specification()
+
+        def count_tokens(self, texts):
+            return [len(text) * 8 for text in texts]
+
+        async def embed_batch(self, texts):
+            self.texts.extend(texts)
+            return [[1.0] + [0.0] * 63 for _ in texts]
+
+        embed_documents = embed_batch
+
+    entries = [{"title": f"Oversized {index}", "content": "a" * 2500} for index in range(3 * module.INDEX_BATCH_SIZE)]
+    entries += [{"title": "Short note", "content": "Short searchable reference."}]
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        assert (await _import(service, _pack("imp.mixed", entries=entries)))["state"] == "active"
+        provider = TokenProvider()
+        service.embedder = provider
+        monkeypatch.setattr(module, "MAX_CHUNKS_PER_PACK", service._registry.packs["imp.mixed"].chunks)
+        monkeypatch.setattr(module, "INDEX_BATCH_PAUSE_SECONDS", 0.0)
+        await service._index_round()
+        stats = service._store.chunk_stats(provider.model_id(), specification=provider.spec())["imp.mixed"]
+        assert stats["ready"] == 1 and stats["ready"] + stats["failed"] == stats["total"]
+        assert stats["failed"] > module.INDEX_BATCH_SIZE
+        assert [text.split("\n", 1)[0] for text in provider.texts] == ["Short note"]
     finally:
         await service.stop()

@@ -247,7 +247,7 @@ export interface KnowledgePackJob {
   chunks_total: number
   created_at: string
   updated_at: string
-  kind?: 'import' | 'import_commit' | 'pack_export'
+  kind?: 'pack_import' | 'import_commit' | 'pack_export'
   result?: KnowledgeArtifact | null
 }
 

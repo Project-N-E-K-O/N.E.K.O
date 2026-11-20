@@ -50,7 +50,7 @@ import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, Sequence, TypeVar
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Protocol, Sequence, TypeVar
 
 import numpy as np
 
@@ -241,6 +241,15 @@ _QUERY_WORK: contextvars.ContextVar[list[concurrent.futures.Future[Any]] | None]
 )
 
 
+def _file_identity(path: Path) -> tuple[int, int] | None:
+    """Size and modification time, or None when the file cannot be read."""
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return info.st_size, info.st_mtime_ns
+
+
 def _job_files(jobs: Sequence[ImportJob], *, installing: Registry | None) -> frozenset[str]:
     """File names whose bytes are counted from ``jobs`` (their ``staged_bytes``).
 
@@ -364,9 +373,15 @@ class KnowledgeService:
         # A package installed before model assets existed may seed vectors once
         # their real identity is known, without recomputing its native model.
         self._seeded_artifacts: set[tuple[str, str]] = set()
+        # (archive, spec) -> file identity of a retained ZIP that failed to
+        # seed; re-read only after the file itself changes.
+        self._seed_failures: dict[tuple[str, str], tuple[int, int] | None] = {}
         # A replan can commit SQLite before registry persistence fails. Block
         # further capacity decisions/encoding until their counts agree again.
         self._pending_chunk_reconcile = False
+        # pack_id -> (pack digest, spec digest, other packs' chunks) of a token
+        # replan refused by chunk limits; it is not retried until one changes.
+        self._refused_replans: dict[str, tuple[str, str, int]] = {}
         self._source_capabilities: dict[str, tuple[tuple, bool]] = {}
 
     # ── lifecycle ───────────────────────────────────────────────────
@@ -890,8 +905,9 @@ class KnowledgeService:
             file_name = record.file_name
 
             def cleanup() -> None:
-                # Best effort: the removal is committed by the registry write,
-                # and the startup reconcile drops leftover rows and files.
+                # Best effort: the removal is committed by the registry write.
+                # The startup reconcile drops leftover index rows; a pack file
+                # left behind is retained and no longer counts toward capacity.
                 try:
                     self._store.delete_pack(pack_id)
                 except Exception as exc:
@@ -1813,13 +1829,17 @@ class KnowledgeService:
         )
 
     def _installed_pack_bytes(self, replacing: str, job_files: frozenset[str] = frozenset()) -> int:
-        """Bytes of pack files on disk, except the one ``replacing`` swaps out.
+        """Bytes of current pack revisions and staging, except ``replacing``'s.
 
         Retained historical revisions have a separate, explicit no-deletion
         policy; the active-pack budget counts current revisions and staging.
+        An unregistered file left in ``packs/`` (an old revision whose move
+        failed, or a write interrupted before the registry commit) is kept but
+        no longer startup-cleaned, so it must not consume the budget forever.
         """
         record = self._registry.packs.get(replacing)
         skip = record.file_name if record is not None else None
+        current = {item.file_name for item in self._registry.packs.values()}
         total = 0
         for directory in (PACKS_DIR, STAGING_DIR):
             try:
@@ -1830,7 +1850,7 @@ class KnowledgeService:
                 # .tmp: an atomic write that could neither finish nor clean up.
                 if path.suffix not in (".json", ".tmp"):
                     continue
-                if directory == PACKS_DIR and path.name == skip:
+                if directory == PACKS_DIR and (path.name == skip or path.name not in current):
                     continue
                 if path.name in job_files:
                     continue
@@ -1876,7 +1896,11 @@ class KnowledgeService:
             # A cancelled job no longer counts toward the staging limits, so
             # its file must go now, not when the runner reaches the job.
             await self._discard_staging(job_id)
-        await self._persist_job(job)
+        # The cancellation has taken effect in memory; a failed record write
+        # must not turn it into a server error. A record left queued on disk
+        # is reconciled as interrupted on the next start.
+        with contextlib.suppress(OSError):
+            await self._persist_job(job)
         return True
 
     def _unqueue(self, job_id: str) -> None:
@@ -2429,7 +2453,18 @@ class KnowledgeService:
                 self._vectors_built_for = None
                 self._vector_generation += 1
                 self._seeded_artifacts.clear()
+                self._seed_failures.clear()
         await self._locked(run, wait=True)
+
+    def _replan_key(self, pack_id: str, specification: Mapping | None) -> tuple[str, str, int] | None:
+        """Identify the inputs a limit-refused token replan depended on."""
+        record = self._registry.packs.get(pack_id)
+        if record is None:
+            self._refused_replans.pop(pack_id, None)
+        if record is None or not specification:
+            return None
+        others = sum(item.chunks for key, item in self._registry.packs.items() if key != pack_id)
+        return record.pack_sha256, self._store._spec_hash(specification), others
 
     def _reconcile_chunk_counts_blocking(self) -> None:
         """Repair a failed replan flush under the existing mutation lock."""
@@ -2455,9 +2490,14 @@ class KnowledgeService:
             key = (record.archive_sha256, identity)
             if key in self._seeded_artifacts:
                 continue
+            path = self.artifact_path(record.archive_sha256)
+            stamp = await self._thread(_file_identity, path)
+            if key in self._seed_failures and self._seed_failures[key] == stamp:
+                continue  # A damaged ZIP is not re-hashed and re-validated every batch.
             try:
-                checked = await self._thread(read_archive, self.artifact_path(record.archive_sha256), expected_spec=specification)
+                checked = await self._thread(read_archive, path, expected_spec=specification)
                 if checked["artifact_sha256"] != record.archive_sha256:
+                    self._seed_failures[key] = stamp
                     continue
                 async def write():
                     if self._registry.packs.get(pack_id) != record:
@@ -2469,8 +2509,14 @@ class KnowledgeService:
                 if stored:
                     self._vectors_dirty = True
                 self._seeded_artifacts.add(key)
-            except (OSError, KnowledgePackError):
-                pass  # Valid canonical text can still use ordinary backfill.
+                self._seed_failures.pop(key, None)
+            except KnowledgePackError:
+                # Valid canonical text can still use ordinary backfill. Only a
+                # verdict on the bytes is remembered; I/O errors (a file locked
+                # by a scanner) are retried on the next batch.
+                self._seed_failures[key] = stamp
+            except OSError:
+                pass
 
     async def _index_round(self, until: float | None = None) -> int:
         """Embed pending chunks; return how many were tried.
@@ -2525,16 +2571,47 @@ class KnowledgeService:
                     ])
                     if not owners:
                         break  # Concurrent replacement removed this batch's rows.
+                    refused: set[str] = set()
                     for pack_id in sorted(set(owners.values())):
+                        key = self._replan_key(pack_id, specification)
+                        if key is not None and self._refused_replans.get(pack_id) == key:
+                            refused.add(pack_id)
+                            continue
                         try:
                             await self._replan_vector_inputs([pack_id])
-                        except (KnowledgePackError, OSError, ValueError):
-                            # One missing/over-capacity source cannot starve
-                            # unrelated packs. Exclude it for this round so
-                            # re-reading the same rows cannot spin forever.
+                        except KnowledgePackError as exc:
+                            if exc.reason in {"too_many_chunks", "capacity_chunks"} and key is not None:
+                                # Remember the limit refusal: re-tokenizing the
+                                # whole pack every round cannot change it.
+                                self._refused_replans[pack_id] = key
+                                refused.add(pack_id)
+                            else:
+                                deferred_packs.add(pack_id)
+                            if self._pending_chunk_reconcile:
+                                return processed  # Reconcile before planning or encoding another pack.
+                        except (OSError, ValueError):
+                            # One missing source cannot starve unrelated packs.
+                            # Exclude it for this round so re-reading the same
+                            # rows cannot spin forever.
                             deferred_packs.add(pack_id)
                             if self._pending_chunk_reconcile:
                                 return processed  # Reconcile before planning or encoding another pack.
+                    if refused:
+                        # Over-long rows of a refused pack stay keyword-only and
+                        # show as failed, so progress can finish; its other rows
+                        # still get vectors. A new model or restart retries once.
+                        over_long = [row[0] for row, size in zip(rows, counts)
+                                     if size > specification["max_length"] and owners.get(row[0]) in refused]
+                        marked = await self._locked(
+                            lambda ids=over_long: self._thread(self._store.exhaust_attempts, ids), wait=True)
+                        if marked:
+                            # Progress: those rows leave the pending set, so the
+                            # loop moves on to the pack's next batch this round.
+                            processed += marked
+                        else:
+                            # Nothing changed; skip the pack so the loop cannot
+                            # re-read the same rows.
+                            deferred_packs.update(refused)
                     continue  # Re-read the new complete inputs before inference.
             started = time.monotonic()
             try:

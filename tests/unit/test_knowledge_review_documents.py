@@ -252,3 +252,24 @@ def test_inline_image_page_without_xobject_is_not_silently_skipped():
     with pytest.raises(documents.SourceError) as error:
         documents.parse_source('scan.pdf',output.getvalue(),documents.SourceLimits())
     assert error.value.reason == 'scan_unsupported'
+
+
+def test_word_traversals_do_not_depend_on_the_python_recursion_limit():
+    import sys
+    import xml.etree.ElementTree as ET
+
+    depth = sys.getrecursionlimit() + 500
+    ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    inner = '<w:p><w:r><w:t>Deep</w:t><w:footnoteReference w:id="7"/></w:r></w:p>'
+    root = ET.fromstring(f'<w:document {ns}>' + '<w:sdt>' * depth + inner + '</w:sdt>' * depth + '</w:document>')
+    assert office._collect_word_note_reference_ids(root, office._WORD_NS + 'footnoteReference') == {'7'}
+    assert [office._extract_word_paragraph_text(p) for p in office._iter_word_paragraphs(root)] == ['Deep']
+
+
+def test_word_paragraph_traversal_keeps_document_order():
+    import xml.etree.ElementTree as ET
+
+    ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    body = _paragraph('One') + '<w:tbl><w:tr><w:tc>' + _paragraph('Two') + _paragraph('Three') + '</w:tc></w:tr></w:tbl>' + _paragraph('Four')
+    root = ET.fromstring(f'<w:document {ns}><w:body>{body}</w:body></w:document>')
+    assert [office._extract_word_paragraph_text(p) for p in office._iter_word_paragraphs(root)] == ['One', 'Two', 'Three', 'Four']

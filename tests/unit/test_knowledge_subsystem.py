@@ -321,6 +321,25 @@ async def test_cancelled_queued_job_leaves_nothing_behind(tmp_path):
         await service.stop()
 
 
+async def test_cancel_succeeds_when_its_record_write_fails(tmp_path, monkeypatch):
+    service = await _started(tmp_path)
+    try:
+        async with service._write_lock:  # hold the writer so the job stays queued
+            result = await service.import_pack(_raw(_pack()))
+
+            async def refuse(_job):
+                raise OSError("synthetic record write failure")
+
+            persist = service._persist_job
+            monkeypatch.setattr(service, "_persist_job", refuse)
+            assert await service.cancel_job(result["job_id"]) is True
+            monkeypatch.setattr(service, "_persist_job", persist)
+        assert (await _wait_for_last_job(service))[0] == "cancelled"
+        assert load_registry(tmp_path).packs == {}
+    finally:
+        await service.stop()
+
+
 # ── rebuild from user data ──────────────────────────────────────────
 
 
@@ -1938,15 +1957,25 @@ async def test_no_unchanged_answer_when_a_removal_starts_during_the_file_check(t
         await service.stop()
 
 
-async def test_undeleted_old_pack_files_count_toward_byte_capacity(tmp_path, monkeypatch):
+async def test_unregistered_pack_files_are_kept_but_do_not_count_toward_byte_capacity(tmp_path, monkeypatch):
     service = await _started(tmp_path)
     try:
         one = _raw(_pack("pack-one"))
         monkeypatch.setattr(service_module, "MAX_TOTAL_PACK_BYTES", int(len(one) * 1.5))
-        # An old version whose deletion failed is still on disk.
-        (tmp_path / "packs" / "pack-old.0000000000000000.json").write_bytes(b"x" * len(one))
+        # An old revision whose move failed, and an interrupted atomic write,
+        # are retained across restarts without consuming the active budget.
+        leftovers = [tmp_path / "packs" / "pack-old.0000000000000000.json", tmp_path / "packs" / "pack-old.json.tmp"]
+        for path in leftovers:
+            path.write_bytes(b"x" * len(one))
+        await service.stop()
+        service = await _started(tmp_path)
         result = await service.import_pack(one)
-        assert result == {"ok": False, "reason": "capacity_bytes"}
+        assert result["ok"] is True
+        assert (await _wait_for_last_job(service))[0] == "active"
+        assert all(path.read_bytes() == b"x" * len(one) for path in leftovers)
+        # Registered current revisions still count.
+        second = await service.import_pack(_raw(_pack("pack-two")))
+        assert second == {"ok": False, "reason": "capacity_bytes"}
     finally:
         await service.stop()
 
@@ -2335,14 +2364,17 @@ async def test_sampling_skips_entries_the_snapshot_disables(tmp_path):
         await service.stop()
 
 
-async def test_leftover_write_temporaries_count_toward_byte_capacity(tmp_path, monkeypatch):
+async def test_leftover_write_temporaries_do_not_count_toward_byte_capacity(tmp_path, monkeypatch):
+    # Interrupted atomic writes are swept by later writes to the same
+    # directory; until then they are not current revisions.
     service = await _started(tmp_path)
     try:
         one = _raw(_pack("pack-one"))
         monkeypatch.setattr(service_module, "MAX_TOTAL_PACK_BYTES", int(len(one) * 1.5))
         (tmp_path / "packs" / ".neko-deadbeef.tmp").write_bytes(b"x" * len(one))
         result = await service.import_pack(one)
-        assert result == {"ok": False, "reason": "capacity_bytes"}
+        assert result["ok"] is True
+        assert (await _wait_for_last_job(service))[0] == "active"
     finally:
         await service.stop()
 

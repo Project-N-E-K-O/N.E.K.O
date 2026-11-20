@@ -4,6 +4,7 @@ import asyncio
 from contextlib import closing
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import zipfile
@@ -403,4 +404,34 @@ async def test_seed_attempt_retries_when_the_policy_record_changed(tmp_path, mon
         release.set()
         if pending is not None:
             await asyncio.gather(pending, return_exceptions=True)
+        await service.stop()
+
+
+async def test_damaged_retained_archive_is_not_reread_until_the_file_changes(tmp_path, monkeypatch):
+    service = KnowledgeService(tmp_path / "library")
+    await service.start()
+    try:
+        result = await service.import_pack(make_archive(tmp_path / "package.zip"))
+        assert (await _finished(service, result))["state"] == "active"
+        record = service._registry.packs["imp.example"]
+        path = service.artifact_path(record.archive_sha256)
+        good = path.read_bytes()
+        path.write_bytes(b"damaged retained artifact")
+        reads = []
+        original = archive.read_archive
+
+        def counted(*args, **kwargs):
+            reads.append(args[0])
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(archive, "read_archive", counted)
+        for _ in range(3):
+            await service._seed_retained_packages(["imp.example"], specification())
+        assert len(reads) == 1 and not service._seeded_artifacts
+        # Repairing the file changes its identity, so seeding is tried again.
+        path.write_bytes(good)
+        os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 1_000_000_000))
+        await service._seed_retained_packages(["imp.example"], specification())
+        assert len(reads) == 2 and service._seeded_artifacts
+    finally:
         await service.stop()

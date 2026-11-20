@@ -740,18 +740,18 @@ def _extract_word_text_from_root(root: ET.Element) -> str:
 
 def _collect_word_note_reference_ids(root: ET.Element, reference_tag: str) -> set[str]:
     references = set()
-
-    def walk(node):
-        # Reference selection must obey the same compatibility visibility as
-        # paragraph extraction; hidden fallback notes are not source content.
+    # Reference selection must obey the same compatibility visibility as
+    # paragraph extraction; hidden fallback notes are not source content.
+    # An explicit stack keeps deeply nested XML a parse result, not a
+    # RecursionError.
+    stack = [root]
+    while stack:
+        node = stack.pop()
         if node.tag == _MC_NS + "Fallback":
-            return
+            continue
         if node.tag == reference_tag and (value := node.attrib.get(_WORD_NS + "id", "")):
             references.add(value)
-        for child in node:
-            walk(child)
-
-    walk(root)
+        stack.extend(node)
     return references
 
 
@@ -773,14 +773,17 @@ def _iter_word_paragraphs(root: ET.Element):
     A text box inside a hidden run is hidden too; its paragraphs cannot see
     the outer run, so the whole run subtree is skipped here.
     """
-    if root.tag == _MC_NS + "Fallback":
-        return
-    if root.tag == _WORD_NS + "r" and _word_run_is_hidden(root):
-        return
-    if root.tag == _WORD_NS + "p":
-        yield root
-    for child in root:
-        yield from _iter_word_paragraphs(child)
+    # Document order with an explicit stack, independent of recursion depth.
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.tag == _MC_NS + "Fallback":
+            continue
+        if node.tag == _WORD_NS + "r" and _word_run_is_hidden(node):
+            continue
+        if node.tag == _WORD_NS + "p":
+            yield node
+        stack.extend(reversed(node))
 
 
 def _extract_word_paragraph_text(paragraph: ET.Element) -> str:
