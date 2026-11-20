@@ -282,15 +282,7 @@ def ensure_steamworks_initialized():
 
     logger.debug("尝试重新初始化 Steamworks...")
     steamworks = initialize_steamworks(quiet=True)
-    try:
-        from main_routers.shared_state import set_steamworks
-
-        set_steamworks(steamworks)
-    except Exception as exc:
-        logger.debug(
-            "Steamworks shared-state update failed during retry: %s", exc, exc_info=True
-        )
-
+    # ensure_steamworks() publishes the returned handle under its generation guard.
     if steamworks is not None:
         get_default_steam_info()
     return steamworks

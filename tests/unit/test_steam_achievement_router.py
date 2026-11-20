@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 import threading
+from unittest.mock import Mock
 
 import pytest
 from fastapi import FastAPI
@@ -357,6 +360,71 @@ def test_hung_initializer_does_not_block_other_callers_or_reinstall_late(
     _join_reconnect_threads()
     assert steam_state.get_steamworks() is None
     assert steam_state._init_in_flight is False
+
+
+def _load_production_steamworks_initializer(initialize_steamworks):
+    """Load ensure_steamworks_initialized from app/main_server/__init__.py without importing the package."""
+    path = Path(__file__).resolve().parents[2] / "app/main_server/__init__.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "ensure_steamworks_initialized"
+    )
+    namespace = {
+        "steamworks": None,
+        "logger": Mock(),
+        "get_default_steam_info": lambda: None,
+        "initialize_steamworks": initialize_steamworks,
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), namespace)
+    return namespace["ensure_steamworks_initialized"], namespace
+
+
+@pytest.mark.unit
+def test_production_initializer_does_not_publish_after_reset(
+    empty_steam_cache: list,
+) -> None:
+    blocking = _BlockingInitializer(result=_FakeSteamworks(_FakeUserStats()))
+    empty_steam_cache.append(blocking)
+    initializer, _namespace = _load_production_steamworks_initializer(
+        lambda *, quiet=False: blocking()
+    )
+    steam_state.set_steamworks_initializer(initializer)
+
+    worker = threading.Thread(
+        target=lambda: steam_state.ensure_steamworks(force=True),
+        daemon=True,
+    )
+    worker.start()
+    try:
+        assert blocking.started.wait(_WAIT)
+        steam_state.set_steamworks(None)
+        blocking.release.set()
+        worker.join(_WAIT)
+        assert not worker.is_alive()
+    finally:
+        blocking.release.set()
+        worker.join(_WAIT)
+
+    assert steam_state.get_steamworks() is None
+
+
+@pytest.mark.unit
+def test_production_initializer_publishes_handle_without_reset(
+    empty_steam_cache: list,
+) -> None:
+    expected = _FakeSteamworks(_FakeUserStats())
+    initializer, namespace = _load_production_steamworks_initializer(
+        lambda *, quiet=False: expected
+    )
+    steam_state.set_steamworks_initializer(initializer)
+
+    returned = steam_state.ensure_steamworks(force=True)
+
+    assert returned is expected
+    assert steam_state.get_steamworks() is expected
+    assert namespace["steamworks"] is expected
 
 
 @pytest.mark.unit
