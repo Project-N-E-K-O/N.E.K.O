@@ -558,7 +558,7 @@ class PermissionGate:
     async def check_builtin(
         self, commission_id: str, category: str, *, detail: dict[str, Any], writes: bool
     ) -> PermissionDecision:
-        """Scope a built-in file operation to its actual path, or a command to its shell and cwd."""
+        """Scope files by access and resolved path, commands by tool, cwd and exact command."""
         work = self._work.setdefault(commission_id, object())
         mode = await self._store.mode(category)
         if self._work.get(commission_id) is not work:
@@ -726,7 +726,8 @@ class PermissionGate:
                 # One answer can cover the whole team. A one-time answer only
                 # covers the operation that asked, so other callers check again.
                 result = await asyncio.shield(pending)
-                if not result.allow:
+                # A failed question in a different commission is not the user's answer to this one.
+                if not result.allow and result.reason != DENIED_NO_ANSWER:
                     return result
                 continue
             pending = asyncio.get_running_loop().create_future()

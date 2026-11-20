@@ -467,14 +467,24 @@ async def test_retired_binding_during_mode_read_denies_the_scoped_fast_path(stor
     assert not (await gate.check("c", "browser", scope=scope)).allow
 
 
-async def test_peer_rechecks_settings_when_asker_ends_while_persisting_always(store, monkeypatch):
+@pytest.mark.parametrize("failure", ["ended_during_save", "question_unavailable"])
+async def test_live_peer_rechecks_after_the_other_request_cannot_finish(store, monkeypatch, failure):
     async def parent(cid):
         return None if cid == "root" else "root"
 
-    asker = Asker("always")
-    gate = PermissionGate(store, asker, parent)
-    scope = GrantScope("builtin", "browser")
+    asked = []
     entered, release, joining = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def ask(cid, _question):
+        asked.append(cid)
+        if failure == "question_unavailable" and cid == "first":
+            entered.set()
+            await release.wait()
+            raise RuntimeError("no session to ask")
+        return "always" if failure == "ended_during_save" else "once"
+
+    gate = PermissionGate(store, ask, parent)
+    scope = GrantScope("builtin", "browser")
     mode = store.mode
     persist = store.set_mode
 
@@ -504,11 +514,12 @@ async def test_peer_rechecks_settings_when_asker_ends_while_persisting_always(st
         # The second caller reads the policy again after resolving its ancestry,
         # then joins the in-flight approval without a further asynchronous step.
         await joining.wait()
-        gate.end_run("first")
+        if failure == "ended_during_save":
+            gate.end_run("first")
         release.set()
     assert not first.result().allow
     assert peer.result().allow and gate.grant_active(peer.result().grant_id)
-    assert len(asker.asked) == 1
+    assert asked == (["first"] if failure == "ended_during_save" else ["first", "second"])
 
 
 async def test_unrelated_setting_does_not_defeat_scoped_always_approval(store):
