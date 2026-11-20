@@ -674,6 +674,9 @@ def _get_model_path(model_name: str) -> tuple[Path | None, str]:
             model_path = _find_vrm_model_file(vrm_dir, model_name)
         except ValueError:
             return None, ""
+        except (OSError, RuntimeError):
+            # A looping or unreadable entry here must not hide later directories.
+            continue
         if model_path is not None:
             return model_path, url_prefix
 

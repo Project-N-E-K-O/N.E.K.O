@@ -588,6 +588,8 @@ async def get_mmd_models():
         if static_mmd_dir.exists():
             for ext in ALLOWED_MODEL_EXTENSIONS:
                 for model_file in static_mmd_dir.rglob(f'*{ext}'):
+                    if not model_file.is_file():  # dangling or looping link
+                        continue
                     rel_path = model_file.relative_to(static_mmd_dir)
                     if not is_utf8_text(rel_path.as_posix()):
                         skipped += 1
@@ -609,9 +611,11 @@ async def get_mmd_models():
         # 2. User mmd/, recursively, skipping reserved directories.
         mmd_dir = _ensure_mmd_directory(config_mgr)
         if mmd_dir and mmd_dir.exists():
-            found_top_dirs = set()  # Record top-level subdirectories containing valid models.
+            found_top_dirs = set()  # Top-level subdirectories holding a model file, listed or skipped.
             for ext in ALLOWED_MODEL_EXTENSIONS:
                 for model_file in mmd_dir.rglob(f'*{ext}'):
+                    if not model_file.is_file():  # dangling or looping link
+                        continue
                     try:
                         rel_path = model_file.relative_to(mmd_dir)
                         if rel_path.parts and rel_path.parts[0] in RESERVED_DIRS:
@@ -629,9 +633,6 @@ async def get_mmd_models():
                     if url in seen_urls:
                         continue
                     seen_urls.add(url)
-                    # Record top-level subdirectories containing models.
-                    if rel_path.parts:
-                        found_top_dirs.add(rel_path.parts[0])
                     models.append({
                         "name": model_file.stem,
                         "filename": model_file.name,
@@ -673,6 +674,8 @@ async def get_mmd_models():
                         installed_path = Path(installed_folder)
                         for ext in ALLOWED_MODEL_EXTENSIONS:
                             for model_file in installed_path.rglob(f'*{ext}'):
+                                if not model_file.is_file():  # dangling or looping link
+                                    continue
                                 try:
                                     rel_path = model_file.relative_to(installed_path)
                                 except ValueError:

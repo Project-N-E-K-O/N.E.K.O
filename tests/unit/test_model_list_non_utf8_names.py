@@ -212,3 +212,37 @@ def test_mmd_folder_with_only_a_skipped_model_is_not_listed_as_broken(tmp_path, 
     assert not [model for model in models if model.get("broken")]
     expected = ["/user_mmd/Good/Good.pmx"] if layout == "top_dir" else []
     assert [model["url"] for model in models] == expected
+
+
+@pytest.mark.parametrize("link", ["dangling", "loop"])
+def test_mmd_models_skip_broken_model_links(tmp_path, monkeypatch, link):
+    """One dangling or looping .pmx link must not empty the whole MMD list."""
+    project_root = tmp_path / "project"
+    static_mmd = project_root / "static" / "mmd"
+    static_mmd.mkdir(parents=True)
+    mmd_dir = tmp_path / "mmd"
+    (mmd_dir / "Good").mkdir(parents=True)
+    (mmd_dir / "Good" / "Good.pmx").write_bytes(b"pmx")
+    item = tmp_path / "workshop" / "123"
+    item.mkdir(parents=True)
+    (item / "Shop.pmx").write_bytes(b"pmx")
+    try:
+        for directory in (static_mmd, mmd_dir / "Good", item):
+            target = "missing.pmx" if link == "dangling" else "Bad.pmx"
+            (directory / "Bad.pmx").symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    config = SimpleNamespace(project_root=project_root, mmd_dir=mmd_dir, mmd_animation_dir=mmd_dir / "animation")
+    monkeypatch.setattr(mmd_router, "get_config_manager", lambda: config)
+    monkeypatch.setattr(mmd_router, "get_subscribed_workshop_items", AsyncMock(return_value={
+        "success": True, "items": [{"installedFolder": str(item), "publishedFileId": "123"}],
+    }))
+    app = FastAPI()
+    app.include_router(mmd_router.router)
+    with TestClient(app) as client:
+        response = client.get("/api/model/mmd/models")
+    assert response.status_code == 200
+    assert sorted(model["url"] for model in response.json()["models"]) == [
+        "/user_mmd/Good/Good.pmx",
+        "/workshop/123/Shop.pmx",
+    ]

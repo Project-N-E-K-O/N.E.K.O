@@ -660,7 +660,7 @@ def test_workshop_folder_symlinks_cannot_widen_the_boundary(vrm_api, tmp_path, m
     assert not (config.project_root / "static" / "vrm" / "configs").exists()
 
 
-@pytest.mark.parametrize("loop_at", ["item", "subdir", "model_file", "root"])
+@pytest.mark.parametrize("loop_at", ["item", "subdir", "model_file", "root", "static_dir", "user_dir"])
 def test_symlink_loops_do_not_stop_the_workshop_search(vrm_api, tmp_path, monkeypatch, loop_at):
     """Python 3.11 raises RuntimeError (3.13: OSError) when resolving a symlink loop."""
     client, _ = vrm_api
@@ -675,6 +675,10 @@ def test_symlink_loops_do_not_stop_the_workshop_search(vrm_api, tmp_path, monkey
             (workshop_root / "100" / "loop").symlink_to("loop")
         elif loop_at == "model_file":
             (workshop_root / "100" / "Avatar.vrm").symlink_to("Avatar.vrm")
+        elif loop_at == "static_dir":
+            (tmp_path / "project" / "static" / "vrm" / "Avatar.vrm").symlink_to("Avatar.vrm")
+        elif loop_at == "user_dir":
+            (tmp_path / "user_vrm" / "Avatar.vrm").symlink_to("Avatar.vrm")
         else:
             (tmp_path / "loop_root").symlink_to("loop_root")
     except OSError as exc:
