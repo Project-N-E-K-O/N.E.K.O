@@ -105,7 +105,7 @@ def _ensure_mmd_directory(config_mgr) -> Path | None:
         return mmd_dir
     except Exception as e:
         logger.error(f"创建 MMD 目录失败: {type(e).__name__}")
-        print(f"创建 MMD 目录失败: {e!r}")
+        print(f"创建 MMD 目录失败: {type(e).__name__}: {e}")
         return None
 
 
@@ -689,6 +689,20 @@ async def get_mmd_models():
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
+def _list_animation_dir(directory: Path, pattern: str | None = None) -> list[Path]:
+    """Entries of an animation folder, or [] if it cannot be read.
+
+    One unreadable folder must not fail the whole list; its path stays out of
+    the persistent log.
+    """
+    try:
+        return list(directory.glob(pattern) if pattern else directory.iterdir())
+    except Exception as dir_error:
+        logger.warning(f"处理动画目录失败: {type(dir_error).__name__}")
+        print(f"处理动画目录失败 {directory!r}: {type(dir_error).__name__}: {dir_error}")
+        return []
+
+
 @router.get('/animations')
 def get_mmd_animations():
     """List VMD animation files."""
@@ -703,7 +717,7 @@ def get_mmd_animations():
         project_root = config_mgr.project_root
         static_anim_dir = project_root / "static" / "mmd" / "animation"
         if static_anim_dir.exists():
-            for anim_file in static_anim_dir.glob('*.vmd'):
+            for anim_file in _list_animation_dir(static_anim_dir, '*.vmd'):
                 try:
                     if not is_utf8_text(anim_file.name):
                         skipped += 1
@@ -723,14 +737,14 @@ def get_mmd_animations():
                     })
                 except Exception as file_error:
                     failed += 1
-                    print(f"处理动画文件失败 {anim_file!r}: {file_error!r}")
+                    print(f"处理动画文件失败 {anim_file!r}: {type(file_error).__name__}: {file_error}")
 
         # 2. User mmd/animation/.
         mmd_dir = _ensure_mmd_directory(config_mgr)
         if mmd_dir:
             user_anim_dir = mmd_dir / "animation"
             if user_anim_dir.exists():
-                for anim_file in user_anim_dir.glob('*.vmd'):
+                for anim_file in _list_animation_dir(user_anim_dir, '*.vmd'):
                     try:
                         if not is_utf8_text(anim_file.name):
                             skipped += 1
@@ -750,7 +764,7 @@ def get_mmd_animations():
                         })
                     except Exception as file_error:
                         failed += 1
-                        print(f"处理动画文件失败 {anim_file!r}: {file_error!r}")
+                        print(f"处理动画文件失败 {anim_file!r}: {type(file_error).__name__}: {file_error}")
 
         if skipped:
             logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VMD 动画")
@@ -965,7 +979,7 @@ async def list_mmd_animations_for_delete(request: Request):
         failed = 0
 
         if user_anim_dir.exists():
-            for vmd_file in user_anim_dir.iterdir():
+            for vmd_file in _list_animation_dir(user_anim_dir):
                 try:
                     if vmd_file.suffix.lower() != '.vmd':
                         continue
@@ -983,7 +997,7 @@ async def list_mmd_animations_for_delete(request: Request):
                     })
                 except Exception as file_error:
                     failed += 1
-                    print(f"处理动画文件失败 {vmd_file!r}: {file_error!r}")
+                    print(f"处理动画文件失败 {vmd_file!r}: {type(file_error).__name__}: {file_error}")
 
         if skipped:
             logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VMD 动画")

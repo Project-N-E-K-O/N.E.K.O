@@ -202,9 +202,11 @@ def test_unreadable_animation_directory_does_not_log_paths(
     _fail_for("animation", method, monkeypatch)
 
     with _client(mmd_router if router_name == "mmd" else vrm_router) as client:
-        client.get(endpoint)
+        response = client.get(endpoint)
 
-    assert log.messages
+    assert response.status_code == 200
+    assert response.json()["animations"] == []
+    assert any(message.startswith("处理动画目录失败") for message in log.messages)
     _assert_logs_have_no_paths(log, tmp_path)
 
 

@@ -370,7 +370,7 @@ def get_vrm_animations():
             config_mgr.ensure_vrm_directory()
         except Exception as ensure_error:
             logger.warning(f"确保VRM目录失败（继续尝试）: {type(ensure_error).__name__}")
-            print(f"确保VRM目录失败（继续尝试）: {ensure_error!r}")
+            print(f"确保VRM目录失败（继续尝试）: {type(ensure_error).__name__}: {ensure_error}")
         
         # Check animations directory.
         animations_dirs = []
@@ -388,7 +388,7 @@ def get_vrm_animations():
                 logger.debug("静态动画目录不存在或不是目录")
         except Exception as static_error:
             logger.warning(f"检查静态动画目录失败: {type(static_error).__name__}")
-            print(f"检查静态动画目录失败: {static_error!r}")
+            print(f"检查静态动画目录失败: {type(static_error).__name__}: {static_error}")
             static_animation_dir = None
 
         # 2. Check user vrm/animation (legacy compatibility).
@@ -401,7 +401,7 @@ def get_vrm_animations():
                 logger.debug("用户动画目录不存在或不是目录")
         except Exception as user_error:
             logger.warning(f"检查用户动画目录失败: {type(user_error).__name__}")
-            print(f"检查用户动画目录失败: {user_error!r}")
+            print(f"检查用户动画目录失败: {type(user_error).__name__}: {user_error}")
             user_animation_dir = None
         
         animations = []
@@ -472,7 +472,7 @@ def get_vrm_animations():
                         })
                     except Exception as file_error:
                         failed += 1
-                        print(f"处理动画文件失败 {anim_file!r}: {file_error!r}")
+                        print(f"处理动画文件失败 {anim_file!r}: {type(file_error).__name__}: {file_error}")
                         continue
                 
                 # Also support .vrm files as animations in certain cases.
@@ -500,11 +500,11 @@ def get_vrm_animations():
                         })
                     except Exception as file_error:
                         failed += 1
-                        print(f"处理动画文件失败 {anim_file!r}: {file_error!r}")
+                        print(f"处理动画文件失败 {anim_file!r}: {type(file_error).__name__}: {file_error}")
                         continue
             except Exception as dir_error:
                 logger.warning(f"处理动画目录失败: {type(dir_error).__name__}")
-                print(f"处理动画目录失败 {anim_dir!r}: {dir_error!r}")
+                print(f"处理动画目录失败 {anim_dir!r}: {type(dir_error).__name__}: {dir_error}")
                 continue
         
         if skipped:
