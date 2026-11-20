@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -28,7 +29,9 @@ BUILD_ROOT = PurePosixPath("/src")
 
 # What each frontend build in the Docker stage actually reads:
 #  - plugin-manager runs `build-only` (plain `vite build`): type-only imports are
-#    erased and test / e2e files are not part of the bundle.
+#    erased and test / e2e files are not part of the bundle -- except in .vue
+#    files, where @vue/compiler-sfc reads the imported types used by
+#    defineProps<T>() / defineEmits<T>(), so .vue keeps type imports.
 #  - react-neko-chat runs `tsc -b && vite build`; tsconfig.app.json includes the
 #    *.test.ts(x) files, so tests and type-only imports must resolve as well.
 FRONTENDS = {
@@ -44,8 +47,11 @@ TEST_DIRS = {"e2e", "__tests__", "tests"}
 # (comments such as /* @vite-ignore */ allowed before the argument),
 # `import.meta.glob('...')` and `new URL('...', ...)`. Only literal relative
 # paths are checked; template literals with `${}` cannot be resolved statically.
-# Known limit: CSS `@import` / `url()` and index.html are not scanned (neither
-# frontend reaches outside its project from those today).
+# Known limits (none of these occur in either frontend today):
+#  - only `<project>/src` is scanned: vite.config.ts, tsconfig `extends` and
+#    `/// <reference path>`, CSS `@import` / `url()` and index.html are not;
+#  - comments are not stripped first, so a `//` comment containing quotes or
+#    parentheses inside an import clause can hide that import.
 # Group "type" captures a leading `type` keyword (type-only import / export).
 # The clause between `import`/`export` and `from` may span lines (multi-line
 # named imports) but never another import/export statement, so a bare
@@ -62,7 +68,7 @@ SPECIFIER = re.compile(
         \b(?:import|export)\s+(?P<type>type\s+)?(?:(?:(?!\b(?:import|export)\b)[^'"`;=()])*?\s+from\s+)?
       | (?P<tof>\btypeof\s+import\s*\(\s*(?:/\*.*?\*/\s*)*)
       | (?<!typeof\s)\bimport\s*\(\s*(?:/\*.*?\*/\s*)*
-      | \bimport\.meta\.glob\s*\(\s*
+      | (?P<glob>\bimport\.meta\.glob\s*\(\s*)
       | \bnew\s+URL\s*\(\s*
     )(?P<q>['"`])(?P<spec>\.\.?/[^'"`$]+)(?P=q)""",
     re.VERBOSE | re.DOTALL,
@@ -75,13 +81,22 @@ GLOB_ARRAY = re.compile(
 LITERAL = re.compile(r"""(?P<q>['"`])(?P<spec>!?\.\.?/[^'"`$]+)(?P=q)""")
 
 
+def _strip_query(spec: str) -> str:
+    return spec.split("?", 1)[0].split("#", 1)[0]
+
+
 def _specifiers(text: str, include_type_imports: bool) -> list[str]:
-    """Relative specifiers the build resolves, in source order."""
+    """Relative paths the build resolves, in source order.
+
+    `?raw` / `#hash` suffixes are stripped from module specifiers; glob patterns
+    are kept as-is because `?` is a wildcard there.
+    """
     found: list[tuple[int, str]] = []
     for match in SPECIFIER.finditer(text):
         if (match.group("type") or match.group("tof")) and not include_type_imports:
             continue
-        found.append((match.start(), match.group("spec")))
+        spec = match.group("spec")
+        found.append((match.start(), spec if match.group("glob") else _strip_query(spec)))
     for match in GLOB_ARRAY.finditer(text):
         for item in LITERAL.finditer(match.group("items")):
             # vite glob negation patterns ('!../x') exclude files, never read them
@@ -106,8 +121,8 @@ def _cross_project_targets(name: str) -> dict[str, list[str]]:
         if not cfg["include_tests"] and _is_test_file(path, project):
             continue
         text = path.read_text(encoding="utf-8")
-        for raw in _specifiers(text, cfg["include_type_imports"]):
-            spec = raw.split("?", 1)[0].split("#", 1)[0]
+        keep_types = cfg["include_type_imports"] or path.suffix == ".vue"
+        for spec in _specifiers(text, keep_types):
             target = Path(os.path.normpath(path.parent / spec))
             if target.is_relative_to(project):
                 continue  # stays inside the project, always copied
@@ -120,7 +135,9 @@ def _cross_project_targets(name: str) -> dict[str, list[str]]:
 
 def _builder_copies(dockerfile: str) -> list[tuple[str, PurePosixPath]]:
     """(source, destination) pairs of the frontend-builder stage's COPY lines."""
-    lines = (ROOT / "docker" / dockerfile).read_text(encoding="utf-8").splitlines()
+    text = (ROOT / "docker" / dockerfile).read_text(encoding="utf-8")
+    # Join backslash-continued instructions into one logical line.
+    lines = re.sub(r"\\\s*\n", " ", text).splitlines()
     copies: list[tuple[str, PurePosixPath]] = []
     in_stage = False
     for line in lines:
@@ -130,6 +147,9 @@ def _builder_copies(dockerfile: str) -> list[tuple[str, PurePosixPath]]:
             continue
         if not in_stage or not re.match(r"COPY\s", stripped, re.IGNORECASE):
             continue
+        flags = [a for a in stripped.split()[1:] if a.startswith("--")]
+        if any(f.lower().startswith("--from") for f in flags):
+            continue  # copies from another stage / image, not the build context
         args = [a for a in stripped.split()[1:] if not a.startswith("--")]
         if len(args) == 2:
             copies.append((args[0].rstrip("/"), PurePosixPath(args[1])))
@@ -225,6 +245,39 @@ def test_glob_array_checks_every_literal():
     bracket = "import.meta.glob(['./local/[ab].json', '../../../static/feature/*.json'])"
     assert _specifiers(bracket, False) == ["./local/[ab].json", "../../../static/feature/*.json"]
     assert _specifiers("import.meta.glob('../g/*.json')", False) == ["../g/*.json"]
+    # glob 里的 ? 是通配符，不是 query；模块路径上的 ?raw 才要去掉
+    assert _specifiers("import.meta.glob('../../../static/a?/x.png')", False) == [
+        "../../../static/a?/x.png"
+    ]
+    assert _specifiers("import d from '../../x/d.js?raw'", False) == ["../../x/d.js"]
+
+
+def test_vue_files_keep_type_imports(tmp_path, monkeypatch):
+    # .vue 里 defineProps<T>() 用到的导入类型会被 compiler-sfc 读取
+    project = tmp_path / "frontend" / "plugin-manager"
+    (project / "src").mkdir(parents=True)
+    line = "import type {{ X }} from '../../../plugin/sdk/{}'\n"
+    (project / "src" / "Comp.vue").write_text(
+        "<script setup lang=\"ts\">\n" + line.format("vue-t") + "</script>\n", encoding="utf-8"
+    )
+    (project / "src" / "util.ts").write_text(line.format("ts-t"), encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    assert sorted(_cross_project_targets("plugin-manager")) == ["plugin/sdk/vue-t"]
+
+
+def test_builder_copies_ignore_other_stages_and_join_continuations(tmp_path, monkeypatch):
+    docker = tmp_path / "docker"
+    docker.mkdir()
+    (docker / "Dockerfile").write_text(
+        "FROM node:24-slim AS frontend-builder\n"
+        "COPY --from=other /src/static/x /src/static/x\n"
+        "COPY --chown=1:1 \\\n    static/y /src/static/y\n"
+        "FROM debian\n"
+        "COPY static/z /src/static/z\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    assert _builder_copies("Dockerfile") == [("static/y", PurePosixPath("/src/static/y"))]
 
 
 @pytest.mark.parametrize("dockerfile", DOCKERFILES)
