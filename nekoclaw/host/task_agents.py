@@ -1988,6 +1988,8 @@ class TaskAgentManager:
             session.model = (config.get("base_url"), config.get("model"))
 
             runtime_name, runtime, fallback = await self._choose_runtime(commission, model, begun_in)
+            # Uninstall/replace must see this commission before gateway setup yields.
+            session.runtime, session.runtime_name = runtime, runtime_name
             gateway_spec = None
             if self._gateway is not None:
                 from config.nekoclaw_settings import FIRST_TURN_DEVICE_TOOLS
@@ -2021,7 +2023,6 @@ class TaskAgentManager:
             spec = await self._spec(
                 commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec
             )
-            session.runtime, session.runtime_name = runtime, runtime_name
             if unwanted():
                 # Everything was stopped while this was being set up, and
                 # the stop left a commission that was over alone: it stays

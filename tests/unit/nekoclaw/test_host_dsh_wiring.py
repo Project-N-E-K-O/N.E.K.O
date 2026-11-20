@@ -858,6 +858,31 @@ async def test_the_switch_and_the_plugins_are_read_and_set_through_the_host(host
     assert (await host.install_dsh())["installed"] is True and installation.installs == 1
 
 
+async def test_selected_dsh_stays_in_use_during_gateway_setup(hosts, tmp_path, monkeypatch):
+    import asyncio
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "done")]), Installation())
+    setting_up, resume = asyncio.Event(), asyncio.Event()
+    start = host.gateway.start
+
+    async def wait_for_setup():
+        setting_up.set()
+        await resume.wait()
+        return await start()
+
+    monkeypatch.setattr(host.gateway, "start", wait_for_setup)
+    dispatch = asyncio.create_task(_dispatch(host, "Open the browser"))
+    try:
+        await asyncio.wait_for(setting_up.wait(), 5)
+        with pytest.raises(DshUnavailable, match="in use"):
+            await host.uninstall_dsh()
+        assert not host.fake.dsh[0].shut_down
+    finally:
+        resume.set()
+        commission_id = await dispatch
+    await wait_status(host, commission_id, "done")
+
+
 async def test_shutting_the_host_down_ends_every_runtime_that_was_started(hosts, tmp_path):
     installation = Installation()
     llm = ScriptedLLM([_report("ready", "one"), _report("ready", "two")])
