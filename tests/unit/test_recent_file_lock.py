@@ -277,16 +277,16 @@ def _run_on_private_loop(coro, executor: ThreadPoolExecutor | None = None):
     process-wide loop instead of creating one. A default executor installed on
     that loop would outlive the test, and once shut down it makes every later
     ``run_in_executor``/``to_thread`` in the same worker fail with "cannot
-    schedule new futures after shutdown". Closing a private loop also shuts
-    down the executor installed on it.
+    schedule new futures after shutdown". The runner's teardown cancels
+    leftover tasks, closes async generators and waits for the executor's
+    threads before closing the loop, so nothing keeps running after the test.
+    ``loop_factory`` keeps the runner from replacing (and later clearing) the
+    thread's current event loop.
     """
-    loop = asyncio.new_event_loop()
-    try:
+    with asyncio.Runner(loop_factory=asyncio.new_event_loop) as runner:
         if executor is not None:
-            loop.set_default_executor(executor)
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+            runner.get_loop().set_default_executor(executor)
+        return runner.run(coro)
 
 
 def _run_with_wide_pool(coro_factory, workers: int = 8):
