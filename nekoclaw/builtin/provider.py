@@ -33,15 +33,16 @@ import contextlib
 import logging
 import threading
 from collections.abc import Callable, Iterable, Iterator
+from dataclasses import replace
 from typing import Any
 
+from nekoclaw.builtin.devices import BrowserDeviceProvider, DesktopDeviceProvider, registered_tools
 from nekoclaw.host.capabilities import (
     BUILTIN_GROUP_BROWSER,
     BUILTIN_GROUP_KEYBOARD_MOUSE,
     BuiltinImage,
     BuiltinOutcome,
     Capability,
-    builtin_tool,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,10 +76,19 @@ class BuiltinToolProvider:
         state: StateReader,
         desktop: Any = None,
         browser: Any = None,
+        desktop_provider: DesktopDeviceProvider | None = None,
+        browser_provider: BrowserDeviceProvider | None = None,
         on_browser_window: WindowListener | None = None,
         own_ports: Callable[[], Iterable[int]] | None = None,
     ) -> None:
         self._state = state
+        if (desktop is not None and desktop_provider is not None) or (browser is not None and browser_provider is not None):
+            raise ValueError("choose either a provider or a prebuilt driver for each device")
+        self._desktop_provider = desktop_provider if desktop_provider is not None else DesktopDeviceProvider()
+        self._browser_provider = browser_provider if browser_provider is not None else BrowserDeviceProvider()
+        # Registration is fixed for the process. A live lease, held key or
+        # permission to reopen a window must stay with the same driver.
+        self._tools = registered_tools(self._desktop_provider, self._browser_provider)
         # Returns the ports of this application's own services; the browser
         # is kept from reaching them (see ``BrowserSession``).
         self._own_ports = own_ports
@@ -89,6 +99,9 @@ class BuiltinToolProvider:
         self._last_window: dict[str, Any] | None = None
         # ``nekoclaw.builtin.desktop.Desktop``; made on first use.
         self._desktop = desktop
+        # The blocking readiness probe and the gateway can both be the first
+        # caller. Held keys must belong to the driver that release() will see.
+        self._desktop_init_lock = threading.Lock()
         # ``nekoclaw.builtin.browser.tools.BrowserTools``; made on first use.
         self._browser = browser
         self._desktop_lock: asyncio.Lock | None = None
@@ -112,35 +125,10 @@ class BuiltinToolProvider:
 
     def available(self) -> list[Capability]:
         """Return every built-in tool with its availability as of now. Does not block."""
-        from config.prompts.prompts_nekoclaw_builtin import (
-            BROWSER_SCREENSHOT_TOOL_NAME,
-            BROWSER_TOOLS,
-            COMPUTER_TOOL,
-        )
-
         items: list[Capability] = []
-        ready, reason = self._state(BUILTIN_GROUP_KEYBOARD_MOUSE)
-        # It works from screenshots: of no use to a model that cannot see them.
-        items.append(
-            builtin_tool(
-                BUILTIN_GROUP_KEYBOARD_MOUSE,
-                COMPUTER_TOOL,
-                available=ready,
-                unavailable_reason=reason,
-                needs_images=True,
-            )
-        )
-        ready, reason = self._state(BUILTIN_GROUP_BROWSER)
-        for definition in BROWSER_TOOLS:
-            items.append(
-                builtin_tool(
-                    BUILTIN_GROUP_BROWSER,
-                    definition,
-                    available=ready,
-                    unavailable_reason=reason,
-                    needs_images=definition["name"] == BROWSER_SCREENSHOT_TOOL_NAME,
-                )
-            )
+        for group, tools in self._tools.items():
+            ready, reason = self._state(group)
+            items.extend(replace(tool, available=ready, unavailable_reason=reason or "") for tool in tools.values())
         return items
 
     def _ready(self, group: str) -> tuple[bool, str | None]:
@@ -180,18 +168,18 @@ class BuiltinToolProvider:
     # -- the parts, made on first use --------------------------------------
 
     def desktop(self) -> Any:
-        if self._desktop is None:
-            from nekoclaw.builtin.desktop import Desktop
+        with self._desktop_init_lock:
+            if self._desktop is None:
+                self._desktop = self._desktop_provider.open_driver()
+            return self._desktop
 
-            self._desktop = Desktop()
-        return self._desktop
+    def browser_installed(self) -> bool:
+        """Probe the registered installation. A prebuilt driver can still be disconnected."""
+        return self._browser_provider.installed()
 
     def browser(self) -> Any:
         if self._browser is None:
-            from nekoclaw.builtin.browser.session import BrowserSession
-            from nekoclaw.builtin.browser.tools import BrowserTools
-
-            self._browser = BrowserTools(BrowserSession(own_ports=self._own_ports))
+            self._browser = self._browser_provider.open_driver(own_ports=self._own_ports)
         return self._browser
 
     # -- calls --------------------------------------------------------------
@@ -213,11 +201,11 @@ class BuiltinToolProvider:
         ready, reason = self._ready(group or "")
         if not ready:
             return BuiltinOutcome(False, f"{capability.tool_name} is not available: {reason or 'switched off'}")
+        if capability.tool_name not in self._tools.get(group or "", {}):
+            return BuiltinOutcome(False, f"unknown tool {capability.tool_name}")
         if group == BUILTIN_GROUP_KEYBOARD_MOUSE:
             return await self._run_desktop(dict(arguments or {}))
-        if group == BUILTIN_GROUP_BROWSER:
-            return await self._run_browser(capability.tool_name, dict(arguments or {}), reopen_agreement)
-        return BuiltinOutcome(False, f"unknown tool {capability.tool_name}")
+        return await self._run_browser(capability.tool_name, dict(arguments or {}), reopen_agreement)
 
     async def _run_desktop(self, arguments: dict[str, Any]) -> BuiltinOutcome:
         from nekoclaw.builtin.desktop import DesktopActionError, DesktopStopped

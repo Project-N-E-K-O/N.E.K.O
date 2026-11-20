@@ -3017,6 +3017,8 @@ async def test_turn_check_reliably_retries_on_timeout():
     import threading
 
     attempts = []
+    refs = []
+    original = "chat_original:" + "c" * 32
 
     class SlowAckBridge:
         def __init__(self):
@@ -3025,6 +3027,7 @@ async def test_turn_check_reliably_retries_on_timeout():
 
         async def publish_analyze_request(self, event):
             attempts.append(event.get("event_id"))
+            refs.append(event.get("source_message_ref"))
             return True
 
     bridge = SlowAckBridge()
@@ -3038,9 +3041,11 @@ async def test_turn_check_reliably_retries_on_timeout():
             reply_text="hello",
             ack_timeout_s=0.05,
             retries=2,
+            source_message_ref=original,
         )
         assert ok is False, "Should have failed after all retries"
         assert len(attempts) == 3, f"Expected 3 attempts (1 + 2 retries), got {len(attempts)}"
+        assert refs == [original] * 3
         assert attempts[0], "event_id must not be empty"
         assert all(eid == attempts[0] for eid in attempts), \
             "All attempts should use the same event_id"

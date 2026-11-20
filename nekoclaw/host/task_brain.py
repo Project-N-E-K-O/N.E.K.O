@@ -58,6 +58,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from nekoclaw.host import call_audit
 from nekoclaw.host.capabilities import CapabilityRegistry, McpDenial, mcp_entry_forbidden
 from nekoclaw.host.decision import (
     DecisionModel,
@@ -74,6 +75,7 @@ from nekoclaw.host.permissions import PermissionStore
 from nekoclaw.host.plugin_runs import (
     PluginRunner,
     RunOutcome,
+    audited_run_entry,
     describe_result,
     plugin_terminal_status,
     resolve_delivery_mode,
@@ -463,6 +465,7 @@ class TaskBrain:
         lang: str = "en",
         source: str = "dispatch",
         generation: int | None = None,
+        source_message_ref: str | None = None,
     ) -> Receipt:
         """Take one sentence from her and return the receipt of the first round.
 
@@ -497,7 +500,7 @@ class TaskBrain:
             return Receipt(kind="nothing_active")
 
         first = self._spawn(
-            self._first_round(text, user_text, lanlan_name, conversation_id, lang, source, generation)
+            self._first_round(text, user_text, lanlan_name, conversation_id, lang, source, generation, source_message_ref)
         )
         done, _pending = await asyncio.wait({first}, timeout=DISPATCH_FIRST_ROUND_SECONDS)
         if done:
@@ -538,6 +541,7 @@ class TaskBrain:
         lang: str,
         source: str,
         generation: int | None = None,
+        source_message_ref: str | None = None,
     ) -> Receipt:
         from config.nekoclaw_settings import COMMISSION_TITLE_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
@@ -632,6 +636,7 @@ class TaskBrain:
             dispatch_text=text,
             user_text=user_text,
             source=source,
+            source_message_ref=source_message_ref,
             conversation_id=conversation_id,
             lang=lang,
         )
@@ -712,7 +717,15 @@ class TaskBrain:
                     source_commission=commission.id,
                 )
             if selection.route == "plugin":
-                await self._call_plugin(commission, selection, request)
+                try:
+                    async with call_audit.call(self._ledger, commission.id, "direct", "plugin") as direct:
+                        await self._call_plugin(commission, selection, request, direct)
+                except call_audit.CommissionEnded:
+                    return
+                except call_audit.AuditFull as exc:
+                    moved = await self._ledger.transition(commission.id, "failed", reason=str(exc))
+                    if moved.applied:
+                        await self._reporter.correction(commission, reason="no_capability", detail="audit_full", text=str(exc))
             elif selection.route == "task_agent" and self._task_agents is not None:
                 # Asked once its session is made ready, before it takes a
                 # place: NekoClaw may have been switched off meanwhile.
@@ -808,10 +821,13 @@ class TaskBrain:
             return False
         return mcp_entry_forbidden(str(selection.plugin_id), entry, await self._denied_mcp())
 
-    async def _call_plugin(self, commission: Commission, selection: Selection, request: DecisionRequest) -> None:
+    async def _call_plugin(
+        self, commission: Commission, selection: Selection, request: DecisionRequest, direct: call_audit.Call
+    ) -> None:
         """Call the chosen plugin entry and turn its result into the commission's end."""
         if await self._permission_store.mode("plugin_entry") == "deny" or await self._mcp_forbidden(selection, request):
             # Forbidden while the model was choosing: nothing is called.
+            direct.status, direct.reason = "denied", "settings"
             await self._overturn_no_capability(commission, "denied")
             return
         moved = await self._ledger.transition(
@@ -823,6 +839,7 @@ class TaskBrain:
             entry_id=selection.entry_id,
         )
         if not moved.applied:
+            direct.status = "cancelled"
             return
         _plugin, entry = find_entry(request.plugins, str(selection.plugin_id), selection.entry_id)
 
@@ -846,8 +863,8 @@ class TaskBrain:
         # list of plugins are waited for since NekoClaw was seen to be
         # on, and it may have been switched off meanwhile.
         still_on, turned_away = self._asks_whether_on()
-        outcome = await self._runner.run_entry(
-            commission_id=commission.id,
+        outcome = await audited_run_entry(
+            self._ledger, self._runner, commission_id=commission.id,
             plugin_id=selection.plugin_id,
             entry_id=selection.entry_id,
             args=selection.plugin_args,
@@ -858,7 +875,9 @@ class TaskBrain:
             on_run_created=run_created,
             still_wanted=still_on,
         )
+        direct.status = plugin_terminal_status(outcome.success, outcome.data)
         if turned_away:
+            direct.status = "cancelled"
             # Nothing was called: put down as what it is, and not as a
             # call that failed.
             await self._overturn_switched_off(commission)
@@ -949,15 +968,19 @@ class TaskBrain:
         if current is None or current.status != "working":
             # Stopped or ended before the plugin was told: it is not called.
             return
-        outcome = await self._runner.run_entry(
-            commission_id=commission.id,
-            plugin_id=plugin_id,
-            entry_id=BIND_TASK_ENTRY,
-            args={"reminder_id": reminder_id, "agent_task_id": commission.id},
-            # Not chosen by a model: a plugin may well hide this entry from
-            # selection, and it has to be reachable all the same.
-            housekeeping=True,
-        )
+        try:
+            outcome = await audited_run_entry(
+                self._ledger, self._runner, commission_id=commission.id,
+                plugin_id=plugin_id,
+                entry_id=BIND_TASK_ENTRY,
+                args={"reminder_id": reminder_id, "agent_task_id": commission.id},
+                # Not chosen by a model: a plugin may well hide this entry from
+                # selection, and it has to be reachable all the same.
+                housekeeping=True,
+            )
+        except (call_audit.AuditFull, call_audit.CommissionEnded) as exc:
+            logger.warning("deferred binding skipped for commission %s (%s)", commission.id, type(exc).__name__)
+            return
         if not outcome.success:
             logger.warning("binding deferred work of commission %s failed: %s", commission.id, outcome.error)
 
@@ -1390,6 +1413,7 @@ class TaskBrain:
         user_text: str,
         reply_text: str,
         conversation_id: str | None = None,
+        source_message_ref: str | None = None,
         lang: str = "en",
         external_intent: float | None = None,
     ) -> TurnCheck:
@@ -1473,6 +1497,7 @@ class TaskBrain:
                 conversation_id=conversation_id,
                 lang=lang,
                 source="promised",
+                source_message_ref=source_message_ref,
                 generation=generation,
             )
             result.receipt = receipt

@@ -2186,6 +2186,14 @@ async def test_a_commission_is_filed_with_its_notes_or_not_at_all(ledger, monkey
     await ledger.wakes_fire([second.id], into=commission.id)
     assert (await ledger.message_get(later.id)).delivered_at == (await ledger.message_get(first.id)).delivered_at
     assert [note.id for note in await ledger.messages_opening(commission.id)] == [first.id]
+    from nekoclaw.host import call_audit
+
+    async with call_audit.call(ledger, commission.id, "device", "browser"):
+        pass
+    root, _step = await ledger.run(lambda db: call_audit.read_trace(db, commission.id, now=ledger._clock()))
+    event = next(event for event in await ledger.events(commission.id) if event.type == "woken")
+    assert event.payload["wake_ids"] == [wake.id]
+    assert root["source_message_ref"] == f"wake_event:{event.seq}"
     # Dropped meanwhile, or handed over already: none is filed for nothing.
     assert await ledger.create_for_wakes([wake.id, second.id], **values) is None
     assert len(await filed()) == 1
