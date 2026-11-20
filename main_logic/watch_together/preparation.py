@@ -24,8 +24,8 @@ _SECRET_PATTERNS = (
     (re.compile(r"\b(Authorization['\"]?\s*[:=]\s*['\"]?)(?:[A-Za-z]+\s+)?[^\s'\",;}]+", re.IGNORECASE), r"\1***"),
     (re.compile(r"\bBearer\s+[^\s'\",;}]+", re.IGNORECASE), "Bearer ***"),
     (re.compile(r"\bsk-[A-Za-z0-9_\-]+"), "sk-***"),
-    (re.compile(r"\b([A-Za-z_\-]{0,32}(?:key|token|secret|password)['\"]?\s*[:=]\s*['\"]?)[^\s&'\",;}]+",
-                re.IGNORECASE), r"\1***"),
+    (re.compile(r"\b([A-Za-z_\-]{0,32}(?:key|token|secret|password|cookie)['\"]?\s*[:=]\s*)"
+                r"(?:'[^']{0,200}'|\"[^\"]{0,200}\"|[^\s&'\",;}]+)", re.IGNORECASE), r"\1***"),
 )
 _URL = re.compile(r"\b([A-Za-z][A-Za-z0-9+.\-]{0,15})://[^\s'\"<>]+")
 
@@ -85,7 +85,8 @@ def error_cause_chain(exc, limit=MAX_CAUSE_DEPTH):
     while isinstance(exc, BaseException) and len(chain) < limit and id(exc) not in seen:
         seen.add(id(exc))
         chain.append(_error_layer(exc))
-        exc = exc.__cause__ or exc.__context__
+        # Explicit None checks: exceptions may define __len__/__bool__.
+        exc = exc.__cause__ if exc.__cause__ is not None else exc.__context__
     return chain
 
 

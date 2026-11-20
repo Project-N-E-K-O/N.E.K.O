@@ -425,8 +425,10 @@ def test_error_message_hides_home_directory(monkeypatch):
 
 @pytest.mark.parametrize('raw,leak,kept', [
     ('headers x-api-key: abc123 sent', 'abc123', 'x-api-key: ***'),
-    ('{"api_key": "AIzaSyXYZ"}', 'AIzaSyXYZ', '"api_key": "***'),
-    ("{'api_key': 'abc'}", "'abc'", "'api_key': '***"),
+    ('{"api_key": "AIzaSyXYZ"}', 'AIzaSyXYZ', '"api_key": ***}'),
+    ("{'api_key': 'abc'}", "'abc'", "'api_key': ***}"),
+    ("api_key='abc def' next", 'def', "api_key=*** next"),
+    ('Cookie: session=abc123', 'abc123', 'Cookie: ***'),
     ('api_key = abc rest', 'abc rest', 'api_key = *** rest'),
     ('password=hunter2&x=1', 'hunter2', 'password=***'),
     ('client_secret=s3cr3t', 's3cr3t', 'client_secret=***'),
@@ -502,3 +504,14 @@ def test_endpoint_fields_are_typed_and_bounded():
     assert detail['vision_host'] is None
     assert len(detail['vision_model']) <= 100
     assert 'last_vision_request' not in detail
+
+
+def test_cause_chain_ignores_exception_truthiness():
+    class Empty(Exception):
+        def __len__(self):
+            return 0
+    inner = Empty('inner')
+    outer = RuntimeError('outer')
+    outer.__cause__ = inner
+    inner.__cause__ = ValueError('root')
+    assert [layer['type'] for layer in preparation.error_cause_chain(outer)] == ['RuntimeError', 'Empty', 'ValueError']
