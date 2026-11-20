@@ -40,7 +40,12 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from nekoclaw.host import call_audit
+
+if TYPE_CHECKING:
+    from nekoclaw.host.ledger import Ledger
 
 from nekoclaw.host.selection import visible_entries
 
@@ -406,6 +411,21 @@ class RunOutcome:
         return {"meta": self.meta}
 
 
+async def audited_run_entry(
+    ledger: Ledger, runner: PluginRunner, *, commission_id: str, plugin_id: str | None,
+    entry_id: str | None, **kwargs: Any,
+) -> RunOutcome:
+    """Record only the host-selected entry and the plugin server's run ID. Keep /runs unchanged."""
+    target = f"plugin:{plugin_id or ''}:{entry_id or ''}"
+    async with call_audit.call(ledger, commission_id, "plugin", target) as record:
+        outcome = await runner.run_entry(
+            commission_id=commission_id, plugin_id=plugin_id, entry_id=entry_id, audit_call=record, **kwargs
+        )
+        record.status = ("cancelled" if getattr(outcome, "reason", None) == "not_wanted"
+                         else plugin_terminal_status(outcome.success, outcome.data))
+        return outcome
+
+
 class PluginRunner:
     """Sends ``/runs`` requests and follows them to their end."""
 
@@ -552,6 +572,7 @@ class PluginRunner:
         latest_user_request: str = "",
         on_progress: ProgressCallback | None = None,
         on_run_created: Callable[[str], Awaitable[None]] | None = None,
+        audit_call: call_audit.Call | None = None,
         housekeeping: bool = False,
         still_wanted: Callable[[], bool] | None = None,
     ) -> RunOutcome:
@@ -675,7 +696,19 @@ class PluginRunner:
         # exist on the plugin server, so a caller that is cancelled meanwhile
         # must not take the request down with it: the answer is still read,
         # and the run it names is cancelled.
-        request = asyncio.ensure_future(self._create_run(body, still_wanted))
+        async def create() -> tuple[Any, tuple[str, str] | None]:
+            created, problem = await self._create_run(body, still_wanted)
+            run_id = created.get("run_id") if isinstance(created, dict) else None
+            if audit_call and isinstance(run_id, str) and run_id:
+                # This task also owns a response arriving after caller cancellation.
+                # Keep the resolved entry and never copy the accompanying run token.
+                try:
+                    await audit_call.bind_run(run_id, f"plugin:{plugin_id}:{resolved_entry}")
+                except Exception as exc:  # a remote run exists; still track it for cancellation
+                    logger.warning("could not attach a plugin run to its host call (%s)", type(exc).__name__)
+            return created, problem
+
+        request = asyncio.ensure_future(create())
         self._cancel_tasks.add(request)
         request.add_done_callback(self._cancel_tasks.discard)
         try:

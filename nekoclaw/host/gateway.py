@@ -108,12 +108,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from nekoclaw.host import call_audit
 from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER, KIND_BUILTIN, Capability, CapabilityRegistry
 from nekoclaw.host.leases import BuiltinLeases
 from nekoclaw.host.ledger import Commission, Ledger
 from nekoclaw.host.permissions import BROWSER_REOPEN, DENIED_BY_SETTINGS, DENIED_BY_USER, PermissionGate
 from nekoclaw.host.plugin_runs import (
     PluginRunner,
+    audited_run_entry,
     describe_result,
     llm_result_fields,
     plugin_terminal_status,
@@ -185,6 +187,7 @@ class _Cleared:
 
     # What the call is answered with instead of being carried out, or None.
     refusal: dict[str, Any] | None = None
+    reason: str | None = None
     # The user's agreement to this call opening a browser they closed, if one was needed.
     agreement: Any = None
     # Drops it when it has waited for its call long enough.
@@ -1076,17 +1079,28 @@ class CapabilityGateway:
             await self._ledger.append_event(
                 commission.id, "capability_denied", {"capability": capability.id, "reason": decision.reason}
             )
-            return _Cleared(refusal=_text(decision.reason or "permission denied", error=True))
+            reason = {DENIED_BY_SETTINGS: "settings", DENIED_BY_USER: "user"}.get(decision.reason, "no_approval")
+            return _Cleared(refusal=_text(decision.reason or "permission denied", error=True), reason=reason)
         if capability.kind == KIND_BUILTIN and capability.group == BUILTIN_GROUP_BROWSER:
             refusal, agreement = await self._ask_before_reopening(commission, capability, just_asked=decision.asked)
-            return _Cleared(refusal=refusal, agreement=agreement)
+            return _Cleared(refusal=refusal, agreement=agreement, reason="browser_reopen" if refusal else None)
         return _Cleared()
 
     async def _call_capability(
-        self,
-        commission: Commission,
-        capability: Capability,
-        arguments: dict[str, Any],
+        self, commission: Commission, capability: Capability, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        kind = "device" if capability.kind == KIND_BUILTIN else "gateway"
+        try:
+            async with call_audit.call(self._ledger, commission.id, kind, capability.id) as record:
+                result = await self._execute(commission, capability, arguments, record)
+                if result.get("isError") and record.status == "completed":
+                    record.status = "failed"
+                return result
+        except (call_audit.AuditFull, call_audit.CommissionEnded) as exc:
+            return _text(str(exc), error=True)
+
+    async def _execute(
+        self, commission: Commission, capability: Capability, arguments: dict[str, Any], record: call_audit.Call
     ) -> dict[str, Any]:
         from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
@@ -1105,10 +1119,12 @@ class CapabilityGateway:
             await self._ledger.append_event(
                 commission.id, "capability_denied", {"capability": capability.id, "reason": DENIED_BY_SETTINGS}
             )
+            record.status, record.reason = "denied", "settings"
             return _text(DENIED_BY_SETTINGS, error=True)
         if permitted is None:
             permitted = await self._permit(commission, capability)
         if permitted.refusal is not None:
+            record.status, record.reason = "denied", permitted.reason
             return permitted.refusal
 
         if capability.kind == KIND_BUILTIN:
@@ -1137,7 +1153,8 @@ class CapabilityGateway:
         # The entry's result contract as it stands for this call: the plugin
         # list may no longer show the entry once the run is over.
         _plugin, entry = find_entry(await self._registry.plugins(), str(capability.plugin_id), capability.entry_id)
-        outcome = await self._runner.run_entry(
+        outcome = await audited_run_entry(
+            self._ledger, self._runner,
             commission_id=commission.id,
             plugin_id=capability.plugin_id,
             entry_id=capability.entry_id,
@@ -1259,9 +1276,7 @@ class CapabilityGateway:
 
         The commission occupies the tool's group first and keeps it until its
         run ends, it waits for the user or it is over (``leases.py``). The
-        call itself is not written to the ledger: the task agent's own
-        ``tool_start`` and ``tool_end`` events already show it, and a task
-        of many small steps would double its rows.
+        enclosing host call records the device identifier and outcome.
         """
         from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens

@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from nekoclaw.host import call_audit
 from tests.unit.nekoclaw.fakes import ScriptedLLM
 from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
@@ -93,7 +94,9 @@ async def test_accepted_then_the_plugin_is_called_directly(server, hosts, tmp_pa
     llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today", {"city": "Shanghai"})])
     host = _host(hosts, tmp_path, server, llm)
 
-    receipt = await _dispatch(host, "查一下上海的天气", user_text="上海今天天气怎么样", conversation_id="conv-9")
+    source_ref = "conversation_input:" + "f" * 32
+    receipt = await _dispatch(host, "查一下上海的天气", user_text="上海今天天气怎么样", conversation_id="conv-9",
+                              source_message_ref=source_ref)
 
     assert receipt.kind == "accepted"
     assert receipt.model_calls == 0
@@ -109,6 +112,13 @@ async def test_accepted_then_the_plugin_is_called_directly(server, hosts, tmp_pa
     assert ctx["lanlan_name"] == "Lan"
     assert ctx["conversation_id"] == "conv-9"
     assert ctx["latest_user_request"] == "上海今天天气怎么样"
+    await host.brain.settle()
+    root, direct, plugin_call = await host.ledger.run(lambda db: call_audit.read_trace(db, done.id, now=host.ledger._clock()))
+    assert (root["source_message_ref"], root["session_id"], root["status"]) == (source_ref, None, "done")
+    assert direct["parent_call_id"] == root["call_id"] == done.id
+    assert plugin_call["parent_call_id"] == direct["call_id"]
+    assert plugin_call["run_id"] and plugin_call["target"] == "plugin:weather:today"
+    assert "Shanghai" not in json.dumps([root, direct, plugin_call])
     # One fine selection in total for the whole dispatch.
     assert llm.tiers() == ["fine"]
     (report,) = await outbox(host, "task_result")
@@ -814,6 +824,10 @@ async def test_nekoclaw_switched_off_after_a_plugin_was_chosen_and_before_it_is_
     # No request for a run is sent, and the commission is put down as not started because
     # NekoClaw is off: not as a call that failed.
     assert calling == [True] and server.calls == [] and server.run_requests == []
+    _root, direct, plugin_call = await host.ledger.run(
+        lambda db: call_audit.read_trace(db, receipt.commission_id, now=host.ledger._clock())
+    )
+    assert direct["status"] == plugin_call["status"] == "cancelled" and plugin_call["run_id"] is None
     failed = await host.ledger.get(receipt.commission_id)
     assert failed.status == "failed" and "switched off" in failed.status_reason
     (correction,) = await outbox(host, "correction")
@@ -1164,6 +1178,16 @@ async def test_a_new_dispatch_is_not_taken_for_a_repeat_of_a_child_task_agent(se
 # ---------------------------------------------------------------------------
 # Deferred results
 # ---------------------------------------------------------------------------
+
+
+async def test_deferred_binding_skipped_when_audit_is_full(server, hosts, tmp_path, monkeypatch, caplog):
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    item, _ = await host.ledger.create(lanlan_name="Lan", title="reminder", dispatch_text="later", source="dispatch")
+    await host.ledger.transition(item.id, "working")
+    monkeypatch.setattr(call_audit, "BUDGET_BYTES", call_audit.RECORD_BYTES)
+    await host.brain._bind_deferred(item, "reminder", "reminder-id")
+    assert "deferred binding skipped" in caplog.text
+    assert server.run_requests == []
 
 
 async def test_deferred_work_stopped_before_it_is_bound_does_not_call_the_plugin(server, hosts, tmp_path):
@@ -1622,10 +1646,12 @@ async def test_run_is_cancelled_when_its_caller_is_cancelled_while_the_request_i
         async def get(self, url: str, **kwargs: Any) -> Any:
             return await self._client.get(url, **kwargs)
 
-    host = _host(hosts, tmp_path, server, FakeDecisionLLM(), client_factory=SlowAnswers)
+    from nekoclaw.host.plugin_runs import audited_run_entry
 
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(), client_factory=SlowAnswers)
+    await host.ledger.create(id="c1", lanlan_name="Lan", title="weather", dispatch_text="weather", source="dispatch")
     calling = asyncio.ensure_future(
-        host.runner.run_entry(commission_id="c1", plugin_id="weather", entry_id="today", args={})
+        audited_run_entry(host.ledger, host.runner, commission_id="c1", plugin_id="weather", entry_id="today", args={})
     )
     await asyncio.wait_for(started.wait(), 5)
     (run,) = server.runs()
@@ -1638,8 +1664,10 @@ async def test_run_is_cancelled_when_its_caller_is_cancelled_while_the_request_i
 
     answer_may_return.set()
 
-    # The answer is still read, and the run it names is cancelled.
+    # The answer is still read, and the run it names is cancelled and linked to the original call.
     await wait_until(lambda: server.cancelled == [("weather", run.run_id)], what="the run being cancelled")
+    _root, step = await host.ledger.run(lambda db: call_audit.read_trace(db, "c1", now=host.ledger._clock()))
+    assert (step["status"], step["run_id"], step["target"]) == ("cancelled", run.run_id, "plugin:weather:today")
 
 
 async def test_run_is_cancelled_when_its_caller_is_cancelled_right_after_it_was_created(server, hosts, tmp_path):

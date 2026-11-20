@@ -83,6 +83,110 @@ async def test_file_is_created_on_first_use_not_before(tmp_path):
         await ledger.close()
 
 
+async def test_call_budget_preserves_active_descendants_and_can_finish_in_place(ledger, monkeypatch):
+    from nekoclaw.host import call_audit
+
+    monkeypatch.setattr(call_audit, "BUDGET_BYTES", call_audit.RECORD_BYTES * 3)
+    ref = "memory_message:" + "a" * 32
+    root = await _file(ledger, source_message_ref=ref)
+    child = await _file(ledger, parent_id=root.id, source="task_agent")
+    await _walk(ledger, root.id, "done")
+    async with call_audit.call(ledger, child.id, "device", "builtin:browser:open"):
+        with pytest.raises(call_audit.AuditFull):
+            async with call_audit.call(ledger, child.id, "device", "builtin:browser:open"):
+                pytest.fail("nothing can execute without a record")
+    pending = await _file(ledger, source_message_ref="conversation_input:" + "b" * 32)
+    assert (await ledger.events(pending.id))[0].payload["audit"] == call_audit.SOURCE_NOT_RECORDED
+    ledger.clock.now += call_audit.RETENTION + 1
+    data = await ledger.run(lambda db: call_audit.read_trace(db, child.id, now=ledger.clock()))
+    assert len(data) == 3 and data[-1]["status"] == "completed"
+    assert data[0]["source_message_ref"] == ref and data[1]["parent_call_id"] == root.id
+    await _walk(ledger, child.id, "done")
+    # Only after both commissions are over can this entire chain be reclaimed.
+    async with call_audit.call(ledger, pending.id, "device", "browser"):
+        pass
+    pending_records = await ledger.run(lambda db: call_audit.read_trace(db, pending.id, now=ledger.clock()))
+    assert pending_records[0]["reason"] == call_audit.SOURCE_NOT_RECORDED
+    assert await ledger.run(lambda db: call_audit.read_trace(db, child.id, now=ledger.clock())) == []
+    assert (await ledger.get(pending.id)).status == "queued"
+
+
+@pytest.mark.parametrize("status", ["failed", "blocked"])
+async def test_resuming_an_expired_commission_starts_with_no_old_calls(ledger, status):
+    from nekoclaw.host import call_audit
+
+    item = await _file(ledger, source_message_ref="conversation_input:" + "a" * 32)
+    await _walk(ledger, item.id, status)
+    ledger.clock.now += call_audit.RETENTION
+    assert (await ledger.transition(item.id, "working")).applied
+    async with call_audit.call(ledger, item.id, "device", "browser"):
+        pass
+    data = await ledger.run(lambda db: call_audit.read_trace(db, item.id, now=ledger.clock()))
+    assert len(data) == 2 and data[0]["source_message_ref"] is None
+
+
+@pytest.mark.parametrize("next_status", ["failed", "cancelled"])
+async def test_ending_an_expired_blocked_commission_again_does_not_restore_old_calls(ledger, next_status):
+    from nekoclaw.host import call_audit
+
+    item = await _file(ledger, source_message_ref="conversation_input:" + "a" * 32)
+    await _walk(ledger, item.id, "blocked")
+    ledger.clock.now += call_audit.RETENTION
+    def read(db):
+        return call_audit.read_trace(db, item.id, now=ledger.clock())
+
+    assert await ledger.run(read) == []
+    assert (await ledger.transition(item.id, next_status)).applied
+    assert await ledger.run(read) == []
+
+
+async def test_losing_the_ledger_after_execution_preserves_the_action_result(ledger, caplog):
+    from nekoclaw.host import call_audit
+
+    item = await _file(ledger)
+    async with call_audit.call(ledger, item.id, "plugin", "weather") as attempt:
+        await ledger.close()
+    assert f"could not close host call {attempt.call_id} (RuntimeError)" in caplog.text
+
+
+async def test_blocked_chain_expires_and_releases_its_budget(ledger, monkeypatch):
+    from nekoclaw.host import call_audit
+
+    monkeypatch.setattr(call_audit, "BUDGET_BYTES", 3 * call_audit.RECORD_BYTES)
+    root = await _file(ledger)
+    child = await _file(ledger, parent_id=root.id, source="task_agent")
+    async with call_audit.call(ledger, child.id, "device", "browser"):
+        pass
+    await _walk(ledger, child.id, "blocked")
+    with pytest.raises(call_audit.CommissionEnded):
+        async with call_audit.call(ledger, child.id, "device", "browser"):
+            pytest.fail("blocked work must first be resumed")
+    await _walk(ledger, root.id, "done")
+    ledger.clock.now += call_audit.RETENTION
+    assert await ledger.run(lambda db: call_audit.read_trace(db, child.id, now=ledger.clock())) == []
+    fresh = await _file(ledger)
+    async with call_audit.call(ledger, fresh.id, "device", "browser"):
+        pass
+    assert await ledger.run(lambda db: db.execute("SELECT DISTINCT trace_id FROM host_calls").fetchone()[0]) == fresh.id
+
+
+async def test_expired_trace_hidden_before_maintenance_and_unknown_source_stays_unknown(ledger):
+    from nekoclaw.host import call_audit
+
+    item = await _file(ledger, source_message_ref="private text masquerading as an ID")
+    async with call_audit.call(ledger, item.id, "gateway", "example"):
+        pass
+    await ledger.update(item.id, session_id="later-session")
+    await _walk(ledger, item.id, "done")
+    data = await ledger.run(lambda db: call_audit.read_trace(db, item.id, now=ledger.clock()))
+    assert (data[0]["source_message_ref"], data[0]["session_id"], data[0]["status"]) == (None, "later-session", "done")
+    assert "private text" not in str(data)
+    ledger.clock.now += call_audit.RETENTION
+    assert await ledger.run(lambda db: call_audit.read_trace(db, item.id, now=ledger.clock())) == []
+    await ledger.run(lambda db: call_audit.reclaim(db, ledger.clock()))
+    assert await ledger.run(lambda db: db.execute("SELECT records FROM host_call_budget").fetchone()[0]) == 0
+
+
 async def test_tables_and_fields_of_the_design(ledger, tmp_path):
     await ledger.open()
     with sqlite3.connect(ledger.path) as conn:
@@ -810,7 +914,7 @@ async def test_a_ledger_made_before_a_column_was_added_is_given_it_when_it_is_op
         columns = [row[1] for row in conn.execute("PRAGMA table_info(commissions)")]
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.close()
-    assert columns.count("session_dir") == 1 and version == 5
+    assert columns.count("session_dir") == 1 and version == 6
     # It has every column a new ledger has. A column put into the table and the commission but left out of
     # ``_ADDED_COLUMNS`` shows here: the ledgers there are could then no longer be read.
     from nekoclaw.host.ledger import _COMMISSION_COLUMNS
@@ -1230,7 +1334,7 @@ async def test_commissions_of_an_earlier_build_are_given_the_sessions_they_had(t
         before = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.close()
-    assert version == 5
+    assert version == 6
     again = Ledger(path)
     try:
         await again.open()
@@ -1431,6 +1535,6 @@ async def test_a_ledger_with_sessions_of_the_build_before_gets_the_new_columns_a
         await second.close()
     conn = sqlite3.connect(path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
     finally:
         conn.close()

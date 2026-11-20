@@ -96,7 +96,7 @@ from nekoclaw.host.permissions import (
     PermissionDecision,
     PermissionGate,
 )
-from nekoclaw.host.plugin_runs import PluginRunner
+from nekoclaw.host.plugin_runs import PluginRunner, audited_run_entry
 from nekoclaw.host.preferences import PreferenceStore, feedback_text
 from nekoclaw.host.reports import CHANNEL_TASK_AGENT, Reporter
 from nekoclaw.host.runtimes import RUNTIME_BUILTIN, RUNTIME_DSH, Runtimes
@@ -5109,7 +5109,8 @@ class TaskAgentManager:
 
         async def one(query: str) -> dict[str, Any]:
             async with gate:
-                outcome = await self._runner.run_entry(
+                outcome = await audited_run_entry(
+                    self._ledger, self._runner,
                     commission_id=commission.id,
                     plugin_id=WEB_SEARCH_PLUGIN_ID,
                     entry_id=WEB_SEARCH_ENTRY_ID,
