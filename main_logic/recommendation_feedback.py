@@ -541,32 +541,44 @@ class RecommendationStore:
 
     @staticmethod
     def _prune_preference_events(db, owner_key):
-        db.execute("""DELETE FROM recommendation_preferences
-            WHERE owner=? AND kind='inferred' AND at<?""", (owner_key, int(time.time()) - 30 * DAY))
         # Explicit affinity and exclusion are independent durable settings. Keep
         # each latest value, including allow events that clear older exclusions.
+        # Keep the current permission outside the history quota. An expired
+        # private inference also stays if a durable interest could revive an
+        # old public permission for the same topic.
         db.execute("""WITH durable AS (
-            SELECT id, row_number() OVER (
+            SELECT id, feature, row_number() OVER (
                 PARTITION BY scope, feature, kind='explicit' ORDER BY at DESC, id DESC
             ) AS version FROM recommendation_preferences
-            WHERE owner=? AND kind IN ('explicit', 'exclude', 'allow')
+            WHERE owner=:owner AND kind IN ('explicit', 'exclude', 'allow')
         ), latest_permission AS (
-            SELECT e.id, row_number() OVER (
-                PARTITION BY e.scope, e.feature ORDER BY e.at DESC, e.id DESC
-            ) AS version FROM recommendation_preferences e
-            JOIN recommendation_search_permissions s ON e.owner=s.owner AND e.id=s.id
-            WHERE e.owner=?
-        ) DELETE FROM recommendation_preferences WHERE owner=? AND id IN (
+            SELECT id, feature, public FROM (
+                SELECT e.id, e.feature, s.public, row_number() OVER (
+                    PARTITION BY e.scope, e.feature ORDER BY e.at DESC, e.id DESC
+                ) AS version FROM recommendation_preferences e
+                JOIN recommendation_search_permissions s ON e.owner=s.owner AND e.id=s.id
+                WHERE e.owner=:owner
+            ) WHERE version=1
+        ), compacted AS (
             SELECT id FROM durable WHERE version>1
-            EXCEPT SELECT id FROM latest_permission WHERE version=1
+            EXCEPT SELECT id FROM latest_permission
             EXCEPT SELECT s.id FROM recommendation_search_permissions s
             LEFT JOIN recommendation_chat_interest_synced c ON s.owner=c.owner AND s.id=c.id
-            WHERE s.owner=? AND s.public=1 AND c.id IS NULL
-        )""", (owner_key, owner_key, owner_key, owner_key))
-        db.execute("""DELETE FROM recommendation_preferences WHERE owner=? AND id IN (
+            WHERE s.owner=:owner AND s.public=1 AND c.id IS NULL
+        ), expired AS (
             SELECT id FROM recommendation_preferences
-            WHERE owner=? AND kind NOT IN ('explicit', 'exclude', 'allow')
-            ORDER BY at DESC, id DESC LIMIT -1 OFFSET 2000)""", (owner_key, owner_key))
+            WHERE owner=:owner AND kind='inferred' AND at<:cutoff
+            EXCEPT SELECT id FROM latest_permission
+            WHERE public=0 AND feature IN (SELECT feature FROM durable)
+        ), overflow AS (
+            SELECT id FROM recommendation_preferences
+            WHERE owner=:owner AND kind NOT IN ('explicit', 'exclude', 'allow')
+              AND (kind!='inferred' OR at>=:cutoff)
+              AND id NOT IN (SELECT id FROM latest_permission)
+            ORDER BY at DESC, id DESC LIMIT -1 OFFSET 2000
+        ) DELETE FROM recommendation_preferences WHERE owner=:owner AND id IN (
+            SELECT id FROM compacted UNION ALL SELECT id FROM expired UNION ALL SELECT id FROM overflow
+        )""", {"owner": owner_key, "cutoff": int(time.time()) - 30 * DAY})
 
     @staticmethod
     def _search_permissions(db, owner_key, cutoff):
@@ -575,7 +587,7 @@ class RecommendationStore:
             """SELECT e.scope, e.feature, s.public, s.game
                FROM recommendation_search_permissions s
                JOIN recommendation_preferences e ON e.owner=s.owner AND e.id=s.id
-               WHERE e.owner=? AND (e.kind!='inferred' OR e.at>=?)
+               WHERE e.owner=? AND (e.kind!='inferred' OR e.at>=? OR s.public=0)
                ORDER BY e.at DESC, e.id DESC""",
             (owner_key, cutoff),
         ):

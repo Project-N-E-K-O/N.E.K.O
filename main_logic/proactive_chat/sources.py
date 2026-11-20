@@ -617,7 +617,7 @@ async def collect_proactive_sources(
         source = sources.setdefault(mode, {"formatted_content": "", "raw_data": {}, "links": []})
         links = {}
         for item in candidates + source["links"]:
-            key = _resource_key(item).rstrip("/")
+            key = _resource_key(item)
             if key not in links:
                 links[key] = item
         source["links"] = list(links.values())

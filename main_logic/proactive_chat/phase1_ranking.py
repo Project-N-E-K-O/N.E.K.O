@@ -24,7 +24,7 @@ _PERSONAL_MATCH_THRESHOLD = 1.5
 
 
 def _resource_key(link: dict) -> str:
-    return link.get("dedupe_key") or _canonical_resource_key(link.get("url", ""))
+    return (link.get("dedupe_key") or _canonical_resource_key(link.get("url", ""))).rstrip("/")
 
 
 def _work_keys(link: dict) -> set[str]:

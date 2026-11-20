@@ -134,11 +134,15 @@ async def test_guest_preference_recalls_candidates_and_reaches_phase_one(
 
 
 @pytest.mark.asyncio
-async def test_exclusion_in_baseline_video_metadata_applies_to_search_duplicate(monkeypatch):
+@pytest.mark.parametrize("url", [
+    "https://www.bilibili.com/video/BV1234567891",
+    "https://example.test/watch/puzzles",
+])
+async def test_exclusion_in_baseline_video_metadata_applies_to_search_duplicate(monkeypatch, url):
     video = {
-        "title": "独立解谜游戏", "url": "https://www.bilibili.com/video/BV1234567891", "source": "B站",
+        "title": "独立解谜游戏", "url": url, "source": "video feed",
     }
-    baseline = {**video, "description_hint": "专题同时包含竞技游戏"}
+    baseline = {**video, "url": f"{url}/", "description_hint": "专题同时包含竞技游戏"}
     monkeypatch.setattr(sources, "_fetch_source", AsyncMock(return_value=(
         "video", {"links": [baseline], "formatted_content": baseline["description_hint"]},
     )))

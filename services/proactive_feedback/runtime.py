@@ -79,13 +79,15 @@ class ProactiveFeedbackRuntime:
             raise SyncFailure("session_changed")
 
     async def _json_request(self, method, path, token, owner, *, body=None, origin=None,
-                            response_limit=MAX_RESPONSE_BYTES, prepare_body=None):
+                            response_limit=MAX_RESPONSE_BYTES, prepare_body=None, pause_requested=None):
         await self._guard(owner, token)
         if prepare_body is not None:
             body = await prepare_body()
             if body is None:
                 return None
             await self._guard(owner, token)
+        if pause_requested is not None and await pause_requested():
+            return None
         headers = {"Authorization": f"Bearer {token}"}
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -361,7 +363,8 @@ class ProactiveFeedbackRuntime:
             try:
                 reply = await self._json_request(
                     "POST", "/api/users/me/chat-interests/sync", token, owner,
-                    prepare_body=prepare_body, origin=origin, response_limit=1024 * 1024,
+                    prepare_body=prepare_body, pause_requested=ais_privacy_mode_enabled,
+                    origin=origin, response_limit=1024 * 1024,
                 )
             except SyncFailure as exc:
                 if exc.code == "authentication_required" and self._verified_sessions.get(owner["key"]) == token:

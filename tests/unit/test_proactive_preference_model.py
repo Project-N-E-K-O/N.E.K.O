@@ -104,6 +104,74 @@ def test_interest_upload_cannot_reuse_an_older_game_permission(tmp_path):
     assert not any(interest.game for interest in pending)
 
 
+@pytest.mark.parametrize("age", [DAY, 31 * DAY])
+def test_preference_pruning_cannot_restore_superseded_public_permission(tmp_path, age):
+    now = int(time())
+    store = RecommendationStore(tmp_path / "preferences.sqlite3")
+    owner = {"key": "test-account"}
+    old_public = PreferenceEvent("a" * 64, "蛙泳换气", "all", "explicit", 1, now - 32 * DAY)
+    private = PreferenceEvent("b" * 64, old_public.feature, "all", "inferred", 1, now - age)
+    public = PreferenceEvent("c" * 64, "夜景摄影", "all", "explicit", 1, now)
+    unrelated = [
+        PreferenceEvent(f"chat-{index}", "游泳", "all", "inferred", 1, now)
+        for index in range(2002)
+    ]
+    store.save_preferences(owner["key"], [old_public, private, public, *unrelated], permissions={
+        old_public.id: SearchPermission(True), private.id: SearchPermission(False),
+        public.id: SearchPermission(True),
+    })
+    assert store.local_preferences(owner).search_permission("news", old_public.feature) == SearchPermission(False)
+    assert [item.event for item in store.pending_chat_interests(owner)] == [public]
+
+
+@pytest.mark.asyncio
+async def test_chat_interest_sync_pauses_when_privacy_changes_during_batch_read(tmp_path, monkeypatch):
+    origin = "https://preferences-community.example.test"
+    saved = {"base_url": origin, "local_user_id": "account", "access_token": "synthetic"}
+    owner = owner_from_snapshot(saved)
+    store = RecommendationStore(tmp_path / "preferences.sqlite3")
+    event = PreferenceEvent("a" * 64, "蛙泳换气", "all", "inferred", 1, int(time()))
+    store.save_preferences(owner["key"], [event], permissions={event.id: SearchPermission(True)})
+    pending = store.pending_chat_interests
+    privacy_on = False
+    enable_on_read = True
+    requests = []
+
+    def read_batch(*args):
+        nonlocal privacy_on
+        batch = pending(*args)
+        if enable_on_read:
+            privacy_on = True
+        return batch
+
+    async def privacy_mode():
+        return privacy_on
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"version": 1, "revision": "e" * 64, "events": []})
+
+    @contextmanager
+    def attribution():
+        yield owner
+
+    monkeypatch.setattr(store, "pending_chat_interests", read_batch)
+    monkeypatch.setattr(preferences, "ais_privacy_mode_enabled", privacy_mode)
+    monkeypatch.setattr("services.proactive_feedback.runtime.fetch_public_search_words", AsyncMock(return_value=frozenset()))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        runtime = ProactiveFeedbackRuntime(
+            store, client=client, chat_interest_origin=origin, snapshot_provider=lambda: saved,
+            fenced_snapshot_provider=lambda: saved, attribution_context=attribution,
+        )
+        await runtime._sync_chat_interests()
+        assert privacy_on and not requests
+        assert [item.event for item in pending(owner)] == [event]
+        privacy_on = enable_on_read = False
+        await runtime._sync_chat_interests()
+    assert [upload["events"] for upload in requests] == [[{**asdict(event), "game": False}]]
+    assert pending(owner) == []
+
+
 @pytest.mark.asyncio
 async def test_account_chat_interests_sync_without_requesting_community_candidates(
     tmp_path, monkeypatch
