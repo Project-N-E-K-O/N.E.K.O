@@ -20,6 +20,7 @@
     //   第 3 下：横向晃 2 倍（封顶），切 surprised，取消第 2 下还没发出去的语音，改约 intensity=rapid
     //   第 4 下：上下摇（2 倍）+ 切 angry，取消待发语音，立刻发 intensity=angry
     //   之后 ANGRY_COOLDOWN_MS 内：点击不晃、不出声、不切表情，也不播任何点击动作/表情
+    //   （小剧场期间不切表情、不出声，也不进冷却，只保留晃动）
     // 从第 2 下起表情由连点写死，所以第 2 下起不再播 touch set，免得把写死的表情盖掉。
     // 预约的语音在停手 COMBO_WINDOW_MS 后才发，也就是"这一串结束时只说一句最高档的话"。
     // 语音走 LLM 互动回复，一旦发出就没法撤回，所以"后一下打断前一下"只能在发出之前做。
@@ -229,6 +230,10 @@
             cancelPendingVoice(state);
             sendVoice(COMBO_VOICE_INTENSITY[COMBO_ANGRY_COUNT], character);
             combo = null;
+            // 剧场里表情和语音都被拦下了，并没有真的生气：只晃不冷却，退出剧场后也不受影响
+            if (isTheaterBlockingChat()) {
+                return { count, angry: false, allowTouchSet: false, comboId: state.id };
+            }
             angryUntil = now + ANGRY_COOLDOWN_MS;
             angryCharacter = character;
             return { count, angry: true, allowTouchSet: false, comboId: state.id };

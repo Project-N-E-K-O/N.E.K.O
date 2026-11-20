@@ -441,16 +441,27 @@ test('tutorial and a held avatar tool keep the plain shake without combo voice, 
     assert.deepEqual(tool.emotions, ['happy', 'happy', 'surprised', 'angry']);
 });
 
-test('theater keeps the shake but suppresses combo voice and expressions', () => {
-    const h = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => true } });
+test('theater keeps the shake but suppresses combo voice, expressions and the angry cooldown', () => {
+    let theater = true;
+    const h = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => theater } });
     for (let i = 0; i < 4; i++) {
         h.shake.tap(h.canvas);
         h.clock.advance(h.gap);
     }
+    assert.equal(peak(h.shakes[3]).y, 10);
+    // 第 5 下仍然要晃，不能被冷却吞掉
+    const fifth = h.shake.tap(h.canvas);
+    assert.equal(fifth.count, 1);
+    assert.equal(h.shakes.length, 5);
     h.clock.advance(5000);
     assert.equal(h.sent.length, 0);
     assert.deepEqual(h.emotions, []);
-    assert.equal(peak(h.shakes[3]).y, 10);
+
+    // 退出剧场后立刻点，也是正常的第 1 下
+    theater = false;
+    const after = h.shake.tap(h.canvas);
+    assert.deepEqual([after.count, after.angry, after.allowTouchSet], [1, false, true]);
+    assert.equal(h.shakes.length, 6);
 });
 
 test('Live2D plays the delayed touch motion for a lone tap, but not once the next tap joins the combo', async () => {
