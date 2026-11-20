@@ -34,6 +34,9 @@
 
     const running = new WeakMap();
     const COMBO_EMOTION_EVENT = 'neko:avatar-click-combo-emotion';
+    const MODEL_READY_EVENTS = Object.freeze([
+        'live2d-model-ready', 'vrm-model-loaded', 'mmd-model-loaded', 'pngtuber-model-loaded'
+    ]);
 
     let combo = null;
     let comboSeq = 0;
@@ -240,7 +243,9 @@
         }
 
         play(element, { scale: shakeScaleFor(count) });
-        if (COMBO_VOICE_INTENSITY[count]) scheduleVoice(state, COMBO_VOICE_INTENSITY[count]);
+        // 剧场里的点击不预约语音（发送时还会再查一次）；同一串里之前排上的也作废，免得离场后补发
+        if (isTheaterBlockingChat()) cancelPendingVoice(state);
+        else if (COMBO_VOICE_INTENSITY[count]) scheduleVoice(state, COMBO_VOICE_INTENSITY[count]);
         return { count, angry: false, allowTouchSet: count < 2, comboId: state.id };
     }
 
@@ -259,6 +264,14 @@
         });
         global.addEventListener('neko:deactivate-avatar-tool', () => {
             avatarToolActive = false;
+        });
+        // 切角色/换模型都会重新加载模型：旧角色的连点和生气冷却一并作废（A→B→A 也不会接着冷却）
+        MODEL_READY_EVENTS.forEach((name) => {
+            global.addEventListener(name, () => {
+                resetCombo();
+                angryUntil = 0;
+                angryCharacter = '';
+            });
         });
     }
 

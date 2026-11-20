@@ -3383,12 +3383,18 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, dura
             }
         }
 
+        // 动作可能是被新的点击/连点抢占中止才返回 false 的，这时不能再落到表情兜底
+        if (!isCurrentPlayAttempt()) {
+            triggerLog.reason = 'superseded_before_expression';
+            return false;
+        }
+
         // 2. 动作不可用或播放失败时，再用表情兜底
         if (!didPlayEffect && expressionFiles.length > 0) {
             const choiceFile = this.getRandomElement(expressionFiles);
             if (choiceFile && typeof this.playExpression === 'function') {
                 console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
-                const expressionPlayed = await this.playExpression(emotion, choiceFile);
+                const expressionPlayed = await this.playExpression(emotion, choiceFile, { isCurrent: isCurrentPlayAttempt });
                 if (!isCurrentPlayAttempt()) {
                     // 已被新的点击接管，不要继续写共享状态
                     triggerLog.reason = 'superseded_after_expression';
@@ -4590,6 +4596,8 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
         failedMotions: [],
         failedExpressions: []
     };
+    // 连点抢占（preemptForClickComboEmotion）后，本次点击的后续步骤一律作废
+    const clickComboGeneration = this._clickComboPreemptGeneration || 0;
 
     if (this._isHandlingTouchInteraction) {
         console.log('[TouchSet] 动作正在加载中，忽略频繁连击防止状态污染');
@@ -4784,6 +4792,12 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
             }
         }
 
+        // 动作被连点抢占中止后会返回 false，不能再落到表情兜底去盖连点写死的表情
+        if ((this._clickComboPreemptGeneration || 0) !== clickComboGeneration) {
+            triggerLog.reason = 'superseded_by_click_combo';
+            return false;
+        }
+
         if (triggerLog.motions.length === 0 && expressions.length > 0) {
             const randomExpressionName = expressions[Math.floor(Math.random() * expressions.length)];
             const faceInfo = this.fileReferences?.Expressions?.find(e => e.Name === randomExpressionName);
@@ -4884,6 +4898,9 @@ Live2DManager.prototype.preemptForClickComboEmotion = function() {
         return false;
     }
     try {
+        // 让进行中的首击点击效果 / touch set 失效：它们的动作被下面中止后不得再落到表情兜底
+        this._clickComboPreemptGeneration = (this._clickComboPreemptGeneration || 0) + 1;
+        this._clickEffectRestoreToken = (this._clickEffectRestoreToken || 0) + 1;
         if (typeof this._cancelTouchSetExpressionRestore === 'function') this._cancelTouchSetExpressionRestore();
         if (typeof this._stopClickEffectAction === 'function') this._stopClickEffectAction();
         // 中止进行中的情绪切换 / 点击动作 / 临时表情（abort 会同步复位 isEmotionChanging 并停掉 SDK 动作）

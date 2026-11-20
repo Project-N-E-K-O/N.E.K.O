@@ -563,3 +563,79 @@ test('pending combo lines stay with the clicked character', () => {
     assert.equal(first.count, 1);
     assert.equal(first.allowTouchSet, true);
 });
+
+test('reloading the model (character switch) clears the angry cooldown, so A -> B -> A starts fresh', () => {
+    const h = comboHelper({ lanlan_config: { lanlan_name: 'A' } });
+    for (let i = 0; i < 4; i++) {
+        h.shake.tap(h.canvas);
+        h.clock.advance(h.gap);
+    }
+    assert.equal(h.shake.tap(h.canvas).allowTouchSet, false, 'same character, no reload: still cooling down');
+
+    h.window.lanlan_config.lanlan_name = 'B';
+    h.window.fire('live2d-model-ready', { detail: {} });
+    h.window.lanlan_config.lanlan_name = 'A';
+    h.window.fire('live2d-model-ready', { detail: {} });
+    const back = h.shake.tap(h.canvas);
+    assert.deepEqual([back.count, back.angry, back.allowTouchSet], [1, false, true]);
+
+    for (const name of ['vrm-model-loaded', 'mmd-model-loaded', 'pngtuber-model-loaded']) {
+        const other = comboHelper({ lanlan_config: { lanlan_name: 'A' } });
+        for (let i = 0; i < 4; i++) other.shake.tap(other.canvas);
+        other.window.fire(name, { detail: {} });
+        assert.equal(other.shake.tap(other.canvas).count, 1, name);
+    }
+});
+
+test('taps during the theater never leave a line queued for after it ends', () => {
+    let theater = true;
+    const h = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => theater } });
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.gap);
+    h.shake.tap(h.canvas);
+    theater = false;
+    h.clock.advance(h.shake.COMBO_WINDOW_MS);
+    assert.equal(h.sent.length, 0, 'a double tap in the theater must not speak after leaving it');
+
+    // 第 2 下在剧场外排上了，第 3 下进剧场：那句也作废
+    const h2 = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => theater } });
+    theater = false;
+    h2.shake.tap(h2.canvas);
+    h2.clock.advance(h2.gap);
+    h2.shake.tap(h2.canvas);
+    h2.clock.advance(h2.gap);
+    theater = true;
+    h2.shake.tap(h2.canvas);
+    theater = false;
+    h2.clock.advance(h2.shake.COMBO_WINDOW_MS);
+    assert.equal(h2.sent.length, 0);
+    assert.equal(h2.clock.pending(), 0);
+});
+
+test('Live2D first-tap click effect does not fall back to an expression once a combo preempts its motion', async () => {
+    const h = live2d();
+    const expressions = [];
+    Object.assign(h.manager, {
+        _cancelTouchSetExpressionRestore() {},
+        _stopClickEffectAction() {},
+        _cancelAvatarOperations() {},
+        clearEmotionEffects() {},
+        isAvatarPerformanceCapabilityLocked: () => false,
+        getRandomElement: list => list[0],
+        fileReferences: { Motions: { happy: [{ File: 'happy.motion3.json' }] }, Expressions: [] },
+        emotionMapping: { expressions: { happy: ['happy.exp3.json'] } },
+        playExpression: async (...args) => { expressions.push(args); return true; },
+        // 第 2 下在首击动作加载期间抢占：动作被中止，返回 false
+        playActionMotion: async () => { h.manager.preemptForClickComboEmotion(); return false; }
+    });
+    const before = h.manager._clickComboPreemptGeneration || 0;
+    assert.equal(await h.manager._playTemporaryClickEffect('happy'), false);
+    assert.deepEqual(expressions, []);
+    assert.equal(h.manager._clickComboPreemptGeneration, before + 1);
+
+    // 没被抢占时，动作失败仍照常用表情兜底
+    h.manager.playActionMotion = async () => false;
+    await h.manager._playTemporaryClickEffect('happy');
+    assert.equal(expressions.length, 1);
+    assert.equal(typeof expressions[0][2].isCurrent, 'function');
+});
