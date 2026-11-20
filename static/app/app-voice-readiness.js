@@ -10,6 +10,7 @@
         let retiredSessions = new Set();
         const waiting = new Map();
         const children = new Set();
+        const closingChildren = new WeakSet();
         const bridge = root.nekoVoiceEnrollment;
         let panel = null;
         let label = null;
@@ -117,6 +118,7 @@
             } else {
                 for (const child of [...children]) {
                     if (!child.closed) {
+                        closingChildren.add(child);
                         let timer;
                         try {
                             await Promise.race([
@@ -279,10 +281,18 @@
                 return;
             }
             if (event.source.opener !== root || event.data.type !== 'neko-voice-enrollment-prepare') return;
+            if (event.source.closed || closingChildren.has(event.source)) return;
             children.add(event.source);
             if (children.size > 32) children.delete(children.values().next().value);
             let result;
             try { result = await prepare(event.data); } catch (_) { result = { stopped: false }; }
+            // The page can close while preview_begin is still in flight. Its
+            // opener must release that late ticket instead of handing it to a
+            // page that can no longer acknowledge or clean it up.
+            if (event.source.closed || closingChildren.has(event.source)) {
+                if (result.token) await compensatePreview({ request_id: event.data.operationId, token: result.token, ttl_seconds: result.ttl_seconds });
+                return;
+            }
             event.source.postMessage({ type: 'neko-voice-enrollment-stopped', operationId: event.data.operationId, ...result }, root.location.origin);
         });
         root.addEventListener('localechange', render);
