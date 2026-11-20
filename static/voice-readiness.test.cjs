@@ -1258,6 +1258,37 @@ for (const closeBeforeAcknowledgement of [false, true]) {
     });
 }
 
+test('browser voice startup releases a preview reply queued to a child that closes before receiving it', async () => {
+    const events = new Map(); const timers = new Map(); const sent = []; const queued = []; let sequence = 0;
+    const socket = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+    const root = { crypto, location: { origin: 'http://localhost:48911' }, t: key => key,
+        addEventListener(name, fn) { events.set(name, fn); },
+        setTimeout(fn, delay) { const id = ++sequence; timers.set(id, { fn, delay }); return id; },
+        clearTimeout(id) { timers.delete(id); } };
+    const document = { readyState: 'complete', body: element(), documentElement: element(), createElement: element };
+    vm.runInNewContext(ownerSource, { window: root, document, crypto, Set, Map });
+    const controller = root.createVoiceCaptureReadiness({ socket, isRecording: false }, async () => {});
+    const child = { opener: root, closed: false, nekoBeforeWindowClose: async () => {},
+        close() { this.closed = true; }, postMessage(message) { queued.push(message); } };
+    const preview = events.get('message')({ origin: root.location.origin, source: child,
+        data: { type: 'neko-voice-enrollment-prepare', operationId: 'queued-browser-trial' } });
+    await new Promise(resolve => setImmediate(resolve));
+    controller.controlResult({ ...sent[0], ok: true, token: 'queued-browser-token', ttl_seconds: 60 }, socket);
+    await preview;
+    assert.equal(queued[0].token, 'queued-browser-token', 'postMessage queues delivery before the child can claim the token');
+    let prepared = false;
+    const preparing = controller.prepareCapture().then(() => { prepared = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(child.closed, true);
+    assert.equal(sent[1]?.event, 'preview_end', 'the parent must release its closed child\'s unclaimed token');
+    assert.equal(sent[1].token, 'queued-browser-token');
+    assert.equal(prepared, false);
+    controller.controlResult({ ...sent[1], ok: true }, socket);
+    await preparing;
+    assert.equal(controller.blocked(), false);
+    assert.equal(timers.size, 0);
+});
+
 test('closing an input test stops capture immediately and waits for server-owned isolation release', async () => {
     const capture = deferred(); const release = deferred(); const h = harness({ captureGate: capture,
         requestRouter: async url => {

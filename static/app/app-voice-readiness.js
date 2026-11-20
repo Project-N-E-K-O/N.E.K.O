@@ -29,13 +29,20 @@
             if (owned.expiry !== null) root.clearTimeout(owned.expiry);
             owned.expiry = root.setTimeout(() => clearIsolation(owned), milliseconds);
         }
+        async function releasePreview(owned, token) {
+            if (owned && owned.releasePending) return owned.releasePending;
+            const releasing = control('preview_end', { token }).then(() => clearIsolation(owned));
+            if (owned) owned.releasePending = releasing;
+            try { await releasing; }
+            finally { if (owned && owned.releasePending === releasing) owned.releasePending = null; }
+        }
         async function compensatePreview(details) {
             const owned = isolation && isolation.operationId === details.request_id ? isolation : null;
             if (owned) {
                 owned.token = details.token;
                 boundIsolation(owned, Math.max(1, Math.min(60, Number(details.ttl_seconds) || 60)) * 1000);
             }
-            try { await control('preview_end', { token: details.token }); clearIsolation(owned); }
+            try { await releasePreview(owned, details.token); }
             catch (_) { /* The matching ticket expiry bounds an uncertain release. */ }
         }
         function t(key, fallback) { const text = root.t && root.t(key); return text && text !== key ? text : fallback; }
@@ -133,6 +140,12 @@
                         }
                     }
                 }
+                // postMessage may have queued the token without the child ever
+                // receiving it. Only release after its bound page is closed,
+                // sharing any release already started by that page.
+                if (isolation && isolation.child && isolation.child.closed && isolation.token) {
+                    await releasePreview(isolation, isolation.token);
+                }
                 // Older desktop bridges close their bound page when an idle
                 // registration advances the capture revision.
                 if (bridge) await register(false);
@@ -188,12 +201,13 @@
                 pending.reject(error);
             }
         }
-        async function prepare(request) {
+        async function prepare(request, child) {
             if (request.event === 'release') {
                 // Release owns its token even when a newer local operation has
                 // replaced it; the server matches the token without touching the
                 // successor. Never discard an old cleanup because a flag changed.
-                if (request.token) await control('preview_end', { token: request.token });
+                const owned = isolation && request.operationId === isolation.operationId && request.token === isolation.token ? isolation : null;
+                if (request.token) await releasePreview(owned, request.token);
                 if (isolation && request.operationId === isolation.operationId && request.token === isolation.token) {
                     clearIsolation(isolation);
                 }
@@ -203,7 +217,7 @@
             if (isolation) throw new Error('capture_owner_busy');
             const atSocket = S.socket;
             const identity = { sessionId: localSession, revision: String(revision) };
-            const owned = { operationId: request.operationId, token: null, expiry: null };
+            const owned = { operationId: request.operationId, token: null, expiry: null, child };
             isolation = owned;
             // A lost begin/release acknowledgement must never leave the client
             // permanently fenced. This includes the begin response budget and
@@ -285,7 +299,7 @@
             children.add(event.source);
             if (children.size > 32) children.delete(children.values().next().value);
             let result;
-            try { result = await prepare(event.data); } catch (_) { result = { stopped: false }; }
+            try { result = await prepare(event.data, event.source); } catch (_) { result = { stopped: false }; }
             // The page can close while preview_begin is still in flight. Its
             // opener must release that late ticket instead of handing it to a
             // page that can no longer acknowledge or clean it up.
