@@ -576,12 +576,14 @@ class KnowledgeService:
         entry_counts = self._store.entry_counts()
         chunk_counts = self._store.chunk_stats(None)
         search_rows = self._store.search_row_counts()
-        # Reserve every pack before planning the first one: a later refused
-        # pack may retain more rows than its registry record currently counts.
-        reservations = {key: max(record.chunks, chunk_counts.get(key, {}).get("total", 0))
-                        for key, record in registry.packs.items()}
         broken: list[str] = []
         original_registry = registry
+        # Reserve every pack's footprint (registered or physically kept rows,
+        # whichever is larger) before planning any rebuild, so the iteration
+        # order cannot let an earlier rebuild use capacity a later refused
+        # pack still occupies. A rebuilt pack then reserves its actual plan.
+        reserved = {key: max(value.chunks, chunk_counts.get(key, {}).get("total", 0))
+                    for key, value in registry.packs.items()}
         for pack_id, record in registry.packs.items():
             # The raw file is the source of truth even when the index is
             # current: a pack whose file is gone or altered cannot be rebuilt
@@ -609,12 +611,10 @@ class KnowledgeService:
             except (OSError, KnowledgePackError) as exc:
                 logger.warning("[Knowledge] pack %s cannot be rebuilt (%s)", pack_id, type(exc).__name__)
                 self._store.delete_pack(pack_id)
-                # The rows are gone, but the still-registered pack keeps its
-                # admitted reservation, as it does during ordinary admission.
-                reservations[pack_id] = record.chunks
                 broken.append(pack_id)
+                reserved[pack_id] = record.chunks  # Rows dropped; the registry count still stands.
                 continue
-            others = sum(reservations.values()) - reservations[pack_id]
+            others = sum(value for key, value in reserved.items() if key != pack_id)
             plan = _budgeted_plan(pack, self._rebuild_options(record), others)
             if plan is None:
                 # A capacity refusal is not SQLite corruption: keep the old
@@ -624,19 +624,21 @@ class KnowledgeService:
                 # The kept rows (e.g. an unfinished replacement) may outnumber
                 # the registered count. Count whichever is larger, so capacity
                 # is never underestimated while the pack waits for repair.
-                kept = chunk_counts.get(pack_id, {}).get("total", 0)
-                if kept > record.chunks:
-                    registry = registry.with_pack(replace(record, chunks=kept))
+                if reserved[pack_id] > record.chunks:
+                    registry = registry.with_pack(replace(record, chunks=reserved[pack_id]))
                 logger.warning("[Knowledge] rebuild of pack %s exceeds the chunk budget", pack_id)
                 continue
             options, chunks = plan
             self._store.replace_pack(pack, pack_sha256=record.pack_sha256,
                                      disabled_keys=record.disabled_titles, **options)
-            reservations[pack_id] = chunks
+            reserved[pack_id] = chunks
             if chunks != record.chunks:
                 registry = registry.with_pack(replace(record, chunks=chunks))
             logger.info("[Knowledge] rebuilt index of pack %s", pack_id)
         if registry != original_registry:
+            # Startup reservations include missing sources, so the row-only
+            # replan coordinator cannot recover a failed save. Let the open
+            # path retain the database and disable admission until a restart.
             save_registry(self.root, registry)
         return broken, registry
 

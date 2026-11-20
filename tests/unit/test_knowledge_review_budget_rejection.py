@@ -207,3 +207,80 @@ async def test_startup_refusal_counts_kept_rows_before_any_admission(tmp_path, m
             assert (await reopened.import_pack(_raw(_pack("imp.third"))))["reason"] == "capacity_chunks"
         finally:
             await reopened.stop()
+
+
+async def test_a_failed_registry_save_at_startup_keeps_the_database(tmp_path, monkeypatch):
+    """Disk full or permissions on registry.json is not SQLite corruption: no database wipe."""
+    async with _installed(tmp_path) as (original, _raw_pack):
+        record = original._registry.packs["imp.example"]
+        entries = [{"title": f"Left {index}", "content": f"Unfinished replacement row {index}."} for index in range(4)]
+        original._store.replace_pack(decode_pack_bytes(_raw(_pack(record.pack_id, entries=entries))), pack_sha256="c" * 64)
+        actual = original._store.chunk_stats(None)[record.pack_id]["total"]
+        before = _rows(original._store)
+        await original.stop()
+        _limit(monkeypatch, "pack")
+        save = module.save_registry
+
+        def refuse(*_args, **_kwargs):
+            raise OSError("synthetic registry write failure")
+
+        monkeypatch.setattr(module, "save_registry", refuse)
+        reopened = KnowledgeService(original.root, embedder=ArchiveProvider())
+        removed = []
+        monkeypatch.setattr(reopened._store, "remove_files", lambda: removed.append(True))
+        await reopened.start()
+        try:
+            assert not removed and _rows(reopened._store) == before
+            # Startup keeps the library unavailable rather than applying the
+            # row-only replan coordinator to registered missing-source capacity.
+            assert reopened._state == "unavailable"
+            assert not reopened._pending_chunk_reconcile
+            monkeypatch.setattr(module, "save_registry", save)
+            await reopened.start()
+            await _stop_automatic_indexer(reopened)
+            assert reopened._state == "ready"
+            assert reopened._registry.packs[record.pack_id].chunks == actual
+            assert not reopened._pending_chunk_reconcile
+            assert json.loads((reopened.root / "registry.json").read_text())["packs"][record.pack_id]["chunks"] == actual
+        finally:
+            await reopened.stop()
+
+
+async def test_startup_rebuild_order_cannot_bypass_the_total_budget(tmp_path, monkeypatch):
+    """A growing pack planned first must already see the rows a later refused pack keeps."""
+    from dataclasses import replace
+
+    from knowledge.registry import load_registry, save_registry
+
+    root = tmp_path / "library"
+    service = KnowledgeService(root, embedder=FakeEmbedder())
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        two = [{"title": f"B{index}", "content": f"Growing reference {index}."} for index in range(2)]
+        three = [{"title": f"A{index}", "content": f"Kept reference {index}."} for index in range(3)]
+        assert (await _import(service, _pack("imp.a-grow", entries=two)))["state"] == "active"
+        assert (await _import(service, _pack("imp.z-kept", entries=three)))["state"] == "active"
+        # The first pack lost its rows; the last holds three rows of an unfinished replacement.
+        service._store.delete_pack("imp.a-grow")
+        service._store.replace_pack(decode_pack_bytes(_raw(_pack("imp.z-kept", entries=three))), pack_sha256="c" * 64)
+    finally:
+        await service.stop()
+    registry = load_registry(root)
+    for pack_id in ("imp.a-grow", "imp.z-kept"):  # Both registered with a stale count of one.
+        registry = registry.with_pack(replace(registry.packs[pack_id], chunks=1))
+    save_registry(root, registry)
+    assert list(registry.packs) == ["imp.a-grow", "imp.z-kept"]  # The growing pack is planned first.
+    monkeypatch.setattr(module, "MAX_TOTAL_CHUNKS", 4)
+    reopened = KnowledgeService(root, embedder=FakeEmbedder())
+    await reopened.start()
+    try:
+        await _stop_automatic_indexer(reopened)
+        stats = reopened._store.chunk_stats(None)
+        assert sum(value["total"] for value in stats.values()) <= 4
+        assert sum(record.chunks for record in reopened._registry.packs.values()) <= 4
+        # The growing pack waits for repair; the kept pack fits and is rebuilt.
+        assert reopened._broken_packs == ("imp.a-grow",)
+        assert stats["imp.z-kept"]["total"] == 3 and "imp.a-grow" not in stats
+    finally:
+        await reopened.stop()

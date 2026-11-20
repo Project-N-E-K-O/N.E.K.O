@@ -165,3 +165,43 @@ async def test_missing_source_releases_rows_but_keeps_its_registered_reservation
             assert sum(item.chunks for item in reopened._registry.packs.values()) == 3
         finally:
             await reopened.stop()
+
+
+async def test_failed_startup_save_keeps_missing_source_capacity_after_recovery(tmp_path, monkeypatch):
+    """A missing source's registered capacity survives a failed startup flush."""
+    async with _installed(tmp_path) as (original, _raw_pack):
+        leftover = decode_pack_bytes(_raw(_pack("imp.example", entries=[
+            {"title": f"Kept {index}", "content": "Retained replacement input."} for index in range(3)
+        ])))
+        original._store.replace_pack(leftover, pack_sha256="c" * 64)
+        missing = original._registry.packs["imp.other"]
+        (original.root / "packs" / missing.file_name).unlink()
+        await original.stop()
+        monkeypatch.setattr(module, "MAX_CHUNKS_PER_PACK", 1)
+        monkeypatch.setattr(module, "MAX_TOTAL_CHUNKS", 4)
+        save = module.save_registry
+
+        def failed_save(*_args):
+            raise OSError("synthetic registry write refusal")
+
+        monkeypatch.setattr(module, "save_registry", failed_save)
+        reopened = KnowledgeService(original.root, embedder=ArchiveProvider())
+        await reopened.start()
+        try:
+            # The ordinary post-replan coordinator counts physical rows only;
+            # it cannot preserve this missing source's admitted reservation.
+            assert json.loads((reopened.root / "registry.json").read_text())["packs"][missing.pack_id]["chunks"] == 1
+            monkeypatch.setattr(module, "save_registry", save)
+            # Allow either background recovery or a fresh startup, but neither
+            # may persist zero simply because the missing source has no rows.
+            if reopened._state == "ready":
+                await reopened._index_round()
+            else:
+                await reopened.start()
+            await _stop_automatic_indexer(reopened)
+            await reopened._index_round()
+            assert reopened._registry.packs[missing.pack_id].chunks == 1
+            assert sum(item.chunks for item in reopened._registry.packs.values()) == 4
+            assert (await reopened.import_pack(_raw(_pack("imp.third"))))["reason"] == "capacity_chunks"
+        finally:
+            await reopened.stop()
