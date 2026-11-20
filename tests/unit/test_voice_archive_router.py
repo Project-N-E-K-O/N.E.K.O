@@ -78,6 +78,19 @@ def test_corrupt_archive_not_played(client):
     assert c.get(url).status_code == 409
 
 
+def test_pending_purge_blocks_old_clip_even_if_same_name_is_live(client):
+    from main_logic.voice_archive import write_character_voice_archive_purge_intent
+
+    c, archive = client
+    save(archive, 'a', 'r')
+    url = c.get('/api/voice-archive/message?character=YUI&record_id=r').json()['clips'][0]['url']
+    write_character_voice_archive_purge_intent(
+        archive.path.parent.parent, 'YUI', character_uid='old-uid', character_id='old-id',
+    )
+    assert c.get('/api/voice-archive/message?character=YUI&record_id=r').status_code == 404
+    assert c.get(url).status_code == 404
+
+
 def test_deleted_character_cannot_replay_old_clip_url(client, monkeypatch):
     c, archive = client
     save(archive, 'a', 'r')

@@ -49,12 +49,18 @@ class RecordingSettings(BaseModel):
 
 
 def require_live_character(character: str):
-    """A deleted character's old clip URL must immediately become invalid."""
+    """A deleted or purge-pending character's old clip URL must stay invalid."""
     try:
-        characters = get_config_manager().load_characters().get('猫娘', {})
+        config_manager = get_config_manager()
+        characters = config_manager.load_characters().get('猫娘', {})
+        from main_logic.voice_archive import has_pending_character_voice_archive_purge
+
+        purge_pending = has_pending_character_voice_archive_purge(
+            config_manager.app_docs_dir, character,
+        )
     except Exception:
         raise HTTPException(503, 'voice_unavailable', headers=HEADERS) from None
-    if character not in characters:
+    if character not in characters or purge_pending:
         raise HTTPException(404, 'voice_unavailable', headers=HEADERS)
 
 

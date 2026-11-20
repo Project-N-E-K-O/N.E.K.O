@@ -61,6 +61,22 @@ def test_history_exposes_only_exact_playable_voice_and_serves_original_audio(cli
     assert audio.headers['cache-control'] == 'no-store'
 
 
+def test_pending_voice_purge_hides_old_recordings_from_history(client):
+    from main_logic.voice_archive import write_character_voice_archive_purge_intent
+
+    web, root = client
+    write_character_voice_archive_purge_intent(
+        root, 'Alice', character_uid='deleted-uid', character_id='deleted-id',
+    )
+    messages = web.get('/api/chat-history/messages', params={'character': 'Alice'}).json()['messages']
+    assert messages
+    assert all('voice' not in entry for entry in messages)
+    assert web.get(
+        '/api/voice-archive/message',
+        params={'character': 'Alice', 'record_id': 'record-63'},
+    ).status_code == 404
+
+
 def test_playback_pages_follow_time_then_id_and_keep_date_search_scope(client):
     web, _ = client
     params = {'character': 'Alice'}

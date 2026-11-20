@@ -8,7 +8,8 @@
 /* The global dark dialog overlay changes this dialog's backdrop only. Keep the
    history content self-themed so its foreground never inherits dark text on a
    translucent black surface. */
-[data-theme="dark"] .history-dialog {
+/* Out-specificity the global .neko-dialog-overlay background override. */
+[data-theme="dark"] .history-dialog.neko-dialog-overlay {
   --history-ink: #e6eee9;
   color-scheme: dark;
   color: #e6eee9;

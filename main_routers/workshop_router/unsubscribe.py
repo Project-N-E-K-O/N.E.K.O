@@ -651,7 +651,13 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     release_character_recent_transaction,
                 )
                 from ..shared_state import get_remove_one_catgirl, get_session_manager
-                from main_logic.voice_archive import retire_voice_archive, delete_character_voice_archive
+                from main_logic.voice_archive import (
+                    retire_voice_archive,
+                    delete_character_voice_archive,
+                    write_character_voice_archive_purge_intent,
+                    commit_character_voice_archive_purge_intent,
+                    discard_character_voice_archive_purge_intent,
+                )
                 from ..characters_router.crud import (
                     collect_numeric_v2_character_purge,
                     complete_numeric_v2_character_purge,
@@ -869,23 +875,54 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             # then fails is retried from this intent by startup maintenance. An
             # intent that cannot be written aborts before anything is committed.
             numeric_purge_intents: dict[str, object] = {}
+            voice_archive_purge_intents: dict[str, tuple[str | None, str | None]] = {}
             if pending_del_names and not theater_preflight_failed:
                 for name in pending_del_names:
                     numeric_purge = numeric_purges.get(name)
-                    if numeric_purge is None:
-                        continue
+                    if numeric_purge is not None:
+                        try:
+                            numeric_purge_intents[name] = (
+                                await persist_numeric_v2_character_purge_intent(numeric_purge)
+                            )
+                        except Exception as exc:
+                            logger.error(
+                                f"取消订阅同步清理: 剧场清理意图写入失败 {name}: {exc}",
+                                exc_info=True,
+                            )
+                            cleanup_summary["errors"].append({
+                                "character": name,
+                                "stage": "theater_preflight",
+                                "error": str(exc),
+                            })
+                            theater_preflight_failed = True
+                            break
+
+                    # Voice recordings are also an irreversible sidecar. Fence
+                    # the identity before characters.json commits; a crash or
+                    # failed SQLite purge then remains retryable at next startup.
+                    reserved = catgirl_map.get(name, {}).get("_reserved", {})
+                    character_id = (
+                        str(reserved.get("character_id") or "").strip()
+                        if isinstance(reserved, dict) else ""
+                    ) or None
+                    character_uid = pending_avatar_uids.get(name)
                     try:
-                        numeric_purge_intents[name] = (
-                            await persist_numeric_v2_character_purge_intent(numeric_purge)
+                        await asyncio.to_thread(
+                            write_character_voice_archive_purge_intent,
+                            config_mgr.app_docs_dir,
+                            name,
+                            character_uid=character_uid,
+                            character_id=character_id,
                         )
+                        voice_archive_purge_intents[name] = (character_uid, character_id)
                     except Exception as exc:
                         logger.error(
-                            f"取消订阅同步清理: 剧场清理意图写入失败 {name}: {exc}",
-                            exc_info=True,
+                            "取消订阅同步清理: 语音归档清理意图写入失败 %s: %s",
+                            name, exc, exc_info=True,
                         )
                         cleanup_summary["errors"].append({
                             "character": name,
-                            "stage": "theater_preflight",
+                            "stage": "voice_archive_preflight",
                             "error": str(exc),
                         })
                         theater_preflight_failed = True
@@ -903,6 +940,21 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                             f"取消订阅同步清理: 未提交的剧场清理意图删除失败 {intent_name}: {exc}"
                         )
                 numeric_purge_intents.clear()
+                for intent_name, (character_uid, character_id) in voice_archive_purge_intents.items():
+                    try:
+                        await asyncio.to_thread(
+                            discard_character_voice_archive_purge_intent,
+                            config_mgr.app_docs_dir,
+                            intent_name,
+                            character_uid=character_uid,
+                            character_id=character_id,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "取消订阅同步清理: 未提交的语音归档清理意图删除失败 %s: %s",
+                            intent_name, exc,
+                        )
+                voice_archive_purge_intents.clear()
 
             if theater_preflight_failed:
                 await _discard_uncommitted_purge_intents()
@@ -952,6 +1004,28 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             if pending_del_names and not theater_preflight_failed and not visit_marker_failed:
                 try:
                     await config_mgr.asave_characters(characters_mut)
+                    # Config deletion is now durable. Promote the fences; if
+                    # this write fails, startup compares the recorded identity
+                    # with characters.json before deciding whether to purge.
+                    for intent_name, (character_uid, character_id) in voice_archive_purge_intents.items():
+                        try:
+                            await asyncio.to_thread(
+                                commit_character_voice_archive_purge_intent,
+                                config_mgr.app_docs_dir,
+                                intent_name,
+                                character_uid=character_uid,
+                                character_id=character_id,
+                            )
+                        except Exception as exc:
+                            logger.error(
+                                "取消订阅同步清理: 语音归档清理意图提交标记失败 %s: %s",
+                                intent_name, exc, exc_info=True,
+                            )
+                            cleanup_summary["errors"].append({
+                                "character": intent_name,
+                                "stage": "voice_archive_intent_commit",
+                                "error": str(exc),
+                            })
                     cleanup_summary["cleaned_characters"] = list(pending_del_names)
                     logger.info(
                         f"取消订阅同步清理: 批量删除 {len(pending_del_names)} 个角色并写入 characters.json: "
@@ -972,7 +1046,9 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
 
             # Any local config cleanup failure (per-name deletion/batch persistence) aborts immediately.
             delete_config_failed = any(
-                err.get("stage") in {"delete_config", "theater_preflight", "visit_retire_marker"}
+                err.get("stage") in {
+                    "delete_config", "theater_preflight", "voice_archive_preflight", "visit_retire_marker",
+                }
                 for err in cleanup_summary.get("errors") or []
             )
             if local_config_cleanup_failed or delete_config_failed:

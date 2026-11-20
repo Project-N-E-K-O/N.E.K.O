@@ -1139,6 +1139,20 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                     await _config_manager.abackfill_character_uids()
             except Exception as e:
                 logger.warning("角色稳定 id 补发失败，下次启动重试: %s", e)
+
+            # Resume committed voice-archive purges before the history and
+            # playback routes can expose rows for a recreated character name.
+            # Failed purges retain their durable fence and retry next startup.
+            try:
+                from main_logic.voice_archive import retry_pending_voice_archive_purges
+
+                voice_purge_summary = await asyncio.to_thread(
+                    retry_pending_voice_archive_purges, _config_manager,
+                )
+                if voice_purge_summary.get("purged") or voice_purge_summary.get("errors"):
+                    logger.info("Voice archive purge recovery: %s", voice_purge_summary)
+            except Exception as e:
+                logger.warning("Voice archive purge recovery deferred to next startup: %s", e)
             await _sync_memory_server_after_startup_import(import_result)
 
             logger.info("正在初始化 Steamworks...")

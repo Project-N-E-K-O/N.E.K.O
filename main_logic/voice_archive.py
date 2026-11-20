@@ -12,8 +12,10 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 import sqlite3
+import tempfile
 
 log = logging.getLogger(__name__)
 MAX_PENDING_EVENTS = 256
@@ -42,11 +44,143 @@ PRAGMA user_version=1;
 """
 
 
+def _purge_intent_path(app_docs_dir, character: str) -> Path:
+    key = hashlib.sha256(str(character).encode("utf-8")).hexdigest()
+    return Path(app_docs_dir) / "voice_archive" / "purge-intents" / f"{key}.json"
+
+
+def has_pending_character_voice_archive_purge(app_docs_dir, character: str) -> bool:
+    """Fail closed while a deleted identity's archive purge is pending."""
+    path = _purge_intent_path(app_docs_dir, character)
+    return path.exists() or path.is_symlink()
+
+
+def _read_purge_intent(path: Path) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 1
+        or not isinstance(payload.get("character"), str)
+        or not payload["character"]
+        or payload.get("state") not in {"prepared", "committed"}
+    ):
+        raise ValueError("invalid voice archive purge intent")
+    return payload
+
+
+def write_character_voice_archive_purge_intent(
+    app_docs_dir,
+    character: str,
+    *,
+    character_uid: str | None = None,
+    character_id: str | None = None,
+) -> Path:
+    """Atomically fence a character name before its config deletion commits."""
+    if not isinstance(character, str) or not character:
+        raise ValueError("voice archive purge requires a character name")
+    path = _purge_intent_path(app_docs_dir, character)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    payload = {
+        "version": 1,
+        "character": character,
+        "character_uid": str(character_uid or "").strip() or None,
+        "character_id": str(character_id or "").strip() or None,
+        "state": "prepared",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if path.exists() or path.is_symlink():
+        existing = _read_purge_intent(path)
+        if existing["character"] != character:
+            raise RuntimeError("voice archive purge intent identity mismatch")
+        for field in ("character_uid", "character_id"):
+            old_value, new_value = existing.get(field), payload.get(field)
+            if old_value and new_value and old_value != new_value:
+                raise RuntimeError("another identity's voice archive purge is still pending")
+            if old_value:
+                payload[field] = old_value
+        if existing.get("state") == "committed":
+            payload["state"] = "committed"
+            payload["created_at"] = existing.get("created_at") or payload["created_at"]
+    _write_purge_intent_payload(path, payload)
+    return path
+
+
+def _write_purge_intent_payload(path: Path, payload: dict) -> None:
+    fd, temporary = tempfile.mkstemp(prefix=".purge-", suffix=".tmp", dir=path.parent)
+    try:
+        try:
+            os.fchmod(fd, 0o600)
+        except (AttributeError, OSError):
+            pass
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        try:
+            os.chmod(path, 0o600)
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            # Atomic replace is the required durability boundary; directory
+            # fsync is best-effort on platforms that do not support it.
+            pass
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def commit_character_voice_archive_purge_intent(
+    app_docs_dir,
+    character: str,
+    *,
+    character_uid: str | None = None,
+    character_id: str | None = None,
+) -> Path:
+    """Mark a prepared intent committed after characters.json is durable."""
+    path = write_character_voice_archive_purge_intent(
+        app_docs_dir, character, character_uid=character_uid, character_id=character_id,
+    )
+    payload = _read_purge_intent(path)
+    payload["state"] = "committed"
+    _write_purge_intent_payload(path, payload)
+    return path
+
+
+def discard_character_voice_archive_purge_intent(
+    app_docs_dir,
+    character: str,
+    *,
+    character_uid: str | None = None,
+    character_id: str | None = None,
+) -> bool:
+    """Remove only an uncommitted intent for the same character identity."""
+    path = _purge_intent_path(app_docs_dir, character)
+    if not path.exists() and not path.is_symlink():
+        return True
+    payload = _read_purge_intent(path)
+    if payload.get("state") == "committed":
+        return False
+    for field, expected in (("character_uid", character_uid), ("character_id", character_id)):
+        actual = payload.get(field)
+        if actual and expected and actual != expected:
+            return False
+    path.unlink(missing_ok=True)
+    return True
+
+
 class VoiceArchive:
     def __init__(self, path):
         self.path = Path(path)
 
     def write(self, event):
+        if has_pending_character_voice_archive_purge(self.path.parent.parent, event["character"]):
+            raise RuntimeError("voice archive purge is pending for this character")
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with closing(sqlite3.connect(self.path, timeout=2)) as db:
             db.execute('PRAGMA journal_mode=WAL')
@@ -123,15 +257,25 @@ def rename_character_voice_archive(app_docs_dir, old_name: str, new_name: str) -
     return changed > 0
 
 
-def delete_character_voice_archive(app_docs_dir, character: str) -> int:
-    """Purge one deleted character's audio and duplicated text, not other owners.
+def delete_character_voice_archive(
+    app_docs_dir,
+    character: str,
+    *,
+    character_uid: str | None = None,
+    character_id: str | None = None,
+) -> int:
+    """Durably fence, then securely purge one deleted character's voice data.
 
-    Called only once the character deletion has committed. ``secure_delete``
-    overwrites removed SQLite cells rather than retaining their old payloads
-    in reusable pages, and a checkpoint releases the old WAL pages.
+    The intent survives SQLite failures and is retried at startup. All replay
+    and history joins reject a character while this marker exists, so a new
+    character with the same name cannot see old rows before the purge finishes.
     """
-    path = Path(app_docs_dir) / 'voice_archive' / 'archive.sqlite3'
+    intent_path = commit_character_voice_archive_purge_intent(
+        app_docs_dir, character, character_uid=character_uid, character_id=character_id,
+    )
+    path = Path(app_docs_dir) / "voice_archive" / "archive.sqlite3"
     if not path.is_file():
+        intent_path.unlink(missing_ok=True)
         return 0
     with closing(sqlite3.connect(path, timeout=2)) as db:
         db.execute('PRAGMA foreign_keys=ON')
@@ -142,8 +286,56 @@ def delete_character_voice_archive(app_docs_dir, character: str) -> int:
                            '(SELECT id FROM clips WHERE character=?)', (character,))
             deleted = db.execute('DELETE FROM clips WHERE character=?', (character,)).rowcount
         db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-        return deleted
+    # Clear the fence only after the row deletes and WAL checkpoint completed.
+    intent_path.unlink(missing_ok=True)
+    return deleted
 
+
+def retry_pending_voice_archive_purges(config_manager) -> dict:
+    """Resume committed archive purges; discard prepared intents for live identities."""
+    app_docs_dir = config_manager.app_docs_dir
+    directory = Path(app_docs_dir) / "voice_archive" / "purge-intents"
+    summary = {"purged": [], "discarded": [], "pending": [], "errors": []}
+    if not directory.is_dir():
+        return summary
+    try:
+        characters_data = config_manager.load_characters()
+        catgirls = characters_data.get("猫娘", {}) if isinstance(characters_data, dict) else {}
+        if not isinstance(catgirls, dict):
+            catgirls = {}
+    except Exception as exc:
+        summary["errors"].append(str(exc))
+        log.warning("Voice archive purge recovery cannot read characters.json: %s", exc)
+        return summary
+
+    from utils.config_manager import get_character_uid, get_reserved
+
+    for intent_path in sorted(directory.glob("*.json")):
+        try:
+            intent = _read_purge_intent(intent_path)
+            character = intent["character"]
+            entry = catgirls.get(character)
+            if intent["state"] == "prepared" and entry is not None:
+                current_uid = str(get_character_uid(entry) or "").strip() or None
+                current_id = str(get_reserved(entry, "character_id", default="") or "").strip() or None
+                same_uid = not intent.get("character_uid") or current_uid == intent["character_uid"]
+                same_id = not intent.get("character_id") or current_id == intent["character_id"]
+                if same_uid and same_id:
+                    intent_path.unlink(missing_ok=True)
+                    summary["discarded"].append(character)
+                    continue
+            deleted = delete_character_voice_archive(
+                app_docs_dir,
+                character,
+                character_uid=intent.get("character_uid"),
+                character_id=intent.get("character_id"),
+            )
+            summary["purged"].append({"character": character, "clips": deleted})
+        except Exception as exc:
+            summary["pending"].append(str(intent_path))
+            summary["errors"].append(str(exc))
+            log.warning("Voice archive purge recovery remains pending: %s", intent_path.name, exc_info=True)
+    return summary
 
 def _mark_incomplete(manager, speech_id, attempt_generation=None):
     sid = str(speech_id)

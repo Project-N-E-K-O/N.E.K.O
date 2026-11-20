@@ -9,6 +9,13 @@ def attach_voice(page, app_docs_dir, character):
     ids = list({entry['recordId'] for entry in entries if entry.get('recordId')})
     path = Path(app_docs_dir) / 'voice_archive' / 'archive.sqlite3'
     page['voiceArchiveAvailable'] = path.is_file()
+    from main_logic.voice_archive import has_pending_character_voice_archive_purge
+    if has_pending_character_voice_archive_purge(app_docs_dir, character):
+        # A same-name replacement must not inherit the deleted identity's
+        # recordings while its durable purge intent is being retried.
+        page['voiceArchiveAvailable'] = False
+        page['voiceUnavailable'] = True
+        return page
     if not ids or not page['voiceArchiveAvailable']:
         return page
     try:

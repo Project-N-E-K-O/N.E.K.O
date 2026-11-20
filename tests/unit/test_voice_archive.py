@@ -10,9 +10,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from main_logic.voice_archive import (VoiceArchive, archive_event, drain_voice_archive,
-                                      rename_character_voice_archive, retire_voice_archive,
-                                      delete_character_voice_archive)
+from main_logic.voice_archive import (
+    VoiceArchive,
+    archive_event,
+    drain_voice_archive,
+    rename_character_voice_archive,
+    retire_voice_archive,
+    delete_character_voice_archive,
+    has_pending_character_voice_archive_purge,
+    retry_pending_voice_archive_purges,
+    write_character_voice_archive_purge_intent,
+)
 
 
 def event(kind, sid='speech-a', **kwargs):
@@ -377,6 +385,79 @@ def test_deleting_character_purges_only_her_saved_voice_and_text(tmp_path):
     assert delete_character_voice_archive(tmp_path, 'Alice') == 0
 
 
+def test_pending_voice_purge_fences_same_name_replacement_until_retry(tmp_path):
+    archive = VoiceArchive(tmp_path / 'voice_archive/archive.sqlite3')
+    archive.write(event('audio', data=b'old-audio', format='pcm_s16le_48000'))
+    archive.write(event('text', text='old private reply', is_first=True))
+    write_character_voice_archive_purge_intent(
+        tmp_path, 'Alice', character_uid='old-uid', character_id='old-id',
+    )
+    assert has_pending_character_voice_archive_purge(tmp_path, 'Alice')
+    with pytest.raises(RuntimeError, match='purge is pending'):
+        archive.write(event('audio', 'new-speech', data=b'new-audio', format='pcm_s16le_48000'))
+
+    # A same-name character with a different immutable identity is not allowed
+    # to inherit the old clip; startup treats the prepared marker as committed.
+    config = SimpleNamespace(
+        app_docs_dir=tmp_path,
+        load_characters=lambda: {
+            '猫娘': {'Alice': {'_reserved': {
+                'character_uid': 'new-uid', 'character_id': 'new-id',
+            }}},
+        },
+    )
+    summary = retry_pending_voice_archive_purges(config)
+    assert summary['purged'] == [{'character': 'Alice', 'clips': 1}]
+    assert not has_pending_character_voice_archive_purge(tmp_path, 'Alice')
+    assert read(archive.path, 'SELECT count(*) FROM clips') == [(0,)]
+
+    archive.write(event('audio', 'new-speech', data=b'new-audio', format='pcm_s16le_48000'))
+    assert read(archive.path, 'SELECT character,speech_id FROM clips') == [('Alice', 'new-speech')]
+
+
+def test_prepared_voice_purge_for_same_live_identity_is_discarded(tmp_path):
+    archive = VoiceArchive(tmp_path / 'voice_archive/archive.sqlite3')
+    archive.write(event('audio', data=b'keep-audio', format='pcm_s16le_48000'))
+    write_character_voice_archive_purge_intent(
+        tmp_path, 'Alice', character_uid='same-uid', character_id='same-id',
+    )
+    config = SimpleNamespace(
+        app_docs_dir=tmp_path,
+        load_characters=lambda: {
+            '猫娘': {'Alice': {'_reserved': {
+                'character_uid': 'same-uid', 'character_id': 'same-id',
+            }}},
+        },
+    )
+    summary = retry_pending_voice_archive_purges(config)
+    assert summary['discarded'] == ['Alice']
+    assert not has_pending_character_voice_archive_purge(tmp_path, 'Alice')
+    assert read(archive.path, 'SELECT count(*) FROM chunks') == [(1,)]
+
+
+def test_failed_voice_purge_keeps_intent_for_startup_retry(tmp_path, monkeypatch):
+    import main_logic.voice_archive as module
+
+    archive = VoiceArchive(tmp_path / 'voice_archive/archive.sqlite3')
+    archive.write(event('audio', data=b'old-audio', format='pcm_s16le_48000'))
+    original_connect = module.sqlite3.connect
+
+    def fail_connect(*args, **kwargs):
+        raise sqlite3.OperationalError('simulated busy database')
+
+    monkeypatch.setattr(module.sqlite3, 'connect', fail_connect)
+    with pytest.raises(sqlite3.OperationalError):
+        delete_character_voice_archive(tmp_path, 'Alice')
+    assert has_pending_character_voice_archive_purge(tmp_path, 'Alice')
+
+    monkeypatch.setattr(module.sqlite3, 'connect', original_connect)
+    config = SimpleNamespace(app_docs_dir=tmp_path, load_characters=lambda: {'猫娘': {}})
+    summary = retry_pending_voice_archive_purges(config)
+    assert summary['purged'] == [{'character': 'Alice', 'clips': 1}]
+    assert not has_pending_character_voice_archive_purge(tmp_path, 'Alice')
+    assert read(archive.path, 'SELECT count(*) FROM chunks') == [(0,)]
+
+
 def test_retry_reset_is_preserved_when_archive_queue_is_full(tmp_path, monkeypatch):
     import main_logic.voice_archive as module
     monkeypatch.setattr(module, 'MAX_PENDING_EVENTS', 2)
@@ -416,6 +497,7 @@ def test_retry_reset_is_preserved_when_archive_queue_is_full(tmp_path, monkeypat
 
         await archive_event(mgr, 'audio', 's', data=b'accepted-attempt')
         await archive_event(mgr, 'text', 's', text='accepted attempt', is_first=True)
+        await drain_voice_archive(mgr)
         await archive_event(mgr, 'done', 's')
         await drain_voice_archive(mgr)
 
