@@ -61,9 +61,10 @@ _WEB_OBJECT = re.compile(
 _CODE_FILE = re.compile(r"(?<![\w./\\-])[\w./\\-]+\.(?:tsx?|jsx?|py|vue|md|json|ya?ml|html?|css)\b", re.ASCII)
 _CODE_CONTEXT = re.compile(
     r"代码|代碼|组件|組件|配置|函数|函數|源文件|包名|"
-    r"\b(?:apis?|bugs?|code|packages?|config(?:uration)?|components?|files?|folders?|functions?|"
+    r"\b(?:apis?|bugs?|code|packages?|config(?:uration)?|components?|functions?|"
     r"indentation|tabs? to spaces?)\b"
 )
+_FILE_OBJECT = re.compile(r"\b(?:files?|folders?)\b|文件夹|資料夾")
 _WEB_ACTION = re.compile(
     r"打开|打開|访问|訪問|浏览(?!器)|瀏覽(?!器)|刷新|切换|切換|关闭|關閉|查看|检查|檢查|阅读|閱讀|"
     r"点击(?!率|量)|點擊(?!率|量)|填写|填寫|搜索|搜尋|用.{0,5}(?:浏览器|瀏覽器)|"
@@ -110,7 +111,7 @@ def select_device_groups(text: str) -> tuple[str, ...]:
         without_files = _CODE_FILE.sub(" ", clause)
         code = without_files != clause or bool(_CODE_CONTEXT.search(clause))
         explicit_web = bool(_EXPLICIT_WEB.search(without_files))
-        web_target = explicit_web or (not code and _WEB_OBJECT.search(without_files))
+        web_target = explicit_web or (not code and not _FILE_OBJECT.search(clause) and _WEB_OBJECT.search(without_files))
         screenshot = bool(_SCREENSHOT_ACTION.search(clause))
         browser = bool(web_target and (_WEB_ACTION.search(clause) or screenshot)) or bool(
             _OTHER_WEB.search(clause)
