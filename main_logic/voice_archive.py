@@ -173,6 +173,29 @@ async def _write_queued_events(manager, queue):
     """Serialize optional disk work without holding a live transport lock."""
     cm = manager._config_manager
     archive = manager._owner_voice_archive
+
+    async def persist(event):
+        sid = event['speech_id']
+
+        def write_event():
+            from utils.voice_archive_settings import write_if_recording_authorized
+            from utils.cloudsave_runtime import assert_cloudsave_writable
+
+            def write():
+                if event['kind'] == 'text' and event.get('is_first'):
+                    cfg = cm.get_core_config()
+                    event['metadata'] = {
+                        k: cfg.get(k) for k in ('ttsModelProvider', 'TTS_MODEL', 'TTS_VOICE_ID')
+                    }
+                    event['metadata']['character_voice_id'] = event.pop('character_voice_id', None)
+                event['archive_error'] = sid in getattr(manager, '_owner_voice_archive_failed', set())
+                assert_cloudsave_writable(cm, operation='voice_archive_write', target=str(archive.path))
+                archive.write(event)
+
+            return write_if_recording_authorized(cm, event['recording_generation'], write)
+
+        return await asyncio.to_thread(write_event)
+
     try:
         while True:
             try:
@@ -185,27 +208,42 @@ async def _write_queued_events(manager, queue):
                 continue
             sid = event['speech_id']
             try:
+                # A retry is a control boundary, not optional audio payload.
+                # When the bounded audio queue was full, its reset is retained
+                # here and committed before any more queued chunks are handled.
+                pending_resets = getattr(manager, '_owner_voice_archive_retry_resets', {})
+                for reset_sid, reset_event in list(pending_resets.items()):
+                    if reset_sid in getattr(manager, '_owner_voice_archive_unconsented', set()):
+                        pending_resets.pop(reset_sid, None)
+                        continue
+                    try:
+                        if not await persist(reset_event):
+                            _reject_unconsented_speech(manager, reset_sid)
+                        else:
+                            getattr(manager, '_owner_voice_archive_failed', set()).discard(reset_sid)
+                    except asyncio.CancelledError:
+                        _mark_incomplete(manager, reset_sid)
+                        raise
+                    except Exception:
+                        _reject_unconsented_speech(manager, reset_sid)
+                        log.warning('Voice archive retry reset failed', exc_info=True)
+                    finally:
+                        pending_resets.pop(reset_sid, None)
+
                 if sid in getattr(manager, '_owner_voice_archive_unconsented', set()):
                     continue
-
-                def write_event():
-                    from utils.voice_archive_settings import write_if_recording_authorized
-                    from utils.cloudsave_runtime import assert_cloudsave_writable
-                    def persist():
-                        if event['kind'] == 'text' and event.get('is_first'):
-                            cfg = cm.get_core_config()
-                            event['metadata'] = {k: cfg.get(k) for k in ('ttsModelProvider', 'TTS_MODEL', 'TTS_VOICE_ID')}
-                            event['metadata']['character_voice_id'] = event.pop('character_voice_id', None)
-                        event['archive_error'] = sid in getattr(manager, '_owner_voice_archive_failed', set())
-                        assert_cloudsave_writable(cm, operation='voice_archive_write', target=str(archive.path))
-                        archive.write(event)
-                    return write_if_recording_authorized(cm, event['recording_generation'], persist)
-
-                if not await asyncio.to_thread(write_event):
+                generations = getattr(manager, '_owner_voice_archive_attempt_generations', {})
+                if event.get('attempt_generation', 0) < generations.get(sid, 0):
+                    # This event belongs to an attempt discarded by a later retry.
+                    continue
+                if not await persist(event):
                     _reject_unconsented_speech(manager, sid)
                     continue
                 if event['kind'] == 'retry':
                     getattr(manager, '_owner_voice_archive_failed', set()).discard(sid)
+                elif event['kind'] == 'done':
+                    if generations.get(sid, 0) == event.get('attempt_generation', 0):
+                        generations.pop(sid, None)
             except asyncio.CancelledError:
                 _mark_incomplete(manager, sid)
                 raise
@@ -259,8 +297,16 @@ def _enqueue_archive_event(manager, kind, speech_id, **values):
     if not character:
         _mark_incomplete(manager, sid)
         return
+    generations = getattr(manager, '_owner_voice_archive_attempt_generations', None)
+    if generations is None:
+        generations = manager._owner_voice_archive_attempt_generations = {}
+    attempt_generation = generations.get(sid, 0)
+    if kind == 'retry':
+        attempt_generation += 1
+        generations[sid] = attempt_generation
     event = dict(values, kind=kind, character=character, speech_id=sid,
                  recording_generation=snapshot[1] if snapshot is not None else 0,
+                 attempt_generation=attempt_generation,
                  proof=dict(getattr(manager, '_chat_original_turns', {}).get(sid, {})))
     if kind == 'audio':
         data = event.get('data')
@@ -283,8 +329,18 @@ def _enqueue_archive_event(manager, kind, speech_id, **values):
     try:
         queue.put_nowait(event)
     except asyncio.QueueFull:
-        _mark_incomplete(manager, sid)
-        log.warning('Voice archive queue full; discarding optional %s event', kind)
+        if kind == 'retry':
+            # Keep the reset outside the bounded media queue. The writer checks
+            # this map before its next queued event, then skips every stale
+            # pre-retry chunk by attempt_generation.
+            pending = getattr(manager, '_owner_voice_archive_retry_resets', None)
+            if pending is None:
+                pending = manager._owner_voice_archive_retry_resets = {}
+            pending[sid] = event
+            log.warning('Voice archive queue full; deferring retry reset for speech %s', sid)
+        else:
+            _mark_incomplete(manager, sid)
+            log.warning('Voice archive queue full; discarding optional %s event', kind)
 
 
 async def archive_event(manager, kind, speech_id, **values):

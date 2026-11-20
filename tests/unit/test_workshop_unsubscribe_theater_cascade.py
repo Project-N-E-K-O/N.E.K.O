@@ -97,6 +97,7 @@ def _install_unsubscribe(monkeypatch, config, *, candidate: str):
     import main_routers.shared_state as shared_state
 
     monkeypatch.setattr(shared_state, "get_remove_one_catgirl", lambda: None)
+    monkeypatch.setattr(shared_state, "get_session_manager", lambda: {})
     return unsubscribe, steam_calls
 
 
@@ -111,6 +112,56 @@ async def _seed_theater(theater: Path, binding: dict):
     archive_store.create_or_get(stored.session)
     archive_store.write_public_archive(title="t", session=stored.session, ending=None)
     return runtime.store._path(stored.session.session_id), archive_store
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_unsubscribe_retires_and_purges_voice_archive(tmp_path, monkeypatch):
+    import sqlite3
+    from contextlib import closing
+    from main_logic.voice_archive import VoiceArchive, archive_event, drain_voice_archive
+    from tests.unit.test_voice_archive import manager as archive_manager_factory
+
+    archive_manager = archive_manager_factory(tmp_path, character="Lan")
+    await archive_event(archive_manager, "audio", "speech", data=b"\x01\x02")
+    await archive_event(archive_manager, "text", "speech", text="private recording", is_first=True)
+    await archive_event(archive_manager, "done", "speech")
+    await drain_voice_archive(archive_manager)
+
+    archive = VoiceArchive(tmp_path / "voice_archive/archive.sqlite3")
+    archive.write({
+        "character": "Other", "speech_id": "other-speech", "kind": "audio",
+        "data": b"\x03\x04", "format": "pcm_s16le_48000",
+    })
+    archive.write({
+        "character": "Other", "speech_id": "other-speech", "kind": "text",
+        "text": "other recording", "is_first": True,
+    })
+
+    config = _Config(tmp_path, {
+        "当前猫娘": "Other",
+        "猫娘": {
+            "Lan": _workshop_character("character_" + "1" * 32),
+            "Other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+        },
+    })
+    unsubscribe, steam_calls = _install_unsubscribe(monkeypatch, config, candidate="Lan")
+    import main_routers.shared_state as shared_state
+    monkeypatch.setattr(shared_state, "get_session_manager", lambda: {"Lan": archive_manager})
+
+    result = await unsubscribe._unsubscribe_workshop_item(
+        _DummyRequest({"item_id": str(ITEM_ID)}), asyncio.Event(),
+    )
+
+    assert result["success"] is True, result
+    assert result["cleanup_summary"]["errors"] == []
+    assert archive_manager._owner_voice_archive_retired is True
+    assert steam_calls == [ITEM_ID]
+    path = tmp_path / "voice_archive/archive.sqlite3"
+    with closing(sqlite3.connect(path)) as db:
+        assert db.execute("SELECT character FROM clips").fetchall() == [("Other",)]
+        assert db.execute("SELECT data FROM chunks").fetchall() == [(b"\x03\x04",)]
+        assert db.execute("SELECT text FROM text_events").fetchall() == [("other recording",)]
 
 
 @pytest.mark.unit

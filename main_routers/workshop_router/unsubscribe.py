@@ -650,7 +650,8 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     finalize_character_recent_delete,
                     release_character_recent_transaction,
                 )
-                from ..shared_state import get_remove_one_catgirl
+                from ..shared_state import get_remove_one_catgirl, get_session_manager
+                from main_logic.voice_archive import retire_voice_archive, delete_character_voice_archive
                 from ..characters_router.crud import (
                     collect_numeric_v2_character_purge,
                     complete_numeric_v2_character_purge,
@@ -991,7 +992,35 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             # Publish config successfully before irreversible memory/tombstone/runtime cleanup.
             # Config failure preserves memory files, avoiding false rollback where registry restores
             # but shutil.rmtree permanently deleted files.
+            try:
+                active_session_managers = get_session_manager()
+            except RuntimeError:
+                active_session_managers = {}
+            # Capture references before remove_one_catgirl removes the runtime slot.
+            archive_managers = {
+                name: active_session_managers.get(name) for name in pending_del_names
+            }
+
             for name in pending_del_names:
+                archive_manager = archive_managers.get(name)
+                voice_archive_retired = True
+                if archive_manager is not None:
+                    try:
+                        # Stop producers and drain their queued writes before purging
+                        # the character's archive; the ordinary delete path uses
+                        # the same retirement boundary.
+                        await await_retirement(retire_voice_archive(archive_manager))
+                    except Exception as exc:
+                        voice_archive_retired = False
+                        logger.error(
+                            "取消订阅同步清理: 语音归档退役失败 %s: %s",
+                            name, exc, exc_info=True,
+                        )
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "retire_voice_archive",
+                            "error": str(exc),
+                        })
                 uid = pending_avatar_uids.get(name)
                 if uid:
                     try:
@@ -1054,6 +1083,25 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                         "stage": "remove_one_catgirl",
                         "error": str(remove_or_exc),
                     })
+
+                # Voice archives are a character-owned sidecar too. Retire first
+                # (above), then securely remove clips, audio chunks and duplicated
+                # text so a later character with the same name cannot reuse old URLs.
+                if voice_archive_retired:
+                    try:
+                        await await_retirement(asyncio.to_thread(
+                            delete_character_voice_archive, config_mgr.app_docs_dir, name,
+                        ))
+                    except Exception as exc:
+                        logger.error(
+                            "取消订阅同步清理: 语音归档清理失败 %s: %s",
+                            name, exc, exc_info=True,
+                        )
+                        cleanup_summary["errors"].append({
+                            "character": name,
+                            "stage": "delete_voice_archive",
+                            "error": str(exc),
+                        })
 
                 # Same cascade as DELETE /catgirl/{name}: sessions, receipts,
                 # public archives, forget intents and quarantined copies. The

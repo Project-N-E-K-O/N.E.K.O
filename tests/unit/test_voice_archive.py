@@ -377,6 +377,53 @@ def test_deleting_character_purges_only_her_saved_voice_and_text(tmp_path):
     assert delete_character_voice_archive(tmp_path, 'Alice') == 0
 
 
+def test_retry_reset_is_preserved_when_archive_queue_is_full(tmp_path, monkeypatch):
+    import main_logic.voice_archive as module
+    monkeypatch.setattr(module, 'MAX_PENDING_EVENTS', 2)
+
+    async def run():
+        mgr = manager(tmp_path)
+        mgr._owner_voice_archive = VoiceArchive(tmp_path / 'voice_archive/archive.sqlite3')
+        started, release = threading.Event(), threading.Event()
+        original = mgr._owner_voice_archive.write
+
+        def slow_write(item):
+            if item['kind'] == 'audio' and item.get('data') == b'old-inflight':
+                started.set()
+                release.wait(3)
+            original(item)
+
+        mgr._owner_voice_archive.write = slow_write
+        await archive_event(mgr, 'audio', 's', data=b'old-inflight')
+        assert await asyncio.to_thread(started.wait, 3)
+
+        # Fill the bounded queue with the discarded attempt while the first
+        # chunk is still being committed in the writer thread.
+        await archive_event(mgr, 'text', 's', text='discarded attempt', is_first=True)
+        await archive_event(mgr, 'audio', 's', data=b'old-queued')
+        assert mgr._owner_voice_archive_queue.full()
+
+        # The retry reset must not be dropped just because media events filled
+        # the queue. It is retained as a priority control event instead.
+        await archive_event(mgr, 'retry', 's')
+        assert 's' in mgr._owner_voice_archive_retry_resets
+        release.set()
+        await drain_voice_archive(mgr)
+        assert 's' not in mgr._owner_voice_archive_retry_resets
+
+        await archive_event(mgr, 'audio', 's', data=b'accepted-attempt')
+        await archive_event(mgr, 'text', 's', text='accepted attempt', is_first=True)
+        await archive_event(mgr, 'done', 's')
+        await drain_voice_archive(mgr)
+
+        path = tmp_path / 'voice_archive/archive.sqlite3'
+        assert read(path, 'SELECT data FROM chunks') == [(b'accepted-attempt',)]
+        assert read(path, 'SELECT text FROM text_events') == [('accepted attempt',)]
+        assert read(path, 'SELECT text,stream_complete FROM clips') == [('accepted attempt', 1)]
+
+    asyncio.run(run())
+
+
 def test_queue_overflow_marks_next_accepted_event_partial(tmp_path, monkeypatch):
     import main_logic.voice_archive as module
     monkeypatch.setattr(module, 'MAX_PENDING_EVENTS', 1)
