@@ -67,10 +67,10 @@ _CODE_CONTEXT = re.compile(
 _FILE_OBJECT = re.compile(r"\b(?:files?|folders?)\b|文件夹|資料夾")
 _WEB_ACTION = re.compile(
     r"打开|打開|访问|訪問|浏览(?!器)|瀏覽(?!器)|刷新|切换|切換|关闭|關閉|查看|检查|檢查|阅读|閱讀|"
-    r"点击(?!率|量)|點擊(?!率|量)|填写|填寫|搜索|搜尋|用.{0,5}(?:浏览器|瀏覽器)|"
+    r"填写|填寫|搜索|搜尋|用.{0,5}(?:浏览器|瀏覽器)|"
     r"列出(?:当前|目前|當前|所有|全部|浏览器|瀏覽器|打开|打開|的|中)*(?:标签页|標籤頁|分頁)|"
     r"\b(?:list|show)\s+(?:(?:the|my|all|current|open|browser)\s+)*tabs?\b|"
-    r"\b(?:open|visit|browse|navigate|go to|load|reload|refresh|switch|close|read|inspect|click(?!-through)|fill|use)\b"
+    r"\b(?:open|visit|browse|navigate|go to|load|reload|refresh|switch|close|read|inspect|fill|use)\b"
 )
 _OTHER_WEB = re.compile(
     r"(?:ブラウザ|ウェブページ|リンク).{0,12}(?:開い|開く|クリック)|"
@@ -87,13 +87,19 @@ _DESKTOP_ACTION = re.compile(
     r"\b(?:capture|inspect)\s+(?:the |my )?(?:screen|desktop)\b|"
     r"スクリーンショットを撮|화면을?\s*캡처|\b(?:captura|capture)\s+(?:la |a )?(?:pantalla|tela)\b|сделай(?:те)? скриншот"
 )
-_CLICK = re.compile(r"点击(?!率|量)|點擊(?!率|量)|双击|雙擊|右击|右鍵點|\b(?:click|double-click|right-click)\b(?!-through)")
+_CLICK = re.compile(
+    r"(?:点击|點擊|双击|雙擊|右击|右鍵點)(?!率|量|事件|处理|處理|监听|監聽|回调|回調)|"
+    r"\b(?:click|double-click|right-click)\b(?!-through|[-\s]+(?:handling|handlers?|listeners?|callbacks?|events?)\b)"
+)
 _SCREENSHOT_ACTION = re.compile(
     r"截(?:一?[个個張张]|一下).{0,10}[图圖]|(?:^\s*|请|請|帮我|幫我|给我|給我)(?:截屏|截[图圖])|"
     r"^\s*(?:给|給|为|為|对|對).{0,10}(?:网页|網頁|屏幕|桌面)(?:截屏|截[图圖])|"
     r"\b(?:take|capture)\s+(?:(?:a|the|my|desktop|screen)\s+){0,3}screenshot\b|^\s*(?:please\s+)?screenshot\b"
 )
-_DESKTOP_TARGET = re.compile(r"桌面|屏幕|螢幕|任务栏|工作列|\b(?:desktop|taskbar|start menu|system tray)\b")
+_DESKTOP_TARGET = re.compile(
+    r"桌面|屏幕|螢幕|任务栏|工作列|文件资源管理器|檔案總管|访达|訪達|"
+    r"\b(?:desktop|taskbar|start menu|system tray|file explorer|finder)\b"
+)
 
 
 def select_device_groups(text: str) -> tuple[str, ...]:
@@ -113,11 +119,11 @@ def select_device_groups(text: str) -> tuple[str, ...]:
         explicit_web = bool(_EXPLICIT_WEB.search(without_files))
         web_target = explicit_web or (not code and not _FILE_OBJECT.search(clause) and _WEB_OBJECT.search(without_files))
         screenshot = bool(_SCREENSHOT_ACTION.search(clause))
-        browser = bool(web_target and (_WEB_ACTION.search(clause) or screenshot)) or bool(
+        click = bool(_CLICK.search(clause))
+        browser = bool(web_target and (screenshot or click or _WEB_ACTION.search(clause))) or bool(
             _OTHER_WEB.search(clause)
         )
         desktop_target = bool(_DESKTOP_TARGET.search(clause))
-        click = bool(_CLICK.search(clause))
         web_context = web_context or explicit_web or browser
         if click and web_context and not desktop_target and not code:
             browser = True
