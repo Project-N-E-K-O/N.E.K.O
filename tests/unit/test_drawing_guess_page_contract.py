@@ -222,7 +222,7 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
     assert "client.voice.onState(handleSdkVoiceState)" in script
     assert "client.voice.onTranscript(handleSdkVoiceTranscript)" in script
     assert "client.voice.onError(handleSdkVoiceError)" in script
-    assert "client.voice.toggle({ timeoutMs: 12000 })" in script
+    assert "client.voice.toggle({ timeoutMs: 15000 })" in script
     assert "client.voice.stop({ timeoutMs: 6500 })" in script
     assert "client.events.on('page-exit', handleSdkPageExit)" in script
     assert "state.playerTextChain = Promise.resolve(state.playerTextChain)" in script
@@ -576,11 +576,16 @@ def test_drawing_guess_static_route_contract():
     assert "function handleVoiceRouteButton" in script
     assert "client.voice.query({ timeoutMs: 5000 })" in script
     assert "client.voice.stop({ timeoutMs: 6500 })" in script
-    assert "client.voice.toggle({ timeoutMs: 12000 })" in script
+    assert "client.voice.toggle({ timeoutMs: 15000 })" in script
     # #3003: a reply for a route that ended mid-command must not be painted over
     # the current route or reported as a failure (the host microphone may well
     # be live), and a start still pending at the deadline is not a failure.
-    toggle_reply = script.split("client.voice.toggle({ timeoutMs: 12000 }).then(", 1)[1]
+    # The client budget must outlast the host's own 12 s start wait (which only
+    # begins once the command arrives), or the SDK rejects before a
+    # start_pending reply can land and the catch reports a failure.
+    toggle_budget = int(script.split("client.voice.toggle({ timeoutMs: ", 1)[1].split(" ", 1)[0])
+    assert toggle_budget > 12000 + 2000
+    toggle_reply = script.split("client.voice.toggle({ timeoutMs: 15000 }).then(", 1)[1]
     toggle_reply = toggle_reply.split("}).catch(", 1)[0]
     superseded_at = toggle_reply.index("voiceState.reason === 'route_superseded') return;")
     pending_at = toggle_reply.index("voiceState.reason === 'start_pending') return;")

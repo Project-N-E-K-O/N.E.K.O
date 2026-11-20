@@ -1310,12 +1310,24 @@ async function attributedCommitCase() {
   assert(r.committed === true, 'the commit fact must be recorded on the attempt receipt');
   assert(env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === true,
          "the attributed attempt's capture is the live one");
+  assert(env.mod.hostMicrophoneCaptureLive() === true, 'the host capture is live');
+
+  // A device switch drops the graph but keeps S.isRecording set until the
+  // replacement commits; the host snapshot must not read that as live.
+  const keptStream = env.S.stream;
+  const keptWorklet = env.S.workletNode;
+  env.S.workletNode = null;
+  assert(env.S.isRecording === true && env.mod.hostMicrophoneCaptureLive() === false,
+         'a recording flag without a live pipeline is not a live host capture');
+  env.S.workletNode = keptWorklet;
+  env.S.stream = keptStream;
 
   // Turning the microphone off keeps the history but not the liveness.
   env.mod.stopRecording({ notifyServer: false });
   assert(r.committed === true, 'a later stop must not erase that the attempt committed');
   assert(env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === false,
          'a stopped capture is no longer live');
+  assert(env.mod.hostMicrophoneCaptureLive() === false, 'a stopped host capture is not live');
 }
 
 async function attributedTakeoverCase() {

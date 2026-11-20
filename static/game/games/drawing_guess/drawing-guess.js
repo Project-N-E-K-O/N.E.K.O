@@ -5132,7 +5132,7 @@
     state.voiceControlRequestSequence = requestSequence;
     state.voiceControlPending = true;
     updateControls();
-    client.voice.toggle({ timeoutMs: 12000 }).then(function (voiceState) {
+    client.voice.toggle({ timeoutMs: 15000 }).then(function (voiceState) {
       if (requestSequence !== state.voiceControlRequestSequence) return;
       // A reply for a route that ended while the command ran describes that
       // route, not this one, and ok:false there does not mean the host

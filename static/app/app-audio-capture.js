@@ -258,6 +258,13 @@
         return receipt;
     }
 
+    // Whether a capture pipeline is actually live right now, whoever owns it.
+    // S.isRecording alone is not enough: a device switch tears the old graph
+    // down and keeps the flag set until the replacement commits.
+    function hostMicrophoneCaptureLive() {
+        return hasLiveCommittedMicrophonePipeline();
+    }
+
     function micStartTokenOwnsLiveCapture(token) {
         return (
             typeof token === 'number'
@@ -3264,6 +3271,7 @@
     window.offerVoiceStartReceipt = offerVoiceStartReceipt;
     window.takeVoiceStartReceipt = takeVoiceStartReceipt;
     window.micStartTokenOwnsLiveCapture = micStartTokenOwnsLiveCapture;
+    window.hostMicrophoneCaptureLive = hostMicrophoneCaptureLive;
     window.stopRecording = stopRecording;
     // Only same-origin, same-Session storage events carry device preferences.
     // Electron partitions retain their separately salted device identifiers.
@@ -3403,6 +3411,7 @@
     mod.offerVoiceStartReceipt = offerVoiceStartReceipt;
     mod.takeVoiceStartReceipt = takeVoiceStartReceipt;
     mod.micStartTokenOwnsLiveCapture = micStartTokenOwnsLiveCapture;
+    mod.hostMicrophoneCaptureLive = hostMicrophoneCaptureLive;
     mod.stopRecording = stopRecording;
     mod.sampleMicVolumeLevel = sampleMicVolumeLevel;
     mod.startSettingsMicVolumeTest = startSettingsMicVolumeTestFromSettings;

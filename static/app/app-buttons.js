@@ -2299,6 +2299,13 @@
                             && S._pendingSessionStartMode !== 'audio')) {
                     return false;
                 }
+                // Every path below stands this start down. Settle its receipt
+                // now: an automatic audio restart takes over WITHOUT moving
+                // the epoch (app-websocket.js), so while it holds the
+                // lifecycle flags the bridge could not tell this exited start
+                // from one still running and would keep reporting 'pending'.
+                // A no-op when the catch already settled it.
+                settleVoiceStartReceipt('cancelled');
                 if (!window.supersededByAudioStart(micStartOwner)) {
                     // This flow may have set S.isSwitchingMode when it began
                     // from a live text session, and standing down returns past
@@ -2514,6 +2521,7 @@
                         // enabled and failed to start). Do not open the mic;
                         // unwind the starting-voice UI so the button is usable
                         // again, and let the ASR failure toast stand.
+                        settleVoiceStartReceipt('cancelled');
                         if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
                             window.abortVoiceStartForBlockedRoute();
                         }

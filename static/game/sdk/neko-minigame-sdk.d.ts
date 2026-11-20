@@ -539,7 +539,9 @@ declare namespace NekoMiniGame {
     readonly start_committed?: boolean;
     /** The capture this command started is the host's live capture right now. */
     readonly start_capture_live?: boolean;
-    /** Snapshot of the host microphone, independent of route and of who started it. */
+    /** Snapshot of the host microphone, independent of route and of who started it.
+     * `host_capture_active` means a capture pipeline is live right now; while the host is
+     * reopening it (e.g. switching device) it reads `host_capture_starting` instead. */
     readonly host_capture_active?: boolean;
     readonly host_capture_starting?: boolean;
     readonly [key: string]: unknown;

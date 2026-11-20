@@ -197,6 +197,20 @@ def test_mic_button_start_takes_and_settles_a_game_start_receipt():
     success_clear = flow.index("S.voiceStartPending = false;", capture_at)
     assert success_settle < success_clear, "success must settle the receipt before clearing the lifecycle"
 
+    # Stand-down exits settle too. An automatic audio restart takes over
+    # without moving the epoch, so a pending receipt whose start already exited
+    # would otherwise keep reading as 'pending' while the restart holds the flags.
+    stand_down = _block_after(flow, "function micStartMustStandDown() {")
+    stand_down_settle = stand_down.index("settleVoiceStartReceipt('cancelled');")
+    assert stand_down.index("return false;") < stand_down_settle < stand_down.index("return true;"), (
+        "micStartMustStandDown must settle the receipt before any of its stand-down exits"
+    )
+    blocked_at = flow.index("if (S.voiceInputRouteBlocked === true) {", flow.index("ensureVoiceStartCurrent();", epoch_at))
+    blocked_branch = flow[blocked_at:flow.index("return;", blocked_at)]
+    assert "settleVoiceStartReceipt('cancelled');" in blocked_branch, (
+        "the blocked-route exit must settle the receipt before returning"
+    )
+
     catch_at = flow.index("} catch (error) {", success_clear)
     catch_settle = flow.index("settleVoiceStartReceipt(", catch_at)
     assert catch_settle < flow.index("S.voiceStartPending = false;", catch_at), (

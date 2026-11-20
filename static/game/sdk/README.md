@@ -115,7 +115,9 @@ to. `start_attribution` / `start_outcome` / `start_committed` /
 host's own per-command receipt (`observed` means the command only waited on a
 start that was already in flight, such as the user's own press).
 `host_capture_active` / `host_capture_starting` are a snapshot of the host
-microphone whoever owns it. `reason: 'route_superseded'` means the route ended
+microphone whoever owns it: active means a capture pipeline is live right now,
+and a host reopening its capture (for example while switching device) reads as
+starting. `reason: 'route_superseded'` means the route ended
 or was replaced while the command ran: that route stays unavailable, but the
 microphone may be live -- the host keeps capture running on route exit, so the
 reply does not imply the start was cancelled. A game must not apply a

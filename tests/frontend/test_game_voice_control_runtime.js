@@ -51,6 +51,9 @@ async function main() {
   let nextCaptureToken = 0;
   let lastClickReceipt = null;
   let clickBehavior = null;
+  // A device switch: the old graph is gone, S.isRecording stays true until the
+  // replacement commits.
+  let pipelineReopening = false;
   function commitReceipt(receipt) {
     nextCaptureToken += 1;
     receipt.captureToken = nextCaptureToken;
@@ -120,6 +123,9 @@ async function main() {
       const receipt = receiptSlot;
       receiptSlot = null;
       return receipt;
+    },
+    hostMicrophoneCaptureLive() {
+      return appState.isRecording === true && !pipelineReopening;
     },
     micStartTokenOwnsLiveCapture(token) {
       return token > 0 && token === liveCaptureToken && appState.isRecording === true;
@@ -594,6 +600,20 @@ async function main() {
     && failedReply.start_committed === false
     && failedReply.host_capture_active === false,
   `a failed start was not reported as failed: ${JSON.stringify(failedReply)}`);
+  // Device switch on the host while a command observes capture: the flag says
+  // recording, but no pipeline is live. The host snapshot must read starting.
+  resetMicrophone();
+  appState.isRecording = true;
+  pipelineReopening = true;
+  sendStart('reopening-start', 'route-instance-h');
+  const reopeningReply = await finalReply('reopening-start');
+  pipelineReopening = false;
+  assert(reopeningReply.start_attribution === 'already_active'
+    && reopeningReply.host_capture_active === false
+    && reopeningReply.host_capture_starting === true,
+  `a host reopening its capture was reported as live: ${JSON.stringify(reopeningReply)}`);
+  resetMicrophone();
+
   // A start the handler accepted but then stood down from (text takeover,
   // blocked route, goodbye) settles nothing itself; once its lifecycle has
   // closed the bridge reports it as cancelled, not pending.

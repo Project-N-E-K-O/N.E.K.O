@@ -268,7 +268,13 @@
         var captureLive = committed
             && typeof window.micStartTokenOwnsLiveCapture === 'function'
             && window.micStartTokenOwnsLiveCapture(receipt.captureToken) === true;
-        var hostActive = S.isRecording === true;
+        // The host snapshot asks the capture module whether a pipeline is
+        // actually live: during a device switch S.isRecording stays true while
+        // the old graph is gone and the new one has not committed. That window
+        // is a restart, so it reads as starting, not as active.
+        var hostActive = typeof window.hostMicrophoneCaptureLive === 'function'
+            ? window.hostMicrophoneCaptureLive() === true
+            : S.isRecording === true;
         return {
             start_attribution: attempt ? attempt.attribution : 'none',
             start_outcome: startReceiptOutcome(attempt),
@@ -276,7 +282,9 @@
             start_capture_live: captureLive,
             host_capture_active: hostActive,
             host_capture_starting: !hostActive
-                && (S.voiceStartPending === true || window.isMicStarting === true)
+                && (S.voiceStartPending === true
+                    || window.isMicStarting === true
+                    || S.isRecording === true)
         };
     }
 
