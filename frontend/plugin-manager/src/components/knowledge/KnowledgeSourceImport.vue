@@ -57,11 +57,17 @@ function discardPreview(previewId: string) {
   void knowledgeApi.discardSourcePreview({ preview_id: previewId }).catch(() => undefined)
 }
 
+// Previews invalidated while their own commit is in flight are discarded only
+// after that request settles; the server keeps one the commit froze first.
+const committing = new Set<string>()
+const discardAfterCommit = new Set<string>()
+
 function dropPreview() {
   const previous = preview.value
   preview.value = null
-  // A commit in flight owns this preview; the server keeps it once frozen.
-  if (previous && !saving.value) discardPreview(previous.preview_id)
+  if (!previous) return
+  if (committing.has(previous.preview_id)) discardAfterCommit.add(previous.preview_id)
+  else discardPreview(previous.preview_id)
 }
 // A finished offline pack has no originals to append to, even when its origin is imported.
 const importedPacks = computed(() => (props.packs ?? []).filter(row => row.sources_managed === true && !row.broken && !row.retained))
@@ -129,6 +135,8 @@ async function prepare() {
 
 async function commit() {
   if (!preview.value || saving.value || (requiresAcknowledgment.value && !acknowledged.value)) return
+  const previewId = preview.value.preview_id
+  committing.add(previewId)
   saving.value = true
   try {
     // Existing pack switches are preserved by the server; only a new pack may
@@ -140,7 +148,7 @@ async function commit() {
       enabled_confirmed: targetPack.value ? requiresAcknowledgment.value && acknowledged.value : enableAfterImport.value,
     })
     // The committed preview is frozen server-side; closing must not discard it.
-    preview.value = null
+    if (preview.value?.preview_id === previewId) preview.value = null
     ElMessage.success(t('knowledge.sourceQueued'))
     emit('committed')
     emit('update:modelValue', false)
@@ -148,6 +156,8 @@ async function commit() {
     ElMessage.error(t(`knowledge.reasons.${knowledgeFailureReason(error)}`))
   } finally {
     saving.value = false
+    committing.delete(previewId)
+    if (discardAfterCommit.delete(previewId)) discardPreview(previewId)
   }
 }
 </script>

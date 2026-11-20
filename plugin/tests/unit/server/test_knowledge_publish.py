@@ -147,7 +147,9 @@ async def test_publication_uses_real_proxy_routing_only_for_remote_market(
     # Keep genuine client/env-mount and httpcore protocol behavior; replace
     # only the socket backend so no test network or external server is needed.
     real_client = type(client)
+    created = []
     def make_client(**kwargs):
+        created.append(kwargs)
         outbound = real_client(**kwargs)
         for transport in (outbound._transport, *outbound._mounts.values()):
             if transport is not None:
@@ -173,6 +175,9 @@ async def test_publication_uses_real_proxy_routing_only_for_remote_market(
         assert tls_names == ["market.test"]
     else:
         assert all(host != "env-proxy.test" for host, _port in connections)
+        if market_base.startswith("https://") and market_base != "https://market.test":
+            # A direct (non-public) market client keeps the user's CA configuration.
+            assert created[-1]["trust_env"] is False and "verify" in created[-1]
     assert response.json()["share"]["id"] == 7
 
 
@@ -195,6 +200,55 @@ def test_publication_and_download_share_one_market_proxy_rule(url, proxied):
     assert market_bridge.market_uses_environment_proxy(url) is proxied
     # Subscription downloads select their transport with the same function.
     assert knowledge_market.market_uses_environment_proxy is market_bridge.market_uses_environment_proxy
+
+
+def _self_signed_ca(path):
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Synthetic LAN Market CA")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now)
+            .not_valid_after(now + datetime.timedelta(days=1))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True).sign(key, hashes.SHA256()))
+    path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+
+@pytest.mark.parametrize("variable", ["SSL_CERT_FILE", "SSL_CERT_DIR"])
+def test_direct_market_hops_keep_the_users_certificate_configuration(tmp_path, monkeypatch, variable):
+    """Bypassing proxies must not also drop a self-hosted market's configured CA."""
+    from plugin.server.routes import market_bridge
+
+    ca = tmp_path / "ca" / "market.pem"
+    ca.parent.mkdir()
+    _self_signed_ca(ca)
+    for key in ("SSL_CERT_FILE", "SSL_CERT_DIR"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(variable, str(ca if variable == "SSL_CERT_FILE" else ca.parent))
+    assert market_bridge.market_client_options("https://market.example") == {"trust_env": True}
+    # Plain loopback HTTP never loads (or fails on) a CA configuration.
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing.pem"))
+    assert market_bridge.market_client_options("http://127.0.0.1:8000") == {"trust_env": False}
+    monkeypatch.setenv(variable, str(ca if variable == "SSL_CERT_FILE" else ca.parent))
+    if variable == "SSL_CERT_DIR":
+        monkeypatch.delenv("SSL_CERT_FILE")
+    options = market_bridge.market_client_options("https://192.168.1.20")
+    assert options["trust_env"] is False
+    if variable == "SSL_CERT_FILE":
+        subjects = [dict(item[0] for item in row["subject"]) for row in options["verify"].get_ca_certs()]
+        assert {"commonName": "Synthetic LAN Market CA"} in subjects
+    else:
+        import httpx
+
+        default = httpx.create_ssl_context(trust_env=False)
+        # A capath context starts empty instead of loading the certifi bundle.
+        assert len(options["verify"].get_ca_certs()) < len(default.get_ca_certs())
 
 
 async def test_publication_confirmation_precedes_account_or_artifact_reads(setup):

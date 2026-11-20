@@ -68,6 +68,7 @@ from plugin.server.routes.market_bridge import (
     _measure_github_proxy_sources,
     _main_server_port,
     _verify_token,
+    market_client_options,
     market_uses_environment_proxy,
 )
 from plugin.server.infrastructure.package_sources import GITHUB_DOWNLOAD_SOURCES
@@ -840,7 +841,8 @@ async def _download(url: str, httpx: Any) -> bytes:
             private = _market_artifact_url(current) and not market_uses_environment_proxy(current)
             if private not in clients:
                 clients[private] = await stack.enter_async_context(httpx.AsyncClient(
-                    timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False, trust_env=not private,
+                    timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False,
+                    **(market_client_options(current) if private else {"trust_env": True}),
                 ))
             client = clients[private]
             headers = {"Accept": "*/*", "Accept-Encoding": "identity"}

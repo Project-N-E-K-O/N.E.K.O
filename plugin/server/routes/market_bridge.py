@@ -250,6 +250,27 @@ def market_uses_environment_proxy(url: str) -> bool:
     return address.is_global
 
 
+def market_client_options(url: str) -> dict[str, Any]:
+    """HTTPX options for one market hop: proxies only for public markets.
+
+    ``trust_env=False`` bypasses proxies but would also drop the user's
+    ``SSL_CERT_FILE``/``SSL_CERT_DIR`` trust for a self-hosted HTTPS market,
+    so a direct hop keeps that certificate configuration explicitly.
+    """
+    if market_uses_environment_proxy(url):
+        return {"trust_env": True}
+    try:
+        secure = urlparse(url).scheme == "https"
+    except ValueError:
+        secure = False
+    if not secure:
+        # Plain loopback HTTP has no TLS; never fail it on a CA setting.
+        return {"trust_env": False}
+    import httpx
+
+    return {"trust_env": False, "verify": httpx.create_ssl_context(trust_env=True)}
+
+
 def _is_local_bridge_origin(origin: str, expected_ports: set[int]) -> bool:
     try:
         parsed = urlparse(origin)

@@ -957,3 +957,23 @@ def test_pair_code_origin_gate_and_main_port(monkeypatch, origin, status):
         # Main's port whichever server the manager page reached (decision A).
         assert response.json()["port"] == 48911
         assert response.json()["one_time_code"]
+
+
+async def test_lan_https_bearer_download_is_direct_but_keeps_configured_ca(monkeypatch):
+    """A self-hosted HTTPS market bypasses proxies without dropping SSL_CERT_FILE trust."""
+    monkeypatch.setattr(km, "MARKET_API_URL", "https://192.168.1.20")
+    options = []
+    async def token(**_kwargs):
+        return {"access_token": "isolated-lan-token"}
+    real_client = httpx.AsyncClient
+    def make_client(**kwargs):
+        options.append(kwargs)
+        return real_client(transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=ARTIFACT)), **kwargs)
+    class Fake:
+        AsyncClient = staticmethod(make_client)
+        Timeout = httpx.Timeout
+    marker = object()
+    monkeypatch.setattr(httpx, "create_ssl_context", lambda **kwargs: marker if kwargs.get("trust_env") else None)
+    monkeypatch.setattr(km, "_ensure_valid_oauth_token", token)
+    assert await km._download("https://192.168.1.20/api/v1/shares/42/download", Fake) == ARTIFACT
+    assert options and options[-1].get("trust_env") is False and options[-1].get("verify") is marker

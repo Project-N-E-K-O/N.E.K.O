@@ -70,14 +70,23 @@ async def test_discard_waits_for_an_in_flight_commit_and_keeps_its_preview(servi
 
     monkeypatch.setattr(service, "_project_sources", slow_project)
     commit = asyncio.create_task(service.commit_source(value["preview_id"], value["sha256"]))
-    await frozen.wait()
-    discard = asyncio.create_task(service.discard_preview(value["preview_id"]))
-    await asyncio.sleep(0.05)
-    assert not discard.done()
-    assert len(_preview_files(tmp_path, value["preview_id"])) == 2
-    release.set()
-    result = await commit
-    assert await discard == {"deleted": False}
+    discard = None
+    try:
+        await asyncio.wait_for(frozen.wait(), timeout=10)
+        discard = asyncio.create_task(service.discard_preview(value["preview_id"]))
+        await asyncio.sleep(0.05)
+        assert not discard.done()
+        assert len(_preview_files(tmp_path, value["preview_id"])) == 2
+    finally:
+        # Never leave the held commit (and the write lock) behind a failed assertion.
+        release.set()
+        pending = [task for task in (commit, discard) if task is not None]
+        done, _ = await asyncio.wait(pending, timeout=10)
+        for task in pending:
+            if task not in done:
+                task.cancel()
+    result = commit.result()
+    assert discard.result() == {"deleted": False}
     assert len(_preview_files(tmp_path, value["preview_id"])) == 2
     assert (await _finished(service, result))["state"] == "active"
 

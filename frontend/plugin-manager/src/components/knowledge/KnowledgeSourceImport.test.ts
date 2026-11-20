@@ -88,19 +88,53 @@ describe('source import privacy and identity', () => {
     expect(api.discardSourcePreview).toHaveBeenCalledWith({ preview_id: 'preview-late' })
   })
 
-  it('does not discard a preview whose commit is still in flight', async () => {
+  it.each([true, false])('defers discarding a preview invalidated during its commit (commit succeeds: %s)', async succeeds => {
     const state = await mount()
     button('Preview document').click()
     await flush()
     let finish!: (value: unknown) => void
-    api.commitSource.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    let fail!: (error: unknown) => void
+    api.commitSource.mockReturnValueOnce(new Promise((resolve, reject) => { finish = resolve; fail = reject }))
     button('Confirm import').click()
     await flush()
     state.file = new File(['other text'], 'other.txt')
     await flush()
-    finish({ ok: true, pack_id: 'imp.test', job_id: 'job-1', state: 'queued' })
-    await flush()
     expect(api.discardSourcePreview).not.toHaveBeenCalled()
+    if (succeeds) finish({ ok: true, pack_id: 'imp.test', job_id: 'job-1', state: 'queued' })
+    else fail(new Error('network'))
+    await flush()
+    // The server keeps a preview the commit already froze, so one late request is safe.
+    expect(api.discardSourcePreview).toHaveBeenCalledTimes(1)
+    expect(api.discardSourcePreview).toHaveBeenCalledWith({ preview_id: 'preview-1' })
+  })
+
+  it('discards only the preview whose own commit settled when commits overlap', async () => {
+    const state = await mount()
+    button('Preview document').click()
+    await flush()
+    const settle: Array<(value: unknown) => void> = []
+    api.commitSource.mockImplementation(() => new Promise(resolve => { settle.push(resolve) }))
+    button('Confirm import').click()
+    await flush()
+    // A new file invalidates preview-1 while its commit is still in flight.
+    state.file = new File(['other text'], 'other.txt')
+    await flush()
+    api.previewSource.mockResolvedValueOnce({ ok: true, pack_id: 'imp.test', preview: { preview_id: 'preview-2',
+      doc_id: 'doc-2', sha256: 'second', name: 'other.txt', chars: 10, content: 'other text', sections: [] } })
+    button('Preview document').click()
+    await flush()
+    button('Confirm import').click()
+    await flush()
+    expect(api.commitSource).toHaveBeenCalledTimes(2)
+    settle[0]!({ ok: true, pack_id: 'imp.test', job_id: 'job-1', state: 'queued' })
+    await flush()
+    expect(api.discardSourcePreview).toHaveBeenCalledTimes(1)
+    expect(api.discardSourcePreview).toHaveBeenCalledWith({ preview_id: 'preview-1' })
+    // preview-2 is never discarded while its own commit is still in flight;
+    // a request after it settles is safe because the server keeps frozen previews.
+    settle[1]!({ ok: true, pack_id: 'imp.test', job_id: 'job-2', state: 'queued' })
+    await flush()
+    expect(api.discardSourcePreview.mock.calls.slice(1).every(([value]) => value.preview_id === 'preview-2')).toBe(true)
   })
 
   it('keeps a committed preview when the dialog closes', async () => {
