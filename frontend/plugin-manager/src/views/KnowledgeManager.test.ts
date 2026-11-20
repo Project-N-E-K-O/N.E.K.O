@@ -327,7 +327,7 @@ describe('KnowledgeManager overview', () => {
       origin: 'imported', enabled: true, auto_context: false, local_embedding: true,
       declared_material_type: 'knowledge', material_type_override: null, effective_material_type: 'knowledge',
       entries: 1, disabled_entries: 0, chunks_total: 1, chunks_ready: 0, chunks_failed: 0,
-      vector_state: 'waiting', broken: false, subscription: null, installed_at: '', updated_at: '',
+      vector_state: 'waiting', export_ready: false, broken: false, subscription: null, installed_at: '', updated_at: '',
     }] })
     api.setPackEnabled.mockResolvedValue({ ok: true, pack_id: 'imp.test', enabled: false })
     const container = await mount()

@@ -33,15 +33,15 @@
             </div>
             <div v-if="!pack.retained" class="export-actions">
               <!-- Export still uses the existing task and vector-readiness gate. -->
-              <el-button type="primary" :loading="exporting" :disabled="exporting || pack.vector_state !== 'complete'" @click="exportPack()">
+              <el-button type="primary" :loading="exporting" :disabled="exporting || !exportReady" @click="exportPack()">
                 <el-icon><Download /></el-icon><span>{{ t('knowledge.exportPackage') }}</span>
               </el-button>
             </div>
           </div>
           <template v-if="!pack.retained">
-            <div class="export-readiness" :class="{ 'is-ready': pack.vector_state === 'complete' }" role="status">
-              <el-icon><CircleCheck v-if="pack.vector_state === 'complete'" /><Clock v-else /></el-icon>
-              <span>{{ t(pack.vector_state === 'complete' ? 'knowledge.exportReadyHint' : 'knowledge.exportVectorWaiting') }}</span>
+            <div class="export-readiness" :class="{ 'is-ready': exportReady }" role="status">
+              <el-icon><CircleCheck v-if="exportReady" /><Clock v-else /></el-icon>
+              <span>{{ t(exportReady ? 'knowledge.exportReadyHint' : 'knowledge.exportVectorWaiting') }}</span>
             </div>
             <p class="export-version-hint">{{ t('knowledge.exportAutoVersionHint') }}</p>
           </template>
@@ -131,6 +131,9 @@ const historySource = ref<KnowledgeDocument | null>(null)
 const versions = ref<KnowledgeDocumentVersion[]>([])
 const versionsLoading = ref(false)
 const exporting = ref(false)
+// Stored-vector provenance, rather than local indexing policy or the current
+// encoder's ready count, determines whether a complete package can be exported.
+const exportReady = computed(() => props.pack?.export_ready === true)
 const downloading = ref('')
 const deleting = ref('')
 // A successful durable deletion must not reappear while parent polling catches up.
@@ -251,7 +254,7 @@ async function restore(version: KnowledgeDocumentVersion) {
 }
 
 async function exportPack() {
-  if (!props.pack || exporting.value || props.pack.vector_state !== 'complete') return
+  if (!props.pack || exporting.value || !exportReady.value) return
   exporting.value = true
   try {
     // Release versions belong to the durable server task, not editable UI state.

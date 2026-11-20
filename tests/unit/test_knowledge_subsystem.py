@@ -315,7 +315,7 @@ async def test_cancelled_queued_job_leaves_nothing_behind(tmp_path):
         assert service.list_jobs()[0]["state"] == "cancelled"
         assert load_registry(tmp_path).packs == {}
         assert not any((tmp_path / ".staging").iterdir())
-        assert service.discard_job(result["job_id"]) is True
+        assert await service.discard_job(result["job_id"]) is True
         assert service.list_jobs() == []
     finally:
         await service.stop()

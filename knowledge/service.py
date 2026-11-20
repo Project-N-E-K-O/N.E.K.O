@@ -492,6 +492,11 @@ class KnowledgeService:
             self._store.initialize()
         try:
             broken, registry = self._reconcile_blocking(registry)
+        except (OSError, KnowledgeRegistryError):
+            # Failure to persist registry facts is not SQLite corruption. The
+            # existing startup error path keeps the library unavailable until
+            # it can retry without deleting retained rows or vectors.
+            raise
         except Exception as exc:
             logger.warning("[Knowledge] index reconcile failed (%s); rebuilding", type(exc).__name__)
             self._store.remove_files()
@@ -571,6 +576,10 @@ class KnowledgeService:
         entry_counts = self._store.entry_counts()
         chunk_counts = self._store.chunk_stats(None)
         search_rows = self._store.search_row_counts()
+        # Reserve every pack before planning the first one: a later refused
+        # pack may retain more rows than its registry record currently counts.
+        reservations = {key: max(record.chunks, chunk_counts.get(key, {}).get("total", 0))
+                        for key, record in registry.packs.items()}
         broken: list[str] = []
         original_registry = registry
         for pack_id, record in registry.packs.items():
@@ -600,9 +609,12 @@ class KnowledgeService:
             except (OSError, KnowledgePackError) as exc:
                 logger.warning("[Knowledge] pack %s cannot be rebuilt (%s)", pack_id, type(exc).__name__)
                 self._store.delete_pack(pack_id)
+                # The rows are gone, but the still-registered pack keeps its
+                # admitted reservation, as it does during ordinary admission.
+                reservations[pack_id] = record.chunks
                 broken.append(pack_id)
                 continue
-            others = sum(value.chunks for key, value in registry.packs.items() if key != pack_id)
+            others = sum(reservations.values()) - reservations[pack_id]
             plan = _budgeted_plan(pack, self._rebuild_options(record), others)
             if plan is None:
                 # A capacity refusal is not SQLite corruption: keep the old
@@ -620,6 +632,7 @@ class KnowledgeService:
             options, chunks = plan
             self._store.replace_pack(pack, pack_sha256=record.pack_sha256,
                                      disabled_keys=record.disabled_titles, **options)
+            reservations[pack_id] = chunks
             if chunks != record.chunks:
                 registry = registry.with_pack(replace(record, chunks=chunks))
             logger.info("[Knowledge] rebuilt index of pack %s", pack_id)
@@ -1407,8 +1420,9 @@ class KnowledgeService:
                 raise KnowledgePackError("pack_changed")
             def read():
                 payload = json.loads(_read_bounded(self.root / PACKS_DIR / record.file_name))
-                model_id = self._current_model_id()
-                spec = self._store.vector_specification(model_id, pack_id=job.pack_id)
+                # Export the unique stored identity, even when another encoder
+                # is loaded or local inference is unavailable or switched off.
+                spec = self._store.vector_specification(None, pack_id=job.pack_id)
                 vectors = self._store.vectors_for_pack(job.pack_id, spec["model_id"]) if spec else []
                 return payload, spec, vectors
             return await self._thread(read)
@@ -1992,33 +2006,36 @@ class KnowledgeService:
         with contextlib.suppress(ValueError):
             self._job_queue.remove(job_id)
 
-    def discard_job(self, job_id: str) -> bool:
-        job = self._jobs.get(job_id)
-        if job is None or job.state not in TERMINAL_JOB_STATES:
-            return False
-        if self._holds_artifact(job):
-            # Only delete_export may remove a finished export with its ZIP.
-            return False
-        job.export_deleted = True
-        del self._jobs[job_id]
-        async def discard():
+    async def discard_job(self, job_id: str) -> bool:
+        async def discard() -> bool:
             async with self._job_persist_lock:
+                job = self._jobs.get(job_id)
+                if job is None or job.state not in TERMINAL_JOB_STATES:
+                    return False
+                if self._holds_artifact(job):
+                    # Only delete_export may remove a finished export with its ZIP.
+                    return False
                 await self._thread((self.root / "jobs" / (job_id + ".json")).unlink, missing_ok=True)
+                # Disk removal is the commit point: failure leaves the card
+                # and retry input intact. Late flushes take this same lock and
+                # see the flag only after deletion has actually succeeded.
+                job.export_deleted = True
+                self._jobs.pop(job_id, None)
                 # Discarding is an explicit user deletion; the frozen retry
                 # input it removes the only entry to goes with it. The copy is
-                # named by and read only for this job; keep it if that job is
-                # tracked again. Other retained inputs are untouched.
-                if job_id in self._jobs:
-                    return
+                # named by and read only for this job. Other retained inputs
+                # are untouched.
                 try:
                     await self._thread((self.root / "jobs" / (job_id + ".pack.json")).unlink, missing_ok=True)
                 except OSError:
                     logger.warning("[Knowledge] could not delete the retry input of discarded job %s", job_id)
+                return True
         task = asyncio.create_task(discard())
         self._detached.add(task)
         task.add_done_callback(self._detached.discard)
         task.add_done_callback(_consume)
-        return True
+        # A disconnected caller cannot interrupt the durable deletion owner.
+        return await asyncio.shield(task)
 
     async def delete_export(self, job_id: str) -> dict[str, Any]:
         """Remove one completed local export, retaining any shared recovery ZIP."""
@@ -3587,9 +3604,10 @@ class KnowledgeService:
         # Legacy providers have no spec API; modern unverifiable ones wait.
         if callable(provider) and specification is None:
             model_id = None
-        counts, stats = await asyncio.gather(
+        counts, stats, indexed_versions = await asyncio.gather(
             self._thread(self._store.entry_counts),
-            self._thread(self._store.chunk_stats, model_id, specification=specification),
+            self._thread(self._store.chunk_stats, model_id, specification=specification, include_export_readiness=True),
+            self._thread(self._store.pack_versions),
         )
         embedding_state = self._embedding_state()
         # Inspect local sidecar facts off-loop; imported ZIP/JSON origins alone
@@ -3627,6 +3645,11 @@ class KnowledgeService:
                     "chunks_total": chunk["total"],
                     "chunks_ready": chunk["ready"],
                     "chunks_failed": chunk["failed"],
+                    # A failed replacement may leave complete vectors for a
+                    # different revision; only the healthy active revision is ready.
+                    "export_ready": (bool(chunk.get("export_ready", 0))
+                                     and indexed_versions.get(record.pack_id) == record.pack_sha256
+                                     and record.pack_id not in self._broken_packs),
                     "vector_state": self._vector_state(
                         record, chunk, embedding_state, indexing=self._registry.enabled
                     ),
@@ -3644,7 +3667,7 @@ class KnowledgeService:
                           "entries": 0, "disabled_entries": 0, "enabled": False, "origin": "imported", "retained": True,
                           "sources_managed": True,
                           "auto_context": False, "local_embedding": False, "chunks_total": 0, "chunks_ready": 0,
-                          "chunks_failed": 0, "vector_state": "off", "broken": False, "subscription": None,
+                          "chunks_failed": 0, "export_ready": False, "vector_state": "off", "broken": False, "subscription": None,
                           "installed_at": "", "updated_at": ""})
         return packs
 

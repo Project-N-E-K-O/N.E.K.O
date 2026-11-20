@@ -1013,18 +1013,27 @@ class KnowledgeStore:
                 (json.dumps(list(chunk_ids)),),
             )}
 
-    def chunk_stats(self, model_id: str | None, *, specification: Mapping | None = None) -> dict[str, dict[str, int]]:
+    def chunk_stats(
+        self, model_id: str | None, *, specification: Mapping | None = None, include_export_readiness: bool = False,
+    ) -> dict[str, dict[str, int]]:
         """Per pack: total, resource-compatible ready chunks, and failed chunks."""
         # Legacy callers know only the profile; verified callers must also bind
         # readiness to the exact resources, just like pending_chunks/load_vectors.
-        spec_clause = " AND spec_sha256=?" if specification is not None else ""
+        spec_clause = " AND c.spec_sha256=?" if specification is not None else ""
         spec_args = (self._spec_hash(specification),) if specification is not None else ()
+        # Export needs one complete stored provenance identity, independently
+        # of the loaded encoder. Reuse this scan without fetching vector BLOBs
+        # into Python or issuing another query for every listed pack.
+        export_columns = (", SUM(c.vector IS NOT NULL), COUNT(s.spec_sha256), COUNT(DISTINCT c.spec_sha256)"
+                          if include_export_readiness else "")
+        export_join = (" LEFT JOIN vector_specs s ON s.spec_sha256=c.spec_sha256 AND s.model_id=c.model_id"
+                       if include_export_readiness else "")
         with self._read() as conn:
             rows = conn.execute(
-                "SELECT pack_id, COUNT(*),"
-                " SUM(CASE WHEN vector IS NOT NULL AND model_id IS ?" + spec_clause + " THEN 1 ELSE 0 END),"
-                " SUM(CASE WHEN attempts >= ? THEN 1 ELSE 0 END)"
-                " FROM chunks GROUP BY pack_id",
+                "SELECT c.pack_id, COUNT(*),"
+                " SUM(CASE WHEN c.vector IS NOT NULL AND c.model_id IS ?" + spec_clause + " THEN 1 ELSE 0 END),"
+                " SUM(CASE WHEN c.attempts >= ? THEN 1 ELSE 0 END)" + export_columns
+                + " FROM chunks c" + export_join + " GROUP BY c.pack_id",
                 (model_id, *spec_args, MAX_EMBED_ATTEMPTS),
             )
             return {
@@ -1032,6 +1041,8 @@ class KnowledgeStore:
                     "total": int(row[1]),
                     "ready": int(row[2] or 0) if model_id else 0,
                     "failed": int(row[3] or 0),
+                    **({"export_ready": int(row[1] > 0 and row[4] == row[1] and row[5] == row[1] and row[6] == 1)}
+                       if include_export_readiness else {}),
                 }
                 for row in rows
             }

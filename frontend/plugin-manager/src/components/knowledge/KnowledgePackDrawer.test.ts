@@ -21,7 +21,7 @@ async function mount(jobs: KnowledgePackJob[] = [], extra: Partial<KnowledgePack
   const root = document.createElement('div')
   document.body.append(root)
   const pack = { pack_id: 'imp.test', source: { name: 'Notes', homepage: '', license: '' }, enabled: false,
-    origin: 'imported', sources_managed: true, chunks_ready: 2, chunks_total: 2, vector_state: 'complete', ...extra } as KnowledgePack
+    origin: 'imported', sources_managed: true, chunks_ready: 2, chunks_total: 2, export_ready: true, vector_state: 'complete', ...extra } as KnowledgePack
   const state = reactive({ modelValue: true, pack: pack as KnowledgePack | null, jobs })
   const app = createApp({ render: () => h(KnowledgePackDrawer, state) })
   app.use(ElementPlus)
@@ -161,8 +161,32 @@ describe('pack documents, versions and publication', () => {
     expect(button.disabled).toBe(false)
   })
 
+  it.each([
+    { local_embedding: false, vector_state: 'off', chunks_ready: 2 },
+    { local_embedding: false, vector_state: 'off', chunks_ready: 0 },
+    { local_embedding: true, vector_state: 'waiting', chunks_ready: 0 },
+  ] as const)('exports verified stored vectors independently of the current inference state (%s)', async state => {
+    await mount([], { ...state, export_ready: true })
+    const button = buttons('Export data package')[0]!
+    expect(button.disabled).toBe(false)
+    expect(document.body.textContent).toContain(enUS.knowledge.exportReadyHint)
+    button.click()
+    await flush()
+    expect(api.exportPack).toHaveBeenCalledWith({ pack_id: 'imp.test' })
+  })
+
+  it.each([[1, 2], [0, 2], [0, 0], [2, 2]])('keeps unverified exports unavailable independently of current-model counts (%s/%s)', async (ready, total) => {
+    // Current-model counts alone cannot certify one complete stored provenance specification.
+    await mount([], { local_embedding: false, vector_state: 'off', export_ready: false, chunks_ready: ready, chunks_total: total })
+    const button = buttons('Export data package')[0]!
+    expect(button.disabled).toBe(true)
+    expect(document.body.textContent).toContain(enUS.knowledge.exportVectorWaiting)
+    button.click()
+    expect(api.exportPack).not.toHaveBeenCalled()
+  })
+
   it('waits for vectors without offering a text-only export', async () => {
-    await mount([], { vector_state: 'building' })
+    await mount([], { vector_state: 'building', export_ready: false, chunks_ready: 1 })
     expect(document.querySelectorAll('.export-actions button')).toHaveLength(1)
     const button = buttons('Export data package')[0]!
     expect(button.disabled).toBe(true)

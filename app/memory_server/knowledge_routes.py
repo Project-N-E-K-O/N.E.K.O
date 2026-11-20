@@ -577,7 +577,7 @@ async def knowledge_discard_job(request: Request):
         return _failure("invalid_request", 400)
 
     async def run(svc: KnowledgeService) -> dict[str, Any]:
-        return {"ok": svc.discard_job(job_id), "job_id": job_id}
+        return {"ok": await svc.discard_job(job_id), "job_id": job_id}
 
     return await _call(run)
 

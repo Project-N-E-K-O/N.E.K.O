@@ -214,6 +214,8 @@ export interface KnowledgePack {
   chunks_total: number
   chunks_ready: number
   chunks_failed: number
+  /** Complete stored vectors share one proven specification, regardless of the active encoder. */
+  export_ready: boolean
   vector_state: KnowledgeVectorState
   broken: boolean
   /** Set for a pack installed from the plugin market; null for a local import. */

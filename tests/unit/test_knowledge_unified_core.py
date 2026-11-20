@@ -124,7 +124,7 @@ async def test_finished_exports_outlive_the_bounded_task_window(tmp_path, restar
         assert export.job_id in ids and failed_export.job_id in ids
         assert len(ids) == MAX_TRACKED_JOBS + 2
         # Discarding is not a way to drop a finished export and orphan its ZIP.
-        assert service.discard_job(export.job_id) is False
+        assert await service.discard_job(export.job_id) is False
         assert export.job_id in [job["job_id"] for job in service.list_jobs()]
     finally:
         await service.stop()

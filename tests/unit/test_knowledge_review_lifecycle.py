@@ -196,7 +196,7 @@ async def test_discarded_job_cannot_be_recreated_by_a_late_flush(tmp_path):
     try:
         result = await _import(service, _pack())
         job = service._jobs[result["job_id"]]
-        assert service.discard_job(job.job_id)
+        assert await service.discard_job(job.job_id)
         await asyncio.gather(*tuple(service._detached))
         await service._persist_job(job)
         assert not (tmp_path / "jobs" / (job.job_id + ".json")).exists()
@@ -224,7 +224,7 @@ async def test_discarding_a_job_deletes_only_its_own_frozen_retry_input(tmp_path
                 return original(self, *args, **kwargs)
 
             monkeypatch.setattr(Path, "unlink", refuse)
-        assert service.discard_job(discarded.job_id) is True
+        assert await service.discard_job(discarded.job_id) is True
         await asyncio.gather(*tuple(service._detached))
         assert not (jobs / (discarded.job_id + ".json")).exists()
         # A failed delete is logged, never turned into a failed discard.
