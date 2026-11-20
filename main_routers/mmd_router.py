@@ -703,6 +703,16 @@ def _list_animation_dir(directory: Path, pattern: str | None = None) -> list[Pat
         return []
 
 
+def _animation_dir_exists(directory: Path) -> bool:
+    """``directory.exists()``, treating a check that raises (e.g. PermissionError) as missing."""
+    try:
+        return directory.exists()
+    except Exception as dir_error:
+        logger.warning(f"检查动画目录失败: {type(dir_error).__name__}")
+        print(f"检查动画目录失败 {directory!r}: {type(dir_error).__name__}: {dir_error}")
+        return False
+
+
 @router.get('/animations')
 def get_mmd_animations():
     """List VMD animation files."""
@@ -716,7 +726,7 @@ def get_mmd_animations():
         # 1. Project static/mmd/animation/.
         project_root = config_mgr.project_root
         static_anim_dir = project_root / "static" / "mmd" / "animation"
-        if static_anim_dir.exists():
+        if _animation_dir_exists(static_anim_dir):
             for anim_file in _list_animation_dir(static_anim_dir, '*.vmd'):
                 try:
                     if not is_utf8_text(anim_file.name):
@@ -743,7 +753,7 @@ def get_mmd_animations():
         mmd_dir = _ensure_mmd_directory(config_mgr)
         if mmd_dir:
             user_anim_dir = mmd_dir / "animation"
-            if user_anim_dir.exists():
+            if _animation_dir_exists(user_anim_dir):
                 for anim_file in _list_animation_dir(user_anim_dir, '*.vmd'):
                     try:
                         if not is_utf8_text(anim_file.name):
@@ -978,7 +988,7 @@ async def list_mmd_animations_for_delete(request: Request):
         skipped = 0  # Non-UTF-8 names cannot be serialized or requested.
         failed = 0
 
-        if user_anim_dir.exists():
+        if _animation_dir_exists(user_anim_dir):
             for vmd_file in _list_animation_dir(user_anim_dir):
                 try:
                     if vmd_file.suffix.lower() != '.vmd':

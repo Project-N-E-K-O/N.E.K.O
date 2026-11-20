@@ -232,3 +232,31 @@ def test_unexpected_failure_does_not_log_paths(router_name, endpoint, tmp_path, 
     assert response.status_code == 500
     assert log.messages
     _assert_logs_have_no_paths(log, tmp_path)
+
+
+@pytest.mark.parametrize("endpoint, broken_dir, expected", [
+    ("/api/model/mmd/animations", "static", ["Wave.vmd"]),
+    ("/api/model/mmd/animations/list", "user", []),
+])
+def test_mmd_animation_dir_check_failure_is_tolerated(
+    endpoint, broken_dir, expected, mmd_env, tmp_path, monkeypatch,
+):
+    static_anim, user_anim, log = mmd_env
+    (user_anim / "Wave.vmd").write_bytes(b"vmd")
+    target = static_anim if broken_dir == "static" else user_anim
+    real_exists = Path.exists
+
+    def flaky_exists(self, *args, **kwargs):
+        if self == target:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_exists(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", flaky_exists)
+
+    with _client(mmd_router) as client:
+        response = client.get(endpoint)
+
+    assert response.status_code == 200
+    assert [a["filename"] for a in response.json()["animations"]] == expected
+    assert "检查动画目录失败: PermissionError" in log.messages
+    _assert_logs_have_no_paths(log, tmp_path)
