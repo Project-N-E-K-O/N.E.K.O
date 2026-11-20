@@ -24,8 +24,12 @@ _SECRET_PATTERNS = (
     (re.compile(r"\b(Authorization['\"]?\s*[:=]\s*['\"]?)(?:[A-Za-z]+\s+)?[^\s'\",;}]+", re.IGNORECASE), r"\1***"),
     (re.compile(r"\bBearer\s+[^\s'\",;}]+", re.IGNORECASE), "Bearer ***"),
     (re.compile(r"\bsk-[A-Za-z0-9_\-]+"), "sk-***"),
+    # A Cookie (or Set-Cookie) header holds several ``name=value;`` pairs: mask up to the line end or quote.
+    (re.compile(r"\b(Cookie['\"]?\s*[:=]\s*)[^\r\n'\"]+", re.IGNORECASE), r"\1***"),
+    # Quoted values run to the closing quote, or to the end of the bounded
+    # input when truncation cut the quote off.
     (re.compile(r"\b([A-Za-z_\-]{0,32}(?:key|token|secret|password|cookie)['\"]?\s*[:=]\s*)"
-                r"(?:'[^']{0,200}'|\"[^\"]{0,200}\"|[^\s&'\",;}]+)", re.IGNORECASE), r"\1***"),
+                r"(?:'[^']*'?|\"[^\"]*\"?|[^\s&'\",;}]+)", re.IGNORECASE), r"\1***"),
 )
 _URL = re.compile(r"\b([A-Za-z][A-Za-z0-9+.\-]{0,15})://[^\s'\"<>]+")
 
