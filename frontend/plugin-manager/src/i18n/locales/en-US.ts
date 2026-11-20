@@ -231,6 +231,7 @@ export default {
     newSourcePack: "Create a new pack",
     sourcePackName: "Pack name",
     previewDocument: "Preview document",
+    sourcePreviewRetention: "Preview saves the original file and extracted text on this device. Cancelling the import does not delete them.",
     sourcePreviewMeta: "{name} · {chars} characters",
     enableImported: "Enable retrieval for this new pack after import",
     cloudDisclosure: "When a pack is enabled, matching document excerpts may be sent to your configured cloud model. New document packs start disabled; automatic context stays off.",

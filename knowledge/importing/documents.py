@@ -26,14 +26,18 @@ class SourceLimits:
 _PDF_PARSE_THREADS: dict[int, int] = {}
 _PDF_LOG_LOCK = threading.Lock()
 _PDF_RECORD_FACTORY = None
+_PDF_RECORD_WRAPPER = None
 
 
-def _private_pdf_record(*args, **kwargs):
-    """Redact every pypdf child emitter before any handler formats its record."""
-    record = _PDF_RECORD_FACTORY(*args, **kwargs)
-    if record.name == "pypdf" or record.name.startswith("pypdf."):
-        _redact_pdf_diagnostic(record)
-    return record
+def _private_pdf_record_factory(delegate):
+    """Keep each installed wrapper's delegate immutable across later parses."""
+    def factory(*args, **kwargs):
+        record = delegate(*args, **kwargs)
+        if record.name == "pypdf" or record.name.startswith("pypdf."):
+            _redact_pdf_diagnostic(record)
+        return record
+
+    return factory
 
 
 def _paragraphs(text: str, location: dict) -> list[dict]:
@@ -77,14 +81,17 @@ def _redact_pdf_diagnostic(record):
 @contextmanager
 def _private_pdf_diagnostics():
     """Redact all private pypdf emitters, without changing other threads' logs."""
-    global _PDF_RECORD_FACTORY
+    global _PDF_RECORD_FACTORY, _PDF_RECORD_WRAPPER
     thread_id = threading.get_ident()
     with _PDF_LOG_LOCK:
         # Logger filters do not cover child loggers during propagation. One
         # shared record factory covers even dynamically created pypdf emitters.
         if not _PDF_PARSE_THREADS:
             _PDF_RECORD_FACTORY = logging.getLogRecordFactory()
-            logging.setLogRecordFactory(_private_pdf_record)
+            # An external library may retain this wrapper after the scope exits.
+            # Its delegate must not change when the next scope wraps that library.
+            _PDF_RECORD_WRAPPER = _private_pdf_record_factory(_PDF_RECORD_FACTORY)
+            logging.setLogRecordFactory(_PDF_RECORD_WRAPPER)
         _PDF_PARSE_THREADS[thread_id] = _PDF_PARSE_THREADS.get(thread_id, 0) + 1
     try:
         yield
@@ -94,10 +101,10 @@ def _private_pdf_diagnostics():
             if not _PDF_PARSE_THREADS[thread_id]:
                 del _PDF_PARSE_THREADS[thread_id]
             if not _PDF_PARSE_THREADS:
-                if logging.getLogRecordFactory() is _private_pdf_record:
+                if logging.getLogRecordFactory() is _PDF_RECORD_WRAPPER:
                     logging.setLogRecordFactory(_PDF_RECORD_FACTORY)
-                # An unrelated logging thread may already be inside the old
-                # factory wrapper; keep its delegate valid after uninstall.
+                # In-flight or externally retained wrappers keep their own
+                # original delegate after uninstall or a later installation.
 
 
 def parse_source(filename: str, data: bytes, limits: SourceLimits) -> dict:

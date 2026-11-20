@@ -231,6 +231,7 @@ export default {
     newSourcePack: "新しいパックを作成",
     sourcePackName: "パック名",
     previewDocument: "文書をプレビュー",
+    sourcePreviewRetention: "プレビューを作成すると、元のファイルと抽出したテキストがこの端末に保存されます。インポートをキャンセルしても削除されません。",
     sourcePreviewMeta: "{name} · {chars} 文字",
     enableImported: "取り込み後に新しいパックの検索を有効にする",
     cloudDisclosure: "パックを有効にすると、一致した文書の抜粋が設定済みのクラウドモデルへ送信される場合があります。新しい文書パックと自動コンテキストは既定で無効です。",

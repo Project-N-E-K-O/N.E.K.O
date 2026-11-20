@@ -231,6 +231,7 @@ export default {
     newSourcePack: "새 팩 만들기",
     sourcePackName: "팩 이름",
     previewDocument: "문서 미리 보기",
+    sourcePreviewRetention: "미리보기를 만들면 원본 파일과 추출한 텍스트가 이 기기에 저장됩니다. 가져오기를 취소해도 삭제되지 않습니다.",
     sourcePreviewMeta: "{name} · {chars}자",
     enableImported: "가져온 뒤 새 팩을 검색에 사용",
     cloudDisclosure: "팩을 켜면 일치하는 문서 발췌문이 설정한 클라우드 모델에 전달될 수 있습니다. 새 문서 팩과 자동 문맥은 기본적으로 꺼져 있습니다.",

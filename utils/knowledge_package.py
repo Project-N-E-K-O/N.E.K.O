@@ -214,6 +214,40 @@ def _spread_positions(positions: int, distance: int, *, backwards: bool = False)
     return positions
 
 
+def _source_match_starts(content: str, body: str) -> Iterator[int]:
+    """Yield ascending, overlapping match starts for a non-empty excerpt."""
+    # Ordinary excerpts have few matches; retain the native substring-search
+    # fast path rather than scanning every source character in Python.
+    start = content.find(body)
+    for _ in range(32):
+        if start < 0:
+            return
+        yield start
+        start = content.find(body, start + 1)
+    if start < 0:
+        return
+    # Dense matches otherwise rescan the same long substring at every start.
+    # Continue from the first unyielded match with KMP's linear scan, retaining
+    # every overlap in exactly the same order and charging the same work budget.
+    failure = [0] * len(body)
+    matched = 0
+    for index in range(1, len(body)):
+        while matched and body[index] != body[matched]:
+            matched = failure[matched - 1]
+        if body[index] == body[matched]:
+            matched += 1
+        failure[index] = matched
+    matched = 0
+    for index in range(start, len(content)):
+        while matched and content[index] != body[matched]:
+            matched = failure[matched - 1]
+        if content[index] == body[matched]:
+            matched += 1
+        if matched == len(body):
+            yield index - len(body) + 1
+            matched = failure[matched - 1]
+
+
 def _source_is_covered(content: str, bodies: Iterable[str], *, remaining_matches: list[int] | None = None) -> bool:
     """Keep every contiguous coverage path without exponential backtracking."""
     remaining_matches = [_MAX_COVERAGE_MATCHES] if remaining_matches is None else remaining_matches
@@ -223,8 +257,7 @@ def _source_is_covered(content: str, bodies: Iterable[str], *, remaining_matches
         # The pack bounds content to 80,000 characters. Each candidate cursor
         # needs one bit; even repetitive text cannot create unbounded path state.
         positions = bytearray((len(content) + 8) // 8)
-        start = content.find(body)
-        while start >= 0:
+        for start in _source_match_starts(content, body):
             # Many distinct repetitive bodies can churn even a bounded cache.
             # Charge real occurrence enumeration against the whole-package
             # work budget, rather than trusting archive byte limits alone.
@@ -232,7 +265,6 @@ def _source_is_covered(content: str, bodies: Iterable[str], *, remaining_matches
             if remaining_matches[0] < 0:
                 raise PackageError("package_capacity_exceeded")
             positions[start // 8] |= 1 << (start % 8)
-            start = content.find(body, start + 1)
         return int.from_bytes(positions, "little")
 
     cursors = 1  # Only position zero is initially covered.

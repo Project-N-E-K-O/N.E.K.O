@@ -2653,12 +2653,29 @@ class KnowledgeService:
         from .archive import read_archive
 
         identity = self._store._spec_hash(specification)
+        readiness = None
         for pack_id in pack_ids:
             record = self._registry.packs.get(pack_id)
             if record is None or not record.archive_sha256:
                 continue
             key = (record.archive_sha256, identity)
             if key in self._seeded_artifacts:
+                continue
+            if readiness is None:
+                # One aggregate scan for all candidates, without loading each
+                # pack's vector BLOBs or revalidating already-installed ZIPs.
+                readiness = await self._thread(lambda: (
+                    self._store.chunk_stats(specification["model_id"], specification=specification),
+                    self._store.pack_versions(),
+                ))
+            if self._registry.packs.get(pack_id) != record:
+                continue
+            counts, indexed = readiness
+            stats = counts.get(pack_id, {})
+            if (indexed.get(pack_id) == record.pack_sha256 and record.chunks > 0
+                    and stats.get("ready") == stats.get("total") == record.chunks):
+                # Do not cache this observation: missing vectors, changed
+                # resources or shared snapshot damage cleanup must reopen it.
                 continue
             # Identity of the expected location: a missing optional ZIP is
             # remembered as None and retried once a file appears there.

@@ -387,6 +387,7 @@ function isInvalidBridgeToken(error: unknown): boolean {
     (
       code === 'invalid_bridge_token' ||
       legacyDetail === 'invalid bridge token' ||
+      // Retained wire response from older servers; this is not UI copy.
       legacyDetail === '无效的 bridge token'
     )
   )

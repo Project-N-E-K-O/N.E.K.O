@@ -2,6 +2,7 @@
 
 import hashlib
 import asyncio
+import json
 from email import policy
 from email.parser import BytesParser
 import threading
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi import FastAPI
+import httpcore
 import httpx
 import pytest
 
@@ -80,6 +82,95 @@ async def test_publication_streams_the_confirmed_artifact_to_existing_shares(set
     assert response.json()["share"]["id"] == 7
     assert events == ["account", "artifact", "publication"]
     assert "bearer" not in response.text
+
+
+@pytest.mark.parametrize("market_base,no_proxy,proxied", [
+    ("https://market.test", "", True),
+    ("https://market.test", "market.test", False),
+    ("http://127.0.0.1:8000", "", False),
+    ("http://localhost:8000", "", False),
+    ("http://[::1]:8000", "", False),
+])
+async def test_publication_uses_real_proxy_routing_only_for_remote_market(
+    setup, tmp_path, monkeypatch, market_base, no_proxy, proxied,
+):
+    client, data, _events, _reply = setup
+    raw = (tmp_path / "source.zip").read_bytes()
+    connections, requests, tls_names = [], [], []
+
+    class Stream(httpcore.AsyncNetworkStream):
+        """Serve HTTP bytes below real HTTPX proxy selection and HTTP CONNECT."""
+        def __init__(self, host):
+            self.host, self.written = host, bytearray()
+
+        async def write(self, buffer, timeout=None):
+            self.written.extend(buffer)
+
+        async def read(self, max_bytes, timeout=None):
+            request = bytes(self.written)
+            self.written.clear()
+            if not request:
+                return b""
+            line = request.split(b"\r\n", 1)[0].decode()
+            requests.append((self.host, line, request))
+            if line.startswith("CONNECT "):
+                return b"HTTP/1.1 200 Connection established\r\n\r\n"
+            if line.startswith("GET "):
+                assert self.host == "127.0.0.1" and "authorization:" not in request.decode(errors="replace").lower()
+                content = raw
+            else:
+                assert line == "POST /api/v1/shares HTTP/1.1"
+                assert b"Authorization: Bearer isolated-test-bearer" in request and raw in request
+                content = json.dumps({"id": 7, "kind": "knowledge", "file_sha256": data["artifact_id"]}).encode()
+            return b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(content)).encode() + b"\r\n\r\n" + content
+
+        async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+            tls_names.append(server_hostname)
+            return self
+
+        async def aclose(self):
+            pass
+
+        def get_extra_info(self, info):
+            return None
+
+    class Network(httpcore.AsyncNetworkBackend):
+        async def connect_tcp(self, host, port, **kwargs):
+            connections.append((host, port))
+            if host == "market.test" and proxied:
+                raise httpcore.ConnectError("synthetic market requires its configured proxy")
+            return Stream(host)
+
+    # Keep genuine client/env-mount and httpcore protocol behavior; replace
+    # only the socket backend so no test network or external server is needed.
+    real_client = type(client)
+    def make_client(**kwargs):
+        outbound = real_client(**kwargs)
+        for transport in (outbound._transport, *outbound._mounts.values()):
+            if transport is not None:
+                transport._pool._network_backend = Network()
+        return outbound
+
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        monkeypatch.delenv(key, raising=False)
+        monkeypatch.delenv(key.lower(), raising=False)
+    monkeypatch.setenv("HTTP_PROXY", "http://env-proxy.test:3128")
+    monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy.test:3128")
+    monkeypatch.setenv("NO_PROXY", no_proxy)
+    monkeypatch.setattr(publish.httpx, "AsyncClient", make_client)
+    monkeypatch.setattr(publish, "get_market_api_url", lambda: market_base)
+    response = await client.post("/market/knowledge/publish?token=test", json=data)
+    assert response.status_code == 200, response.text
+    assert connections[0] == ("127.0.0.1", 48911)
+    assert requests[0][1].startswith("GET /api/public-knowledge/packs/artifacts?")
+    if proxied:
+        assert connections[1] == ("env-proxy.test", 3128)
+        assert requests[1][1] == "CONNECT market.test:443 HTTP/1.1"
+        assert b"isolated-test-bearer" not in requests[1][2]
+        assert tls_names == ["market.test"]
+    else:
+        assert all(host != "env-proxy.test" for host, _port in connections)
+    assert response.json()["share"]["id"] == 7
 
 
 async def test_publication_confirmation_precedes_account_or_artifact_reads(setup):

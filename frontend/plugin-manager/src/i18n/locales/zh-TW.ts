@@ -231,6 +231,7 @@ export default {
     newSourcePack: "建立資料包",
     sourcePackName: "資料包名稱",
     previewDocument: "預覽文件",
+    sourcePreviewRetention: "預覽會將原件和解析文字儲存在本機；取消匯入也不會自動刪除。",
     sourcePreviewMeta: "{name} · {chars} 字元",
     enableImported: "匯入後啟用新資料包參與檢索",
     cloudDisclosure: "資料包啟用後，命中的資料片段可能傳送至你設定的雲端模型。新資料包預設不啟用，自動注入仍預設關閉。",

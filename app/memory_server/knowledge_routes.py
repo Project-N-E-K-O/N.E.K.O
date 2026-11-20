@@ -511,7 +511,12 @@ async def _streamed_pack_import(request: Request, service: KnowledgeService, *, 
             return await _call(lambda svc: svc.import_pack(path, subscription=subscription, _options=options))
         except BodyTooLarge:
             return _failure("pack_too_large", 413)
-        except (ValueError, OSError, MultiPartException, ClientDisconnect):
+        except OSError as exc:
+            # Scratch I/O failures are server faults; never expose a private
+            # path from the exception or misreport a valid file as bad input.
+            logger.warning("[Knowledge] pack upload storage failed: %s", type(exc).__name__)
+            return _failure("knowledge_error", 500)
+        except (ValueError, MultiPartException, ClientDisconnect):
             return _failure("invalid_request", 400)
         finally:
             if form is not None:
@@ -678,7 +683,11 @@ async def knowledge_source_preview(request: Request, pack_id: str = "", doc_id: 
             return await _call(lambda svc: svc.preview_source(filename, path, pack_id=pack_id, doc_id=doc_id, name=name))
         except BodyTooLarge:
             return _failure("document_too_large", 413)
-        except (ValueError, OSError, ClientDisconnect):
+        except OSError as exc:
+            # Match the package spool's storage-error and privacy boundary.
+            logger.warning("[Knowledge] source upload storage failed: %s", type(exc).__name__)
+            return _failure("knowledge_error", 500)
+        except (ValueError, ClientDisconnect):
             return _failure("invalid_request", 400)
         finally:
             with contextlib.suppress(OSError):

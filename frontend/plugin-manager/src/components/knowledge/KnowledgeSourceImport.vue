@@ -1,6 +1,8 @@
 <template>
   <el-dialog :model-value="modelValue" :title="t('knowledge.importDocumentTitle')" width="min(720px, 94vw)" :close-on-click-modal="!saving" :close-on-press-escape="!saving" :show-close="!saving" @close="close">
     <template v-if="file">
+      <!-- Preview itself retains local data, even before an import is committed. -->
+      <el-alert :title="t('knowledge.sourcePreviewRetention')" type="info" :closable="false" show-icon data-testid="source-retention-disclosure" />
       <el-form v-if="!preview" label-position="top" @submit.prevent="prepare">
         <el-form-item :label="t('knowledge.sourceName')"><span>{{ file.name }}</span></el-form-item>
         <el-form-item v-if="!pack" :label="t('knowledge.sourceTarget')">

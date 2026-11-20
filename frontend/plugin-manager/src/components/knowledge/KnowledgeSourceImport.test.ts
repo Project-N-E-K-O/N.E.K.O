@@ -49,6 +49,20 @@ beforeEach(() => {
 afterEach(() => { cleanup?.(); cleanup = undefined; document.body.innerHTML = ''; vi.unstubAllGlobals() })
 
 describe('source import privacy and identity', () => {
+  it('discloses retained local originals before preview and when cancelling import', async () => {
+    const state = await mount()
+    const disclosure = 'Preview saves the original file and extracted text on this device. Cancelling the import does not delete them.'
+    expect(document.querySelector('[data-testid="source-retention-disclosure"]')?.textContent).toContain(disclosure)
+    expect(api.previewSource).not.toHaveBeenCalled()
+    button('Preview document').click()
+    await flush()
+    expect(document.querySelector('[data-testid="source-retention-disclosure"]')?.textContent).toContain(disclosure)
+    button('Cancel').click()
+    await flush()
+    expect(state.modelValue).toBe(false)
+    expect(api.commitSource).not.toHaveBeenCalled()
+  })
+
   it('offers only packs with local source provenance as append destinations', async () => {
     await mount(null, [
       { pack_id: 'imp.local', origin: 'imported', sources_managed: true, source: { name: 'Local originals' } } as KnowledgePack,
