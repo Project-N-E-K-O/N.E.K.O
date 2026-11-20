@@ -374,6 +374,75 @@ async def test_scoped_loan_is_shared_by_the_root_but_bound_to_each_actual_delive
     assert (await deliver("second")).allow and len(asked) == 5
 
 
+async def test_widening_a_rule_keeps_parallel_answers_and_queued_approvals(store):
+    pending = asyncio.Event()
+    answer = asyncio.Event()
+
+    async def ask(actor, _question):
+        if actor == "queued":
+            return "once"
+        if actor == "second":
+            pending.set()
+            await answer.wait()
+            return "once"
+        return "always"
+
+    gate = PermissionGate(store, ask)
+    queued = await gate.check("queued", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+    async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
+        second = tasks.create_task(gate.check("second", "browser", scope=GrantScope("browser", "second"), hold_once=True))
+        await pending.wait()
+        first = await gate.check("first", "browser", scope=GrantScope("browser", "first"), hold_once=True)
+        answer.set()
+    assert first.allow and second.result().allow and second.result().asked
+    assert gate.grant_active(queued.grant_id) and gate.grant_active(second.result().grant_id)
+    await store.set_mode("browser", "allow")
+    assert gate.grant_active(queued.grant_id)
+    await store.set_mode("browser", "first_ask")
+    await store.set_mode("browser", "allow")
+    assert not gate.grant_active(queued.grant_id)
+
+
+async def test_unrelated_setting_does_not_defeat_scoped_always_approval(store):
+    async def ask(_actor, _question):
+        await store.set_mode("run_command", "deny")
+        return "always"
+
+    gate = PermissionGate(store, ask)
+    result = await gate.check("c", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+    assert result.allow and result.asked and gate.grant_active(result.grant_id)
+    assert await store.mode("browser") == "allow"
+
+
+@pytest.mark.parametrize("new_mode, expected", [("always_ask", True), ("deny", False)])
+async def test_a_tightening_during_confirmation_never_persists_the_wider_answer(store, new_mode, expected):
+    async def ask(_actor, _question):
+        await store.set_mode("browser", new_mode)
+        return "always"
+
+    gate = PermissionGate(store, ask)
+    reply = await gate.check("c", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+    assert reply.allow is expected and await store.mode("browser") == new_mode
+    assert not gate.session_grants("c") and not gate.run_grants("c")
+    if expected:
+        assert gate.grant_active(reply.grant_id)
+        gate.release_grant(reply.grant_id)
+        assert not gate.grant_active(reply.grant_id)
+    else:
+        assert reply.reason == DENIED_BY_SETTINGS
+
+
+async def test_mcp_default_tightens_only_servers_that_inherit_it(store):
+    gate = PermissionGate(store, Asker("once"))
+    await store.set_mode("mcp_server", "allow", "named")
+    explicit = await gate.check("a", "mcp_server", key="named", scope=GrantScope("named"), hold_once=True)
+    inherited = await gate.check("a", "mcp_server", key="other", scope=GrantScope("other"), hold_once=True)
+    await store.set_mode("mcp_server", "deny")
+    assert gate.grant_active(explicit.grant_id) and not gate.grant_active(inherited.grant_id)
+    await store.set_mode("mcp_server", "allow", "other")
+    assert not gate.grant_active(inherited.grant_id)
+
+
 async def test_expanded_settings_do_not_silently_approve_every_data_recipient(store):
     await store.set_mode("managed_delivery", "allow")
     gate = PermissionGate(store, Asker("once"))

@@ -69,6 +69,8 @@ logger = logging.getLogger(__name__)
 
 MODES: tuple[str, ...] = ("first_ask", "always_ask", "allow", "deny")
 CHOICES: tuple[str, ...] = ("always", "session", "once", "deny")
+# A lower rank withdraws approval previously issued under a wider setting.
+_MODE_RANK = {"deny": 0, "always_ask": 1, "first_ask": 2, "allow": 3}
 # What a category that asks every time offers.
 CHOICES_ALWAYS_ASK: tuple[str, ...] = ("once", "deny")
 
@@ -276,10 +278,15 @@ class PermissionStore:
         return self._categories.get(name, DEFAULT_MODES.get(name, "always_ask"))
 
     def revision(self, category: str, key: str | None = None) -> int:
-        return max(self._revisions.get((category, None), 0), self._revisions.get(_slot(category, key), 0))
+        """Generation of the last tightening of the effective rule for this scope."""
+        name, slot = _slot(category, key)
+        if name == MCP_SERVER_CATEGORY and slot in self._mcp_servers:
+            return self._revisions.get((name, slot), 0)
+        return self._revisions.get((name, None), 0)
 
     async def set_mode(
-        self, category: str, mode: str, key: str | None = None, *, expected_version: int | None = None
+        self, category: str, mode: str, key: str | None = None, *, expected_version: int | None = None,
+        expected_revision: int | None = None,
     ) -> bool:
         """Set the mode of a category and write the file.
 
@@ -299,12 +306,24 @@ class PermissionStore:
                 raise PermissionFileError("the permissions file cannot be read; repair or remove it first")
             if expected_version is not None and expected_version != self._version:
                 return False
+            if expected_revision is not None and self.revision(category, key) != expected_revision:
+                return False
+            fallback = self._categories.get(name, DEFAULT_MODES.get(name, "always_ask"))
+            setting = (name, None)
+            previous = fallback
+            generation = self._revisions.get(setting, 0)
             if name == MCP_SERVER_CATEGORY and key is not None:
-                self._mcp_servers[slot or "*"] = mode
+                previous = self._mcp_servers.get(slot, fallback)
+                generation = self.revision(name, key)
+                setting = (name, slot)
+                self._mcp_servers[slot] = mode
             else:
                 self._categories[name] = mode
             self._version += 1
-            self._revisions[(name, slot if key is not None else None)] = self._version
+            # Managed transfers still ask per recipient under an "allow" setting.
+            ceiling = _MODE_RANK["first_ask"] if name == "managed_delivery" else _MODE_RANK["allow"]
+            tighter = min(_MODE_RANK[mode], ceiling) < min(_MODE_RANK[previous], ceiling)
+            self._revisions[setting] = self._version if tighter else generation
             # A cancelled caller still waits for the write, so the lock is not
             # released while an older setting can land on disk after a newer one.
             await to_thread_through_cancellation(self._write, dict(self._categories), dict(self._mcp_servers))
@@ -536,10 +555,11 @@ class PermissionGate:
         mode = await self._store.mode(category)
         if mode in ("allow", "deny"):
             return PermissionDecision(mode == "allow", DENIED_BY_SETTINGS if mode == "deny" else None)
-        revision = self._store.revision(category)
         work = self._work.setdefault(commission_id, object())
         decision = await self.ask_each_time(commission_id, category, detail=detail)
-        if self._work.get(commission_id) is not work or self._store.revision(category) != revision:
+        if await self._store.mode(category) == "deny":
+            return PermissionDecision(False, DENIED_BY_SETTINGS)
+        if self._work.get(commission_id) is not work:
             return PermissionDecision(False, DENIED_NO_ANSWER)
         return decision
 
@@ -670,7 +690,6 @@ class PermissionGate:
             self._pending[pending_key] = pending
             result = PermissionDecision(False, DENIED_NO_ANSWER)
             try:
-                version = self._store.version
                 revision = self._store.revision(*slot)
                 options = CHOICES_ALWAYS_ASK if mode == "always_ask" else CHOICES
                 if delivery and mode != "always_ask":
@@ -680,19 +699,24 @@ class PermissionGate:
                 if not live():
                     pending.set_result(PermissionDecision(True))
                     return result
-                if self._store.revision(*slot) != revision:
-                    return result
                 if choice in ("always", "session") and choice not in options:
                     choice = "once"
                 if choice not in options or choice == "deny":
                     result = PermissionDecision(False, DENIED_BY_USER)
                     return result
                 if choice == "always":
-                    if not await self._store.set_mode(category, "allow", key, expected_version=version) or not live():
-                        return result
-                if choice == "session":
+                    # Only this rule can invalidate an approval, not a simultaneous edit elsewhere.
+                    await self._store.set_mode(category, "allow", key, expected_revision=revision)
+                current = await self._store.mode(category, key)
+                if current == "deny":
+                    result = PermissionDecision(False, DENIED_BY_SETTINGS)
+                    return result
+                if not live():
+                    return result
+                tightened = self._store.revision(*slot) != revision
+                if choice == "session" and not tightened:
                     grant_id = receipt(self._record_loan(root, root, slot, scope, "session"))
-                elif choice == "once" and category in RUN_SCOPED_CATEGORIES:
+                elif choice == "once" and category in RUN_SCOPED_CATEGORIES and not tightened:
                     grant_id = receipt(self._record_loan(commission_id, root, slot, scope, "run", branch=branch))
                 elif delivery or hold_once:
                     grant_id = self._record_loan(commission_id, root, slot, scope, "once", branch=branch)
