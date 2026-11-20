@@ -84,6 +84,9 @@ class BuiltinLeases:
         self._on_released = on_released
         self._wait_seconds = wait_seconds
         self._held: dict[str, Occupation] = {}
+        # Pending provider calls sharing a new membership. One completed
+        # operation promotes that membership to the normal run-long hold.
+        self._pending_members: dict[tuple[str, str], set[object]] = {}
         self._waiters: set[asyncio.Future[None]] = set()
         self._cleanups: set[asyncio.Task[Any]] = set()
 
@@ -113,7 +116,9 @@ class BuiltinLeases:
         except Exception:  # noqa: BLE001 - a display that fails must not hold the work up
             logger.warning("telling about built-in activity failed", exc_info=True)
 
-    async def acquire(self, group: str, commission_id: str, *, title: str = "") -> Occupation | None:
+    async def acquire(
+        self, group: str, commission_id: str, *, title: str = "", claim: object | None = None
+    ) -> Occupation | None:
         """Occupy a group for a commission, waiting while another team has it.
 
         Returns None once the commission's team has the group. When the wait
@@ -124,12 +129,20 @@ class BuiltinLeases:
         deadline = loop.time() + self._wait_limit()
         while True:
             held = self._held.get(group)
-            if held is None:
-                self._held[group] = Occupation(team=team, title=title, members={commission_id})
-                self._tell(group, "started", team)
-                return None
-            if held.team == team:
+            if held is None or held.team == team:
+                started = held is None
+                if held is None:
+                    held = self._held[group] = Occupation(team=team, title=title)
+                key = (group, commission_id)
+                if claim is None:
+                    self._pending_members.pop(key, None)
+                elif commission_id not in held.members:
+                    self._pending_members[key] = {claim}
+                elif key in self._pending_members:
+                    self._pending_members[key].add(claim)
                 held.members.add(commission_id)
+                if started:
+                    self._tell(group, "started", team)
                 return None
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -144,6 +157,19 @@ class BuiltinLeases:
             finally:
                 self._waiters.discard(waiter)
 
+    def finish_claim(self, group: str, commission_id: str, claim: object, *, keep: bool) -> None:
+        """Keep a used device for the run; roll back a declined call's own claim only."""
+        key = (group, commission_id)
+        claims = self._pending_members.get(key)
+        if claims is None or claim not in claims:
+            return
+        if keep:
+            del self._pending_members[key]
+            return
+        claims.remove(claim)
+        if not claims:
+            self.release(commission_id, only_group=group)
+
     def release(self, commission_id: str, *, only_group: str | None = None) -> list[str]:
         """Release this commission from the requested group, or from all of them. Return the groups freed.
 
@@ -154,6 +180,7 @@ class BuiltinLeases:
         for group, held in list(self._held.items()):
             if (only_group is not None and group != only_group) or commission_id not in held.members:
                 continue
+            self._pending_members.pop((group, commission_id), None)
             held.members.discard(commission_id)
             if not held.members:
                 del self._held[group]

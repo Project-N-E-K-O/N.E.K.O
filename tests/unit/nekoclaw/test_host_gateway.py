@@ -2760,6 +2760,31 @@ async def test_revoking_browser_approval_while_queued_keeps_the_next_provider_ca
     assert builtin_host.leases.occupied() == {"keyboard_mouse": other.id}
 
 
+async def test_decline_inside_provider_queue_keeps_parallel_browser_call_occupied(builtin_host, monkeypatch):
+    host = builtin_host
+    await host.permission_store.set_mode("browser", "allow")
+    commission = await _commission(host)
+    grant = _grant(host, commission)
+    running, finish = asyncio.Event(), asyncio.Event()
+
+    async def run(tool, *, commission_id, arguments, still_allowed):
+        assert still_allowed()
+        if arguments["url"] == "queued":
+            return BuiltinOutcome(False, "permission denied")
+        running.set()
+        await finish.wait()
+        return BuiltinOutcome(True, "finished")
+
+    monkeypatch.setattr(host.provider, "run", run)
+    async with asyncio.timeout(5), asyncio.TaskGroup() as group:
+        group.create_task(_call(host, grant, "browser_navigate_page", {"url": "active"}))
+        await running.wait()
+        denied = await _call(host, grant, "browser_navigate_page", {"url": "queued"})
+        assert denied["isError"] and host.leases.occupied() == {"browser": commission.id}
+        finish.set()
+    assert host.leases.occupied() == {"browser": commission.id}
+
+
 async def test_stopping_a_commission_stops_its_call_that_waits_for_a_group(builtin_host):
     builtin_host.permissions.set_asker(Asker("once"))
     first = await _commission(builtin_host)

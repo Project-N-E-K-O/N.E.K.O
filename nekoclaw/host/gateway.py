@@ -1302,44 +1302,49 @@ class CapabilityGateway:
         from utils.tokenize import truncate_to_tokens
 
         group = capability.group or ""
-        if self._leases is not None and group:
-            in_the_way = await self._leases.acquire(group, commission.id, title=commission.title)
-            if in_the_way is not None:
-                await self._ledger.append_event(
-                    commission.id, "builtin_occupied", {"capability": capability.id, "by": in_the_way.team}
-                )
-                what = _group_name(group)
-                return _text(
-                    f"The {what} is in use by another task ({in_the_way.title or 'no title'}) and did not come "
-                    "free in time. Nothing was done. Go on with what does not need it, try again later, or "
-                    "report that you are waiting for it.",
-                    error=True,
-                )
-            # The wait can be long; the commission may have been stopped or
-            # have started waiting for the user meanwhile.
-            current = await self._ledger.get(commission.id)
-            if current is None or current.status != "working":
-                self._leases.release(commission.id)
-                return _text("this commission is no longer under way", error=True)
-        if not self._permissions.grant_active(grant_id):
-            if self._leases is not None:
-                self._leases.release(commission.id, only_group=group)
-            record.status, record.reason = "denied", "settings"
-            return _text(DENIED_BY_SETTINGS, error=True)
+        claim = object()
+        keep = False
         try:
-            outcome = await self._registry.run_builtin(
-                capability, commission_id=commission.id, arguments=arguments, reopen_agreement=reopen_agreement,
-                still_allowed=lambda: self._permissions.grant_active(grant_id),
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - the task agent is told and decides how to go on
-            logger.exception("built-in tool %s failed", capability.id)
-            return _text(f"{capability.tool_name} failed: {type(exc).__name__}", error=True)
-        if not outcome.success and outcome.text == "permission denied":
-            if self._leases is not None:
-                self._leases.release(commission.id, only_group=group)
-            record.status, record.reason = "denied", "settings"
+            if self._leases is not None and group:
+                in_the_way = await self._leases.acquire(group, commission.id, title=commission.title, claim=claim)
+                if in_the_way is not None:
+                    await self._ledger.append_event(
+                        commission.id, "builtin_occupied", {"capability": capability.id, "by": in_the_way.team}
+                    )
+                    what = _group_name(group)
+                    return _text(
+                        f"The {what} is in use by another task ({in_the_way.title or 'no title'}) and did not come "
+                        "free in time. Nothing was done. Go on with what does not need it, try again later, or "
+                        "report that you are waiting for it.",
+                        error=True,
+                    )
+                # The wait can be long; the commission may have been stopped or
+                # have started waiting for the user meanwhile.
+                current = await self._ledger.get(commission.id)
+                if current is None or current.status != "working":
+                    self._leases.release(commission.id)
+                    return _text("this commission is no longer under way", error=True)
+            if not self._permissions.grant_active(grant_id):
+                record.status, record.reason = "denied", "settings"
+                return _text(DENIED_BY_SETTINGS, error=True)
+            keep = True
+            try:
+                outcome = await self._registry.run_builtin(
+                    capability, commission_id=commission.id, arguments=arguments, reopen_agreement=reopen_agreement,
+                    still_allowed=lambda: self._permissions.grant_active(grant_id),
+                )
+            except asyncio.CancelledError:
+                # The device may have started. Its run returns the lease once the worker stops.
+                raise
+            except Exception as exc:  # noqa: BLE001 - the task agent is told and decides how to go on
+                logger.exception("built-in tool %s failed", capability.id)
+                return _text(f"{capability.tool_name} failed: {type(exc).__name__}", error=True)
+            if not outcome.success and outcome.text == "permission denied":
+                keep = False
+                record.status, record.reason = "denied", "settings"
+        finally:
+            if self._leases is not None and group:
+                self._leases.finish_claim(group, commission.id, claim, keep=keep)
         text = truncate_to_tokens(outcome.text or ("done" if outcome.success else "failed"), GATEWAY_RESULT_MAX_TOKENS)
         if not outcome.images:
             return _text(text, error=not outcome.success)
