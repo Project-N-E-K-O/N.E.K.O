@@ -29,6 +29,7 @@ from nekoclaw.host.permissions import (
     DENIED_BY_SETTINGS,
     DENIED_BY_USER,
     DENIED_NO_ANSWER,
+    GrantBinding,
     GrantScope,
     PermissionGate,
     PermissionStore,
@@ -431,6 +432,66 @@ async def test_widening_a_rule_keeps_parallel_answers_and_queued_approvals(store
     await store.set_mode("browser", "first_ask")
     await store.set_mode("browser", "allow")
     assert not gate.grant_active(queued.grant_id)
+
+
+async def test_retired_binding_during_mode_read_denies_the_scoped_fast_path(store, monkeypatch):
+    await store.set_mode("browser", "allow")
+    gate = PermissionGate(store)
+    binding = GrantBinding()
+    scope = GrantScope("builtin", "browser", bindings=(binding,))
+    mode = store.mode
+
+    async def retire(category, key=None):
+        value = await mode(category, key)
+        binding.active = False
+        return value
+
+    monkeypatch.setattr(store, "mode", retire)
+    assert not (await gate.check("c", "browser", scope=scope)).allow
+
+
+async def test_peer_rechecks_settings_when_asker_ends_while_persisting_always(store, monkeypatch):
+    async def parent(cid):
+        return None if cid == "root" else "root"
+
+    asker = Asker("always")
+    gate = PermissionGate(store, asker, parent)
+    scope = GrantScope("builtin", "browser")
+    entered, release, joining = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    mode = store.mode
+    persist = store.set_mode
+
+    async def write(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await persist(*args, **kwargs)
+
+    peer_reads = 0
+
+    async def read(*args, **kwargs):
+        nonlocal peer_reads
+        result = await mode(*args, **kwargs)
+        if asyncio.current_task() is peer and result == "first_ask":
+            peer_reads += 1
+            if peer_reads == 2:
+                joining.set()
+        return result
+
+    monkeypatch.setattr(store, "set_mode", write)
+    peer = None
+    async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
+        first = tasks.create_task(gate.check("first", "browser", scope=scope, hold_once=True))
+        await entered.wait()
+        monkeypatch.setattr(store, "mode", read)
+        peer = tasks.create_task(gate.check("second", "browser", scope=scope, hold_once=True))
+        # The second caller reads the policy again after resolving its ancestry,
+        # then joins the in-flight approval without a further asynchronous step.
+        await joining.wait()
+        gate.end_run("first")
+        release.set()
+    assert not first.result().allow
+    assert peer.result().allow and gate.grant_active(peer.result().grant_id)
+    assert len(asker.asked) == 1
 
 
 async def test_unrelated_setting_does_not_defeat_scoped_always_approval(store):

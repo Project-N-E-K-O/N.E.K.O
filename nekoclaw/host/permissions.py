@@ -657,7 +657,7 @@ class PermissionGate:
         ended = self._lineage_lookups[lookup] = set()
         try:
             mode = await self._store.mode(category, key)
-            if self._work.get(commission_id) is not work:
+            if not scope.registered() or self._work.get(commission_id) is not work:
                 return PermissionDecision(False, DENIED_NO_ANSWER)
             if mode == "deny":
                 return PermissionDecision(False, DENIED_BY_SETTINGS)
@@ -742,6 +742,7 @@ class PermissionGate:
                     result = PermissionDecision(False, DENIED_BY_SETTINGS)
                     return result
                 if not live():
+                    pending.set_result(PermissionDecision(True))
                     return result
                 tightened = self._store.revision(*slot) != revision
                 if choice == "session" and not tightened:

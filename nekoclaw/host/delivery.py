@@ -198,7 +198,10 @@ class ManagedDelivery:
         parent = self._processing.get()
         if deferred and (parent is None or parent.accepted is None or parent.task is asyncio.current_task()):
             raise DeliveryDenied("only a queued trigger worker may await acceptance")
-        continuation = parent is not None and parent.accepted is not None and (deferred or parent.task is None)
+        continuation = parent is not None and parent.accepted is not None and parent.task is not asyncio.current_task()
+        if continuation and parent.task is not None and not deferred:
+            # A child awaited by trigger() would deadlock if we waited implicitly.
+            raise DeliveryDenied("an early trigger worker must request deferred acceptance")
         if parent is not None and (parent.endpoint is not sender or parent.commission_id != commission_id):
             raise DeliveryDenied("invocation does not belong to this adapter")
         # Freeze mutable data before awaiting acceptance. A trigger may acquire
