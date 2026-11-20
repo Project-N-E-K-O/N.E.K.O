@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import http.client
 import re
 import sys
 import urllib.error
@@ -57,6 +58,9 @@ DEFAULT_BUNDLE = ROOT / "main_logic" / "voice_input" / "wake_word" / "runtime_bu
 USER_AGENT = "neko-wake-word-runtime-check/1"
 DEFAULT_TIMEOUT_S = 60.0
 _CHUNK = 1024 * 1024
+# Only these are evaluated, so unrelated WHEEL_* additions cannot break the check.
+_PIN_NAMES = frozenset({"WHEEL_NAME", "WHEEL_URL", "WHEEL_SHA256", "WHEEL_BYTES"})
+_NETWORK_ERRORS = (urllib.error.URLError, http.client.HTTPException, OSError)
 _RANGE_TOTAL = re.compile(r"^bytes\s+\d+-\d+/(\d+)$")
 
 
@@ -101,7 +105,7 @@ def load_pins(path: Path = DEFAULT_BUNDLE) -> WheelPins:
             target, value = statement.target, statement.value
         else:
             continue
-        if isinstance(target, ast.Name) and target.id.startswith("WHEEL_"):
+        if isinstance(target, ast.Name) and target.id in _PIN_NAMES:
             known[target.id] = _evaluate(value, known)
     url, sha256, size = known.get("WHEEL_URL"), known.get("WHEEL_SHA256"), known.get("WHEEL_BYTES")
     if not isinstance(url, str) or not url.startswith("https://"):
@@ -156,8 +160,8 @@ def check_head(pins: WheelPins, opener=None, timeout: float = DEFAULT_TIMEOUT_S)
         if exc.code not in (403, 405):
             raise CheckError(f"HEAD failed: HTTP {exc.code} {exc.reason} at {_display(exc.url)}") from exc
         print(f"HEAD returned HTTP {exc.code} at {_display(exc.url)}; retrying with a 1-byte ranged GET")
-    except urllib.error.URLError as exc:
-        raise CheckError(f"HEAD failed: {exc.reason}") from exc
+    except _NETWORK_ERRORS as exc:
+        raise CheckError(f"HEAD failed: {getattr(exc, 'reason', exc)!r}") from exc
     try:
         with _request(opener, pins.url, "GET", timeout, {"Range": "bytes=0-0"}) as response:
             match = _RANGE_TOTAL.match(response.headers.get("Content-Range", "").strip())
@@ -169,8 +173,8 @@ def check_head(pins: WheelPins, opener=None, timeout: float = DEFAULT_TIMEOUT_S)
     except urllib.error.HTTPError as exc:
         exc.close()
         raise CheckError(f"ranged GET failed: HTTP {exc.code} {exc.reason} at {_display(exc.url)}") from exc
-    except urllib.error.URLError as exc:
-        raise CheckError(f"ranged GET failed: {exc.reason}") from exc
+    except _NETWORK_ERRORS as exc:
+        raise CheckError(f"ranged GET failed: {getattr(exc, 'reason', exc)!r}") from exc
 
 
 def check_full(pins: WheelPins, opener=None, timeout: float = DEFAULT_TIMEOUT_S) -> str:
@@ -189,8 +193,8 @@ def check_full(pins: WheelPins, opener=None, timeout: float = DEFAULT_TIMEOUT_S)
     except urllib.error.HTTPError as exc:
         exc.close()
         raise CheckError(f"download failed: HTTP {exc.code} {exc.reason} at {_display(exc.url)}") from exc
-    except (urllib.error.URLError, OSError) as exc:
-        raise CheckError(f"download failed: {getattr(exc, 'reason', exc)}") from exc
+    except _NETWORK_ERRORS as exc:
+        raise CheckError(f"download failed: {getattr(exc, 'reason', exc)!r}") from exc
     if received != pins.size:
         raise CheckError(f"size mismatch: received {received} bytes, WHEEL_BYTES is {pins.size}")
     actual = digest.hexdigest()

@@ -131,7 +131,8 @@ def test_parse_follows_name_concatenation(tmp_path):
         '             "tag/" + WHEEL_NAME)\n'
         f'WHEEL_SHA256 = "{"a" * 64}"\n'
         'WHEEL_BYTES: int = 1024 * 4\n'
-        'OTHER = os.getcwd()\n',
+        'OTHER = os.getcwd()\n'
+        'WHEEL_TAGS = tuple(sorted({"a", "b"}))\n',  # unrelated WHEEL_* must be ignored
         encoding="utf-8",
     )
     pins = checker.load_pins(bundle)
@@ -265,6 +266,15 @@ def test_cli_exit_codes(server, opener, tmp_path, capsys, monkeypatch, mode, tar
     )
     assert checker.main([mode, "--bundle", str(bundle)], opener=opener) == code
     assert marker in capsys.readouterr().out
+
+
+def test_unreachable_host_is_a_clean_failure(opener):
+    # Port 9 on 127.0.0.1 is almost certainly closed: connection refused.
+    pins = checker.WheelPins(url="http://127.0.0.1:9/x.whl", sha256="0" * 64, size=1)
+    with pytest.raises(checker.CheckError, match="HEAD failed"):
+        checker.check_head(pins, opener=opener, timeout=5)
+    with pytest.raises(checker.CheckError, match="download failed"):
+        checker.check_full(pins, opener=opener, timeout=5)
 
 
 def test_cli_unparsable_bundle_fails(tmp_path, capsys):
