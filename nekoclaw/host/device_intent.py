@@ -53,7 +53,7 @@ _NON_ACTION = re.compile(
     r"하지\s*마|하지\s*않|ないで|しない|方法|\b(?:no|não|не)\s+"
 )
 _EXPLICIT_WEB = re.compile(
-    r"浏览器|瀏覽器|\b(?:browser|chrome|edge(?!\s+cases?\b)|firefox)\b|https?://|"
+    r"(?:浏览器|瀏覽器|\b(?:browser|chrome|edge(?!\s+cases?\b)|firefox)\b)(?!\s*(?a:apis?\b))|https?://|"
     + _DOMAIN
 )
 _WEB_OBJECT = re.compile(
