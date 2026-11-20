@@ -128,7 +128,7 @@ jobs:
           cp "${wheels[0]}" release-assets/
           cp artifact/build-manifest.json release-assets/build-manifest.json
           # LICENSE of the pinned upstream k2-fsa/sherpa-onnx checkout.
-          cp artifact/sherpa-onnx/LICENSE release-assets/sherpa-onnx-LICENSE.txt
+          cp artifact/sherpa-onnx/LICENSE release-assets/SHERPA-LICENSE.txt
           wheel="release-assets/$(basename "${wheels[0]}")"
           sha256=$(sha256sum "$wheel" | cut -d' ' -f1)
           bytes=$(stat -c %s "$wheel")
@@ -182,7 +182,7 @@ jobs:
             echo "- Size: $WHEEL_BYTES bytes"
             echo "- SHA256: \`$WHEEL_SHA256\`"
             echo "- \`build-manifest.json\`: build provenance (upstream commit, patches, CMake options)."
-            echo "- \`sherpa-onnx-LICENSE.txt\`: license of the upstream k2-fsa/sherpa-onnx source."
+            echo "- \`SHERPA-LICENSE.txt\`: license of the upstream k2-fsa/sherpa-onnx source."
             echo
             echo "Clients only use this build after WHEEL_URL / WHEEL_SHA256 / WHEEL_BYTES in"
             echo "main_logic/voice_input/wake_word/runtime_bundle.py are updated to:"
