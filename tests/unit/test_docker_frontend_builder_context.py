@@ -60,14 +60,18 @@ TEST_DIRS = {"e2e", "__tests__", "tests"}
 SPECIFIER = re.compile(
     r"""(?:
         \b(?:import|export)\s+(?P<type>type\s+)?(?:(?:(?!\b(?:import|export)\b)[^'"`;=()])*?\s+from\s+)?
-      | (?P<tof>\btypeof\s+import\s*\(\s*)
+      | (?P<tof>\btypeof\s+import\s*\(\s*(?:/\*.*?\*/\s*)*)
       | (?<!typeof\s)\bimport\s*\(\s*(?:/\*.*?\*/\s*)*
       | \bimport\.meta\.glob\s*\(\s*
       | \bnew\s+URL\s*\(\s*
     )(?P<q>['"`])(?P<spec>\.\.?/[^'"`$]+)(?P=q)""",
     re.VERBOSE | re.DOTALL,
 )
-GLOB_ARRAY = re.compile(r"\bimport\.meta\.glob\s*\(\s*\[(?P<items>[^\]]*)\]")
+# The array body skips whole string literals, so a `]` inside a pattern such as
+# './[ab].json' does not end the array early.
+GLOB_ARRAY = re.compile(
+    r"""\bimport\.meta\.glob\s*\(\s*\[(?P<items>(?:[^\]'"`]|'[^']*'|"[^"]*"|`[^`]*`)*)\]"""
+)
 LITERAL = re.compile(r"""(?P<q>['"`])(?P<spec>!?\.\.?/[^'"`$]+)(?P=q)""")
 
 
@@ -172,6 +176,7 @@ def test_scanner_still_sees_the_known_cross_project_imports():
         ("import(`../tl`)", ("", "../tl")),
         ("import.meta.glob('../g/*.json')", ("", "../g/*.json")),
         ("type M = typeof import('../ti')", ("type", "../ti")),
+        ("type M = typeof import(/* c */ '../tc')", ("type", "../tc")),
         ("new URL('../u.png', import.meta.url)", ("", "../u.png")),
         # 不带 from 的 export type 不能吞掉下一行的值导入
         ("export type { Foo }\nimport bar from '../x.js'", ("", "../x.js")),
@@ -197,12 +202,18 @@ def test_type_references_follow_each_frontends_build(frontend):
     source = (
         "import type { A } from '../../../plugin/a'\n"
         "type B = typeof import('../../../plugin/b')\n"
+        "type D = typeof import(/* note */ '../../../plugin/d')\n"
         "import c from '../../../static/c.js'\n"
     )
     keep_types = FRONTENDS[frontend]["include_type_imports"]
     expected = ["../../../static/c.js"]
     if keep_types:
-        expected = ["../../../plugin/a", "../../../plugin/b", "../../../static/c.js"]
+        expected = [
+            "../../../plugin/a",
+            "../../../plugin/b",
+            "../../../plugin/d",
+            "../../../static/c.js",
+        ]
     assert _specifiers(source, keep_types) == expected
 
 
@@ -210,6 +221,9 @@ def test_glob_array_checks_every_literal():
     source = "const m = import.meta.glob(['./local/*.json', '../../../static/feature/*.json', '!../../../static/skip/*.json'])"
     assert _specifiers(source, False) == ["./local/*.json", "../../../static/feature/*.json"]
     assert _specifiers("import.meta.glob(['../ga/*.json'])", False) == ["../ga/*.json"]
+    # 字符串里的 ] 不能被当成数组结尾
+    bracket = "import.meta.glob(['./local/[ab].json', '../../../static/feature/*.json'])"
+    assert _specifiers(bracket, False) == ["./local/[ab].json", "../../../static/feature/*.json"]
     assert _specifiers("import.meta.glob('../g/*.json')", False) == ["../g/*.json"]
 
 
