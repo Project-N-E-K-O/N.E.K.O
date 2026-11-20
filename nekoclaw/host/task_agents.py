@@ -1997,7 +1997,12 @@ class TaskAgentManager:
                 if FIRST_TURN_DEVICE_TOOLS and kept.kind != "fork" and not custom_tools:
                     from nekoclaw.host.device_intent import select_device_groups
 
-                    groups = select_device_groups(prompt or commission.dispatch_text)
+                    # On relaunch, a short follow-up like "click login" belongs to the
+                    # same commission's browser task. A new commission starts afresh.
+                    instructions = commission.dispatch_text
+                    if prompt:
+                        instructions += "\n" + prompt
+                    groups = select_device_groups(instructions)
                     if groups and runtime_name == RUNTIME_DSH:
                         supports = getattr(runtime, "supports_device_schemas", None)
                         if supports is None or not supports(model):

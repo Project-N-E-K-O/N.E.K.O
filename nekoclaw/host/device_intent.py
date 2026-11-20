@@ -27,7 +27,11 @@ from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER, BUILTIN_GROUP_KEYB
 
 # Protect URLs before splitting on punctuation, including those inside a quoted
 # navigation target. Other quoted instructions are examples or button labels.
-_URL = re.compile(r"(?:https?://|www\.)[^\s，。；！？<>\"'“”‘’「」『』`]+", re.I)
+# After NFKC a Chinese comma looks like an ASCII comma. Keep punctuation
+# inside URL paths/queries (e.g. ?q=click), but stop before a Chinese clause.
+_URL = re.compile(
+    r"(?:https?://|www\.)(?:[^\s。,;!?<>\"'“”‘’「」『』`]|[,;!?](?=[a-z0-9%_~./&=+\-]))+", re.I
+)
 _QUOTED = re.compile(
     r"```[\s\S]*?(?:```|$)|`[^`\n]*`|\"[^\"\n]*\"|(?<!\w)'[^'\n]+'(?!\w)|"
     r"“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』"

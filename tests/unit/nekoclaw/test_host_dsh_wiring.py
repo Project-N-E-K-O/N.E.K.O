@@ -224,6 +224,24 @@ async def test_dispatch_only_mounts_devices_on_a_supported_related_route(
     assert "computer" not in names and {"capability_call", "capability_search"} <= names
 
 
+@pytest.mark.parametrize("follow_up", ["点击登录按钮", "继续"])
+async def test_relaunch_keeps_the_device_context_of_the_same_commission(hosts, tmp_path, follow_up):
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    llm = ScriptedLLM([_report("blocked", "waiting for login"), _report("ready", "done")])
+    host = _host(hosts, tmp_path, llm, Installation(preference="builtin"),
+                 builtins=BuiltinToolProvider(state=lambda group: (True, "")))
+    commission_id = await _dispatch(host, "打开浏览器")
+    await wait_status(host, commission_id, "blocked")
+    await wait_until(lambda: host.task_agents.running == [], what="the blocked session being released")
+    assert await host.task_agents.tell(commission_id, follow_up)
+    await wait_status(host, commission_id, "done")
+    assert len(llm.overrides) == 2
+    for request in llm.overrides:
+        names = {tool["function"]["name"] for tool in request["tools"]}
+        assert "browser_click" in names and "computer" not in names
+
+
 # ---------------------------------------------------------------------------
 # Which runtime
 # ---------------------------------------------------------------------------
