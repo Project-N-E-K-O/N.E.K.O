@@ -439,7 +439,7 @@
         }
         async function inactiveTicket(id, at) {
             const ticket = await hooks.request('/audio/check/isolation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request_id: id }) });
-            if (at !== epoch) { hooks.request('/audio/check/isolation/release', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: ticket.token }) }).catch(() => {}); throw new Error('capture_cancelled'); }
+            if (at !== epoch) { hooks.request('/audio/check/isolation/release', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: ticket.token }) }).catch(() => {}); throw new Error('capture_cancelled'); }
             isolationId = id; isolationToken = ticket.token; isolationServerOwned = true;
         }
         async function prepareIsolation(at) {
@@ -473,7 +473,7 @@
                     if (timedOut || at !== epoch) {
                         if (event.data.token) {
                             root.opener.postMessage({ type: 'neko-voice-enrollment-release', operationId: id, token: event.data.token }, root.location.origin);
-                            hooks.request('/audio/check/isolation/release', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: event.data.token }) }).catch(() => {});
+                            hooks.request('/audio/check/isolation/release', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: event.data.token }) }).catch(() => {});
                         }
                         reject(new Error('capture_cancelled'));
                         return;
@@ -685,7 +685,7 @@
             try {
                 const result = await hooks.request('/resources/operations/' + encodeURIComponent(id) + '/cancel', { method: 'POST', keepalive: true });
                 if (operation === id && ['succeeded', 'failed', 'cancelled'].includes(result.state)) operation = null;
-                if (at !== epoch) return;
+                if (at !== epoch || pageHidden) return;
                 resourceFeedbackIssue = result.state !== 'succeeded' || !!result.reason;
                 el['resource-message'].textContent = t('voiceIdentity.resourceOperation_' + result.state, result.state || '');
                 if (result.reason) el['resource-message'].textContent += ' — ' + operationReason(result.reason);

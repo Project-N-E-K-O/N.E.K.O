@@ -23,7 +23,10 @@
             if (owned.expiry !== null) root.clearTimeout(owned.expiry);
             owned.expiry = null;
             if (isolation === owned) isolation = null;
-            if (owned.released) owned.released();
+            if (owned.releaseWaiters) {
+                owned.releaseWaiters.forEach(resolve => resolve());
+                owned.releaseWaiters.clear();
+            }
         }
         function boundIsolation(owned, milliseconds) {
             if (owned.expiry !== null) root.clearTimeout(owned.expiry);
@@ -152,15 +155,18 @@
             }
             if (isolation) {
                 const owned = isolation;
+                const waiters = owned.releaseWaiters || (owned.releaseWaiters = new Set());
+                let releaseWaiter;
                 let timer;
                 try {
                     await new Promise((resolve, reject) => {
-                        owned.released = resolve;
+                        releaseWaiter = resolve;
+                        waiters.add(resolve);
                         timer = root.setTimeout(() => reject(new Error('voice_control_timeout')), 13000);
                     });
                 } finally {
                     root.clearTimeout(timer);
-                    owned.released = null;
+                    waiters.delete(releaseWaiter);
                 }
             }
             if (atSocket !== S.socket) throw new Error('capture_owner_unavailable');

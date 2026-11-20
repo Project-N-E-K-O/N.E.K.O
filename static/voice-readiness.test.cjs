@@ -966,7 +966,27 @@ test('a cancelled browser stop acknowledgement releases its own late token', asy
     receive({origin:h.root.location.origin,source:h.root.opener,data:{type:'neko-voice-enrollment-stopped',operationId:messages[0].operationId,stopped:true,token:'late-token'}});
     await pending;
     assert.equal(messages[1].type,'neko-voice-enrollment-release');assert.equal(messages[1].token,'late-token');
+    assert.equal(h.calls.find(call=>call.url==='/audio/check/isolation/release').config.keepalive,true);
     assert.equal(h.calls.some(call=>call.url==='/audio/check'),false);assert.equal(h.controller.canStart(),false);
+});
+
+test('an HTTP isolation ticket arriving after close is released with keepalive', async () => {
+    const ticket = deferred();
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources') return { can_enroll: true, resources: {} };
+        if (url === '/audio/check/isolation') return ticket.promise;
+        if (url === '/audio/check/isolation/release') return { released: true };
+        throw new Error('closed trial must not upload audio');
+    } });
+    await h.controller.refreshResources();
+    const testing = h.elements.get('voice-identity-test').emit('click');
+    await h.controller.close();
+    ticket.resolve({ token: 'late-http-ticket' }); await testing;
+    const release = h.calls.find(call => call.url === '/audio/check/isolation/release');
+    assert.equal(JSON.parse(release.config.body).token, 'late-http-ticket');
+    assert.equal(release.config.keepalive, true);
+    assert.equal(h.hooks.stream(), null);
+    assert.equal(h.controller.canStart(), false);
 });
 
 for (const rejected of [true, false]) {
@@ -1118,6 +1138,36 @@ test('capture preparation waits for the desktop enrollment window to finish clos
     assert.equal(prepared, true); assert.equal(h.S.isRecording, false);
     assert.equal(h.sent.length, 0, 'page cleanup must run before a voice session is requested');
 });
+
+for (const timeoutFirst of [false, true]) {
+    test(`overlapping capture preparations retain independent release waiters${timeoutFirst ? ' after the first times out' : ''}`, async () => {
+        const h = isolationHarness();
+        const begin = h.receive({ operationId: 'shared-preview' });
+        await new Promise(resolve => setImmediate(resolve));
+        h.root.nekoVoiceEnrollment.close = async () => ({ closed: true });
+        const before = new Set(h.timers.keys());
+        let firstReady = false; let secondReady = false;
+        const first = h.controller.prepareCapture().then(() => { firstReady = true; });
+        const firstDone = timeoutFirst ? assert.rejects(first, /voice_control_timeout/) : first;
+        await new Promise(resolve => setImmediate(resolve));
+        const firstTimer = [...h.timers.entries()].find(([id]) => !before.has(id))[1];
+        const second = h.controller.prepareCapture().then(() => { secondReady = true; }, () => {});
+        await new Promise(resolve => setImmediate(resolve));
+        if (timeoutFirst) { firstTimer.fn(); await firstDone; }
+        h.ack(h.sent[0]); const result = await begin;
+        const release = h.receive({ event: 'release', operationId: 'shared-preview', token: result.token });
+        h.ack(h.sent[1]); await release;
+        try {
+            await new Promise(resolve => setImmediate(resolve));
+            assert.equal(secondReady, true, 'an older waiter must not clear the successor resolver');
+            if (!timeoutFirst) assert.equal(firstReady, true, 'release must wake every pending preparation');
+        } finally {
+            for (const timer of [...h.timers.values()]) if (timer.delay === 13000) timer.fn();
+            await second; await firstDone;
+        }
+        assert.equal(h.timers.size, 0);
+    });
+}
 
 for (const cancelled of [false, true]) {
     test(`the microphone button waits for enrollment cleanup before starting the server${cancelled ? ' and honors cancellation' : ''}`, async () => {
@@ -1446,6 +1496,33 @@ test('unconfirmed cancellation retains its ID and retry exit without allowing a 
     await h.elements.get('voice-identity-resource-cancel').emit('click');
     assert.equal(cancellations, 2); assert.equal(h.elements.get('voice-identity-resource-cancel').hidden, true);
     assert.equal(h.elements.get('voice-identity-prepare').disabled, false);
+});
+
+test('closing a resource operation skips page snapshots after cancellation', async () => {
+    const poll = deferred(); const snapshot = deferred(); let snapshots = 0; let statuses = 0;
+    const h = harness({ status: async () => { statuses++; }, requestRouter: async url => {
+        if (url === '/resources') return ++snapshots === 1 ? { can_enroll: true, resources: {} } : snapshot.promise;
+        if (url === '/resources/operations') return { operation_id: 'closing-resource' };
+        if (url.endsWith('/start')) return {};
+        if (url.endsWith('/cancel')) return { state: 'cancelled' };
+        if (url === '/resources/operations/closing-resource') return poll.promise;
+        throw new Error('unexpected resource request: ' + url);
+    } });
+    await h.controller.refreshResources();
+    const preparing = h.elements.get('voice-identity-prepare').emit('click');
+    while (!h.calls.some(call => call.url === '/resources/operations/closing-resource')) await new Promise(resolve => setImmediate(resolve));
+    let closed = false;
+    const closing = h.controller.close().then(() => { closed = true; });
+    try {
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(closed, true, 'closing must not wait for snapshots of a disappearing page');
+        assert.equal(snapshots, 1);
+        assert.equal(statuses, 0);
+        assert.equal(h.calls.find(call => call.url.endsWith('/cancel')).config.keepalive, true);
+    } finally {
+        snapshot.resolve({ can_enroll: true, resources: {} }); poll.resolve({ state: 'cancelled' });
+        await closing; await preparing;
+    }
 });
 
 test('pagehide cancels the known operation with keepalive even while start receipt is pending', async () => {
