@@ -508,7 +508,16 @@
             if (closePromise) return closePromise;
             pageHidden = true;
             const owned = { id: isolationId, token: isolationToken, serverOwned: isolationServerOwned };
-            closePromise = Promise.all([cancelOperation(), releaseIsolation(owned), ...isolationReleases]).then(() => {});
+            let timer = null;
+            // The close button also uses this hook without a parent deadline.
+            // Keep cleanup requests alive, but never treat a timeout as release.
+            const deadline = new Promise((_, reject) => {
+                timer = root.setTimeout(() => reject(new Error('voice_control_timeout')), 13000);
+            });
+            closePromise = Promise.race([
+                Promise.all([cancelOperation(), releaseIsolation(owned), ...isolationReleases]),
+                deadline
+            ]).then(() => {}).finally(() => root.clearTimeout(timer));
             return closePromise;
         }
         async function testInput() {

@@ -1439,6 +1439,83 @@ for (const desktop of [false, true]) {
     });
 }
 
+for (const desktop of [false, true]) {
+    test(`closing times out a stalled ${desktop ? 'desktop' : 'HTTP'} isolation release without confirming readiness`, async () => {
+        const capture = deferred(); const release = deferred();
+        const h = harness({ captureGate: capture, requestRouter: async url => {
+            if (url === '/resources') return { can_enroll: true, resources: {} };
+            if (url === '/audio/check/isolation') return { token: 'stalled-ticket' };
+            if (url === '/audio/check/isolation/release') return release.promise;
+            throw new Error('a closed trial must not upload');
+        } });
+        if (desktop) h.root.nekoVoiceEnrollment = {
+            prepare: async ({ operationId }) => ({ operationId, stopped: true, token: 'stalled-ticket' }),
+            release: () => release.promise
+        };
+        await h.controller.refreshResources();
+        const testing = h.elements.get('voice-identity-test').emit('click');
+        while (!h.hooks.stream()) await new Promise(resolve => setImmediate(resolve));
+        const stream = h.hooks.stream(); const timers = new Map();
+        h.root.setTimeout = (fn, delay) => { const id = {}; timers.set(id, { fn, delay }); return id; };
+        h.root.clearTimeout = id => timers.delete(id);
+        const closing = h.controller.close();
+        try {
+            assert.equal(stream.track.readyState, 'ended');
+            const deadline = [...timers.values()].find(timer => timer.delay === 13000);
+            assert.ok(deadline, 'manual close needs a deadline even without the parent closing the page');
+            deadline.fn();
+            await assert.rejects(closing, /voice_control_timeout/);
+            assert.equal(h.controller.canStart(), false, 'a timeout must not confirm server cleanup');
+            assert.equal([...timers.values()].some(timer => timer.delay === 13000), false);
+            assert.equal(h.calls.some(call => call.url === '/audio/check'), false);
+        } finally {
+            release.resolve({ released: true }); capture.resolve();
+            await testing; await closing.catch(() => {});
+        }
+    });
+}
+
+test('closing times out a stalled resource cancellation and lets the window close', async () => {
+    const poll = deferred(); const cancellation = deferred();
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources') return { can_enroll: true, resources: {} };
+        if (url === '/resources/operations') return { operation_id: 'stalled-cancel' };
+        if (url.endsWith('/start')) return {};
+        if (url.endsWith('/cancel')) return cancellation.promise;
+        if (url === '/resources/operations/stalled-cancel') return poll.promise;
+        throw new Error('unexpected request: ' + url);
+    } });
+    await h.controller.refreshResources();
+    const preparing = h.elements.get('voice-identity-prepare').emit('click');
+    while (!h.calls.some(call => call.url === '/resources/operations/stalled-cancel')) await new Promise(resolve => setImmediate(resolve));
+    const timers = new Map();
+    h.root.setTimeout = (fn, delay) => { const id = {}; timers.set(id, { fn, delay }); return id; };
+    h.root.clearTimeout = id => timers.delete(id);
+    const closing = h.controller.close();
+    try {
+        const deadline = [...timers.values()].find(timer => timer.delay === 13000);
+        assert.ok(deadline, 'resource cancellation must not block the close button indefinitely');
+        deadline.fn();
+        await assert.rejects(closing, /voice_control_timeout/);
+        assert.equal([...timers.values()].some(timer => timer.delay === 13000), false);
+        assert.equal(h.calls.find(call => call.url.endsWith('/cancel')).config.keepalive, true);
+    } finally {
+        cancellation.resolve({ state: 'cancelled' }); poll.resolve({ state: 'cancelled' });
+        await preparing; await closing.catch(() => {});
+    }
+});
+
+test('successful close clears its deadline and remains idempotent', async () => {
+    const h = harness(); const timers = new Map();
+    h.root.setTimeout = (fn, delay) => { const id = {}; timers.set(id, { fn, delay }); return id; };
+    h.root.clearTimeout = id => timers.delete(id);
+    const closing = h.controller.close();
+    assert.equal([...timers.values()].filter(timer => timer.delay === 13000).length, 1);
+    assert.equal(h.controller.close(), closing);
+    await closing;
+    assert.equal([...timers.values()].some(timer => timer.delay === 13000), false);
+});
+
 test('a shared preview acknowledgement cannot make another window release the owner ticket', async () => {
     const owner = isolationHarness();
     const observer = isolationHarness();
