@@ -112,7 +112,7 @@ permissions = ["state:read"]
 from plugin.sdk.plugin import (
     NekoPluginBase,  # 默认插件基类。
     neko_plugin,     # 默认插件发现装饰器。
-    plugin_entry,    # 默认后端 entry，也是 LLM 可见工具。
+    plugin_entry,    # 默认后端 entry，Agent 和其他插件也能调用。
     ui,              # Hosted UI 装饰器：context 和 action。
     tr,              # 推荐：声明插件本地 i18n 引用。
     Ok,              # 推荐：成功结果辅助函数。
@@ -146,7 +146,7 @@ class MyPlugin(NekoPluginBase):
         id="refresh_item",
         name=tr("entries.refresh.name", default="Refresh Item"),
         description=tr("entries.refresh.description", default="Refresh an item."),
-        # 推荐：schema 会用于表单、参数提示和 LLM 工具元数据。
+        # 推荐：schema 用于表单和校验提示，也会发布给调用方。
         input_schema={
             "type": "object",
             "properties": {
@@ -157,7 +157,7 @@ class MyPlugin(NekoPluginBase):
             },
             "required": ["item_id"],
         },
-        # 可选：告诉 LLM 侧重点关注哪些返回字段。
+        # 可选：运行结束后 Agent（猫爪，NekoClaw）交给它的模型的返回字段。
         llm_result_fields=["message"],
     )
     async def refresh_item(self, item_id: str, **_):
@@ -168,7 +168,7 @@ class MyPlugin(NekoPluginBase):
 
 - `@ui.context(id="dashboard")` 的返回值会进入 `props.state`。
 - `@ui.action(...)` 会把某个后端 entry 暴露为 UI 动作。
-- `@plugin_entry(...)` 仍然是后端可调用入口，也是 LLM 可见工具元数据。
+- `@plugin_entry(...)` 仍然是后端可调用入口，Agent 和其他插件也能调用它。它不是主对话模型的工具，见[选择 `@plugin_entry` 还是 `@llm_tool`](/zh-CN/plugins/tool-calling#choosing-an-entry-type)。
 - `tr(...)` 声明插件本地 i18n key，并提供英文默认值。
 - `refresh_context=True` 表示动作成功后自动刷新上下文。
 

@@ -2,7 +2,7 @@
 
 入口点是已加载插件暴露给插件管理器、其他插件和 Agent（猫爪，NekoClaw）的可调用操作。它由 `@plugin_entry(id=...)` 产生的运行时 `entry_id` 标识。
 
-不要把它与 `plugin.toml` 的 `[plugin].entry` 混淆：后者是宿主导入插件类时使用的 `module.path:ClassName`。也不要与 `@llm_tool` 混淆：LLM 工具注册到 main_server 的 `/api/tools` registry，由主对话模型在对话中调用；Agent 则是在一件事被交给它之后，才去选择插件的运行时入口。
+不要把它与 `plugin.toml` 的 `[plugin].entry` 混淆：后者是宿主导入插件类时使用的 `module.path:ClassName`。也不要与 `@llm_tool` 混淆：LLM 工具注册到 main_server 的 `/api/tools` registry，由主对话模型在对话中调用；Agent 则是在一件事被交给它之后，才去选择插件的运行时入口。见[选择 `@plugin_entry` 还是 `@llm_tool`](/zh-CN/plugins/tool-calling#choosing-an-entry-type)。
 
 Agent 先筛选插件，再读取入口元数据。精选必须返回精确存在的 `plugin_id` 和 `entry_id`；缺失或未知 ID 不会追问，也不会直达调用任何入口：这件事交给 task agent，task agent 不可用时回「办不了」。入口什么时候被调用、由谁调用、结果怎么处理，见下文「Agent 怎么调用入口」。
 

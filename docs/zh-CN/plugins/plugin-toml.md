@@ -199,6 +199,38 @@ enabled = true
 
 ---
 
+### `[plugin.database]` — SQLite 数据库
+
+```toml
+[plugin.database]
+enabled = true
+name = "plugin.db"   # 插件数据目录里的文件名（默认 plugin.db）
+```
+
+启用后，`self.db` 使用插件数据目录里的 SQLite 数据库文件：写 SQL 用 `await self.db.session()`，存键值数据用 `self.db.kv`。默认关闭。
+
+::: warning `check` 会对这一段报 warning
+当前的 `neko-plugin check` 没有把 `database` 列为已知的 `[plugin]` 键，所以会报 warning：`[plugin].database is not a recognized plugin.toml field`。运行时照常读取这一段，这条 warning 可以忽略。
+:::
+
+---
+
+### `[plugin_state]` — 重启后保留实例属性
+
+```toml
+[plugin_state]
+backend = "file"        # 状态存在哪里
+persist_mode = "auto"   # 什么时候保存
+```
+
+运行时会保存插件类 `__freezable__` 列表里列出的实例属性，插件下次启动时恢复；恢复成功后清除已保存的状态。`backend` 是总开关：`"file"` 存在插件数据目录的文件里，`"memory"` 只在插件进程存活期间保留；不写 `backend`（或不写这一段）就什么都不保存。`persist_mode` 决定哪些入口调用后保存：`"auto"` 每次入口调用后都保存，`"manual"` 只在用 `@plugin_entry(persist=True)` 声明的入口调用后保存；入口上的 `persist=True` / `persist=False` 优先于它，但 `"off"` 时一律不保存。不写 `persist_mode` 时，按类属性 `__persist_mode__`（默认 `"off"`）。插件被冻结时也会保存一次。
+
+::: warning `check` 和运行时认可的取值不一样
+运行时认可 `backend` = `file` / `memory` / `off`、`persist_mode` = `auto` / `manual` / `off`；当前的 `neko-plugin check` 按 `file` / `sqlite` / `memory` 和 `auto` / `always` / `manual` / `disabled` 校验，其他取值报 error。只用两边都认可的值（`file` 或 `memory`，`auto` 或 `manual`）；想关闭保存就不写 `backend`，不要写 `"off"`。
+:::
+
+---
+
 ### `[plugin.shared]` — 读取别的插件的共享文件
 
 ```toml

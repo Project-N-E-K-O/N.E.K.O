@@ -23,7 +23,7 @@ class MyPlugin(NekoPluginBase):
 
 ## @plugin_entry
 
-Defines an externally callable entry point.
+Defines an externally callable entry point. For how it differs from `@llm_tool`, see [Choosing between `@plugin_entry` and `@llm_tool`](/plugins/tool-calling#choosing-an-entry-type).
 
 ```python
 @plugin_entry(

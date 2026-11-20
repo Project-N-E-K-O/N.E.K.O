@@ -223,7 +223,8 @@ class DynamicPlugin(NekoPluginBase):
     @lifecycle(id="startup")
     async def on_startup(self, **_):
         # 設定に基づいて実行時にエントリーを登録
-        commands = self.metadata.get("commands", {})
+        cfg = await self.config.dump()
+        commands = cfg.get("commands", {})
         for cmd_id, cmd_config in commands.items():
             self.register_dynamic_entry(
                 entry_id=cmd_id,

@@ -112,7 +112,7 @@ Mode is inferred from the entry extension:
 from plugin.sdk.plugin import (
     NekoPluginBase,  # Default plugin base class.
     neko_plugin,     # Default decorator for plugin discovery.
-    plugin_entry,    # Default backend entry and LLM-visible tool.
+    plugin_entry,    # Default backend entry, callable by the Agent and other plugins.
     ui,              # Hosted UI decorators: context and action.
     tr,              # Recommended: plugin-local i18n reference.
     Ok,              # Recommended result helper for successful entries.
@@ -146,7 +146,7 @@ class MyPlugin(NekoPluginBase):
         id="refresh_item",
         name=tr("entries.refresh.name", default="Refresh Item"),
         description=tr("entries.refresh.description", default="Refresh an item."),
-        # Recommended: schema drives forms, validation hints, and LLM tool metadata.
+        # Recommended: schema drives forms and validation hints, and is published to callers.
         input_schema={
             "type": "object",
             "properties": {
@@ -157,7 +157,7 @@ class MyPlugin(NekoPluginBase):
             },
             "required": ["item_id"],
         },
-        # Optional: tells the LLM-facing layer which result fields matter.
+        # Optional: result fields the Agent (NekoClaw) gives its model after a run.
         llm_result_fields=["message"],
     )
     async def refresh_item(self, item_id: str, **_):
@@ -168,7 +168,7 @@ This gives the UI two things:
 
 - `@ui.context(id="dashboard")` returns the `props.state` payload.
 - `@ui.action(...)` exposes a backend entry as a UI action.
-- `@plugin_entry(...)` is still the callable backend entry and the LLM-visible tool metadata.
+- `@plugin_entry(...)` is still the callable backend entry; the Agent and other plugins can call it too. It is not a tool of the main dialogue model: see [Choosing between `@plugin_entry` and `@llm_tool`](/plugins/tool-calling#choosing-an-entry-type).
 - `tr(...)` declares a plugin-local i18n key with an English default.
 - `refresh_context=True` asks the hosted UI to refresh context after the action succeeds.
 

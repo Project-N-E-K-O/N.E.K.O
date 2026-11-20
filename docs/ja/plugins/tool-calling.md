@@ -7,18 +7,18 @@ LLM が会話中にプラグインの機能を「呼び出せる」ようにし�
 
 ## `@plugin_entry` と `@llm_tool` の選び方 {#choosing-an-entry-type}
 
-- **`@plugin_entry` がプラグインの機能を公開する既定の、推奨される形です。**
-  plugin entry は Plugin Manager に表示され、他のプラグインや Hosted UI の
-  アクションから、また Agent（ネコクロー、NekoClaw）route 経由で呼び出せます。
-- **`@llm_tool` は控えめに使ってください。** メインの対話モデルが会話中に直接
-  呼び出す必要がある、少数の機能だけに使います。登録されたツールの schema は
-  すべてリクエストと一緒にモデルへ送られるため、ツールが増えるほどモデルの
-  ツール一覧が長くなります。1 つのプラグインに必要な LLM tool は通常ごく少数です。
-  `@plugin_entry` で表現できる機能は plugin entry のままにしてください。
+| | `@plugin_entry` | `@llm_tool` |
+|---|---|---|
+| 何か | プラグインのランタイムエントリー | メインの対話モデルのツール一覧に入るツール（main_server の `/api/tools` registry） |
+| 誰が使うか | Plugin Manager、他のプラグイン、Hosted UI のアクション、Agent（ネコクロー、NekoClaw）の plugin 選択（Agent 側のモデルが選んで呼び出す） | メインの対話モデル（会話中に直接呼び出す） |
+| いつ使うか | **既定の、推奨される形**。プラグインの機能はこれで公開する | **控えめに**。メインの対話モデルが直接呼び出す必要がある少数の機能だけ |
 
-::: warning plugin entry とは別です
-`@llm_tool(name="get_weather")` は conversation-time tool を main_server の `/api/tools` registry に登録します。`@plugin_entry(id="get_weather")` は Plugin Manager、cross-plugin call、別系統の Agent（ネコクロー、NekoClaw）route 用 runtime entry です。SDK 内部は IPC reuse のため LLM tool handler を reserved dynamic entry（`__llm_tool__...`）として保持しますが、この実装詳細によって 2 つの public API が同じになるわけではありません。この prefix を持つ entry を呼ぶのはメインの対話モデルだけで、Agent の plugin 選択にも task agent にも渡されません。
-:::
+登録された LLM tool の schema はすべてリクエストと一緒にモデルへ送られるため、
+ツールが増えるほどモデルのツール一覧が長くなります。1 つのプラグインに必要な
+LLM tool は通常ごく少数です。`@plugin_entry` で表現できる機能は plugin entry の
+ままにしてください。SDK 内部は IPC reuse のため LLM tool の handler を reserved
+dynamic entry（`__llm_tool__...`）として保持しますが、この prefix を持つ entry は
+Agent の plugin 選択にも task agent にも渡されないため、2 つの API は混ざりません。
 
 このメカニズムは `main_logic/tool_calling.py` の `ToolRegistry` に
 よって支えられ、ツール呼び出しをサポートする全ての provider

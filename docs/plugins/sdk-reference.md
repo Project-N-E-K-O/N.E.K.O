@@ -49,7 +49,7 @@ class MyPlugin(NekoPluginBase):
 | `self.config_dir` | `Path` | Compatibility alias for `self.plugin_dir` |
 | `self.storage_dir` | `Path` | User storage root assigned to this plugin |
 | `self.runtime_config_path` | `Path` | External runtime configuration file |
-| `self.metadata` | `dict` | Plugin metadata from `plugin.toml` |
+| `self.metadata` | `dict` | Always `{}` in the plugin process today (`plugin.toml` data is not passed in). Read configuration with `await self.config.dump()` |
 | `self.bus` | `SdkBusContext` | Read/watch facade over host state; it has no publish/emit API |
 | `self.plugins` | `Plugins` | Cross-plugin call helper |
 | `self.system_info` | `SystemInfo` | Host system metadata |
@@ -182,13 +182,18 @@ This is an agreement between plugins, not a security boundary: plugins are not s
 Register an entry point at runtime (not via decorator).
 
 ```python
+async def greet(name: str = "World", **_):
+    return Ok({"msg": f"Hi {name}"})
+
 self.register_dynamic_entry(
     entry_id="dynamic_greet",
-    handler=lambda name="World", **_: Ok({"msg": f"Hi {name}"}),
+    handler=greet,
     name="Dynamic Greet",
     description="A dynamically registered greeting",
 )
 ```
+
+The handler must be an `async def` function: registration accepts any callable, but calling an entry whose handler is not a coroutine function fails with `Entry must be 'async def'`.
 
 #### `unregister_dynamic_entry(entry_id) -> bool`
 
@@ -398,7 +403,7 @@ The `ctx` object is injected by the host at construction time.
 | `ctx.config_path` | `Path` | Path to `plugin.toml` |
 | `ctx.logger` | `Logger` | Logger instance |
 | `ctx.bus` | `SdkBusContext` | Read/watch facade over host state |
-| `ctx.metadata` | `dict` | Plugin metadata |
+| `ctx.metadata` | `dict` | Always `{}` in the plugin process today; use `await self.config.dump()` for configuration |
 
 ### Bus and memory
 

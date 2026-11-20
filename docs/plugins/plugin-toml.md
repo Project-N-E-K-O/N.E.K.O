@@ -204,6 +204,38 @@ Don't need storage? Just don't include this section (disabled by default).
 
 ---
 
+### `[plugin.database]` — SQLite database
+
+```toml
+[plugin.database]
+enabled = true
+name = "plugin.db"   # File name in the plugin's data directory (default: plugin.db)
+```
+
+When enabled, `self.db` uses a SQLite database file in the plugin's data directory: `await self.db.session()` for SQL, or `self.db.kv` for key-value data. Disabled by default.
+
+::: warning `check` reports this table
+The current `neko-plugin check` does not list `database` among the known `[plugin]` keys, so it reports the warning `[plugin].database is not a recognized plugin.toml field`. The runtime still reads the table; you can ignore this warning.
+:::
+
+---
+
+### `[plugin_state]` — Keep instance attributes across restarts
+
+```toml
+[plugin_state]
+backend = "file"        # Where the state is kept
+persist_mode = "auto"   # When it is saved
+```
+
+The runtime saves the plugin instance attributes named in the class's `__freezable__` list and restores them when the plugin next starts; the saved state is cleared after a successful restore. `backend` is the switch: `"file"` keeps the state in a file in the plugin's data directory, `"memory"` only while the plugin process runs, and without `backend` (or without this table) nothing is saved. `persist_mode` decides which entry calls save it: `"auto"` after every entry call, `"manual"` only after entries declared with `@plugin_entry(persist=True)`; an entry's `persist=True` / `persist=False` overrides this, except that `"off"` never saves. When `persist_mode` is omitted, the class attribute `__persist_mode__` (default `"off"`) applies. The state is also saved when the plugin is frozen.
+
+::: warning `check` and the runtime accept different values
+The runtime accepts `backend` = `file` / `memory` / `off` and `persist_mode` = `auto` / `manual` / `off`. The current `neko-plugin check` validates against `file` / `sqlite` / `memory` and `auto` / `always` / `manual` / `disabled`, and reports other values as errors. Use only the values both accept (`file` or `memory`, `auto` or `manual`); to turn saving off, leave `backend` out instead of writing `"off"`.
+:::
+
+---
+
 ### `[plugin.shared]` — Reading another plugin's shared files
 
 ```toml

@@ -23,7 +23,7 @@ class MyPlugin(NekoPluginBase):
 
 ## @plugin_entry
 
-外部から呼び出し可能なエントリーポイントを定義します。
+外部から呼び出し可能なエントリーポイントを定義します。`@llm_tool` との違いは [`@plugin_entry` と `@llm_tool` の選び方](/ja/plugins/tool-calling#choosing-an-entry-type)を参照してください。
 
 ```python
 @plugin_entry(

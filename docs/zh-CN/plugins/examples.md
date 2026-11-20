@@ -222,7 +222,8 @@ class DynamicPlugin(NekoPluginBase):
     @lifecycle(id="startup")
     async def on_startup(self, **_):
         # 根据配置在运行时注册入口
-        commands = self.metadata.get("commands", {})
+        cfg = await self.config.dump()
+        commands = cfg.get("commands", {})
         for cmd_id, cmd_config in commands.items():
             self.register_dynamic_entry(
                 entry_id=cmd_id,

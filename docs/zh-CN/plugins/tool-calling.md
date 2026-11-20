@@ -6,16 +6,16 @@ LLM 在用户问"北京天气怎么样"时会自动调用，等待返回结果�
 
 ## 选择 `@plugin_entry` 还是 `@llm_tool` {#choosing-an-entry-type}
 
-- **`@plugin_entry` 是插件对外提供能力的默认形式，也是推荐的形式**。插件入口会列在
-  插件管理器里，可以被其他插件、Hosted UI 动作调用，也可以经由 Agent（猫爪，NekoClaw）
-  路由调用。
-- **`@llm_tool` 要克制使用**，只用在少数必须让主对话模型在对话中直接调用的能力上。
-  每个已注册工具的 schema 都会随请求发给模型，多一个工具，模型的工具列表就长一截。
-  一个插件通常只需要很少几个 LLM 工具；能用 `@plugin_entry` 表达的，就保持为插件入口。
+| | `@plugin_entry` | `@llm_tool` |
+|---|---|---|
+| 是什么 | 插件的运行时入口 | 主对话模型工具表里的工具（main_server 的 `/api/tools` registry） |
+| 谁来用 | 插件管理器、其他插件、Hosted UI 动作，以及 Agent（猫爪，NekoClaw）的插件选择：由 Agent 侧的模型挑选后调用 | 主对话模型，在聊天当下直接调用 |
+| 什么时候用 | **默认、推荐的形式**，插件对外提供能力都用它 | **克制使用**，只用于少数必须让主对话模型直接调用的能力 |
 
-::: warning 它不同于插件入口
-`@llm_tool(name="get_weather")` 把对话期工具注册到 main_server 的 `/api/tools` registry。`@plugin_entry(id="get_weather")` 声明的是供插件管理器、跨插件调用和独立的 Agent（猫爪，NekoClaw）路由使用的运行时入口。SDK 内部为了复用 IPC，会把 LLM tool handler 存成保留前缀的动态入口（`__llm_tool__...`），但这项实现细节不会把两套公开 API 合并成一套：带这个前缀的入口只由主对话模型调用，不会进入 Agent 的插件筛选，也不会提供给 task agent。
-:::
+每个已注册 LLM 工具的 schema 都会随请求发给模型，多一个工具，模型的工具列表就长一截。
+一个插件通常只需要很少几个 LLM 工具；能用 `@plugin_entry` 表达的，就保持为插件入口。
+SDK 内部为了复用 IPC，会把 LLM 工具的 handler 存成保留前缀的动态入口（`__llm_tool__...`）；
+带这个前缀的入口不会进入 Agent 的插件选择，也不会提供给 task agent，两套 API 不会混在一起。
 
 本机制由 `main_logic/tool_calling.py` 的 `ToolRegistry` 支撑，对所有支持工具
 调用的 provider（OpenAI / Gemini / GLM / Qwen Omni / StepFun 等）统一抽象。

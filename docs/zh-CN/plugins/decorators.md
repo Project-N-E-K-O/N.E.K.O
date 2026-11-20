@@ -23,7 +23,7 @@ class MyPlugin(NekoPluginBase):
 
 ## @plugin_entry
 
-定义一个可外部调用的入口点。
+定义一个可外部调用的入口点。它和 `@llm_tool` 的区别见[选择 `@plugin_entry` 还是 `@llm_tool`](/zh-CN/plugins/tool-calling#choosing-an-entry-type)。
 
 ```python
 @plugin_entry(

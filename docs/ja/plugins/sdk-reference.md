@@ -49,7 +49,7 @@ class MyPlugin(NekoPluginBase):
 | `self.config_dir` | `Path` | `self.plugin_dir` の互換エイリアス |
 | `self.storage_dir` | `Path` | このプラグインに割り当てられたユーザーストレージルート |
 | `self.runtime_config_path` | `Path` | 外部ランタイム設定ファイルのパス |
-| `self.metadata` | `dict` | `plugin.toml` からのプラグインメタデータ |
+| `self.metadata` | `dict` | 現在、プラグインプロセスでは常に `{}`（`plugin.toml` の内容は渡されません）。設定は `await self.config.dump()` で読みます |
 | `self.bus` | `SdkBusContext` | host state の read/watch facade。publish/emit API はありません |
 | `self.plugins` | `Plugins` | プラグイン間呼び出しヘルパー |
 | `self.system_info` | `SystemInfo` | ホストシステムのメタデータ |
@@ -172,13 +172,18 @@ cities = self.shared_path_of("weather", "cities.json")
 実行時にエントリーポイントを登録します（デコレーター経由ではなく）。
 
 ```python
+async def greet(name: str = "World", **_):
+    return Ok({"msg": f"Hi {name}"})
+
 self.register_dynamic_entry(
     entry_id="dynamic_greet",
-    handler=lambda name="World", **_: Ok({"msg": f"Hi {name}"}),
+    handler=greet,
     name="Dynamic Greet",
     description="動的に登録された挨拶",
 )
 ```
+
+handler は `async def` 関数である必要があります。登録時は呼び出し可能かどうかしか確認しませんが、handler がコルーチン関数でないエントリーを呼び出すと `Entry must be 'async def'` で失敗します。
 
 #### `unregister_dynamic_entry(entry_id) -> bool`
 
@@ -388,7 +393,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `ctx.config_path` | `Path` | `plugin.toml` へのパス |
 | `ctx.logger` | `Logger` | ロガーインスタンス |
 | `ctx.bus` | `SdkBusContext` | host state の read/watch facade |
-| `ctx.metadata` | `dict` | プラグインメタデータ |
+| `ctx.metadata` | `dict` | 現在、プラグインプロセスでは常に `{}`。設定は `await self.config.dump()` で読みます |
 
 ### Bus と Memory
 
