@@ -45,6 +45,7 @@ from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json_async
 from utils.logger_config import get_module_logger
+from utils.url_utils import is_utf8_text
 
 router = APIRouter(prefix="/api/model/mmd", tags=["mmd"])
 logger = get_module_logger(__name__, "Main")
@@ -102,7 +103,8 @@ def _ensure_mmd_directory(config_mgr) -> Path | None:
         animation_dir.mkdir(parents=True, exist_ok=True)
         return mmd_dir
     except Exception as e:
-        logger.error(f"创建 MMD 目录失败: {e}")
+        logger.error(f"创建 MMD 目录失败: {type(e).__name__}")
+        print(f"创建 MMD 目录失败: {e!r}")
         return None
 
 
@@ -510,7 +512,7 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                         "error": f"目录 {extract_dir_name} 已存在，请先删除旧模型"
                     })
                 else:
-                    logger.info(f"清理残留的无效模型目录: {target_dir}")
+                    logger.info(f"清理残留的无效模型目录: {extract_dir_name}")
                     await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
 
             # Extract using corrected filenames.
@@ -693,12 +695,16 @@ def get_mmd_animations():
         config_mgr = get_config_manager()
         animations = []
         seen_urls = set()
+        skipped = 0  # Non-UTF-8 names cannot be serialized or requested.
 
         # 1. Project static/mmd/animation/.
         project_root = config_mgr.project_root
         static_anim_dir = project_root / "static" / "mmd" / "animation"
         if static_anim_dir.exists():
             for anim_file in static_anim_dir.glob('*.vmd'):
+                if not is_utf8_text(anim_file.name):
+                    skipped += 1
+                    continue
                 url = f"/static/mmd/animation/{anim_file.name}"
                 if url in seen_urls:
                     continue
@@ -717,6 +723,9 @@ def get_mmd_animations():
             user_anim_dir = mmd_dir / "animation"
             if user_anim_dir.exists():
                 for anim_file in user_anim_dir.glob('*.vmd'):
+                    if not is_utf8_text(anim_file.name):
+                        skipped += 1
+                        continue
                     url = f"{MMD_USER_PATH}/animation/{anim_file.name}"
                     if url in seen_urls:
                         continue
@@ -729,6 +738,8 @@ def get_mmd_animations():
                         "size": anim_file.stat().st_size
                     })
 
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VMD 动画")
         return JSONResponse(content={"success": True, "animations": animations})
     except Exception as e:
         logger.error(f"获取 VMD 动画列表失败: {e}")
@@ -867,7 +878,7 @@ async def delete_mmd_model(request: Request):
                     })
                 # Incomplete directory without model files: permit deletion.
                 deleted_files = await asyncio.to_thread(_count_and_rmtree, candidate)
-                logger.info(f"删除残缺 MMD 模型目录: {candidate}")
+                logger.info(f"删除残缺 MMD 模型目录: {candidate.name}")
                 return JSONResponse(content={
                     "success": True,
                     "message": f"已删除残缺模型目录 {rel_path}",
@@ -895,21 +906,21 @@ async def delete_mmd_model(request: Request):
             if top_subdir.name.lower() in RESERVED_DIRS:
                 return JSONResponse(status_code=400, content={"success": False, "error": "不能删除保留目录"})
             deleted_files = await asyncio.to_thread(_count_and_rmtree, top_subdir)
-            logger.info(f"删除 MMD 模型目录: {top_subdir} ({deleted_files} 个文件)")
+            logger.info(f"删除 MMD 模型目录: {top_subdir.name} ({deleted_files} 个文件)")
         else:
             # Top-level model: delete model file only.
             if safe_path.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
                 return JSONResponse(status_code=400, content={"success": False, "error": "只能删除模型文件"})
             safe_path.unlink()
             deleted_files = 1
-            logger.info(f"删除 MMD 模型文件: {safe_path}")
+            logger.info(f"删除 MMD 模型文件: {safe_path.name}")
 
         # Delete corresponding emotion map too, using same normalization as GET/POST.
         safe_model_name = model_name.replace('..', '_')
         emotion_config = mmd_dir / "emotion_config" / f"{safe_model_name}.json"
         if emotion_config.exists() and emotion_config.resolve().is_relative_to((mmd_dir / "emotion_config").resolve()):
             emotion_config.unlink()
-            logger.info(f"删除 MMD 情感映射配置: {emotion_config}")
+            logger.info(f"删除 MMD 情感映射配置: {emotion_config.name}")
 
         return JSONResponse(content={
             "success": True,
@@ -932,10 +943,14 @@ async def list_mmd_animations_for_delete(request: Request):
 
         user_anim_dir = mmd_dir / "animation"
         animations = []
+        skipped = 0  # Non-UTF-8 names cannot be serialized or requested.
 
         if user_anim_dir.exists():
             for vmd_file in user_anim_dir.iterdir():
                 if vmd_file.is_file() and vmd_file.suffix.lower() == '.vmd':
+                    if not is_utf8_text(vmd_file.name):
+                        skipped += 1
+                        continue
                     rel_path = vmd_file.relative_to(mmd_dir)
                     animations.append({
                         "name": vmd_file.stem,
@@ -944,6 +959,8 @@ async def list_mmd_animations_for_delete(request: Request):
                         "path": rel_path.as_posix()
                     })
 
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VMD 动画")
         return JSONResponse(content={"success": True, "animations": animations})
     except Exception as e:
         logger.error(f"获取 VMD 动画列表失败: {e}", exc_info=True)
@@ -990,7 +1007,7 @@ async def delete_mmd_animation(request: Request):
 
         # Delete file.
         safe_path.unlink()
-        logger.info(f"删除 VMD 动画文件: {safe_path}")
+        logger.info(f"删除 VMD 动画文件: {safe_path.name}")
 
         return JSONResponse(content={
             "success": True,

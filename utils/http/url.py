@@ -28,6 +28,21 @@ def encode_url_path(path: str) -> str:
     return '/'.join(encoded_parts)
 
 
+def is_utf8_text(value: str) -> bool:
+    """Whether ``value`` can be encoded as UTF-8.
+
+    On POSIX, names whose bytes are not valid UTF-8 (e.g. a ZIP extracted with a
+    GBK or Shift-JIS name) come back from ``os.listdir`` with lone surrogates.
+    Such a name can be neither URL-quoted nor written into a JSON response, and
+    no browser request can address the file, so model lists skip it.
+    """
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 # The scheme's optional default port: specifying or omitting it identifies the same endpoint.
 _DEFAULT_PORTS = {'http': '80', 'https': '443', 'ws': '80', 'wss': '443'}
 
