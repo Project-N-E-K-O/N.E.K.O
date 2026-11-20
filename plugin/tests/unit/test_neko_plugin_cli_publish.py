@@ -418,6 +418,12 @@ _MARKET_RELEASE_URL = "https://github.com/neko/n.e.k.o_plugin_demo/releases/tag/
             "waiting for a Market reviewer",
         ),
         (
+            httpx.Response(202, json=_market_review("superseded")),
+            1,
+            "[MARKET] status=superseded candidate=7\n",
+            "[FAIL] a newer release",
+        ),
+        (
             httpx.Response(202, json=_market_review("rejected")),
             1,
             "[MARKET] status=rejected candidate=7\n",
@@ -1451,6 +1457,15 @@ def test_release_asset_is_ready_only_after_github_marks_it_uploaded() -> None:
 
     asset["state"] = "uploaded"
     assert release_asset_is_downloadable(asset) is True
+
+
+@pytest.mark.parametrize("plugin_id,has_link", [(17, True), (True, False), (-1, False), ("https://example.org", False)])
+def test_publish_market_recovers_from_legacy_latest(plugin_id, has_link, capsys):
+    payload = {"code": "release_version_not_newer", "detail": "Legacy latest",
+               "issues": [None, {"code": "release_latest_unordered", "plugin_id": plugin_id}]}
+    assert publish_cmd._report_market_response(409, payload) == 1
+    error = capsys.readouterr().err
+    assert ("https://market.project-neko.cn/#/plugin/17?tab=versions&action=publish" in error) is has_link
 
 
 def test_publish_market_surfaces_stable_market_error(

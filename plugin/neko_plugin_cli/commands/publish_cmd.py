@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 import httpx
 
@@ -327,6 +327,15 @@ def _report_market_response(status_code: int, payload: dict) -> int:
             f"{code}: {detail}",
             file=sys.stderr,
         )
+        issues = payload.get("issues")
+        if code == "release_version_not_newer" and isinstance(issues, list):
+            for issue in issues:
+                if isinstance(issue, dict) and issue.get("code") == "release_latest_unordered":
+                    plugin_id = issue.get("plugin_id")
+                    if type(plugin_id) is int and plugin_id > 0:
+                        page = urljoin(_MARKET_PUBLICATION_URL, f"/#/plugin/{plugin_id}?tab=versions&action=publish")
+                        print(page, file=sys.stderr)
+                        break
         return 1
 
     publication = parse_market_publication(status_code, payload)
@@ -388,13 +397,15 @@ def _report_market_response(status_code: int, payload: dict) -> int:
         )
     elif status == "superseded":
         print(
-            "[OK] "
+            "[FAIL] "
             + _tri(
                 "a newer release of this version replaced this one in Market review",
                 "此版本的更新 Release 已在 Market 审核中取代了这一个",
                 "このバージョンの新しい Release が Market の審査でこれを置き換えました",
-            )
+            ),
+            file=sys.stderr,
         )
+        return 1
     else:
         print(f"[OK] Market accepted the notification / Market 已受理通知 / Market が通知を受理しました ({status})")
     return 0
