@@ -2752,7 +2752,7 @@
                 // start was acquiring. The user's explicit pick replaces it; stop
                 // the replaced stream so its tracks do not leak.
                 var replacedStream = S.screenCaptureStream;
-                if (replacedStream && replacedStream !== captureStream) {
+                if (captureStream && replacedStream && replacedStream !== captureStream) {
                     try {
                         replacedStream.getTracks().forEach(function (track) {
                             try { track.stop(); } catch (_) { }

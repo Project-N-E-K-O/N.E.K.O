@@ -55,9 +55,11 @@ function boot(mode, opts) {
   const S = { isRecording: true, voiceChatActive: true, proactiveVisionEnabled: true, proactiveVisionInterval: 15,
     socket: { readyState: 1, send: m => sent.push(JSON.parse(m)) }, audioPlayerContext: { state: 'running' },
     screenCaptureStream: null, selectedScreenSourceId: mode === 'electron' ? 'screen:0:0' : null };
-  const playCalls = [];
+  const playCalls = []; const deferredPlays = [];
   const el = id => { const c = new Set(); return { id, disabled: false,
-    play: () => { playCalls.push(id); return opts.playRejects ? Promise.reject(Object.assign(new Error('play failed'), { name: 'NotAllowedError' })) : Promise.resolve(); },
+    play: () => { playCalls.push(id);
+      if (opts.playDeferredOnce && deferredPlays.length === 0) return new Promise((_, reject) => deferredPlays.push(reject));
+      return opts.playRejects ? Promise.reject(Object.assign(new Error('play failed'), { name: 'NotAllowedError' })) : Promise.resolve(); },
     getContext: () => ({ drawImage() {}, getImageData: () => ({ data: [200, 200, 200, 255] }) }), toDataURL: () => 'data:image/jpeg;base64,AAA', srcObject: null, readyState: 4, videoWidth: 4, videoHeight: 4, style: {}, dataset: {}, classList: { add: x => c.add(x), remove: x => c.delete(x), contains: x => c.has(x), toggle() {} },
     addEventListener: noop, removeEventListener: noop, setAttribute: noop, getAttribute: () => null, appendChild: noop, querySelector: () => null, querySelectorAll: () => [] }; };
   const els = {};
@@ -65,7 +67,9 @@ function boot(mode, opts) {
     getElementById: id => (els[id] = els[id] || el(id)), querySelector: () => null, querySelectorAll: () => [], createElement: t => el(t) };
   // Each capture request waits until the test settles it, in any order.
   const pending = [];
-  const capture = kind => new Promise(resolve => { pending.push({ kind, resolve: () => { const s = makeStream(); resolve(s); return s; } }); });
+  const capture = kind => new Promise((resolve, reject) => { pending.push({ kind,
+    resolve: () => { const s = makeStream(); resolve(s); return s; },
+    reject: () => reject(Object.assign(new Error('capture failed'), { name: 'NotReadableError' })) }); });
   const mediaDevices = { getDisplayMedia: async () => capture('display'), getUserMedia: async () => capture('electron') };
   const intervals = new Map(); let iid = 1;
   const w = { console: { log: noop, info: noop, debug: noop, warn: noop, error: noop },
@@ -85,7 +89,7 @@ function boot(mode, opts) {
   w.window = w; vm.createContext(w);
   vm.runInContext(fs.readFileSync(path.join(repo, 'static/app/app-screen.js'), 'utf8'), w);
   if (mode === 'electron') S.selectedScreenSourceId = 'screen:0:0';
-  return { w, S, sent, els, intervals, pending, playCalls };
+  return { w, S, sent, els, intervals, pending, playCalls, deferredPlays };
 }
 function snapshot(r) {
   const screen = r.w.document.getElementById('screenButton');
@@ -171,11 +175,51 @@ async function manualVsProactive(order) {
     manualStops: manualStream.track.stops, proactiveStops: proactiveStream.track.stops }) };
 }
 
+// The first share's play() is still pending when the user stops and starts
+// again on a new stream; the old play() then rejects and must not touch the
+// new share.
+async function stalePlayRejects() {
+  const r = boot('web', { playDeferredOnce: true });
+  let starting = r.w.startScreenSharing();
+  await waitPending(r, 1);
+  const oldStream = r.pending[0].resolve();
+  await starting;
+  await r.w.stopScreenSharing(true);
+  starting = r.w.startScreenSharing();
+  await waitPending(r, 2);
+  const newStream = r.pending[1].resolve();
+  await starting;
+  await flush();
+  r.deferredPlays[0](Object.assign(new Error('play failed'), { name: 'AbortError' }));
+  await flush();
+  return Object.assign(snapshot(r), {
+    cacheIsNew: r.S.screenCaptureStream === newStream,
+    oldStops: oldStream.track.stops, newStops: newStream.track.stops });
+}
+
+// A manual share whose own capture fails must not stop the stream proactive
+// vision cached while that share was starting.
+async function manualFailsAfterProactiveCached() {
+  const r = boot('web');
+  const starting = r.w.startScreenSharing();
+  await waitPending(r, 1);
+  const proactive = r.w.acquireOrReuseCachedStream({ allowPrompt: true });
+  await waitPending(r, 2);
+  const proactiveStream = r.pending[1].resolve();
+  await proactive;
+  r.pending[0].reject();
+  await starting;
+  await flush();
+  return Object.assign(snapshot(r), { proactiveStops: proactiveStream.track.stops });
+}
+
 (async () => {
   const way = __WAY__;
   let out;
   if (way === 'play_rejects') out = await playRejects(true);
   else if (way === 'play_resolves') out = await playRejects(false);
+  else if (way === 'stale_play_rejects') out = await stalePlayRejects();
+  else if (way === 'manual_fails') out = await manualFailsAfterProactiveCached();
   else if (way === 'two_display') out = await twoAcquisitions('web');
   else if (way === 'two_electron') out = await twoAcquisitions('electron');
   else out = await manualVsProactive(way);
@@ -246,3 +290,18 @@ def test_manual_share_and_proactive_capture_race_keeps_one_live_stream(order):
     assert after["active"] is False and after["streamCleared"] is True
     assert after["manualStops"] == 1 and after["proactiveStops"] == 1
     assert after["notices"] == 1
+
+
+def test_stale_play_rejection_does_not_stop_a_restarted_share():
+    out = _run("stale_play_rejects")
+    assert out["active"] is True and out["sender"] is True
+    assert out["cacheIsNew"] is True
+    assert out["oldStops"] == 1 and out["newStops"] == 0
+    # Only the user's own stop sent a notice.
+    assert out["notices"] == 1
+
+
+def test_failed_manual_capture_keeps_stream_cached_by_proactive_vision():
+    out = _run("manual_fails")
+    assert out["active"] is False
+    assert out["proactiveStops"] == 0
