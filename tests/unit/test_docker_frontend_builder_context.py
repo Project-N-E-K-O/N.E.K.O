@@ -47,9 +47,16 @@ TEST_DIRS = {"e2e", "__tests__", "tests"}
 # Known limit: CSS `@import` / `url()` and index.html are not scanned (neither
 # frontend reaches outside its project from those today).
 # Group "type" captures a leading `type` keyword (type-only import / export).
+# The clause between `import`/`export` and `from` may span lines (multi-line
+# named imports) but never another import/export statement, so a bare
+# `export type { Foo }` cannot swallow the value import on the next line.
+# Known approximation (errs on the safe side): `import('...')` in a type
+# position, e.g. `type X = import('...').Y`, counts as a runtime reference and
+# may ask for a COPY the build does not strictly need; `typeof import()` is
+# skipped.
 SPECIFIER = re.compile(
     r"""(?:
-        \b(?:import|export)\s+(?P<type>type\s+)?(?:[^'"`;=()]*?\s+from\s+)?
+        \b(?:import|export)\s+(?P<type>type\s+)?(?:(?:(?!\b(?:import|export)\b)[^'"`;=()])*?\s+from\s+)?
       | (?<!typeof\s)\bimport\s*\(\s*(?:/\*.*?\*/\s*)*
       | \bimport\.meta\.glob\s*\(\s*(?:\[\s*)?
       | \bnew\s+URL\s*\(\s*
@@ -119,8 +126,50 @@ def test_scanner_still_sees_the_known_cross_project_imports():
     targets = _cross_project_targets("plugin-manager")
     assert "static/plugin-ui-sdk/display.js" in targets
     assert any(t.startswith("static/assets/tutorial/") for t in targets)
-    # 仅类型导入在 build-only 下会被擦除，不应计入
-    assert not any(t.startswith("plugin/sdk/") for t in targets)
+    # 仅类型导入在 build-only 下会被擦除，不应计入（只核对已知的这几个文件，
+    # 以后真有值导入并补了 COPY，不应让这条自检误报）
+    type_only = {
+        "frontend/plugin-manager/src/composables/usePluginDisplay.ts",
+        "frontend/plugin-manager/src/composables/usePluginDisplayDialog.ts",
+        "frontend/plugin-manager/src/composables/pluginDisplaySession.ts",
+    }
+    for path in type_only:
+        assert (ROOT / path).is_file(), f"{path} 不存在了，请更新这条自检"
+    leaked = {t: f for t, f in targets.items() if type_only & set(f)}
+    assert not leaked, f"仅类型导入被当成了运行时引用：{leaked}"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("import a from '../../x/a.js?raw'", ("", "../../x/a.js?raw")),
+        ("import {\n  a,\n  b,\n} from \"../y\"", ("", "../y")),
+        ("import type { T } from '../t'", ("type", "../t")),
+        ("export type { T } from '../t'", ("type", "../t")),
+        ("export * from '../e'", ("", "../e")),
+        ("import '../side.css'", ("", "../side.css")),
+        ("import('../d')", ("", "../d")),
+        ("import(/* @vite-ignore */ '../dc')", ("", "../dc")),
+        ("import(`../tl`)", ("", "../tl")),
+        ("import.meta.glob('../g/*.json')", ("", "../g/*.json")),
+        ("import.meta.glob(['../ga/*.json'])", ("", "../ga/*.json")),
+        ("new URL('../u.png', import.meta.url)", ("", "../u.png")),
+        # 不带 from 的 export type 不能吞掉下一行的值导入
+        ("export type { Foo }\nimport bar from '../x.js'", ("", "../x.js")),
+        ("export { a }\nimport b from '../x.js'", ("", "../x.js")),
+        ("type M = typeof import('../ti')", None),
+        ("import(`../${name}`)", None),
+        ("export type Foo = { a: string }\nconst q = 1", None),
+    ],
+)
+def test_specifier_regex(source, expected):
+    matches = list(SPECIFIER.finditer(source))
+    if expected is None:
+        assert not matches, [m.group(0) for m in matches]
+        return
+    assert len(matches) == 1, [m.group(0) for m in matches]
+    kind = "type" if matches[0].group("type") else ""
+    assert (kind, matches[0].group("spec")) == expected
 
 
 @pytest.mark.parametrize("dockerfile", DOCKERFILES)
