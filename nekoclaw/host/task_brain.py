@@ -891,6 +891,18 @@ class TaskBrain:
                 grants.append(decision.grant_id)
                 cleanup.callback(self._permissions.release_grant, decision.grant_id)
             direct.grant_id = self._permissions.authorization_ref(grants[-1])
+            stopped_for = ""
+
+            def still_wanted() -> bool:
+                nonlocal stopped_for
+                if not still_on():
+                    return False
+                if not self._registry.plugins_enabled():
+                    stopped_for = "not_enabled"
+                elif not all(self._permissions.grant_active(ref) for ref in grants):
+                    stopped_for = "denied"
+                return not stopped_for
+
             outcome = await audited_run_entry(
                 self._ledger, self._runner, commission_id=commission.id,
                 plugin_id=selection.plugin_id,
@@ -901,10 +913,7 @@ class TaskBrain:
                 latest_user_request=commission.user_text,
                 on_progress=progress,
                 on_run_created=run_created,
-                still_wanted=lambda: (
-                    still_on() and self._registry.plugins_enabled()
-                    and all(self._permissions.grant_active(ref) for ref in grants)
-                ),
+                still_wanted=still_wanted,
             )
         direct.status = plugin_terminal_status(outcome.success, outcome.data)
         if turned_away:
@@ -912,6 +921,10 @@ class TaskBrain:
             # Nothing was called: put down as what it is, and not as a
             # call that failed.
             await self._overturn_switched_off(commission)
+            return
+        if stopped_for:
+            direct.status, direct.reason = "denied", "settings"
+            await self._overturn_no_capability(commission, "plugin unavailable before submission", reason=stopped_for)
             return
         await self._finish_direct(commission, request.plugins, entry, outcome)
 

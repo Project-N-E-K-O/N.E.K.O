@@ -1181,7 +1181,7 @@ class CapabilityGateway:
             conversation_id=commission.conversation_id,
             latest_user_request=commission.user_text,
             on_run_created=run_created,
-            still_wanted=lambda: self._permissions.grant_active(permitted.grant_id),
+            still_wanted=lambda: self._registry.plugins_enabled() and self._permissions.grant_active(permitted.grant_id),
         )
         text = describe_result(entry, outcome, lang=commission.lang)
         terminal = plugin_terminal_status(outcome.success, outcome.data)

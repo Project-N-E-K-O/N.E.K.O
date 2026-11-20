@@ -92,7 +92,12 @@ class DeliveryAdapter(Protocol):
         ...
 
     async def trigger(self, invocation: Invocation, arguments: Parcel) -> None:
-        """Accept a job at its source without creating a business return path."""
+        """Accept without a business reply. Deferred transfers belong to the invoking run.
+
+        Directly await nested transfers in this same task. A queued worker can use
+        deferred=True after scheduling; trigger must return for it to be accepted.
+        Work that must survive that run requires a separately registered commission.
+        """
         ...
 
     async def call(self, invocation: Invocation, arguments: Parcel) -> Answer: ...

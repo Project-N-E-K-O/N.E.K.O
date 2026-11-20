@@ -1071,7 +1071,7 @@ class TaskAgentManager:
         permissions.set_asker(self.ask_permission)
         # A task agent started by another is covered by what the user allowed
         # for that one's session.
-        permissions.set_parent_lookup(self._parent_of)
+        permissions.set_parent_lookup(self._ledger.permission_parent)
         # A commission that holds a session without having it open (it waits
         # for an answer) can end without a word from a runtime: stopped, say.
         self._unsubscribe = ledger.subscribe(self._on_commission_change)
@@ -4892,13 +4892,6 @@ class TaskAgentManager:
         # Anything that is not one of the four answers is a refusal. An
         # approval wider than the question offered is narrowed by the gate.
         return choice if choice in CHOICES else "deny"
-
-    async def _parent_of(self, commission_id: str) -> str | None:
-        """Return the commission that started this one; the permission gate's lookup."""
-        commission = await self._ledger.get(commission_id)
-        if commission is None or not commission.active:
-            raise LookupError("the commission has ended or is unknown")
-        return commission.parent_id
 
     # -- host callbacks ---------------------------------------------------
 

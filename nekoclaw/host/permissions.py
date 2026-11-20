@@ -167,7 +167,7 @@ class PermissionAsk:
 # Puts the question to the user on behalf of a commission; returns a choice.
 Asker = Callable[[str, PermissionAsk], Awaitable[str]]
 # Returns the commission that started the given one, or None.
-ParentLookup = Callable[[str], Awaitable["str | None"]]
+ParentLookup = Callable[[str], Awaitable["str | None | tuple[str | None, bool]"]]
 
 
 def _slot(category: str, key: str | None) -> tuple[str, str | None]:
@@ -419,9 +419,9 @@ class PermissionGate:
         self.end_session(commission_id)
         self._external_input_roots.add(commission_id)
 
-    def _sharing_lineage(self, lineage: list[str]) -> list[str]:
+    def _sharing_lineage(self, lineage: list[str], received: set[str]) -> list[str]:
         for i, actor in enumerate(lineage):
-            if actor in self._external_input_roots:
+            if actor in received or actor in self._external_input_roots:
                 return lineage[: i + 1]
         return lineage
 
@@ -450,7 +450,7 @@ class PermissionGate:
             loan.slot for loan in self._loans.values() if loan.owner == commission_id and loan.lifetime == 'session'
         )
 
-    async def _lineage(self, commission_id: str, *, verified: bool = False) -> list[str]:
+    async def _lineage(self, commission_id: str, received: set[str], *, verified: bool = False) -> list[str]:
         """Return the commission and the commissions it descends from, nearest first."""
         chain = [commission_id]
         if self._parent_of is None:
@@ -458,7 +458,13 @@ class PermissionGate:
         current = commission_id
         while True:
             try:
-                parent = await self._parent_of(current)
+                link = await self._parent_of(current)
+                if isinstance(link, tuple):
+                    parent, external = link
+                    if external:
+                        received.add(current)
+                else:
+                    parent = link
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - without a known parent only its own grants count
@@ -495,7 +501,8 @@ class PermissionGate:
         # lineage (one ledger read per level) is looked up only now. The mode
         # is then read again together with its version, with nothing awaited
         # between the two.
-        lineage = await self._lineage(commission_id) if mode == "first_ask" else [commission_id]
+        received: set[str] = set()
+        lineage = await self._lineage(commission_id, received) if mode == "first_ask" else [commission_id]
         mode = await self._store.mode(category, key)
         version = self._store.version
         if mode == "allow":
@@ -503,7 +510,7 @@ class PermissionGate:
         if mode == "deny":
             return PermissionDecision(False, DENIED_BY_SETTINGS)
         slot = _slot(category, key)
-        if mode == "first_ask" and any(slot in self._session_grants.get(item, ()) for item in self._sharing_lineage(lineage)):
+        if mode == "first_ask" and any(slot in self._session_grants.get(item, ()) for item in self._sharing_lineage(lineage, received)):
             # Allowed for this session, or for the session of the commission
             # that started this one. A category that asks every time has no
             # such answer and keeps asking.
@@ -625,11 +632,12 @@ class PermissionGate:
     ) -> bool:
         if not self.grant_active(grant_id):
             return False
-        lineage = await self._lineage(commission_id, verified=True)
+        received: set[str] = set()
+        lineage = await self._lineage(commission_id, received, verified=True)
         loan = self._loans.get(grant_id)
         return bool(
             loan and lineage and loan.scope == scope and loan.slot == _slot(category, key)
-            and loan.root == lineage[-1] and loan.owner in self._sharing_lineage(lineage) and self.grant_active(grant_id)
+            and loan.root == lineage[-1] and loan.owner in self._sharing_lineage(lineage, received) and self.grant_active(grant_id)
         )
 
     def _record_loan(
@@ -664,14 +672,15 @@ class PermissionGate:
             delivery = category == "managed_delivery"
             if mode == "allow" and not delivery and not hold_once:
                 return PermissionDecision(True)
-            lineage = await self._lineage(commission_id, verified=True)
+            received: set[str] = set()
+            lineage = await self._lineage(commission_id, received, verified=True)
         finally:
             del self._lineage_lookups[lookup]
         if not lineage or not ended.isdisjoint(lineage) or self._work.get(commission_id) is not work:
             return PermissionDecision(False, DENIED_NO_ANSWER)
         branch = tuple(lineage)
         root = branch[-1]
-        sharing_root = self._sharing_lineage(lineage)[-1]
+        sharing_root = self._sharing_lineage(lineage, received)[-1]
         slot = _slot(category, key)
         lives = [(actor, self._lives.setdefault(actor, object())) for actor in branch]
 

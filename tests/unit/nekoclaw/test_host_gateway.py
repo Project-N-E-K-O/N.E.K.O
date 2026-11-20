@@ -584,6 +584,23 @@ async def test_plugin_entries_are_allowed_without_asking(host, server):
     assert asker.asked == []
 
 
+async def test_gateway_observes_the_plugin_switch_after_asking(host, server, monkeypatch):
+    _catalog(server)
+    await host.permission_store.set_mode("plugin_entry", "first_ask")
+    enabled = True
+    monkeypatch.setattr(host.gateway._registry, "plugins_enabled", lambda: enabled)
+
+    async def switch_off(_cid, _question):
+        nonlocal enabled
+        enabled = False
+        return "once"
+
+    host.permissions.set_asker(switch_off)
+    grant = _grant(host, await _commission(host), "weather")
+    result = await _call(host, grant, "plugin__weather__today", {"city": "Paris"})
+    assert result["isError"] and not server.run_requests
+
+
 async def test_plugin_entries_can_be_forbidden_in_the_settings(host, server):
     _catalog(server)
     await host.permission_store.set_mode("plugin_entry", "deny")

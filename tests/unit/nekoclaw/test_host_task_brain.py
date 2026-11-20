@@ -149,6 +149,10 @@ async def test_direct_plugin_never_runs_after_decline_or_late_answer(server, hos
         assert await host.answer(waiting.id, "", choice="deny", question_id=question["id"])
     await host.brain.settle()
     assert not server.run_requests and llm.tiers() == ["fine"]
+    if finish == "disable_plugins":
+        assert (await host.ledger.get(waiting.id)).status == "failed"
+        (correction,) = await outbox(host, "correction")
+        assert correction.payload["detail"] == "not_enabled"
 
 
 async def test_the_result_is_stored_with_the_status_not_after_it(server, hosts, tmp_path, monkeypatch):
