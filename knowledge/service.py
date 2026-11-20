@@ -253,14 +253,23 @@ def _budgeted_plan(pack: KnowledgePack, options: dict[str, Any], others: int) ->
     """Pick the rebuild plan that fits the chunk budgets, preferring vectors.
 
     Try the token plan with verified archive rows, then without the token
-    plan, then the local (legacy) layout. A rebuild must never grow a pack
+    plan, then the local (legacy) layout. A token plan that cannot fit an
+    entry's header counts as not fitting. A rebuild must never grow a pack
     past the per-pack or total limits: when no plan fits (e.g. a pack admitted
     with its archive layout whose retained ZIP is now gone), return None and
     let the caller refuse the rebuild before writing anything.
     """
     for dropped in ((), ("fit",), ("fit", "seed_vectors")):
         trial = {key: value for key, value in options.items() if key not in dropped}
-        chunks = count_pack_chunks(pack, fit=trial.get("fit"), seed_vectors=trial.get("seed_vectors", ()))
+        try:
+            chunks = count_pack_chunks(pack, fit=trial.get("fit"), seed_vectors=trial.get("seed_vectors", ()))
+        except ValueError as exc:
+            # A pack admitted before tokenizer assets existed may have a header
+            # that alone exceeds the token budget. That rejects only the token
+            # plan; it is not index corruption, so try the plans without fit.
+            if trial.get("fit") is None or str(exc) != "embedding_input_too_large":
+                raise
+            continue
         if chunks <= MAX_CHUNKS_PER_PACK and others + chunks <= MAX_TOTAL_CHUNKS:
             return trial, chunks
     return None
