@@ -3069,7 +3069,7 @@ def test_validate_plugin_dir_rejects_non_table_plugin_database(tmp_path: Path) -
 
 @pytest.mark.parametrize(
     "name",
-    ["../escape.db", "sub/notes.db", ".", "C:notes.db", "C:\\\\notes.db", "notes?.db", "a|b.db", "CON", "nul.db", "com1.db"],
+    ["../escape.db", "sub/notes.db", ".", "C:notes.db", "C:\\\\notes.db", "notes?.db", "a|b.db", "CON", "nul.db", "com1.db", "COM\u00b9.db", "lpt\u00b2.db", "CONIN$", "notes.db.", "notes.db "],
 )
 def test_validate_plugin_dir_rejects_plugin_database_name_runtime_refuses(tmp_path: Path, name: str) -> None:
     from plugin.sdk.shared.storage.database import PluginDatabase

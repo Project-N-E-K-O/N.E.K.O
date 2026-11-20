@@ -58,26 +58,27 @@ _STORE_BACKEND_IGNORED = {
 
 _DATABASE_NAME_INVALID = {
     "en": "[plugin.database].name must be a plain file name that also works on Windows: "
-    "no folders, drive letters, \"..\", characters <>:\"/\\|?* or reserved names such as CON or NUL",
+    "no folders, drive letters, \"..\", characters <>:\"/\\|?*, a trailing dot or space, or reserved names such as CON or NUL",
     "zh-CN": "[plugin.database].name 必须是在 Windows 上也能用的单纯文件名：不能带目录、盘符、\"..\"、"
-    "字符 <>:\"/\\|?*，也不能用 CON、NUL 这类保留名",
+    "字符 <>:\"/\\|?*，不能以点或空格结尾，也不能用 CON、NUL 这类保留名",
     "zh-TW": "[plugin.database].name 必須是在 Windows 上也能用的單純檔案名稱：不能帶目錄、磁碟代號、\"..\"、"
-    "字元 <>:\"/\\|?*，也不能用 CON、NUL 這類保留名稱",
+    "字元 <>:\"/\\|?*，不能以點或空格結尾，也不能用 CON、NUL 這類保留名稱",
     "ja": "[plugin.database].name は Windows でも使える単純なファイル名にしてください。フォルダー、ドライブ文字、"
-    "\"..\"、文字 <>:\"/\\|?*、CON や NUL などの予約名は使えません",
+    "\"..\"、文字 <>:\"/\\|?*、末尾のドットや空白、CON や NUL などの予約名は使えません",
     "ko": "[plugin.database].name은 Windows에서도 쓸 수 있는 파일 이름만 써야 합니다. 폴더, 드라이브 문자, "
-    "\"..\", 문자 <>:\"/\\|?*, CON·NUL 같은 예약 이름은 쓸 수 없습니다",
+    "\"..\", 문자 <>:\"/\\|?*, 끝의 마침표나 공백, CON·NUL 같은 예약 이름은 쓸 수 없습니다",
     "ru": "[plugin.database].name должно быть простым именем файла, допустимым и в Windows: без папок, букв дисков, "
-    "\"..\", символов <>:\"/\\|?* и зарезервированных имён вроде CON или NUL",
+    "\"..\", символов <>:\"/\\|?*, точки или пробела в конце и зарезервированных имён вроде CON или NUL",
     "es": "[plugin.database].name debe ser un nombre de archivo simple que también sirva en Windows: sin carpetas, "
-    "letras de unidad, \"..\", caracteres <>:\"/\\|?* ni nombres reservados como CON o NUL",
+    "letras de unidad, \"..\", caracteres <>:\"/\\|?*, punto o espacio final ni nombres reservados como CON o NUL",
     "pt": "[plugin.database].name deve ser um nome de arquivo simples que também funcione no Windows: sem pastas, "
-    "letras de unidade, \"..\", caracteres <>:\"/\\|?* nem nomes reservados como CON ou NUL",
+    "letras de unidade, \"..\", caracteres <>:\"/\\|?*, ponto ou espaço no final nem nomes reservados como CON ou NUL",
 }
 # Windows refuses these in any file name, and these device names with any extension.
 _WINDOWS_FORBIDDEN_FILENAME_CHARS = frozenset('<>:"/\\|?*') | {chr(code) for code in range(32)}
 _WINDOWS_RESERVED_FILENAMES = frozenset(
-    {"CON", "PRN", "AUX", "NUL"} | {f"COM{n}" for n in range(1, 10)} | {f"LPT{n}" for n in range(1, 10)}
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    | {f"{device}{digit}" for device in ("COM", "LPT") for digit in "123456789\u00b9\u00b2\u00b3"}
 )
 # Hint added under the persist_mode error for the old spellings; {new} / {old} are filled in.
 _PERSIST_MODE_MIGRATION_HINT = {
@@ -521,6 +522,8 @@ def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
             PureWindowsPath(name).name == name
             and not _WINDOWS_FORBIDDEN_FILENAME_CHARS.intersection(name)
             and name.split(".", 1)[0].strip().upper() not in _WINDOWS_RESERVED_FILENAMES
+            # Windows drops a trailing dot or space, so the file would not match the name.
+            and name[-1] not in ". "
         )
     except ValueError:
         valid = False
