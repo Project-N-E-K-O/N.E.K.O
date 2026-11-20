@@ -246,3 +246,43 @@ def test_mmd_models_skip_broken_model_links(tmp_path, monkeypatch, link):
         "/user_mmd/Good/Good.pmx",
         "/workshop/123/Shop.pmx",
     ]
+
+
+@pytest.mark.parametrize("link", ["dangling", "loop"])
+def test_vrm_workshop_models_skip_broken_model_links(tmp_path, monkeypatch, link):
+    """A broken .vrm link in one Workshop item must not hide that item or later ones."""
+    project_root = tmp_path / "project"
+    (project_root / "static" / "vrm").mkdir(parents=True)
+    user_dir = tmp_path / "user_vrm"
+    user_dir.mkdir()
+    first = tmp_path / "workshop" / "100"
+    (first / "nested").mkdir(parents=True)
+    second = tmp_path / "workshop" / "200"
+    second.mkdir()
+    (first / "First.vrm").write_bytes(b"glTF")
+    (first / "nested" / "Nested.vrm").write_bytes(b"glTF")
+    (second / "Second.vrm").write_bytes(b"glTF")
+    try:
+        for directory in (first, first / "nested"):
+            target = "missing.vrm" if link == "dangling" else "Bad.vrm"
+            (directory / "Bad.vrm").symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    config = SimpleNamespace(project_root=project_root, vrm_dir=user_dir, ensure_vrm_directory=lambda: True)
+    monkeypatch.setattr(vrm_router, "get_config_manager", lambda: config)
+    monkeypatch.setattr(vrm_router, "get_subscribed_workshop_items", AsyncMock(return_value={
+        "success": True, "items": [
+            {"installedFolder": str(first), "publishedFileId": "100"},
+            {"installedFolder": str(second), "publishedFileId": "200"},
+        ],
+    }))
+    app = FastAPI()
+    app.include_router(vrm_router.router)
+    with TestClient(app) as client:
+        response = client.get("/api/model/vrm/models")
+    assert response.status_code == 200
+    assert sorted(model["url"] for model in response.json()["models"]) == [
+        "/workshop/100/First.vrm",
+        "/workshop/100/nested/Nested.vrm",
+        "/workshop/200/Second.vrm",
+    ]

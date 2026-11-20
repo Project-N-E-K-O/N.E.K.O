@@ -722,6 +722,13 @@ def test_looping_canonical_file_does_not_hide_a_case_variant(vrm_api, tmp_path, 
         directory = tmp_path / "workshop" / "200"
         directory.mkdir(parents=True)
         monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(tmp_path / "workshop"))
+    probe = directory / "case_probe"
+    probe.write_bytes(b"")
+    case_insensitive = (directory / "CASE_PROBE").exists()
+    probe.unlink(missing_ok=True)
+    if case_insensitive:
+        # APFS / Windows: Avatar.VRM would open the looping Avatar.vrm link itself.
+        pytest.skip("filesystem is case-insensitive; Avatar.vrm and Avatar.VRM cannot coexist")
     try:
         (directory / "Avatar.vrm").symlink_to("Avatar.vrm")
     except OSError as exc:

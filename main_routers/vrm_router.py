@@ -321,6 +321,8 @@ async def get_vrm_models():
                         # Check installation directory for .vrm files.
                         for filename in os.listdir(installed_folder):
                             if filename.lower().endswith('.vrm'):
+                                if not os.path.isfile(os.path.join(installed_folder, filename)):
+                                    continue  # dangling or looping link
                                 if not is_utf8_text(filename):
                                     skipped += 1
                                     continue
@@ -346,6 +348,8 @@ async def get_vrm_models():
                             if os.path.isdir(subdir_path):
                                 for filename in os.listdir(subdir_path):
                                     if filename.lower().endswith('.vrm'):
+                                        if not os.path.isfile(os.path.join(subdir_path, filename)):
+                                            continue  # dangling or looping link
                                         if not (is_utf8_text(subdir) and is_utf8_text(filename)):
                                             skipped += 1
                                             continue
