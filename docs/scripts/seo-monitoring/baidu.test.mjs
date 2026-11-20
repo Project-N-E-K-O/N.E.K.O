@@ -86,6 +86,67 @@ test('Baidu posts one batch, polls accepted tasks, and preserves partial errors'
   assert.equal(report.rows[0].taskId, firstId)
 })
 
+test('Baidu distinguishes unranked targets and confirmed misses in a valid sample', async () => {
+  const targetUrl = 'https://example.test/download/'
+  const competitor = { type: 'organic', rank_group: 1, url: 'https://competitor.test/' }
+  const rankedTarget = { type: 'organic', rank_group: 3, url: targetUrl }
+  const unrankedTarget = { type: 'organic', url: targetUrl }
+  const oneKeyword = { ...definition, keywordConfig: { ...definition.keywordConfig, keywords: ['数字生命'] } }
+  const collect = async items => {
+    const client = {
+      post: async () => ({ tasks: [{ id: firstId, status_code: 20100, data: { tag: 'baidu-0' } }] }),
+      get: async () => ({ tasks: [{ result: [{ items }] }] }),
+    }
+    const report = await collectBaiduRankings(oneKeyword, { client, paid: true })
+    return report.rows[0]
+  }
+
+  const unranked = await collect([competitor, unrankedTarget])
+  assert.equal(unranked.status, 'UNKNOWN')
+  assert.match(unranked.reason, /缺少有效自然排名/u)
+  const incomplete = await collect([competitor, rankedTarget, { ...unrankedTarget, rank_group: 0 }])
+  assert.equal(incomplete.status, 'UNKNOWN')
+  assert.equal(incomplete.rank, null)
+  assert.equal(incomplete.confirmedRank, 3)
+  const unresolved = await collect([competitor, rankedTarget, { type: 'organic' }])
+  assert.equal(unresolved.status, 'UNKNOWN')
+  assert.equal(unresolved.confirmedRank, 3)
+  const miss = await collect([competitor, { ...rankedTarget, rank_group: 11 }])
+  assert.equal(miss.status, 'OBSERVED')
+  assert.equal(miss.rank, null)
+})
+
+test('Baidu retries malformed success and temporary GET errors but stops on plain HTTP 404', async () => {
+  const oneKeyword = { ...definition, keywordConfig: { ...definition.keywordConfig, keywords: ['数字生命'] } }
+  let clock = 0
+  let gets = 0
+  const client = new DataForSeoClient({
+    login: 'fixture-login',
+    password: 'fixture-password',
+    fetchImpl: async (_url, { method }) => {
+      if (method === 'POST') {
+        return Response.json({ status_code: 20000, cost: 0.006,
+          tasks: [{ id: firstId, status_code: 20100, data: { tag: 'baidu-0' } }] })
+      }
+      gets += 1
+      if (gets === 1) {
+        return Response.json({ status_code: 20000, tasks: [{ status_code: 20000, result: [{ items: {} }] }] })
+      }
+      return new Response('fixture proxy body', { status: gets === 2 ? 502 : 404 })
+    },
+  })
+  const report = await collectBaiduRankings(oneKeyword, {
+    client, paid: true, now: () => clock, sleep: async delay => { clock += delay },
+  })
+  assert.equal(gets, 3)
+  assert.equal(report.pending, 0)
+  assert.equal(report.status, 'FAILED')
+  assert.equal(report.knownCostUsd, 0.006)
+  assert.equal(report.rows[0].taskId, firstId)
+  assert.match(report.rows[0].reason, /404/u)
+  assert.doesNotMatch(JSON.stringify(report), /fixture proxy body/u)
+})
+
 test('Baidu stops polling at the deadline and never retries an uncertain billed submission', async () => {
   let now = 0
   const client = {

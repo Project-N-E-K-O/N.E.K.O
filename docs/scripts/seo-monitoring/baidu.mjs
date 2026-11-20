@@ -10,14 +10,8 @@ function statusCode(error) {
 }
 
 function summarizeResult(row, items, targetDomain) {
-  const organic = Array.isArray(items) ? items.filter(item => (
-    item?.type === 'organic' && Number.isInteger(item.rank_group)
-    && item.rank_group > 0 && item.rank_group <= DEPTH
-  )) : []
-  if (organic.length === 0) return { ...row, status: 'UNKNOWN', reason: '未返回有效自然搜索结果' }
-
-  const results = organic.map(item => {
-    const rank = item.rank_group
+  const organic = items.filter(item => item?.type === 'organic').map(item => {
+    const rank = Number.isInteger(item.rank_group) && item.rank_group > 0 ? item.rank_group : null
     try {
       const url = new URL(item.url)
       const isRedirect = domainMatchesTarget(url.hostname, 'baidu.com')
@@ -29,13 +23,22 @@ function summarizeResult(row, items, targetDomain) {
       // An unresolved organic URL can prevent a reliable domain match.
     }
     return { rank, url: null }
-  })
-  const match = results
-    .filter(item => item.url && domainMatchesTarget(item.url.hostname, targetDomain))
+  }).filter(item => item.rank === null || item.rank <= DEPTH)
+  const targets = organic.filter(item => item.url && domainMatchesTarget(item.url.hostname, targetDomain))
+  const match = targets
+    .filter(item => item.rank !== null)
     .sort((left, right) => left.rank - right.rank)[0]
-  if (results.some(item => !item.url && (!match || item.rank < match.rank))) {
-    return { ...row, status: 'UNKNOWN', reason: '部分自然结果缺少可识别的直达网址' }
+  const missingTargetRank = targets.some(item => item.rank === null)
+  const missingUrl = organic.some(item => !item.url && (item.rank === null || !match || item.rank < match.rank))
+  if (missingTargetRank || missingUrl) {
+    return {
+      ...row,
+      ...(match ? { confirmedRank: match.rank, matchedUrl: match.url.href } : {}),
+      status: 'UNKNOWN',
+      reason: missingTargetRank ? '目标域名结果缺少有效自然排名' : '部分自然结果缺少可识别的直达网址',
+    }
   }
+  if (!organic.some(item => item.rank !== null)) return { ...row, status: 'UNKNOWN', reason: '未返回有效自然搜索结果' }
   return { ...row, status: 'OBSERVED', rank: match?.rank ?? null, matchedUrl: match?.url.href ?? null }
 }
 
@@ -113,8 +116,9 @@ export async function collectBaiduRankings(definition, {
     await Promise.all([...pending].map(async ([index, id]) => {
       try {
         const response = await client.get(`${DATAFORSEO_ENDPOINTS.baiduTaskGet}/${id}`, { timeoutMs })
-        const result = response.tasks?.[0]?.result?.[0]
-        report.rows[index] = summarizeResult({ ...entries[index], taskId: id }, result?.items, config.targetDomain)
+        const items = response?.tasks?.[0]?.result?.[0]?.items
+        if (!Array.isArray(items)) return
+        report.rows[index] = summarizeResult({ ...entries[index], taskId: id }, items, config.targetDomain)
       } catch (error) {
         if (QUEUED_CODES.has(error?.statusCode) || error?.retryable
             || (error?.billingUncertain && !error.fatal)) return

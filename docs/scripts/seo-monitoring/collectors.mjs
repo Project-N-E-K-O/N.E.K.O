@@ -295,6 +295,7 @@ async function collectGscPropertyDay(analyticsUrl, range, { accessToken, fetchIm
     const rows = payload.rows ?? []
     if (!Array.isArray(rows)) return { status: 'FAILED' }
     if (rows.length === 0) return { status: 'UNKNOWN' }
+    if (payload.responseAggregationType !== 'byProperty') return { status: 'FAILED' }
     const dates = rows.map(row => row?.keys?.[0])
     if (dates.some(date => typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(date)
         || date < range.startDate || date > range.endDate)) {
@@ -533,9 +534,12 @@ export async function collectGa4SearchEngineSessions({
         ] } },
       ]),
     }, accessToken, fetchImpl)
+    if (payload?.rows !== undefined && !Array.isArray(payload.rows)) {
+      return { status: 'FAILED', date, reason: 'GA4 来源响应的会话行格式无效' }
+    }
     const rows = payload?.rows ?? []
     const metadata = payload?.metadata
-    if (!Array.isArray(rows) || rows.length !== (payload?.rowCount ?? 0)
+    if (rows.length !== (payload?.rowCount ?? 0)
         || metadata?.dataLossFromOtherRow || metadata?.subjectToThresholding
         || metadata?.samplingMetadatas?.length || metadata?.dataTruncationReasons?.length
         || rows.some(row => row?.dimensionValues?.[0]?.value === '(other)')) {
@@ -548,6 +552,9 @@ export async function collectGa4SearchEngineSessions({
     }
     if (metadata?.timeZone && date >= isoDate(calendarDateInTimeZone(now, metadata.timeZone))) {
       return unknown('该日期在 GA4 属性时区尚未结束')
+    }
+    if (rows.length === 0 && metadata?.emptyReason) {
+      return unknown('GA4 返回了带原因的空报告，无法确认会话数')
     }
     const sessions = Object.fromEntries(SEARCH_ENGINES.map(engine => [engine.id, 0]))
     const referralSessions = { ...sessions }

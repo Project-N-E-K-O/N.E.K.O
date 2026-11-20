@@ -80,7 +80,7 @@ test('GSC collector returns latest day, consecutive 7-day trend, and action queu
       }
       if (body.aggregationType === 'byProperty') {
         assert.deepEqual(body, { ...recent7, dimensions: ['date'], aggregationType: 'byProperty', dataState: 'final' })
-        return jsonResponse({ rows: [
+        return jsonResponse({ responseAggregationType: 'byProperty', rows: [
           { keys: ['2026-07-17'], clicks: 2, impressions: 100 },
           { keys: ['2026-07-19'], clicks: 4, impressions: 50 },
         ] })
@@ -255,6 +255,26 @@ test('GSC collector paginates each requested period', async () => {
   assert.equal(starts.length, 6)
 })
 
+test('GSC does not report page-aggregated results as a property day', async () => {
+  const result = await collectGsc({
+    siteUrl: 'https://project-neko.online/',
+    sitemapUrl: 'https://project-neko.online/sitemap.xml',
+    categoryQueryRegex: 'desktop pet',
+  }, reportingWindow(new Date('2026-07-23T08:00:00Z')), {
+    accessToken: 'fixture-auth',
+    fetchImpl: async (url, options) => {
+      if (!url.includes('searchAnalytics')) return jsonResponse({ errors: 0, warnings: 0 })
+      const body = JSON.parse(options.body)
+      if (body.aggregationType === 'byProperty') {
+        return jsonResponse({ responseAggregationType: 'byPage',
+          rows: [{ keys: [body.endDate], clicks: 4, impressions: 50 }] })
+      }
+      return jsonResponse({ rows: [] })
+    },
+  })
+  assert.deepEqual(result.latestPropertyDay, { status: 'FAILED' })
+})
+
 test('GA4 collector returns latest day and 7-day organic, AI, and CTA trends', async () => {
   const window = reportingWindow(new Date('2026-07-23T08:00:00Z'))
   const result = await collectGa4({
@@ -381,6 +401,19 @@ test('GA4 engine sessions use the exact host and report organic and referral cha
   assert.equal(empty.status, 'OBSERVED')
   assert.ok(Object.values(empty.sessions).every(value => value === 0))
   assert.ok(Object.values(empty.referralSessions).every(value => value === 0))
+
+  for (const [response, status] of [
+    [{ ...headers, rows: null }, 'FAILED'],
+    [{ ...headers, rows: {} }, 'FAILED'],
+    [{ ...headers, metadata: { emptyReason: 'fixture reason' } }, 'UNKNOWN'],
+  ]) {
+    const incomplete = await collectGa4SearchEngineSessions(site, range, {
+      accessToken: 'fixture-auth', fetchImpl: async () => Response.json(response),
+    })
+    assert.equal(incomplete.status, status)
+    assert.equal(incomplete.sessions, undefined)
+    assert.doesNotMatch(JSON.stringify(incomplete), /fixture reason/u)
+  }
 
   const stillOpen = await collectGa4SearchEngineSessions(site, range, {
     accessToken: 'fixture-auth', now: new Date('2026-07-23T02:00:00Z'),

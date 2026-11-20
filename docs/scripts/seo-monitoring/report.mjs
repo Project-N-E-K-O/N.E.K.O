@@ -837,13 +837,16 @@ function buildTrustRows(sites, segments, rankComparison, bingRankings, baiduRank
       })
     }
     for (const engine of site.regionalSearch) {
-      const probes = [engine.verification, engine.robots, engine.sitemap]
+      const probes = [
+        ['验证文件', engine.verification], ['robots.txt', engine.robots], ['sitemap', engine.sitemap],
+      ]
+      if (engine.homepage) probes.push(['首页', engine.homepage])
       rows.push({
         source: `${engine.label} 公开探针`, target: site.label,
-        status: probes.every(probe => probe.status === 'OBSERVED') ? 'OBSERVED'
-          : probes.some(probe => probe.status === 'FAILED') ? 'FAILED' : 'UNKNOWN',
+        status: probes.every(([, probe]) => probe.status === 'OBSERVED') ? 'OBSERVED'
+          : probes.some(([, probe]) => probe.status === 'FAILED') ? 'FAILED' : 'UNKNOWN',
         collectedAt: site.technical?.collectedAt ?? null,
-        result: `验证文件 ${engine.verification.status} / robots.txt ${engine.robots.status} / sitemap ${engine.sitemap.status}`,
+        result: probes.map(([label, probe]) => `${label} ${probe.status}`).join(' / '),
         evidence: engine.verification.url ?? null,
       })
       if (engine.submission) {

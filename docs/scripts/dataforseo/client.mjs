@@ -218,8 +218,9 @@ export class DataForSeoClient {
         {
           endpoint,
           statusCode: response.status,
+          retryable: request.method === 'GET' && isRetryableHttpStatus(response.status),
           fatal: isFatalHttpStatus(response.status),
-          billingUncertain: true,
+          billingUncertain: request.method !== 'GET' || response.ok,
         },
       )
     }
@@ -232,8 +233,9 @@ export class DataForSeoClient {
         {
           endpoint,
           statusCode: response.status,
+          retryable: request.method === 'GET' && isRetryableHttpStatus(response.status),
           fatal: isFatalHttpStatus(response.status),
-          billingUncertain: true,
+          billingUncertain: request.method !== 'GET' || response.ok,
         },
       )
     }

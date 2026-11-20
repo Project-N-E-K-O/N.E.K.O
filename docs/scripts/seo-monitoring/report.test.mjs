@@ -260,7 +260,7 @@ test('regional search report exposes ranking availability separately from public
     ],
   }
   const probes = definition.regionalSearch.map(({ id }) => ({
-    id, verification: { status: 'OBSERVED' }, homepage: { status: 'OBSERVED' },
+    id, verification: { status: 'OBSERVED' }, homepage: { status: 'FAILED' },
     sitemap: { status: 'OBSERVED' }, robots: { status: 'OBSERVED', allowed: true },
   }))
   const report = buildMonitoringReport({
@@ -279,6 +279,8 @@ test('regional search report exposes ranking availability separately from public
   assert.match(markdown, /360 \| UNSUPPORTED.*\| UNSUPPORTED/u)
   assert.match(markdown, /头条搜索 \| UNSUPPORTED.*\| UNSUPPORTED/u)
   assert.match(markdown, /百度推送 · UNKNOWN/u)
+  assert.match(markdown, /百度 公开探针 \| .*? \| FAILED \|.*首页 FAILED/u)
+  assert.match(markdown, /搜狗 公开探针 \| .*? \| OBSERVED \|/u)
   assert.deepEqual(report.sites[0].regionalSearch.map(engine => engine.performance.status), Array(4).fill('UNSUPPORTED'))
 })
 
