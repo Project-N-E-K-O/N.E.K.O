@@ -85,9 +85,19 @@ def read_archive(path: Path, *, expected_spec: dict | None = None) -> dict:
         seeds = []
         if local is not None and common == local["dimension"] and checked.semantic_available:
             source_dim, target_dim = source["dimension"], local["dimension"]
+            # Validation proves coverage of the original package text. Local
+            # sanitization/NFC may change that text, invalidating its inputs;
+            # only unchanged entries may retain their complete vector plan.
+            unchanged = {
+                original["title"] for original, entry in zip(checked.pack["entries"], pack.entries)
+                if original["title"] == entry.title and original.get("summary", "") == entry.summary
+                and original["content"] == entry.content
+            }
             with zipfile.ZipFile(checked.path) as archive, archive.open("vectors.f32") as stream:
                 for chunk in checked.chunks:
                     raw = stream.read(source_dim * 4)
+                    if chunk["entry_title"] not in unchanged:
+                        continue  # Consume its bytes so later entry vectors stay aligned.
                     values = struct.unpack(f"<{source_dim}f", raw)[:target_dim]
                     norm = math.hypot(*values)
                     if not norm:
