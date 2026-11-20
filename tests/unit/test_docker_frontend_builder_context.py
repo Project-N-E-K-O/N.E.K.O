@@ -50,19 +50,40 @@ TEST_DIRS = {"e2e", "__tests__", "tests"}
 # The clause between `import`/`export` and `from` may span lines (multi-line
 # named imports) but never another import/export statement, so a bare
 # `export type { Foo }` cannot swallow the value import on the next line.
-# Known approximation (errs on the safe side): `import('...')` in a type
+# `typeof import('...')` is captured as a type reference ("tof"), so it is kept
+# only where type imports matter (react-neko-chat's `tsc -b`).
+# Known approximation (errs on the safe side): a bare `import('...')` in a type
 # position, e.g. `type X = import('...').Y`, counts as a runtime reference and
-# may ask for a COPY the build does not strictly need; `typeof import()` is
-# skipped.
+# may ask for a COPY the build does not strictly need.
+# `import.meta.glob([...])` arrays are handled by GLOB_ARRAY so that every
+# literal in the array is checked, not just the first.
 SPECIFIER = re.compile(
     r"""(?:
         \b(?:import|export)\s+(?P<type>type\s+)?(?:(?:(?!\b(?:import|export)\b)[^'"`;=()])*?\s+from\s+)?
+      | (?P<tof>\btypeof\s+import\s*\(\s*)
       | (?<!typeof\s)\bimport\s*\(\s*(?:/\*.*?\*/\s*)*
-      | \bimport\.meta\.glob\s*\(\s*(?:\[\s*)?
+      | \bimport\.meta\.glob\s*\(\s*
       | \bnew\s+URL\s*\(\s*
     )(?P<q>['"`])(?P<spec>\.\.?/[^'"`$]+)(?P=q)""",
     re.VERBOSE | re.DOTALL,
 )
+GLOB_ARRAY = re.compile(r"\bimport\.meta\.glob\s*\(\s*\[(?P<items>[^\]]*)\]")
+LITERAL = re.compile(r"""(?P<q>['"`])(?P<spec>!?\.\.?/[^'"`$]+)(?P=q)""")
+
+
+def _specifiers(text: str, include_type_imports: bool) -> list[str]:
+    """Relative specifiers the build resolves, in source order."""
+    found: list[tuple[int, str]] = []
+    for match in SPECIFIER.finditer(text):
+        if (match.group("type") or match.group("tof")) and not include_type_imports:
+            continue
+        found.append((match.start(), match.group("spec")))
+    for match in GLOB_ARRAY.finditer(text):
+        for item in LITERAL.finditer(match.group("items")):
+            # vite glob negation patterns ('!../x') exclude files, never read them
+            if not item.group("spec").startswith("!"):
+                found.append((match.start("items") + item.start(), item.group("spec")))
+    return [spec for _, spec in sorted(found)]
 
 
 def _is_test_file(path: Path, project: Path) -> bool:
@@ -81,10 +102,8 @@ def _cross_project_targets(name: str) -> dict[str, list[str]]:
         if not cfg["include_tests"] and _is_test_file(path, project):
             continue
         text = path.read_text(encoding="utf-8")
-        for match in SPECIFIER.finditer(text):
-            if match.group("type") and not cfg["include_type_imports"]:
-                continue
-            spec = match.group("spec").split("?", 1)[0].split("#", 1)[0]
+        for raw in _specifiers(text, cfg["include_type_imports"]):
+            spec = raw.split("?", 1)[0].split("#", 1)[0]
             target = Path(os.path.normpath(path.parent / spec))
             if target.is_relative_to(project):
                 continue  # stays inside the project, always copied
@@ -152,12 +171,11 @@ def test_scanner_still_sees_the_known_cross_project_imports():
         ("import(/* @vite-ignore */ '../dc')", ("", "../dc")),
         ("import(`../tl`)", ("", "../tl")),
         ("import.meta.glob('../g/*.json')", ("", "../g/*.json")),
-        ("import.meta.glob(['../ga/*.json'])", ("", "../ga/*.json")),
+        ("type M = typeof import('../ti')", ("type", "../ti")),
         ("new URL('../u.png', import.meta.url)", ("", "../u.png")),
         # 不带 from 的 export type 不能吞掉下一行的值导入
         ("export type { Foo }\nimport bar from '../x.js'", ("", "../x.js")),
         ("export { a }\nimport b from '../x.js'", ("", "../x.js")),
-        ("type M = typeof import('../ti')", None),
         ("import(`../${name}`)", None),
         ("export type Foo = { a: string }\nconst q = 1", None),
     ],
@@ -168,8 +186,31 @@ def test_specifier_regex(source, expected):
         assert not matches, [m.group(0) for m in matches]
         return
     assert len(matches) == 1, [m.group(0) for m in matches]
-    kind = "type" if matches[0].group("type") else ""
+    kind = "type" if (matches[0].group("type") or matches[0].group("tof")) else ""
     assert (kind, matches[0].group("spec")) == expected
+
+
+@pytest.mark.parametrize("frontend", sorted(FRONTENDS))
+def test_type_references_follow_each_frontends_build(frontend):
+    # plugin-manager 只跑 vite build，类型引用会被擦除；react-neko-chat 的
+    # tsc -b 仍要解析它们。
+    source = (
+        "import type { A } from '../../../plugin/a'\n"
+        "type B = typeof import('../../../plugin/b')\n"
+        "import c from '../../../static/c.js'\n"
+    )
+    keep_types = FRONTENDS[frontend]["include_type_imports"]
+    expected = ["../../../static/c.js"]
+    if keep_types:
+        expected = ["../../../plugin/a", "../../../plugin/b", "../../../static/c.js"]
+    assert _specifiers(source, keep_types) == expected
+
+
+def test_glob_array_checks_every_literal():
+    source = "const m = import.meta.glob(['./local/*.json', '../../../static/feature/*.json', '!../../../static/skip/*.json'])"
+    assert _specifiers(source, False) == ["./local/*.json", "../../../static/feature/*.json"]
+    assert _specifiers("import.meta.glob(['../ga/*.json'])", False) == ["../ga/*.json"]
+    assert _specifiers("import.meta.glob('../g/*.json')", False) == ["../g/*.json"]
 
 
 @pytest.mark.parametrize("dockerfile", DOCKERFILES)
