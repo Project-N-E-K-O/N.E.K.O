@@ -34,6 +34,7 @@ import os
 import re
 import shutil
 import tempfile
+import traceback
 import zipfile
 from pathlib import Path
 
@@ -696,37 +697,20 @@ def get_mmd_animations():
         animations = []
         seen_urls = set()
         skipped = 0  # Non-UTF-8 names cannot be serialized or requested.
+        failed = 0
 
         # 1. Project static/mmd/animation/.
         project_root = config_mgr.project_root
         static_anim_dir = project_root / "static" / "mmd" / "animation"
         if static_anim_dir.exists():
             for anim_file in static_anim_dir.glob('*.vmd'):
-                if not is_utf8_text(anim_file.name):
-                    skipped += 1
-                    continue
-                url = f"/static/mmd/animation/{anim_file.name}"
-                if url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                animations.append({
-                    "name": anim_file.stem,
-                    "filename": anim_file.name,
-                    "url": url,
-                    "type": "vmd",
-                    "size": anim_file.stat().st_size
-                })
-
-        # 2. User mmd/animation/.
-        mmd_dir = _ensure_mmd_directory(config_mgr)
-        if mmd_dir:
-            user_anim_dir = mmd_dir / "animation"
-            if user_anim_dir.exists():
-                for anim_file in user_anim_dir.glob('*.vmd'):
+                try:
                     if not is_utf8_text(anim_file.name):
                         skipped += 1
                         continue
-                    url = f"{MMD_USER_PATH}/animation/{anim_file.name}"
+                    if not anim_file.is_file():
+                        continue
+                    url = f"/static/mmd/animation/{anim_file.name}"
                     if url in seen_urls:
                         continue
                     seen_urls.add(url)
@@ -737,12 +721,46 @@ def get_mmd_animations():
                         "type": "vmd",
                         "size": anim_file.stat().st_size
                     })
+                except Exception as file_error:
+                    failed += 1
+                    print(f"处理动画文件失败 {anim_file!r}: {file_error!r}")
+
+        # 2. User mmd/animation/.
+        mmd_dir = _ensure_mmd_directory(config_mgr)
+        if mmd_dir:
+            user_anim_dir = mmd_dir / "animation"
+            if user_anim_dir.exists():
+                for anim_file in user_anim_dir.glob('*.vmd'):
+                    try:
+                        if not is_utf8_text(anim_file.name):
+                            skipped += 1
+                            continue
+                        if not anim_file.is_file():
+                            continue
+                        url = f"{MMD_USER_PATH}/animation/{anim_file.name}"
+                        if url in seen_urls:
+                            continue
+                        seen_urls.add(url)
+                        animations.append({
+                            "name": anim_file.stem,
+                            "filename": anim_file.name,
+                            "url": url,
+                            "type": "vmd",
+                            "size": anim_file.stat().st_size
+                        })
+                    except Exception as file_error:
+                        failed += 1
+                        print(f"处理动画文件失败 {anim_file!r}: {file_error!r}")
 
         if skipped:
             logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VMD 动画")
+        if failed:
+            logger.warning(f"跳过 {failed} 个处理失败的 VMD 动画文件")
         return JSONResponse(content={"success": True, "animations": animations})
     except Exception as e:
-        logger.error(f"获取 VMD 动画列表失败: {e}")
+        # Exception text and tracebacks may carry absolute paths: details go to print only.
+        logger.error(f"获取 VMD 动画列表失败: {type(e).__name__}")
+        print(f"获取 VMD 动画列表失败: {traceback.format_exc()}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
@@ -944,12 +962,17 @@ async def list_mmd_animations_for_delete(request: Request):
         user_anim_dir = mmd_dir / "animation"
         animations = []
         skipped = 0  # Non-UTF-8 names cannot be serialized or requested.
+        failed = 0
 
         if user_anim_dir.exists():
             for vmd_file in user_anim_dir.iterdir():
-                if vmd_file.is_file() and vmd_file.suffix.lower() == '.vmd':
+                try:
+                    if vmd_file.suffix.lower() != '.vmd':
+                        continue
                     if not is_utf8_text(vmd_file.name):
                         skipped += 1
+                        continue
+                    if not vmd_file.is_file():
                         continue
                     rel_path = vmd_file.relative_to(mmd_dir)
                     animations.append({
@@ -958,12 +981,19 @@ async def list_mmd_animations_for_delete(request: Request):
                         "url": f"{MMD_USER_PATH}/{rel_path.as_posix()}",
                         "path": rel_path.as_posix()
                     })
+                except Exception as file_error:
+                    failed += 1
+                    print(f"处理动画文件失败 {vmd_file!r}: {file_error!r}")
 
         if skipped:
             logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VMD 动画")
+        if failed:
+            logger.warning(f"跳过 {failed} 个处理失败的 VMD 动画文件")
         return JSONResponse(content={"success": True, "animations": animations})
     except Exception as e:
-        logger.error(f"获取 VMD 动画列表失败: {e}", exc_info=True)
+        # Exception text and tracebacks may carry absolute paths: details go to print only.
+        logger.error(f"获取 VMD 动画列表失败: {type(e).__name__}")
+        print(f"获取 VMD 动画列表失败: {traceback.format_exc()}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 

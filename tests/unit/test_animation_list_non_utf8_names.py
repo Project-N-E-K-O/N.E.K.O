@@ -9,6 +9,8 @@ file system path. All names here are synthetic and live under ``tmp_path``.
 
 import os
 import sys
+import traceback
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -43,10 +45,15 @@ class _RecordingLogger:
     def __init__(self):
         self.messages = []
 
-    def _record(self, msg, *args, **_kwargs):
+    def _record(self, msg, *args, exc_info=None, **_kwargs):
         self.messages.append(str(msg) % args if args else str(msg))
+        if exc_info:
+            self.messages.append(traceback.format_exc())
 
-    debug = info = warning = error = exception = critical = _record
+    def exception(self, msg, *args, **kwargs):
+        self._record(msg, *args, exc_info=True, **kwargs)
+
+    debug = info = warning = error = critical = _record
 
 
 def _assert_logs_have_no_paths(log: _RecordingLogger, tmp_path):
@@ -108,7 +115,7 @@ def test_mmd_animations_skip_non_utf8_entries(mmd_env, tmp_path):
     body = response.json()
     assert body["success"] is True
     assert sorted(a["filename"] for a in body["animations"]) == ["Dance #1.vmd", "Wave.vmd"]
-    assert any("2" in message and "UTF-8" in message for message in log.messages)
+    assert "跳过 2 个文件名不是合法 UTF-8 的 VMD 动画" in log.messages
     _assert_logs_have_no_paths(log, tmp_path)
 
 
@@ -124,7 +131,7 @@ def test_mmd_delete_list_skips_non_utf8_entries(mmd_env, tmp_path):
     body = response.json()
     assert body["success"] is True
     assert [a["filename"] for a in body["animations"]] == ["Wave.vmd"]
-    assert any("1" in message and "UTF-8" in message for message in log.messages)
+    assert "跳过 1 个文件名不是合法 UTF-8 的 VMD 动画" in log.messages
     _assert_logs_have_no_paths(log, tmp_path)
 
 
@@ -144,26 +151,82 @@ def test_vrm_animations_skip_non_utf8_entries(vrm_env, tmp_path):
     body = response.json()
     assert body["success"] is True
     assert sorted(a["filename"] for a in body["animations"]) == ["Idle #1.vrma.gz", "Pose.vrm", "Wave.vrma"]
-    assert any("3" in message and "UTF-8" in message for message in log.messages)
+    assert "跳过 3 个文件名不是合法 UTF-8 的 VRM 动画" in log.messages
     _assert_logs_have_no_paths(log, tmp_path)
 
 
-def test_vrm_animation_file_errors_do_not_log_paths(vrm_env, tmp_path, monkeypatch):
-    _, user_anim, log = vrm_env
-    (user_anim / "Wave.vrma").write_bytes(b"vrma")
-    (user_anim / "Broken.vrma").write_bytes(b"vrma")
-    real_stat = type(user_anim).stat
+def _fail_for(name, method, monkeypatch):
+    """Make ``Path.<method>`` raise a path-carrying PermissionError for ``name`` only."""
+    real = getattr(Path, method)
 
-    def flaky_stat(self, *args, **kwargs):
-        if self.name == "Broken.vrma" and not kwargs and not args:
+    def flaky(self, *args, **kwargs):
+        if self.name == name:
             raise PermissionError(13, "Permission denied", str(self))
-        return real_stat(self, *args, **kwargs)
+        return real(self, *args, **kwargs)
 
-    monkeypatch.setattr(type(user_anim), "stat", flaky_stat)
+    monkeypatch.setattr(Path, method, flaky)
 
-    with _client(vrm_router) as client:
-        response = client.get("/api/model/vrm/animations")
+
+@pytest.mark.parametrize("router_name, endpoint, extension", [
+    ("mmd", "/api/model/mmd/animations", ".vmd"),
+    ("mmd", "/api/model/mmd/animations/list", ".vmd"),
+    ("vrm", "/api/model/vrm/animations", ".vrma"),
+])
+def test_unreadable_animation_file_is_counted_without_logging_paths(
+    router_name, endpoint, extension, mmd_env, vrm_env, tmp_path, monkeypatch,
+):
+    _, user_anim, log = mmd_env if router_name == "mmd" else vrm_env
+    (user_anim / f"Wave{extension}").write_bytes(b"x")
+    (user_anim / f"Broken{extension}").write_bytes(b"x")
+    _fail_for(f"Broken{extension}", "is_file", monkeypatch)
+
+    with _client(mmd_router if router_name == "mmd" else vrm_router) as client:
+        response = client.get(endpoint)
 
     assert response.status_code == 200
-    assert [a["filename"] for a in response.json()["animations"]] == ["Wave.vrma"]
+    assert [a["filename"] for a in response.json()["animations"]] == [f"Wave{extension}"]
+    label = "VMD" if router_name == "mmd" else "VRM"
+    assert f"跳过 1 个处理失败的 {label} 动画文件" in log.messages
+    _assert_logs_have_no_paths(log, tmp_path)
+
+
+@pytest.mark.parametrize("router_name, endpoint, method", [
+    ("mmd", "/api/model/mmd/animations", "glob"),
+    ("mmd", "/api/model/mmd/animations/list", "iterdir"),
+    ("vrm", "/api/model/vrm/animations", "glob"),
+])
+def test_unreadable_animation_directory_does_not_log_paths(
+    router_name, endpoint, method, mmd_env, vrm_env, tmp_path, monkeypatch,
+):
+    _, _, log = mmd_env if router_name == "mmd" else vrm_env
+    _fail_for("animation", method, monkeypatch)
+
+    with _client(mmd_router if router_name == "mmd" else vrm_router) as client:
+        client.get(endpoint)
+
+    assert log.messages
+    _assert_logs_have_no_paths(log, tmp_path)
+
+
+@pytest.mark.parametrize("router_name, endpoint", [
+    ("mmd", "/api/model/mmd/animations"),
+    ("mmd", "/api/model/mmd/animations/list"),
+    ("vrm", "/api/model/vrm/animations"),
+])
+def test_unexpected_failure_does_not_log_paths(router_name, endpoint, tmp_path, monkeypatch):
+    router_module = mmd_router if router_name == "mmd" else vrm_router
+    log = _RecordingLogger()
+    monkeypatch.setattr(router_module, "logger", log)
+    secret = str(tmp_path / "config.json")
+
+    def broken_config():
+        raise PermissionError(13, "Permission denied", secret)
+
+    monkeypatch.setattr(router_module, "get_config_manager", broken_config)
+
+    with _client(router_module) as client:
+        response = client.get(endpoint)
+
+    assert response.status_code == 500
+    assert log.messages
     _assert_logs_have_no_paths(log, tmp_path)

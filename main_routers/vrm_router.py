@@ -518,9 +518,9 @@ def get_vrm_animations():
         })
     except Exception as e:
         import traceback
-        error_detail = traceback.format_exc()
-        logger.exception("获取VRM动画列表失败")
-        logger.error(f"错误详情: {error_detail}")
+        # Exception text and tracebacks may carry absolute paths: details go to print only.
+        logger.error(f"获取VRM动画列表失败: {type(e).__name__}")
+        print(f"获取VRM动画列表失败: {traceback.format_exc()}")
         error_message = str(e)
         return JSONResponse(
             status_code=500, 
