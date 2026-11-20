@@ -126,11 +126,12 @@ async def test_accepted_then_the_plugin_is_called_directly(server, hosts, tmp_pa
     assert report.payload["task_id"] == receipt.commission_id
 
 
-@pytest.mark.parametrize("finish", ["deny", "abort"])
+@pytest.mark.parametrize("finish", ["deny", "abort", "disable_plugins"])
 async def test_direct_plugin_never_runs_after_decline_or_late_answer(server, hosts, tmp_path, finish):
     _weather(server)
     llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today")])
-    host = _host(hosts, tmp_path, server, llm)
+    plugins_enabled = True
+    host = _host(hosts, tmp_path, server, llm, plugins_enabled=lambda: plugins_enabled)
     await host.permission_store.set_mode("plugin_entry", "first_ask")
     receipt = await _dispatch(host, "查今天的天气")
     waiting = await wait_status(host, receipt.commission_id, "waiting_user")
@@ -141,6 +142,9 @@ async def test_direct_plugin_never_runs_after_decline_or_late_answer(server, hos
     if finish == "abort":
         await host.abort(waiting.id)
         assert not await host.answer(waiting.id, "", choice="once", question_id=question["id"])
+    elif finish == "disable_plugins":
+        plugins_enabled = False
+        assert await host.answer(waiting.id, "", choice="once", question_id=question["id"])
     else:
         assert await host.answer(waiting.id, "", choice="deny", question_id=question["id"])
     await host.brain.settle()

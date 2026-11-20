@@ -901,7 +901,10 @@ class TaskBrain:
                 latest_user_request=commission.user_text,
                 on_progress=progress,
                 on_run_created=run_created,
-                still_wanted=lambda: still_on() and all(self._permissions.grant_active(ref) for ref in grants),
+                still_wanted=lambda: (
+                    still_on() and self._registry.plugins_enabled()
+                    and all(self._permissions.grant_active(ref) for ref in grants)
+                ),
             )
         direct.status = plugin_terminal_status(outcome.success, outcome.data)
         if turned_away:
