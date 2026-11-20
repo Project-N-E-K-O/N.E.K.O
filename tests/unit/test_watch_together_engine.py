@@ -363,3 +363,47 @@ async def test_subtitle_budget_preserves_late_windows_and_skips_invalid_tracks()
     assert result[-1]['content'] == 'ending dialogue'
     assert sum(len(row['content']) for row in result if row['from'] == 0) <= 600
     client.get.assert_awaited_once()
+
+
+def test_vision_request_stats_counts_structure_only():
+    from main_logic.watch_together.engine import vision_request_stats
+    image = 'data:image/jpeg;base64,' + 'A' * 1000
+    blocks = [{'type': 'text', 'text': '弹幕'}, {'type': 'image_url', 'image_url': {'url': image}},
+              {'type': 'text', 'text': 'abc'}, {'type': 'image_url', 'image_url': {'url': image}},
+              {'type': 'image_url', 'image_url': {}}]
+    stats = vision_request_stats('sys', blocks)
+    assert stats == {'images': 3, 'image_bytes': 2 * len(image), 'text_chars': 3 + 2 + 3,
+                     'request_bytes': 3 + 6 + 3 + 2 * len(image)}
+    assert all(isinstance(value, int) for value in stats.values())
+
+
+@pytest.mark.asyncio
+async def test_each_window_records_request_size_before_the_vision_call(tmp_path, monkeypatch, capsys):
+    import json
+    engine, instance, _ = _budget_engine(tmp_path, monkeypatch, [])
+    seen = []
+    async def llm(blocks, job):
+        # The size must already describe this request if the call fails.
+        seen.append((dict(instance.last_vision_request), blocks))
+        return {'events': []}
+    monkeypatch.setattr(instance, 'llm', llm)
+    job = {'id': 'job'}
+    await instance.prepare(job, 'BV1GJ411x7h7', 'cat')
+    assert [stats['window_start'] for stats, _ in seen] == [0, 30]
+    for stats, blocks in seen:
+        assert stats == {'window_start': stats['window_start'],
+                         **engine.vision_request_stats(instance.director_prompt, blocks)}
+    printed = [json.loads(line.split(': ', 1)[1]) for line in capsys.readouterr().out.splitlines()
+               if line.startswith('Watch vision request: ')]
+    assert printed == [stats for stats, _ in seen]
+
+
+@pytest.mark.asyncio
+async def test_vision_config_records_only_endpoint_host_and_model(tmp_path):
+    from types import SimpleNamespace
+    from main_logic.watch_together.engine import Engine
+    instance = Engine(tmp_path, None, 'cat')
+    instance._cm = SimpleNamespace(get_model_api_config=lambda _: {
+        'api_key': 'sk-secret', 'model': 'vision-1', 'base_url': 'https://u:p@api.example.test/v1?key=x'})
+    await instance.vision_config()
+    assert instance.vision_endpoint == {'host': 'api.example.test', 'model': 'vision-1'}

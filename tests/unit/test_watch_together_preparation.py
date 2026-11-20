@@ -309,3 +309,115 @@ async def test_missing_vision_prevents_paid_speech_probe(tmp_path, monkeypatch):
     await asyncio.gather(*preparation.tasks)
     assert not probes
     assert preparation.jobs[result['id']]['status'] == 'error'
+
+
+def _provider_connection_failure():
+    """Synthetic SDK error wrapping a transport error wrapping an OSError."""
+    import errno
+    import httpx
+    import openai
+    request = httpx.Request('POST', 'https://user:pw@free.example.test:8443/v1/chat/completions?api_key=sk-secretquery')
+    try:
+        try:
+            try:
+                raise ConnectionResetError(errno.ECONNRESET, 'Connection reset by peer')
+            except ConnectionResetError as reset:
+                raise httpx.ReadError(
+                    'read failed for https://free.example.test/v1/chat?token=tok-123 '
+                    'with Authorization: Bearer abc.def-ghi and sk-live1234567890 '
+                    'access_key=AKIA999 payload data:image/jpeg;base64,/9j/AAAA', request=request) from reset
+        except httpx.ReadError as read:
+            raise openai.APIConnectionError(request=request) from read
+    except openai.APIConnectionError as exc:
+        return exc
+
+
+def test_error_cause_chain_keeps_types_and_errno_but_redacts_secrets():
+    chain = preparation.error_cause_chain(_provider_connection_failure())
+    assert [layer['type'] for layer in chain] == ['APIConnectionError', 'ReadError', 'ConnectionResetError']
+    import errno
+    assert [layer['errno'] for layer in chain] == [None, None, errno.ECONNRESET]
+    text = ' '.join(layer['message'] for layer in chain)
+    assert 'https://free.example.test ' in text
+    for secret in ('/v1/chat', 'token=tok-123', 'abc.def-ghi', 'sk-live', 'AKIA999', '/9j/AAAA', 'user:pw', 'secretquery'):
+        assert secret not in text
+    assert 'Bearer ***' in text and 'sk-***' in text and 'access_key=***' in text and 'data:***' in text
+
+
+def test_error_cause_chain_is_bounded_and_survives_cycles():
+    def nested(depth):
+        exc = ValueError('level 0')
+        for level in range(1, depth):
+            outer = RuntimeError(f'level {level}')
+            outer.__cause__ = exc
+            exc = outer
+        return exc
+    assert len(preparation.error_cause_chain(nested(10))) == preparation.MAX_CAUSE_DEPTH == 4
+    assert [layer['message'] for layer in preparation.error_cause_chain(nested(2))] == ['level 1', 'level 0']
+    first, second = RuntimeError('a'), RuntimeError('b')
+    first.__context__, second.__context__ = second, first
+    assert len(preparation.error_cause_chain(first)) == 2
+
+
+def test_error_message_is_truncated_after_redaction():
+    # Redacting first lets the text after a long key survive the length cap.
+    assert preparation.redact_error_message('sk-' + 'k' * 300 + ' tail') == 'sk-*** tail'
+    long = preparation.redact_error_message('y' * 500)
+    assert long == 'y' * preparation.MAX_CAUSE_MESSAGE_CHARS + '…'
+
+
+@pytest.mark.asyncio
+async def test_failed_preparation_prints_and_stores_redacted_detail(tmp_path, monkeypatch, capsys):
+    failure = _provider_connection_failure()
+    class Engine:
+        def __init__(self, *args, **kwargs):
+            self.vision_endpoint = {'host': 'free.example.test', 'model': 'vision-model-1'}
+            self.last_vision_request = {'window_start': 0, 'images': 22, 'image_bytes': 1500000,
+                                        'text_chars': 9000, 'request_bytes': 1520000}
+        async def vision_config(self):
+            return {}
+        async def prepare(self, *args, **kwargs):
+            raise failure
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    job = preparation.jobs[result['id']]
+    assert job['error'] == 'APIConnectionError'
+    detail = job['error_detail']
+    assert detail['vision_host'] == 'free.example.test'
+    assert detail['vision_model'] == 'vision-model-1'
+    assert detail['last_vision_request']['images'] == 22
+    assert [layer['type'] for layer in detail['chain']] == ['APIConnectionError', 'ReadError', 'ConnectionResetError']
+    printed = capsys.readouterr().out
+    assert 'Watch preparation failed: APIConnectionError' in printed
+    assert 'ConnectionResetError' in printed and '"request_bytes": 1520000' in printed
+    assert 'sk-live' not in printed and 'abc.def-ghi' not in printed
+
+
+@pytest.mark.asyncio
+async def test_failure_before_engine_exists_still_reports_chain(tmp_path, monkeypatch):
+    class Engine:
+        def __init__(self, *args, **kwargs):
+            raise OSError(28, 'No space left on device')
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    detail = preparation.jobs[result['id']]['error_detail']
+    assert detail == {'chain': [{'type': 'OSError', 'message': '[Errno 28] No space left on device', 'errno': 28}]}
+
+
+def test_error_message_hides_home_directory(monkeypatch):
+    monkeypatch.setenv('HOME', '/home/alice')
+    monkeypatch.setenv('USERPROFILE', '/home/alice')
+    message = preparation.redact_error_message("[Errno 2] No such file: '/home/alice/Documents/N.E.K.O/x.jpg'")
+    assert message == "[Errno 2] No such file: '~/Documents/N.E.K.O/x.jpg'"

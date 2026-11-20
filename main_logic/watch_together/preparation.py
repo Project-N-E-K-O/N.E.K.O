@@ -1,7 +1,10 @@
 """Preparation adapter uses the character's provider-neutral official TTS cache."""
 import asyncio
 import json
+import os
+import re
 import uuid
+from urllib.parse import urlparse
 
 from .engine import Engine, SpeechCueTooLarge
 from . import media
@@ -11,6 +14,69 @@ from .telemetry import count
 jobs = {}
 tasks = set()
 pending_confirmations = {}
+
+MAX_CAUSE_DEPTH = 4
+MAX_CAUSE_MESSAGE_CHARS = 200
+_DATA_URL = re.compile(r"\bdata:[^\s,]*,\S*", re.IGNORECASE)
+_SECRET_PATTERNS = (
+    (re.compile(r"\bBearer\s+[^\s'\",;]+", re.IGNORECASE), "Bearer ***"),
+    (re.compile(r"\bsk-[A-Za-z0-9_\-]+"), "sk-***"),
+    (re.compile(r"\b([A-Za-z_\-]*(?:key|token))=[^\s&'\",;]+", re.IGNORECASE), r"\1=***"),
+)
+_URL = re.compile(r"\b([A-Za-z][A-Za-z0-9+.\-]*)://[^\s'\"<>]+")
+
+
+def _url_origin(match):
+    try:
+        host = urlparse(match.group(0)).hostname
+    except ValueError:
+        host = None
+    return f"{match.group(1)}://{host or '?'}"
+
+
+def redact_error_message(message) -> str:
+    """Keep an exception message useful for diagnosis without credentials, URL paths or home directory."""
+    text = _DATA_URL.sub("data:***", str(message))
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    # URLs keep only scheme and host: paths and queries may carry keys or IDs.
+    text = _URL.sub(_url_origin, text)
+    # OSError messages carry local paths; users paste these logs into public issues.
+    home = os.path.expanduser("~")
+    if len(home) > 1:
+        text = text.replace(home, "~")
+    if len(text) > MAX_CAUSE_MESSAGE_CHARS:
+        text = text[:MAX_CAUSE_MESSAGE_CHARS] + "…"
+    return text
+
+
+def error_cause_chain(exc, limit=MAX_CAUSE_DEPTH):
+    """Describe the exception and up to ``limit - 1`` underlying causes.
+
+    Provider SDKs wrap transport failures (for example an httpx ReadError with
+    an errno) in a generic connection error, so the class name alone does not
+    tell a dropped oversized request from DNS, TLS or proxy failures.
+    """
+    chain, seen = [], set()
+    while exc is not None and len(chain) < limit and id(exc) not in seen:
+        seen.add(id(exc))
+        errno = getattr(exc, "errno", None)
+        chain.append({"type": type(exc).__name__, "message": redact_error_message(exc),
+                      "errno": errno if isinstance(errno, int) and not isinstance(errno, bool) else None})
+        exc = exc.__cause__ or exc.__context__
+    return chain
+
+
+def preparation_error_detail(exc, engine=None) -> dict:
+    """Structural failure detail: no prompt, danmaku, model output or frame data."""
+    detail = {"chain": error_cause_chain(exc)}
+    endpoint = getattr(engine, "vision_endpoint", None)
+    if isinstance(endpoint, dict):
+        detail.update(vision_host=endpoint.get("host"), vision_model=endpoint.get("model"))
+    request = getattr(engine, "last_vision_request", None)
+    if isinstance(request, dict):
+        detail["last_vision_request"] = dict(request)
+    return detail
 
 
 def is_available(manager) -> bool:
@@ -106,6 +172,7 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
 
     async def run():
         staging = library.root / "preparations"
+        engine = None
         try:
             engine = Engine(staging, synthesize, character, language=language, persona=persona)
             async with asyncio.timeout(1800) as deadline:
@@ -123,8 +190,12 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
             job.update(status="cancelled", stage="Cancelled", stage_key="cancelled")
             raise
         except Exception as exc:
-            job.update(status="error", stage="Preparation failed", stage_key="prepareFailed", error=type(exc).__name__)
-            print(f"Watch preparation failed: {type(exc).__name__}")
+            detail = preparation_error_detail(exc, engine)
+            job.update(status="error", stage="Preparation failed", stage_key="prepareFailed", error=type(exc).__name__,
+                       error_detail=detail)
+            # print, not logger (privacy rule): messages come from providers.
+            print(f"Watch preparation failed: {type(exc).__name__} "
+                  f"{json.dumps(detail, ensure_ascii=False, default=str)}")
         finally:
             folder = staging / job["id"]
             try:
