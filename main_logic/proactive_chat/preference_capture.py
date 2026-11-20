@@ -24,23 +24,37 @@ from utils.proactive_preferences.search_policy import (
 )
 
 
+def capture_chat_source_owner() -> str | None:
+    """Read the accepted input's owner without waiting for the credential writer lock."""
+    from services.proactive_feedback import host
+
+    try:
+        owner = host.owner_from_snapshot(host.credentials.saved_session_snapshot())
+        status, account_id = host.credentials.signed_in_account_state()
+        if (status == "signed_out" and not owner["user_id"]) or (
+            status == "signed_in" and account_id and account_id == owner["user_id"]
+        ):
+            return owner["key"]
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return None
+
+
 async def remember_chat_source(
-    character: str, source_id: str, text: str, *, config_manager
+    character: str, source_id: str, text: str, *, owner_key: str, config_manager
 ) -> None:
     """Persist the provenance of a locally accepted original for later analysis."""
     from main_logic.recommendation_feedback import RecommendationStore
     from services.proactive_feedback import host
 
     def remember():
-        with host.attribution_context() as owner:
-            owner_key = owner["key"]
         digest = hashlib.sha256(text.strip().encode()).hexdigest()
         path = Path(
             config_manager.get_runtime_config_path("recommendation_feedback.sqlite3")
         )
-        RecommendationStore(path).remember_chat_source(
-            owner_key, character, source_id, digest
-        )
+        with host.attribution_context() as owner:
+            if owner["key"] == owner_key:
+                RecommendationStore(path).remember_chat_source(owner_key, character, source_id, digest)
 
     try:
         await asyncio.to_thread(remember)

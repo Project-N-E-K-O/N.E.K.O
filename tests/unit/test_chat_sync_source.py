@@ -614,12 +614,18 @@ async def test_real_turn_input_preserves_full_text_without_waiting_for_reply(mon
     save = AsyncMock(return_value="6" * 32)
     monkeypatch.setattr("main_logic.core.turn.save_original", save)
 
-    async def remember(character, source_id, text, *, config_manager):
+    def capture_owner():
+        assert not manager.sync_message_queue.messages
+        return "accepted-owner"
+
+    async def remember(character, source_id, text, *, owner_key, config_manager):
         queued = manager.sync_message_queue.messages[-1]["data"]
         assert queued["chat_original_source"]["recordId"] == source_id
         assert queued["data"] == text
+        assert owner_key == "accepted-owner"
 
     remember = AsyncMock(side_effect=remember)
+    monkeypatch.setattr("main_logic.proactive_chat.preference_capture.capture_chat_source_owner", capture_owner)
     monkeypatch.setattr("main_logic.proactive_chat.preference_capture.remember_chat_source", remember)
     assert await TurnMixin.handle_input_transcript(
         manager, RAW.text, is_voice_source=False,

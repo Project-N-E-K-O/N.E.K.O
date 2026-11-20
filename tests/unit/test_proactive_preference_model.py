@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import threading
@@ -5,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from time import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -17,6 +19,8 @@ from utils.proactive_preferences.personalization import (
 from utils.proactive_preferences.preference_model import DAY, PreferenceEvent, Profile
 from utils.proactive_preferences.search_policy import SearchPermission
 from main_logic.recommendation_feedback import RecommendationStore
+from main_logic.proactive_chat import preference_capture
+from services.proactive_feedback import host as feedback_host
 from services.proactive_feedback.host import owner_from_snapshot
 from services.proactive_feedback.runtime import ProactiveFeedbackRuntime
 from utils import preferences
@@ -66,6 +70,48 @@ def test_chat_preferences_are_owner_scoped_and_rank_across_sources(tmp_path: Pat
     assert len(events) == 2
     assert preferences.profile.rank("news", candidates)[0] == candidates[1]
     assert not store.local_preferences({"key": "account"}).profile.weights
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("switch_account", [False, True])
+async def test_chat_source_worker_keeps_admitted_owner(tmp_path, monkeypatch, switch_account):
+    origin = "https://preferences-community.example.test"
+    original = {"base_url": origin, "local_user_id": "account-a", "access_token": "synthetic-a"}
+    replacement = {**original, "local_user_id": "account-b", "access_token": "synthetic-b"}
+    active = original
+    loop = asyncio.get_running_loop()
+    worker_started = asyncio.Event()
+    release_worker = threading.Event()
+
+    @contextmanager
+    def attribution():
+        loop.call_soon_threadsafe(worker_started.set)
+        assert release_worker.wait(3)
+        yield owner_from_snapshot(active)
+
+    monkeypatch.setattr(feedback_host.credentials, "saved_session_snapshot", lambda: active)
+    monkeypatch.setattr(feedback_host.credentials, "signed_in_account_state", lambda: ("signed_in", active["local_user_id"]))
+    monkeypatch.setattr(feedback_host, "attribution_context", attribution)
+    owner_key = preference_capture.capture_chat_source_owner()
+    assert owner_key == owner_from_snapshot(original)["key"]
+    config_manager = SimpleNamespace(get_runtime_config_path=lambda name: tmp_path / name)
+    source_id = "1" * 32
+    transcript = "I am learning swimming"
+    task = asyncio.create_task(preference_capture.remember_chat_source(
+        "NEKO", source_id, transcript, owner_key=owner_key, config_manager=config_manager,
+    ))
+    try:
+        await asyncio.wait_for(worker_started.wait(), 3)
+        if switch_account:
+            active = replacement
+    finally:
+        release_worker.set()
+        await task
+    store = RecommendationStore(tmp_path / "recommendation_feedback.sqlite3")
+    assert store.chat_source_digests(owner_from_snapshot(replacement)["key"], "NEKO") == {}
+    assert store.chat_source_digests(owner_key, "NEKO") == (
+        {} if switch_account else {source_id: hashlib.sha256(transcript.encode()).hexdigest()}
+    )
 
 
 def test_durable_exclusions_survive_inferred_event_trimming(tmp_path):
@@ -451,11 +497,11 @@ async def test_chat_provenance_survives_store_reopen_and_uses_a_worker(
     ]
     for label in ("old", "first", "current"):
         await preference_capture.remember_chat_source(
-            "Neko", label, label, config_manager=manager
+            "Neko", label, label, owner_key=active, config_manager=manager
         )
     active = "other-account"
     await preference_capture.remember_chat_source(
-        "Neko", "other", "other", config_manager=manager
+        "Neko", "other", "other", owner_key=active, config_manager=manager
     )
     owned = RecommendationStore(path).chat_source_digests("guest", "Neko")
     assert set(owned) == {"old", "first", "current"}

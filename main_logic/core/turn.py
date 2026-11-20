@@ -2635,6 +2635,17 @@ class TurnMixin:
         # delivered_at and falsely count as responses on the next tick (Codex P2).
         _transcript_arrival_ts = time.time()
         self.last_user_activity_time = _transcript_arrival_ts
+        source_value = str(source or "").strip()
+        raw_source = chat_input_source if chat_input_source is not None else source_value
+        original_id = None
+        chat_source_owner = None
+        if record_transcript_text and is_chat_input_source(raw_source) and getattr(self, '_config_manager', None) is not None:
+            from main_logic.proactive_chat.preference_capture import capture_chat_source_owner
+
+            original_id = uuid4().hex
+            # Credentials are read before the transcript path yields. The
+            # worker checks this owner again under the writer fence after enqueue.
+            chat_source_owner = capture_chat_source_owner()
         if (
             is_voice_source
             and transcript_text
@@ -2744,16 +2755,12 @@ class TurnMixin:
 
         # Push to synchronization queue.
         user_message = {"input_type": "transcript", "data": record_transcript_text}
-        source_value = str(source or "").strip()
         if source_value:
             user_message["source"] = source_value
         if isinstance(metadata, dict) and metadata:
             user_message["metadata"] = metadata
         if not is_voice_source and self._active_text_request_id:
             user_message["request_id"] = self._active_text_request_id
-        raw_source = chat_input_source if chat_input_source is not None else source_value
-        original_id = (uuid4().hex if record_transcript_text and is_chat_input_source(raw_source)
-                       and getattr(self, '_config_manager', None) is not None else None)
         if original_id:
             user_message["chat_original_source"] = {"recordId": original_id,
                 "originalTime": str(int(_transcript_arrival_ts * 1000)), "origin": "chat"}
@@ -2761,12 +2768,13 @@ class TurnMixin:
         # Preserve the existing queue order before any source database await.
         # Save accepted raw text independently, even if the reply later fails.
         if original_id and getattr(self, '_config_manager', None) is not None:
-            from main_logic.proactive_chat.preference_capture import remember_chat_source
+            if chat_source_owner is not None:
+                from main_logic.proactive_chat.preference_capture import remember_chat_source
 
-            await remember_chat_source(
-                self.lanlan_name, original_id, record_transcript_text,
-                config_manager=self._config_manager,
-            )
+                await remember_chat_source(
+                    self.lanlan_name, original_id, record_transcript_text,
+                    owner_key=chat_source_owner, config_manager=self._config_manager,
+                )
             try:
                 await save_original(
                     self.lanlan_name, 'user',
