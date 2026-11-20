@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from contextlib import ExitStack, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -103,6 +104,14 @@ class _Processing:
     commission_id: str
     scopes: frozenset[str]
     grants: dict[tuple[str, GrantScope], str]
+    binding: GrantBinding
+    accepted: asyncio.Future[bool] | None
+    run_active: Callable[[], bool]
+    task: asyncio.Task | None
+
+    def settle(self, ok: bool) -> None:
+        if self.accepted is not None and not self.accepted.done():
+            self.accepted.set_result(ok)
 
 
 class ManagedDelivery:
@@ -147,12 +156,14 @@ class ManagedDelivery:
         arguments: Parcel,
         *,
         one_way: bool,
+        deferred: bool = False,
     ) -> Answer | None:
+        """Queued trigger workers may pass deferred=True to wait for audited acceptance."""
         # Strip both text and exception context. An adapter's native checks and
         # driver errors can contain data the sender must never receive.
         try:
             return await self._invoke(
-                commission_id, sender, target, arguments, one_way=one_way
+                commission_id, sender, target, arguments, one_way=one_way, deferred=deferred
             )
         except asyncio.CancelledError:
             failure = asyncio.CancelledError()
@@ -178,22 +189,32 @@ class ManagedDelivery:
         arguments: Parcel,
         *,
         one_way: bool,
+        deferred: bool,
     ) -> Answer | None:
         recipient = self._adapters.get(target)
         if recipient is None or not self._connected(sender, recipient):
             raise DeliveryDenied("managed delivery is unavailable")
         registrations = (self._bindings[sender.identity], self._bindings[target])
         parent = self._processing.get()
-        if parent is not None:
-            if parent.endpoint is not sender or parent.commission_id != commission_id:
-                raise DeliveryDenied("invocation does not belong to this adapter")
-        # Forwarded inputs and results retain their source restrictions even if
-        # an adapter constructs a new public parcel around a derived value.
+        if deferred and (parent is None or parent.accepted is None or parent.task is asyncio.current_task()):
+            raise DeliveryDenied("only a queued trigger worker may await acceptance")
+        continuation = parent is not None and parent.accepted is not None and (deferred or parent.task is None)
+        if parent is not None and (parent.endpoint is not sender or parent.commission_id != commission_id):
+            raise DeliveryDenied("invocation does not belong to this adapter")
+        # Freeze mutable data before awaiting acceptance. A trigger may acquire
+        # additional restricted information before releasing its worker.
         arguments = arguments.snapshot(parent.scopes if parent else frozenset())
+        if continuation:
+            if not await asyncio.shield(parent.accepted):
+                raise DeliveryDenied("trigger was not accepted")
+            arguments = Parcel(arguments.data, arguments.scopes | parent.scopes)
+        if parent is not None and (not parent.binding.active or not parent.run_active()):
+            raise DeliveryDenied("registration or run has ended")
+        run_active = parent.run_active if parent is not None else self._permissions.current_run(commission_id)
         # Keep once-only loans until the actual handoff, including across audit
         # writes. Roll back every temporary handle on all exit paths.
         with ExitStack() as cleanup:
-            grants = parent.grants.copy() if parent else {}
+            grants = parent.grants.copy() if parent and not continuation else {}
             answer = None
             invoked = False
             return_scopes: frozenset[str] = frozenset()
@@ -201,7 +222,7 @@ class ManagedDelivery:
                 self._ledger, commission_id, "trigger" if one_way else "invoke", target
             ) as op:
                 try:
-                    if not recipient.permits(sender.identity, one_way=one_way):
+                    if not run_active() or not recipient.permits(sender.identity, one_way=one_way):
                         raise DeliveryDenied("invocation refused")
                     invocation = Invocation(commission_id, op.trace_id, op.call_id)
                     start_scope = GrantScope(
@@ -230,11 +251,15 @@ class ManagedDelivery:
                         grants,
                     )
                     self._require_live(sender, recipient, arguments.scopes, grants)
-                    if not recipient.permits(sender.identity, one_way=one_way):
+                    if not run_active() or not recipient.permits(sender.identity, one_way=one_way):
                         raise DeliveryDenied("invocation refused")
                     frame = _Processing(
-                        recipient, commission_id, arguments.scopes, grants.copy()
+                        recipient, commission_id, arguments.scopes, grants.copy(), registrations[1],
+                        asyncio.get_running_loop().create_future() if one_way else None,
+                        run_active, asyncio.current_task(),
                     )
+                    if one_way:
+                        cleanup.callback(frame.settle, False)
                     token = self._processing.set(frame)
                     try:
                         invoked = True
@@ -243,6 +268,7 @@ class ManagedDelivery:
                         else:
                             answer = await recipient.call(invocation, arguments)
                     finally:
+                        frame.task = None
                         self._processing.reset(token)
                     if not one_way:
                         self._require_live(sender, recipient, arguments.scopes, grants)
@@ -278,7 +304,15 @@ class ManagedDelivery:
                     raise
             # Closing a call record awaited SQLite. Check again, with no await
             # between this test and the caller receiving the actual payload.
-            if not one_way:
+            if not op.closed:
+                raise ResultWithheld()
+            if one_way:
+                # A queued independent job keeps the classification and endpoint binding,
+                # but must obtain its own execution and delivery approvals.
+                with suppress(Exception):
+                    self._require_live(sender, recipient, arguments.scopes, grants)
+                    frame.settle(run_active())
+            else:
                 try:
                     self._require_live(recipient, sender, return_scopes, grants)
                 except Exception:
@@ -416,3 +450,5 @@ class ManagedDelivery:
                 record.status = "denied"
                 record.reason = "managed_delivery_denied"
                 raise
+        if not record.closed:
+            raise DeliveryDenied("the transfer could not be audited")

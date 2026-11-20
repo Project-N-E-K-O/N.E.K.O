@@ -135,6 +135,86 @@ async def test_one_way_work_has_no_reply_handle_or_private_arguments(env):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("early", [False, True])
+@pytest.mark.parametrize("outcome", ["allow", "denied", "native_deny", "reregister", "end_run"])
+async def test_queued_trigger_obtains_its_own_authorization_but_keeps_origin(env, early, outcome):
+    host, cid, timer, report, questions = env
+    timer.readable = WORK
+    owner = Endpoint("session:owner", WORK)
+    host.delivery.register(owner)
+    ready, release = asyncio.Event(), asyncio.Event()
+    jobs = []
+
+    async def ask(_cid, question):
+        questions.append(question)
+        return "deny" if len(questions) == 2 and outcome == "denied" else "once"
+
+    async def send():
+        ready.set()
+        if not early:
+            await release.wait()
+        await host.delivery.invoke(
+            cid, report, owner.identity, Parcel("derived", PUBLIC), one_way=True, deferred=early
+        )
+
+    def change_recipient_or_run():
+        if outcome == "native_deny":
+            owner.readable = PUBLIC
+        elif outcome == "reregister":
+            host.delivery.unregister(report)
+            host.delivery.register(report)
+        elif outcome == "end_run":
+            host.permissions.end_run(cid)
+
+    async def trigger(invocation, arguments):
+        jobs.append(asyncio.create_task(send()))
+        await ready.wait()
+        if early:
+            change_recipient_or_run()
+
+    report.trigger = trigger
+    host.permissions.set_asker(ask)
+    assert await host.delivery.invoke(cid, timer, report.identity, Parcel("input", WORK), one_way=True) is None
+    if not early:
+        change_recipient_or_run()
+    release.set()
+    if outcome == "allow":
+        await jobs[0]
+        assert owner.inputs == [Parcel("derived", WORK)] and len(questions) == 2
+        rows = await host.ledger.run(lambda db: call_audit.read_trace(db, cid, now=0))
+        triggers = [r for r in rows if r["kind"] == "trigger"]
+        assert len(triggers) == 2 and triggers[1]["parent_call_id"] == triggers[0]["call_id"]
+    else:
+        with pytest.raises(DeliveryDenied):
+            await jobs[0]
+        assert not owner.inputs
+    assert not timer.inputs
+
+
+@pytest.mark.asyncio
+async def test_failed_trigger_does_not_release_an_early_worker(env):
+    host, cid, timer, report, _ = env
+    jobs = []
+    ready = asyncio.Event()
+
+    async def send():
+        ready.set()
+        await host.delivery.invoke(cid, report, timer.identity, Parcel(None, PUBLIC), one_way=True, deferred=True)
+
+    async def trigger(invocation, arguments):
+        jobs.append(asyncio.create_task(send()))
+        await ready.wait()
+        raise RuntimeError("private error")
+
+    report.trigger = trigger
+    with pytest.raises(DeliveryDenied):
+        await host.delivery.invoke(cid, timer, report.identity, Parcel(None, PUBLIC), one_way=True)
+    with pytest.raises(DeliveryDenied):
+        await jobs[0]
+    assert not timer.inputs
+
+
+@pytest.mark.asyncio
 async def test_each_channel_has_its_own_recipient_check_and_derived_data_inherits_inputs(
     env,
 ):
@@ -184,6 +264,24 @@ async def test_audit_exhaustion_reports_whether_the_target_ran(env, monkeypatch,
     assert bool(report.inputs) == (available == 2)
     assert ("No new action" in str(failure.value)) == (available == 1)
     assert failure.value.__context__ is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["send_arguments", "deliver_value", "invoke"])
+async def test_audit_close_must_commit_before_the_corresponding_handoff(env, kind):
+    host, cid, timer, report, _ = env
+    timer.readable = WORK
+    report.response = Answer(value=Parcel("private result", WORK))
+    await host.ledger.run(lambda db: db.execute(
+        f"CREATE TRIGGER fail_close BEFORE UPDATE OF ended_at ON host_calls WHEN OLD.kind='{kind}' "
+        "BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END"
+    ))
+    expected = DeliveryDenied if kind == "send_arguments" else ResultWithheld
+    with pytest.raises(expected) as failure:
+        await host.delivery.invoke(cid, timer, report.identity, Parcel("private input", WORK), one_way=False)
+    assert type(failure.value) is expected
+    assert len(report.inputs) == int(kind != "send_arguments")
+    assert "private" not in str(failure.value)
 
 
 @pytest.mark.asyncio

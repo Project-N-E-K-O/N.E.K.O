@@ -504,6 +504,36 @@ async def test_late_scoped_confirmation_does_not_authorize_a_cancelled_operation
     assert not result.allow and not result.grant_id
 
 
+@pytest.mark.parametrize("transition,actor,allowed", [
+    ("end_run", "child", False), ("end_session", "child", False),
+    ("end_session", "root", False), ("end_session", "unrelated", True),
+])
+async def test_scoped_lookup_is_bound_to_the_run_that_requested_it(store, transition, actor, allowed):
+    gate = PermissionGate(store)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def parent_of(cid):
+        entered.set()
+        await release.wait()
+        return "root" if cid == "child" else None
+
+    ask = Asker("once")
+    gate.set_asker(ask)
+    gate.set_parent_lookup(parent_of)
+
+    async def check():
+        return await gate.check("child", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+
+    pending = asyncio.create_task(check())
+    await entered.wait()
+    getattr(gate, transition)(actor)
+    release.set()
+    result = await pending
+    assert result.allow is allowed and bool(result.grant_id) is allowed
+    assert len(ask.asked) == int(allowed)
+    assert (await check()).allow  # the next genuine request belongs to the current run
+
+
 async def test_defaults_of_the_design(store):
     assert DEFAULT_MODES == {
         "workdir_files": "allow",

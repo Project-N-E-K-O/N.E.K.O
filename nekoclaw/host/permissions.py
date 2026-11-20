@@ -392,7 +392,7 @@ class PermissionGate:
         # Lifetimes captured before an await; end_run/session invalidates late answers.
         self._work: dict[str, object] = {}
         self._lives: dict[str, object] = {}
-        self._ended = 0
+        self._lineage_lookups: dict[object, set[str]] = {}
         self._external_input_roots: set[str] = set()
 
     def set_asker(self, asker: Asker | None) -> None:
@@ -403,7 +403,8 @@ class PermissionGate:
 
     def end_session(self, commission_id: str) -> None:
         """Forget what was allowed for a commission's session; call it when the commission is done, has failed or is stopped."""
-        self._ended += 1
+        for ended in self._lineage_lookups.values():
+            ended.add(commission_id)
         self._external_input_roots.discard(commission_id)
         self._lives.pop(commission_id, None)
         self._session_grants.pop(commission_id, None)
@@ -423,6 +424,11 @@ class PermissionGate:
             if actor in self._external_input_roots:
                 return lineage[: i + 1]
         return lineage
+
+    def current_run(self, commission_id: str) -> Callable[[], bool]:
+        """Bind in-flight host work to this run, including while awaiting a ledger write."""
+        work = self._work.setdefault(commission_id, object())
+        return lambda: self._work.get(commission_id) is work
 
     def end_run(self, commission_id: str) -> None:
         """Forget what was allowed "once" for a commission's run; call it when that run is over."""
@@ -546,7 +552,10 @@ class PermissionGate:
         self, commission_id: str, category: str, *, detail: dict[str, Any], writes: bool
     ) -> PermissionDecision:
         """Scope a built-in file operation to its actual path, or a command to its shell and cwd."""
+        work = self._work.setdefault(commission_id, object())
         mode = await self._store.mode(category)
+        if self._work.get(commission_id) is not work:
+            return PermissionDecision(False, DENIED_NO_ANSWER)
         if mode in ("allow", "deny"):
             return PermissionDecision(mode == "allow", DENIED_BY_SETTINGS if mode == "deny" else None)
         tool = str(detail.get("tool") or "")
@@ -557,6 +566,8 @@ class PermissionGate:
         elif isinstance(path := detail.get("path"), str) and path:
             actual_path = os.path.normcase(await asyncio.to_thread(os.path.realpath, path))
             resource = json.dumps(["write" if writes else "read", actual_path])
+        if self._work.get(commission_id) is not work:
+            return PermissionDecision(False, DENIED_NO_ANSWER)
         return await self.check(commission_id, category, detail=detail, scope=GrantScope("builtin-runtime", resource))
 
     async def check_native(
@@ -637,27 +648,32 @@ class PermissionGate:
     ) -> PermissionDecision:
         if not scope.registered() or not scope.provider or (category == "managed_delivery" and not scope.recipient):
             return PermissionDecision(False, DENIED_NO_ANSWER)
-        mode = await self._store.mode(category, key)
-        if mode == "deny":
-            return PermissionDecision(False, DENIED_BY_SETTINGS)
-        delivery = category == "managed_delivery"
-        if mode == "allow" and not delivery and not hold_once:
-            return PermissionDecision(True)
-        # A commission may end during a ledger lookup of its ancestors.
-        # Repeat only when a terminal transition overlapped that lookup.
-        while True:
-            ended = self._ended
+        # Capture before any asynchronous settings or parent lookup. A late
+        # request from an ended run cannot attach itself to the next run.
+        work = self._work.setdefault(commission_id, object())
+        # Ancestors are not known until the ledger answers. Record which sessions
+        # ended during this lookup, including an ancestor that has since resumed.
+        lookup = object()
+        ended = self._lineage_lookups[lookup] = set()
+        try:
+            mode = await self._store.mode(category, key)
+            if self._work.get(commission_id) is not work:
+                return PermissionDecision(False, DENIED_NO_ANSWER)
+            if mode == "deny":
+                return PermissionDecision(False, DENIED_BY_SETTINGS)
+            delivery = category == "managed_delivery"
+            if mode == "allow" and not delivery and not hold_once:
+                return PermissionDecision(True)
             lineage = await self._lineage(commission_id, verified=True)
-            if ended == self._ended:
-                break
-        if not lineage:
+        finally:
+            del self._lineage_lookups[lookup]
+        if not lineage or not ended.isdisjoint(lineage) or self._work.get(commission_id) is not work:
             return PermissionDecision(False, DENIED_NO_ANSWER)
         branch = tuple(lineage)
         root = branch[-1]
         sharing_root = self._sharing_lineage(lineage)[-1]
         slot = _slot(category, key)
         lives = [(actor, self._lives.setdefault(actor, object())) for actor in branch]
-        work = self._work.setdefault(commission_id, object())
 
         def live() -> bool:
             return scope.registered() and self._work.get(commission_id) is work and all(

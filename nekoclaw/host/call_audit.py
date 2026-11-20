@@ -223,6 +223,8 @@ class Call:
     # Correlation only. The audit token cannot be used to claim a grant.
     grant_id: str | None = None
     scope_ref: str | None = None
+    # True only after the closing update actually matched this row and committed.
+    closed: bool = False
 
     async def bind_run(self, run_id: str, target: str) -> None:
         opaque_id = (
@@ -296,12 +298,12 @@ async def _finish(started: asyncio.Task[Call], status: str) -> None:
         except Exception:  # insertion rolled back; there is no record to close
             return
         try:
-            await record.ledger.run(
+            record.closed = await record.ledger.run(
                 lambda db: db.execute(
                     "UPDATE host_calls SET status=?,reason=?,grant_id=?,scope_ref=?,ended_at=? "
                     "WHERE call_id=? AND status='running'",
                     (status, record.reason, record.grant_id, record.scope_ref, record.ledger._clock(), record.call_id),
-                )
+                ).rowcount == 1
             )
         except (sqlite3.Error, OSError, RuntimeError) as exc:
             # The effect already happened. Preserve its result so it is not
