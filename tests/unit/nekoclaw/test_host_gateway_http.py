@@ -872,8 +872,9 @@ async def test_task_agent_that_calls_a_tool_before_loading_its_group_is_handed_t
     host = _task_agent_host(hosts, tmp_path, server, llm, builtins=desk)
     await host.permission_store.set_mode("browser", "allow")
 
-    receipt = await host.dispatch("read the opening hours off the page", lanlan_name="Lan", lang="en")
+    receipt = await host.dispatch("find the opening hours", lanlan_name="Lan", lang="en")
     await wait_status(host, receipt.commission_id, "done")
+    assert "browser_take_snapshot" not in _offered(llm)
 
     # The first call did nothing and came back with the group: how it is
     # used and the definition the call was written without.
@@ -907,8 +908,9 @@ async def test_task_agent_whose_reply_holds_two_calls_to_a_group_it_has_not_read
     host = _task_agent_host(hosts, tmp_path, server, llm, builtins=desk)
     await host.permission_store.set_mode("browser", "allow")
 
-    receipt = await host.dispatch("read the opening hours off the page", lanlan_name="Lan", lang="en")
+    receipt = await host.dispatch("find the opening hours", lanlan_name="Lan", lang="en")
     await wait_status(host, receipt.commission_id, "done")
+    assert "browser_take_snapshot" not in _offered(llm)
 
     # The first came back with the group. The second was written before
     # that answer could be read: it was not carried out either, and was
