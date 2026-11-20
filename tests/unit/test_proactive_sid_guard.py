@@ -651,6 +651,33 @@ async def test_finish_proactive_delivery_engagement_mismatch_skips_all_writes():
     assert mgr.sync_message_queue.empty()
 
 
+async def test_proactive_delivery_drops_account_choice_after_focus_cleanup():
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr._active_text_request_id = None
+    mgr.send_lanlan_response = LLMSessionManager.send_lanlan_response.__get__(mgr)
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    account = "original"
+
+    async def switch_account(_visible):
+        nonlocal account
+        account = "replacement"
+
+    async def owner_check():
+        return account == "original"
+
+    mgr._push_focus_thinking = switch_account
+    result = await LLMSessionManager.finish_proactive_delivery(
+        mgr, "personalized recommendation", expected_speech_id="s_proactive",
+        delivery_is_current=owner_check,
+    )
+    assert result is False
+    assert account == "replacement"
+    assert mgr.sync_message_queue.empty()
+    assert mgr.session._conversation_history == []
+
+
 async def test_finish_proactive_delivery_rechecks_after_committing_wait():
     """Engagement during state.fire(COMMITTING) must lose at the publish guard."""
     mgr = _make_mgr()

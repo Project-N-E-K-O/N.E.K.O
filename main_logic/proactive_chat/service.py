@@ -58,6 +58,7 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_PASS_DISABLED,
     PROACTIVE_REASON_PASS_DUPLICATE,
     PROACTIVE_REASON_PASS_PRIVACY,
+    PROACTIVE_REASON_PASS_SOURCE_EMPTY,
     ProactiveChatCommand,
     ProactiveChatResult,
     _proactive_chat_body,
@@ -123,6 +124,8 @@ from main_logic.proactive_chat.mini_game_invite import (
 from main_logic.proactive_chat.music_recommendation import (
     _build_music_dynamic_context,
     _build_music_playing_hint,
+    _fetch_music_with_fallback,
+    _format_music_content,
     _select_music_recommendation,
 )
 from main_logic.proactive_chat.music_refusal import is_music_refusal_cooldown_active
@@ -139,7 +142,7 @@ from main_logic.proactive_chat.state import (
     _source_hash,
 )
 from main_logic.proactive_chat.sources import collect_proactive_sources
-from main_logic.proactive_chat.verse_plan import VERSE_MODES, fetch_verse_plan, select_verse_source
+from main_logic.proactive_chat.verse_plan import VERSE_MODES, fetch_verse_plan, iter_verse_sources
 from utils.web_scraper.proactive_candidate import (
     SelectedWebCandidatePreempted,
     prepare_selected_web_candidate,
@@ -661,6 +664,7 @@ async def _collect_sources_under_vision_consent(
     mgr: Any = None,
     recommendations: RecommendationContext | None = None,
     music_available: bool = True,
+    meme_proxy_candidate_fetchable: Any = None,
 ) -> tuple[list[str], dict[str, dict], bool, bool]:
     """Collect enabled sources; screen and window sources only under vision consent.
 
@@ -704,10 +708,46 @@ async def _collect_sources_under_vision_consent(
         **({"recommendations": recommendations} if recommendations is not None else {}),
     )
     if verse_plan is not None and recommendations is not None:
-        choice = select_verse_source(verse_plan, recommendations, delegated)
-        if choice is not None:
-            mode, content = choice
+        deadline = asyncio.get_running_loop().time() + 10.0
+        meme_checks = 0
+        for mode, content in iter_verse_sources(verse_plan, recommendations, delegated):
+            if mode in {"music", "meme"}:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    continue
+                if mode == "meme":
+                    if meme_checks >= _MEME_PROXY_CANDIDATE_CHECK_LIMIT:
+                        continue
+                    meme_checks += 1
+                try:
+                    async with asyncio.timeout(min(remaining, 5.0)):
+                        if mode == "music":
+                            raw = await _fetch_music_with_fallback(content["verse_keyword"], lanlan_name=lanlan_name)
+                            if not raw or not raw.get("success"):
+                                continue
+                            lang = _resolve_proactive_locale(command, mgr, fmt="prompt")
+                            selection = _select_music_recommendation(
+                                {"raw_data": raw, "formatted_content": _format_music_content(raw, lang)},
+                                lang=lang, source_hash=_source_hash, should_skip_source=_should_skip_source,
+                                lanlan_name=lanlan_name, preferences=recommendations.preferences,
+                            )
+                            if not selection.link:
+                                continue
+                            content["verse_music_selection"] = selection
+                        else:
+                            meme = content["verse_meme"]
+                            moderation = await moderate_meme_image_url(meme["url"], fail_closed=False)
+                            if not moderation.allowed:
+                                continue
+                            if meme_proxy_candidate_fetchable is not None:
+                                fetchable, _ = await meme_proxy_candidate_fetchable(meme["url"])
+                                if not fetchable:
+                                    continue
+                            meme["verse_checked"] = True
+                except (OSError, ValueError, TimeoutError):
+                    continue
             sources[mode] = content
+            break
     if await _withhold_revoked_vision_sources(
         sources, vision_consent_check, lanlan_name=lanlan_name, stage="采集期间",
     ):
@@ -1251,6 +1291,7 @@ async def handle_proactive_chat(
 
                 _gi_prob = _gi_prob_default
             branch_game_invite = False
+            context = None
             chosen_game_type: str | None = None
             selected_theater = None
             gi_prompt: str | None = None
@@ -1295,6 +1336,8 @@ async def handle_proactive_chat(
                     channel="work_break_game_invite",
                     lang=_break_lang,
                     round_id=lifecycle.screenshot_request_id,
+                    **({"delivery_is_current": recommendation_owner_is_current}
+                       if context is not None and recommendation_owner_is_current is not None else {}),
                 )
                 delivered_text = reminder_delivery.delivered_text
                 if reminder_delivery.repeat_suppressed:
@@ -1358,7 +1401,9 @@ async def handle_proactive_chat(
                         session_id=invite_session_id,
                     )
                     try:
-                        await push_mini_game_invite_options(mgr, options_payload)
+                        if (context is None or recommendation_owner_is_current is None
+                                or await recommendation_owner_is_current()):
+                            await push_mini_game_invite_options(mgr, options_payload)
                     except Exception as _ws_err:
                         logger.warning(
                             "[%s] work_break+game_invite options WS push failed: %s",
@@ -1633,6 +1678,7 @@ async def handle_proactive_chat(
                 mgr=mgr,
                 recommendations=recommendations,
                 music_available=not (is_music_occupied or is_playing_music or music_cooldown),
+                meme_proxy_candidate_fetchable=meme_proxy_candidate_fetchable,
             )
         )
         if recommendations is not None and recommendation_owner_is_current is not None:
@@ -1641,12 +1687,14 @@ async def handle_proactive_chat(
                     body=_proactive_preempted_json("recommendation_account_changed"),
                 ))
         profile = recommendations.preferences.profile if recommendations is not None else None
+        preference_withheld_source = False
         if profile is not None:
             for mode, source in list(sources.items()):
                 if not source.get("links") and mode in {"vision", "window"}:
                     candidate = {"title": source.get("window_title"), "content": source.get("formatted_content")}
                     if profile.score(mode, profile.match(mode, candidate)) is None:
                         sources.pop(mode)
+                        preference_withheld_source = True
         avatar_position = command.avatar_position
 
         if not sources:
@@ -1663,6 +1711,12 @@ async def handle_proactive_chat(
                         ),
                     )
                 )
+            if not _has_unfinished_thread and preference_withheld_source:
+                return await _end_proactive(ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_PASS_SOURCE_EMPTY, message="all sources excluded by preferences",
+                    ),
+                ))
             if not _has_unfinished_thread and not verse_ranked:
                 return await _end_proactive(
                     ProactiveChatResult(
@@ -2199,7 +2253,7 @@ async def handle_proactive_chat(
         # Symmetric web/meme: overfetch N, probabilistically skip each and proceed to next on hit.
         # If all skipped, clear music_content to degrade entire channel.
         # ============================================================
-        music_selection = _select_music_recommendation(
+        music_selection = (music_content or {}).get("verse_music_selection") or _select_music_recommendation(
             music_content,
             lang=proactive_lang,
             source_hash=_source_hash,
@@ -2233,7 +2287,8 @@ async def handle_proactive_chat(
                         continue  # Skip candidates lacking URL.
                     meme_source = candidate_meme.get("source", "表情包")
                     meme_topic_key = _source_hash(meme_url, meme_title)
-                    if meme_topic_key and _should_skip_source(meme_topic_key):
+                    verse_checked = bool(candidate_meme.get("verse_checked"))
+                    if not verse_checked and meme_topic_key and _should_skip_source(meme_topic_key):
                         logger.debug(
                             f"[{lanlan_name}]- Phase 1 表情包候选去重命中，跳过: {meme_title[:30]}"
                         )
@@ -2246,7 +2301,7 @@ async def handle_proactive_chat(
                                 )
                             )
                         )
-                    moderation = await moderate_meme_image_url(
+                    moderation = None if verse_checked else await moderate_meme_image_url(
                         meme_url, fail_closed=False
                     )
                     if _round_preempted():
@@ -2257,7 +2312,7 @@ async def handle_proactive_chat(
                                 )
                             )
                         )
-                    if not moderation.allowed:
+                    if moderation is not None and not moderation.allowed:
                         logger.info(
                             "[%s]- Phase 1 meme candidate moderation blocked: reason=%s cached=%s url_hash=%s title=%s",
                             lanlan_name,
@@ -2278,7 +2333,7 @@ async def handle_proactive_chat(
                             meme_topic_key[:16],
                         )
                         continue
-                    if meme_proxy_candidate_fetchable is not None:
+                    if not verse_checked and meme_proxy_candidate_fetchable is not None:
                         if (
                             proxy_checked_count
                             >= _MEME_PROXY_CANDIDATE_CHECK_LIMIT
@@ -2805,6 +2860,8 @@ async def handle_proactive_chat(
             log=logger,
             round_id=lifecycle.screenshot_request_id,
             vision_consent_epoch=vision_consent_epoch,
+            **({"delivery_is_current": recommendation_owner_is_current}
+               if recommendations is not None and recommendation_owner_is_current is not None else {}),
         )
         if delivery_commit.result is not None:
             return await _end_proactive(

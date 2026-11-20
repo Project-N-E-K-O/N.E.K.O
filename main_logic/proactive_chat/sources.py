@@ -53,6 +53,7 @@ from .content_logging import (
 )
 from .contracts import ProactiveChatCommand
 from .interest_retrieval import collect_interest_candidates
+from .phase1_ranking import _resource_key
 from utils.proactive_preferences.personalization import RecommendationContext
 
 
@@ -554,6 +555,7 @@ async def collect_proactive_sources(
                     if mode != "community" or recommendations.allows_guest_community
                 ],
                 locale=community_locale,
+                include_excluded_metadata=True,
             ),
         )
 
@@ -579,22 +581,34 @@ async def collect_proactive_sources(
                 content = {**content, "trend_ranks": trend_ranks}
         sources[mode] = content
     for mode, candidates in interest_candidates.items():
+        if mode == "community":
+            candidates = _extract_links_from_raw(mode, {"posts": candidates}, log=log)
         # The community feed may have delivered cross-device exclusions while
         # these requests were in flight. Check the latest profile before merging.
         if recommendations is not None:
             profile = recommendations.preferences.profile
+            baseline_links = sources.get(mode, {}).get("links", [])
+            blocked_keys = {
+                _resource_key(item) for item in candidates + baseline_links
+                if profile.score(mode, profile.match(mode, item)) is None
+            }
+            if blocked_keys and mode in sources:
+                sources[mode]["links"] = [
+                    item for item in baseline_links if _resource_key(item) not in blocked_keys
+                ]
+                if baseline_links and not sources[mode]["links"]:
+                    sources[mode]["formatted_content"] = ""
             candidates = [
                 item for item in candidates
-                if (profile.score(mode, profile.match(mode, item)) or 0) > 0
+                if _resource_key(item) not in blocked_keys
+                and (profile.score(mode, profile.match(mode, item)) or 0) > 0
             ]
-        if mode == "community":
-            candidates = _extract_links_from_raw(mode, {"posts": candidates}, log=log)
         if not candidates:
             continue
         source = sources.setdefault(mode, {"formatted_content": "", "raw_data": {}, "links": []})
         links = {}
         for item in candidates + source["links"]:
-            key = item.get("dedupe_key") or item["url"].rstrip("/")
+            key = _resource_key(item).rstrip("/")
             if key not in links:
                 links[key] = item
         source["links"] = list(links.values())

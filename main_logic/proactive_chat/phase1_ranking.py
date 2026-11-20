@@ -7,7 +7,6 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlsplit
 
 from utils.proactive_preferences.preference_model import (
     Profile,
@@ -15,7 +14,7 @@ from utils.proactive_preferences.preference_model import (
     valid_feature,
 )
 
-from .state import _get_source_history_entry, _source_hash
+from .state import _canonical_resource_key, _get_source_history_entry, _source_hash
 
 
 _HOUR = 3600
@@ -25,32 +24,7 @@ _PERSONAL_MATCH_THRESHOLD = 1.5
 
 
 def _resource_key(link: dict) -> str:
-    if key := link.get("dedupe_key"):
-        return key
-    url = link.get("url", "")
-    try:
-        address = urlsplit(url)
-        host = (address.hostname or "").removeprefix("www.")
-    except ValueError:
-        return url
-    if host == "store.steampowered.com":
-        if match := re.match(r"/app/([0-9]+)(?:/|$)", address.path):
-            return f"steam:app:{match[1]}"
-    if host in {"bilibili.com", "m.bilibili.com"}:
-        if match := re.match(r"/video/(BV[0-9A-Za-z]+)(?:/|$)", address.path):
-            return f"bilibili:video:{match[1]}"
-    if host in {"youtube.com", "m.youtube.com", "youtu.be"}:
-        if host == "youtu.be":
-            video_id = address.path.strip("/")
-        elif address.path.startswith("/shorts/"):
-            video_id = address.path.removeprefix("/shorts/").rstrip("/")
-        elif address.path == "/watch":
-            video_id = parse_qs(address.query).get("v", [""])[0]
-        else:
-            return url
-        if re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
-            return f"youtube:video:{video_id}"
-    return url
+    return link.get("dedupe_key") or _canonical_resource_key(link.get("url", ""))
 
 
 def _work_keys(link: dict) -> set[str]:

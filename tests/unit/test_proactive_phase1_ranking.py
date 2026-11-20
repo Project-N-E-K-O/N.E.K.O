@@ -164,6 +164,23 @@ async def test_committed_work_cools_cross_source_duplicates_but_leaves_new_work(
     assert [item["url"] for item in links] == [new["url"]]
 
 
+@pytest.mark.asyncio
+async def test_video_cooldown_preserves_case_sensitive_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(state, "_source_history", {})
+    first = link("First video", "https://www.youtube.com/watch?v=A234567890A", "YouTube")
+    alternate = link("First video alternate URL", "https://youtu.be/A234567890A", "YouTube")
+    different = link("Different video", "https://www.youtube.com/watch?v=a234567890A", "YouTube")
+    assert state._source_hash(first["url"]) == state._source_hash(alternate["url"])
+    assert state._source_hash(first["url"]) != state._source_hash(different["url"])
+    await state._record_source_used(
+        url=first["url"], kind="web", aliases=history_aliases(first), memory_dir=tmp_path,
+    )
+    selected = candidate_selection._select_phase1_links(
+        ["video"], {"video": {"links": [alternate, different]}}, total=4, profile=Profile(),
+    )
+    assert [item["url"] for item in selected] == [different["url"]]
+
+
 def test_retrieval_rotates_secondary_interests_without_dropping_main_interest():
     profile = Profile({("all", "独立解谜"): 3, ("all", "摄影"): 2, ("all", "足球"): 2})
     preferences = LocalPreferences(

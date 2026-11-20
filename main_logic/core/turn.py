@@ -25,7 +25,7 @@ import json
 import re
 import time
 from collections import deque
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 from datetime import datetime
 from fastapi import WebSocketDisconnect
 from main_logic.omni_realtime_client import OmniRealtimeClient
@@ -2913,6 +2913,7 @@ class TurnMixin:
         on_published: Callable[[float], None] | None = None,
         reply_owner: _ReplyTurn | None = None,
         publish_if: Callable[[], bool] | None = None,
+        publish_if_async: Callable[[], Awaitable[bool]] | None = None,
     ):
         """Qwen output transcription callback: usable for frontend display/cache/sync.
 
@@ -2992,6 +2993,8 @@ class TurnMixin:
         # ``None`` is reserved for this guarded rejection; ``False`` still
         # means the sync publish succeeded but the best-effort WebSocket send
         # did not.
+        if publish_if_async is not None and not await publish_if_async():
+            return None
         if not guarded_delivery_is_current():
             return None
 
@@ -3124,6 +3127,10 @@ class TurnMixin:
             )
         try:
             async def _do_send():
+                if publish_if_async is not None and (
+                    not await publish_if_async() or not guarded_delivery_is_current()
+                ):
+                    return False
                 if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                     await self.websocket.send_json(message)
                     return True

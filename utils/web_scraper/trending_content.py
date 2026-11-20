@@ -2290,7 +2290,7 @@ async def fetch_neko_community_feed(
             try:
                 async with asyncio.timeout(timeout):
                     async with httpx.AsyncClient(
-                        timeout=10.0, trust_env=True, follow_redirects=False,
+                        timeout=10.0, trust_env=urlparse(feed_api).scheme == "https", follow_redirects=False,
                     ) as client:
                         try:
                             status_code, payload = await _fetch_neko_community_payload(
@@ -2314,7 +2314,11 @@ async def fetch_neko_community_feed(
                     if not posts and _community_feed_collection(payload) != []:
                         raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
                     if recommendations is not None:
-                        posts = recommendations.preferences.profile.rank("community", posts)
+                        profile = recommendations.preferences.profile
+                        posts = [
+                            post for post in posts
+                            if profile.score("community", profile.match("community", post)) is not None
+                        ]
             except (httpx.HTTPError, TimeoutError, ValueError):
                 if recommendations is None or requires_account:
                     raise

@@ -104,7 +104,8 @@ class LocalPreferences:
             )
 
         if self.profile.features("music"):
-            return self.profile.rank("music", tracks)
+            # Profile ranking is stable, so artist feedback breaks ties.
+            return self.profile.rank("music", sorted(tracks, key=score, reverse=True))
         return sorted(tracks, key=score, reverse=True)
 
 

@@ -735,7 +735,10 @@ async def _fetch_phase1_followups(
     fetch_tasks: list[Any] = []
     fetch_labels: list[str] = []
 
-    if has_music_task and not parsed.get("music_pass"):
+    if has_music_task and (music_content or {}).get("verse_music_selection"):
+        if parsed.get("music_pass"):
+            music_content = None
+    elif has_music_task and not parsed.get("music_pass"):
         fetch_tasks.append(
             _fetch_music_with_fallback(
                 (music_content or {}).get("verse_keyword") or parsed.get("music_keyword") or "",

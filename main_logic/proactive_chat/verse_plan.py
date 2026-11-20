@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+from collections.abc import Iterator
 from urllib.parse import urlsplit
 
 import httpx
@@ -47,6 +48,7 @@ async def fetch_verse_plan(
             httpx.AsyncClient(
                 timeout=7.0,
                 follow_redirects=False,
+                trust_env=urlsplit(origin).scheme == "https",
             ) as client,
             client.stream(
                 "POST",
@@ -82,12 +84,12 @@ async def fetch_verse_plan(
         return None
 
 
-def select_verse_source(
+def iter_verse_sources(
     choices: list[dict],
     context: RecommendationContext,
     modes: set[str],
-) -> tuple[str, dict] | None:
-    """Keep the first cloud choice that can still be delivered on this device."""
+) -> Iterator[tuple[str, dict]]:
+    """Yield locally eligible choices in the order ranked by Verse."""
     profile = context.preferences.profile
     for item in choices:
         mode = item.get("mode")
@@ -98,7 +100,7 @@ def select_verse_source(
             if not isinstance(keyword, str) or not may_search_phrase(keyword):
                 continue
             if profile.score(mode, profile.match(mode, {"name": keyword})) is not None:
-                return mode, {"placeholder": True, "verse_keyword": keyword}
+                yield mode, {"placeholder": True, "verse_keyword": keyword}
             continue
         title, url, source, description = (
             item.get(field, "")
@@ -153,11 +155,11 @@ def select_verse_source(
             mode, profile.match(mode, link)
         ) is not None and not _should_skip_source(link_cooldown_key(link)):
             if mode == "meme":
-                return mode, {
+                yield mode, {
                     "placeholder": True,
                     "verse_meme": {
                         field: link[field] for field in ("title", "url", "source")
                     },
                 }
-            return mode, {"links": [link], "formatted_content": "", "raw_data": {}}
-    return None
+            else:
+                yield mode, {"links": [link], "formatted_content": "", "raw_data": {}}

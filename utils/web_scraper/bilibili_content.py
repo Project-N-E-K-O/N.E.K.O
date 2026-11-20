@@ -19,6 +19,7 @@ import re
 import time
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
+from weakref import WeakValueDictionary
 
 from utils.external_http_client import get_external_http_client
 from utils.logger_config import get_module_logger
@@ -42,7 +43,7 @@ _BILIBILI_TIMEZONE = timezone(timedelta(hours=8))
 
 _RESULT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _ENRICHMENT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_CACHE_LOCKS: dict[str, asyncio.Lock] = {}
+_CACHE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 class BilibiliEnrichmentPreempted(Exception):

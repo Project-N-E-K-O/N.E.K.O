@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from time import time
@@ -130,6 +131,47 @@ async def test_guest_preference_recalls_candidates_and_reaches_phase_one(
     [puzzle_pick] = [item for item in selected if item["url"] == puzzle["url"]]
     assert puzzle_pick["phase1_priority"]
     assert "NEKO_MATCH=HIGH" in prompt
+
+
+@pytest.mark.asyncio
+async def test_exclusion_in_baseline_video_metadata_applies_to_search_duplicate(monkeypatch):
+    video = {
+        "title": "独立解谜游戏", "url": "https://www.bilibili.com/video/BV1234567891", "source": "B站",
+    }
+    baseline = {**video, "description_hint": "专题同时包含竞技游戏"}
+    monkeypatch.setattr(sources, "_fetch_source", AsyncMock(return_value=(
+        "video", {"links": [baseline], "formatted_content": baseline["description_hint"]},
+    )))
+    monkeypatch.setattr(sources, "collect_interest_candidates", AsyncMock(return_value={"video": [video]}))
+    profile = Profile({("all", "独立解谜游戏"): 3}, {("video", "竞技游戏")})
+    result = await sources.collect_proactive_sources(
+        command=ProactiveChatCommand(), enabled_modes=["video"], lanlan_name="NEKO",
+        log=logging.getLogger(__name__), recommendations=RecommendationContext(
+            preferences=LocalPreferences(profile=profile),
+        ),
+    )
+    assert result["video"]["links"] == []
+    assert result["video"]["formatted_content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_public_news_queries_have_budget_for_a_serialized_backend(monkeypatch):
+    lock = asyncio.Lock()
+
+    async def search(topic, *, china):
+        async with lock:
+            await asyncio.sleep(0.08)
+            return [{"title": f"{topic}新闻", "url": f"https://example.test/{topic}"}]
+
+    monkeypatch.setattr(interest_retrieval, "_search_news", search)
+    monkeypatch.setattr(interest_retrieval, "_FETCH_TIMEOUT", 0.12)
+    monkeypatch.setattr(interest_retrieval, "_NEWS_FETCH_TIMEOUT", 0.6)
+    weights = {("all", "机械键盘"): 3, ("all", "游泳"): 3}
+    preferences = LocalPreferences(
+        profile=Profile(weights), search_permissions={key: SearchPermission(True) for key in weights},
+    )
+    result = await interest_retrieval.collect_interest_candidates(preferences, ["news"], locale="zh-CN")
+    assert {item["title"] for item in result["news"]} == {"机械键盘新闻", "游泳新闻"}
 
 
 @pytest.mark.asyncio

@@ -1198,6 +1198,7 @@ async def test_new_dialog_preference_sources_preserve_the_existing_context(tmp_p
         AIMessage(content="Try a guide", metadata={"chat_original_source": original}),
         HumanMessage(content="No original proof"),
     ]
+    monkeypatch.setattr(routes, "get_timestamp", lambda: "2026-11-20 12:00")
     plain = await routes._new_dialog(_NAME, render_language="en")
     structured = await routes._new_dialog(_NAME, render_language="en", preference_evidence=True)
     payload = json.loads(structured.body)

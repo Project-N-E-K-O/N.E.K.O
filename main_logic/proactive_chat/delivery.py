@@ -18,7 +18,7 @@
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from config import MEMORY_SERVER_PORT
 from config.prompts.prompts_proactive import build_proactive_action_note
@@ -228,6 +228,7 @@ async def _commit_proactive_delivery(
     log: logging.Logger | None = None,
     round_id: str | None = None,
     vision_consent_epoch: int | None = None,
+    delivery_is_current: Callable[[], Awaitable[bool]] | None = None,
 ) -> DeliveryCommit:
     """Build, feed, and atomically finish one proactive delivery.
 
@@ -236,7 +237,9 @@ async def _commit_proactive_delivery(
     """
     active_logger = log or logger
     # The TTS/commit critical sections recheck round ownership themselves.
-    delivery_round = {"expected_round_id": round_id} if round_id is not None else {}
+    delivery_round: dict[str, Any] = {"expected_round_id": round_id} if round_id is not None else {}
+    if delivery_is_current is not None:
+        delivery_round["delivery_is_current"] = delivery_is_current
     has_music_topic = "music" in active_channels
     primary_channel, source_links = build_proactive_response(
         source_tag,

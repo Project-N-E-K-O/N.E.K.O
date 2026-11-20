@@ -79,8 +79,13 @@ class ProactiveFeedbackRuntime:
             raise SyncFailure("session_changed")
 
     async def _json_request(self, method, path, token, owner, *, body=None, origin=None,
-                            response_limit=MAX_RESPONSE_BYTES):
+                            response_limit=MAX_RESPONSE_BYTES, prepare_body=None):
         await self._guard(owner, token)
+        if prepare_body is not None:
+            body = await prepare_body()
+            if body is None:
+                return None
+            await self._guard(owner, token)
         headers = {"Authorization": f"Bearer {token}"}
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -337,20 +342,31 @@ class ProactiveFeedbackRuntime:
             if not isinstance(token, str) or not token:
                 return
             vocabulary = await fetch_public_search_words(get_global_language_full() or "en")
-            sent = await asyncio.to_thread(self.store.pending_chat_interests, owner, vocabulary)
-            if await ais_privacy_mode_enabled():
+            sent = []
+
+            async def prepare_body():
+                nonlocal sent
+                if await ais_privacy_mode_enabled():
+                    return None
+                sent = await asyncio.to_thread(self.store.pending_chat_interests, owner, vocabulary)
+                query = {
+                    "version": VERSION, "account_id": str(owner["user_id"]),
+                    "events": [{**asdict(item.event), "game": item.game} for item in sent],
+                }
+                cached = self._chat_interest_revision
+                if cached is not None and cached[0] == owner["key"]:
+                    query["known_revision"] = cached[1]
+                return canonical_bytes(query)
+
+            try:
+                reply = await self._json_request(
+                    "POST", "/api/users/me/chat-interests/sync", token, owner,
+                    prepare_body=prepare_body, origin=origin, response_limit=1024 * 1024,
+                )
+            except SyncFailure as exc:
+                if exc.code == "authentication_required" and self._verified_sessions.get(owner["key"]) == token:
+                    self._verified_sessions.pop(owner["key"], None)
                 return
-            query = {
-                "version": VERSION, "account_id": str(owner["user_id"]),
-                "events": [{**asdict(item.event), "game": item.game} for item in sent],
-            }
-            cached = self._chat_interest_revision
-            if cached is not None and cached[0] == owner["key"]:
-                query["known_revision"] = cached[1]
-            reply = await self._json_request(
-                "POST", "/api/users/me/chat-interests/sync", token, owner,
-                body=canonical_bytes(query), origin=origin, response_limit=1024 * 1024,
-            )
             if not isinstance(reply, dict) or reply.get("version") != VERSION:
                 return
             revision = reply.get("revision")

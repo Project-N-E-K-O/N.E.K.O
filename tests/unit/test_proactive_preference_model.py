@@ -68,6 +68,42 @@ def test_chat_preferences_are_owner_scoped_and_rank_across_sources(tmp_path: Pat
     assert not store.local_preferences({"key": "account"}).profile.weights
 
 
+def test_durable_exclusions_survive_inferred_event_trimming(tmp_path):
+    now = int(time())
+    store = RecommendationStore(tmp_path / "preferences.sqlite3")
+    owner = {"key": "test-account"}
+    blocked = PreferenceEvent("blocked", "竞技游戏", "video", "exclude", -1, now - DAY)
+    old_affinity = PreferenceEvent("old-affinity", "摄影", "all", "explicit", 1, now - DAY)
+    new_affinity = PreferenceEvent("new-affinity", "摄影", "all", "explicit", -1, now)
+    inferred = [
+        PreferenceEvent(f"chat-{index}", "游泳", "all", "inferred", 1, now)
+        for index in range(2002)
+    ]
+    store.save_preferences(owner["key"], [blocked, old_affinity, new_affinity, *inferred])
+    preferences, events = store.preference_context(owner)
+    assert len(events) == 2002
+    assert preferences.profile.score("video", {blocked.feature}) is None
+    assert preferences.profile.score("video", {new_affinity.feature}) == -3
+    store.save_preferences(owner["key"], [
+        PreferenceEvent("unblock", blocked.feature, blocked.scope, "allow", 1, now + 1),
+    ])
+    assert store.local_preferences(owner).profile.score("video", {blocked.feature}) == 0
+
+
+def test_interest_upload_cannot_reuse_an_older_game_permission(tmp_path):
+    now = int(time())
+    store = RecommendationStore(tmp_path / "preferences.sqlite3")
+    owner = {"key": "test-account"}
+    older = PreferenceEvent("a" * 64, "独立解谜", "all", "inferred", 1, now - 1)
+    newer = PreferenceEvent("b" * 64, "独立解谜", "all", "inferred", 1, now)
+    store.save_preferences(owner["key"], [older, newer], permissions={
+        older.id: SearchPermission(True, True), newer.id: SearchPermission(True, False),
+    })
+    pending = store.pending_chat_interests(owner)
+    assert [interest.event for interest in pending] == [older, newer]
+    assert not any(interest.game for interest in pending)
+
+
 @pytest.mark.asyncio
 async def test_account_chat_interests_sync_without_requesting_community_candidates(
     tmp_path, monkeypatch

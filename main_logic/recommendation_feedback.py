@@ -497,7 +497,7 @@ class RecommendationStore:
             SyncedChatInterest(
                 PreferenceEvent(row["id"], row["feature"], row["scope"], row["kind"],
                                 row["direction"], row["at"]),
-                bool(row["game"]),
+                bool(row["game"]) and permission.game,
             )
             for row in rows
             if re.fullmatch(r"[0-9a-f]{64}", row["id"])
@@ -524,6 +524,7 @@ class RecommendationStore:
                    SELECT owner, id FROM recommendation_preferences WHERE owner=? AND id=?""",
                 ((owner_key, interest.event.id) for interest in (*sent, *received)),
             )
+            self._prune_preference_events(db, owner_key)
 
     @staticmethod
     def _save_preference_events(db, owner_key, events, permissions):
@@ -536,10 +537,35 @@ class RecommendationStore:
                 (owner, id, public, game) VALUES (?, ?, ?, ?)""",
                 ((owner_key, event.id, item.public, item.game)
                  for event in events if (item := permissions.get(event.id)) is not None))
+        RecommendationStore._prune_preference_events(db, owner_key)
+
+    @staticmethod
+    def _prune_preference_events(db, owner_key):
         db.execute("""DELETE FROM recommendation_preferences
             WHERE owner=? AND kind='inferred' AND at<?""", (owner_key, int(time.time()) - 30 * DAY))
+        # Explicit affinity and exclusion are independent durable settings. Keep
+        # each latest value, including allow events that clear older exclusions.
+        db.execute("""WITH durable AS (
+            SELECT id, row_number() OVER (
+                PARTITION BY scope, feature, kind='explicit' ORDER BY at DESC, id DESC
+            ) AS version FROM recommendation_preferences
+            WHERE owner=? AND kind IN ('explicit', 'exclude', 'allow')
+        ), latest_permission AS (
+            SELECT e.id, row_number() OVER (
+                PARTITION BY e.scope, e.feature ORDER BY e.at DESC, e.id DESC
+            ) AS version FROM recommendation_preferences e
+            JOIN recommendation_search_permissions s ON e.owner=s.owner AND e.id=s.id
+            WHERE e.owner=?
+        ) DELETE FROM recommendation_preferences WHERE owner=? AND id IN (
+            SELECT id FROM durable WHERE version>1
+            EXCEPT SELECT id FROM latest_permission WHERE version=1
+            EXCEPT SELECT s.id FROM recommendation_search_permissions s
+            LEFT JOIN recommendation_chat_interest_synced c ON s.owner=c.owner AND s.id=c.id
+            WHERE s.owner=? AND s.public=1 AND c.id IS NULL
+        )""", (owner_key, owner_key, owner_key, owner_key))
         db.execute("""DELETE FROM recommendation_preferences WHERE owner=? AND id IN (
-            SELECT id FROM recommendation_preferences WHERE owner=?
+            SELECT id FROM recommendation_preferences
+            WHERE owner=? AND kind NOT IN ('explicit', 'exclude', 'allow')
             ORDER BY at DESC, id DESC LIMIT -1 OFFSET 2000)""", (owner_key, owner_key))
 
     @staticmethod
@@ -550,7 +576,7 @@ class RecommendationStore:
                FROM recommendation_search_permissions s
                JOIN recommendation_preferences e ON e.owner=s.owner AND e.id=s.id
                WHERE e.owner=? AND (e.kind!='inferred' OR e.at>=?)
-               ORDER BY e.at DESC, e.id DESC LIMIT 2000""",
+               ORDER BY e.at DESC, e.id DESC""",
             (owner_key, cutoff),
         ):
             permissions.setdefault(
@@ -574,7 +600,7 @@ class RecommendationStore:
             events = [PreferenceEvent(**dict(row)) for row in db.execute(
                 """SELECT id, feature, scope, kind, direction, at FROM recommendation_preferences
                    WHERE owner=? AND (kind!='inferred' OR at>=?)
-                   ORDER BY at DESC, id DESC LIMIT 2000""", (owner["key"], int(cutoff)),
+                   ORDER BY at DESC, id DESC""", (owner["key"], int(cutoff)),
             )]
             search_permissions = self._search_permissions(db, owner["key"], int(cutoff))
             rows = db.execute(f"""SELECT r.track, r.decision, r.decision_event, moment.reason, moment.received_at,

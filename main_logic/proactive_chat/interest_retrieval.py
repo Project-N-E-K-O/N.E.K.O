@@ -25,6 +25,7 @@ _MAX_TOPICS_PER_SOURCE = 2
 _RESULT_LIMIT = 6
 _FETCH_TIMEOUT = 6.0
 _STEAM_FETCH_TIMEOUT = 10.0
+_NEWS_FETCH_TIMEOUT = 10.0  # Includes the search gateway's five-second start interval.
 _WEB_MODES = {"news", "video", "home", "community"}
 
 
@@ -143,7 +144,8 @@ async def _fetch_topic(mode: str, query: str, language: str, china: bool) -> lis
 
 
 async def collect_interest_candidates(
-    preferences: LocalPreferences, modes: list[str], *, locale: str | None
+    preferences: LocalPreferences, modes: list[str], *, locale: str | None,
+    include_excluded_metadata: bool = False,
 ) -> dict[str, list[dict]]:
     """Search original interest phrases concurrently with provider-specific adapters."""
     web_modes = [mode for mode in modes if mode in _WEB_MODES]
@@ -160,7 +162,7 @@ async def collect_interest_candidates(
     requests: dict[tuple[str, str], asyncio.Task[list[dict]]] = {}
 
     async def retrieve(source: str, topic: str) -> list[dict]:
-        limit = _STEAM_FETCH_TIMEOUT if source == "steam" else _FETCH_TIMEOUT
+        limit = {"news": _NEWS_FETCH_TIMEOUT, "steam": _STEAM_FETCH_TIMEOUT}.get(source, _FETCH_TIMEOUT)
         try:
             return await asyncio.wait_for(
                 _fetch_topic(source, topic, language, china), limit
@@ -204,12 +206,16 @@ async def collect_interest_candidates(
             for outcome in outcomes
             if isinstance(outcome, list)
             for item in outcome
-            if (profile.score(mode, profile.match(mode, item)) or 0) > 0
+            if ((score := profile.score(mode, profile.match(mode, item))) or 0) > 0
+            or (include_excluded_metadata and score is None)
         ]
 
     results = await asyncio.gather(*(collect_mode(mode) for mode in web_modes))
     return {
-        mode: profile.rank(mode, links)
+        mode: profile.rank(mode, links) + [
+            item for item in links
+            if include_excluded_metadata and profile.score(mode, profile.match(mode, item)) is None
+        ]
         for mode, links in zip(web_modes, results)
         if links
     }

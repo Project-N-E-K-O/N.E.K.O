@@ -795,6 +795,7 @@ class ProactiveMixin:
                         None if expected_round_id is None
                         else lambda: ProactiveMixin._proactive_round_owned(self, expected_round_id)
                     ),
+                    **({"publish_if_async": delivery_is_current} if delivery_is_current is not None else {}),
                 )
             except (asyncio.CancelledError, Exception) as exc:
                 if observation["started"]:
@@ -813,6 +814,8 @@ class ProactiveMixin:
                     "[%s] finish_proactive_delivery skip: final publish guard rejected",
                     self.lanlan_name,
                 )
+                return False
+            if delivery_is_current is not None and not await delivery_is_current():
                 return False
 
             # Flush per-turn AI-text buffer to activity tracker. The regular
