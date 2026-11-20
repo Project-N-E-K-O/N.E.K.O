@@ -242,13 +242,17 @@ test('a cancelled viewport restore cannot consume a newer restore target', async
     assert.equal(h.I.getPendingModelViewportRestoreBounds().height, 1080);
 });
 
-for (const type of ['live2d', 'mmd']) {
-    test(`${type}: cancelling during display lookup prevents a no-snap return from saving stale position`, async () => {
+for (const [type, shouldCancel] of [
+    ['live2d', true], ['live2d', false],
+    ['mmd', true], ['mmd', false]
+]) {
+    test(`${type}: ${shouldCancel ? 'cancelled return skips' : 'current return completes'} a no-snap save after display lookup`, async () => {
         const h = harness(type);
         const display = deferred();
         const persisted = [];
         let current = true;
-        h.window.electronScreen = { getCurrentDisplay: () => display.promise };
+        let displayQueries = 0;
+        h.window.electronScreen = { getCurrentDisplay: () => { displayQueries++; return display.promise; } };
         h.window.screen = { width: 1706, height: 1066 };
         h.context.console.debug = () => {};
         Object.assign(h.model, {
@@ -275,11 +279,15 @@ for (const type of ['live2d', 'mmd']) {
         }
         const settlement = h.I.settleReturnedModelBounds(true, { isCurrentSettlement: () => current });
         await flush();
-        h.depart();
-        current = false;
-        h.model.x = h.model.mesh.position.x = 900;
+        assert.equal(displayQueries, 1, 'the real save must reach its display lookup before cancellation');
+        if (shouldCancel) {
+            h.depart();
+            current = false;
+            h.model.x = h.model.mesh.position.x = 900;
+        }
         display.resolve({ screenX: 1, screenY: 1 });
         await settlement;
-        assert.equal(persisted.length, 0);
+        assert.equal(persisted.length, shouldCancel ? 0 : 1);
+        if (!shouldCancel) assert.equal(persisted[0][1].x, 500);
     });
 }
