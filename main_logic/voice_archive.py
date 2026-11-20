@@ -254,7 +254,11 @@ async def _write_queued_events(manager, queue):
                         _reject_unconsented_speech(manager, reset_sid)
                         log.warning('Voice archive retry reset failed', exc_info=True)
                     finally:
-                        pending_resets.pop(reset_sid, None)
+                        # A newer retry can replace this reset while SQLite is
+                        # committing it in the worker thread. Never pop that
+                        # newer control event with the older completion.
+                        if pending_resets.get(reset_sid) is reset_event:
+                            pending_resets.pop(reset_sid, None)
 
                 if sid in getattr(manager, '_owner_voice_archive_unconsented', set()):
                     continue
