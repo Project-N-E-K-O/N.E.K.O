@@ -273,6 +273,21 @@ def _mcp_notes(server: FakePluginServer, calls: list[str]) -> None:
     )
 
 
+async def test_visible_mcp_owner_change_during_direct_approval_stops_submission(server, hosts, tmp_path):
+    registered = entry("mcp_team_docs_search", "Search docs", name="[team_docs] search")
+    server.add_plugin(plugin("mcp_adapter", "MCP", [registered]), mcp_team_docs_search=_recording_tool([], "search"))
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(fine=[pick_plugin("mcp_adapter", registered["id"])]))
+    receipt = await _dispatch(host, "search docs")
+    pending = await wait_status(host, receipt.commission_id, "waiting_user")
+    assert pending.question()["category"] == "mcp_server"
+    # The public entry ID remains valid for both spellings, but the approved server differs.
+    registered["name"] = "[team] docs_search"
+    host.catalog.invalidate()
+    assert await host.answer(pending.id, "", choice="once", question_id=pending.question()["id"])
+    await host.brain.settle()
+    assert not server.run_requests and (await host.ledger.get(pending.id)).status == "failed"
+
+
 async def test_generic_mcp_entry_is_not_offered_even_without_a_denied_server(server, hosts, tmp_path):
     _mcp_notes(server, [])
     llm = FakeDecisionLLM(fine=[pick_plugin("mcp_adapter", "mcp_notes_search")])

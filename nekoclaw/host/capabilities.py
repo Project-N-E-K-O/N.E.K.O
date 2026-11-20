@@ -108,6 +108,18 @@ class Capability:
     # only to a task agent whose model can.
     needs_images: bool = False
 
+    def matches_entry(self, plugin: dict[str, Any], entry: dict[str, Any]) -> bool:
+        """Verify the catalog identity visible to the host, including the MCP server and tool."""
+        if plugin.get("id") != self.plugin_id or entry.get("id") != self.entry_id or plugin.get("passive"):
+            return False
+        if self.plugin_id != MCP_ADAPTER_PLUGIN_ID:
+            return self.kind == KIND_PLUGIN_ENTRY
+        candidates = capabilities_of_plugin({**plugin, "entries": [entry]})
+        return any(
+            item.available and item.id == self.id and item.kind == self.kind and item.permission_key == self.permission_key
+            for item in candidates
+        )
+
 
 # The two groups of built-in tools. A group's name is also its permission
 # category and the thing one commission occupies at a time.

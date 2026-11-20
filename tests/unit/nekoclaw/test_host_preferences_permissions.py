@@ -434,6 +434,23 @@ async def test_widening_a_rule_keeps_parallel_answers_and_queued_approvals(store
     assert not gate.grant_active(queued.grant_id)
 
 
+@pytest.mark.parametrize("mode", ["allow", "first_ask"])
+async def test_dsh_native_request_must_outlive_its_first_settings_read(store, monkeypatch, mode):
+    await store.set_mode("run_command", mode)
+    ask = Asker("once")
+    gate = PermissionGate(store, ask)
+    read = store.mode
+
+    async def end_during_read(category, key=None):
+        current = await read(category, key)
+        gate.end_run("commission")
+        return current
+
+    monkeypatch.setattr(store, "mode", end_during_read)
+    decision = await gate.check_native("commission", "run_command", detail={"tool": "native"})
+    assert not decision.allow and not ask.asked
+
+
 async def test_retired_binding_during_mode_read_denies_the_scoped_fast_path(store, monkeypatch):
     await store.set_mode("browser", "allow")
     gate = PermissionGate(store)

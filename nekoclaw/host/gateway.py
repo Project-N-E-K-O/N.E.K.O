@@ -1181,8 +1181,12 @@ class CapabilityGateway:
             conversation_id=commission.conversation_id,
             latest_user_request=commission.user_text,
             on_run_created=run_created,
+            matches_entry=capability.matches_entry,
             still_wanted=lambda: self._registry.plugins_enabled() and self._permissions.grant_active(permitted.grant_id),
         )
+        if outcome.reason == "entry_changed":
+            record.status, record.reason = "denied", "settings"
+            return _text(str(outcome.error), error=True)
         text = describe_result(entry, outcome, lang=commission.lang)
         terminal = plugin_terminal_status(outcome.success, outcome.data)
         await self._ledger.append_event(

@@ -913,6 +913,7 @@ class TaskBrain:
                 latest_user_request=commission.user_text,
                 on_progress=progress,
                 on_run_created=run_created,
+                matches_entry=capability.matches_entry,
                 still_wanted=still_wanted,
             )
         direct.status = plugin_terminal_status(outcome.success, outcome.data)
@@ -922,6 +923,8 @@ class TaskBrain:
             # call that failed.
             await self._overturn_switched_off(commission)
             return
+        if outcome.reason == "entry_changed":
+            stopped_for = "denied"
         if stopped_for:
             direct.status, direct.reason = "denied", "settings"
             await self._overturn_no_capability(commission, "plugin unavailable before submission", reason=stopped_for)

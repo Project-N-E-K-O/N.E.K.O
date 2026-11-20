@@ -583,14 +583,18 @@ class PermissionGate:
         """ACP knows the operation, not the native tool owner's registration identity."""
         if category not in {"workdir_files", "outside_read", "outside_write", "run_command", "other"}:
             return PermissionDecision(False, DENIED_BY_SETTINGS)
+        live = self.current_run(commission_id)
         mode = await self._store.mode(category)
+        if not live():
+            return PermissionDecision(False, DENIED_NO_ANSWER)
         if mode in ("allow", "deny"):
             return PermissionDecision(mode == "allow", DENIED_BY_SETTINGS if mode == "deny" else None)
-        work = self._work.setdefault(commission_id, object())
         decision = await self.ask_each_time(commission_id, category, detail=detail)
+        if not live():
+            return PermissionDecision(False, DENIED_NO_ANSWER)
         if await self._store.mode(category) == "deny":
             return PermissionDecision(False, DENIED_BY_SETTINGS)
-        if self._work.get(commission_id) is not work:
+        if not live():
             return PermissionDecision(False, DENIED_NO_ANSWER)
         return decision
 

@@ -601,6 +601,23 @@ async def test_gateway_observes_the_plugin_switch_after_asking(host, server, mon
     assert result["isError"] and not server.run_requests
 
 
+async def test_gateway_refuses_a_different_mcp_target_on_the_same_catalog_entry(host, server):
+    _mcp(server)
+    grant = _grant(host, await _commission(host))
+
+    async def change_target(_cid, _question):
+        registered = next(item for item in server.catalog if item["id"] == "mcp_adapter")
+        target = next(item for item in registered["entries"] if item["id"] == "mcp_notes_search")
+        target["name"] = "[other] search"
+        host.catalog.invalidate()
+        return "once"
+
+    host.permissions.set_asker(change_target)
+    result = await _call(host, grant, CALL_TOOL, {"name": "mcp__notes__search"})
+    assert result["isError"] and "approved plugin entry has changed" in _text(result)
+    assert not server.run_requests
+
+
 async def test_plugin_entries_can_be_forbidden_in_the_settings(host, server):
     _catalog(server)
     await host.permission_store.set_mode("plugin_entry", "deny")
