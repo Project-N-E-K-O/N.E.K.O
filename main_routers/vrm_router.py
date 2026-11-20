@@ -41,6 +41,8 @@ from fastapi.responses import JSONResponse
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json_async, read_json_async
+from utils.frontend_utils import _resolve_workshop_search_dir
+from utils.url_utils import is_utf8_text
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api/model/vrm", tags=["vrm"])
@@ -50,6 +52,7 @@ logger = get_module_logger(__name__, "Main")
 VRM_USER_PATH = "/user_vrm"  
 VRM_STATIC_PATH = "/static/vrm"
 VRM_STATIC_ANIMATION_PATH = "/static/vrm/animation"
+VRM_WORKSHOP_PATH = "/workshop"
 
 # File-upload constants.
 MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
@@ -254,12 +257,16 @@ async def get_vrm_models():
 
         models = []
         seen_urls = set()  # Use a set to deduplicate by URL.
+        skipped = 0  # Non-UTF-8 names cannot be quoted or serialized (#3230).
 
         # 1. Find project VRM files (static/vrm/).
         project_root = config_mgr.project_root
         static_vrm_dir = project_root / "static" / "vrm"
         if static_vrm_dir.exists():
             for vrm_file in _iter_vrm_model_files(static_vrm_dir):
+                if not is_utf8_text(vrm_file.name):
+                    skipped += 1
+                    continue
                 url = f"/static/vrm/{quote(vrm_file.name, safe='')}"
                 # Skip existing URLs to avoid duplicates.
                 if url in seen_urls:
@@ -281,6 +288,9 @@ async def get_vrm_models():
         vrm_dir = config_mgr.vrm_dir
         if vrm_dir.exists():
             for vrm_file in _iter_vrm_model_files(vrm_dir):
+                if not is_utf8_text(vrm_file.name):
+                    skipped += 1
+                    continue
                 url = f"{VRM_USER_PATH}/{quote(vrm_file.name, safe='')}"
                 # Skip existing URLs to avoid duplicates.
                 if url in seen_urls:
@@ -310,6 +320,9 @@ async def get_vrm_models():
                         # Check installation directory for .vrm files.
                         for filename in os.listdir(installed_folder):
                             if filename.lower().endswith('.vrm'):
+                                if not is_utf8_text(filename):
+                                    skipped += 1
+                                    continue
                                 url = f"/workshop/{item_id}/{quote(filename, safe='')}"
                                 if url in seen_urls:
                                     continue
@@ -332,6 +345,9 @@ async def get_vrm_models():
                             if os.path.isdir(subdir_path):
                                 for filename in os.listdir(subdir_path):
                                     if filename.lower().endswith('.vrm'):
+                                        if not (is_utf8_text(subdir) and is_utf8_text(filename)):
+                                            skipped += 1
+                                            continue
                                         url = f"/workshop/{item_id}/{quote(subdir, safe='')}/{quote(filename, safe='')}"
                                         if url in seen_urls:
                                             continue
@@ -351,6 +367,8 @@ async def get_vrm_models():
         except Exception as e:
             logger.error(f"获取创意工坊VRM模型时出错: {e}")
 
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VRM 模型")
         return JSONResponse(content={
             "success": True,
             "models": models
@@ -658,7 +676,39 @@ def _get_model_path(model_name: str) -> tuple[Path | None, str]:
         if model_path is not None:
             return model_path, url_prefix
 
+    # /models lists Workshop VRMs too, so the emotion manager can pick them (#3379).
+    for item_dir in _iter_workshop_vrm_dirs():
+        try:
+            model_path = _find_vrm_model_file(item_dir, model_name)
+        except ValueError:
+            continue
+        if model_path is not None:
+            return model_path, VRM_WORKSHOP_PATH
+
     return None, ""
+
+
+def _iter_workshop_vrm_dirs():
+    """Yield installed Workshop item folders and their direct subfolders.
+
+    Mirrors the depth /models scans, but reads the local Workshop root that the
+    /workshop mount serves instead of querying Steam, so a lookup stays cheap
+    and works while Steam is unavailable.
+    """
+    workshop_root = _resolve_workshop_search_dir()
+    if not workshop_root:
+        return
+    try:
+        item_dirs = sorted(p for p in Path(workshop_root).iterdir() if p.name.isdigit() and p.is_dir())
+    except OSError as e:
+        logger.warning(f"读取创意工坊目录失败: {e}")
+        return
+    for item_dir in item_dirs:
+        yield item_dir
+        try:
+            yield from sorted(p for p in item_dir.iterdir() if p.is_dir())
+        except OSError:
+            continue
 
 
 def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:

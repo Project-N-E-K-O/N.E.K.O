@@ -45,6 +45,7 @@ from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json_async
 from utils.logger_config import get_module_logger
+from utils.url_utils import is_utf8_text
 
 router = APIRouter(prefix="/api/model/mmd", tags=["mmd"])
 logger = get_module_logger(__name__, "Main")
@@ -579,6 +580,7 @@ async def get_mmd_models():
         config_mgr = get_config_manager()
         models = []
         seen_urls = set()
+        skipped = 0  # Non-UTF-8 names cannot be serialized or requested (#3230).
 
         # 1. Project static/mmd/, recursively.
         project_root = config_mgr.project_root
@@ -587,6 +589,9 @@ async def get_mmd_models():
             for ext in ALLOWED_MODEL_EXTENSIONS:
                 for model_file in static_mmd_dir.rglob(f'*{ext}'):
                     rel_path = model_file.relative_to(static_mmd_dir)
+                    if not is_utf8_text(rel_path.as_posix()):
+                        skipped += 1
+                        continue
                     url = f"/static/mmd/{rel_path.as_posix()}"
                     if url in seen_urls:
                         continue
@@ -613,6 +618,9 @@ async def get_mmd_models():
                             continue
                     except (ValueError, IndexError):
                         continue
+                    if not is_utf8_text(rel_path.as_posix()):
+                        skipped += 1
+                        continue
                     url = f"{MMD_USER_PATH}/{rel_path.as_posix()}"
                     if url in seen_urls:
                         continue
@@ -634,6 +642,9 @@ async def get_mmd_models():
             # Usually failed-import residue; list so users can delete.
             for item in mmd_dir.iterdir():
                 if item.is_dir() and item.name not in RESERVED_DIRS and item.name not in found_top_dirs:
+                    if not is_utf8_text(item.name):
+                        skipped += 1
+                        continue
                     models.append({
                         "name": item.name,
                         "filename": "",
@@ -662,6 +673,9 @@ async def get_mmd_models():
                                     rel_path = model_file.relative_to(installed_path)
                                 except ValueError:
                                     continue
+                                if not is_utf8_text(rel_path.as_posix()):
+                                    skipped += 1
+                                    continue
                                 url = f"/workshop/{item_id}/{rel_path.as_posix()}"
                                 if url in seen_urls:
                                     continue
@@ -680,6 +694,8 @@ async def get_mmd_models():
         except Exception as e:
             logger.error(f"获取创意工坊MMD模型时出错: {e}")
 
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 MMD 模型")
         return JSONResponse(content={"success": True, "models": models})
     except Exception as e:
         logger.error(f"获取 MMD 模型列表失败: {e}")

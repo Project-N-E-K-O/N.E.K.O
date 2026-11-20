@@ -28,6 +28,31 @@ def encode_url_path(path: str) -> str:
     return '/'.join(encoded_parts)
 
 
+
+def is_utf8_text(value: str) -> bool:
+    """Whether ``value`` can be encoded as UTF-8.
+
+    On POSIX, names whose bytes are not valid UTF-8 (e.g. a ZIP extracted with a
+    GBK or Shift-JIS name) come back from ``os.listdir`` with lone surrogates.
+    Such a name can be neither URL-quoted nor written into a JSON response, and
+    no browser request can address the file, so model lists skip it.
+    """
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def drop_non_utf8_entries(entries: list) -> tuple[list, int]:
+    """Return ``(kept, skipped_count)``, dropping dict entries with a non-UTF-8 string value."""
+    kept = []
+    for entry in entries:
+        values = entry.values() if isinstance(entry, dict) else (entry,)
+        if all(is_utf8_text(value) for value in values if isinstance(value, str)):
+            kept.append(entry)
+    return kept, len(entries) - len(kept)
+
 # The scheme's optional default port: specifying or omitting it identifies the same endpoint.
 _DEFAULT_PORTS = {'http': '80', 'https': '443', 'ws': '80', 'wss': '443'}
 

@@ -512,7 +512,7 @@ class MMDCore {
             this._updateLoadingOverlay(loadingSessionId, 'model');
             const mmd = await new Promise((resolve, reject) => {
                 loader.load(
-                    modelUrl,
+                    MMDCore.toRequestUrl(modelUrl),
                     (mmd) => {
                         this._pendingMmd = mmd;
                         resolve(mmd);
@@ -873,11 +873,35 @@ class MMDCore {
 
     // ═══════════════════ 模型信息 ═══════════════════
 
+    /**
+     * Local model URL for the request only. Character config and model lists keep
+     * raw file names (the identity used for preferences and config names), so
+     * '#', '?' and '%' must be escaped here or the browser reads them as URL
+     * syntax (#3379). Valid %XX runs are decoded once first, the same rule as
+     * getConfigName, so an already-encoded path is not encoded twice.
+     */
+    static toRequestUrl(modelUrl) {
+        if (typeof modelUrl !== 'string') return modelUrl;
+        const paths = window.MMD_PATHS || {};
+        const prefixes = ['/user_mmd/', '/static/mmd/', '/workshop/'];
+        for (const prefix of [paths.user_mmd, paths.static_mmd]) {
+            if (typeof prefix === 'string' && prefix.startsWith('/')) prefixes.push(prefix.replace(/\/*$/, '/'));
+        }
+        if (!prefixes.some(prefix => modelUrl.startsWith(prefix))) return modelUrl;
+        return modelUrl.split('/').map(segment => encodeURIComponent(
+            segment.replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
+                try { return decodeURIComponent(encoded); }
+                catch (_) { return encoded; }
+            })
+        )).join('/');
+    }
+
     // 与后端模型列表的 Path.stem 一致；内部模型名仍仅用于展示元信息。
     static getConfigName(modelUrl) {
         if (typeof modelUrl !== 'string' || !modelUrl) return '';
         try {
-            const filename = new URL(modelUrl, window.location.href).pathname.split('/').pop();
+            // Raw local names may contain '#' or '?'; escape them before URL parsing.
+            const filename = new URL(MMDCore.toRequestUrl(modelUrl), window.location.href).pathname.split('/').pop();
             // Backend URLs can contain literal percent signs. Decode valid runs once,
             // without rejecting the entire filename or double-decoding escaped names.
             return filename.replace(/(?:%[0-9a-f]{2})+/gi, encoded => {

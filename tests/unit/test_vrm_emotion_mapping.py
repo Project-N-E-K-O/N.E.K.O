@@ -43,6 +43,8 @@ def vrm_api(tmp_path, monkeypatch):
         "get_subscribed_workshop_items",
         AsyncMock(return_value={"success": True, "items": []}),
     )
+    # Never resolve the real Workshop folder; tests that need one point it at tmp_path.
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: None)
     app = FastAPI()
     app.include_router(vrm_router.router)
     app.include_router(live2d_models.router)
@@ -536,3 +538,61 @@ def test_resolved_paths_cannot_escape_their_directory(vrm_api, tmp_path, locatio
     else:
         assert vrm_router._get_model_path(name) == (None, "")
     assert outside.read_bytes() == b"outside sentinel"
+
+
+@pytest.mark.parametrize("model_name", ["Cool Model", "猫娘#1%"])
+@pytest.mark.parametrize("subdir", ["", "nested"])
+def test_workshop_model_emotion_mapping_roundtrip(vrm_api, tmp_path, monkeypatch, model_name, subdir):
+    """#3379: Workshop VRMs are listed in the emotion manager, so saving must find them."""
+    client, config = vrm_api
+    workshop_root = tmp_path / "workshop"
+    item = workshop_root / "123"
+    directory = item / subdir
+    directory.mkdir(parents=True)
+    (directory / f"{model_name}.VRM").write_bytes(b"glTF")
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    monkeypatch.setattr(vrm_router, "get_subscribed_workshop_items", AsyncMock(return_value={
+        "success": True, "items": [{"installedFolder": str(item), "publishedFileId": "123"}],
+    }))
+    listed = client.get(f"{API}/models").json()["models"]
+    assert [model["name"] for model in listed] == [model_name]
+
+    url = f"{API}/emotion_mapping/{quote(model_name, safe='')}"
+    mapping = {"happy": ["workshop smile"]}
+    saved = client.post(url, json=mapping)
+    assert saved.status_code == 200
+    assert saved.json()["success"] is True
+    assert client.get(url).json()["config"] == mapping
+    config_path = config.project_root / "static" / "vrm" / "configs" / f"{model_name}_emotion.json"
+    assert json.loads(config_path.read_text(encoding="utf-8")) == mapping
+    assert vrm_router._get_model_path(model_name) == ((directory / f"{model_name}.VRM").resolve(), "/workshop")
+
+
+def test_workshop_lookup_matches_listing_depth_only(vrm_api, tmp_path, monkeypatch):
+    client, config = vrm_api
+    workshop_root = tmp_path / "workshop"
+    (workshop_root / "123" / "a" / "b").mkdir(parents=True)
+    (workshop_root / "123" / "a" / "b" / "Deep.vrm").write_bytes(b"glTF")
+    (workshop_root / "not-an-item").mkdir()
+    (workshop_root / "not-an-item" / "Loose.vrm").write_bytes(b"glTF")
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    for model_name in ("Deep", "Loose"):
+        response = client.post(f"{API}/emotion_mapping/{model_name}", json={"happy": ["smile"]})
+        assert response.status_code == 404
+    assert not (config.project_root / "static" / "vrm" / "configs").exists()
+
+
+def test_workshop_lookup_rejects_items_that_escape_their_folder(vrm_api, tmp_path, monkeypatch):
+    client, config = vrm_api
+    workshop_root = tmp_path / "workshop"
+    (workshop_root / "123").mkdir(parents=True)
+    outside = tmp_path / "outside.vrm"
+    outside.write_bytes(b"glTF")
+    try:
+        (workshop_root / "123" / "Escape.vrm").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    response = client.post(f"{API}/emotion_mapping/Escape", json={"happy": ["smile"]})
+    assert response.status_code == 404
+    assert not (config.project_root / "static" / "vrm" / "configs").exists()
