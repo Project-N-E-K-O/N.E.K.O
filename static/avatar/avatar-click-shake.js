@@ -215,11 +215,13 @@
             // 气还没消：这一下当作没点
             return { count: 0, angry: true, allowTouchSet: false, comboId: 0 };
         }
+        // 剧场内外各算各的：进出剧场都从第 1 下重新数，剧场里攒的次数不带到剧场外
+        const theater = isTheaterBlockingChat();
         if (!combo || combo.element !== element || combo.character !== character
-                || now - combo.lastAt > COMBO_WINDOW_MS) {
+                || combo.theater !== theater || now - combo.lastAt > COMBO_WINDOW_MS) {
             resetCombo();
             comboSeq += 1;
-            combo = { id: comboSeq, element, character, count: 0, lastAt: 0, voiceTimer: 0 };
+            combo = { id: comboSeq, element, character, theater, count: 0, lastAt: 0, voiceTimer: 0 };
         }
         const state = combo;
         state.count += 1;

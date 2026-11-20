@@ -587,6 +587,23 @@ test('reloading the model (character switch) clears the angry cooldown, so A -> 
     }
 });
 
+test('leaving the theater mid-combo starts counting again from the first tap', () => {
+    let theater = true;
+    const h = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => theater } });
+    for (let i = 0; i < 5; i++) {
+        h.shake.tap(h.canvas);
+        h.clock.advance(h.gap);
+    }
+    // 第 5 下在剧场里开了新的一串；不等连点窗口过去就离场再点
+    theater = false;
+    const after = h.shake.tap(h.canvas);
+    assert.deepEqual([after.count, after.angry, after.allowTouchSet], [1, false, true]);
+    assert.equal(peak(h.shakes.at(-1)).x, 4);
+    h.clock.advance(h.shake.COMBO_WINDOW_MS * 2);
+    assert.deepEqual(h.emotions, []);
+    assert.equal(h.sent.length, 0);
+});
+
 test('taps during the theater never leave a line queued for after it ends', () => {
     let theater = true;
     const h = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => theater } });
