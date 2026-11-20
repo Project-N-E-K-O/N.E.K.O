@@ -551,30 +551,43 @@ class RecommendationStore:
                 PARTITION BY scope, feature, kind='explicit' ORDER BY at DESC, id DESC
             ) AS version FROM recommendation_preferences
             WHERE owner=:owner AND kind IN ('explicit', 'exclude', 'allow')
+        ), permission_events AS (
+            SELECT e.id, e.scope, e.feature, e.kind, e.at, s.public
+            FROM recommendation_preferences e
+            JOIN recommendation_search_permissions s ON e.owner=s.owner AND e.id=s.id
+            WHERE e.owner=:owner
         ), latest_permission AS (
-            SELECT id, feature, public FROM (
-                SELECT e.id, e.feature, s.public, row_number() OVER (
-                    PARTITION BY e.scope, e.feature ORDER BY e.at DESC, e.id DESC
-                ) AS version FROM recommendation_preferences e
-                JOIN recommendation_search_permissions s ON e.owner=s.owner AND e.id=s.id
-                WHERE e.owner=:owner
+            SELECT id FROM (
+                SELECT id, row_number() OVER (
+                    PARTITION BY scope, feature ORDER BY at DESC, id DESC
+                ) AS version FROM permission_events
+                WHERE kind!='inferred' OR at>=:cutoff OR public=0
             ) WHERE version=1
+        ), permission_after_expiry AS (
+            SELECT id, feature, public FROM (
+                SELECT id, feature, public, row_number() OVER (
+                    PARTITION BY scope, feature ORDER BY at DESC, id DESC
+                ) AS version FROM permission_events
+                WHERE kind!='inferred' OR public=0
+            ) WHERE version=1
+        ), protected_permission AS (
+            SELECT id FROM latest_permission UNION SELECT id FROM permission_after_expiry
         ), compacted AS (
             SELECT id FROM durable WHERE version>1
-            EXCEPT SELECT id FROM latest_permission
+            EXCEPT SELECT id FROM protected_permission
             EXCEPT SELECT s.id FROM recommendation_search_permissions s
             LEFT JOIN recommendation_chat_interest_synced c ON s.owner=c.owner AND s.id=c.id
             WHERE s.owner=:owner AND s.public=1 AND c.id IS NULL
         ), expired AS (
             SELECT id FROM recommendation_preferences
             WHERE owner=:owner AND kind='inferred' AND at<:cutoff
-            EXCEPT SELECT id FROM latest_permission
+            EXCEPT SELECT id FROM permission_after_expiry
             WHERE public=0 AND feature IN (SELECT feature FROM durable)
         ), overflow AS (
             SELECT id FROM recommendation_preferences
             WHERE owner=:owner AND kind NOT IN ('explicit', 'exclude', 'allow')
               AND (kind!='inferred' OR at>=:cutoff)
-              AND id NOT IN (SELECT id FROM latest_permission)
+              AND id NOT IN (SELECT id FROM protected_permission)
             ORDER BY at DESC, id DESC LIMIT -1 OFFSET 2000
         ) DELETE FROM recommendation_preferences WHERE owner=:owner AND id IN (
             SELECT id FROM compacted UNION ALL SELECT id FROM expired UNION ALL SELECT id FROM overflow

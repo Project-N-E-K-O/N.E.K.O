@@ -321,12 +321,18 @@ class ProactiveFeedbackRuntime:
                     "upgrade_url": "https://github.com/Project-N-E-K-O/N.E.K.O/releases",
                     "retry_after_seconds": max(0, self._retry_at.get(owner["key"], 0) - self.clock())}
 
-    def _commit_chat_interests(self, owner, token, sent, received):
+    def _commit_chat_interests(self, owner, token, sent, received) -> bool:
+        from utils.preferences import locked_privacy_mode
+
         with self.attribution_context() as current_owner:
             snapshot = self.fenced_snapshot_provider() or {}
             if self._closing or current_owner != owner or snapshot.get("access_token") != token:
                 raise SyncFailure("session_changed")
-            self.store.complete_chat_interest_sync(owner, sent, received)
+            with locked_privacy_mode() as privacy_on:
+                if privacy_on:
+                    return False
+                self.store.complete_chat_interest_sync(owner, sent, received)
+                return True
 
     async def _sync_chat_interests(self):
         from utils.language_utils import get_global_language_full
@@ -385,7 +391,8 @@ class ProactiveFeedbackRuntime:
                     await asyncio.to_thread(self._commit_chat_interests, owner, token, sent, [])
                     return
                 if sent or received:
-                    await asyncio.to_thread(self._commit_chat_interests, owner, token, sent, received)
+                    if not await asyncio.to_thread(self._commit_chat_interests, owner, token, sent, received):
+                        return
                 self._chat_interest_revision = (owner["key"], revision) if revision else None
         except (SyncFailure, httpx.HTTPError, OSError, sqlite3.Error, RuntimeError, TimeoutError, ValueError, LockException):
             # The next cycle retries from SQLite without altering feedback sync state.

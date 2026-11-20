@@ -900,6 +900,14 @@ async def ais_privacy_mode_enabled() -> bool:
     return not settings.get('proactiveVisionEnabled', True)
 
 
+@contextmanager
+def locked_privacy_mode():
+    """Read privacy mode and hold its settings lock until the local operation finishes."""
+    with _locked_preferences_store(attribute=False):
+        settings = load_global_conversation_settings(strict=True)
+        yield not settings.get('proactiveVisionEnabled', True)
+
+
 def _load_preferences_data_for_write_unlocked() -> List[Dict[str, Any]]:
     """Load the latest write-root snapshot while the caller holds the lock.
 

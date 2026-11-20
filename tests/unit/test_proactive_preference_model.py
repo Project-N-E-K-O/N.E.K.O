@@ -18,6 +18,7 @@ from utils.proactive_preferences.personalization import (
 )
 from utils.proactive_preferences.preference_model import DAY, PreferenceEvent, Profile
 from utils.proactive_preferences.search_policy import SearchPermission
+from main_logic import recommendation_feedback
 from main_logic.recommendation_feedback import RecommendationStore
 from main_logic.proactive_chat import preference_capture
 from services.proactive_feedback import host as feedback_host
@@ -25,6 +26,15 @@ from services.proactive_feedback.host import owner_from_snapshot
 from services.proactive_feedback.runtime import ProactiveFeedbackRuntime
 from utils import preferences
 from utils.web_scraper import trending_content
+
+
+@pytest.fixture
+def privacy_settings_path(tmp_path, monkeypatch):
+    path = tmp_path / "user_preferences.json"
+    monkeypatch.setattr(preferences, "PREFERENCES_FILE", str(path))
+    monkeypatch.setattr(preferences, "_get_preferences_write_path", lambda: str(path))
+    monkeypatch.setattr(preferences, "_get_preferences_read_path", lambda: str(path))
+    return path
 
 
 def test_chat_preferences_are_owner_scoped_and_rank_across_sources(tmp_path: Path):
@@ -171,7 +181,7 @@ def test_preference_pruning_cannot_restore_superseded_public_permission(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_chat_interest_sync_pauses_when_privacy_changes_during_batch_read(tmp_path, monkeypatch):
+async def test_chat_interest_sync_pauses_when_privacy_changes_during_batch_read(tmp_path, monkeypatch, privacy_settings_path):
     origin = "https://preferences-community.example.test"
     saved = {"base_url": origin, "local_user_id": "account", "access_token": "synthetic"}
     owner = owner_from_snapshot(saved)
@@ -218,9 +228,80 @@ async def test_chat_interest_sync_pauses_when_privacy_changes_during_batch_read(
     assert pending(owner) == []
 
 
+@pytest.mark.parametrize("new_public_age", [29, 31])
+def test_expiring_public_inference_cannot_erase_underlying_private_permission(tmp_path, monkeypatch, new_public_age):
+    now = int(time())
+    clock = [now]
+    monkeypatch.setattr(recommendation_feedback, "time", SimpleNamespace(time=lambda: clock[0]))
+    store = RecommendationStore(tmp_path / "preferences.sqlite3")
+    owner = {"key": "test-account"}
+    topic = "蛙泳换气"
+    explicit = PreferenceEvent("a" * 64, topic, "all", "explicit", 1, now - 33 * DAY)
+    private = PreferenceEvent("b" * 64, topic, "all", "inferred", 1, now - 32 * DAY)
+    temporary_public = PreferenceEvent("c" * 64, topic, "all", "inferred", 1, now - new_public_age * DAY)
+    store.save_preferences(owner["key"], [explicit, private, temporary_public], permissions={
+        explicit.id: SearchPermission(True), private.id: SearchPermission(False),
+        temporary_public.id: SearchPermission(True),
+    })
+    assert bool(store.pending_chat_interests(owner)) == (new_public_age < 30)
+    clock[0] += 2 * DAY
+    store.save_preferences(owner["key"], [])
+    assert store.local_preferences(owner).search_permission("news", topic) == SearchPermission(False)
+    assert store.pending_chat_interests(owner) == []
+
+
+@pytest.mark.asyncio
+async def test_chat_interest_snapshot_is_not_committed_if_privacy_turns_on(tmp_path, monkeypatch, privacy_settings_path):
+    origin = "https://preferences-community.example.test"
+    saved = {"base_url": origin, "local_user_id": "account", "access_token": "synthetic"}
+    owner = owner_from_snapshot(saved)
+    store = RecommendationStore(tmp_path / "preferences.sqlite3")
+    remote = PreferenceEvent("e" * 64, "夜景摄影", "all", "explicit", 1, int(time()))
+    revision = "f" * 64
+    ready_to_commit = asyncio.Event()
+    release_commit = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def handler(_request):
+        return httpx.Response(200, json={"version": 1, "revision": revision, "events": [asdict(remote)]})
+
+    @contextmanager
+    def attribution():
+        loop.call_soon_threadsafe(ready_to_commit.set)
+        assert release_commit.wait(3)
+        yield owner
+
+    def set_privacy(enabled):
+        with preferences._locked_preferences_store(attribute=False):
+            privacy_settings_path.write_text(json.dumps([{
+                "model_path": preferences.GLOBAL_CONVERSATION_KEY,
+                "proactiveVisionEnabled": not enabled,
+            }]))
+
+    monkeypatch.setattr("services.proactive_feedback.runtime.fetch_public_search_words", AsyncMock(return_value=frozenset()))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        runtime = ProactiveFeedbackRuntime(
+            store, client=client, chat_interest_origin=origin, snapshot_provider=lambda: saved,
+            fenced_snapshot_provider=lambda: saved, attribution_context=attribution,
+        )
+        task = asyncio.create_task(runtime._sync_chat_interests())
+        try:
+            await asyncio.wait_for(ready_to_commit.wait(), 3)
+            await asyncio.to_thread(set_privacy, True)
+        finally:
+            release_commit.set()
+            await task
+        assert "夜景摄影" not in store.local_preferences(owner).profile.features("news")
+        assert runtime._chat_interest_revision is None
+        await asyncio.to_thread(set_privacy, False)
+        await runtime._sync_chat_interests()
+    assert "夜景摄影" in store.local_preferences(owner).profile.features("news")
+    assert runtime._chat_interest_revision == (owner["key"], revision)
+
+
 @pytest.mark.asyncio
 async def test_account_chat_interests_sync_without_requesting_community_candidates(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, privacy_settings_path
 ):
     now = int(time())
     origin = "https://preferences-community.example.test"
@@ -343,6 +424,7 @@ async def test_account_chat_interests_sync_without_requesting_community_candidat
 async def test_sync_drains_upload_backlog_before_merging_account_snapshot(
     tmp_path,
     monkeypatch,
+    privacy_settings_path,
 ):
     from utils.proactive_preferences.preference_model import SYNC_BATCH_LIMIT
 
