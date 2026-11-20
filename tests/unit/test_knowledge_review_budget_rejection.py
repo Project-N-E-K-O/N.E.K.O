@@ -182,3 +182,28 @@ async def test_refused_rollback_keeps_a_registered_index_usable_without_a_model(
         assert await service._index_round() == 0
         assert not service._pending_chunk_reconcile
         assert service._registry.packs[previous.pack_id] == previous
+
+
+async def test_startup_refusal_counts_kept_rows_before_any_admission(tmp_path, monkeypatch):
+    """Rows left by an unfinished replacement may outnumber the registry; capacity must see them."""
+    async with _installed(tmp_path) as (original, _raw_pack):
+        record = original._registry.packs["imp.example"]
+        entries = [{"title": f"Left {index}", "content": f"Unfinished replacement row {index}."} for index in range(4)]
+        leftover = decode_pack_bytes(_raw(_pack(record.pack_id, entries=entries)))
+        original._store.replace_pack(leftover, pack_sha256="c" * 64)
+        actual = original._store.chunk_stats(None)[record.pack_id]["total"]
+        assert actual > record.chunks
+        await original.stop()
+        _limit(monkeypatch, "pack")
+        reopened = KnowledgeService(original.root, embedder=ArchiveProvider())
+        await reopened.start()
+        try:
+            await _stop_automatic_indexer(reopened)
+            assert reopened._broken_packs == (record.pack_id,)
+            # Counted at startup, before any admission can rely on it.
+            assert reopened._registry.packs[record.pack_id].chunks == actual
+            others = sum(item.chunks for key, item in reopened._registry.packs.items() if key != record.pack_id)
+            monkeypatch.setattr(module, "MAX_TOTAL_CHUNKS", others + actual)
+            assert (await reopened.import_pack(_raw(_pack("imp.third"))))["reason"] == "capacity_chunks"
+        finally:
+            await reopened.stop()

@@ -609,6 +609,12 @@ class KnowledgeService:
                 # rows/record and use the existing reimport repair path. Do not
                 # let it reach _open_blocking's database replacement fallback.
                 broken.append(pack_id)
+                # The kept rows (e.g. an unfinished replacement) may outnumber
+                # the registered count. Count whichever is larger, so capacity
+                # is never underestimated while the pack waits for repair.
+                kept = chunk_counts.get(pack_id, {}).get("total", 0)
+                if kept > record.chunks:
+                    registry = registry.with_pack(replace(record, chunks=kept))
                 logger.warning("[Knowledge] rebuild of pack %s exceeds the chunk budget", pack_id)
                 continue
             options, chunks = plan
