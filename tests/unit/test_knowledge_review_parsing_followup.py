@@ -81,9 +81,13 @@ def test_blank_pdf_operators_are_distinguished_from_actual_image_operations(kind
         assert parse_source("blank-page.pdf", _pdf_with_artwork(kind), SourceLimits())["content"] == "A complete private reference."
 
 
-@pytest.mark.parametrize("filename,raw", [("sheets.xlsx", _xlsx_bytes("A", sheet_count=2)),
-                                          ("notes.pptx", _pptx_bytes("Slide", "Notes"))])
-def test_office_character_budget_counts_separator_between_parts(filename, raw):
+# Builders, not bytes: ZIP members carry the current time, so byte parameters
+# could differ between xdist workers and break collection.
+@pytest.mark.parametrize("filename,build", [("sheets.xlsx", lambda: _xlsx_bytes("A", sheet_count=2)),
+                                            ("notes.pptx", lambda: _pptx_bytes("Slide", "Notes"))],
+                         ids=["xlsx", "pptx"])
+def test_office_character_budget_counts_separator_between_parts(filename, build):
+    raw = build()
     full = document_parser.parse_document(filename, "", raw)
     limit = full["chars"] - 2
     bounded = document_parser.parse_document(filename, "", raw,

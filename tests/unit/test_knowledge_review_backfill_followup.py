@@ -1,5 +1,7 @@
 """Exercise recovery and row identity across deferred knowledge backfill."""
 
+import asyncio
+
 import pytest
 
 from knowledge import service as module
@@ -193,3 +195,29 @@ async def test_archive_capacity_and_index_rebuild_preserve_the_installed_plan(tm
         assert provider.calls == []
     finally:
         await rebuilt.stop()
+
+
+async def test_rollback_restore_keeps_the_installed_archive_plan_and_its_vectors(tmp_path, monkeypatch):
+    """A failed update's rollback rebuilds the old archive install with its own rows, not a local split."""
+    pack, path, _checked, spec = _archive(tmp_path)
+
+    class ArchiveProvider(TokenProvider):
+        def count_tokens(self, texts):
+            return [(len(text) + 1) // 2 for text in texts]
+
+    service = KnowledgeService(tmp_path / "library", embedder=ArchiveProvider())
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        result = await service.import_pack(path)
+        assert (await _finished(service, result))["state"] == "active"
+        previous = service._registry.packs[pack.pack_id]
+        assert previous.chunks == 97
+        # The same restore a failed replacement runs after writing SQLite.
+        service._store.delete_pack(pack.pack_id)
+        await asyncio.to_thread(service._restore_index_blocking, pack.pack_id, previous)
+        assert not service._pending_chunk_reconcile
+        stats = service._store.chunk_stats(spec["model_id"], specification=spec)[pack.pack_id]
+        assert stats == {"total": 97, "ready": 97, "failed": 0}
+    finally:
+        await service.stop()
