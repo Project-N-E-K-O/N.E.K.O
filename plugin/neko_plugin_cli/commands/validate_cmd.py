@@ -425,9 +425,15 @@ def _check_store_table(value: object, issues: list[tuple[str, str]]) -> None:
         return
     _warn_unknown_keys(value, {"enabled", "backend"}, "[plugin.store]", issues)
     _check_optional_bool(value, "enabled", "[plugin.store].enabled", issues)
-    backend = value.get("backend")
-    if backend is not None:
-        _check_enum(backend, "[plugin.store].backend", {"file", "sqlite", "memory"}, issues)
+    if "backend" in value:
+        # Still a known key so existing plugin.toml files keep passing, but the SDK
+        # only reads [plugin.store].enabled (resolve_store_enabled); backend is never read.
+        issues.append((
+            "warning",
+            "[plugin.store].backend is not read by the runtime and has no effect / "
+            "[plugin.store].backend 不会被运行时读取，写了没有效果 / "
+            "[plugin.store].backend はランタイムで読み取られないため、効果はありません",
+        ))
 
 
 def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
@@ -438,7 +444,8 @@ def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
         issues.append(("error", "[plugin.database] must be a table"))
         return
     _warn_unknown_keys(value, {"enabled", "name"}, "[plugin.database]", issues)
-    _check_optional_bool(value, "enabled", "[plugin.database].enabled", issues)
+    # The SDK applies bool() (resolve_db_config), so enabled = "false" would turn the database on.
+    _check_entry_bool(value.get("enabled"), "[plugin.database].enabled", issues, reader="the SDK")
     name = value.get("name")
     if name is None:
         return
@@ -838,15 +845,21 @@ def _check_entry_field_types(
             ))
 
 
-def _check_entry_bool(value: object, label: str, issues: list[tuple[str, str]]) -> None:
-    # Unlike _check_optional_bool, no string spelling is safe here: the registry
+def _check_entry_bool(
+    value: object,
+    label: str,
+    issues: list[tuple[str, str]],
+    *,
+    reader: str = "the registry",
+) -> None:
+    # Unlike _check_optional_bool, no string spelling is safe here: the reader
     # applies bool(), so "false", "no", "0" and "off" all read as True.
     if value is None or isinstance(value, bool):
         return
     if isinstance(value, str):
         issues.append((
             "error",
-            f"{label} must be true/false, not a string; the registry reads any non-empty string as true",
+            f"{label} must be true/false, not a string; {reader} reads any non-empty string as true",
         ))
         return
     issues.append(("error", f"{label} must be a boolean"))

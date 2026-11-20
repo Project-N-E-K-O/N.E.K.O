@@ -3051,3 +3051,24 @@ def test_validate_plugin_dir_warns_unknown_plugin_database_key(tmp_path: Path) -
     issues = _validate_with_extra_toml(tmp_path, '[plugin.database]\nenabled = true\npath = "x.db"')
 
     assert ("warning", "[plugin.database].path is not a recognized plugin.toml field") in issues
+
+
+@pytest.mark.parametrize("enabled", ['"false"', '"no"'])
+def test_validate_plugin_dir_rejects_string_plugin_database_enabled(tmp_path: Path, enabled: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f"[plugin.database]\nenabled = {enabled}")
+
+    assert (
+        "error",
+        "[plugin.database].enabled must be true/false, not a string; the SDK reads any non-empty string as true",
+    ) in issues
+
+
+@pytest.mark.parametrize("backend", ["file", "sqlite", "anything"])
+def test_validate_plugin_dir_warns_plugin_store_backend_is_not_read(tmp_path: Path, backend: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin.store]\nenabled = true\nbackend = "{backend}"')
+
+    store_issues = [(level, message) for level, message in issues if "[plugin.store]" in message]
+    assert len(store_issues) == 1
+    level, message = store_issues[0]
+    assert level == "warning"
+    assert message.startswith("[plugin.store].backend is not read by the runtime and has no effect")
