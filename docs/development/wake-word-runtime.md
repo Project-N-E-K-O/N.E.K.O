@@ -28,6 +28,26 @@ uv run --no-sync python -c 'import sherpa_onnx as s; print(s.__version__, s.vers
 
 `uv sync --extra wake-word` 现在只启用项目的空 extra，不会安装错误的上游 wheel。它可以用于同步项目其余依赖，但不会替代定制 runtime 的安装。
 
+## 发布新构建（维护者）
+
+`.github/workflows/wake-word-runtime.yml` 平时只把 wheel、`build-manifest.json`、native 测试程序和上游 sherpa-onnx 的 `LICENSE` 上传为保留 14 天的 Actions artifact。需要把一次构建发布成「修复资源」可用的固定附件时：
+
+1. 在 Actions 页手动运行 **Wake word runtime**，选择要构建的分支，`release_tag` 填一个新 tag（必须以 `wake-word-runtime-v` 开头，例如 `wake-word-runtime-v1.13.8-neko.kws3-win-py311`）。不填 `release_tag` 时只上传 artifact，和以往一样。
+2. 构建通过后，独立的 publish job（只有它有 `contents: write`）以本次运行的提交为 `--target` 新建这个 tag，并创建一个预发行版（prerelease，不标记为 latest），附件为 wheel、`build-manifest.json` 和 `sherpa-onnx-LICENSE.txt`。tag 或同名 Release（包括草稿）已存在时直接失败，从不替换已有附件；构建前也会先检查一次，避免白跑。
+3. Release 说明和运行摘要里给出新 wheel 的下载地址、字节数和 SHA256。把它们同步到 `main_logic/voice_input/wake_word/runtime_bundle.py` 的 `WHEEL_URL`、`WHEEL_BYTES`、`WHEEL_SHA256`（文件名或版本变化时同时改 `WHEEL_NAME` / `SUPPORTED_RUNTIME_VERSION`），走 PR 合并。
+4. 合并后手动运行 **Wake word runtime URL check**，`mode` 选 `full`，确认转绿。
+
+如果 publish job 在建好 tag 之后失败，重跑会因 tag 已存在而失败；先确认这个 tag 没有被代码引用，再由维护者手动删除 tag 后重跑，或换一个新 tag。
+
+## 下载地址巡检
+
+`.github/workflows/wake-word-runtime-url-check.yml` 防止固定附件丢失或被替换而长期无人发现。它通过 `scripts/check_wake_word_runtime_url.py` 从 `runtime_bundle.py` 读取上述常量（workflow 里不另存一份），请求不带任何 token：
+
+- 每天定时：匿名 HEAD 请求并跟随重定向，最终不是 2xx 即失败；对象存储对 HEAD 返回 403 时改用只取 1 字节的 `Range` GET，不下载整个 wheel。服务器给出总大小时也核对字节数。
+- 发布 Release（published）时，或手动运行并选择 `mode: full`：完整下载 wheel，核对字节数和 SHA256。Release 事件检查的是默认分支上的常量。注意由 workflow 自身 `GITHUB_TOKEN` 创建的 Release 不会触发其他 workflow，所以用上面的 publish job 发布后需要按第 4 步手动运行。
+
+这个检查变红说明用户点「修复资源」时下载会失败（或校验不通过），应尽快恢复附件或发布新构建并更新常量。本地可以用 `uv run --no-project --python 3.11 python scripts/check_wake_word_runtime_url.py --head`（或 `--full`）复现。
+
 ## 准备模型
 
 模型权重与 Python runtime 分开管理。使用下面的命令下载并校验固定 SHA-256 的模型归档：
