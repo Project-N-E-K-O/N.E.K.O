@@ -353,8 +353,7 @@ async def test_a_terminal_resets_the_per_turn_output_state():
     )
     assert client._image_recognized_this_turn is False
 
-    socket.finish()
-    await asyncio.wait_for(receive_loop, timeout=1)
+    await _finish_loop(socket, receive_loop)
 
 
 @pytest.mark.unit
@@ -378,8 +377,7 @@ async def test_response_created_resets_the_per_response_output_state():
     assert client._current_response_transcript == ""
     assert client._last_response_created_time > 0.0
 
-    socket.finish()
-    await asyncio.wait_for(receive_loop, timeout=1)
+    await _finish_loop(socket, receive_loop)
 
 
 @pytest.mark.unit
@@ -420,8 +418,7 @@ async def test_transcript_flush_failure_does_not_stop_the_receive_loop(monkeypat
     assert client._current_response_id == "resp-2"
     assert client._response_created_total == 2
 
-    socket.finish()
-    await asyncio.wait_for(receive_loop, timeout=1)
+    await _finish_loop(socket, receive_loop)
 
 
 @pytest.mark.unit
@@ -452,8 +449,7 @@ async def test_a_terminal_clears_the_in_progress_flags():
     )
     assert client._interrupted is False
 
-    socket.finish()
-    await asyncio.wait_for(receive_loop, timeout=1)
+    await _finish_loop(socket, receive_loop)
 
 
 @pytest.mark.unit
@@ -561,8 +557,7 @@ async def test_a_second_terminal_for_a_finished_turn_does_not_finalize_it_again(
         "late terminal"
     )
 
-    socket.finish()
-    await asyncio.wait_for(receive_loop, timeout=1)
+    await _finish_loop(socket, receive_loop)
 
 
 @pytest.mark.unit
@@ -600,8 +595,7 @@ async def test_a_raising_host_hook_does_not_skip_the_rotation():
 
     assert rotations == ["rotate"]
 
-    socket.finish()
-    await asyncio.wait_for(receive_loop, timeout=1)
+    await _finish_loop(socket, receive_loop)
 
 
 @pytest.mark.unit
@@ -633,8 +627,7 @@ async def test_a_terminal_rearms_analysis_on_a_non_native_image_provider():
         "turn with no cached frame has to re-arm it"
     )
 
-    socket.finish()
-    await asyncio.wait_for(receive_loop, timeout=1)
+    await _finish_loop(socket, receive_loop)
 
 
 @pytest.mark.unit
@@ -724,8 +717,7 @@ async def test_a_native_create_response_runs_through_the_arbiter_end_to_end():
     assert arbiter.is_busy is False
     assert arbiter.current_source is None
 
-    socket.finish()
-    await asyncio.wait_for(receive_loop, timeout=1)
+    await _finish_loop(socket, receive_loop)
 
 
 def _wired_client(api_type: str = "qwen", model: str = "qwen-omni-turbo-realtime"):
@@ -741,7 +733,10 @@ def _wired_client(api_type: str = "qwen", model: str = "qwen-omni-turbo-realtime
 
 async def _finish_loop(socket: _RecordingSocket, receive_loop: asyncio.Task) -> None:
     socket.finish()
-    await asyncio.wait_for(receive_loop, timeout=1)
+    # The teardown after EOF takes well under a millisecond here; the bound is a
+    # liveness check, not a latency budget. 10 s keeps a stalled Windows runner
+    # from reading as a hang, so a timeout here means the loop really is stuck.
+    await asyncio.wait_for(receive_loop, timeout=10)
 
 
 async def _ack_item_and_expect_create(socket: _RecordingSocket, index: int) -> None:
@@ -1358,8 +1353,7 @@ async def test_a_real_quota_error_still_closes_the_transport(error_payload):
     assert connection_errors, "the frontend must be told the session died"
 
     assert create.done()
-    socket.finish()
-    await asyncio.wait_for(receive_loop, timeout=1)
+    await _finish_loop(socket, receive_loop)
 
 
 # ---------------------------------------------------------------------------
