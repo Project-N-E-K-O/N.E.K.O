@@ -91,14 +91,28 @@ class SourceStore:
         """
         identity = _id(preview_id)
         for path in self.root.glob(f"*/previews/{identity}.json"):
-            preview = self.read(path)
-            if any(value.get("preview_id") == identity
-                   for value in self.versions(preview["pack_id"], preview["doc_id"])):
+            pack_folder = path.parent.parent
+            try:
+                preview = self.read(path)
+                versions = self.versions(preview["pack_id"], preview["doc_id"])
+            except (KnowledgePackError, ValueError, KeyError, TypeError):
+                # An unreadable preview record must still be deletable; only
+                # its pack's own version records can show that it was frozen.
+                versions = [self.read(item) for item in (pack_folder / "versions").glob("*.json")]
+            if any(value.get("preview_id") == identity for value in versions):
                 return False
             # The descriptive JSON goes last, so an interrupted delete can be
             # repeated by the same identity instead of orphaning the original.
             path.with_suffix(".original").unlink(missing_ok=True)
             path.unlink(missing_ok=True)
+            if not (pack_folder / "manifest.json").exists():
+                # A never-committed new pack existed only for previews. Remove
+                # its now-empty folders; a non-empty folder is left untouched.
+                for folder in (path.parent, pack_folder):
+                    try:
+                        folder.rmdir()
+                    except OSError:
+                        break
             return True
         return False
 

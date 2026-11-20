@@ -34,7 +34,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { knowledgeApi, knowledgeFailureReason, type KnowledgeDocumentPreview, type KnowledgePack } from '@/api/knowledge'
@@ -105,6 +105,13 @@ watch(() => targetPack.value?.pack_id, () => {
   acknowledged.value = false
 })
 watch(requiresAcknowledgment, () => { acknowledged.value = false })
+
+// Leaving the page through in-app navigation is also a cancel. Closing the
+// browser itself cannot be observed reliably and keeps the preview.
+onBeforeUnmount(() => {
+  generation += 1
+  dropPreview()
+})
 
 function close() {
   if (saving.value) return

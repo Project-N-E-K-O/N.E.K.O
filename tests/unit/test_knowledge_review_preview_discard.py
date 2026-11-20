@@ -123,3 +123,25 @@ async def test_commit_after_an_interrupted_discard_reports_a_missing_preview(ser
         await service.commit_source(value["preview_id"], value["sha256"])
     assert await service.discard_preview(value["preview_id"]) == {"deleted": True}
     assert _preview_files(tmp_path, value["preview_id"]) == []
+
+
+async def test_discard_removes_an_unreadable_preview_and_a_new_packs_empty_folders(service, tmp_path):
+    created = await service.preview_source("a.txt", b"Corrupted preview record.")
+    value = created["preview"]
+    record = next((tmp_path / "sources").rglob(f"previews/{value['preview_id']}.json"))
+    record.write_text("{not json")
+    assert await service.discard_preview(value["preview_id"]) == {"deleted": True}
+    assert _preview_files(tmp_path, value["preview_id"]) == []
+    # The never-committed new pack existed only for this preview.
+    assert not (tmp_path / "sources" / created["pack_id"]).exists()
+
+
+async def test_discard_keeps_an_existing_packs_folders(service, tmp_path):
+    value = (await service.preview_source("a.txt", b"First committed document."))["preview"]
+    result = await service.commit_source(value["preview_id"], value["sha256"])
+    assert (await _finished(service, result))["state"] == "active"
+    pack_id = result["pack_id"]
+    other = (await service.preview_source("b.txt", b"Cancelled addition.", pack_id=pack_id))["preview"]
+    assert await service.discard_preview(other["preview_id"]) == {"deleted": True}
+    assert (tmp_path / "sources" / pack_id / "manifest.json").exists()
+    assert len(_preview_files(tmp_path, value["preview_id"])) == 2

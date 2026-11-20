@@ -137,6 +137,16 @@ describe('source import privacy and identity', () => {
     expect(api.discardSourcePreview.mock.calls.slice(1).every(([value]) => value.preview_id === 'preview-2')).toBe(true)
   })
 
+  it('deletes an open preview when the component unmounts', async () => {
+    await mount()
+    button('Preview document').click()
+    await flush()
+    cleanup?.()
+    cleanup = undefined
+    await flush()
+    expect(api.discardSourcePreview).toHaveBeenCalledWith({ preview_id: 'preview-1' })
+  })
+
   it('keeps a committed preview when the dialog closes', async () => {
     const state = await mount()
     button('Preview document').click()

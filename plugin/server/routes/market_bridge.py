@@ -229,9 +229,10 @@ def _is_loopback_host(host: str) -> bool:
 def market_uses_environment_proxy(url: str) -> bool:
     """Route the configured market through environment proxies only when public.
 
-    Loopback HTTP, ``localhost`` and non-global addresses (a self-hosted LAN or
-    CGNAT/VPN market) stay direct, as they did before HTTPS proxy support; publication
-    and subscription download share this one rule.
+    Loopback HTTP, ``localhost`` and non-global IP literals (a self-hosted LAN
+    or CGNAT/VPN market addressed by IP) stay direct. Host names such as
+    ``nas.local`` are not resolved here; route them with ``NO_PROXY``.
+    Publication and subscription download share this one rule.
     """
     try:
         parsed = urlparse(url)
