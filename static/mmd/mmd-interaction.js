@@ -975,13 +975,25 @@ class MMDInteraction {
         this._isSnappingModel = true;
 
         return new Promise((resolve) => {
-            this._snapResolve = resolve;
-            const animate = (currentTime) => {
-                if (!isCurrentSettlement() || this.manager.currentModel?.mesh !== mesh) {
+            const animationToken = { isCurrentSettlement };
+            this._activeSnapAnimation = animationToken;
+            const finish = (result) => {
+                if (this._activeSnapAnimation === animationToken) {
+                    this._activeSnapAnimation = null;
                     this._isSnappingModel = false;
                     this._snapCancelFrame = null;
                     this._snapResolve = null;
-                    resolve(false);
+                }
+                resolve(result);
+            };
+            animationToken.cancel = () => {
+                if (this._activeSnapAnimation === animationToken) this._snapCancelFrame?.();
+                finish(false);
+            };
+            this._snapResolve = finish;
+            const animate = (currentTime) => {
+                if (this._activeSnapAnimation !== animationToken || !isCurrentSettlement() || this.manager.currentModel?.mesh !== mesh) {
+                    finish(false);
                     return;
                 }
                 const elapsed = currentTime - startTime;
@@ -998,10 +1010,7 @@ class MMDInteraction {
                     this._snapCancelFrame = this._scheduleSnapFrame(animate);
                 } else {
                     mesh.position.copy(targetPosition);
-                    this._isSnappingModel = false;
-                    this._snapCancelFrame = null;
-                    this._snapResolve = null;
-                    resolve(true);
+                    finish(true);
                 }
             };
 
@@ -1015,6 +1024,8 @@ class MMDInteraction {
      */
     async _snapModelIntoScreen({ animate = true, isCurrentSettlement = () => true } = {}) {
         if (!isCurrentSettlement()) return false;
+        const previousSnap = this._activeSnapAnimation;
+        if (previousSnap?.isCurrentSettlement?.() === false) previousSnap.cancel();
         if (this._isSnappingModel) return false;
         const mesh = this.manager.currentModel?.mesh;
         if (!mesh || !this.manager.camera || !this.manager.renderer || !THREE) return false;

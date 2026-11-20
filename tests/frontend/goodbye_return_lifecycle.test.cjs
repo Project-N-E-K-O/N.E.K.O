@@ -9,6 +9,44 @@ const read = name => fs.readFileSync(path.join(root, 'static/app/app-ui', name),
 const surfaceSource = read('surface-floating-controls.js');
 const types = ['live2d', 'vrm', 'mmd', 'pngtuber'];
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test('Live2D starts a new snap while a cancelled paced frame is still pending', async () => {
+    const source = fs.readFileSync(path.join(root, 'static/live2d/live2d-interaction.js'), 'utf8');
+    const start = source.indexOf('Live2DManager.prototype._performSnapAnimation =');
+    const end = source.indexOf('function getLive2DRendererPointer', start);
+    const frames = [];
+    const context = {
+        Live2DManager: function () {},
+        performance: { now: () => 0 },
+        SNAP_CONFIG: { animationDuration: 100, easingType: 'linear' },
+        EasingFunctions: { linear: value => value },
+        console: { log() {}, debug() {} },
+        scheduleLive2DSnapFrame: callback => frames.push(callback),
+    };
+    vm.runInNewContext(source.slice(start, end), context);
+    const manager = new context.Live2DManager();
+    manager._isModelReadyForInteraction = true;
+    manager._savePositionAfterInteraction = async () => {};
+    manager._checkSnapRequired = async () => ({ startX: 0, startY: 0, targetX: 200, targetY: 200 });
+    const model = { x: 0, y: 0 };
+    let current = true;
+    const previous = manager._performSnapAnimation(model, { startX: 0, startY: 0, targetX: 100, targetY: 100 }, {
+        isCurrentSettlement: () => current
+    });
+    current = false;
+    const next = manager._checkAndPerformSnap(model);
+    await flush();
+    assert.equal(frames.length, 2);
+    assert.equal(await previous, false);
+    frames[0](100);
+    assert.deepEqual(model, { x: 0, y: 0 });
+    assert.equal(manager._isSnapping, true);
+    frames[1](100);
+    assert.equal(await next, true);
+    assert.deepEqual(model, { x: 200, y: 200 });
+    assert.equal(manager._isSnapping, false);
+});
+
 function deferred() {
     let resolve;
     const promise = new Promise(done => { resolve = done; });

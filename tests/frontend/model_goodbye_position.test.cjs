@@ -156,6 +156,36 @@ function assertVisible(h) {
 }
 
 for (const type of ['vrm', 'mmd']) {
+    test(`${type}: a new return retires a delayed old snap without waiting for its frame`, async () => {
+        const h = await harness(type);
+        const interaction = h.manager.interaction;
+        const frames = [];
+        interaction._scheduleSnapFrame = callback => {
+            const frame = { callback, cancelled: false };
+            frames.push(frame);
+            return () => { frame.cancelled = true; };
+        };
+        const start = h.scene.position.clone();
+        let current = true;
+        const previous = interaction._animateModelToPosition(start, start.clone().addScalar(10), {
+            isCurrentSettlement: () => current
+        });
+        current = false;
+        const target = start.clone().addScalar(0.5);
+        interaction.clampModelPosition = () => target.clone();
+        const next = interaction._snapModelIntoScreen({ animate: true });
+        assert.equal(frames.length, 2, 'new settlement must schedule its own snap before the old timer fires');
+        assert.equal(await previous, false);
+        assert.equal(frames[0].cancelled, true);
+        frames[0].callback(1000); // Even a late callback must not clear the successor's ownership.
+        assert.ok(h.scene.position.equals(start));
+        assert.equal(interaction._isSnappingModel, true);
+        frames[1].callback(1000);
+        assert.equal(await next, true);
+        assert.ok(h.scene.position.equals(target));
+        assert.equal(interaction._isSnappingModel, false);
+    });
+
     test(`${type}: a superseded return stops its snap before writing another animation frame`, async () => {
         const h = await harness(type);
         const start = h.scene.position.clone();
