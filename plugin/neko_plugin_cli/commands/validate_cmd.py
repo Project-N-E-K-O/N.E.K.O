@@ -57,15 +57,28 @@ _STORE_BACKEND_IGNORED = {
 
 
 _DATABASE_NAME_INVALID = {
-    "en": "[plugin.database].name must be a plain file name, without folders, drive letters or \"..\"",
-    "zh-CN": "[plugin.database].name 必须是单纯的文件名，不能带目录、盘符或 \"..\"",
-    "zh-TW": "[plugin.database].name 必須是單純的檔案名稱，不能帶目錄、磁碟代號或 \"..\"",
-    "ja": "[plugin.database].name はフォルダー、ドライブ文字、\"..\" を含まない単純なファイル名にしてください",
-    "ko": "[plugin.database].name은 폴더, 드라이브 문자, \"..\" 없이 파일 이름만 써야 합니다",
-    "ru": "[plugin.database].name должно быть простым именем файла, без папок, букв дисков и \"..\"",
-    "es": "[plugin.database].name debe ser un nombre de archivo simple, sin carpetas, letras de unidad ni \"..\"",
-    "pt": "[plugin.database].name deve ser um nome de arquivo simples, sem pastas, letras de unidade ou \"..\"",
+    "en": "[plugin.database].name must be a plain file name that also works on Windows: "
+    "no folders, drive letters, \"..\", characters <>:\"/\\|?* or reserved names such as CON or NUL",
+    "zh-CN": "[plugin.database].name 必须是在 Windows 上也能用的单纯文件名：不能带目录、盘符、\"..\"、"
+    "字符 <>:\"/\\|?*，也不能用 CON、NUL 这类保留名",
+    "zh-TW": "[plugin.database].name 必須是在 Windows 上也能用的單純檔案名稱：不能帶目錄、磁碟代號、\"..\"、"
+    "字元 <>:\"/\\|?*，也不能用 CON、NUL 這類保留名稱",
+    "ja": "[plugin.database].name は Windows でも使える単純なファイル名にしてください。フォルダー、ドライブ文字、"
+    "\"..\"、文字 <>:\"/\\|?*、CON や NUL などの予約名は使えません",
+    "ko": "[plugin.database].name은 Windows에서도 쓸 수 있는 파일 이름만 써야 합니다. 폴더, 드라이브 문자, "
+    "\"..\", 문자 <>:\"/\\|?*, CON·NUL 같은 예약 이름은 쓸 수 없습니다",
+    "ru": "[plugin.database].name должно быть простым именем файла, допустимым и в Windows: без папок, букв дисков, "
+    "\"..\", символов <>:\"/\\|?* и зарезервированных имён вроде CON или NUL",
+    "es": "[plugin.database].name debe ser un nombre de archivo simple que también sirva en Windows: sin carpetas, "
+    "letras de unidad, \"..\", caracteres <>:\"/\\|?* ni nombres reservados como CON o NUL",
+    "pt": "[plugin.database].name deve ser um nome de arquivo simples que também funcione no Windows: sem pastas, "
+    "letras de unidade, \"..\", caracteres <>:\"/\\|?* nem nomes reservados como CON ou NUL",
 }
+# Windows refuses these in any file name, and these device names with any extension.
+_WINDOWS_FORBIDDEN_FILENAME_CHARS = frozenset('<>:"/\\|?*') | {chr(code) for code in range(32)}
+_WINDOWS_RESERVED_FILENAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"} | {f"COM{n}" for n in range(1, 10)} | {f"LPT{n}" for n in range(1, 10)}
+)
 # Hint added under the persist_mode error for the old spellings; {new} / {old} are filled in.
 _PERSIST_MODE_MIGRATION_HINT = {
     "en": 'use "{new}" instead of "{old}"',
@@ -502,9 +515,13 @@ def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
         return
     try:
         PluginDatabase._normalize_db_name(name)
-        # The SDK checks with the host's own Path; a name like "C:notes.db" passes on
-        # Linux/macOS but is refused on Windows, so check the Windows reading too.
-        valid = not name or PureWindowsPath(name).name == name
+        # The SDK checks with the host's own Path; a name like "C:notes.db" or "notes?.db"
+        # passes on Linux/macOS but cannot be created on Windows, so check that too.
+        valid = not name or (
+            PureWindowsPath(name).name == name
+            and not _WINDOWS_FORBIDDEN_FILENAME_CHARS.intersection(name)
+            and name.split(".", 1)[0].strip().upper() not in _WINDOWS_RESERVED_FILENAMES
+        )
     except ValueError:
         valid = False
     if not valid:

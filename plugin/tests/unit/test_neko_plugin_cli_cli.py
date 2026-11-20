@@ -3067,11 +3067,14 @@ def test_validate_plugin_dir_rejects_non_table_plugin_database(tmp_path: Path) -
     assert ("error", "[plugin.database] must be a table") in validate_plugin_dir(plugin_dir, strict=True)
 
 
-@pytest.mark.parametrize("name", ["../escape.db", "sub/notes.db", ".", "C:notes.db", "C:\\\\notes.db"])
+@pytest.mark.parametrize(
+    "name",
+    ["../escape.db", "sub/notes.db", ".", "C:notes.db", "C:\\\\notes.db", "notes?.db", "a|b.db", "CON", "nul.db", "com1.db"],
+)
 def test_validate_plugin_dir_rejects_plugin_database_name_runtime_refuses(tmp_path: Path, name: str) -> None:
     from plugin.sdk.shared.storage.database import PluginDatabase
 
-    if ":" not in name:
+    if name in {"../escape.db", "sub/notes.db", ".", "C:\\\\notes.db"}:  # refused by the SDK on every OS
         with pytest.raises(ValueError):
             PluginDatabase._normalize_db_name(name)
 
@@ -3079,9 +3082,16 @@ def test_validate_plugin_dir_rejects_plugin_database_name_runtime_refuses(tmp_pa
 
     (message,) = [m for level, m in issues if level == "error" and "[plugin.database].name" in m]
     lines = message.split("\n")
-    assert lines[0] == '[plugin.database].name must be a plain file name, without folders, drive letters or ".."'
+    assert lines[0].startswith("[plugin.database].name must be a plain file name that also works on Windows")
     assert [line.strip().split(":", 1)[0] for line in lines[1:]] == ["zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt"]
     assert all(line.strip().split(": ", 1)[1].startswith("[plugin.database].name") for line in lines[1:])
+
+
+@pytest.mark.parametrize("name", ["", "notes.db", "console.db", "com10.db", "lpt.db"])
+def test_validate_plugin_dir_accepts_windows_safe_plugin_database_name(tmp_path: Path, name: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin.database]\nname = "{name}"')
+
+    assert not any("[plugin.database]" in message for _level, message in issues)
 
 
 def test_validate_plugin_dir_warns_unknown_plugin_database_key(tmp_path: Path) -> None:
