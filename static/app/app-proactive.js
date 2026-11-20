@@ -2339,9 +2339,12 @@
                 // (discardVisionRevokedSince).
                 proactiveVisionRevocationSeq += 1;
                 releaseProactiveVisionStream();
-                // Also on the first sync of this page (wasAllowed null): a
-                // round another window started may still be in flight. A
-                // spare invalidation only ends screen access nobody may use.
+            }
+            // Only on a real change seen by this window. Not on its first sync
+            // (wasAllowed null), which may run before its settings loaded and
+            // would end another window's legitimate round; every open window
+            // sees the change through the cross-window sync and sends this.
+            if (wasAllowed === true) {
                 invalidateProactiveVisionRounds();
             }
             return;

@@ -84,9 +84,12 @@
 
 撤权用递增的序号表示，不用布尔值比较：后端是 `_proactive_vision_revocation_epoch`，前端是 `static/app/app-proactive.js` 的 `proactiveVisionRevocationSeq`。「关了又马上打开」之后布尔值和之前一样，但撤权之前截的图不能再用。前端发送前还会读一次 `localStorage` 里最新保存的设置（另一个窗口的撤权可能先落盘，同步事件还没到）。
 
+「主动搭话」和它下面的「屏幕分享」开关不属于授权，只在前端挡新请求。它们把视觉从允许变成不允许时（`syncProactiveVisionDuringSpeech`），前端发一次 WebSocket 的 `proactive_vision_invalidate`，后端 `invalidate_proactive_vision_rounds` 只把 `_proactive_vision_revocation_epoch` 加一，在途的语音和文本轮按上面的规则丢掉屏幕；授权状态、手动分享的帧缓存和 `_screen_consent_revocation_epoch` 都不动。前端同时递增 `proactiveVisionRevocationSeq`，文本轮发送前的 `discardVisionRevokedSince` 也看这两个开关。被取代的旧窗口 socket 发这条消息时照常处理，不关闭连接。
+
 ### 已知并接受的残留窗口
 
 - 前端判断完授权到请求发出之间的毫秒级窗口。
 - 另一个窗口「撤权又立刻重新开启」而本窗口的同步事件还没到。
+- 请求已经发出、后端还没开始这一轮时关掉开关：`proactive_vision_invalidate` 走 WebSocket，可能先于这条 HTTP 请求到达，这一轮按新序号开始，仍可能看屏。WebSocket 没连上时这条消息也不补发。
 
-这两种都需要用户在极短时间内完成特定操作才会发生，不为它们增加新的跨窗口协议。评审再提同类意见按此回复。
+这几种都需要用户在极短时间内完成特定操作才会发生，不为它们增加新的跨窗口协议。评审再提同类意见按此回复。

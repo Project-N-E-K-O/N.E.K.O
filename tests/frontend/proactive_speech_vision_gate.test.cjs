@@ -1126,3 +1126,10 @@ test('a text-chat screenshot taken before a switch went off does not ride its re
     h.settings.proactiveChatEnabled = false;
     assert.equal(api.discardVisionRevokedSince(body, seq), true);
 });
+
+test('the first sync of a page does not end another window\'s rounds', () => {
+    const h = loadProactive({ privacyAllowsVision: true });
+    h.S.proactiveChatEnabled = false; // e.g. settings not loaded yet
+    h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(invalidations(h), 0);
+});
