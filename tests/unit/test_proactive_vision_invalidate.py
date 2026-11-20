@@ -76,6 +76,22 @@ async def test_voice_nudge_in_flight_loses_the_screen():
 
 
 @pytest.mark.unit
+async def test_voice_nudge_judges_vision_against_the_request_entry_epoch():
+    """An invalidation between the HTTP entry and the nudge already counts."""
+    session = _voice_session()
+    mgr = _voice_manager(session)
+    mgr._proactive_vision_revocation_epoch = 0
+    entry_epoch = mgr._proactive_vision_revocation_epoch
+    _invalidate(mgr)
+
+    await LLMSessionManager.trigger_voice_proactive_nudge(
+        mgr, allow_vision=True, vision_consent_epoch=entry_epoch,
+    )
+    vision_allowed = session.prompt_ephemeral.await_args.kwargs["vision_allowed"]
+    assert vision_allowed() is False
+
+
+@pytest.mark.unit
 async def test_text_round_in_flight_loses_the_screen():
     mgr = SimpleNamespace(
         _proactive_vision_enabled=True, _proactive_vision_revocation_epoch=0,

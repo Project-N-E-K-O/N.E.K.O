@@ -243,6 +243,7 @@ class ProactiveMixin:
         *,
         language: str | None = None,
         allow_vision: bool = True,
+        vision_consent_epoch: int | None = None,
     ) -> bool:
         """Inject a text prompt to nudge the voice model into speaking.
 
@@ -257,13 +258,21 @@ class ProactiveMixin:
         source; the cached frame then stays out of this turn. Live consent is
         re-checked inside ``prompt_ephemeral`` on every visual step.
 
+        ``vision_consent_epoch`` is the revocation epoch the proactive request
+        started under (the HTTP entry); a revocation or a switch-off since then
+        already counts. None: start from the current epoch.
+
         Returns True if the text turn was sent, False if skipped.
         """
         # Same rule as the text path's consent checker: a revocation during
         # this nudge, including while it waits for the lock below, ends its
         # vision for good, even if consent is granted again before the frame
         # would be sent.
-        vision_epoch = getattr(self, "_proactive_vision_revocation_epoch", 0)
+        vision_epoch = (
+            getattr(self, "_proactive_vision_revocation_epoch", 0)
+            if vision_consent_epoch is None
+            else vision_consent_epoch
+        )
         # Share the callback-inject lock so a scheduled nudge cannot register a
         # second no-id fallback while an agent callback inject is unresolved.
         async with self._voice_proactive_inject_lock:
