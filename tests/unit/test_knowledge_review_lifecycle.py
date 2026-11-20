@@ -1,8 +1,10 @@
 """Reproduce review findings at the existing import and indexing boundaries."""
 
 import asyncio
+from contextlib import closing
 import hashlib
 import json
+import sqlite3
 import threading
 import zipfile
 
@@ -179,6 +181,8 @@ async def test_unverifiable_spec_defers_without_encoding_or_burning_attempts(tmp
         assert await service._index_round() == 0
         assert embedder.batches == []
         assert service._store.chunk_stats(embedder.model_id())["demo-memes"]["failed"] == 0
+        with closing(sqlite3.connect(service._store.database_path)) as conn:
+            assert conn.execute("SELECT MAX(attempts) FROM chunks WHERE pack_id='demo-memes'").fetchone()[0] == 0
     finally:
         await service.stop()
 

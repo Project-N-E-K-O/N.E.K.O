@@ -5,6 +5,8 @@ import json
 import logging
 import zipfile
 
+from pathlib import Path
+
 import pytest
 
 from knowledge.chunking import derive_chunks, _fit_windows
@@ -158,12 +160,39 @@ def test_fitted_chunks_do_not_publish_blank_bodies():
     assert ''.join(chunk.embed_text.split('\n',1)[1] for chunk in chunks).replace(' ','') == 'AB'
 
 
-def test_source_spool_is_bounded_and_keeps_the_original(tmp_path):
+def test_source_spool_keeps_the_exact_original_bytes(tmp_path):
     spool = tmp_path / 'request-spool'
-    spool.write_bytes(b'complete original')
+    raw = b'complete\r\noriginal\r\n'
+    spool.write_bytes(raw)
     store = SourceStore(tmp_path / 'library')
     preview = store.preview('spooled.txt', spool)
-    assert store.retain_preview(preview['preview_id'],preview['sha256'])['content'] == 'complete original'
+    retained = store.retain_preview(preview['preview_id'],preview['sha256'])
+    assert 'complete' in retained['content'] and 'original' in retained['content']
+    stored = store.directory(retained['pack_id']) / 'originals' / retained['doc_id'] / 'v1' / 'original'
+    assert stored.read_bytes() == raw
+
+
+def test_source_spool_read_is_bounded_by_the_document_limit(tmp_path, monkeypatch):
+    from knowledge.importing import sources
+
+    monkeypatch.setattr(sources, 'SourceLimits', lambda: documents.SourceLimits(max_document_bytes=16))
+    spool = tmp_path / 'request-spool'
+    spool.write_bytes(b'x' * 64)
+    reads = []
+    original_open = Path.open
+
+    def tracking_open(self, *args, **kwargs):
+        stream = original_open(self, *args, **kwargs)
+        if self == spool:
+            read = stream.read
+            stream.read = lambda size=-1: reads.append(size) or read(size)
+        return stream
+
+    monkeypatch.setattr(Path, 'open', tracking_open)
+    with pytest.raises(documents.SourceError) as error:
+        SourceStore(tmp_path / 'library').preview('spooled.txt', spool)
+    assert error.value.reason == 'document_too_large'
+    assert reads == [17]
 
 
 def test_many_located_paragraphs_have_readable_preview_and_version_records(tmp_path):

@@ -530,3 +530,31 @@ async def test_background_microbatch_failure_discards_partial_results(monkeypatc
         assert calls == [["one", "three"]]  # Existing memory batching is unchanged.
     finally:
         await service.close()
+
+
+async def test_cancelling_a_cooling_background_waiter_beside_a_notify_is_not_swallowed():
+    """A wake-up landing in the same loop turn as cancellation must not win the slot."""
+    from memory._embeddings.scheduling import InferenceQueue
+
+    queue = InferenceQueue()
+    loop = asyncio.get_running_loop()
+    queue._background_ready_at = loop.time() + 60
+    acquired = []
+
+    async def background():
+        async with queue.slot("background"):
+            acquired.append(True)
+
+    waiter = asyncio.create_task(background())
+    while queue._waiting["background"] == 0:
+        await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    async with queue._condition:
+        queue._background_ready_at = loop.time()
+        queue._condition.notify_all()
+        waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert acquired == []
+    assert queue._active is False
+    assert queue._waiting["background"] == 0
