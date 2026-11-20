@@ -469,3 +469,37 @@ def test_loader_gets_escaped_url_while_identity_stays_raw(page: Page):
         return loaded;
     }""")
     assert result == ["/user_mmd/a%23b/a%23b.pmx"]
+
+
+@pytest.mark.parametrize("raw,config_name", [
+    ("/user_mmd/a#b/a#b.pmx", "a#b"),
+    ("/user_mmd/空 格/50%.pmx", "50%"),
+])
+def test_successful_load_keeps_raw_identity(page: Page, raw, config_name):
+    """Only the loader request is escaped; currentModel.url and preferences keep the raw path."""
+    setup_runtime(page)
+    result = page.evaluate("""async raw => {
+        window.THREE = {LoadingManager: class {}};
+        const loaded = [];
+        const restored = [];
+        const core = manager.core;
+        manager.currentModel = null;
+        manager.scene = {add() {}};
+        manager.enablePhysics = false;
+        manager._shouldRender = true;
+        core._postProcessMaterials = () => {};
+        core._logMaterialDiagnostics = () => {};
+        core._buildModelInfo = mmd => ({name: 'fixture', configName: mmd.configName});
+        core._restoreUserPreferences = async (mmd, modelUrl) => { restored.push(modelUrl); };
+        core._getMMDModule = async () => ({MMDLoader: class {
+            load(url, onLoad) { loaded.push(url); onLoad({mesh: {}}); }
+        }});
+        const info = await core.loadModel(raw, {}, manager._activeLoadToken);
+        return {loaded, restored, url: manager.currentModel.url,
+                configName: manager.currentModel.configName, info};
+    }""", raw)
+    assert result["loaded"] == [page.evaluate("raw => MMDCore.toRequestUrl(raw)", raw)]
+    assert result["loaded"][0] != raw
+    assert result["url"] == raw
+    assert result["restored"] == [raw]
+    assert result["configName"] == config_name

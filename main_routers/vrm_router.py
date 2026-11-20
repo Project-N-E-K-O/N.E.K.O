@@ -41,6 +41,7 @@ from fastapi.responses import JSONResponse
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json_async, read_json_async
+from utils.config_manager import get_steam_workshop_path
 from utils.frontend_utils import _resolve_workshop_search_dir
 from utils.url_utils import is_utf8_text
 from utils.logger_config import get_module_logger
@@ -680,7 +681,8 @@ def _get_model_path(model_name: str) -> tuple[Path | None, str]:
     for item_dir in _iter_workshop_vrm_dirs():
         try:
             model_path = _find_vrm_model_file(item_dir, model_name)
-        except ValueError:
+        except (OSError, ValueError):
+            # An unreadable or escaping folder must not hide models in later items.
             continue
         if model_path is not None:
             return model_path, VRM_WORKSHOP_PATH
@@ -688,27 +690,70 @@ def _get_model_path(model_name: str) -> tuple[Path | None, str]:
     return None, ""
 
 
+def _workshop_roots() -> list[Path]:
+    """Workshop roots to search, the Steam root first.
+
+    Startup mounts /workshop at the Steam install root derived from the
+    subscribed items (the same folders /models lists); the configured root
+    (user_mod_folder, cached or default folder) is the fallback mount when
+    Steam is unavailable. Both are searched so a mapping can be saved in either
+    case without a Steam query.
+    """
+    roots = []
+    for getter in (get_steam_workshop_path, _resolve_workshop_search_dir):
+        try:
+            root = getter()
+        except Exception as e:
+            logger.warning(f"获取创意工坊目录失败: {e}")
+            continue
+        if not root:
+            continue
+        try:
+            resolved = Path(root).resolve()
+        except OSError:
+            continue
+        if resolved.is_dir() and resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
 def _iter_workshop_vrm_dirs():
     """Yield installed Workshop item folders and their direct subfolders.
 
-    Mirrors the depth /models scans, but reads the local Workshop root that the
-    /workshop mount serves instead of querying Steam, so a lookup stays cheap
-    and works while Steam is unavailable.
+    Mirrors the depth /models scans. Each yielded folder is resolved and must
+    stay inside its parent (item inside root, subfolder inside item), so a
+    symlinked folder cannot widen the boundary _find_vrm_model_file checks.
     """
-    workshop_root = _resolve_workshop_search_dir()
-    if not workshop_root:
-        return
-    try:
-        item_dirs = sorted(p for p in Path(workshop_root).iterdir() if p.name.isascii() and p.name.isdigit() and p.is_dir())
-    except OSError as e:
-        logger.warning(f"读取创意工坊目录失败: {e}")
-        return
-    for item_dir in item_dirs:
-        yield item_dir
+    for root in _workshop_roots():
         try:
-            yield from sorted(p for p in item_dir.iterdir() if p.is_dir())
-        except OSError:
+            item_dirs = sorted(p for p in root.iterdir() if p.name.isascii() and p.name.isdigit())
+        except OSError as e:
+            logger.warning(f"读取创意工坊目录失败: {e}")
             continue
+        for item_dir in item_dirs:
+            item_dir = _resolved_child_dir(item_dir, root)
+            if item_dir is None:
+                continue
+            yield item_dir
+            try:
+                children = sorted(item_dir.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                child = _resolved_child_dir(child, item_dir)
+                if child is not None:
+                    yield child
+
+
+def _resolved_child_dir(path: Path, parent: Path) -> Path | None:
+    """Resolved directory path, or None if it is not a directory under ``parent``."""
+    try:
+        resolved = path.resolve()
+        if resolved != parent and resolved.is_relative_to(parent) and resolved.is_dir():
+            return resolved
+    except OSError:
+        pass
+    return None
 
 
 def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:

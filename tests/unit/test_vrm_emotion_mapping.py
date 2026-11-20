@@ -1,6 +1,7 @@
 """VRM emotion mappings must preserve uploaded filenames and path boundaries."""
 
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import quote
@@ -45,6 +46,7 @@ def vrm_api(tmp_path, monkeypatch):
     )
     # Never resolve the real Workshop folder; tests that need one point it at tmp_path.
     monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: None)
+    monkeypatch.setattr(vrm_router, "get_steam_workshop_path", lambda: None)
     app = FastAPI()
     app.include_router(vrm_router.router)
     app.include_router(live2d_models.router)
@@ -593,6 +595,66 @@ def test_workshop_lookup_rejects_items_that_escape_their_folder(vrm_api, tmp_pat
     except OSError as exc:
         pytest.skip(f"symlinks unavailable: {exc}")
     monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    response = client.post(f"{API}/emotion_mapping/Escape", json={"happy": ["smile"]})
+    assert response.status_code == 404
+    assert not (config.project_root / "static" / "vrm" / "configs").exists()
+
+
+def test_workshop_lookup_uses_mounted_steam_root_when_user_mod_folder_differs(vrm_api, tmp_path, monkeypatch):
+    """get_workshop_path() prefers user_mod_folder, but /workshop serves the Steam root."""
+    client, _ = vrm_api
+    steam_root = tmp_path / "steam_workshop"
+    (steam_root / "123").mkdir(parents=True)
+    (steam_root / "123" / "Steam Only.vrm").write_bytes(b"glTF")
+    user_mod_folder = tmp_path / "user_mod_folder"
+    (user_mod_folder / "456").mkdir(parents=True)
+    (user_mod_folder / "456" / "Local Only.vrm").write_bytes(b"glTF")
+    monkeypatch.setattr(vrm_router, "get_steam_workshop_path", lambda: str(steam_root))
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(user_mod_folder))
+    for model_name in ("Steam Only", "Local Only"):
+        url = f"{API}/emotion_mapping/{quote(model_name, safe='')}"
+        assert client.post(url, json={"happy": ["smile"]}).status_code == 200
+    # Offline: only the configured root is known.
+    monkeypatch.setattr(vrm_router, "get_steam_workshop_path", lambda: None)
+    assert vrm_router._get_model_path("Steam Only") == (None, "")
+    assert vrm_router._get_model_path("Local Only")[1] == "/workshop"
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="needs a non-root POSIX user")
+def test_unreadable_workshop_item_does_not_hide_later_items(vrm_api, tmp_path, monkeypatch):
+    client, _ = vrm_api
+    workshop_root = tmp_path / "workshop"
+    locked = workshop_root / "100"
+    (locked / "nested").mkdir(parents=True)
+    (workshop_root / "200").mkdir()
+    (workshop_root / "200" / "Avatar.vrm").write_bytes(b"glTF")
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    locked.chmod(0)
+    try:
+        response = client.post(f"{API}/emotion_mapping/Avatar", json={"happy": ["smile"]})
+    finally:
+        locked.chmod(0o755)
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("linked", ["item", "subdir"])
+def test_workshop_folder_symlinks_cannot_widen_the_boundary(vrm_api, tmp_path, monkeypatch, linked):
+    client, config = vrm_api
+    workshop_root = tmp_path / "workshop"
+    workshop_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "Escape.vrm").write_bytes(b"glTF")
+    try:
+        if linked == "item":
+            (workshop_root / "123").symlink_to(outside, target_is_directory=True)
+        else:
+            (workshop_root / "123").mkdir()
+            (workshop_root / "123" / "linked").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    assert vrm_router._get_model_path("Escape") == (None, "")
     response = client.post(f"{API}/emotion_mapping/Escape", json={"happy": ["smile"]})
     assert response.status_code == 404
     assert not (config.project_root / "static" / "vrm" / "configs").exists()
