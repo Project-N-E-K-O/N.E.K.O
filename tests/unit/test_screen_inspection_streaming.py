@@ -472,6 +472,7 @@ async def test_mixed_tool_batch_revalidates_screen_consent_after_slow_tool(provi
         await asyncio.wait_for(task, 5)
 
         assert len(requests) == 2
+        assert manager._screen_inspection_state["images"] == {}
         images, outputs, text = _screen_routing_request(requests[-1], provider)
         assert images == []
         assert "Test APP" not in text and snapshot_id not in text

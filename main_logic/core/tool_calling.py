@@ -215,12 +215,21 @@ class ToolCallingMixin:
                 async def screen_capture_still_valid(owner):
                     from main_logic.screen_inspection import _check_permission, InspectionError
 
+                    def clear_owned_snapshot():
+                        state = getattr(self, "_screen_inspection_state", None)
+                        if isinstance(state, dict) and state.get("owner") == owner:
+                            images = state.get("images")
+                            if isinstance(images, dict):
+                                images.clear()
+
                     try:
                         await _check_permission(self, owner)
                         return True
                     except InspectionError:
+                        clear_owned_snapshot()
                         return False
                     except Exception:
+                        clear_owned_snapshot()
                         logger.warning(
                             "Screen capture consent revalidation failed; dropping evidence",
                             exc_info=True,
