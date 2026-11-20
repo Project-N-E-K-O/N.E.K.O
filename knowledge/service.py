@@ -1917,6 +1917,16 @@ class KnowledgeService:
         async def discard():
             async with self._job_persist_lock:
                 await self._thread((self.root / "jobs" / (job_id + ".json")).unlink, missing_ok=True)
+                # Discarding is an explicit user deletion; the frozen retry
+                # input it removes the only entry to goes with it. The copy is
+                # named by and read only for this job; keep it if that job is
+                # tracked again. Other retained inputs are untouched.
+                if job_id in self._jobs:
+                    return
+                try:
+                    await self._thread((self.root / "jobs" / (job_id + ".pack.json")).unlink, missing_ok=True)
+                except OSError:
+                    logger.warning("[Knowledge] could not delete the retry input of discarded job %s", job_id)
         task = asyncio.create_task(discard())
         self._detached.add(task)
         task.add_done_callback(self._detached.discard)
@@ -2006,7 +2016,11 @@ class KnowledgeService:
             if digest != job.archive_sha256:
                 raise KnowledgePackError("artifact_hash_mismatch")
             return await self.import_pack(path, subscription=job.subscription, _options=options)
-        raw = await self._thread(_read_bounded, self.root / "jobs" / (job.job_id + ".pack.json"))
+        try:
+            raw = await self._thread(_read_bounded, self.root / "jobs" / (job.job_id + ".pack.json"))
+        except FileNotFoundError as exc:
+            # A concurrent discard removed this job together with its input.
+            raise KnowledgePackError("job_not_retryable") from exc
         expected = job.subscription.artifact_sha256 if job.subscription is not None else job.staged_sha256
         if pack_sha256(raw) != expected:
             raise KnowledgePackError("pack_file_mismatch")
