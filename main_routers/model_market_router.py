@@ -1,13 +1,12 @@
-"""Local model-package import, task polling and cancellation; no network download API."""
+"""Local package import and bounded, paired Market download commands."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import portalocker
-from pathlib import Path
-from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from python_multipart.exceptions import MultipartParseError
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
@@ -21,6 +20,8 @@ from main_routers.system_router._shared import (
     _validate_local_mutation_request,
 )
 from services.model_workshop.bundle import BundleError, BundleLimits
+from services.model_workshop.catalog import public_result as _public_result
+from services.model_workshop.download import ConnectedDownloads
 from services.model_workshop.paths import WorkshopError, WorkshopPaths, write_all
 from services.model_workshop.registry import Registry
 from services.model_workshop.runtime import get_service, maintain
@@ -41,6 +42,8 @@ router = APIRouter(
     dependencies=[Depends(_require_local_access)],
 )
 MAX_IMPORT_BODY = BundleLimits().archive_bytes + 1024 * 1024
+# Construction is inert: no network, writer or recovery is started at import.
+connected_downloads = ConnectedDownloads()
 
 
 def _preflight(scope):
@@ -71,7 +74,7 @@ def _error(exc):
         else "model_workshop_io_error"
     )
     status = 422 if isinstance(exc, BundleError) else 503
-    if code == "model_workshop_task_not_found":
+    if code in {"model_workshop_task_not_found", "model_market_expired"}:
         status = 404
     elif code.endswith("too_large"):
         status = 413
@@ -81,6 +84,8 @@ def _error(exc):
         "model_workshop_closed",
     ):
         status = 409
+    elif code.startswith("model_market_") or code.startswith("market_auth_"):
+        status = 502 if code == "model_market_unavailable" else 409
     if isinstance(exc, MaintenanceModeError):
         code, status = "model_workshop_storage_blocked", 409
     return JSONResponse(
@@ -90,6 +95,69 @@ def _error(exc):
         if status in (409, 503)
         else {"Cache-Control": "no-store"},
     )
+
+
+async def _command(request, keys):
+    """Authenticate before consuming even a small selection body; reject extras."""
+    rejected = _preflight(request.scope)
+    if rejected is not None:
+        raise HTTPException(rejected.status_code, detail="local mutation refused")
+    if request.headers.get("content-type", "").split(";", 1)[0] != "application/json":
+        raise HTTPException(415, detail="JSON model command required")
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > 4096:
+            raise HTTPException(413, detail="model command too large")
+        raw.extend(chunk)
+    try:
+        value = json.loads(raw)
+    except (ValueError, RecursionError):
+        raise HTTPException(400, detail="invalid model command") from None
+    if not isinstance(value, dict) or set(value) != keys:
+        raise HTTPException(400, detail="invalid model command fields")
+    return value
+
+
+@router.post("/launch")
+async def launch_market(request: Request, response: Response):
+    await _command(request, set())
+    # Pairing URLs and role/task results must not survive in HTTP caches.
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return {"success": True, **await connected_downloads.launch(
+            get_config_manager(), str(request.base_url).rstrip("/"))}
+    except (WorkshopError, OSError, MaintenanceModeError) as error:
+        return _error(error)
+
+
+@router.get("/launch/{request_id}")
+async def connected_status(request_id: str, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return {"success": True, **connected_downloads.status(get_config_manager(), request_id)}
+    except (WorkshopError, OSError) as error:
+        return _error(error)
+
+
+@router.post("/launch/{request_id}/select", status_code=202)
+async def select_market_model(request_id: str, request: Request, response: Response):
+    value = await _command(request, {"model_id", "expected_sha256", "byte_size"})
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return {"success": True, **connected_downloads.select(get_config_manager(), request_id,
+            value["model_id"], value["expected_sha256"], value["byte_size"])}
+    except (WorkshopError, OSError, MaintenanceModeError) as error:
+        return _error(error)
+
+
+@router.post("/launch/{request_id}/cancel")
+async def cancel_connected_download(request_id: str, request: Request, response: Response):
+    await _command(request, set())
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return {"success": True, **connected_downloads.cancel(request_id)}
+    except WorkshopError as error:
+        return _error(error)
 
 
 class ModelImportBodyGuard:
@@ -217,36 +285,6 @@ class _PackageFormParser(MultiPartParser):
             for spool in self._files_to_close_on_error:
                 await _drain_sync(spool.close)
             raise
-
-
-def _public_result(config, row):
-    """Return existing resource URLs and raw attribution text, never filesystem roots or Steam IDs."""
-    kind = row["model_format"]
-    relative = Path(row["local_entrypoint"]).relative_to(kind).as_posix()
-    prefix = {"live2d": "/user_live2d", "vrm": "/user_vrm", "mmd": "/user_mmd"}[kind]
-    if kind == "live2d":
-        readable = getattr(config, "readable_live2d_dir", None)
-        if readable and Path(readable).resolve() != Path(config.live2d_dir).resolve():
-            prefix = "/user_live2d_local"
-    return {
-        **{
-            key: row[key]
-            for key in (
-                "package_sha256",
-                "install_id",
-                "model_format",
-                "display_name",
-                "attribution",
-                "license",
-            )
-        },
-        "url": prefix + "/" + quote(relative, safe="/"),
-        "name": Path(row["target"]).name
-        if kind == "live2d"
-        else Path(row["local_entrypoint"]).stem,
-        "status": row.get("status", "installed"),
-        "already_installed": row.get("already_installed", False),
-    }
 
 
 def _public_task(config, data):

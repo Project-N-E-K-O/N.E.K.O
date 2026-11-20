@@ -700,6 +700,17 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     served by the main server, so it needs the same same-origin bridge here.
     """
 
+    # Model bytes go directly between backend services. Only exact command
+    # paths may use this buffering proxy: checking a package prefix alone would
+    # miss dot segments normalized by the outgoing HTTP client.
+    if path == "models" or path.startswith("models/"):
+        from services.model_workshop.market import REQUEST as model_request
+        parts = path.split("/")
+        if not (len(parts) in {3, 4} and parts[1] == "launch"
+                and model_request.fullmatch(parts[2])
+                and (len(parts) == 3 or parts[3] in {"select", "cancel"})):
+            return JSONResponse(status_code=403, content={"detail": "local service endpoint"})
+
     target = f"{_resolve_user_plugin_base()}/market"
     if path:
         target = f"{target}/{path}"
@@ -750,7 +761,10 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # streamed through under their size cap instead; see below.
     knowledge_path = path == "knowledge" or path.startswith("knowledge/")
     theater_path = path.startswith("theater/")
-    body = b"" if knowledge_path or theater_path else await request.body()
+    # Connected model commands are streamed under their own small cap. The
+    # local-only package reader refuses remote Market origins independently.
+    model_path = path.startswith("models/")
+    body = b"" if knowledge_path or theater_path or model_path else await request.body()
     if request.scope.get("neko.instance_identity"):
         # This is a new authenticated service-to-service hop. The plugin's
         # proxy middleware must observe its real loopback caller, not rewrite
@@ -772,9 +786,9 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         refused, body = _knowledge_body(request, path[len("knowledge"):].lstrip("/"))
         if refused is not None:
             return refused
-    elif theater_path and request.method == "POST":
+    elif (theater_path or model_path) and request.method == "POST":
         from utils.http.knowledge_proxy import capped_body, declared_size_problem
-        limit = 8 * 1024 * 1024 if path.endswith("/import") else 4096
+        limit = 8 * 1024 * 1024 if theater_path and path.endswith("/import") else 4096
         problem = declared_size_problem(request.headers.get("content-length"), limit)
         if problem is not None:
             return _payload_too_large()
