@@ -44,7 +44,11 @@ def is_utf8_text(value: str) -> bool:
 
 
 def drop_non_utf8_entries(entries: list) -> tuple[list, int]:
-    """Return ``(kept, skipped_count)``, dropping dict entries with a non-UTF-8 string value."""
+    """Return ``(kept, skipped_count)``, dropping dict entries with a non-UTF-8 string value.
+
+    Only top-level string values are checked, so entries must be flat dicts
+    (as the model-list routes build them); nested containers are not inspected.
+    """
     kept = []
     for entry in entries:
         values = entry.values() if isinstance(entry, dict) else (entry,)

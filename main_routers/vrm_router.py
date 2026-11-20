@@ -681,8 +681,8 @@ def _get_model_path(model_name: str) -> tuple[Path | None, str]:
     for item_dir in _iter_workshop_vrm_dirs():
         try:
             model_path = _find_vrm_model_file(item_dir, model_name)
-        except (OSError, ValueError):
-            # An unreadable or escaping folder must not hide models in later items.
+        except (OSError, RuntimeError, ValueError):
+            # An unreadable, looping or escaping entry must not hide models in later items.
             continue
         if model_path is not None:
             return model_path, VRM_WORKSHOP_PATH
@@ -710,7 +710,7 @@ def _workshop_roots() -> list[Path]:
             continue
         try:
             resolved = Path(root).resolve()
-        except OSError:
+        except (OSError, RuntimeError):  # Python 3.11 raises RuntimeError on symlink loops
             continue
         if resolved.is_dir() and resolved not in roots:
             roots.append(resolved)
@@ -751,7 +751,7 @@ def _resolved_child_dir(path: Path, parent: Path) -> Path | None:
         resolved = path.resolve()
         if resolved != parent and resolved.is_relative_to(parent) and resolved.is_dir():
             return resolved
-    except OSError:
+    except (OSError, RuntimeError):  # Python 3.11 raises RuntimeError on symlink loops
         pass
     return None
 

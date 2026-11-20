@@ -181,3 +181,34 @@ def test_mmd_models_skip_non_utf8_entries(tmp_path, monkeypatch):
         "/user_mmd/Good/Good.pmx",
         "/workshop/123/Shop.pmx",
     ]
+
+
+@pytest.mark.parametrize("layout", ["file", "subdir", "top_dir"])
+def test_mmd_folder_with_only_a_skipped_model_is_not_listed_as_broken(tmp_path, monkeypatch, layout):
+    """A skipped model must not turn its folder into deletable 'import residue'."""
+    mmd_dir = tmp_path / "mmd"
+    good = mmd_dir / "Good"
+    good.mkdir(parents=True)
+    if layout == "file":
+        _make_bad_path(good, b".pmx")
+    elif layout == "subdir":
+        bad_subdir = _make_bad_path(good, is_dir=True)
+        with open(os.path.join(os.fsencode(bad_subdir), b"m.pmx"), "wb") as file_obj:
+            file_obj.write(b"pmx")
+    else:
+        bad_top = _make_bad_path(mmd_dir, is_dir=True)
+        with open(os.path.join(os.fsencode(bad_top), b"m.pmx"), "wb") as file_obj:
+            file_obj.write(b"pmx")
+        (good / "Good.pmx").write_bytes(b"pmx")
+    config = SimpleNamespace(project_root=tmp_path / "project", mmd_dir=mmd_dir,
+                             mmd_animation_dir=mmd_dir / "animation")
+    monkeypatch.setattr(mmd_router, "get_config_manager", lambda: config)
+    monkeypatch.setattr(mmd_router, "get_subscribed_workshop_items",
+                        AsyncMock(return_value={"success": True, "items": []}))
+    app = FastAPI()
+    app.include_router(mmd_router.router)
+    with TestClient(app) as client:
+        models = client.get("/api/model/mmd/models").json()["models"]
+    assert not [model for model in models if model.get("broken")]
+    expected = ["/user_mmd/Good/Good.pmx"] if layout == "top_dir" else []
+    assert [model["url"] for model in models] == expected

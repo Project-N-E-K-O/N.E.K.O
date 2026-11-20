@@ -618,6 +618,10 @@ async def get_mmd_models():
                             continue
                     except (ValueError, IndexError):
                         continue
+                    # Record the folder before the UTF-8 skip: a folder whose only model
+                    # has a non-UTF-8 name is not import residue (and is counted once).
+                    if rel_path.parts:
+                        found_top_dirs.add(rel_path.parts[0])
                     if not is_utf8_text(rel_path.as_posix()):
                         skipped += 1
                         continue

@@ -658,3 +658,30 @@ def test_workshop_folder_symlinks_cannot_widen_the_boundary(vrm_api, tmp_path, m
     response = client.post(f"{API}/emotion_mapping/Escape", json={"happy": ["smile"]})
     assert response.status_code == 404
     assert not (config.project_root / "static" / "vrm" / "configs").exists()
+
+
+@pytest.mark.parametrize("loop_at", ["item", "subdir", "model_file", "root"])
+def test_symlink_loops_do_not_stop_the_workshop_search(vrm_api, tmp_path, monkeypatch, loop_at):
+    """Python 3.11 raises RuntimeError (3.13: OSError) when resolving a symlink loop."""
+    client, _ = vrm_api
+    workshop_root = tmp_path / "workshop"
+    (workshop_root / "100").mkdir(parents=True)
+    (workshop_root / "200").mkdir()
+    (workshop_root / "200" / "Avatar.vrm").write_bytes(b"glTF")
+    try:
+        if loop_at == "item":
+            (workshop_root / "050").symlink_to("050")
+        elif loop_at == "subdir":
+            (workshop_root / "100" / "loop").symlink_to("loop")
+        elif loop_at == "model_file":
+            (workshop_root / "100" / "Avatar.vrm").symlink_to("Avatar.vrm")
+        else:
+            (tmp_path / "loop_root").symlink_to("loop_root")
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    steam_root = str(tmp_path / "loop_root") if loop_at == "root" else None
+    monkeypatch.setattr(vrm_router, "get_steam_workshop_path", lambda: steam_root)
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    response = client.post(f"{API}/emotion_mapping/Avatar", json={"happy": ["smile"]})
+    assert response.status_code == 200
+    assert vrm_router._get_model_path("Avatar") == ((workshop_root / "200" / "Avatar.vrm").resolve(), "/workshop")
