@@ -126,7 +126,7 @@ SDK は互換性のため `reload` ID を受け付けますが、Plugin Manager 
     auto_start=True          # 自動的に開始（デフォルト: True）
 )
 async def cleanup(self, **_):
-    # 別スレッドで実行
+    # 専用のタイマースレッドで実行。実行のたびに新しいイベントループを使う
     return Ok({"cleaned": True})
 ```
 

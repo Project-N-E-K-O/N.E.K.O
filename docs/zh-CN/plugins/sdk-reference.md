@@ -406,7 +406,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `ctx.config_path` | `Path` | `plugin.toml` 的路径 |
 | `ctx.logger` | `Logger` | 日志记录器实例 |
 | `ctx.bus` | `SdkBusContext` | 宿主状态的 read/watch 门面 |
-| `ctx.metadata` | `dict` | 目前在插件进程里恒为 `{}`；读取配置用 `await self.config.dump()` |
+| `ctx.metadata` | `dict` | 传给 `__init__` 的原始 `ctx` 没有 `metadata` 属性（读取会抛 `AttributeError`）；包装后的 `self.ctx.metadata` 返回 `{}`。读取配置用 `await self.config.dump()` |
 
 ### Bus 与 Memory
 

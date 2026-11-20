@@ -124,7 +124,7 @@ async def divide(self, a: float, b: float):
 
 ---
 
-## 控制 AI 看到的返回内容
+## 控制 AI 看到的返回内容 {#controlling-what-the-ai-sees}
 
 用 `llm_result_fields` 声明 AI 读结果里的哪些字段。返回值里常常有大量原始数据（比如完整的搜索结果列表），而 AI 只需要看到摘要：
 

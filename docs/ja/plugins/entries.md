@@ -126,7 +126,7 @@ async def divide(self, a: float, b: float):
 
 ---
 
-## AI に見せる戻り値を制御する
+## AI に見せる戻り値を制御する {#controlling-what-the-ai-sees}
 
 `llm_result_fields` で、AI が結果のどのフィールドを読むかを宣言します。戻り値には検索結果の生データのような大きな値が入りがちですが、AI に必要なのは要約だけ、という場合に使います。
 

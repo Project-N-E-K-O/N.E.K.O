@@ -403,7 +403,7 @@ The `ctx` object is injected by the host at construction time.
 | `ctx.config_path` | `Path` | Path to `plugin.toml` |
 | `ctx.logger` | `Logger` | Logger instance |
 | `ctx.bus` | `SdkBusContext` | Read/watch facade over host state |
-| `ctx.metadata` | `dict` | Always `{}` in the plugin process today; use `await self.config.dump()` for configuration |
+| `ctx.metadata` | `dict` | The `ctx` passed to `__init__` has no `metadata` attribute (reading it raises `AttributeError`); the wrapped `self.ctx.metadata` returns `{}`. Use `await self.config.dump()` for configuration |
 
 ### Bus and memory
 

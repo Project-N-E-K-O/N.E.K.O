@@ -127,7 +127,7 @@ SDK 仍兼容 `reload` 生命周期 ID，但插件管理器的重载按钮会重
     auto_start=True          # 自动启动（默认值：True）
 )
 async def cleanup(self, **_):
-    # 在独立线程中运行
+    # 在专用定时器线程中运行；每次触发都用新的事件循环
     return Ok({"cleaned": True})
 ```
 

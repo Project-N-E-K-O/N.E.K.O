@@ -157,7 +157,7 @@ class MyPlugin(NekoPluginBase):
             },
             "required": ["item_id"],
         },
-        # Optional: result fields the Agent (NekoClaw) gives its model after a run.
+        # Optional: result fields the model reading the result sees (see entries#controlling-what-the-ai-sees).
         llm_result_fields=["message"],
     )
     async def refresh_item(self, item_id: str, **_):

@@ -157,7 +157,7 @@ class MyPlugin(NekoPluginBase):
             },
             "required": ["item_id"],
         },
-        # 可选：运行结束后 Agent（猫爪，NekoClaw）交给它的模型的返回字段。
+        # 可选：读取结果的模型能看到的返回字段（见 entries#controlling-what-the-ai-sees）。
         llm_result_fields=["message"],
     )
     async def refresh_item(self, item_id: str, **_):

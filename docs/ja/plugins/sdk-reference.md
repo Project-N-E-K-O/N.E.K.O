@@ -393,7 +393,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `ctx.config_path` | `Path` | `plugin.toml` へのパス |
 | `ctx.logger` | `Logger` | ロガーインスタンス |
 | `ctx.bus` | `SdkBusContext` | host state の read/watch facade |
-| `ctx.metadata` | `dict` | 現在、プラグインプロセスでは常に `{}`。設定は `await self.config.dump()` で読みます |
+| `ctx.metadata` | `dict` | `__init__` に渡される元の `ctx` には `metadata` 属性がありません（読むと `AttributeError`）。ラップ後の `self.ctx.metadata` は `{}` を返します。設定は `await self.config.dump()` で読みます |
 
 ### Bus と Memory
 

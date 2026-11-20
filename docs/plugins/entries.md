@@ -124,7 +124,7 @@ async def divide(self, a: float, b: float):
 
 ---
 
-## Controlling what the AI sees
+## Controlling what the AI sees {#controlling-what-the-ai-sees}
 
 Declare `llm_result_fields` to say which fields of the result the AI reads. A return value often contains large raw data (like a full search results list) while the AI only needs a summary:
 

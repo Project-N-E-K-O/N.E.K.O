@@ -211,7 +211,7 @@ enabled = true
 name = "plugin.db"   # プラグインのデータディレクトリ内のファイル名（デフォルト: plugin.db）
 ```
 
-有効にすると、`self.db` はプラグインのデータディレクトリにある SQLite データベースファイルを使います。SQL には `await self.db.session()`、キーと値のデータには `self.db.kv` を使います。デフォルトでは無効です。
+有効にすると、`self.db` はプラグインのデータディレクトリにある SQLite データベースファイルを使います。SQL には `async with unwrap(await self.db.session()) as session:`（`session()` は `Result` を返します）、キーと値のデータには `self.db.kv` を使います。デフォルトでは無効です。
 
 ::: warning `check` はこのテーブルに warning を出します
 現在の `neko-plugin check` は `database` を既知の `[plugin]` キーに含めていないため、`[plugin].database is not a recognized plugin.toml field` という warning を出します。ランタイムはこのテーブルを読み込むので、この warning は無視してかまいません。
@@ -219,7 +219,7 @@ name = "plugin.db"   # プラグインのデータディレクトリ内のファ
 
 ---
 
-### `[plugin_state]` — 再起動後もインスタンス属性を保持する
+### `[plugin_state]` — インスタンス属性の保存と復元
 
 ```toml
 [plugin_state]
@@ -227,7 +227,7 @@ backend = "file"        # 状態の保存先
 persist_mode = "auto"   # 保存するタイミング
 ```
 
-ランタイムはプラグインクラスの `__freezable__` リストに挙げたインスタンス属性を保存し、プラグインの次回起動時に復元します。復元に成功すると保存済みの状態は消去されます。`backend` がスイッチです。`"file"` はプラグインのデータディレクトリ内のファイルに、`"memory"` はプラグインプロセスが動いている間だけ保持し、`backend` を書かなければ（このテーブル自体がなければ）何も保存されません。`persist_mode` はどのエントリー呼び出しの後に保存するかを決めます。`"auto"` ではエントリー呼び出しが正常に戻るたびに保存し（`Err` を返した場合も正常に戻ったとみなします。例外や厳格な出力契約の違反では保存しません）、`"manual"` では `@plugin_entry(persist=True)` で宣言したエントリーの呼び出し後だけ保存します。エントリーの `persist=True` / `persist=False` はこれより優先されますが、`"off"` のときはエントリー呼び出し後に保存されません。`persist_mode` を省略すると、クラス属性 `__persist_mode__`（デフォルト `"off"`）が使われ、それが `"off"` の場合は旧設定 `[plugin_checkpoint] freeze_mode` が引き続き有効です。また `persist_mode` に関係なく、プラグインをフリーズするときにも状態が保存されます。
+ランタイムはプラグインクラスの `__freezable__` リストに挙げたインスタンス属性を保存し、プラグインの次回起動時に復元します。復元に成功すると保存済みの状態は消去されます。`backend` がスイッチです。`"file"` はプラグインのデータディレクトリ内のファイルに保持し、プラグインプロセスの再起動後も残るのはこれだけです。`"memory"` はプラグインプロセスが動いている間だけ保持します。`backend` を書かなければ（このテーブル自体がなければ）何も保存されません。`persist_mode` はどのエントリー呼び出しの後に保存するかを決めます。`"auto"` ではエントリー呼び出しが正常に戻るたびに保存し（`Err` を返した場合も正常に戻ったとみなします。例外や厳格な出力契約の違反では保存しません）、`"manual"` では `@plugin_entry(persist=True)` で宣言したエントリーの呼び出し後だけ保存し、`"off"` ではエントリー呼び出し後に保存しません。エントリーの `persist=True` / `persist=False` は `"auto"` / `"manual"` より優先されます。モードは次の順で決まります。まずクラス属性 `__persist_mode__`（デフォルト `"off"`）、次に `[plugin_state].persist_mode` が `auto` / `manual` / `off` のいずれかならそれで上書きします（`always` / `disabled` などそれ以外の値は無視されます）。結果が `"off"` の場合（`persist_mode = "off"` を明示した場合も含む）、旧設定 `[plugin_checkpoint] freeze_mode` が `"auto"` または `"manual"` ならそれで上書きされます。また `persist_mode` に関係なく、プラグインをフリーズするときにも状態が保存されます。
 
 ::: warning `check` とランタイムで受け付ける値が異なります
 ランタイムが受け付けるのは `backend` = `file` / `memory` / `off`、`persist_mode` = `auto` / `manual` / `off` です。現在の `neko-plugin check` は `file` / `sqlite` / `memory` と `auto` / `always` / `manual` / `disabled` で検証し、それ以外の値は error になります。両方が受け付ける値（`file` または `memory`、`auto` または `manual`）だけを使い、保存を無効にしたい場合は `"off"` と書かずに `backend` を省略してください。
