@@ -584,6 +584,21 @@ test('a line already handed to the host is re-checked against the clicked charac
     h.window.appState.isSwitchingCatgirl = false;
     h.window.lanlan_config.lanlan_name = 'B';
     assert.equal(isStillValid(), false, "A's click must not be sent on B's connection");
+    h.window.lanlan_config.lanlan_name = 'A';
+    assert.equal(isStillValid(), true);
+
+    // 等重连期间开了小剧场、进了教程或拿起了工具，也都作废
+    let theater = true;
+    h.window.nekoTheaterRuntime = { blocksOrdinaryChat: () => theater };
+    assert.equal(isStillValid(), false, 'theater started during the wait');
+    theater = false;
+    h.window.isInTutorial = true;
+    assert.equal(isStillValid(), false, 'tutorial started during the wait');
+    h.window.isInTutorial = false;
+    h.window.dispatchEvent(new h.window.CustomEvent('react-chat-window:avatar-tool-state', { detail: { active: true } }));
+    assert.equal(isStillValid(), false, 'avatar tool picked up during the wait');
+    h.window.dispatchEvent(new h.window.CustomEvent('react-chat-window:avatar-tool-state', { detail: { active: false } }));
+    assert.equal(isStillValid(), true);
 });
 
 test('reloading the model (character switch) clears the angry cooldown, so A -> B -> A starts fresh', () => {

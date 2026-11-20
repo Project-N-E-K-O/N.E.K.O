@@ -161,8 +161,10 @@
             timestamp: Date.now()
         };
         try {
-            // 发送前可能要等重连：等完再确认一次还是同一个角色，免得 A 的点击发到 B 的连接上
-            const isStillValid = () => !isSwitchingCharacter() && currentCharacter() === character;
+            // 发送前可能要等重连：等完再把发送条件整体复核一遍——还是同一个角色（免得 A 的点击发到 B 的连接上），
+            // 且这期间没有进教程、拿起工具或开小剧场
+            const isStillValid = () => canEscalate() && !isTheaterBlockingChat()
+                && !isSwitchingCharacter() && currentCharacter() === character;
             Promise.resolve(buttons.sendAvatarInteractionPayload(payload, { isStillValid })).catch(() => {});
         } catch (_) {
             return false;
