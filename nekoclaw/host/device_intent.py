@@ -38,6 +38,7 @@ _QUOTED = re.compile(
 )
 _CLAUSE = re.compile(
     r"[，,。；;！？!?\n]|\.(?:\s+|$)|\b(?:but|then|instead|however)\b|(?=\bwithout\b)|"
+    r"\band\s+(?=(?:describe|translate|explain)\b)|[并並](?=描述|翻译|翻譯|解释|解釋)|"
     r"但是|不过|不過|然后|然後|接着|接著|改为|改為|改用|再(?=打开|打開|点击|點擊|截|按|用)"
 )
 # A mention in prose, code, help or a prohibition is a poor reason to load
@@ -49,12 +50,20 @@ _NON_ACTION = re.compile(
     r"how (?:to|do|can|would)|write (?:a |an |the )?(?:script|guide|test|code|instructions))\b|"
     r"하지\s*마|하지\s*않|ないで|しない|方法|\b(?:no|não|не)\s+"
 )
-_WEB_TARGET = (
-    r"(?:网页|網頁|页面|頁面|网站|網站|网址|網址|链接|連結|鏈接|浏览器|瀏覽器|标签页|分頁|"
-    r"\b(?:browser|web\s?page|page|website|site|urls?|link|tabs?|chrome|edge(?!\s+cases?\b)|firefox)\b|https?://|"
-    r"\b[\w-]+\.(?:com|org|net|cn|io|dev)\b)"
+_EXPLICIT_WEB = re.compile(
+    r"浏览器|瀏覽器|\b(?:browser|chrome|edge(?!\s+cases?\b)|firefox)\b|https?://|"
+    r"\b[\w-]+\.(?:com|org|net|cn|io|dev)\b"
 )
-_WEB_CONTEXT = re.compile(_WEB_TARGET)
+_WEB_OBJECT = re.compile(
+    r"网页|網頁|页面|頁面|网站|網站|网址|網址|链接|連結|鏈接|标签页|分頁|"
+    r"\b(?:web\s?page|page|website|site|urls?|link|tabs?)\b"
+)
+_CODE_FILE = re.compile(r"(?<![\w./\\-])[\w./\\-]+\.(?:tsx?|jsx?|py|vue|md|json|ya?ml|html?|css)\b", re.ASCII)
+_CODE_CONTEXT = re.compile(
+    r"代码|代碼|组件|組件|配置|函数|函數|源文件|包名|"
+    r"\b(?:apis?|bugs?|code|packages?|config(?:uration)?|components?|files?|folders?|functions?|"
+    r"indentation|tabs? to spaces?)\b"
+)
 _WEB_ACTION = re.compile(
     r"打开|打開|访问|訪問|浏览(?!器)|瀏覽(?!器)|刷新|切换|切換|关闭|關閉|查看|检查|檢查|阅读|閱讀|"
     r"点击(?!率|量)|點擊(?!率|量)|填写|填寫|搜索|搜尋|用.{0,5}(?:浏览器|瀏覽器)|"
@@ -92,18 +101,29 @@ def select_device_groups(text: str) -> tuple[str, ...]:
     text = _URL.sub("https:// ", text)
     text = _QUOTED.sub(lambda m: "https:// " if m[0][1:-1].strip() == "https://" else " ", text)
     groups: set[str] = set()
+    web_context = False
     for clause in _CLAUSE.split(text):
         if _NON_ACTION.search(clause):
             continue
+        # Words like page and tabs also name source files, modules and indentation.
+        # In development tasks require an actual browser or address for web tools.
+        without_files = _CODE_FILE.sub(" ", clause)
+        code = without_files != clause or bool(_CODE_CONTEXT.search(clause))
+        explicit_web = bool(_EXPLICIT_WEB.search(without_files))
+        web_target = explicit_web or (not code and _WEB_OBJECT.search(without_files))
         screenshot = bool(_SCREENSHOT_ACTION.search(clause))
-        browser = bool(_WEB_CONTEXT.search(clause) and (_WEB_ACTION.search(clause) or screenshot)) or bool(
+        browser = bool(web_target and (_WEB_ACTION.search(clause) or screenshot)) or bool(
             _OTHER_WEB.search(clause)
         )
+        desktop_target = bool(_DESKTOP_TARGET.search(clause))
+        click = bool(_CLICK.search(clause))
+        web_context = web_context or explicit_web or browser
+        if click and web_context and not desktop_target and not code:
+            browser = True
         if browser:
             groups.add(BUILTIN_GROUP_BROWSER)
-        desktop_target = bool(_DESKTOP_TARGET.search(clause))
         if _DESKTOP_ACTION.search(clause) or (screenshot and (not browser or desktop_target)):
             groups.add(BUILTIN_GROUP_KEYBOARD_MOUSE)
-        if _CLICK.search(clause) and (desktop_target or (not browser and BUILTIN_GROUP_BROWSER not in groups)):
+        if click and (desktop_target or (not code and not browser)):
             groups.add(BUILTIN_GROUP_KEYBOARD_MOUSE)
     return tuple(group for group in BUILTIN_GROUPS if group in groups)
