@@ -53,7 +53,7 @@ def require_live_character(character: str):
     try:
         config_manager = get_config_manager()
         characters = config_manager.load_characters().get('猫娘', {})
-        from main_logic.voice_archive import has_pending_character_voice_archive_purge
+        from utils.voice_archive_purge import has_pending_character_voice_archive_purge
 
         purge_pending = has_pending_character_voice_archive_purge(
             config_manager.app_docs_dir, character,
