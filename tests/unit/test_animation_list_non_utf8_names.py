@@ -27,14 +27,17 @@ BAD_NAME_BYTES = "你好世界".encode("gbk")
 BAD_NAME = BAD_NAME_BYTES.decode("utf-8", "surrogateescape")
 
 
-def _make_bad_file(directory, suffix: bytes):
+def _make_bad_file(directory, suffix: bytes, *, is_dir: bool = False):
     """Create ``directory/<GBK bytes><suffix>``; skip where the filesystem refuses raw bytes."""
     if sys.platform == "win32":
         pytest.skip("Windows file names are UTF-16; non-UTF-8 byte names cannot occur")
     target = os.path.join(os.fsencode(directory), BAD_NAME_BYTES + suffix)
     try:
-        with open(target, "wb") as file_obj:
-            file_obj.write(b"x")
+        if is_dir:
+            os.mkdir(target)
+        else:
+            with open(target, "wb") as file_obj:
+                file_obj.write(b"x")
     except OSError as exc:  # e.g. APFS rejects invalid UTF-8 names
         pytest.skip(f"filesystem rejects non-UTF-8 names: {exc}")
 
@@ -107,6 +110,8 @@ def test_mmd_animations_skip_non_utf8_entries(mmd_env, tmp_path):
     (user_anim / "Wave.vmd").write_bytes(b"vmd")
     _make_bad_file(static_anim, b".vmd")
     _make_bad_file(user_anim, b".vmd")
+    # A folder is not an animation, so it must not count as a skipped one.
+    _make_bad_file(user_anim, b"-folder.vmd", is_dir=True)
 
     with _client(mmd_router) as client:
         response = client.get("/api/model/mmd/animations")
@@ -123,6 +128,7 @@ def test_mmd_delete_list_skips_non_utf8_entries(mmd_env, tmp_path):
     _, user_anim, log = mmd_env
     (user_anim / "Wave.vmd").write_bytes(b"vmd")
     _make_bad_file(user_anim, b".vmd")
+    _make_bad_file(user_anim, b"-folder.vmd", is_dir=True)
 
     with _client(mmd_router) as client:
         response = client.get("/api/model/mmd/animations/list")
@@ -143,6 +149,8 @@ def test_vrm_animations_skip_non_utf8_entries(vrm_env, tmp_path):
     _make_bad_file(static_anim, b".vrma.gz")
     _make_bad_file(user_anim, b".vrma")
     _make_bad_file(user_anim, b".vrm")
+    _make_bad_file(user_anim, b"-folder.vrma", is_dir=True)
+    _make_bad_file(user_anim, b"-folder.vrm", is_dir=True)
 
     with _client(vrm_router) as client:
         response = client.get("/api/model/vrm/animations")

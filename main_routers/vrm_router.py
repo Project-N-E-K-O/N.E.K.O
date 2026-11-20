@@ -443,15 +443,15 @@ def get_vrm_animations():
                 animation_files = list(anim_dir.glob('*.vrma')) + list(anim_dir.glob('*.vrma.gz'))
                 for anim_file in animation_files:
                     try:
-                        if not is_utf8_text(anim_file.name):
-                            skipped += 1
-                            continue
                         # Internal guided-movement assets need movement playback options and are excluded from ordinary animation selectors.
                         if url_prefix == VRM_STATIC_ANIMATION_PATH and anim_file.name in {
                             "world-walk.vrma", "world-walk.vrma.gz"
                         }:
                             continue
                         if not anim_file.exists() or not anim_file.is_file():
+                            continue
+                        if not is_utf8_text(anim_file.name):
+                            skipped += 1
                             continue
                         
                         url = f"{url_prefix}/{anim_file.name}"
@@ -478,10 +478,10 @@ def get_vrm_animations():
                 # Also support .vrm files as animations in certain cases.
                 for anim_file in anim_dir.glob('*.vrm'):
                     try:
+                        if not anim_file.exists() or not anim_file.is_file():
+                            continue
                         if not is_utf8_text(anim_file.name):
                             skipped += 1
-                            continue
-                        if not anim_file.exists() or not anim_file.is_file():
                             continue
                         
                         url = f"{url_prefix}/{anim_file.name}"

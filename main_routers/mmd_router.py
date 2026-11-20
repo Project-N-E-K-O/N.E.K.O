@@ -729,10 +729,10 @@ def get_mmd_animations():
         if _animation_dir_exists(static_anim_dir):
             for anim_file in _list_animation_dir(static_anim_dir, '*.vmd'):
                 try:
+                    if not anim_file.is_file():
+                        continue
                     if not is_utf8_text(anim_file.name):
                         skipped += 1
-                        continue
-                    if not anim_file.is_file():
                         continue
                     url = f"/static/mmd/animation/{anim_file.name}"
                     if url in seen_urls:
@@ -756,10 +756,10 @@ def get_mmd_animations():
             if _animation_dir_exists(user_anim_dir):
                 for anim_file in _list_animation_dir(user_anim_dir, '*.vmd'):
                     try:
+                        if not anim_file.is_file():
+                            continue
                         if not is_utf8_text(anim_file.name):
                             skipped += 1
-                            continue
-                        if not anim_file.is_file():
                             continue
                         url = f"{MMD_USER_PATH}/animation/{anim_file.name}"
                         if url in seen_urls:
@@ -993,10 +993,10 @@ async def list_mmd_animations_for_delete(request: Request):
                 try:
                     if vmd_file.suffix.lower() != '.vmd':
                         continue
+                    if not vmd_file.is_file():
+                        continue
                     if not is_utf8_text(vmd_file.name):
                         skipped += 1
-                        continue
-                    if not vmd_file.is_file():
                         continue
                     rel_path = vmd_file.relative_to(mmd_dir)
                     animations.append({
