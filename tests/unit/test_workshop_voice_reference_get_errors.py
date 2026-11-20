@@ -9,7 +9,7 @@ the status codes and the plain "not found" answers are unchanged.
 
 The 503 text comes from ``GET /subscribed-items``, whose 500 branch used to
 embed ``str(e)`` too. That route now only returns fixed strings, so the 503
-can keep showing them (e.g. "Steamworks未初始化").
+can keep showing them (e.g. the "Steamworks not initialized" message).
 """
 
 import ast

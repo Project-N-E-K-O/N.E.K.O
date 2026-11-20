@@ -355,7 +355,7 @@ async def get_workshop_voice_reference(item_id: str):
         item = await _find_subscribed_item_by_id(item_id)
     except SubscribedItemsUnavailable as e:
         # The message is one of the fixed strings returned by /subscribed-items
-        # (e.g. "Steamworks未初始化"), never raw exception text, so it is safe
+        # (e.g. "Steamworks not initialized"), never raw exception text, so it is safe
         # to show; see get_subscribed_workshop_items.
         return JSONResponse({
             "success": False,
@@ -429,7 +429,7 @@ async def get_workshop_voice_reference_audio(item_id: str):
         item = await _find_subscribed_item_by_id(item_id)
     except SubscribedItemsUnavailable as e:
         # The message is one of the fixed strings returned by /subscribed-items
-        # (e.g. "Steamworks未初始化"), never raw exception text, so it is safe
+        # (e.g. "Steamworks not initialized"), never raw exception text, so it is safe
         # to show; see get_subscribed_workshop_items.
         return JSONResponse({
             "success": False,
