@@ -341,7 +341,7 @@ def test_error_cause_chain_keeps_types_and_errno_but_redacts_secrets():
     assert 'https://free.example.test ' in text
     for secret in ('/v1/chat', 'token=tok-123', 'abc.def-ghi', 'sk-live', 'AKIA999', '/9j/AAAA', 'user:pw', 'secretquery'):
         assert secret not in text
-    assert 'Bearer ***' in text and 'sk-***' in text and 'access_key=***' in text and 'data:***' in text
+    assert 'Authorization: ***' in text and 'sk-***' in text and 'access_key=***' in text and 'data:***' in text
 
 
 def test_error_cause_chain_is_bounded_and_survives_cycles():
@@ -421,3 +421,84 @@ def test_error_message_hides_home_directory(monkeypatch):
     monkeypatch.setenv('USERPROFILE', '/home/alice')
     message = preparation.redact_error_message("[Errno 2] No such file: '/home/alice/Documents/N.E.K.O/x.jpg'")
     assert message == "[Errno 2] No such file: '~/Documents/N.E.K.O/x.jpg'"
+
+
+@pytest.mark.parametrize('raw,leak,kept', [
+    ('headers x-api-key: abc123 sent', 'abc123', 'x-api-key: ***'),
+    ('{"api_key": "AIzaSyXYZ"}', 'AIzaSyXYZ', '"api_key": "***'),
+    ("{'api_key': 'abc'}", "'abc'", "'api_key': '***"),
+    ('api_key = abc rest', 'abc rest', 'api_key = *** rest'),
+    ('password=hunter2&x=1', 'hunter2', 'password=***'),
+    ('client_secret=s3cr3t', 's3cr3t', 'client_secret=***'),
+    ('Authorization: Basic dXNlcjpwYXNz', 'dXNlcjpwYXNz', 'Authorization: ***'),
+    ('authorization=Bearer tok', 'tok', 'authorization=***'),
+    ('proxy said bearer abc.def', 'abc.def', 'Bearer ***'),
+])
+def test_error_message_masks_common_credential_formats(raw, leak, kept):
+    message = preparation.redact_error_message(raw)
+    assert leak not in message
+    assert kept in message
+
+
+def test_provider_status_errors_keep_status_but_not_the_echoed_body():
+    import httpx
+    import openai
+    request = httpx.Request('POST', 'https://api.example.test/v1/chat/completions')
+    body = {'error': {'message': 'content flagged: 私密弹幕内容', 'code': 'content_filter'}}
+    response = httpx.Response(400, request=request, json=body)
+    exc = openai.BadRequestError('Error code: 400 - ' + str(body), response=response, body=body['error'])
+    [layer] = preparation.error_cause_chain(exc)
+    assert layer == {'type': 'BadRequestError', 'errno': None, 'status_code': 400,
+                     'code': 'content_filter', 'message': None}
+
+
+def test_windows_home_paths_are_hidden_even_when_repr_escaped(monkeypatch):
+    monkeypatch.setattr(preparation.os.path, 'expanduser', lambda _path: 'C:\\Users\\bob')
+    message = preparation.redact_error_message(OSError(2, 'No such file', 'C:\\Users\\bob\\AppData\\x.jpg'))
+    assert 'bob' not in message
+    assert message.startswith("[Errno 2] No such file: '~")
+
+
+def test_huge_messages_are_bounded_before_redaction():
+    import time
+    started = time.perf_counter()
+    for raw in ('a-' * 200000, 'data:' * 50000, 'x' * 400000):
+        assert len(preparation.redact_error_message(raw)) <= preparation.MAX_CAUSE_MESSAGE_CHARS + 1
+    # Linear-time redaction takes milliseconds; the unbounded patterns took seconds.
+    assert time.perf_counter() - started < 2
+
+
+def test_unprintable_exception_keeps_its_type():
+    class Broken(Exception):
+        def __str__(self):
+            raise RuntimeError('broken __str__')
+    assert preparation.error_cause_chain(Broken()) == [{'type': 'Broken', 'errno': None, 'message': None}]
+
+
+@pytest.mark.asyncio
+async def test_failure_detail_errors_still_end_the_job(tmp_path, monkeypatch):
+    class Engine:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError('boom')
+    def broken_detail(*args, **kwargs):
+        raise TypeError('detail failed')
+    monkeypatch.setattr(preparation, 'preparation_error_detail', broken_detail)
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    job = preparation.jobs[result['id']]
+    assert job['status'] == 'error' and job['error'] == 'RuntimeError'
+    assert job['error_detail'] == {'chain': [{'type': 'RuntimeError'}], 'detail_error': 'TypeError'}
+
+
+def test_endpoint_fields_are_typed_and_bounded():
+    engine = SimpleNamespace(vision_endpoint={'host': 5, 'model': 'm-sk-abc ' + 'x' * 300}, last_vision_request=None)
+    detail = preparation.preparation_error_detail(ValueError('x'), engine)
+    assert detail['vision_host'] is None
+    assert len(detail['vision_model']) <= 100
+    assert 'last_vision_request' not in detail

@@ -396,6 +396,8 @@ async def test_each_window_records_request_size_before_the_vision_call(tmp_path,
     printed = [json.loads(line.split(': ', 1)[1]) for line in capsys.readouterr().out.splitlines()
                if line.startswith('Watch vision request: ')]
     assert printed == [stats for stats, _ in seen]
+    # Failures after the vision loop must not be blamed on its last request.
+    assert instance.last_vision_request is None
 
 
 @pytest.mark.asyncio
@@ -407,3 +409,15 @@ async def test_vision_config_records_only_endpoint_host_and_model(tmp_path):
         'api_key': 'sk-secret', 'model': 'vision-1', 'base_url': 'https://u:p@api.example.test/v1?key=x'})
     await instance.vision_config()
     assert instance.vision_endpoint == {'host': 'api.example.test', 'model': 'vision-1'}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('configured_url', [None, 123, 'http://[broken'])
+async def test_vision_config_tolerates_unusual_base_url(tmp_path, configured_url):
+    from types import SimpleNamespace
+    from main_logic.watch_together.engine import Engine
+    instance = Engine(tmp_path, None, 'cat')
+    cfg = {'api_key': 'k', 'model': 'vision-1', 'base_url': configured_url}
+    instance._cm = SimpleNamespace(get_model_api_config=lambda _: cfg)
+    assert await instance.vision_config() is cfg
+    assert instance.vision_endpoint == {'host': None, 'model': 'vision-1'}

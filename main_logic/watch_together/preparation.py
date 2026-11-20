@@ -17,13 +17,17 @@ pending_confirmations = {}
 
 MAX_CAUSE_DEPTH = 4
 MAX_CAUSE_MESSAGE_CHARS = 200
-_DATA_URL = re.compile(r"\bdata:[^\s,]*,\S*", re.IGNORECASE)
+# Provider messages can be large; bound the regex work before redacting.
+_REDACTION_INPUT_CHARS = 2000
+_DATA_URL = re.compile(r"\bdata:[^\s,]{0,100},\S*", re.IGNORECASE)
 _SECRET_PATTERNS = (
-    (re.compile(r"\bBearer\s+[^\s'\",;]+", re.IGNORECASE), "Bearer ***"),
+    (re.compile(r"\b(Authorization['\"]?\s*[:=]\s*['\"]?)(?:[A-Za-z]+\s+)?[^\s'\",;}]+", re.IGNORECASE), r"\1***"),
+    (re.compile(r"\bBearer\s+[^\s'\",;}]+", re.IGNORECASE), "Bearer ***"),
     (re.compile(r"\bsk-[A-Za-z0-9_\-]+"), "sk-***"),
-    (re.compile(r"\b([A-Za-z_\-]*(?:key|token))=[^\s&'\",;]+", re.IGNORECASE), r"\1=***"),
+    (re.compile(r"\b([A-Za-z_\-]{0,32}(?:key|token|secret|password)['\"]?\s*[:=]\s*['\"]?)[^\s&'\",;}]+",
+                re.IGNORECASE), r"\1***"),
 )
-_URL = re.compile(r"\b([A-Za-z][A-Za-z0-9+.\-]*)://[^\s'\"<>]+")
+_URL = re.compile(r"\b([A-Za-z][A-Za-z0-9+.\-]{0,15})://[^\s'\"<>]+")
 
 
 def _url_origin(match):
@@ -36,18 +40,38 @@ def _url_origin(match):
 
 def redact_error_message(message) -> str:
     """Keep an exception message useful for diagnosis without credentials, URL paths or home directory."""
-    text = _DATA_URL.sub("data:***", str(message))
+    text = _DATA_URL.sub("data:***", str(message)[:_REDACTION_INPUT_CHARS])
     for pattern, replacement in _SECRET_PATTERNS:
         text = pattern.sub(replacement, text)
     # URLs keep only scheme and host: paths and queries may carry keys or IDs.
     text = _URL.sub(_url_origin, text)
-    # OSError messages carry local paths; users paste these logs into public issues.
+    # OSError messages carry local paths (Windows ones repr-escaped); users
+    # paste these logs into public issues.
     home = os.path.expanduser("~")
     if len(home) > 1:
-        text = text.replace(home, "~")
+        text = text.replace(home.replace("\\", "\\\\"), "~").replace(home, "~")
     if len(text) > MAX_CAUSE_MESSAGE_CHARS:
         text = text[:MAX_CAUSE_MESSAGE_CHARS] + "…"
     return text
+
+
+def _error_layer(exc) -> dict:
+    errno = getattr(exc, "errno", None)
+    layer = {"type": type(exc).__name__,
+             "errno": errno if isinstance(errno, int) and not isinstance(errno, bool) else None}
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        # Provider status errors embed the response body, which may echo
+        # request content; keep only the status and the provider error code.
+        code = getattr(exc, "code", None)
+        layer.update(status_code=status, code=redact_error_message(code)[:64] if isinstance(code, str) else None,
+                     message=None)
+        return layer
+    try:
+        layer["message"] = redact_error_message(exc)
+    except Exception:
+        layer["message"] = None
+    return layer
 
 
 def error_cause_chain(exc, limit=MAX_CAUSE_DEPTH):
@@ -58,11 +82,9 @@ def error_cause_chain(exc, limit=MAX_CAUSE_DEPTH):
     tell a dropped oversized request from DNS, TLS or proxy failures.
     """
     chain, seen = [], set()
-    while exc is not None and len(chain) < limit and id(exc) not in seen:
+    while isinstance(exc, BaseException) and len(chain) < limit and id(exc) not in seen:
         seen.add(id(exc))
-        errno = getattr(exc, "errno", None)
-        chain.append({"type": type(exc).__name__, "message": redact_error_message(exc),
-                      "errno": errno if isinstance(errno, int) and not isinstance(errno, bool) else None})
+        chain.append(_error_layer(exc))
         exc = exc.__cause__ or exc.__context__
     return chain
 
@@ -72,7 +94,9 @@ def preparation_error_detail(exc, engine=None) -> dict:
     detail = {"chain": error_cause_chain(exc)}
     endpoint = getattr(engine, "vision_endpoint", None)
     if isinstance(endpoint, dict):
-        detail.update(vision_host=endpoint.get("host"), vision_model=endpoint.get("model"))
+        host, model = endpoint.get("host"), endpoint.get("model")
+        detail.update(vision_host=host if isinstance(host, str) else None,
+                      vision_model=redact_error_message(model)[:100] if isinstance(model, str) else None)
     request = getattr(engine, "last_vision_request", None)
     if isinstance(request, dict):
         detail["last_vision_request"] = dict(request)
@@ -190,9 +214,13 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
             job.update(status="cancelled", stage="Cancelled", stage_key="cancelled")
             raise
         except Exception as exc:
-            detail = preparation_error_detail(exc, engine)
-            job.update(status="error", stage="Preparation failed", stage_key="prepareFailed", error=type(exc).__name__,
-                       error_detail=detail)
+            job.update(status="error", stage="Preparation failed", stage_key="prepareFailed", error=type(exc).__name__)
+            try:
+                detail = preparation_error_detail(exc, engine)
+            except Exception as detail_error:
+                # Diagnostics must never keep the job from its terminal state.
+                detail = {"chain": [{"type": type(exc).__name__}], "detail_error": type(detail_error).__name__}
+            job["error_detail"] = detail
             # print, not logger (privacy rule): messages come from providers.
             print(f"Watch preparation failed: {type(exc).__name__} "
                   f"{json.dumps(detail, ensure_ascii=False, default=str)}")
