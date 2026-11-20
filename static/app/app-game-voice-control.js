@@ -285,8 +285,7 @@
                 && (S.voiceStartPending === true
                     || window.isMicStarting === true
                     || (typeof window.hostMicrophoneCaptureReopening === 'function'
-                        ? window.hostMicrophoneCaptureReopening() === true
-                        : (S.isRecording === true && S.voiceInputRouteBlocked !== true)))
+                        && window.hostMicrophoneCaptureReopening() === true))
         };
     }
 

@@ -132,7 +132,11 @@ even then `start_committed` / `start_capture_live` / `host_capture_active`
 say whether the microphone is on. The three groups are independent:
 a start that stood down after its capture committed reads `start_outcome:
 'cancelled'` with `start_committed: true`, and `start_capture_live` alone says
-whether that capture is still the live one. The voice API never stops,
+whether that capture is still the live one. Only one command runs at a time;
+while a start is still settling (which can include a host permission prompt) a
+further command is answered `reason: 'busy'` and is not queued, so a game that
+needs a `stop` to land should retry it after the pending command replies. The
+voice API never stops,
 restarts or cancels host capture to make a report consistent.
 
 There is deliberately no bearer credential here. One existed briefly and was

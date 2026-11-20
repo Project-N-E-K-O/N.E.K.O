@@ -1458,6 +1458,13 @@ async function gameSttGateConfirmsBeforeLiveCase() {
          && env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === true
          && env.mod.hostMicrophoneCaptureReopening() === false,
          "after onstart the recogniser holds this attempt's microphone");
+  // Audio capture ends before the service does: no longer live, while the
+  // duplicate-start guard stays set until onend.
+  recognisers[0].onaudioend();
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === false
+         && env.S.gameVoiceSttListening === true,
+         'after audioend the recogniser no longer holds the microphone');
   // The recogniser ends (the gate schedules a restart): no longer live.
   recognisers[0].onend();
   assert(env.mod.hostMicrophoneCaptureLive() === false
@@ -1473,6 +1480,15 @@ async function gameSttGateConfirmsBeforeLiveCase() {
   env.mod.startGameVoiceSttGate();
   recognisers[recognisers.length - 1].onstart();
   assert(env.S.gameVoiceSttCapturing === true, 'the restarted recogniser confirmed');
+  recognisers[0].onaudioend();
+  assert(env.S.gameVoiceSttCapturing === true,
+         "a superseded recogniser's audioend must not clear the current one's capture");
+  // Muting pauses capture on purpose: neither live nor reopening.
+  env.S.isMicMuted = true;
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.hostMicrophoneCaptureReopening() === false,
+         'a muted host is not reopening its capture');
+  env.S.isMicMuted = false;
   env.mod.stopGameVoiceSttGate({ restoreOrdinaryMic: false });
   assert(env.S.gameVoiceSttCapturing === false, 'stopping the gate must clear the confirmed flag');
 }

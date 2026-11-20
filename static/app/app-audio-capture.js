@@ -291,6 +291,9 @@
         return (
             S.isRecording === true
             && S.voiceInputRouteBlocked !== true
+            // Muted is a deliberate pause, not a reopen (the STT gate stops
+            // its recogniser on mute and the ordinary pipeline is gone).
+            && S.isMicMuted !== true
             && !S.stream
             && !hostMicrophoneCaptureLive()
         );
@@ -1029,6 +1032,11 @@
         };
         recognition.onaudioend = function () {
             console.log('[GameVoiceSTT][Diag] audio end');
+            // Audio capture is over even though the service has not ended yet
+            // (onend follows). Only the report flag: the duplicate-start
+            // guard (gameVoiceSttListening) stays until onend.
+            if (S.gameVoiceSttRecognition !== recognition) return;
+            S.gameVoiceSttCapturing = false;
         };
         recognition.onnomatch = function (event) {
             console.warn('[GameVoiceSTT][Diag] no match:', event);

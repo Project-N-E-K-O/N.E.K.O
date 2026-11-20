@@ -1762,6 +1762,7 @@
     var observedRequestSequence = state.voiceControlRequestSequence;
     if (!client || !client.capabilities.has('voice-input') || !isSdkRouteRunning(client)) {
       state.voiceRouteActive = false;
+      state.voiceRouteStarting = false;
       updateControls();
       return Promise.resolve(false);
     }
@@ -1772,6 +1773,7 @@
     }).catch(function () {
       if (observedRequestSequence !== state.voiceControlRequestSequence) return false;
       state.voiceRouteActive = false;
+      state.voiceRouteStarting = false;
       updateControls();
       return false;
     });
@@ -1791,6 +1793,7 @@
       return !!voiceState && voiceState.ok !== false;
     }).catch(function () {
       state.voiceRouteActive = false;
+      state.voiceRouteStarting = false;
       state.voiceControlPending = false;
       updateControls();
       return false;
@@ -5170,6 +5173,9 @@
       );
     }).catch(function (error) {
       if (requestSequence !== state.voiceControlRequestSequence) return;
+      // No reply arrived (timeout, bridge gone): nothing will tell us the host
+      // is still starting, so do not keep the button held on a stale flag.
+      state.voiceRouteStarting = false;
       addEventMessage('drawingGuess.voice.controlFailed', 'Voice operation failed: {{reason}}', {
         reason: sdkErrorReason(error)
       });

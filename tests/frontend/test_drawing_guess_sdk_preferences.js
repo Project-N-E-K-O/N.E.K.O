@@ -1200,6 +1200,21 @@ async function testVoiceTogglePendingAndSupersededRepliesAreNotFailures() {
     'a reply for a route that already ended was reported as a failure');
   assertEqual(api.state.voiceRouteActive, true,
     'a reply for a route that already ended overwrote the current route voice state');
+
+  // The host bridge goes away while the button is held: no reply will ever
+  // clear the starting flag, so the failure paths must.
+  api.state.voiceRouteStarting = true;
+  client.voice.toggle = () => Promise.reject(new Error('timeout'));
+  api.handleVoiceRouteButton();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertEqual(api.state.voiceRouteStarting, false,
+    'a toggle that got no reply left the voice button held');
+  api.state.voiceRouteStarting = true;
+  client.voice.query = () => Promise.reject(new Error('timeout'));
+  client.runtime = { state: 'running' };
+  await api.querySdkVoiceRouteState(client);
+  assertEqual(api.state.voiceRouteStarting, false,
+    'a failed voice query left the voice button held');
 }
 
 async function testCharacterBindingIsSharedRetiredAndRebound() {
