@@ -200,8 +200,14 @@ async def register_remote_tool(
     timeout_seconds: float,
     role: Optional[str] = None,
     reply_tail: bool = False,
+    risk: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Register a plugin-owned LLM tool with ``main_server``.
+
+    ``risk`` is the tool's declared risk class. It is carried as None when the plugin
+    declared none: the host records that gap and refuses the call under enforce mode, so
+    the field must reach the host instead of being filtered out here. An installed plugin
+    that has never heard of the field still has to be able to register.
 
     Idempotent at the registry level: if the same ``(plugin_id, name)``
     is registered twice, the second call still POSTs to ``main_server``
@@ -218,6 +224,7 @@ async def register_remote_tool(
     payload = {
         "name": name,
         "description": description,
+        "risk": risk,
         "parameters": parameters,
         "callback_url": callback_url,
         "role": role,

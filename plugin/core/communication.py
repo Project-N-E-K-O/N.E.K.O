@@ -68,6 +68,14 @@ def _resolve_plugin_server_base_url() -> str:
 _PLANE_DROP_WARN_THROTTLE_SECONDS = 60.0
 
 
+# The four risk classes the host permission gate accepts, duplicated here on purpose:
+# the plugin process must not import host config to validate a wire field it can check
+# itself, and the layering gate would refuse it anyway (scripts/check_module_layering.py
+# FORBIDDEN_EDGES). A drift between this set and the host enum is caught by the host
+# refusal, not silently accepted.
+_LLM_TOOL_RISKS = frozenset({"read", "self", "write", "external"})
+
+
 @dataclass
 class PluginCommunicationResourceManager:
     """Host-side communication manager backed by ZMQ transport.
@@ -1084,10 +1092,34 @@ class PluginCommunicationResourceManager:
             if role is not None and not isinstance(role, str):
                 role = None
 
+            # A wrong label is the author's typo, so refuse it here: main_server would
+            # reject the registration and this consumer has always swallowed that
+            # rejection into a log, so the author would only see a missing tool.
+            # A MISSING label is different, and it is the normal state of every plugin
+            # installed before the permission gate existed. Forward it as None and let
+            # the host decide: the host logs the gap at registration and refuses the call
+            # whenever the gate runs in enforce mode. Dropping the tool here would put
+            # the plugin process in charge of how strict the host is.
+            raw_risk = msg.get("risk")
+            risk = str(raw_risk or "").strip().lower() or None
+            if risk is not None and risk not in _LLM_TOOL_RISKS:
+                self.logger.warning(
+                    "LLM_TOOL_REGISTER {} declares an unusable risk label ({}); "
+                    "the tool was not registered", name, raw_risk,
+                )
+                return
+            if risk is None:
+                self.logger.warning(
+                    "LLM_TOOL_REGISTER {} carries no risk label; registering it "
+                    "unlabelled, so the host permission gate refuses its calls as soon "
+                    "as it runs in enforce mode", name,
+                )
+
             await register_remote_tool(
                 plugin_id=self.plugin_id,
                 name=name,
                 description=str(description),
+                risk=risk,
                 parameters=parameters,
                 timeout_seconds=float(timeout_seconds),
                 role=role,

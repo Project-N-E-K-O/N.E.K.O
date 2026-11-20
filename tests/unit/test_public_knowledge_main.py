@@ -286,6 +286,10 @@ def test_a_plugin_tool_with_the_same_name_is_left_alone():
     manager = _manager()
     plugin_tool = ToolDefinition(
         name=public_knowledge.TOOL_NAME, description="plugin", handler=None,
+        # A stand-in for a plugin's tool. It declares a label because these tests call
+        # the host registration API directly, and a host-side registration must carry
+        # one. The tool it imitates is a knowledge lookup, which is a read.
+        risk="read",
         metadata={"source": "plugin:other"},
     )
     manager.tool_registry.register(plugin_tool)
@@ -304,6 +308,10 @@ def test_the_builtin_returns_when_a_colliding_plugin_tool_is_removed():
     public_knowledge.note_availability({"tool_available": True})
     plugin_tool = ToolDefinition(
         name=public_knowledge.TOOL_NAME, description="plugin", handler=None,
+        # A stand-in for a plugin's tool. It declares a label because these tests call
+        # the host registration API directly, and a host-side registration must carry
+        # one. The tool it imitates is a knowledge lookup, which is a read.
+        risk="read",
         metadata={"source": "plugin:other"},
     )
     manager.register_tool(plugin_tool)
@@ -327,6 +335,7 @@ def test_evicting_a_dead_plugin_gives_the_name_back_to_the_builtin(monkeypatch):
     public_knowledge.note_availability({"tool_available": True})
     manager.tool_registry.register(ToolDefinition(
         name=public_knowledge.TOOL_NAME, description="plugin", handler=None,
+        risk="read",
         metadata={"source": "plugin:dead", "callback_url": "http://127.0.0.1:9/cb"},
     ))
     monkeypatch.setattr(tool_router, "get_session_manager", lambda: {"Alpha": manager})

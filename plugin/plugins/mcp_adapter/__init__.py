@@ -93,6 +93,13 @@ class MCPServerConfig:
     headers: Dict[str, str] = field(default_factory=dict)
 
 
+#: The four risk classes the host permission gate accepts. Repeated here on purpose,
+#: the same way plugin/core/communication.py does: this file runs in the plugin process,
+#: and a local set is cheaper than a cross-package import for four words. A drift shows up
+#: as the host refusing the value, not as a silent pass.
+_TOOL_RISK_CLASSES = frozenset({"read", "self", "write", "external"})
+
+
 @dataclass
 class MCPTool:
     """MCP Tool information"""
@@ -1548,6 +1555,16 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             )
             self.register_llm_tool(
                 name=llm_name,
+                # An MCP server is a third party this repository does not own, and its
+                # tools can do anything the server implements. So the adapter declares
+                # every bridged tool `external` unless the operator pins a narrower
+                # class for that server in its config: guessing per tool from a
+                # description string would invent a label the author never reviewed,
+                # which is the thing this field exists to prevent.
+                risk=str(
+                    self._server_tool_risk(server_name)
+                    or "external"
+                ),
                 description=description or f"MCP tool '{tool_name}' from server '{server_name}'.",
                 parameters=parameters,
                 handler=self._build_chat_tool_handler(
@@ -1568,6 +1585,37 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             "tool_name": tool_name,
         }
         return True
+
+    def _server_tool_risk(self, server_name: str) -> str:
+        """The operator's pinned risk class for one MCP server, or "" if unpinned.
+
+        Read from ``self._servers_config``, the startup copy of the plugin's own
+        ``mcp_servers`` block. Not ``self.ctx.config``: that attribute does not exist, and
+        the broad ``except`` below would have swallowed the AttributeError forever,
+        leaving every server on the blanket default while the comment claimed an override
+        was available. The config schema declares ``mcp_servers`` as an open object (no
+        ``additionalProperties: false``), so an extra per-server key is legal here.
+
+        Unset means the default, never an inferred value: guessing a class from a tool
+        description would invent a label no author reviewed.
+        """
+        entry = {}
+        try:
+            servers = getattr(self, "_servers_config", None) or {}
+            entry = servers.get(server_name) or {}
+        except Exception:
+            entry = {}
+        value = entry.get("tool_risk") if isinstance(entry, dict) else None
+        risk = str(value or "").strip().lower()
+        if risk and risk not in _TOOL_RISK_CLASSES:
+            # A typo here must not silently become the strictest class or the loosest one.
+            # Say what was ignored, then apply the default.
+            self.ctx.logger.warning(
+                f"Ignoring unknown tool_risk={value!r} for MCP server '{server_name}'; "
+                f"expected one of {sorted(_TOOL_RISK_CLASSES)}, using 'external'"
+            )
+            return ""
+        return risk
 
     async def _remote_unregister_llm_tool(self, llm_name: str) -> str:
         """Synchronously call main_server directly to unregister an LLM tool.
@@ -2379,6 +2427,31 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         finally:
             self._reconnect_tasks.pop(server_name, None)
     
+    async def _pin_connected_server_config(
+        self, server_name: str, server_cfg: Dict[str, object]
+    ) -> bool:
+        """Make ``_servers_config`` describe the connection that is being opened.
+
+        ``connect_server`` builds the connection from a fresh ``config.dump()``
+        snapshot, but ``_server_tool_risk`` reads ``_servers_config``. The two only
+        agreed at process start: after a reconnect they could disagree, so a newly
+        saved ``tool_risk`` was ignored until restart -- and a server whose risk was
+        lowered would keep the looser class while its URL was already the new one.
+
+        Run under the same lock every other writer takes (add / remove /
+        set_chat_injection), so a concurrent removal is not resurrected by this
+        write and the assignment is never torn. Returns False when the server was
+        removed while the connect task waited, which is the caller's signal to stop.
+        """
+        async with self._servers_config_lock:
+            if server_name not in self._servers_config:
+                self.ctx.logger.info(f"Skip connecting removed MCP server '{server_name}'")
+                return False
+            self._servers_config[server_name] = (
+                dict(server_cfg) if isinstance(server_cfg, dict) else server_cfg
+            )
+        return True
+
     async def _connect_server(
         self,
         server_name: str,
@@ -2390,6 +2463,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         try:
             if server_name not in self._servers_config:
                 self.ctx.logger.info(f"Skip connecting removed MCP server '{server_name}'")
+                return False
+            # Pin the config this connection is built from before any tool is
+            # registered. See ``_pin_connected_server_config`` for why.
+            if not await self._pin_connected_server_config(server_name, server_cfg):
                 return False
             timeout = self._coerce_timeout(timeout, 30.0)
             # Extract configuration fields and convert their types.

@@ -342,7 +342,8 @@ async def test_real_tool_loop_and_core_completion_keep_old_tools_unchanged(monke
 
     mgr.tool_registry = ToolRegistry(remote_dispatcher=dispatch)
     mgr.tool_registry.register(ToolDefinition(
-        "lookup", "", metadata={"source": "plugin:stickers", "reply_tail": opt_in},
+        "lookup", "", risk="read",
+        metadata={"source": "plugin:stickers", "reply_tail": opt_in},
     ))
     client.on_tool_call = ToolCallingMixin._make_tool_call_handler(mgr, client)
     monkeypatch.setattr("main_logic.core.dispatch_text_user_message", lambda *_: None)
@@ -381,10 +382,15 @@ async def test_registration_transport_preserves_explicit_opt_in(monkeypatch, opt
 
     manager = SimpleNamespace(lanlan_name="Cat", tool_registry=ToolRegistry())
 
-    async def register_tool(definition, *, replace=False):
-        manager.tool_registry.register(definition)
+    async def register_tool(definition, *, replace=False, risk_required=True):
+        # The real manager forwards the flag, and this stub is standing in for that
+        # manager: the route must be able to say "this arrived over the wire, an
+        # unlabelled tool is a recorded gap here, not a refused registration".
+        seen["risk_required"] = risk_required
+        manager.tool_registry.register(definition, risk_required=risk_required)
         return True
 
+    seen = {}
     manager.register_tool_and_sync = register_tool
     monkeypatch.setattr(tool_router, "get_session_manager", lambda: {"Cat": manager})
     monkeypatch.setattr(tool_router, "_ensure_dispatcher_bound", lambda *_: None)
@@ -401,6 +407,13 @@ async def test_registration_transport_preserves_explicit_opt_in(monkeypatch, opt
             timeout_seconds=20, role="Cat", reply_tail=opt_in,
         )
     assert result["ok"]
+    # This caller sends no risk field at all, which is exactly what every plugin built
+    # before the permission gate does. The wire path must register it and record the gap,
+    # not reject the registration: a refused registration would take the plugin's whole
+    # tool set with it.
+    assert seen == {"risk_required": False}
+    registered = manager.tool_registry.get("tail_transport_tool")
+    assert registered is not None and registered.risk is None
     metadata = manager.tool_registry.get("tail_transport_tool").metadata
     assert ("reply_tail" in metadata) == opt_in
     if opt_in:
@@ -765,7 +778,8 @@ async def test_a_long_reply_kept_by_its_recovery_is_a_completed_reply(monkeypatc
 
     mgr.tool_registry = ToolRegistry(remote_dispatcher=dispatch)
     mgr.tool_registry.register(ToolDefinition(
-        "lookup", "", metadata={"source": "plugin:stickers", "reply_tail": True},
+        "lookup", "", risk="read",
+        metadata={"source": "plugin:stickers", "reply_tail": True},
     ))
     client.on_tool_call = ToolCallingMixin._make_tool_call_handler(mgr, client)
     monkeypatch.setattr("main_logic.core.dispatch_text_user_message", lambda *_: None)

@@ -45,7 +45,9 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 
 from PIL import Image
 
+from main_logic import tool_permissions
 from utils.logger_config import get_module_logger
+from utils.provenance import current_provenance, provenance_scope
 
 logger = get_module_logger(__name__, "Main")
 
@@ -107,6 +109,12 @@ class ToolDefinition:
     # Free-form metadata: e.g. {"source": "plugin", "plugin_id": "...", "version": "..."}
     # Used by the cross-process RPC layer to route remote calls.
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # What this tool does, from config.permission_settings.ToolRisk. There is no
+    # default risk on purpose: the field's default None means "not declared", and
+    # ToolRegistry.register refuses such a tool. A permissive default here would make
+    # every unlabelled tool look read-only, which is the one mistake a permission
+    # system must not make.
+    risk: Optional[Any] = None
 
     def to_openai_chat(self) -> Dict[str, Any]:
         """OpenAI Chat Completions / StepFun Realtime / Qwen-text format
@@ -559,17 +567,57 @@ class ToolRegistry:
 
     # ---- registration ---------------------------------------------------
 
-    def register(self, tool: ToolDefinition, *, replace: bool = True) -> None:
+    def register(self, tool: ToolDefinition, *, replace: bool = True,
+                 risk_required: bool = True) -> None:
         if not tool.name:
             raise ToolRegistryError("ToolDefinition.name must be non-empty")
+        # This is the enforcement point the brief asks for. It sits here rather than in
+        # LLMSessionManager.register_tool because the two other producers -- the HTTP
+        # register endpoint and the ledger replay at startup (main_routers/tool_router.py
+        # replay_remote_tools) -- write the registry directly and would walk past a
+        # higher check. Normalising on the way in means the gate at execute() can trust
+        # the value without re-parsing it per call.
+        #
+        # ``risk_required`` is about WHO is registering, and it is set from the code path,
+        # never from a field in the payload (a caller that can name its own source can
+        # name itself anything). True is the host's own registrations: builtin tools,
+        # in-tree plugins, anything calling this directly. There the PR author owns the
+        # label and a missing one is a bug to fail on.
+        #
+        # False is the two wire paths, where third-party plugins arrive. Refusing them at
+        # import or at registration switches off working features: on this machine 29
+        # installed plugin packages define tools and none of them has the keyword yet. An
+        # unlabelled plugin tool instead registers, logs the gap by name, and meets the
+        # strictest answer the gate can give at call time -- deny in enforce, a recorded
+        # would-deny in observe. A missing label is the most restricted shape there is, so
+        # this is not a way to escape the rule; it only moves when the refusal lands.
+        try:
+            tool.risk = tool_permissions.parse_risk(
+                tool.risk if tool.risk is not None else tool.metadata.get("risk")
+            )
+        except tool_permissions.PermissionConfigError as exc:
+            if risk_required:
+                raise ToolRegistryError(
+                    f"tool '{tool.name}' has no usable risk label: {exc}. Declare one of "
+                    f"read, self, write, external at the tool's own registration site."
+                ) from None
+            tool.risk = None
+            logger.warning(
+                "ToolRegistry: tool '%s' (source=%s) declares no risk label; it stays "
+                "registered and the permission gate treats it as the highest class it "
+                "can get no answer for. Ask the plugin author to declare one of "
+                "read, self, write, external.",
+                tool.name, tool.metadata.get("source", "unknown"),
+            )
         if not replace and tool.name in self._tools:
             raise ToolRegistryError(f"tool '{tool.name}' already registered")
         self._tools[tool.name] = tool
         logger.info(
-            "ToolRegistry: registered '%s' (handler=%s, source=%s)",
+            "ToolRegistry: registered '%s' (handler=%s, source=%s, risk=%s)",
             tool.name,
             "local" if tool.handler else "remote",
             tool.metadata.get("source", "unknown"),
+            tool.risk.value if tool.risk is not None else "unlabelled",
         )
 
     def unregister(self, name: str) -> bool:
@@ -604,11 +652,21 @@ class ToolRegistry:
 
     # ---- execution ------------------------------------------------------
 
-    async def execute(self, call: ToolCall) -> ToolResult:
+    async def execute(self, call: ToolCall, *,
+                      provenance: Any = None) -> ToolResult:
         """Execute a tool call. Never raises — wraps errors into a
         ``ToolResult(is_error=True)`` so the calling client can still feed
         a structured response back to the model (model sees the error as
-        a normal tool result string, often recoverable)."""
+        a normal tool result string, often recoverable).
+
+        ``provenance`` is the turn's single carrier (``utils/provenance.py``): the
+        speaker, the trace id and the plugin chain. It is passed explicitly from
+        the session because the client loop that produces the call is long-lived
+        and predates the turn, so a task-local scope set at ingress never reaches
+        it. The gate reads the same object, and the execution below re-binds it so
+        the remote dispatcher can forward the trace to the plugin side without
+        threading another parameter through every dispatcher implementation.
+        """
         tool = self._tools.get(call.name)
         if tool is None:
             msg = f"tool '{call.name}' is not registered"
@@ -621,6 +679,37 @@ class ToolRegistry:
                 error_message=msg,
             )
 
+        # Permission gate. One place, ahead of both the local handler and the remote
+        # dispatcher, because this is the only function every model tool call passes
+        # through (main_logic/core/tool_calling.py:187 is its single caller). A gate
+        # placed at the session level would leave the ledger replay and any future
+        # executor outside it.
+        #
+        # Denied calls answer as a normal error result rather than raising: this
+        # function's contract is "never raises", and the model recovers from a tool
+        # error string. Changing that contract to make a point would break turns that
+        # call an unrelated tool in the same breath.
+        #
+        # ``blocks`` and "the policy said deny" differ on purpose: in observe mode the
+        # decision is recorded and the call runs, so the switch changes behaviour
+        # without changing what the table concluded.
+        decision = await tool_permissions.enforce(
+            call.name, tool.risk,
+            tool_permissions.actor_for_call(call, session_provenance=provenance),
+            provenance=provenance,
+        )
+        if decision.blocks:
+            return tool_permissions.permission_denied_result(call, decision)
+
+        with provenance_scope(provenance if provenance is not None else current_provenance()):
+            return await self._execute_allowed(call, tool)
+
+    async def _execute_allowed(self, call: ToolCall, tool: ToolDefinition) -> ToolResult:
+        """Run an allowed call: local handler or remote dispatcher, errors folded.
+
+        Split out of ``execute`` only so the provenance scope above covers every
+        return path; the body is unchanged.
+        """
         start = time.time()
         try:
             if tool.handler is not None:

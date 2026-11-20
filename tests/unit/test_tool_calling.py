@@ -85,7 +85,7 @@ async def test_registry_local_handler_runs():
         calls.append(args)
         return {"echoed": args}
 
-    reg.register(ToolDefinition(name="echo", description="echo", handler=echo_handler))
+    reg.register(ToolDefinition(name="echo", description="echo", handler=echo_handler, risk="read"))
     result = await reg.execute(ToolCall(name="echo", arguments={"x": 1}, call_id="c1"))
     assert result.is_error is False
     assert result.output == {"echoed": {"x": 1}}
@@ -119,7 +119,7 @@ async def test_registry_local_handler_envelope_extracts_images():
 
     reg = ToolRegistry()
     reg.register(ToolDefinition(
-        name="shot", description="shot", handler=screenshot_handler))
+        name="shot", description="shot", handler=screenshot_handler, risk="read"))
     result = await reg.execute(ToolCall(name="shot", arguments={}, call_id="c1"))
 
     assert result.is_error is False
@@ -141,7 +141,7 @@ async def test_registry_local_handler_keeps_data_dicts_that_contain_output():
 
     reg = ToolRegistry()
     reg.register(ToolDefinition(
-        name="ready", description="ready", handler=ready_handler))
+        name="ready", description="ready", handler=ready_handler, risk="read"))
     result = await reg.execute(ToolCall(name="ready", arguments={}, call_id="c1"))
 
     assert result.is_error is False
@@ -160,7 +160,7 @@ async def test_registry_local_handler_keeps_business_images_as_plain_data():
 
     reg = ToolRegistry()
     reg.register(ToolDefinition(
-        name="search", description="search", handler=lambda _args: payload))
+        name="search", description="search", handler=lambda _args: payload, risk="read"))
     result = await reg.execute(ToolCall(name="search", arguments={}, call_id="c1"))
 
     assert result.is_error is False
@@ -194,7 +194,7 @@ async def test_registry_remote_dispatcher_invoked_when_no_handler():
         description="remote",
         handler=None,
         metadata={"source": "plugin:foo", "callback_url": "http://x/y"},
-    ))
+     risk="read"))
     result = await reg.execute(ToolCall(name="r", arguments={}, call_id="c"))
     assert result.output == {"remote": True}
     assert seen_metadata["source"] == "plugin:foo"
@@ -205,9 +205,9 @@ def test_registry_clear_by_source():
     from main_logic.tool_calling import ToolDefinition, ToolRegistry
 
     reg = ToolRegistry()
-    reg.register(ToolDefinition(name="a", description="", handler=lambda _: 1, metadata={"source": "plugin:foo"}))
-    reg.register(ToolDefinition(name="b", description="", handler=lambda _: 1, metadata={"source": "plugin:bar"}))
-    reg.register(ToolDefinition(name="c", description="", handler=lambda _: 1, metadata={"source": "plugin:foo"}))
+    reg.register(ToolDefinition(name="a", description="", handler=lambda _: 1, metadata={"source": "plugin:foo"}, risk="read"))
+    reg.register(ToolDefinition(name="b", description="", handler=lambda _: 1, metadata={"source": "plugin:bar"}, risk="read"))
+    reg.register(ToolDefinition(name="c", description="", handler=lambda _: 1, metadata={"source": "plugin:foo"}, risk="read"))
     assert reg.clear(source="plugin:foo") == 2
     assert sorted(reg.names()) == ["b"]
 
@@ -225,7 +225,7 @@ def test_registry_specs_for_dialect_shapes():
             "required": ["city"],
         },
         handler=lambda _: 0,
-    ))
+     risk="read"))
     chat = reg.specs_for(dialect="openai_chat")[0]
     rt = reg.specs_for(dialect="openai_realtime")[0]
     gem = reg.specs_for(dialect="gemini")[0]
@@ -345,7 +345,7 @@ async def test_offline_openai_path_runs_tool_then_text():
         description="weather lookup",
         parameters={"type": "object", "properties": {"city": {"type": "string"}}},
         handler=get_weather,
-    )
+     risk="read")
 
     # Two scripted LLM responses:
     # Call 1: model emits a tool_call (finish_reason="tool_calls")
@@ -444,7 +444,7 @@ async def test_cancelled_tool_round_does_not_start_another_provider_call():
         description="lookup",
         parameters={"type": "object", "properties": {}},
         handler=None,
-    )]
+     risk="read")]
     client.llm = _FakeLLM([[
         LLMStreamChunk(
             content="",
@@ -531,7 +531,7 @@ async def test_offline_openai_path_filters_pretool_leak_before_history():
         description="recall",
         parameters={"type": "object", "properties": {"query": {"type": "string"}}},
         handler=recall_handler,
-    )
+     risk="read")
     leak = 'recall_memory</name><parameter name="query">secret</parameter></function></seed:tool_call>'
     chunks_call_1 = [
         LLMStreamChunk(content="让我查一下。"),
@@ -602,7 +602,7 @@ async def test_offline_openai_path_emits_finalized_pretool_tail():
         description="recall",
         parameters={"type": "object", "properties": {"query": {"type": "string"}}},
         handler=recall_handler,
-    )
+     risk="read")
     chunks_call_1 = [
         LLMStreamChunk(content="Let"),
         LLMStreamChunk(content="s"),
@@ -697,7 +697,7 @@ async def test_offline_openai_path_persists_reasoning_content_with_tool_call():
         description="recall",
         parameters={"type": "object", "properties": {"q": {"type": "string"}}},
         handler=lambda args: {"hits": []},
-    )
+     risk="read")
 
     # First round: stream reasoning, then tool_call, with finish_reason=tool_calls.
     chunks_call_1 = [
@@ -992,7 +992,7 @@ async def test_offline_openai_path_omits_reasoning_when_absent():
         description="recall",
         parameters={"type": "object", "properties": {"q": {"type": "string"}}},
         handler=lambda args: {"hits": []},
-    )
+     risk="read")
     chunks_call_1 = [
         LLMStreamChunk(
             content="",
@@ -1367,9 +1367,9 @@ async def test_register_tool_and_sync_serializes_concurrent_updates():
 
     # Three concurrent registrations.
     await _asyncio.gather(
-        mgr.register_tool_and_sync(ToolDefinition(name="a", description="", handler=lambda _: 0)),
-        mgr.register_tool_and_sync(ToolDefinition(name="b", description="", handler=lambda _: 0)),
-        mgr.register_tool_and_sync(ToolDefinition(name="c", description="", handler=lambda _: 0)),
+        mgr.register_tool_and_sync(ToolDefinition(name="a", description="", handler=lambda _: 0, risk="read")),
+        mgr.register_tool_and_sync(ToolDefinition(name="b", description="", handler=lambda _: 0, risk="read")),
+        mgr.register_tool_and_sync(ToolDefinition(name="c", description="", handler=lambda _: 0, risk="read")),
     )
 
     # Serialization: snapshots seen by successive syncs grow monotonically (never see abc followed by ab).
@@ -1457,7 +1457,7 @@ async def test_register_tool_and_sync_propagates_session_update_failure():
     mgr = _StubMgr()
     with pytest.raises(RuntimeError, match="tool sync failed"):
         await mgr.register_tool_and_sync(
-            ToolDefinition(name="x", description="", handler=lambda _: 0),
+            ToolDefinition(name="x", description="", handler=lambda _: 0, risk="read"),
         )
 
 
@@ -1554,15 +1554,15 @@ async def test_remote_dispatch_evicts_dead_plugin_after_three_connect_failures(
         mgr.tool_registry.register(ToolDefinition(
             name="weather", description="", handler=None,
             metadata={"source": "plugin:dead_foo", "callback_url": "http://127.0.0.1:9999/cb"},
-        ))
+         risk="read"))
         mgr.tool_registry.register(ToolDefinition(
             name="search", description="", handler=None,
             metadata={"source": "plugin:dead_foo", "callback_url": "http://127.0.0.1:9999/cb"},
-        ))
+         risk="read"))
         mgr.tool_registry.register(ToolDefinition(
             name="recall_memory", description="", handler=lambda _: "",
             metadata={"source": "builtin"},
-        ))
+         risk="read"))
 
     fake_session_manager = {"Alpha": mgr_a, "Beta": mgr_b}
     monkeypatch.setattr(_tr, "get_session_manager", lambda: fake_session_manager)
@@ -1619,7 +1619,7 @@ async def test_remote_dispatch_business_error_does_not_evict(
     mgr.tool_registry.register(ToolDefinition(
         name="buggy_tool", description="", handler=None,
         metadata={"source": "plugin:buggy", "callback_url": "http://127.0.0.1:9999/cb"},
-    ))
+     risk="read"))
     monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
 
     # Simulate a live plugin (200 + is_error=true body).
@@ -1667,7 +1667,7 @@ async def test_remote_dispatch_success_resets_failure_counter(
     mgr.tool_registry.register(ToolDefinition(
         name="flaky", description="", handler=None,
         metadata={"source": "plugin:flaky", "callback_url": "http://127.0.0.1:9999/cb"},
-    ))
+     risk="read"))
     monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
 
     class _OkResp:
@@ -1720,7 +1720,7 @@ async def test_remote_dispatch_builtin_source_never_evicted(
     mgr.tool_registry.register(ToolDefinition(
         name="recall_memory", description="", handler=None,
         metadata={"source": "builtin", "callback_url": "http://127.0.0.1:9999/cb"},
-    ))
+     risk="read"))
     monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
 
     class _DeadClient:
@@ -1754,7 +1754,7 @@ async def test_remote_dispatch_read_timeout_does_not_evict(
     mgr.tool_registry.register(ToolDefinition(
         name="slow", description="", handler=None,
         metadata={"source": "plugin:slow", "callback_url": "http://127.0.0.1:9999/cb"},
-    ))
+     risk="read"))
     monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
 
     class _SlowClient:
@@ -1794,11 +1794,11 @@ async def test_remote_dispatch_endpoint_local_outage_preserves_sibling_endpoints
     mgr.tool_registry.register(ToolDefinition(
         name="tool_on_dead_port", description="", handler=None,
         metadata={"source": "plugin:multi_port", "callback_url": "http://127.0.0.1:9001/cb"},
-    ))
+     risk="read"))
     mgr.tool_registry.register(ToolDefinition(
         name="tool_on_live_port", description="", handler=None,
         metadata={"source": "plugin:multi_port", "callback_url": "http://127.0.0.1:9002/cb"},
-    ))
+     risk="read"))
     monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
 
     # Only port 9001 is unreachable; 9002 works.
@@ -1896,7 +1896,7 @@ async def test_remote_dispatch_survives_malformed_callback_url(
     mgr.tool_registry.register(ToolDefinition(
         name="malformed_tool", description="", handler=None,
         metadata={"source": "plugin:malformed", "callback_url": bad_url},
-    ))
+     risk="read"))
     monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
 
     class _DeadClient:
@@ -2487,7 +2487,7 @@ def _tools_declining_client(astream_impl, *, max_tool_iterations=1):
         description="noop",
         parameters={"type": "object", "properties": {}},
         handler=handler,
-    )
+     risk="read")
 
     class _Llm:
         max_completion_tokens = 100
@@ -2714,7 +2714,7 @@ async def test_offline_openai_path_persists_streamed_text_with_tool_calls():
         name="get_weather", description="weather",
         parameters={"type": "object", "properties": {"city": {"type": "string"}}},
         handler=get_weather,
-    )
+     risk="read")
 
     # First LLM call: yield text, then tool_call, and finally finish=tool_calls.
     chunks_call_1 = [
@@ -2882,7 +2882,7 @@ async def test_set_tools_resets_genai_unsupported_flag():
     client = OmniOfflineClient.__new__(OmniOfflineClient)
     _init_bare(client)
     client._tool_definitions = [
-        ToolDefinition(name="bad", description="", handler=lambda _: 0),
+        ToolDefinition(name="bad", description="", handler=lambda _: 0, risk="read"),
     ]
     client._genai_tools_unsupported = True  # Simulate an old tool having triggered schema rejection.
 
@@ -2894,7 +2894,7 @@ async def test_set_tools_resets_genai_unsupported_flag():
 
     # Registering a new tool must reset it too (the caller may supply a new one).
     client._genai_tools_unsupported = True
-    client.set_tools([ToolDefinition(name="good", description="", handler=lambda _: 0)])
+    client.set_tools([ToolDefinition(name="good", description="", handler=lambda _: 0, risk="read")])
     assert client._genai_tools_unsupported is False
 
 
@@ -3161,7 +3161,7 @@ async def test_offline_iteration_cap_breaks_runaway_loop():
     async def loop_tool(args):
         return {"ok": True}
 
-    tool = ToolDefinition(name="loop", description="", handler=loop_tool)
+    tool = ToolDefinition(name="loop", description="", handler=loop_tool, risk="read")
 
     # Every tool round returns another tool_call.
     def loop_chunks():
@@ -3282,7 +3282,7 @@ async def test_openai_nameless_fragment_round_fires_round_start_and_finalizes():
         handler_calls.append(call.name)
         return ToolResult(call_id=call.call_id, name=call.name, output={})
 
-    tool = ToolDefinition(name="lookup", description="", handler=handler)
+    tool = ToolDefinition(name="lookup", description="", handler=handler, risk="read")
     chunks_call_1 = [
         LLMStreamChunk(content="我查一下", finish_reason=None),
         LLMStreamChunk(
@@ -3346,7 +3346,7 @@ async def test_openai_cap_one_normal_recall_logs_info_not_warning():
         handler_calls.append(call.name)
         return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
 
-    tool = ToolDefinition(name="recall_memory", description="", handler=handler)
+    tool = ToolDefinition(name="recall_memory", description="", handler=handler, risk="read")
     chunks_call_1 = [
         LLMStreamChunk(
             content="",
@@ -3394,7 +3394,7 @@ async def test_openai_cap_multi_runaway_still_warns():
     async def handler(call: ToolCall) -> ToolResult:
         return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
 
-    tool = ToolDefinition(name="loop", description="", handler=handler)
+    tool = ToolDefinition(name="loop", description="", handler=handler, risk="read")
 
     def loop_chunks():
         return [
@@ -3749,7 +3749,7 @@ def _bare_genai_client(rounds, handler, *, cap, finalize_parts=None):
             name="recall_memory", description="recall",
             parameters={"type": "object", "properties": {}},
             handler=handler,
-        )]
+         risk="read")]
         client.has_tools = lambda: True
     client.max_tool_iterations = cap
     client._genai_tools_unsupported = False
@@ -3925,7 +3925,7 @@ async def test_openai_round_start_fires_after_leak_filter_tail():
     async def handler(call: ToolCall) -> ToolResult:
         return ToolResult(call_id=call.call_id, name=call.name, output={})
 
-    tool = ToolDefinition(name="recall_memory", description="", handler=handler)
+    tool = ToolDefinition(name="recall_memory", description="", handler=handler, risk="read")
     chunks_call_1 = [
         LLMStreamChunk(content="我查一下"),
         # A partial text fragment resembling a tail: the filter holds it until finalize releases it.
@@ -4087,7 +4087,7 @@ async def test_openai_zero_execution_round_does_not_replay_streamed_text():
         handler_calls.append(call.name)
         return ToolResult(call_id=call.call_id, name=call.name, output={})
 
-    tool = ToolDefinition(name="lookup", description="", handler=handler)
+    tool = ToolDefinition(name="lookup", description="", handler=handler, risk="read")
 
     def _nameless_round():
         return [
@@ -4406,7 +4406,7 @@ def _make_rt_client(api_type: str, *, tool_name: str = "x", tool_kwargs=None):
         description=tk.get("description", ""),
         parameters=tk.get("parameters", {"type": "object", "properties": {}}),
         handler=lambda _: 0,
-    )]
+     risk="read")]
     client.on_tool_call = lambda _c: None  # truthy → has_tools() == True
     sent: list = []
 
@@ -5073,7 +5073,7 @@ def _minimal_offline_client_for_leak_tests():
     client.enable_long_response_summary = False
     client.vision_model = ""
     client.model = "x"
-    client._tool_definitions = [ToolDefinition(name="recall_memory", description="")]
+    client._tool_definitions = [ToolDefinition(name="recall_memory", description="", risk="read")]
     return client
 
 

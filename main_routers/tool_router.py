@@ -72,10 +72,13 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 import asyncio
 import ipaddress
+
+from main_logic import tool_permissions
+from utils.provenance import current_provenance
 from urllib.parse import urlparse
 
 import httpx
@@ -182,6 +185,19 @@ class ToolRegisterRequest(BaseModel):
     callback_url: str = Field(..., min_length=1)
     role: Optional[str] = None  # None = global
     source: str = "external"
+    # A Literal, not a str with a permissive validator: a misspelled "Read" must be a
+    # 422 at the wire instead of silently becoming some middle class, the same discipline
+    # config/memory_settings.py states for speaker_tier.
+    #
+    # Optional is deliberate, and it is about who calls here. This endpoint is how
+    # third-party plugins arrive, and their code predates the risk field: on one machine
+    # 29 installed plugin packages define tools, none with a label. A required field
+    # would 422 them all and switch off working features -- the same outage the observe
+    # mode exists to prevent, reached by a different door. So a missing label registers,
+    # logs the gap, and meets the gate's strictest answer at call time. ``risk_required``
+    # in ToolRegistry.register carries that rule; host-side registration stays strict.
+    # A wrong value is still a 422: guessing an author's typo is not the host's job.
+    risk: Optional[Literal["read", "self", "write", "external"]] = None
     # Bound values: huge timeouts block entire tool-call path and model turns;
     # synchronous tools longer than five minutes should be split into plugin tasks,
     # never hold main_server long-term.
@@ -438,6 +454,13 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
         "call_id": call.call_id,
         "raw_arguments": call.raw_arguments,
     }
+    # One provenance record travels with the call: trace id, speaker and the
+    # plugin chain so far. The plugin side puts it in the reserved ``_ctx`` and
+    # extends the chain with its own hop (#3780). Without this, "who spoke" ends
+    # at the process boundary and the two audit trails cannot be joined.
+    _prov = current_provenance()
+    if _prov is not None:
+        payload["provenance"] = _prov.to_wire()
     if call.host_reply is not None:
         payload["host_reply"] = call.host_reply
     try:
@@ -510,6 +533,37 @@ class ReplyHookSubscription(BaseModel):
 class ReplyHookUnsubscribe(BaseModel):
     plugin_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
     entry_id: str = Field(pattern=r"^[A-Za-z0-9_.:-]{1,128}$")
+
+
+class PermissionResolveRequest(BaseModel):
+    request_id: str = Field(..., min_length=8, max_length=64)
+    approve: bool
+
+
+@router.post("/permission/pending")
+async def list_pending_permissions() -> Dict[str, Any]:
+    """What the permission gate is waiting on, oldest first.
+
+    The approver surface for a CONFIRM. Nothing in the host can push a question to the
+    owner today -- there is no owner roster, and the nearest park-and-resume code lives
+    behind a forbidden layering edge -- so this is polled, and
+    ``PERMISSION_APPROVER_ENABLED`` stays off until something can carry the request.
+    While it is off a CONFIRM degrades to a deny and the audit line names the reason.
+    """
+    rows = tool_permissions.approvals.snapshot()
+    rows.sort(key=lambda r: -r["age_seconds"])
+    return {"ok": True, "pending": rows, "count": len(rows)}
+
+
+@router.post("/permission/resolve")
+async def resolve_permission_request(req: PermissionResolveRequest) -> Dict[str, Any]:
+    """Answer one parked CONFIRM. An unknown or already-answered id returns ok=False.
+
+    Answering is the only path to an allow. Silence is not: the waiter times out and
+    denies, so a forgotten request cannot release a tool by accident.
+    """
+    resolved = tool_permissions.approvals.resolve(req.request_id, req.approve)
+    return {"ok": resolved, "request_id": req.request_id, "approve": req.approve}
 
 
 @router.post("/reply-tail/subscribe")
@@ -689,7 +743,11 @@ def replay_remote_tools(mgr: Any, role_name: str) -> List[str]:
                 continue
         elif entry.role != role_name:
             continue
-        registry.register(entry.tool, replace=True)
+        # A ledger entry is a wire registration restored, so it gets the wire rule.
+        # With the strict default here, every plugin tool that had no risk label would
+        # vanish the first time a role was rebuilt -- silently, and in observe mode too,
+        # because the refusal happens at registration, where the gate mode is not read.
+        registry.register(entry.tool, replace=True, risk_required=False)
         replayed.append(entry.tool.name)
     replayed = list(dict.fromkeys(replayed))
     if replayed:
@@ -724,6 +782,7 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
         name=req.name,
         description=req.description,
         parameters=req.parameters,
+        risk=req.risk,
         handler=None,  # remote — dispatched via _remote_dispatch
         metadata={
             "source": req.source,
@@ -791,7 +850,12 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             # so when caller gets ok=True, active/pending session tools
             # are current, avoiding success responses followed by model calls
             # unable to see tools.
-            await mgr.register_tool_and_sync(tool, replace=True)
+            await mgr.register_tool_and_sync(
+                tool, replace=True,
+                # The wire is where unlabelled third-party tools arrive. See
+                # ToolRegisterRequest.risk for why the refusal lands at call time here.
+                risk_required=False,
+            )
             affected.append(role_name)
         except Exception as e:
             err_text = f"{type(e).__name__}: {e}"
@@ -933,6 +997,12 @@ async def list_tools(role: Optional[str] = Query(None)) -> Dict[str, Any]:
                 "source": t.metadata.get("source", ""),
                 "callback_url": t.metadata.get("callback_url"),
                 "is_remote": t.handler is None,
+                # The declaration the gate actually uses. PR section 5 named
+                # "/api/tools shows the declared class" as one of the two control
+                # points for an author-declared risk; without this key that control
+                # point did not exist. None means "registered without a label",
+                # which is the row an operator wants to find.
+                "risk": getattr(t.risk, "value", t.risk) if t.risk is not None else None,
             }
             for t in registry.all()
         ]

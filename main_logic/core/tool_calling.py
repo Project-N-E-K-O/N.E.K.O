@@ -26,6 +26,7 @@ import os
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic import public_knowledge
+from config.permission_settings import ToolRisk
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
 from config.prompts.prompts_sys import _loc
 from config.turn_context_settings import (
@@ -54,10 +55,41 @@ from config.prompts.prompts_memory import (
     _normalize_memory_prompt_lang,
 )
 from ._shared import logger
+from utils.provenance import (
+    Provenance,
+    current_provenance as current_task_provenance,
+    local_owner_provenance,
+)
 
 
 class ToolCallingMixin:
     """Tool-calling surface methods (see module docstring)."""
+
+    # ---- turn provenance -------------------------------------------------
+    #
+    # The session anchor. The conversational clients' receive loop is long-lived
+    # and started before any message arrived, so ``asyncio.create_task`` context
+    # does not carry a per-turn scope into it. Local UI and microphone entry
+    # points therefore write the anchor here, and the gate reads it at tool-call
+    # time. Remote ingress must set the task-local scope instead -- the scope
+    # wins over the anchor, so a connector turn can never inherit the owner's
+    # band by arriving while the anchor is set.
+
+    def begin_local_turn(self, origin: str) -> Provenance:
+        """Mark the current turn as belonging to the person at this machine.
+
+        Callable only from the local UI socket dispatch and the local voice
+        transcript path. It is deliberately not reachable from an HTTP or
+        plugin route: those carry a speaker from the transport, not an owner
+        claim about the machine.
+        """
+        provenance = local_owner_provenance(origin)
+        self._session_provenance = provenance
+        return provenance
+
+    def turn_provenance(self) -> Provenance | None:
+        """Task-local provenance first, then the local session anchor."""
+        return current_task_provenance() or getattr(self, "_session_provenance", None)
 
     def _only_looks_up(self, tool_name: str) -> bool:
         """Whether a tool is one of the built-in ones that only look something up.
@@ -96,7 +128,8 @@ class ToolCallingMixin:
         self.tool_registry.register(tool, replace=replace)
         self._fire_task(self._sync_tools_to_active_session())
 
-    async def register_tool_and_sync(self, tool: ToolDefinition, *, replace: bool = True) -> None:
+    async def register_tool_and_sync(self, tool: ToolDefinition, *, replace: bool = True,
+                                     risk_required: bool = True) -> None:
         """The awaitable version of ``register_tool``: registers, then waits for the session sync push to finish.
 
         For remote entries like HTTP `/api/tools/register` — by the time the
@@ -110,7 +143,7 @@ class ToolCallingMixin:
         wire, propagate the exception upward, so HTTP /api/tools doesn't return a
         false ok=true.
         """
-        self.tool_registry.register(tool, replace=replace)
+        self.tool_registry.register(tool, replace=replace, risk_required=risk_required)
         await self._sync_tools_to_active_session(raise_on_failure=True)
 
     def unregister_tool(self, name: str) -> bool:
@@ -184,7 +217,9 @@ class ToolCallingMixin:
                 call.host_reply = reply_tail_registry.tool_context(
                     self, call.reply_owner, call.call_id, str(tool.metadata.get("source", "")),
                 )
-        result = await self.tool_registry.execute(call)
+        result = await self.tool_registry.execute(
+            call, provenance=self.turn_provenance(),
+        )
         if result.images:
             await self._route_tool_images(
                 result, invoking_session=invoking_session,
@@ -288,7 +323,13 @@ class ToolCallingMixin:
                 "required": [],
             },
             handler=self._handle_recall_memory_call,
+            # A lookup. It reads the character's own memory over HTTP and changes
+            # nothing, which is exactly what read means here. It does return private
+            # recollection to whoever is speaking, so the band that reaches it is the
+            # thing to watch, not the class -- see the STRANGER/read cell comment in
+            # config/permission_settings.py.
             metadata={"source": "builtin"},
+            risk=ToolRisk.READ,
         )
         self.tool_registry.register(recall_tool, replace=True)
         self._register_public_knowledge_tool()
@@ -336,7 +377,10 @@ class ToolCallingMixin:
                     "required": ["task"],
                 },
                 handler=self._handle_dispatch_task_call,
+                # Creates work in the task system that outlives this turn and can act
+                # further, so write rather than self: a call the speaker cannot undo.
                 metadata={"source": "builtin"},
+                risk=ToolRisk.WRITE,
             ),
             ToolDefinition(
                 name=QUERY_TOOL_NAME,
@@ -348,7 +392,9 @@ class ToolCallingMixin:
                     },
                 },
                 handler=self._handle_query_tasks_call,
+                # Status of work already dispatched. Reads only.
                 metadata={"source": "builtin"},
+                risk=ToolRisk.READ,
             ),
         )
         for definition in definitions:
