@@ -624,7 +624,15 @@ class KnowledgeService:
                 registry = registry.with_pack(replace(record, chunks=chunks))
             logger.info("[Knowledge] rebuilt index of pack %s", pack_id)
         if registry != original_registry:
-            save_registry(self.root, registry)
+            try:
+                save_registry(self.root, registry)
+            except OSError as exc:
+                # A registry write failure (disk full, permissions) is not
+                # SQLite corruption: it must not reach _open_blocking's
+                # database replacement. Keep the corrected counts in memory
+                # and block admission until the coordinator persists them.
+                logger.warning("[Knowledge] could not save reconciled registry (%s)", type(exc).__name__)
+                self._pending_chunk_reconcile = True
         return broken, registry
 
     def _rebuild_options(self, record: PackRecord) -> dict[str, Any]:

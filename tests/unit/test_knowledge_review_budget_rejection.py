@@ -207,3 +207,38 @@ async def test_startup_refusal_counts_kept_rows_before_any_admission(tmp_path, m
             assert (await reopened.import_pack(_raw(_pack("imp.third"))))["reason"] == "capacity_chunks"
         finally:
             await reopened.stop()
+
+
+async def test_a_failed_registry_save_at_startup_keeps_the_database(tmp_path, monkeypatch):
+    """Disk full or permissions on registry.json is not SQLite corruption: no database wipe."""
+    async with _installed(tmp_path) as (original, _raw_pack):
+        record = original._registry.packs["imp.example"]
+        entries = [{"title": f"Left {index}", "content": f"Unfinished replacement row {index}."} for index in range(4)]
+        original._store.replace_pack(decode_pack_bytes(_raw(_pack(record.pack_id, entries=entries))), pack_sha256="c" * 64)
+        actual = original._store.chunk_stats(None)[record.pack_id]["total"]
+        before = _rows(original._store)
+        await original.stop()
+        _limit(monkeypatch, "pack")
+        save = module.save_registry
+
+        def refuse(*_args, **_kwargs):
+            raise OSError("synthetic registry write failure")
+
+        monkeypatch.setattr(module, "save_registry", refuse)
+        reopened = KnowledgeService(original.root, embedder=ArchiveProvider())
+        removed = []
+        monkeypatch.setattr(reopened._store, "remove_files", lambda: removed.append(True))
+        await reopened.start()
+        try:
+            await _stop_automatic_indexer(reopened)
+            assert not removed and _rows(reopened._store) == before
+            # Corrected in memory; admission waits until the count is persisted.
+            assert reopened._registry.packs[record.pack_id].chunks == actual
+            assert reopened._pending_chunk_reconcile
+            assert (await reopened.import_pack(_raw(_pack("imp.third"))))["reason"] == "knowledge_busy"
+            monkeypatch.setattr(module, "save_registry", save)
+            await reopened._index_round()
+            assert not reopened._pending_chunk_reconcile
+            assert json.loads((reopened.root / "registry.json").read_text())["packs"][record.pack_id]["chunks"] == actual
+        finally:
+            await reopened.stop()
