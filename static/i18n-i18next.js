@@ -33,8 +33,9 @@
     // OpenClaw、MCP 开关文案，加上 DeepSeek 语音合成的音色示例占位文案和自定义
     // 语音合成不填音色时的说明（八语言）合在一起，刷新客户端缓存。
     // 远程配对页新增八种语言的密钥获取说明，刷新客户端缓存。
+    // 补齐八语言 airBasketball 台词并同步 zh-CN 文案，刷新客户端缓存。
     // Retire the standalone library namespace; management uses the plugin UI.
-    const LOCALE_VERSION = '2026-11-19-unified-knowledge-manager-merge';
+    const LOCALE_VERSION = '2026-11-20-unified-knowledge-manager-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
