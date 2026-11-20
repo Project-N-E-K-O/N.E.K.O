@@ -56,10 +56,40 @@ _STORE_BACKEND_IGNORED = {
 }
 
 
-def _format_multilingual(texts: dict[str, str]) -> str:
-    """One message: the English line, then one indented line per other locale."""
-    lines = [texts["en"]]
-    lines.extend(f"      {locale}: {texts[locale]}" for locale in _MESSAGE_LOCALES if locale != "en")
+_DATABASE_NAME_INVALID = {
+    "en": "[plugin.database].name must be a plain file name, without folders, drive letters or \"..\"",
+    "zh-CN": "[plugin.database].name 必须是单纯的文件名，不能带目录、盘符或 \"..\"",
+    "zh-TW": "[plugin.database].name 必須是單純的檔案名稱，不能帶目錄、磁碟代號或 \"..\"",
+    "ja": "[plugin.database].name はフォルダー、ドライブ文字、\"..\" を含まない単純なファイル名にしてください",
+    "ko": "[plugin.database].name은 폴더, 드라이브 문자, \"..\" 없이 파일 이름만 써야 합니다",
+    "ru": "[plugin.database].name должно быть простым именем файла, без папок, букв дисков и \"..\"",
+    "es": "[plugin.database].name debe ser un nombre de archivo simple, sin carpetas, letras de unidad ni \"..\"",
+    "pt": "[plugin.database].name deve ser um nome de arquivo simples, sem pastas, letras de unidade ou \"..\"",
+}
+# Hint added under the persist_mode error for the old spellings; {new} / {old} are filled in.
+_PERSIST_MODE_MIGRATION_HINT = {
+    "en": 'use "{new}" instead of "{old}"',
+    "zh-CN": '请把 "{old}" 改成 "{new}"',
+    "zh-TW": '請把 "{old}" 改成 "{new}"',
+    "ja": '"{old}" の代わりに "{new}" を使ってください',
+    "ko": '"{old}" 대신 "{new}"를 사용하세요',
+    "ru": 'используйте "{new}" вместо "{old}"',
+    "es": 'usa "{new}" en lugar de "{old}"',
+    "pt": 'use "{new}" em vez de "{old}"',
+}
+
+
+def _format_multilingual(texts: dict[str, str], *, head: str | None = None) -> str:
+    """One message in all locales.
+
+    Without ``head`` the English text is the main line and the other locales follow
+    on indented lines. With ``head`` (an existing English message) that is the main
+    line and every locale, English included, follows it.
+    """
+    lines = [texts["en"] if head is None else head]
+    lines.extend(
+        f"      {locale}: {texts[locale]}" for locale in _MESSAGE_LOCALES if head is not None or locale != "en"
+    )
     return "\n".join(lines)
 
 
@@ -472,13 +502,13 @@ def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
         return
     try:
         PluginDatabase._normalize_db_name(name)
-    except ValueError as exc:
-        issues.append(("error", f"[plugin.database].name is invalid: {exc}"))
-        return
-    # The SDK checks with the host's own Path; a name like "C:notes.db" passes on
-    # Linux/macOS but is refused on Windows, so check the Windows reading too.
-    if name and PureWindowsPath(name).name != name:
-        issues.append(("error", "[plugin.database].name is invalid: db_name must be a plain filename within plugin_dir"))
+        # The SDK checks with the host's own Path; a name like "C:notes.db" passes on
+        # Linux/macOS but is refused on Windows, so check the Windows reading too.
+        valid = not name or PureWindowsPath(name).name == name
+    except ValueError:
+        valid = False
+    if not valid:
+        issues.append(("error", _format_multilingual(_DATABASE_NAME_INVALID)))
 
 
 def _check_shared_table(value: object, issues: list[tuple[str, str]]) -> None:
@@ -1027,7 +1057,8 @@ def _check_plugin_state_table(value: object, issues: list[tuple[str, str]]) -> N
         )
         replacement = _PLUGIN_STATE_PERSIST_MODE_MIGRATIONS.get(persist_mode) if isinstance(persist_mode, str) else None
         if replacement is not None:
-            message += f' (use "{replacement}" instead of "{persist_mode}")'
+            hint = {locale: text.format(new=replacement, old=persist_mode) for locale, text in _PERSIST_MODE_MIGRATION_HINT.items()}
+            message = _format_multilingual(hint, head=message)
         issues.append(("error", message))
 
 

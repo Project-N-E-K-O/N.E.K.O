@@ -2989,16 +2989,36 @@ def test_validate_plugin_dir_accepts_runtime_plugin_state_persist_modes(tmp_path
     assert not any("[plugin_state].persist_mode" in message for _level, message in issues)
 
 
-@pytest.mark.parametrize(
-    ("persist_mode", "hint"),
-    [("always", ' (use "auto" instead of "always")'), ("disabled", ' (use "off" instead of "disabled")'), ("Auto", "")],
-)
+@pytest.mark.parametrize("persist_mode", ["always", "disabled", "Auto"])
 def test_validate_plugin_dir_rejects_plugin_state_persist_mode_runtime_ignores(
-    tmp_path: Path, persist_mode: str, hint: str
+    tmp_path: Path, persist_mode: str
 ) -> None:
     issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\npersist_mode = "{persist_mode}"')
 
-    assert ("error", f"[plugin_state].persist_mode must be one of: auto, manual, off{hint}") in issues
+    errors = [message for level, message in issues if level == "error" and "[plugin_state].persist_mode" in message]
+    assert len(errors) == 1
+    assert errors[0].split("\n")[0] == "[plugin_state].persist_mode must be one of: auto, manual, off"
+
+
+@pytest.mark.parametrize(("persist_mode", "replacement"), [("always", "auto"), ("disabled", "off")])
+def test_plugin_state_persist_mode_error_adds_eight_locale_migration_hint(
+    tmp_path: Path, persist_mode: str, replacement: str
+) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\npersist_mode = "{persist_mode}"')
+
+    (message,) = [m for level, m in issues if level == "error" and "[plugin_state].persist_mode" in m]
+    lines = message.split("\n")
+    assert lines[0] == "[plugin_state].persist_mode must be one of: auto, manual, off"
+    hint = dict(line.strip().split(": ", 1) for line in lines[1:])
+    assert list(hint) == ["en", "zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt"]
+    assert hint["en"] == f'use "{replacement}" instead of "{persist_mode}"'
+    assert all(f'"{replacement}"' in text and f'"{persist_mode}"' in text for text in hint.values())
+
+
+def test_plugin_state_persist_mode_error_without_migration_is_one_line(tmp_path: Path) -> None:
+    issues = _validate_with_extra_toml(tmp_path, '[plugin_state]\npersist_mode = "Auto"')
+
+    assert ("error", "[plugin_state].persist_mode must be one of: auto, manual, off") in issues
 
 
 def test_host_applies_the_persist_modes_check_accepts() -> None:
@@ -3057,9 +3077,11 @@ def test_validate_plugin_dir_rejects_plugin_database_name_runtime_refuses(tmp_pa
 
     issues = _validate_with_extra_toml(tmp_path, f'[plugin.database]\nname = "{name}"')
 
-    assert any(
-        level == "error" and message.startswith("[plugin.database].name is invalid:") for level, message in issues
-    )
+    (message,) = [m for level, m in issues if level == "error" and "[plugin.database].name" in m]
+    lines = message.split("\n")
+    assert lines[0] == '[plugin.database].name must be a plain file name, without folders, drive letters or ".."'
+    assert [line.strip().split(":", 1)[0] for line in lines[1:]] == ["zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt"]
+    assert all(line.strip().split(": ", 1)[1].startswith("[plugin.database].name") for line in lines[1:])
 
 
 def test_validate_plugin_dir_warns_unknown_plugin_database_key(tmp_path: Path) -> None:
