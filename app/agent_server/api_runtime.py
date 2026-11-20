@@ -817,13 +817,16 @@ async def shutdown():
         # says is left: that browser is killed (or being killed) already.
         left = min(BROWSER_CLOSE_AT_SHUTDOWN_SECONDS, browser_killed_at - asyncio.get_running_loop().time())
         closed_in_time = False
-        if left > 0 and not browser_last_resort_fired.is_set():
+        last_resort_fired = browser_last_resort_fired.is_set()
+        if left > 0 and not last_resort_fired:
             try:
                 await asyncio.wait_for(_close_browser(), timeout=left)
                 closed_in_time = True
             except asyncio.TimeoutError:
                 pass  # Killed just below, like one there was no time left to ask.
-        if not closed_in_time:
+        if last_resort_fired:
+            logger.warning("[Agent] The browser was killed by the shutdown's last resort; killing it once more")
+        elif not closed_in_time:
             logger.warning("[Agent] The browser did not close in time; killing it")
         elif builtin_provider.browser_unclosed():
             # It was asked in time and closing it failed. The browser is then
