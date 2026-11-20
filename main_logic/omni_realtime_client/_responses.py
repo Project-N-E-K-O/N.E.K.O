@@ -707,6 +707,13 @@ class _ResponseMixin:
                     raise RealtimeImagePayloadTooLargeError(
                         "multimodal turn item exceeds the realtime frame limit"
                     )
+                # The shrink already warned that it dropped the item; say
+                # that the turn still goes.
+                logger.info(
+                    "external multimodal turn %s: shrink failed; sending after "
+                    "the visual downgrade",
+                    stable_turn_id,
+                )
         text_hash = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:8]
         logger.info(
             "external_multimodal_turn queued turn=%s chars=%d images=%d hash=%s",

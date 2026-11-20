@@ -408,9 +408,15 @@ async def _submit_websocket_shrink_fails(
 
 
 @pytest.mark.asyncio
-async def test_failed_recompression_rechecks_consent_before_failing_the_turn(monkeypatch):
-    sent = await _submit_websocket_shrink_fails(monkeypatch, revoke_during_shrink=True)
+async def test_failed_recompression_rechecks_consent_before_failing_the_turn(monkeypatch, caplog):
+    with caplog.at_level(logging.INFO):
+        sent = await _submit_websocket_shrink_fails(monkeypatch, revoke_during_shrink=True)
     assert sent == [USER]
+    # The shrink's "dropped" warning is followed by a note that the turn went.
+    assert any(
+        "shrink failed; sending after the visual downgrade" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -463,8 +469,13 @@ async def _send_with_failed_shrink(strip: bool):
 
 
 @pytest.mark.asyncio
-async def test_send_event_failed_shrink_sends_what_the_hook_leaves():
-    result, written = await _send_with_failed_shrink(strip=True)
+async def test_send_event_failed_shrink_sends_what_the_hook_leaves(caplog):
+    with caplog.at_level(logging.INFO):
+        result, written = await _send_with_failed_shrink(strip=True)
+    assert any(
+        "shrink failed; sending after the pre-send hook" in r.getMessage()
+        for r in caplog.records
+    )
     assert result is True
     content = json.loads(written[0])["item"]["content"]
     assert [part["type"] for part in content] == ["input_text"]

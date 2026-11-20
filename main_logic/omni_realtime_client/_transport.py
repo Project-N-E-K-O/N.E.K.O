@@ -1073,6 +1073,13 @@ class _TransportMixin:
                         rechecked = json.dumps(event)
                         if len(rechecked) <= OMNI_WS_FRAME_LIMIT_BYTES:
                             payload = rechecked
+                            # The shrink already warned it dropped the item.
+                            logger.info(
+                                "oversized %s: shrink failed; sending after "
+                                "the pre-send hook (%d bytes)",
+                                event.get("type", ""),
+                                len(rechecked),
+                            )
                     if payload is None:
                         if raise_on_oversize:
                             raise RealtimeImagePayloadTooLargeError(
