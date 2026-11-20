@@ -1184,13 +1184,12 @@
         }
 
         // 1. 缓存流有效且 tracks live → 直接返回（~0ms）
+        if (isLiveCaptureStream(S.screenCaptureStream)) {
+            S.screenCaptureStreamLastUsed = Date.now();
+            scheduleScreenCaptureIdleCheck();
+            return S.screenCaptureStream;
+        }
         if (S.screenCaptureStream && S.screenCaptureStream.active) {
-            var tracks = S.screenCaptureStream.getVideoTracks();
-            if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
-                S.screenCaptureStreamLastUsed = Date.now();
-                scheduleScreenCaptureIdleCheck();
-                return S.screenCaptureStream;
-            }
             // tracks 已结束，废弃流
             console.warn('[acquireStream] 缓存流 tracks 已结束，废弃');
             try { S.screenCaptureStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) { } }); } catch (e) { }
@@ -1734,7 +1733,17 @@
             // backend gets screen_share_stopped, like the native capture failures.
             if (!isCurrentStream()) return;
             console.warn('[屏幕分享] 视频播放失败，停止屏幕分享:', playError);
-            stopScreenSharing(true);
+            stopScreenSharing(true).catch(function (stopError) {
+                console.warn('[屏幕分享] 视频播放失败后停止屏幕分享出错:', stopError);
+            }).then(function () {
+                window.showStatusToast(
+                    safeT(
+                        'app.screenSource.captureFailed',
+                        '屏幕捕获已停止，请检查系统权限或重新选择来源'
+                    ),
+                    5000
+                );
+            });
         }); // 每1000ms一帧
     }
     mod.startScreenVideoStreaming = startScreenVideoStreaming;

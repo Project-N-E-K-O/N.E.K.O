@@ -71,7 +71,7 @@ function boot(mode, opts) {
     resolve: () => { const s = makeStream(); resolve(s); return s; },
     reject: () => reject(Object.assign(new Error('capture failed'), { name: 'NotReadableError' })) }); });
   const mediaDevices = { getDisplayMedia: async () => capture('display'), getUserMedia: async () => capture('electron') };
-  const intervals = new Map(); let iid = 1;
+  const intervals = new Map(); let iid = 1; const toasts = [];
   const w = { console: { log: noop, info: noop, debug: noop, warn: noop, error: noop },
     location: { pathname: '/', origin: 'http://x', search: '' }, appState: S, appConst: { MAX_SCREENSHOT_WIDTH: 1280, MAX_SCREENSHOT_HEIGHT: 720 },
     appUtils: { isMobile: () => false }, safeT: (k, f) => f, t: k => k, document, navigator: { userAgent: 'node', mediaDevices },
@@ -79,17 +79,18 @@ function boot(mode, opts) {
     localStorage: { getItem: () => null, setItem: noop, removeItem: noop }, sessionStorage: { getItem: () => null, setItem: noop, removeItem: noop },
     addEventListener: noop, removeEventListener: noop, dispatchEvent: noop, CustomEvent: function () {},
     setTimeout: () => 0, clearTimeout: noop, setInterval(fn) { const id = iid++; intervals.set(id, fn); return id; }, clearInterval(id) { intervals.delete(id); },
-    showStatusToast: noop, ensureAudioPlayerContext: async () => {},
+    showStatusToast: msg => toasts.push(msg), ensureAudioPlayerContext: async () => {},
     startProactiveVisionDuringSpeech: noop, stopProactiveVisionDuringSpeech: noop,
     invokeDesktopCaptureWithTimeout: async (p, m, args) => p[m].apply(p, args), desktopSourceEnumerationMayPrompt: () => false,
   };
+  if (opts.proactiveHolds) w.holdsProactiveVisionStream = () => true;
   if (mode === 'electron') {
     w.getDesktopCaptureProvider = () => ({ getSources: async () => [{ id: 'screen:0:0', name: 'Screen 1' }] });
   }
   w.window = w; vm.createContext(w);
   vm.runInContext(fs.readFileSync(path.join(repo, 'static/app/app-screen.js'), 'utf8'), w);
   if (mode === 'electron') S.selectedScreenSourceId = 'screen:0:0';
-  return { w, S, sent, els, intervals, pending, playCalls, deferredPlays };
+  return { w, S, sent, els, intervals, pending, playCalls, deferredPlays, toasts };
 }
 function snapshot(r) {
   const screen = r.w.document.getElementById('screenButton');
@@ -110,14 +111,21 @@ async function waitPending(r, n) {
   if (r.pending.length < n) throw new Error('expected ' + n + ' pending captures, got ' + r.pending.length);
 }
 
-async function playRejects(playFails) {
-  const r = boot('web', { playRejects: playFails });
+// `late`: play() rejects only after the start has settled, so the share is
+// stopped by the play failure itself, not by cancelling a pending start.
+async function playRejects(playFails, proactiveHolds, late) {
+  const r = boot('web', { playRejects: playFails, proactiveHolds, playDeferredOnce: late });
   const starting = r.w.startScreenSharing();
   await waitPending(r, 1);
   const stream = r.pending[0].resolve();
   await starting;
   await flush();
-  return Object.assign(snapshot(r), { playCalls: r.playCalls.length, trackStops: stream.track.stops });
+  if (late) {
+    if (!snapshot(r).active) throw new Error('share not running before play() rejects');
+    r.deferredPlays[0](Object.assign(new Error('play failed'), { name: 'NotAllowedError' }));
+    await flush();
+  }
+  return Object.assign(snapshot(r), { playCalls: r.playCalls.length, trackStops: stream.track.stops, toasts: r.toasts.slice() });
 }
 
 // Two proactive captures in flight; the second request is settled first.
@@ -216,8 +224,10 @@ async function manualFailsAfterProactiveCached() {
 (async () => {
   const way = __WAY__;
   let out;
-  if (way === 'play_rejects') out = await playRejects(true);
-  else if (way === 'play_resolves') out = await playRejects(false);
+  if (way === 'play_rejects') out = await playRejects(true, false, false);
+  else if (way === 'play_rejects_late') out = await playRejects(true, false, true);
+  else if (way === 'play_rejects_late_proactive_holds') out = await playRejects(true, true, true);
+  else if (way === 'play_resolves') out = await playRejects(false, false, false);
   else if (way === 'stale_play_rejects') out = await stalePlayRejects();
   else if (way === 'manual_fails') out = await manualFailsAfterProactiveCached();
   else if (way === 'two_display') out = await twoAcquisitions('web');
@@ -244,8 +254,12 @@ def _run(way: str) -> dict:
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def test_play_rejection_stops_share_and_notifies_backend():
-    out = _run("play_rejects")
+@pytest.mark.parametrize(
+    "way", ["play_rejects", "play_rejects_late", "play_rejects_late_proactive_holds"]
+)
+def test_play_rejection_stops_share_and_notifies_backend(way):
+    # With proactive vision holding the stream, only a forced release clears it.
+    out = _run(way)
     assert out["playCalls"] >= 1
     assert out["active"] is False
     assert out["stopDisabled"] is True
@@ -253,6 +267,7 @@ def test_play_rejection_stops_share_and_notifies_backend():
     assert out["streamCleared"] is True
     assert out["trackStops"] == 1
     assert out["notices"] == 1
+    assert out["toasts"] == ["屏幕捕获已停止，请检查系统权限或重新选择来源"]
 
 
 def test_successful_play_keeps_share_running():
@@ -263,6 +278,7 @@ def test_successful_play_keeps_share_running():
     assert out["streamCleared"] is False
     assert out["trackStops"] == 0
     assert out["notices"] == 0
+    assert out["toasts"] == []
 
 
 @pytest.mark.parametrize(("way", "kind"), [("two_display", "display"), ("two_electron", "electron")])
