@@ -232,11 +232,15 @@ async def test_browser_last_resort_fired_ahead_of_loop_clock_is_not_closed(shutd
     from config import nekoclaw_settings
 
     fixture = shutdown_fixture
-    monkeypatch.setattr(nekoclaw_settings, "BROWSER_KILL_AT_SHUTDOWN_SECONDS", 1.0)
+    # The kill time is far past every wait below (2 s each), so when the
+    # browser step runs the loop still sees time left: a runner slow enough
+    # to use it all up fails a wait instead of passing without reaching the
+    # check under test.
+    monkeypatch.setattr(nekoclaw_settings, "BROWSER_KILL_AT_SHUTDOWN_SECONDS", 30.0)
 
     def early_timer(seconds, callback):
-        # Far more than one tick early, so the loop is sure to see time left.
-        current = threading.Timer(seconds - .9, callback)
+        # Fires long before the loop's clock reaches the kill time.
+        current = threading.Timer(.05, callback)
         fixture.timers.append(current)
         return current
 
@@ -249,6 +253,7 @@ async def test_browser_last_resort_fired_ahead_of_loop_clock_is_not_closed(shutd
         fixture.events.append("host")
 
     monkeypatch.setattr(fixture.api, "shutdown_nekoclaw_host", host)
+    started = asyncio.get_running_loop().time()
     task = asyncio.create_task(fixture.api.shutdown())
     try:
         await asyncio.wait_for(entered.wait(), 2)
@@ -257,6 +262,9 @@ async def test_browser_last_resort_fired_ahead_of_loop_clock_is_not_closed(shutd
                 await asyncio.sleep(.01)
         release.set()
         await asyncio.wait_for(task, 2)
+        # The kill time was set after ``started``; still short of it now, so
+        # the loop saw time left when it reached the browser step.
+        assert asyncio.get_running_loop().time() < started + 30.0, "the loop must see time left at the browser step"
         assert "browser" not in fixture.events, "do not close a browser the last resort has killed"
         assert "keys" in fixture.events and "status" in fixture.events
     finally:
