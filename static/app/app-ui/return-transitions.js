@@ -210,7 +210,7 @@
             if (modelType === 'mmd') {
                 const interaction = window.mmdManager && window.mmdManager.interaction;
                 if (interaction && typeof interaction._savePositionAfterInteraction === 'function') {
-                    await interaction._savePositionAfterInteraction();
+                    await interaction._savePositionAfterInteraction({ isCurrentSettlement });
                 }
                 return;
             }
@@ -229,7 +229,7 @@
                 return;
             }
             if (window.live2dManager && typeof window.live2dManager._savePositionAfterInteraction === 'function') {
-                await window.live2dManager._savePositionAfterInteraction();
+                await window.live2dManager._savePositionAfterInteraction({ isCurrentSettlement });
             }
         } catch (error) {
             console.warn('[App] 保存回来后的模型位置失败:', error);

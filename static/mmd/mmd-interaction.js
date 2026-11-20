@@ -1039,14 +1039,17 @@ class MMDInteraction {
         }
 
         if (changed && isCurrentSettlement()) {
-            await this._savePositionAfterInteraction();
+            await this._savePositionAfterInteraction({ isCurrentSettlement });
         }
         return changed;
     }
 
     // ═══════════════════ 偏好保存 ═══════════════════
 
-    async _savePositionAfterInteraction() {
+    async _savePositionAfterInteraction(options = {}) {
+        const isCurrentSettlement = typeof options.isCurrentSettlement === 'function'
+            ? options.isCurrentSettlement : () => true;
+        if (!isCurrentSettlement()) return false;
         if (!this.manager.currentModel || !this.manager.currentModel.url) return;
 
         const modelUrl = this.manager.currentModel.url;
@@ -1085,6 +1088,8 @@ class MMDInteraction {
                 console.warn('[MMD] 获取显示器信息失败:', error);
             }
         }
+
+        if (!isCurrentSettlement()) return false;
 
         // 视口信息（跨分辨率缩放归一化）
         let viewportInfo = null;

@@ -203,3 +203,45 @@ test('a cancelled viewport restore cannot consume a newer restore target', async
     assert.equal(h.I.getPendingModelViewportRestoreBounds().width, 1920);
     assert.equal(h.I.getPendingModelViewportRestoreBounds().height, 1080);
 });
+
+for (const type of ['live2d', 'mmd']) {
+    test(`${type}: cancelling during display lookup prevents a no-snap return from saving stale position`, async () => {
+        const h = harness(type);
+        const display = deferred();
+        const persisted = [];
+        let current = true;
+        h.window.electronScreen = { getCurrentDisplay: () => display.promise };
+        h.window.screen = { width: 1706, height: 1066 };
+        h.context.console.debug = () => {};
+        Object.assign(h.model, {
+            x: 500, y: 300, scale: { x: 1, y: 1 }, url: 'fixture-model',
+            mesh: { position: { x: 500, y: 300, z: 0 }, scale: { x: 1, y: 1, z: 1 }, rotation: { x: 0, y: 0, z: 0 } }
+        });
+        const persist = (...args) => { persisted.push(args); return Promise.resolve(true); };
+        const source = fs.readFileSync(path.join(root, `static/${type}/${type}-interaction.js`), 'utf8');
+        if (type === 'live2d') {
+            const start = source.indexOf('Live2DManager.prototype._savePositionAfterInteraction = async function');
+            const end = source.indexOf('// 防抖动保存位置的辅助函数', start);
+            h.context.Live2DManager = { prototype: {} };
+            vm.runInContext(source.slice(start, end), h.context);
+            h.manager._savePositionAfterInteraction = h.context.Live2DManager.prototype._savePositionAfterInteraction;
+            h.manager._lastLoadedModelPath = 'fixture-model';
+            h.manager.saveUserPreferences = persist;
+        } else {
+            const start = source.indexOf('    async _savePositionAfterInteraction(');
+            const end = source.indexOf('    _debouncedSavePosition()', start);
+            vm.runInContext(`window.saveMmdPosition = ({ ${source.slice(start, end)} })._savePositionAfterInteraction;`, h.context);
+            h.manager.interaction._savePositionAfterInteraction = h.window.saveMmdPosition;
+            h.manager.interaction.manager = h.manager;
+            h.manager.core = { saveUserPreferences: persist };
+        }
+        const settlement = h.I.settleReturnedModelBounds(true, { isCurrentSettlement: () => current });
+        await flush();
+        h.depart();
+        current = false;
+        h.model.x = h.model.mesh.position.x = 900;
+        display.resolve({ screenX: 1, screenY: 1 });
+        await settlement;
+        assert.equal(persisted.length, 0);
+    });
+}
