@@ -443,6 +443,7 @@ def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
     if name is None:
         return
     if not isinstance(name, str):
+        # The SDK would str() it, but a non-string file name in TOML is almost always a typo.
         issues.append(("error", "[plugin.database].name must be a string"))
         return
     try:

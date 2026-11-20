@@ -2999,9 +2999,38 @@ def test_validate_plugin_dir_rejects_plugin_state_persist_mode_runtime_ignores(
 
 
 def test_validate_plugin_dir_accepts_plugin_database_table(tmp_path: Path) -> None:
+    baseline = validate_plugin_dir(_make_plugin_dir(tmp_path / "baseline"), strict=True)
     issues = _validate_with_extra_toml(tmp_path, '[plugin.database]\nenabled = true\nname = "notes.db"')
 
+    assert issues == baseline
     assert not any("database" in message for _level, message in issues)
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        ("[plugin.database]\nname = 5", ("error", "[plugin.database].name must be a string")),
+        ("[plugin.database]\nenabled = 3", ("error", "[plugin.database].enabled must be a boolean")),
+        ("[plugin_state]\nbackend = 1", ("error", "[plugin_state].backend must be one of: file, memory, off")),
+    ],
+)
+def test_validate_plugin_dir_rejects_non_string_storage_values(
+    tmp_path: Path, extra: str, expected: tuple[str, str]
+) -> None:
+    assert expected in _validate_with_extra_toml(tmp_path, extra)
+
+
+def test_validate_plugin_dir_rejects_non_table_plugin_database(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            'type = "plugin"', 'type = "plugin"\ndatabase = "plugin.db"', 1
+        ),
+        encoding="utf-8",
+    )
+
+    assert ("error", "[plugin.database] must be a table") in validate_plugin_dir(plugin_dir, strict=True)
 
 
 @pytest.mark.parametrize("name", ["../escape.db", "sub/notes.db", "."])
