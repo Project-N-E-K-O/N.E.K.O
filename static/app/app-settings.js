@@ -1241,6 +1241,10 @@
             && Number.isInteger(_knownServerKeyRevisions[key])
             && keyToken.confirmedRevision < _knownServerKeyRevisions[key]) return value;
         _rememberSharedKeyWrites([key], token);
+        // Record it as a cross-window change, as the listener does, so a 412
+        // conflict merge keeps it instead of restoring the server's older
+        // "allowed" (see preservedKeys in syncSettingsToServer).
+        _noteCrossWindowMutations({ [key]: false }, [key]);
         if (_settingsBaseline && !_dirtySettingsKeys.has(key)) {
             _settingsBaseline[key] = false;
         }

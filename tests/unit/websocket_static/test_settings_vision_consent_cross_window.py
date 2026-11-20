@@ -54,6 +54,7 @@ _HARNESS = textwrap.dedent(
       const inbox = [];
       const consent = [];
       const postBodies = [];
+      let win = null;
       const sandbox = {
         console: { log() {}, info() {}, debug() {}, warn() {}, error() {} },
         setInterval() { return 0; },
@@ -84,12 +85,27 @@ _HARNESS = textwrap.dedent(
           if (opts && opts.method === 'POST') {
             const body = JSON.parse(opts.body);
             postBodies.push(body);
-            serverRevision += 1;
-            serverSettings = Object.assign({}, serverSettings, body);
-            const etag = '"conversation-settings-' + serverRevision + '"';
-            return Promise.resolve(response(true, 200, etag, {
-              success: true, settings: serverSettings, revision: serverRevision,
-            }));
+            // The server applies a POST when it arrives, with If-Match CAS.
+            // A held window's POSTs stay in flight until released.
+            const arrive = () => {
+              const current = '"conversation-settings-' + serverRevision + '"';
+              const ifMatch = opts.headers && opts.headers['If-Match'];
+              if (ifMatch && ifMatch !== current) {
+                return response(false, 412, current, {
+                  success: false, settings: serverSettings, revision: serverRevision,
+                });
+              }
+              serverRevision += 1;
+              serverSettings = Object.assign({}, serverSettings, body);
+              const etag = '"conversation-settings-' + serverRevision + '"';
+              return response(true, 200, etag, {
+                success: true, settings: serverSettings, revision: serverRevision,
+              });
+            };
+            if (win && win.holdPosts) {
+              return new Promise((resolve) => win.heldPosts.push(() => resolve(arrive())));
+            }
+            return Promise.resolve(arrive());
           }
           const etag = '"conversation-settings-' + serverRevision + '"';
           return Promise.resolve(response(true, 200, etag, {
@@ -129,8 +145,14 @@ _HARNESS = textwrap.dedent(
       assert(storageListener, name + ': storage listener registered');
       const runtime = { stoppedScreening: 0 };
       sandbox.window.stopScreening = () => { runtime.stoppedScreening += 1; };
-      const win = {
+      win = {
         name,
+        holdPosts: false,
+        heldPosts: [],
+        releasePosts() {
+          this.holdPosts = false;
+          while (this.heldPosts.length) this.heldPosts.shift()();
+        },
         runtime,
         inbox,
         consent,
@@ -154,7 +176,30 @@ _HARNESS = textwrap.dedent(
     }
     const lastConsent = (win) => win.consent[win.consent.length - 1];
 
+    async function singleWindow() {
+      // Single window: plain toggles behave as before (fresh profile).
+      const solo = makeWindow('solo');
+      await settle();
+      solo.deliver();
+      solo.consent.length = 0;
+      solo.S.proactiveVisionEnabled = false;
+      solo.mod.saveSettings();
+      await settle();
+      solo.S.proactiveVisionEnabled = true;
+      solo.mod.saveSettings();
+      await settle();
+      assert(JSON.stringify(solo.consent) === JSON.stringify([false, true]),
+        'single-window toggles report exactly their value: ' + JSON.stringify(solo.consent));
+
+    }
+
     async function main() {
+      if (__MODE__ === 'single') {
+        await singleWindow();
+        console.log('HARNESS_OK');
+        process.exitCode = 0;
+        return;
+      }
       const a = makeWindow('A');
       const b = makeWindow('B');
       await settle();
@@ -282,21 +327,47 @@ _HARNESS = textwrap.dedent(
       assert(lastConsent(d) === true, 'D reports its fresh choice');
       assert(stored() === true, 'D saves its fresh choice');
 
-      // Single window: plain toggles behave as before.
-      const solo = makeWindow('solo');
+      // 412 path, with a window that never touched the privacy key: E saves
+      // something unrelated (lands, so F's ETag is now stale), then revokes
+      // while that POST is still in flight. F adopts the revocation; its POST
+      // gets 412 with the server still saying "allowed". The conflict merge
+      // must keep the adopted revocation.
       windows.length = 0;
-      windows.push(solo);
+      serverSettings = Object.assign({}, serverSettings, { proactiveVisionEnabled: true });
+      serverRevision += 1;
+      const e = makeWindow('E');
+      const f = makeWindow('F');
       await settle();
-      solo.deliver();
-      solo.consent.length = 0;
-      solo.S.proactiveVisionEnabled = false;
-      solo.mod.saveSettings();
+      e.deliver();
+      f.deliver();
+      assert(e.S.proactiveVisionEnabled === true && f.S.proactiveVisionEnabled === true,
+        'precondition: consent allowed in both windows');
+      e.S.mergeMessagesEnabled = !e.S.mergeMessagesEnabled;
+      e.mod.saveSettings();
       await settle();
-      solo.S.proactiveVisionEnabled = true;
-      solo.mod.saveSettings();
+      e.holdPosts = true;
+      e.S.proactiveVisionEnabled = false;
+      e.mod.saveSettings();
       await settle();
-      assert(JSON.stringify(solo.consent) === JSON.stringify([false, true]),
-        'single-window toggles report exactly their value: ' + JSON.stringify(solo.consent));
+      assert(serverSettings.proactiveVisionEnabled === true,
+        'precondition: E\\'s revocation POST is in flight');
+      f.consent.length = 0;
+      f.S.mergeMessagesEnabled = !f.S.mergeMessagesEnabled;
+      f.mod.saveSettings();
+      await settle();
+      assert(f.postBodies.length >= 2, 'precondition: F\\'s POST hit 412 and retried');
+      assert(f.consent.every((v) => v === false),
+        'a 412 merge must not re-grant consent: ' + JSON.stringify(f.consent));
+      assert(f.S.proactiveVisionEnabled === false, 'F keeps the adopted revocation after 412');
+      assert(stored() === false, 'the 412 merge must not save "allowed" back');
+      assert(serverSettings.proactiveVisionEnabled === false, 'F\\'s retry persists the revocation');
+      e.releasePosts();
+      await settle();
+      e.deliver();
+      f.deliver();
+      await settle();
+      assert(e.S.proactiveVisionEnabled === false && f.S.proactiveVisionEnabled === false
+        && serverSettings.proactiveVisionEnabled === false, 'all converge on revoked');
 
       console.log('HARNESS_OK');
       process.exitCode = 0;
@@ -312,8 +383,22 @@ _HARNESS = textwrap.dedent(
 )
 
 
+def _run(mode):
+    return _run_settings_node_harness(_HARNESS.replace("__MODE__", json.dumps(mode)))
+
+
+def test_single_window_toggle_reports_its_own_value_harness():
+    result = _run("single")
+    assert result.returncode == 0, (
+        "single-window vision consent harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
 def test_stale_window_save_does_not_regrant_vision_consent_harness():
-    result = _run_settings_node_harness(_HARNESS)
+    result = _run("multi")
     assert result.returncode == 0, (
         "stale-window vision consent harness failed\n"
         f"stdout:\n{result.stdout}\n"
