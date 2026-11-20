@@ -385,6 +385,34 @@ def test_deleting_character_purges_only_her_saved_voice_and_text(tmp_path):
     assert delete_character_voice_archive(tmp_path, 'Alice') == 0
 
 
+def test_rename_cannot_move_recordings_into_or_out_of_pending_purge(tmp_path):
+    archive = VoiceArchive(tmp_path / 'voice_archive/archive.sqlite3')
+    archive.write(event('audio', 'alice-speech', data=b'alice', format='pcm_s16le_48000'))
+    archive.write({
+        'kind': 'audio', 'character': 'Bob', 'speech_id': 'bob-speech',
+        'data': b'bob', 'format': 'pcm_s16le_48000',
+    })
+
+    write_character_voice_archive_purge_intent(
+        tmp_path, 'Bob', character_uid='deleted-bob', character_id='deleted-bob-id',
+    )
+    with pytest.raises(RuntimeError, match='pending voice archive purge'):
+        rename_character_voice_archive(tmp_path, 'Alice', 'Bob')
+    assert read(archive.path, 'SELECT character,speech_id FROM clips ORDER BY character') == [
+        ('Alice', 'alice-speech'), ('Bob', 'bob-speech'),
+    ]
+
+    # The same fence applies when the old identity itself is awaiting purge.
+    write_character_voice_archive_purge_intent(
+        tmp_path, 'Alice', character_uid='deleted-alice', character_id='deleted-alice-id',
+    )
+    with pytest.raises(RuntimeError, match='pending voice archive purge'):
+        rename_character_voice_archive(tmp_path, 'Alice', 'Carol')
+    assert read(archive.path, 'SELECT character,speech_id FROM clips ORDER BY character') == [
+        ('Alice', 'alice-speech'), ('Bob', 'bob-speech'),
+    ]
+
+
 def test_pending_voice_purge_fences_same_name_replacement_until_retry(tmp_path):
     archive = VoiceArchive(tmp_path / 'voice_archive/archive.sqlite3')
     archive.write(event('audio', data=b'old-audio', format='pcm_s16le_48000'))
@@ -400,7 +428,7 @@ def test_pending_voice_purge_fences_same_name_replacement_until_retry(tmp_path):
     # to inherit the old clip; startup treats the prepared marker as committed.
     config = SimpleNamespace(
         app_docs_dir=tmp_path,
-        load_characters=lambda: {
+        load_characters=lambda **kwargs: {
             '猫娘': {'Alice': {'_reserved': {
                 'character_uid': 'new-uid', 'character_id': 'new-id',
             }}},
@@ -435,6 +463,23 @@ def test_prepared_voice_purge_for_same_live_identity_is_discarded(tmp_path):
     assert read(archive.path, 'SELECT count(*) FROM chunks') == [(1,)]
 
 
+def test_purge_recovery_keeps_fence_when_character_config_is_not_authoritative(tmp_path):
+    archive = VoiceArchive(tmp_path / 'voice_archive/archive.sqlite3')
+    archive.write(event('audio', data=b'protected-audio', format='pcm_s16le_48000'))
+    write_character_voice_archive_purge_intent(
+        tmp_path, 'Alice', character_uid='old-uid', character_id='old-id',
+    )
+
+    def unreadable_config(**kwargs):
+        raise FileNotFoundError('characters.json unavailable')
+
+    config = SimpleNamespace(app_docs_dir=tmp_path, load_characters=unreadable_config)
+    summary = retry_pending_voice_archive_purges(config)
+    assert summary['errors']
+    assert has_pending_character_voice_archive_purge(tmp_path, 'Alice')
+    assert read(archive.path, 'SELECT count(*) FROM chunks') == [(1,)]
+
+
 def test_failed_voice_purge_keeps_intent_for_startup_retry(tmp_path, monkeypatch):
     import main_logic.voice_archive as module
 
@@ -451,7 +496,7 @@ def test_failed_voice_purge_keeps_intent_for_startup_retry(tmp_path, monkeypatch
     assert has_pending_character_voice_archive_purge(tmp_path, 'Alice')
 
     monkeypatch.setattr(module.sqlite3, 'connect', original_connect)
-    config = SimpleNamespace(app_docs_dir=tmp_path, load_characters=lambda: {'猫娘': {}})
+    config = SimpleNamespace(app_docs_dir=tmp_path, load_characters=lambda **kwargs: {'猫娘': {}})
     summary = retry_pending_voice_archive_purges(config)
     assert summary['purged'] == [{'character': 'Alice', 'clips': 1}]
     assert not has_pending_character_voice_archive_purge(tmp_path, 'Alice')

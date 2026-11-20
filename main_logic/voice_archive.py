@@ -247,6 +247,11 @@ def rename_character_voice_archive(app_docs_dir, old_name: str, new_name: str) -
     This runs from the serialized character-rename transaction, off the event
     loop and after pending writes from the old character have drained.
     """
+    if (
+        has_pending_character_voice_archive_purge(app_docs_dir, old_name)
+        or has_pending_character_voice_archive_purge(app_docs_dir, new_name)
+    ):
+        raise RuntimeError("cannot rename a character into or out of a pending voice archive purge")
     path = Path(app_docs_dir) / 'voice_archive' / 'archive.sqlite3'
     if not path.is_file():
         return False
@@ -299,7 +304,10 @@ def retry_pending_voice_archive_purges(config_manager) -> dict:
     if not directory.is_dir():
         return summary
     try:
-        characters_data = config_manager.load_characters()
+        # Never interpret ConfigManager's default-profile fallback as proof
+        # that the deleted identity is absent. A missing, malformed or
+        # unpersisted characters.json must leave the purge fenced for retry.
+        characters_data = config_manager.load_characters(require_authoritative=True)
         catgirls = characters_data.get("猫娘", {}) if isinstance(characters_data, dict) else {}
         if not isinstance(catgirls, dict):
             catgirls = {}

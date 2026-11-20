@@ -214,7 +214,7 @@ async def test_workshop_voice_archive_purge_failure_is_retried_at_startup(tmp_pa
     monkeypatch.setattr(voice_archive, "delete_character_voice_archive", original_delete)
     recovery_config = SimpleNamespace(
         app_docs_dir=tmp_path,
-        load_characters=lambda: {"猫娘": {"Other": {}}},
+        load_characters=lambda **kwargs: {"猫娘": {"Other": {}}},
     )
     summary = voice_archive.retry_pending_voice_archive_purges(recovery_config)
     assert summary["purged"] == [{"character": "Lan", "clips": 1}]
