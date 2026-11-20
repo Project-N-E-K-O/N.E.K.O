@@ -722,6 +722,49 @@ async def test_a_name_two_capabilities_share_is_served_for_neither(host, server)
 # ---------------------------------------------------------------------------
 
 
+async def test_revocation_then_disconnect_finishes_a_pending_audit_insert(host, server, monkeypatch):
+    import threading
+
+    _catalog(server)
+    commission = await _commission(host)
+    grant = _grant(host, commission)
+    inserting = asyncio.Event()
+    commit = threading.Event()
+    loop = asyncio.get_running_loop()
+    ensure = call_audit._ensure_commissions
+
+    def pause_insert(*args, **kwargs):
+        result = ensure(*args, **kwargs)
+        loop.call_soon_threadsafe(inserting.set)
+        assert commit.wait(5)
+        return result
+
+    monkeypatch.setattr(call_audit, "_ensure_commissions", pause_insert)
+    incoming = asyncio.Queue()
+    message = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "plugin__weather__today"}}
+    await incoming.put({"type": "http.request", "body": json.dumps(message).encode()})
+    scope = {"type": "http", "method": "POST", "path": "/mcp", "headers": [(b"authorization", f"Bearer {grant.token}".encode())]}
+
+    async def send(response):
+        pytest.fail(f"the disconnected client was sent {response['type']}")
+
+    serving = asyncio.create_task(host.gateway._asgi(scope, incoming.get, send))
+    try:
+        await asyncio.wait_for(inserting.wait(), 3)
+        (work,) = grant.in_flight
+        host.gateway.revoke(commission.id)
+        await asyncio.sleep(0)  # first cancellation reaches the pending audit insertion
+        await incoming.put({"type": "http.disconnect"})
+        await wait_until(lambda: work.cancelling() >= 2, what="the disconnect cancelling revoked work again")
+    finally:
+        commit.set()
+        await asyncio.wait_for(serving, 3)
+    assert work.cancelled() and not server.calls
+    root, attempt = await host.ledger.run(lambda db: call_audit.read_trace(db, commission.id, now=host.ledger._clock()))
+    assert (attempt["parent_call_id"], attempt["status"]) == (root["call_id"], "cancelled")
+    assert attempt["ended_at"] is not None
+
+
 async def test_a_token_replaced_while_the_body_arrives_is_refused(host, server):
     commission = await _commission(host)
     token = host.gateway.issue(commission.id)

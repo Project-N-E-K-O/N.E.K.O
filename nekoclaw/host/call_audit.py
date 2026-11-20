@@ -250,8 +250,7 @@ async def call(ledger: Ledger, commission_id: str, kind: str, target: str):
     try:
         record = await asyncio.shield(started)
     except asyncio.CancelledError:
-        record = await started
-        await _finish(record, "cancelled")
+        await _finish(started, "cancelled")
         raise
     token = _CURRENT.set(record)
     try:
@@ -264,16 +263,34 @@ async def call(ledger: Ledger, commission_id: str, kind: str, target: str):
         raise
     finally:
         _CURRENT.reset(token)
-        await asyncio.shield(_finish(record, record.status))
+        await _finish(started, record.status)
 
 
-async def _finish(record: Call, status: str) -> None:
-    await record.ledger.run(
-        lambda db: db.execute(
-            "UPDATE host_calls SET status=?,reason=?,ended_at=? WHERE call_id=? AND status='running'",
-            (status, record.reason, record.ledger._clock(), record.call_id),
+async def _finish(started: asyncio.Task[Call], status: str) -> None:
+    # Revocation and disconnect can both cancel the caller while SQLite is
+    # still working. One independent task owns both the ID and its closing write.
+    async def close_record() -> None:
+        try:
+            record = await started
+        except Exception:  # insertion rolled back; there is no record to close
+            return
+        await record.ledger.run(
+            lambda db: db.execute(
+                "UPDATE host_calls SET status=?,reason=?,ended_at=? WHERE call_id=? AND status='running'",
+                (status, record.reason, record.ledger._clock(), record.call_id),
+            )
         )
-    )
+
+    closing = asyncio.create_task(close_record())
+    cancelled = False
+    while not closing.done():
+        try:
+            await asyncio.shield(closing)
+        except asyncio.CancelledError:
+            cancelled = True
+    closing.result()
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def read_trace(
