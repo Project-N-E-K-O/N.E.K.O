@@ -354,9 +354,12 @@ async def get_workshop_voice_reference(item_id: str):
     try:
         item = await _find_subscribed_item_by_id(item_id)
     except RuntimeError as e:
+        # The message may come from an arbitrary exception upstream; keep it
+        # in the log only.
+        logger.warning(f"读取参考语音清单时获取订阅物品失败: {e}")
         return JSONResponse({
             "success": False,
-            "error": str(e),
+            "error": "获取订阅物品失败",
         }, status_code=503)
 
     if not item:
@@ -377,16 +380,20 @@ async def get_workshop_voice_reference(item_id: str):
     try:
         voice_ref = await asyncio.to_thread(resolve_voice_reference_serialized, install_folder)
     except FileNotFoundError as e:
+        # Fixed messages for both branches: the ValueError can wrap an OSError whose message
+        # carries server paths. The details go to the log only.
+        logger.warning(f"工坊物品 {item_id!r} 的参考语音文件不存在: {e}")
         return JSONResponse({
             "success": False,
             "available": False,
-            "error": str(e),
+            "error": "参考语音文件不存在",
         }, status_code=404)
     except ValueError as e:
+        logger.warning(f"读取工坊物品 {item_id!r} 的参考语音清单失败: {e}")
         return JSONResponse({
             "success": False,
             "available": False,
-            "error": str(e),
+            "error": "读取参考语音清单失败",
         }, status_code=400)
 
     if not voice_ref:
@@ -412,9 +419,12 @@ async def get_workshop_voice_reference_audio(item_id: str):
     try:
         item = await _find_subscribed_item_by_id(item_id)
     except RuntimeError as e:
+        # The message may come from an arbitrary exception upstream; keep it
+        # in the log only.
+        logger.warning(f"读取参考语音音频时获取订阅物品失败: {e}")
         return JSONResponse({
             "success": False,
-            "error": str(e),
+            "error": "获取订阅物品失败",
         }, status_code=503)
 
     if not item:
@@ -433,14 +443,17 @@ async def get_workshop_voice_reference_audio(item_id: str):
     try:
         voice_ref = await asyncio.to_thread(resolve_voice_reference_serialized, install_folder)
     except FileNotFoundError as e:
+        # Same fixed messages as the manifest route; details in the log only.
+        logger.warning(f"工坊物品 {item_id!r} 的参考语音文件不存在: {e}")
         return JSONResponse({
             "success": False,
-            "error": str(e),
+            "error": "参考语音文件不存在",
         }, status_code=404)
     except ValueError as e:
+        logger.warning(f"读取工坊物品 {item_id!r} 的参考语音清单失败: {e}")
         return JSONResponse({
             "success": False,
-            "error": str(e),
+            "error": "读取参考语音清单失败",
         }, status_code=400)
 
     if not voice_ref:
