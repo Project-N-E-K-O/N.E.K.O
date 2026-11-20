@@ -1206,12 +1206,13 @@
             : S.proactiveVisionEnabled;
     }
 
-    // Another window may have turned privacy mode on (an explicit write in the
-    // shared snapshot) before its storage event reached this window. This
-    // window's "allowed" copy is then stale: saving it would overwrite the
-    // revocation in localStorage and the server body. Adopt the revocation the
-    // way the storage listener will once the event arrives. A value this
-    // window changed since its last sync is newer intent and stays.
+    // Another window may have turned privacy mode on before its storage event
+    // reached this window. This window's "allowed" copy is then stale: saving
+    // it would overwrite the revocation in localStorage and the server body.
+    // Adopt the revocation the way the storage listener will once the event
+    // arrives: by the key's own write token, which later unrelated saves of
+    // that window keep carrying (knownKeyWrites). A value this window changed
+    // since its last sync is newer intent and stays.
     function _adoptUnseenVisionRevocation(value) {
         const key = 'proactiveVisionEnabled';
         if (value !== true) return value;
@@ -1228,15 +1229,18 @@
         if (!stored || stored[key] !== false) return value;
         const meta = _readSharedWriteMeta(stored);
         if (!meta || meta.writerId === _SHARED_WRITER_ID) return value;
-        if (meta.changedKeys.indexOf(key) === -1) return value;
-        if (!_sharedWriteTokenOutranks(meta, _knownSharedKeyWrites[key])) return value;
+        const token = meta.changedKeys.indexOf(key) !== -1
+            ? meta
+            : meta.knownKeyWrites[key];
+        // No token: an incidental copy (e.g. a boot default), not a choice.
+        if (!_sharedWriteTokenOutranks(token, _knownSharedKeyWrites[key])) return value;
         // Same server-floor check as the listener: a write the server has
         // since superseded is not a pending revocation.
-        const token = meta.knownKeyWrites[key];
-        if (token && Number.isInteger(token.confirmedRevision)
+        const keyToken = meta.knownKeyWrites[key];
+        if (keyToken && Number.isInteger(keyToken.confirmedRevision)
             && Number.isInteger(_knownServerKeyRevisions[key])
-            && token.confirmedRevision < _knownServerKeyRevisions[key]) return value;
-        _rememberSharedKeyWrites([key], meta);
+            && keyToken.confirmedRevision < _knownServerKeyRevisions[key]) return value;
+        _rememberSharedKeyWrites([key], token);
         if (_settingsBaseline && !_dirtySettingsKeys.has(key)) {
             _settingsBaseline[key] = false;
         }

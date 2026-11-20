@@ -170,7 +170,16 @@ _HARNESS = textwrap.dedent(
       assert(lastConsent(a) === false, 'A reports the revocation');
       assert(stored() === false, 'A saved the revocation');
 
-      // B: stale memory, A's storage event not delivered yet; unrelated save.
+      // A then saves something unrelated: the latest snapshot no longer lists
+      // the privacy key as changed, only its per-key write token remembers.
+      a.S.mergeMessagesEnabled = !a.S.mergeMessagesEnabled;
+      a.mod.saveSettings();
+      await settle();
+      assert(JSON.parse(store.get('project_neko_settings'))._sharedWriteMeta.changedKeys
+        .indexOf('proactiveVisionEnabled') === -1,
+        'precondition: the latest snapshot does not list the privacy key');
+
+      // B: stale memory, A's storage events not delivered yet; unrelated save.
       assert(b.S.proactiveVisionEnabled === true, 'precondition: B is stale');
       b.S.mergeMessagesEnabled = true;
       b.mod.saveSettings();
@@ -207,8 +216,8 @@ _HARNESS = textwrap.dedent(
       assert(a.S.proactiveVisionEnabled === true, 'A applies B\\'s explicit re-enable');
       assert(lastConsent(a) === true, 'A reports the re-enable once received');
 
-      // A stale "revoked" copy is not a revocation: A (now stale on purpose)
-      // saves an incidental false that does not list the key as changed.
+      // A stale "revoked" copy is not a revocation: a stale window's
+      // incidental false whose per-key token is no newer than B's own enable.
       store.set('project_neko_settings', JSON.stringify(Object.assign(
         JSON.parse(store.get('project_neko_settings')),
         {
