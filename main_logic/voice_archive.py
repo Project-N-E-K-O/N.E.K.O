@@ -145,13 +145,37 @@ def delete_character_voice_archive(app_docs_dir, character: str) -> int:
         return deleted
 
 
-def _mark_incomplete(manager, speech_id):
+def _mark_incomplete(manager, speech_id, attempt_generation=None):
+    sid = str(speech_id)
     failed = getattr(manager, '_owner_voice_archive_failed', None)
     if failed is None:
         failed = manager._owner_voice_archive_failed = set()
-    if len(failed) >= 256:
+    if len(failed) >= 256 and sid not in failed:
         failed.pop()
-    failed.add(str(speech_id))
+    failed.add(sid)
+
+    generations = getattr(manager, '_owner_voice_archive_attempt_generations', {})
+    if attempt_generation is None:
+        attempt_generation = generations.get(sid, 0)
+    failed_generations = getattr(manager, '_owner_voice_archive_failed_generations', None)
+    if failed_generations is None:
+        failed_generations = manager._owner_voice_archive_failed_generations = {}
+    if len(failed_generations) >= 256 and sid not in failed_generations:
+        failed_generations.pop(next(iter(failed_generations)))
+    failed_generations[sid] = max(
+        int(attempt_generation or 0), failed_generations.get(sid, -1),
+    )
+
+
+def _clear_discarded_attempt_failure(manager, speech_id, attempt_generation):
+    sid = str(speech_id)
+    failed_generations = getattr(manager, '_owner_voice_archive_failed_generations', {})
+    failed_generation = failed_generations.get(sid)
+    # A failure in the new attempt must survive a reset that only discards
+    # an older attempt; otherwise a missing new chunk could be marked complete.
+    if failed_generation is None or failed_generation < int(attempt_generation or 0):
+        getattr(manager, '_owner_voice_archive_failed', set()).discard(sid)
+        failed_generations.pop(sid, None)
 
 
 def _reject_unconsented_speech(manager, speech_id):
@@ -220,7 +244,9 @@ async def _write_queued_events(manager, queue):
                         if not await persist(reset_event):
                             _reject_unconsented_speech(manager, reset_sid)
                         else:
-                            getattr(manager, '_owner_voice_archive_failed', set()).discard(reset_sid)
+                            _clear_discarded_attempt_failure(
+                                manager, reset_sid, reset_event.get('attempt_generation', 0),
+                            )
                     except asyncio.CancelledError:
                         _mark_incomplete(manager, reset_sid)
                         raise
@@ -240,15 +266,17 @@ async def _write_queued_events(manager, queue):
                     _reject_unconsented_speech(manager, sid)
                     continue
                 if event['kind'] == 'retry':
-                    getattr(manager, '_owner_voice_archive_failed', set()).discard(sid)
+                    _clear_discarded_attempt_failure(
+                        manager, sid, event.get('attempt_generation', 0),
+                    )
                 elif event['kind'] == 'done':
                     if generations.get(sid, 0) == event.get('attempt_generation', 0):
                         generations.pop(sid, None)
             except asyncio.CancelledError:
-                _mark_incomplete(manager, sid)
+                _mark_incomplete(manager, sid, event.get('attempt_generation', 0))
                 raise
             except Exception:
-                _mark_incomplete(manager, sid)
+                _mark_incomplete(manager, sid, event.get('attempt_generation', 0))
                 log.warning('Voice archive write failed', exc_info=True)
             finally:
                 queue.task_done()
@@ -339,7 +367,7 @@ def _enqueue_archive_event(manager, kind, speech_id, **values):
             pending[sid] = event
             log.warning('Voice archive queue full; deferring retry reset for speech %s', sid)
         else:
-            _mark_incomplete(manager, sid)
+            _mark_incomplete(manager, sid, attempt_generation)
             log.warning('Voice archive queue full; discarding optional %s event', kind)
 
 
