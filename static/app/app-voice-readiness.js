@@ -126,7 +126,7 @@
                 const result = await bridge.close();
                 if (!result || result.closed !== true) throw new Error('capture_owner_unavailable');
             } else {
-                for (const child of [...children]) {
+                const closedPages = await Promise.allSettled([...children].map(async child => {
                     if (!child.closed) {
                         closingChildren.add(child);
                         let timer;
@@ -142,16 +142,22 @@
                             child.close();
                         }
                     }
-                }
+                }));
+                let failure = closedPages.find(result => result.status === 'rejected');
                 // postMessage may have queued the token without the child ever
                 // receiving it. Only release after its bound page is closed,
                 // sharing any release already started by that page.
-                if (isolation && isolation.child && isolation.child.closed && isolation.token) {
-                    await releasePreview(isolation, isolation.token);
+                try {
+                    if (isolation && isolation.child && isolation.child.closed && isolation.token) {
+                        await releasePreview(isolation, isolation.token);
+                    }
+                    // Older desktop bridges close their bound page when an idle
+                    // registration advances the capture revision.
+                    if (bridge) await register(false);
+                } catch (error) {
+                    if (!failure) failure = { reason: error };
                 }
-                // Older desktop bridges close their bound page when an idle
-                // registration advances the capture revision.
-                if (bridge) await register(false);
+                if (failure) throw failure.reason;
             }
             if (isolation) {
                 const owned = isolation;

@@ -1265,6 +1265,53 @@ test('browser page cleanup timeout closes the page and rejects voice startup', a
     cleanup.resolve();
 });
 
+for (const timeout of [false, true]) {
+    test(`browser cleanup ${timeout ? 'timeout' : 'failure'} closes every page and releases the surviving preview before rejecting`, async () => {
+        const events = new Map(); const timers = new Map(); const sent = []; let sequence = 0; let secondCleanup = 0;
+        const socket = { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } };
+        const root = { crypto, location: { origin: 'http://localhost:48911' }, t: key => key,
+            addEventListener(name, fn) { events.set(name, fn); },
+            setTimeout(fn, delay) { const id = ++sequence; timers.set(id, { fn, delay }); return id; },
+            clearTimeout(id) { timers.delete(id); } };
+        const document = { readyState: 'complete', body: element(), documentElement: element(), createElement: element };
+        vm.runInNewContext(ownerSource, { window: root, document, crypto, Set, Map });
+        const controller = root.createVoiceCaptureReadiness({ socket, isRecording: false }, async () => {});
+        const first = { opener: root, closed: false, close() { this.closed = true; },
+            nekoBeforeWindowClose: () => timeout ? new Promise(() => {}) : Promise.reject(new Error('first_cleanup_failed')) };
+        const stream = trackStream();
+        const second = { opener: root, closed: false, postMessage() {}, close() { this.closed = true; input.stop(stream); },
+            async nekoBeforeWindowClose() { secondCleanup++; input.stop(stream); } };
+        const message = (child, data) => events.get('message')({ origin: root.location.origin, source: child, data });
+        await message(first, { type: 'neko-voice-enrollment-opened', operationId: 'first-page' });
+        const preview = message(second, { type: 'neko-voice-enrollment-prepare', operationId: 'second-preview' });
+        await new Promise(resolve => setImmediate(resolve));
+        controller.controlResult({ ...sent[0], ok: true, token: 'second-token', ttl_seconds: 60 }, socket); await preview;
+        let closeError;
+        const closing = controller.prepareCapture().catch(error => { closeError = error; });
+        await new Promise(resolve => setImmediate(resolve));
+        if (timeout) {
+            const deadline = [...timers.values()].find(timer => timer.delay === 13000);
+            assert.ok(deadline); deadline.fn(); await new Promise(resolve => setImmediate(resolve));
+        }
+        try {
+            assert.equal(first.closed, true);
+            assert.equal(second.closed, true, 'a failing page must not skip the next microphone window');
+            assert.equal(secondCleanup, 1);
+            assert.equal(stream.track.readyState, 'ended');
+            assert.equal(sent[1]?.event, 'preview_end');
+            assert.equal(sent[1].token, 'second-token');
+            assert.equal(closeError, undefined, 'report the page error after the surviving preview is released');
+            controller.controlResult({ ...sent[1], ok: true }, socket); await closing;
+            assert.equal(closeError.message, timeout ? 'voice_control_timeout' : 'first_cleanup_failed');
+            assert.equal(controller.blocked(), false);
+            assert.equal(timers.size, 0);
+        } finally {
+            if (sent[1]?.event === 'preview_end') controller.controlResult({ ...sent[1], ok: true }, socket);
+            await closing;
+        }
+    });
+}
+
 for (const closeBeforeAcknowledgement of [false, true]) {
     test(`browser voice startup releases a pending preview when its page is ${closeBeforeAcknowledgement ? 'closed' : 'closing'}`, async () => {
         const events = new Map(); const timers = new Map(); const sent = []; const replies = [];
