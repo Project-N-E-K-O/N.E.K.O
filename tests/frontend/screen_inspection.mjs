@@ -167,17 +167,19 @@ console.log('Frontend: 16 scenarios passed');
     await run({operation:'validate',request_id:'after',scope:f.sent[0].scope},f.state,f.socket);
     assert.equal(f.sent[1].error,'scope_changed');
 }
-// Stream replacement during capture is rejected even with the same selected ID.
+// Replacing the picker stream during capture invalidates the original stream scope.
 {
     const f=fixture(); f.state.selectedScreenSourceId='screen:1';
     const track={id:'monitor',getSettings:()=>({displaySurface:'monitor'})};
     f.state.screenCaptureStream={active:true,getVideoTracks:()=>[track]};
-    window.electronDesktopCapturer.captureSourceAsDataUrl=async()=>{
+    const video={videoWidth:64,videoHeight:64,play:async()=>{
         f.state.screenCaptureStream={active:true,getVideoTracks:()=>[track]};
-        return {success:true,dataUrl:'old-pixels'};
-    };
+    },pause(){}};
+    global.document={createElement:name=>name==='video'?video:{getContext:()=>({drawImage(){}}),toDataURL:()=> 'old-pixels'}};
+    window.electronDesktopCapturer.captureSourceAsDataUrl=async()=>assert.fail('must not capture stale screen:1');
     await run({operation:'overview',request_id:'replace-stream'},f.state,f.socket);
     assert.equal(f.sent[0].error,'scope_changed');assert.equal(f.sent[0].data_url,undefined);
+    assert.deepEqual(f.captures,[]);
 }
 // A proven window stream can be reused without native capture or a new picker.
 for (const bound of [true,false]) {
