@@ -2755,18 +2755,18 @@ class TurnMixin:
         original_id = (uuid4().hex if record_transcript_text and is_chat_input_source(raw_source)
                        and getattr(self, '_config_manager', None) is not None else None)
         if original_id:
-            from main_logic.proactive_chat.preference_capture import remember_chat_source
-
-            await remember_chat_source(
-                self.lanlan_name, original_id, record_transcript_text,
-                config_manager=self._config_manager,
-            )
             user_message["chat_original_source"] = {"recordId": original_id,
                 "originalTime": str(int(_transcript_arrival_ts * 1000)), "origin": "chat"}
         self.sync_message_queue.put({"type": "user", "data": user_message})
         # Preserve the existing queue order before any source database await.
         # Save accepted raw text independently, even if the reply later fails.
         if original_id and getattr(self, '_config_manager', None) is not None:
+            from main_logic.proactive_chat.preference_capture import remember_chat_source
+
+            await remember_chat_source(
+                self.lanlan_name, original_id, record_transcript_text,
+                config_manager=self._config_manager,
+            )
             try:
                 await save_original(
                     self.lanlan_name, 'user',
@@ -3127,10 +3127,6 @@ class TurnMixin:
             )
         try:
             async def _do_send():
-                if publish_if_async is not None and (
-                    not await publish_if_async() or not guarded_delivery_is_current()
-                ):
-                    return False
                 if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                     await self.websocket.send_json(message)
                     return True

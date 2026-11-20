@@ -389,14 +389,20 @@ class ProactiveFeedbackRuntime:
             pass
 
     async def _run(self):
+        retryable = (OSError, sqlite3.Error, RuntimeError, ValueError, LockException)
         while not self._closing:
             self._wake.clear()
             try:
                 if self.chat_interest_origin:
-                    await asyncio.gather(self.sync_once(), self._sync_chat_interests())
+                    results = await asyncio.gather(
+                        self.sync_once(), self._sync_chat_interests(), return_exceptions=True,
+                    )
+                    for result in results:
+                        if isinstance(result, BaseException) and not isinstance(result, retryable):
+                            raise result
                 else:
                     await self.sync_once()
-            except (OSError, sqlite3.Error, RuntimeError, ValueError, LockException):
+            except retryable:
                 # Never emit token-bearing exception text; retain durable data.
                 pass
             try:

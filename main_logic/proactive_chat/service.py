@@ -320,26 +320,32 @@ def _build_ranked_web_prompt(
         )
         if truncate_to_tokens(tentative, PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS) != tentative:
             continue
-        link["phase1_rendered_title"] = line.removeprefix(f"{index}. ").split(" | ", 1)[0].strip()
+        rendered_title = line.removeprefix(f"{index}. ").split(" | ", 1)[0].strip()
+        if rendered_title:
+            link["phase1_rendered_title"] = rendered_title
         positions = tentative_positions
         links.append(link)
         rows.append(line)
     link_section = "\n".join([header, *rows]) if rows else ""
-    visible_parts = [(label, records[:1]) for label, records in context_parts if f"--- {label} ---" in fallback]
+    visible_parts = {label: records[:1] for label, records in context_parts if f"--- {label} ---" in fallback}
     remaining = _PHASE1_TOTAL_TOPIC_TARGET - len(links) - len(visible_parts)
     for label, rows_in_context in context_parts:
         for record in rows_in_context[1:]:
             if remaining <= 0:
                 break
-            addition = f"{fallback}\n\n--- {label} ---\n{record}"
+            expanded = {**visible_parts, label: [*visible_parts.get(label, []), record]}
+            addition = "\n\n".join(
+                "\n".join([f"--- {section_label} ---", *records])
+                for section_label, records in expanded.items()
+            )
             combined = "\n\n".join(part for part in (link_section, addition) if part)
             if truncate_to_tokens(combined, PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS) == combined:
-                visible_parts.append((label, [record]))
+                visible_parts = expanded
                 fallback = addition
                 remaining -= 1
     merged = "\n\n".join(part for part in (link_section, fallback) if part)
-    fallback_labels = list(dict.fromkeys(label for label, _ in visible_parts))
-    fallback_records = [record for _, records in visible_parts for record in records]
+    fallback_labels = list(visible_parts)
+    fallback_records = [record for records in visible_parts.values() for record in records]
     return merged, links, fallback_labels, fallback_records
 
 
@@ -696,6 +702,8 @@ async def _collect_sources_under_vision_consent(
         verse_plan = await fetch_verse_plan(
             recommendations, delegated, locale=locale or "en", china=is_china_region(),
         )
+    # A valid plan owns public sources this round. Empty plans and choices
+    # rejected by device checks leave those channels empty.
     collect_modes = enabled_modes if verse_plan is None else [
         mode for mode in enabled_modes if mode not in VERSE_MODES
     ]
@@ -744,7 +752,8 @@ async def _collect_sources_under_vision_consent(
                                 if not fetchable:
                                     continue
                             meme["verse_checked"] = True
-                except (OSError, ValueError, TimeoutError):
+                except Exception as exc:
+                    logger.warning("[%s] Verse %s candidate preflight failed: %s", lanlan_name, mode, type(exc).__name__)
                     continue
             sources[mode] = content
             break
@@ -1999,7 +2008,7 @@ async def handle_proactive_chat(
         )
 
         web_modes = [m for m in sources if m not in ("vision", "music", "meme")]
-        # Personal-feed context wins when the same URL also appears elsewhere.
+        # The ranker gives personal-feed links a source bonus. Visit them first for ties.
         web_modes.sort(key=lambda mode: 0 if mode == "personal" else 1)
 
         # Collect Phase1 results.

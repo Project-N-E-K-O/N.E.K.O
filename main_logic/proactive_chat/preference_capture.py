@@ -27,7 +27,7 @@ from utils.proactive_preferences.search_policy import (
 async def remember_chat_source(
     character: str, source_id: str, text: str, *, config_manager
 ) -> None:
-    """Persist the provenance of a locally accepted original before publishing it."""
+    """Persist the provenance of a locally accepted original for later analysis."""
     from main_logic.recommendation_feedback import RecommendationStore
     from services.proactive_feedback import host
 

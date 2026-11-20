@@ -602,8 +602,8 @@ async def _attempt_mini_game_invite_delivery(
             **({"preferences": context.preferences.profile} if context is not None else {}),
         )
         if game_type is None:
-            logger.warning(
-                "[%s] mini-game invite skipped: no game_type available "
+            logger.info(
+                "[%s] mini-game invite skipped: no eligible game "
                 "(MINI_GAME_INVITE_AVAILABLE_GAMES=%r, LINES keys=%r)",
                 lanlan_name,
                 MINI_GAME_INVITE_AVAILABLE_GAMES,

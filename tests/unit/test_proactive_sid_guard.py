@@ -678,6 +678,32 @@ async def test_proactive_delivery_drops_account_choice_after_focus_cleanup():
     assert mgr.session._conversation_history == []
 
 
+async def test_account_change_after_publish_keeps_proactive_history():
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    account_current = True
+
+    async def owner_check():
+        return account_current
+
+    async def publish_then_switch(_text, **kwargs):
+        nonlocal account_current
+        assert await kwargs["publish_if_async"]()
+        kwargs["on_published"](100.0)
+        account_current = False
+        return False  # The internal publish succeeded even if WebSocket delivery failed.
+
+    mgr.send_lanlan_response = AsyncMock(side_effect=publish_then_switch)
+    committed = await LLMSessionManager.finish_proactive_delivery(
+        mgr, "published recommendation", expected_speech_id="s_proactive",
+        delivery_is_current=owner_check,
+    )
+    assert committed
+    assert [message.content for message in mgr.session._conversation_history] == ["published recommendation"]
+
+
 async def test_finish_proactive_delivery_rechecks_after_committing_wait():
     """Engagement during state.fire(COMMITTING) must lose at the publish guard."""
     mgr = _make_mgr()

@@ -105,7 +105,8 @@ async def test_music_uses_verse_keyword_and_can_still_pass(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ranked_verse_choices_fall_through_unplayable_music_and_unfetchable_image(monkeypatch):
+@pytest.mark.parametrize("music_error", [None, httpx.ConnectError("synthetic failure")])
+async def test_ranked_verse_choices_fall_through_unplayable_music_and_unfetchable_image(monkeypatch, music_error):
     video = {
         "mode": "video", "title": "Playable video", "source": "YouTube",
         "url": "https://www.youtube.com/watch?v=01234567890",
@@ -115,7 +116,7 @@ async def test_ranked_verse_choices_fall_through_unplayable_music_and_unfetchabl
     monkeypatch.setattr(service, "fetch_verse_plan", AsyncMock(return_value=plan))
     monkeypatch.setattr(service, "collect_proactive_sources", AsyncMock(return_value={}))
     monkeypatch.setattr(verse_plan, "_should_skip_source", lambda _: False)
-    fetch_music = AsyncMock(return_value=None)
+    fetch_music = AsyncMock(return_value=None, side_effect=music_error)
     fetch_meme = AsyncMock(return_value=(False, "unavailable"))
     monkeypatch.setattr(service, "_fetch_music_with_fallback", fetch_music)
     monkeypatch.setattr(service, "moderate_meme_image_url", AsyncMock(return_value=SimpleNamespace(allowed=True)))

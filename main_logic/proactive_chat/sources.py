@@ -546,7 +546,7 @@ async def collect_proactive_sources(
     if recommendations is None:
         fetch_results = await baseline
     else:
-        fetch_results, interest_candidates = await asyncio.gather(
+        fetch_results, interest_result = await asyncio.gather(
             baseline,
             collect_interest_candidates(
                 recommendations.preferences,
@@ -557,7 +557,16 @@ async def collect_proactive_sources(
                 locale=community_locale,
                 include_excluded_metadata=True,
             ),
+            return_exceptions=True,
         )
+        if isinstance(fetch_results, BaseException):
+            raise fetch_results
+        if isinstance(interest_result, Exception):
+            log.warning("[%s] interest retrieval failed: %s", lanlan_name, type(interest_result).__name__)
+        elif isinstance(interest_result, BaseException):
+            raise interest_result
+        else:
+            interest_candidates = interest_result
 
     sources: dict[str, dict] = {}
     for index, result in enumerate(fetch_results):

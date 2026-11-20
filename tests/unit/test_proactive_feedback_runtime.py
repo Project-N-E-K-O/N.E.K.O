@@ -326,6 +326,42 @@ async def test_worker_cancellation_during_http_keeps_pending(setup):
         await client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_interest_sync_finishes_before_worker_retries_after_feedback_failure(setup, monkeypatch):
+    runtime, client = runtime_for(setup, chat_interest_origin=COMMUNITY_ORIGIN)
+    interest_started, finish_interest, feedback_failed, feedback_retried = (
+        asyncio.Event(), asyncio.Event(), asyncio.Event(), asyncio.Event(),
+    )
+
+    async def sync_feedback():
+        if feedback_failed.is_set():
+            feedback_retried.set()
+            return
+        await interest_started.wait()
+        feedback_failed.set()
+        runtime._wake.set()
+        raise OSError("synthetic feedback failure")
+
+    async def sync_interests():
+        interest_started.set()
+        await finish_interest.wait()
+
+    monkeypatch.setattr(runtime, "sync_once", sync_feedback)
+    monkeypatch.setattr(runtime, "_sync_chat_interests", sync_interests)
+    try:
+        runtime.start()
+        await asyncio.wait_for(feedback_failed.wait(), 3)
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not feedback_retried.is_set()
+        finish_interest.set()
+        await asyncio.wait_for(feedback_retried.wait(), 3)
+    finally:
+        finish_interest.set()
+        await runtime.close()
+        await client.aclose()
+
+
 def test_settings_transfer_acknowledges_only_durable_members(monkeypatch):
     from utils import preferences
     owner = host.owner_from_snapshot({"local_user_id": "a", "base_url": COMMUNITY_ORIGIN, "access_token": "x"})

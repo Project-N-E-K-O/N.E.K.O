@@ -815,9 +815,6 @@ class ProactiveMixin:
                     self.lanlan_name,
                 )
                 return False
-            if delivery_is_current is not None and not await delivery_is_current():
-                return False
-
             # Flush per-turn AI-text buffer to activity tracker. The regular
             # /api/proactive_chat path doesn't call handle_proactive_complete
             # (only the agent-direct-reply path in main_server.py does), so
