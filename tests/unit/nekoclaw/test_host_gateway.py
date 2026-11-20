@@ -39,6 +39,7 @@ from nekoclaw.host.capabilities import (
     BuiltinOutcome,
     builtin_tool,
 )
+from nekoclaw.host import call_audit
 from nekoclaw.host.gateway import CALL_TOOL, SEARCH_TOOL
 from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM, make_host, wait_until
 from tests.unit.nekoclaw.plugin_server_fake import (
@@ -147,6 +148,25 @@ def _text(result: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # Protocol
 # ---------------------------------------------------------------------------
+
+
+async def test_parallel_gateway_calls_keep_their_own_plugin_runs(host, server):
+    _catalog(server)
+    commission = await _commission(host, session_id="stable-session")
+    grant = _grant(host, commission)
+    await asyncio.gather(
+        _call(host, grant, "plugin__weather__today", {"city": "PrivateCity"}),
+        _call(host, grant, "plugin__lamp__switch"),
+    )
+    records = await host.ledger.run(lambda db: call_audit.read_trace(db, commission.id, now=host.ledger._clock()))
+    by_id = {r["call_id"]: r for r in records}
+    children = [r for r in records if r["kind"] == "plugin"]
+    assert len(children) == 2 and len({r["run_id"] for r in children}) == 2
+    for child in children:
+        gateway = by_id[child["parent_call_id"]]
+        assert gateway["kind"] == "gateway" and gateway["target"] == child["target"]
+        assert gateway["parent_call_id"] == commission.id and child["session_id"] == "stable-session"
+    assert "PrivateCity" not in json.dumps(records)
 
 
 async def test_initialize_ping_and_unknown_methods(host, server):
@@ -2101,8 +2121,12 @@ async def test_a_builtin_call_asks_first_and_then_runs_for_the_commission(builti
         ("browser_navigate_page", commission.id, {"url": "https://example.com"})
     ]
     assert result == {"content": [{"type": "text", "text": "browser_navigate_page done"}], "isError": False}
-    # A step that went well adds no row to the ledger: the task agent's own
-    # tool events show it already, and a task is many such steps.
+    root, device = await builtin_host.ledger.run(
+        lambda db: call_audit.read_trace(db, commission.id, now=builtin_host.ledger._clock())
+    )
+    assert (device["parent_call_id"], device["kind"], device["status"]) == (root["call_id"], "device", "completed")
+    assert "example.com" not in json.dumps(device)
+    # Existing HUD events remain separate from the compact host audit.
     assert [event.type for event in await builtin_host.ledger.events(commission.id)] == before
 
 
@@ -2115,6 +2139,10 @@ async def test_a_declined_builtin_is_not_run(builtin_host):
 
     assert result["isError"] is True and "the user declined" in _text(result)
     assert builtin_host.provider.calls == []
+    root, device = await builtin_host.ledger.run(
+        lambda db: call_audit.read_trace(db, commission.id, now=builtin_host.ledger._clock())
+    )
+    assert (device["parent_call_id"], device["status"], device["reason"]) == (root["call_id"], "denied", "user")
     # Declined before the desktop was occupied.
     assert builtin_host.leases.occupied() == {}
     denied = [

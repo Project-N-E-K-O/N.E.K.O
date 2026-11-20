@@ -528,6 +528,7 @@ async def _handle_turn_check_request(event: Dict[str, Any]) -> None:
             user_text=user_text,
             reply_text=reply_text,
             conversation_id=event.get("conversation_id"),
+            source_message_ref=event.get("source_message_ref"),
             lang=_resolve_session_language(event.get("language")),
             external_intent=external_intent,
         )
@@ -921,6 +922,7 @@ async def nekoclaw_dispatch(payload: Dict[str, Any]):
         lanlan_name=lanlan_name,
         user_text=user_text if isinstance(user_text, str) else "",
         conversation_id=conversation_id if isinstance(conversation_id, str) and conversation_id else None,
+        source_message_ref=payload.get("source_message_ref"),
         lang=lang,
         source="dispatch",
     )

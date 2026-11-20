@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 from queue import Queue
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -1042,7 +1043,7 @@ def test_the_latest_user_message_and_everything_she_said_after_it():
         {"role": "assistant", "content": ""},
     ]
 
-    assert cross_server._turn_to_check(messages) == ("帮我订个闹钟", "好的\n这就去", True)
+    assert cross_server._turn_to_check(messages) == ("帮我订个闹钟", "好的\n这就去", True, None)
 
 
 @pytest.mark.parametrize(
@@ -1075,6 +1076,36 @@ def published(monkeypatch):
 
 
 _EXCHANGE = [{"role": "user", "content": "帮我订个闹钟"}, {"role": "assistant", "content": "好，我去订"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("metadata", "expected"), [
+    ({"chat_original_source": {"recordId": "a" * 32}}, "chat_original:" + "a" * 32),
+    ({"memory_message_id": "b" * 32}, "memory_message:" + "b" * 32),
+    ({}, None),
+])
+async def test_turn_check_uses_only_the_selected_user_message_ref(published, metadata, expected):
+    calls, _ = published
+    previous = {"role": "user", "content": "same words", "metadata": {"memory_message_id": "c" * 32}}
+    messages = [previous, {**previous, "metadata": metadata}, _EXCHANGE[1]]
+    assert await cross_server._publish_turn_check_with_fallback("Lan", "turn_end", messages)
+    assert calls[0].get("source_message_ref") == expected
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uses_the_emitting_reply_even_after_the_next_input(agent_process):
+    process = agent_process(lambda request: httpx.Response(200, json={"kind": "accepted", "text": "OK"}))
+    manager = _manager()
+    manager._register_task_tools()
+    manager._latest_user_utterance = "a newer input"
+    arguments = {"task": "set a timer", "source_message_ref": "from the model"}
+    owner = SimpleNamespace(observation_input_id="a" * 32, speech_id="earlier")
+    await manager._on_tool_call(ToolCall(DISPATCH_TOOL_NAME, arguments, reply_owner=owner))
+    await manager._on_tool_call(ToolCall(DISPATCH_TOOL_NAME, arguments))
+    first, second = [request["body"] for request in process.requests]
+    assert first["source_message_ref"] == "conversation_input:" + "a" * 32
+    assert first["conversation_id"] == "earlier" and first["user_text"] == ""
+    assert "source_message_ref" not in second
 
 
 @pytest.mark.asyncio
