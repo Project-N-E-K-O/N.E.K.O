@@ -31,7 +31,10 @@ BUILD_ROOT = PurePosixPath("/src")
 #  - plugin-manager runs `build-only` (plain `vite build`): type-only imports are
 #    erased and test / e2e files are not part of the bundle -- except in .vue
 #    files, where @vue/compiler-sfc reads the imported types used by
-#    defineProps<T>() / defineEmits<T>(), so .vue keeps type imports.
+#    defineProps<T>() / defineEmits<T>(), so .vue keeps type imports. This is
+#    deliberately approximate: a .vue type import used only for e.g. ref<T>()
+#    is also kept (over-reports), and types reached through an imported .ts
+#    file are not followed (see the known limits below).
 #  - react-neko-chat runs `tsc -b && vite build`; tsconfig.app.json includes the
 #    *.test.ts(x) files, so tests and type-only imports must resolve as well.
 FRONTENDS = {
@@ -136,7 +139,11 @@ def _cross_project_targets(name: str) -> dict[str, list[str]]:
 def _builder_copies(dockerfile: str) -> list[tuple[str, PurePosixPath]]:
     """(source, destination) pairs of the frontend-builder stage's COPY lines."""
     text = (ROOT / "docker" / dockerfile).read_text(encoding="utf-8")
-    # Join backslash-continued instructions into one logical line.
+    # Like Docker: drop comment lines first (they never take part in line
+    # continuation), then join backslash-continued instructions. Otherwise a
+    # comment ending in `\` would swallow the next FROM and lose the stage
+    # boundary.
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     lines = re.sub(r"\\\s*\n", " ", text).splitlines()
     copies: list[tuple[str, PurePosixPath]] = []
     in_stage = False
@@ -272,6 +279,7 @@ def test_builder_copies_ignore_other_stages_and_join_continuations(tmp_path, mon
         "FROM node:24-slim AS frontend-builder\n"
         "COPY --from=other /src/static/x /src/static/x\n"
         "COPY --chown=1:1 \\\n    static/y /src/static/y\n"
+        "# Run: docker run \\\n"
         "FROM debian\n"
         "COPY static/z /src/static/z\n",
         encoding="utf-8",
