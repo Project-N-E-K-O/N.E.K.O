@@ -1329,7 +1329,16 @@ async function attributedCommitCase() {
   // The game STT gate released the ordinary pipeline and the browser
   // recogniser now holds the microphone: live, not reopening.
   env.S.gameVoiceSttGateActive = true;
+  // start() has returned (listening is set to guard a duplicate start) but
+  // the recogniser has not confirmed onstart: the ordinary pipeline is
+  // already gone and nothing is capturing yet.
   env.S.gameVoiceSttListening = true;
+  env.S.gameVoiceSttCapturing = false;
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === false
+         && env.mod.hostMicrophoneCaptureReopening() === true,
+         'a recogniser that has not confirmed onstart is not a live capture');
+  env.S.gameVoiceSttCapturing = true;
   assert(env.mod.hostMicrophoneCaptureLive() === true
          && env.mod.hostMicrophoneCaptureReopening() === false,
          'a listening game STT gate is a live host capture, not a reopen');
@@ -1338,6 +1347,7 @@ async function attributedCommitCase() {
   // Gate active but its recogniser not (yet / any longer) listening: that is
   // a restart in progress.
   env.S.gameVoiceSttListening = false;
+  env.S.gameVoiceSttCapturing = false;
   assert(env.mod.hostMicrophoneCaptureLive() === false
          && env.mod.hostMicrophoneCaptureReopening() === true,
          'a game STT gate between recogniser runs is reopening');
@@ -1420,8 +1430,56 @@ async function receiptDoesNotLeakCase() {
          'a receipt consumed by a refused start must not describe a later one');
 }
 
+async function gameSttGateConfirmsBeforeLiveCase() {
+  // The real gate: start() returning is not a live capture. The ordinary
+  // pipeline is released synchronously, but the recogniser only holds the
+  // microphone once it fires onstart (#3871 review).
+  const env = loadModule();
+  const r = receipt();
+  env.mod.offerVoiceStartReceipt(r);
+  assert((await env.mod.startMicCapture()) === true, 'the attributed start should commit');
+  const recognisers = [];
+  env.win.SpeechRecognition = class {
+    constructor() { recognisers.push(this); }
+    start() {}
+    stop() { if (this.onend) this.onend(); }
+    abort() {}
+  };
+  env.S.gameVoiceSttGateActive = true;
+  assert(env.mod.startGameVoiceSttGate() === true, 'the gate should start');
+  assert(env.S.stream === null, 'the gate releases the ordinary pipeline');
+  assert(env.S.gameVoiceSttListening === true, 'start() returned: the duplicate-start guard is set');
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === false
+         && env.mod.hostMicrophoneCaptureReopening() === true,
+         'before onstart the host is reopening, not capturing');
+  recognisers[0].onstart();
+  assert(env.mod.hostMicrophoneCaptureLive() === true
+         && env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === true
+         && env.mod.hostMicrophoneCaptureReopening() === false,
+         "after onstart the recogniser holds this attempt's microphone");
+  // The recogniser ends (the gate schedules a restart): no longer live.
+  recognisers[0].onend();
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.hostMicrophoneCaptureReopening() === true,
+         'a recogniser between runs is reopening, not live');
+  // onend without a preceding onstart (start rejected asynchronously) must
+  // not leave a confirmed flag behind either.
+  env.mod.startGameVoiceSttGate();
+  recognisers[recognisers.length - 1].onend();
+  assert(env.S.gameVoiceSttCapturing === false, 'an unconfirmed recogniser that ended left capture confirmed');
+  // Stopping a confirmed gate: stop() detaches the recogniser first, so its
+  // onend is ignored as stale -- the gate itself must clear the flag.
+  env.mod.startGameVoiceSttGate();
+  recognisers[recognisers.length - 1].onstart();
+  assert(env.S.gameVoiceSttCapturing === true, 'the restarted recogniser confirmed');
+  env.mod.stopGameVoiceSttGate({ restoreOrdinaryMic: false });
+  assert(env.S.gameVoiceSttCapturing === false, 'stopping the gate must clear the confirmed flag');
+}
+
 (async () => {
   await attributedCommitCase();
+  await gameSttGateConfirmsBeforeLiveCase();
   await attributedTakeoverCase();
   await attributedFailureCases();
   await receiptDoesNotLeakCase();

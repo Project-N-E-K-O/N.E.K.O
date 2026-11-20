@@ -263,14 +263,17 @@
     // down and keeps the flag set until the replacement commits.
     // The game STT gate is the one sanctioned "recording without the ordinary
     // pipeline" state: startGameVoiceSttGate() releases the pipeline (S.stream
-    // goes null) and the browser recogniser holds the microphone instead, with
-    // S.gameVoiceSttListening as its success flag. That is a live host
-    // capture, not a reopen.
+    // goes null) and the browser recogniser holds the microphone instead. That
+    // is a live host capture, not a reopen -- but only once the recogniser has
+    // CONFIRMED it started (onstart -> S.gameVoiceSttCapturing).
+    // S.gameVoiceSttListening is set as soon as start() returns, to guard
+    // against a duplicate start, while the ordinary pipeline is already gone;
+    // that window is a reopen.
     function gameVoiceSttHoldsMicrophone() {
         return (
             S.isRecording === true
             && S.gameVoiceSttGateActive === true
-            && S.gameVoiceSttListening === true
+            && S.gameVoiceSttCapturing === true
             && S.isMicMuted !== true
         );
     }
@@ -1004,6 +1007,7 @@
         recognition.onstart = function () {
             if (S.gameVoiceSttRecognition !== recognition) return;
             S.gameVoiceSttListening = true;
+            S.gameVoiceSttCapturing = true;
             S.gameVoiceSttStopping = false;
             publishGameVoiceBrowserTranscriptionState(true, 'browser_ready');
             console.log('[GameVoiceSTT][Diag] recognition start');
@@ -1075,6 +1079,7 @@
         recognition.onend = function () {
             if (S.gameVoiceSttRecognition !== recognition) return;
             S.gameVoiceSttListening = false;
+            S.gameVoiceSttCapturing = false;
             if (S.gameVoiceSttRestartTimer) {
                 clearTimeout(S.gameVoiceSttRestartTimer);
                 S.gameVoiceSttRestartTimer = null;
@@ -1085,6 +1090,8 @@
             S.gameVoiceSttStopping = false;
         };
         S.gameVoiceSttRecognition = recognition;
+        // A new recogniser has not confirmed anything yet.
+        S.gameVoiceSttCapturing = false;
 
         try {
             S.gameVoiceSttStopping = false;
@@ -1102,6 +1109,7 @@
             }
             console.warn('[GameVoiceSTT] recognition start failed:', error);
             S.gameVoiceSttListening = false;
+            S.gameVoiceSttCapturing = false;
             publishGameVoiceBrowserTranscriptionState(false, 'browser_start_failed');
             restoreOrdinaryMicCaptureAfterGameVoiceSttFailure('recognition_start_failed', error);
             return false;
@@ -1131,6 +1139,7 @@
             }
         }
         S.gameVoiceSttListening = false;
+        S.gameVoiceSttCapturing = false;
         S.gameVoiceSttStopping = false;
         if (!keepActive && restoreOrdinaryMic) {
             restoreOrdinaryMicCaptureAfterGameVoiceSttStop('gate stop');
