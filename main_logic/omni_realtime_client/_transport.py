@@ -1059,6 +1059,18 @@ class _TransportMixin:
                                 "image payload exceeds realtime WebSocket frame limit"
                             )
                         return False
+                    if pre_send is not None:
+                        # The recompression above yields to a worker thread,
+                        # so the caller's conditions may have changed again
+                        # (e.g. screen consent revoked). Re-run the hook; the
+                        # item shrink edits ``event`` in place, so serializing
+                        # it again keeps the smaller images. Only reserialize
+                        # when the hook actually changed something.
+                        shrunk_snapshot = json.dumps(event)
+                        pre_send(event)
+                        rechecked = json.dumps(event)
+                        if rechecked != shrunk_snapshot:
+                            payload = rechecked
                 # Two distinct presend checks both run: send_guard verifies current connection
                 # ownership; raw-vision fencing verifies the frame still fits current routing
                 # mode. Semaphore waits and oversized-image recompression yield, allowing either

@@ -534,9 +534,12 @@ class _ResponseMixin:
                 # The ladder never samples here (the per-turn cap equals its
                 # sample size) and only ever drops from the front, so the
                 # survivors are the tail of the staged frames.
+                # A sampled ladder (should the cap ever exceed the sample size)
+                # breaks that mapping: count every frame as live then.
                 user_flags = (
                     user_flags[len(user_flags) - len(images_bytes):]
                     if len(images_bytes) <= len(user_flags)
+                    and not _notice.get("sampled")
                     else (False,) * len(images_bytes)
                 )
                 # Above asyncio.to_thread compresses several MB-sized screenshots, a real, lengthy yield
@@ -698,7 +701,12 @@ class _ResponseMixin:
             "external_multimodal_turn queued turn=%s chars=%d images=%d hash=%s",
             stable_turn_id,
             len(clean),
-            len(staged_images),
+            # What is left after the pre-enqueue downgrade, not what came in.
+            sum(
+                1
+                for part in item_event["item"]["content"]
+                if isinstance(part, dict) and part.get("type") == "input_image"
+            ),
             text_hash,
         )
         # Final visual-ownership recheck before arbiter submission, symmetric with Gemini path.
