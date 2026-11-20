@@ -46,7 +46,9 @@ def _url_origin(match):
 
 def redact_error_message(message) -> str:
     """Keep an exception message useful for diagnosis without credentials, URL paths or home directory."""
-    text = _DATA_URL.sub("data:***", str(message)[:_REDACTION_INPUT_CHARS])
+    # Lone surrogates (non-UTF-8 file names) would break the UTF-8 timeline write.
+    text = str(message)[:_REDACTION_INPUT_CHARS].encode("utf-8", "backslashreplace").decode("utf-8")
+    text = _DATA_URL.sub("data:***", text)
     for pattern, replacement in _SECRET_PATTERNS:
         text = pattern.sub(replacement, text)
     # URLs keep only scheme and host: paths and queries may carry keys or IDs.
@@ -91,8 +93,15 @@ def error_cause_chain(exc, limit=MAX_CAUSE_DEPTH):
     while isinstance(exc, BaseException) and len(chain) < limit and id(exc) not in seen:
         seen.add(id(exc))
         chain.append(_error_layer(exc))
-        # Explicit None checks: exceptions may define __len__/__bool__.
-        exc = exc.__cause__ if exc.__cause__ is not None else exc.__context__
+        # Explicit None checks: exceptions may define __len__/__bool__. Honour
+        # ``raise ... from None``: a context hidden on purpose stays hidden
+        # (the openai SDK raises status errors that way over httpx's error).
+        if exc.__cause__ is not None:
+            exc = exc.__cause__
+        elif exc.__suppress_context__:
+            exc = None
+        else:
+            exc = exc.__context__
     return chain
 
 
@@ -230,7 +239,7 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
             job["error_detail"] = detail
             # print, not logger (privacy rule): messages come from providers.
             print(f"Watch preparation failed: {type(exc).__name__} "
-                  f"{json.dumps(detail, ensure_ascii=False, default=str)}")
+                  f"{json.dumps(detail, default=str)}")
         finally:
             folder = staging / job["id"]
             try:

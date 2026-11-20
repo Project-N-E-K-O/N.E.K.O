@@ -524,3 +524,64 @@ def test_cause_chain_ignores_exception_truthiness():
     outer.__cause__ = inner
     inner.__cause__ = ValueError('root')
     assert [layer['type'] for layer in preparation.error_cause_chain(outer)] == ['RuntimeError', 'Empty', 'ValueError']
+
+
+def test_cause_chain_honours_from_none():
+    try:
+        try:
+            raise ValueError('inner secret content')
+        except ValueError:
+            raise RuntimeError('outer') from None
+    except RuntimeError as exc:
+        chain = preparation.error_cause_chain(exc)
+    assert chain == [{'type': 'RuntimeError', 'errno': None, 'message': 'outer'}]
+
+
+def test_openai_status_error_hides_the_suppressed_httpx_error():
+    import httpx
+    import openai
+    request = httpx.Request('POST', 'https://api.example.test/v1/chat/completions')
+    response = httpx.Response(413, request=request, json={'error': {'message': 'echoed 弹幕', 'code': 'too_large'}})
+    try:
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            # Same shape as the SDK: ``raise self._make_status_error_from_response(...) from None``.
+            raise openai.APIStatusError('Error code: 413', response=response, body={'code': 'too_large'}) from None
+    except openai.APIStatusError as exc:
+        chain = preparation.error_cause_chain(exc)
+    assert [layer['type'] for layer in chain] == ['APIStatusError']
+    assert chain[0]['status_code'] == 413
+
+
+def test_lone_surrogates_do_not_break_utf8_output():
+    message = preparation.redact_error_message('bad-\udcff-name')
+    assert message.encode('utf-8') == b'bad-\\udcff-name'
+
+
+@pytest.mark.asyncio
+async def test_surrogate_in_failure_detail_still_prints_and_persists(tmp_path, monkeypatch, capsys):
+    import json
+    class Engine:
+        def __init__(self, root, *args, **kwargs):
+            self.root = root
+        async def vision_config(self):
+            return {}
+        async def prepare(self, job, *args, **kwargs):
+            (self.root / job['id']).mkdir(parents=True)
+            raise RuntimeError('decoded name frame-\udcff.jpg')
+    imported = []
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(
+        root=tmp_path, import_sources=lambda *args, **kwargs: imported.append(True)))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    job = preparation.jobs[result['id']]
+    assert job['stage'] == 'Preparation failed' and imported
+    saved = json.loads((tmp_path / 'preparations' / result['id'] / 'timeline.json').read_text(encoding='utf-8'))
+    assert saved['error_detail']['chain'][0]['message'] == 'decoded name frame-\\udcff.jpg'
+    assert 'Watch preparation failed: RuntimeError' in capsys.readouterr().out

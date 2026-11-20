@@ -381,10 +381,11 @@ def record_usage(job, response, model, stage):
 def vision_request_stats(system_prompt, blocks):
     """Count the structure of one vision request without keeping its content.
 
-    ``request_bytes`` is an estimate: UTF-8 text plus inline image URLs, before
-    the per-call token truncation and the provider's JSON envelope.
+    ``request_bytes`` is an estimate: UTF-8 text plus inline ``data:`` image
+    URLs, before the per-call token truncation and the provider's JSON envelope.
+    Remote image links are only counted: their size is unknown here.
     """
-    images = image_bytes = text_chars = text_bytes = 0
+    images = remote_images = image_bytes = text_chars = text_bytes = 0
     for text in [system_prompt] + [block.get("text") for block in blocks if block.get("type") == "text"]:
         if isinstance(text, str):
             text_chars += len(text)
@@ -393,9 +394,29 @@ def vision_request_stats(system_prompt, blocks):
         if block.get("type") == "image_url":
             url = (block.get("image_url") or {}).get("url")
             images += 1
-            image_bytes += len(url) if isinstance(url, str) else 0
-    return {"images": images, "image_bytes": image_bytes, "text_chars": text_chars,
+            if isinstance(url, str) and url[:5].lower() == "data:":
+                image_bytes += len(url)
+            elif isinstance(url, str):
+                remote_images += 1
+    return {"images": images, "remote_images": remote_images, "image_bytes": image_bytes, "text_chars": text_chars,
             "request_bytes": text_bytes + image_bytes}
+
+
+def endpoint_host(base_url):
+    """``host[:port]`` of a configured endpoint, without credentials or path."""
+    if not isinstance(base_url, str) or not base_url.strip():
+        return None
+    url = base_url.strip()
+    try:
+        # A base URL written without a scheme still names a host.
+        parsed = urlparse(url if "//" in url else "//" + url)
+        host, port = parsed.hostname, parsed.port
+    except ValueError:
+        return None
+    if not host:
+        return None
+    host = f"[{host}]" if ":" in host else host
+    return f"{host}:{port}" if port else host
 
 
 async def vision_model_config(cm):
@@ -499,12 +520,7 @@ class Engine:
 
     async def vision_config(self):
         cfg = await vision_model_config(self.cm)
-        base_url = cfg.get("base_url")
-        try:
-            host = urlparse(base_url).hostname if isinstance(base_url, str) else None
-        except ValueError:
-            host = None
-        self.vision_endpoint = {"host": host, "model": cfg.get("model")}
+        self.vision_endpoint = {"host": endpoint_host(cfg.get("base_url")), "model": cfg.get("model")}
         return cfg
 
     async def llm(self, content, job):
@@ -669,6 +685,8 @@ class Engine:
         (folder / "evidence.json").write_text(json.dumps(evidence, ensure_ascii=False), encoding="utf-8")
         candidates = []
         for start in range(0, math.ceil(length), 30):
+            # Until this window's request is assembled, a failure is not a request-size failure.
+            self.last_vision_request = None
             end = min(length, start + 30)
             progress("analyzing", 40 + int(32 * start / max(1, length)))
             subs = [s for s in subtitles if s.get("to", 0) >= start - 5 and s.get("from", 0) < end]
