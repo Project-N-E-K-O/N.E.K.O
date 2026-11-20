@@ -424,6 +424,17 @@ def test_retry_reset_is_preserved_when_archive_queue_is_full(tmp_path, monkeypat
         assert read(path, 'SELECT text FROM text_events') == [('accepted attempt',)]
         assert read(path, 'SELECT text,stream_complete,archive_error FROM clips') == [('accepted attempt', 1, 1)]
 
+        # A second retry after done must advance the same speech's generation
+        # and clear only the partial marker from the discarded prior attempt.
+        await archive_event(mgr, 'retry', 's')
+        await archive_event(mgr, 'audio', 's', data=b'clean-retry')
+        await archive_event(mgr, 'text', 's', text='clean retry', is_first=True)
+        await archive_event(mgr, 'done', 's')
+        await drain_voice_archive(mgr)
+        assert read(path, 'SELECT data FROM chunks') == [(b'clean-retry',)]
+        assert read(path, 'SELECT text FROM text_events') == [('clean retry',)]
+        assert read(path, 'SELECT text,stream_complete,archive_error FROM clips') == [('clean retry', 1, 0)]
+
     asyncio.run(run())
 
 

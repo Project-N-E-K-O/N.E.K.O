@@ -273,9 +273,6 @@ async def _write_queued_events(manager, queue):
                     _clear_discarded_attempt_failure(
                         manager, sid, event.get('attempt_generation', 0),
                     )
-                elif event['kind'] == 'done':
-                    if generations.get(sid, 0) == event.get('attempt_generation', 0):
-                        generations.pop(sid, None)
             except asyncio.CancelledError:
                 _mark_incomplete(manager, sid, event.get('attempt_generation', 0))
                 raise
@@ -334,7 +331,19 @@ def _enqueue_archive_event(manager, kind, speech_id, **values):
         generations = manager._owner_voice_archive_attempt_generations = {}
     attempt_generation = generations.get(sid, 0)
     if kind == 'retry':
+        if sid not in generations and len(generations) >= 256:
+            # Retain only a bounded set of retried speech IDs. If an extremely
+            # old retry owner is evicted, suppress its late events rather than
+            # allowing them to create a second recording generation.
+            expired_sid = next(iter(generations))
+            generations.pop(expired_sid, None)
+            getattr(manager, '_owner_voice_archive_failed_generations', {}).pop(expired_sid, None)
+            getattr(manager, '_owner_voice_archive_retry_resets', {}).pop(expired_sid, None)
+            _reject_unconsented_speech(manager, expired_sid)
         attempt_generation += 1
+        # Keep the generation counter after done so a later retry of the same
+        # speech ID cannot reuse a generation and clear a newer partial marker.
+        generations.pop(sid, None)
         generations[sid] = attempt_generation
     event = dict(values, kind=kind, character=character, speech_id=sid,
                  recording_generation=snapshot[1] if snapshot is not None else 0,
