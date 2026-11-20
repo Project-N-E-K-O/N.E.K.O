@@ -1255,6 +1255,7 @@
                 var voiceModes = [];
                 if (canProactiveVisionRunDuringSpeech()) {
                     voiceModes.push('vision');
+                    noteProactiveVisionInUse();
                 }
                 console.log('[ProactiveChat] 语音模式快速路径，modes: [' + voiceModes.join(', ') + ']');
                 // 故意不带 base_interval_seconds / 不读 next_schedule_fixed_mode：
@@ -1360,6 +1361,7 @@
             if (holdsProactiveVisionStream()) {
                 availableModes.push('vision');
                 availableModes.push('window');
+                noteProactiveVisionInUse();
             }
 
             // 新闻搭话：使用微博热议、贴吧与小黑盒首页内容
@@ -2267,6 +2269,7 @@
         if (!canProactiveVisionRunDuringSpeech() || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
         if (screenButton && screenButton.classList.contains('active')) return; // 手动共享时不启动
+        noteProactiveVisionInUse();
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
@@ -2326,6 +2329,15 @@
     // privacy mode went off), so a frame captured before an off -> on toggle
     // is dropped even though the gate is open again when it completes.
     var _speechVisionOffSeq = 0;
+    // Settings load does not run the sync above, so a window can start
+    // proactive rounds with vision while _speechVisionAllowedLast is still
+    // null. Record "allowed" wherever this window actually starts using the
+    // screen (a round asking for vision, the speech heartbeat), so the first
+    // switch-off after that still sends the invalidation. Only ever records
+    // true: a "not allowed" read during early startup proves nothing.
+    function noteProactiveVisionInUse() {
+        _speechVisionAllowedLast = true;
+    }
     function syncProactiveVisionDuringSpeech() {
         var allowed = canProactiveVisionRunDuringSpeech();
         var wasAllowed = _speechVisionAllowedLast;

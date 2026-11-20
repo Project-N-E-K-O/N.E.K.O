@@ -1133,3 +1133,18 @@ test('the first sync of a page does not end another window\'s rounds', () => {
     h.window.syncProactiveVisionDuringSpeech();
     assert.equal(invalidations(h), 0);
 });
+
+// Settings load does not run syncProactiveVisionDuringSpeech; a window that
+// started using the screen must still report the first switch-off.
+test('the first switch-off after the heartbeat started without any sync still ends in-flight vision', () => {
+    const { h } = runningCall(); // heartbeat started, no settings sync yet
+    h.S.proactiveVisionChatEnabled = false;
+    h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(invalidations(h), 1);
+});
+
+test('a proactive round that asks for vision records that vision is in use', () => {
+    const proactive = read('static/app/app-proactive.js');
+    assert.match(proactive, /voiceModes\.push\('vision'\);\s*noteProactiveVisionInUse\(\);/);
+    assert.match(proactive, /availableModes\.push\('window'\);\s*noteProactiveVisionInUse\(\);/);
+});
