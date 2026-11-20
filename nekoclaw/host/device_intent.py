@@ -67,11 +67,12 @@ _CODE_CONTEXT = re.compile(
 _FILE_OBJECT = re.compile(r"\b(?:files?|folders?)\b|文件夹|資料夾")
 _WEB_ACTION = re.compile(
     r"打开|打開|访问|訪問|浏览(?!器)|瀏覽(?!器)|刷新|切换|切換|关闭|關閉|查看|检查|檢查|阅读|閱讀|"
-    r"填写|填寫|搜索|搜尋|用.{0,5}(?:浏览器|瀏覽器)|"
+    r"填写|填寫|搜索|搜尋|"
     r"列出(?:当前|目前|當前|所有|全部|浏览器|瀏覽器|打开|打開|的|中)*(?:标签页|標籤頁|分頁)|"
     r"\b(?:list|show)\s+(?:(?:the|my|all|current|open|browser)\s+)*tabs?\b|"
-    r"\b(?:open|visit|browse|navigate|go to|load|reload|refresh|switch|close|read|inspect|fill|use)\b"
+    r"\b(?:open|visit|browse|navigate|go to|load|reload|refresh|switch|close|read|inspect|fill)\b"
 )
+_WEB_USE = re.compile(r"用.{0,5}(?:浏览器|瀏覽器)|\buse\b")
 _OTHER_WEB = re.compile(
     r"(?:ブラウザ|ウェブページ|リンク).{0,12}(?:開い|開く|クリック)|"
     r"(?:브라우저|웹\s?페이지|링크).{0,12}(?:열어|열기|클릭)|"
@@ -119,8 +120,9 @@ def select_device_groups(text: str) -> tuple[str, ...]:
         explicit_web = bool(_EXPLICIT_WEB.search(without_files))
         web_target = explicit_web or (not code and not _FILE_OBJECT.search(clause) and _WEB_OBJECT.search(without_files))
         screenshot = bool(_SCREENSHOT_ACTION.search(clause))
-        click = bool(_CLICK.search(clause))
-        browser = bool(web_target and (screenshot or click or _WEB_ACTION.search(clause))) or bool(
+        click = bool(_CLICK.search(without_files))
+        web_action = _WEB_ACTION.search(without_files) or (not code and _WEB_USE.search(without_files))
+        browser = bool(web_target and (screenshot or click or web_action)) or bool(
             _OTHER_WEB.search(clause)
         )
         desktop_target = bool(_DESKTOP_TARGET.search(clause))
