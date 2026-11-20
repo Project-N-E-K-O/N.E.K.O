@@ -374,6 +374,36 @@ async def test_scoped_loan_is_shared_by_the_root_but_bound_to_each_actual_delive
     assert (await deliver("second")).allow and len(asked) == 5
 
 
+async def test_external_message_starts_a_fresh_approval_branch_without_resetting_siblings(store):
+    parents = {"child": "root", "grandchild": "child", "other": "root"}
+
+    async def parent_of(cid):
+        return parents.get(cid)
+
+    asker = Asker("session")
+    gate = PermissionGate(store, asker, parent_of)
+    scope = GrantScope("builtin", "browser")
+
+    async def borrow(cid):
+        return await gate.check(cid, "browser", scope=scope, hold_once=True)
+
+    first = await borrow("child")
+    original = gate.authorization_ref(first.grant_id)
+    descendant = await borrow("grandchild")
+    assert gate.authorization_ref(descendant.grant_id) == original
+    gate.received_external_input("child")
+    assert not gate.grant_active(first.grant_id) and not gate.grant_active(descendant.grant_id)
+    assert not await gate.valid_grant("child", original, "browser", scope=scope)
+    assert gate.authorization_ref((await borrow("other")).grant_id) == original
+    assert len(asker.asked) == 1
+    fresh = await borrow("child")
+    assert fresh.asked and gate.authorization_ref(fresh.grant_id) != original
+    assert gate.authorization_ref((await borrow("grandchild")).grant_id) == gate.authorization_ref(fresh.grant_id)
+    assert len(asker.asked) == 2
+    gate.end_session("root")
+    assert not gate.grant_active(original) and not gate.grant_active(fresh.grant_id)
+
+
 async def test_widening_a_rule_keeps_parallel_answers_and_queued_approvals(store):
     pending = asyncio.Event()
     answer = asyncio.Event()

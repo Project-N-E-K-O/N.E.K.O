@@ -60,7 +60,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from nekoclaw.host import call_audit
-from nekoclaw.host.capabilities import CapabilityRegistry, McpDenial, capabilities_of_plugin, mcp_entry_forbidden
+from nekoclaw.host.capabilities import MCP_ADAPTER_PLUGIN_ID, CapabilityRegistry, McpDenial, capabilities_of_plugin, mcp_entry_forbidden
 from nekoclaw.host.decision import (
     DecisionModel,
     DecisionRequest,
@@ -433,17 +433,18 @@ class TaskBrain:
         adapter's entries that can reach any server.
         """
         denial = await self._denied_mcp()
-        if not denial.any_denied:
-            return plugins
         kept: list[dict[str, Any]] = []
         for plugin in plugins:
-            plugin_id = str(plugin.get("id") or "")
+            if plugin.get("id") != MCP_ADAPTER_PLUGIN_ID:
+                kept.append(plugin)
+                continue
+            # The chooser and both execution routes use the same verified server identities.
+            allowed_ids = {
+                item.entry_id for item in capabilities_of_plugin(plugin)
+                if item.available and (item.permission != "mcp_server" or not denial.server_denied(item.permission_key or ""))
+            }
             entries = plugin.get("entries") or []
-            allowed = [
-                entry
-                for entry in entries
-                if not (isinstance(entry, dict) and mcp_entry_forbidden(plugin_id, entry, denial))
-            ]
+            allowed = [entry for entry in entries if isinstance(entry, dict) and entry.get("id") in allowed_ids]
             if len(allowed) == len(entries):
                 kept.append(plugin)
                 continue

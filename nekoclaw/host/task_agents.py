@@ -5623,7 +5623,7 @@ class TaskAgentManager:
                 # it, and is asked again for whatever it does from here on.
                 # (A time the commission set for itself brings none of
                 # another's words.)
-                self._permissions.end_session(commission_id)
+                self._permissions.received_external_input(commission_id)
             if chosen == "steer":
                 assert session is not None
                 if commission_id in self._prepaid_starts:

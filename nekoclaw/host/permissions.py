@@ -393,6 +393,7 @@ class PermissionGate:
         self._work: dict[str, object] = {}
         self._lives: dict[str, object] = {}
         self._ended = 0
+        self._external_input_roots: set[str] = set()
 
     def set_asker(self, asker: Asker | None) -> None:
         self._asker = asker
@@ -403,6 +404,7 @@ class PermissionGate:
     def end_session(self, commission_id: str) -> None:
         """Forget what was allowed for a commission's session; call it when the commission is done, has failed or is stopped."""
         self._ended += 1
+        self._external_input_roots.discard(commission_id)
         self._lives.pop(commission_id, None)
         self._session_grants.pop(commission_id, None)
         self._run_grants.pop(commission_id, None)
@@ -410,6 +412,17 @@ class PermissionGate:
         for loan in tuple(self._loans.values()):
             if loan.owner == commission_id or loan.root == commission_id or commission_id in loan.branch:
                 self._discard_loan(loan.id)
+
+    def received_external_input(self, commission_id: str) -> None:
+        """Isolate this branch from old team approvals when another session adds text."""
+        self.end_session(commission_id)
+        self._external_input_roots.add(commission_id)
+
+    def _sharing_lineage(self, lineage: list[str]) -> list[str]:
+        for i, actor in enumerate(lineage):
+            if actor in self._external_input_roots:
+                return lineage[: i + 1]
+        return lineage
 
     def end_run(self, commission_id: str) -> None:
         """Forget what was allowed "once" for a commission's run; call it when that run is over."""
@@ -484,7 +497,7 @@ class PermissionGate:
         if mode == "deny":
             return PermissionDecision(False, DENIED_BY_SETTINGS)
         slot = _slot(category, key)
-        if mode == "first_ask" and any(slot in self._session_grants.get(item, ()) for item in lineage):
+        if mode == "first_ask" and any(slot in self._session_grants.get(item, ()) for item in self._sharing_lineage(lineage)):
             # Allowed for this session, or for the session of the commission
             # that started this one. A category that asks every time has no
             # such answer and keeps asking.
@@ -605,7 +618,7 @@ class PermissionGate:
         loan = self._loans.get(grant_id)
         return bool(
             loan and lineage and loan.scope == scope and loan.slot == _slot(category, key)
-            and loan.root == lineage[-1] and loan.owner in lineage and self.grant_active(grant_id)
+            and loan.root == lineage[-1] and loan.owner in self._sharing_lineage(lineage) and self.grant_active(grant_id)
         )
 
     def _record_loan(
@@ -641,6 +654,7 @@ class PermissionGate:
             return PermissionDecision(False, DENIED_NO_ANSWER)
         branch = tuple(lineage)
         root = branch[-1]
+        sharing_root = self._sharing_lineage(lineage)[-1]
         slot = _slot(category, key)
         lives = [(actor, self._lives.setdefault(actor, object())) for actor in branch]
         work = self._work.setdefault(commission_id, object())
@@ -665,7 +679,7 @@ class PermissionGate:
             if mode == "allow":
                 grant_id = self._record_loan(commission_id, root, slot, scope, "once", branch=branch) if hold_once else None
                 return PermissionDecision(True, grant_id=grant_id)
-            for owner in (root, commission_id):
+            for owner in (sharing_root, commission_id):
                 loan = self._shared.get((owner, slot, scope))
                 if loan is None:
                     continue
@@ -677,7 +691,7 @@ class PermissionGate:
                     return PermissionDecision(True, grant_id=receipt(loan.id))
             if self._asker is None:
                 return PermissionDecision(False, DENIED_NO_ANSWER)
-            pending_key = (root, slot, scope)
+            pending_key = (sharing_root, slot, scope)
             pending = self._pending.get(pending_key)
             if pending is not None:
                 # One answer can cover the whole team. A one-time answer only
@@ -715,7 +729,8 @@ class PermissionGate:
                     return result
                 tightened = self._store.revision(*slot) != revision
                 if choice == "session" and not tightened:
-                    grant_id = receipt(self._record_loan(root, root, slot, scope, "session"))
+                    ancestors = branch[branch.index(sharing_root):]
+                    grant_id = receipt(self._record_loan(sharing_root, root, slot, scope, "session", branch=ancestors))
                 elif choice == "once" and category in RUN_SCOPED_CATEGORIES and not tightened:
                     grant_id = receipt(self._record_loan(commission_id, root, slot, scope, "run", branch=branch))
                 elif delivery or hold_once:

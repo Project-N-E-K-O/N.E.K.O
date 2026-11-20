@@ -11,7 +11,7 @@ import pytest
 import pytest_asyncio
 
 from nekoclaw.host import call_audit
-from nekoclaw.host.delivery import Answer, DeliveryAuditFull, DeliveryDenied, Parcel, ScopeTooLarge
+from nekoclaw.host.delivery import Answer, DeliveryAuditFull, DeliveryDenied, Parcel, ResultWithheld, ScopeTooLarge
 from nekoclaw.host.ledger import Ledger
 from nekoclaw.host.reports import describe_permission, render_question
 from tests.unit.nekoclaw.host_fakes import make_host
@@ -221,11 +221,23 @@ async def test_model_content_requires_its_own_approval_after_program_value(env):
 
     host.permissions.set_asker(deny_model)
     report.response = Answer(content=Parcel("model", WORK))
-    with pytest.raises(DeliveryDenied):
+    with pytest.raises(ResultWithheld, match="target was invoked"):
         await host.delivery.invoke(cid, timer, report.identity, arguments, one_way=False)
     assert [ask.detail["direction"] for ask in questions] == ["value", "content"]
     rows = await host.ledger.run(lambda db: call_audit.read_trace(db, cid, now=0))
     assert any(row["kind"] == "deliver_content" and row["status"] == "denied" for row in rows)
+    assert any(row["kind"] == "invoke" and row["reason"] == "result_withheld" for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_oversize_result_is_withheld_after_invocation_without_a_retry_hint(env):
+    host, cid, timer, report, questions = env
+    timer.readable = report.readable = frozenset(f"resource-{n}" for n in range(300))
+    report.response = Answer(content=Parcel("private business content", report.readable))
+    with pytest.raises(ResultWithheld) as failure:
+        await host.delivery.invoke(cid, timer, report.identity, Parcel(None, PUBLIC), one_way=False)
+    assert str(failure.value) == "The target was invoked. Its result was withheld."
+    assert failure.value.__context__ is None and not questions and len(report.inputs) == 1
 
 
 @pytest.mark.asyncio

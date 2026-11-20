@@ -265,6 +265,18 @@ def _mcp_notes(server: FakePluginServer, calls: list[str]) -> None:
     )
 
 
+async def test_generic_mcp_entry_is_not_offered_even_without_a_denied_server(server, hosts, tmp_path):
+    _mcp_notes(server, [])
+    llm = FakeDecisionLLM(fine=[pick_plugin("mcp_adapter", "mcp_notes_search")])
+    host = _host(hosts, tmp_path, server, llm)
+    await host.permission_store.set_mode("mcp_server", "allow", key="notes")
+    receipt = await _dispatch(host, "search my notes")
+    await host.brain.settle()
+    offered = json.dumps(next(messages for tier, messages in llm.calls if tier == "fine"))
+    assert "call_tool" not in offered and "mcp_notes_search" in offered
+    assert (await host.ledger.get(receipt.commission_id)).status == "done"
+
+
 async def test_a_denied_mcp_server_is_not_reached_by_a_dispatch(server, hosts, tmp_path):
     calls: list[str] = []
     _mcp_notes(server, calls)

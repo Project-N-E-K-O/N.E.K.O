@@ -15,7 +15,7 @@ import asyncio
 import hashlib
 import json
 import re
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -32,6 +32,11 @@ class DeliveryDenied(PermissionError):
 class ScopeTooLarge(DeliveryDenied):
     def __init__(self) -> None:
         super().__init__("The full scope must fit in the permission request. Request fewer resources at a time.")
+
+
+class ResultWithheld(DeliveryDenied):
+    def __init__(self) -> None:
+        super().__init__("The target was invoked. Its result was withheld.")
 
 
 class DeliveryAuditFull(RuntimeError):
@@ -157,6 +162,8 @@ class ManagedDelivery:
             failure = call_audit.AuditFull()
         except DeliveryAuditFull:
             failure = DeliveryAuditFull()
+        except ResultWithheld:
+            failure = ResultWithheld()
         except ScopeTooLarge:
             failure = ScopeTooLarge()
         except Exception:
@@ -259,22 +266,32 @@ class ManagedDelivery:
                     raise
                 except DeliveryDenied:
                     op.status = "denied"
+                    if invoked and not one_way:
+                        op.reason = "result_withheld"
+                        raise ResultWithheld() from None
                     op.reason = "managed_delivery_denied"
+                    raise
+                except Exception:
+                    if invoked and not one_way:
+                        op.reason = "result_unavailable_after_invocation"
+                        raise ResultWithheld() from None
                     raise
             # Closing a call record awaited SQLite. Check again, with no await
             # between this test and the caller receiving the actual payload.
             if not one_way:
                 try:
                     self._require_live(recipient, sender, return_scopes, grants)
-                except DeliveryDenied:
+                except Exception:
                     # The target ran, but the caller never received the result.
-                    await self._ledger.run(
-                        lambda db: db.execute(
-                            "UPDATE host_calls SET status='denied',reason='delivery_revoked' WHERE call_id=?",
-                            (op.call_id,),
+                    # Keep the outcome unambiguous even if the final audit update fails.
+                    with suppress(Exception):
+                        await self._ledger.run(
+                            lambda db: db.execute(
+                                "UPDATE host_calls SET status='denied',reason='delivery_revoked' WHERE call_id=?",
+                                (op.call_id,),
+                            )
                         )
-                    )
-                    raise
+                    raise ResultWithheld() from None
                 if parent is not None:
                     parent.scopes |= return_scopes
             return answer
