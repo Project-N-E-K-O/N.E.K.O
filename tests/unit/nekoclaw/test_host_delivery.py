@@ -196,6 +196,7 @@ async def test_queued_trigger_obtains_its_own_authorization_but_keeps_origin(env
 async def test_failed_trigger_does_not_release_an_early_worker(env, deferred):
     host, cid, timer, report, _ = env
     jobs = []
+    done_before_failure = []
     ready = asyncio.Event()
 
     async def send():
@@ -205,15 +206,14 @@ async def test_failed_trigger_does_not_release_an_early_worker(env, deferred):
     async def trigger(invocation, arguments):
         jobs.append(asyncio.create_task(send()))
         await ready.wait()
-        if not deferred:
-            # Prove the worker cannot run early, even when trigger awaits it inline.
-            with pytest.raises(DeliveryDenied):
-                await asyncio.wait_for(asyncio.shield(jobs[0]), timeout=2)
+        # The worker has reached invoke() and either finished or suspended.
+        done_before_failure.append(jobs[0].done())
         raise RuntimeError("private error")
 
     report.trigger = trigger
     with pytest.raises(DeliveryDenied):
         await host.delivery.invoke(cid, timer, report.identity, Parcel(None, PUBLIC), one_way=True)
+    assert done_before_failure == [not deferred]
     with pytest.raises(DeliveryDenied):
         await jobs[0]
     assert not timer.inputs
