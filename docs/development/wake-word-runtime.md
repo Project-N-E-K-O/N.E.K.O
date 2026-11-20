@@ -32,12 +32,12 @@ uv run --no-sync python -c 'import sherpa_onnx as s; print(s.__version__, s.vers
 
 `.github/workflows/wake-word-runtime.yml` 平时只把 wheel、`build-manifest.json`、native 测试程序和上游 sherpa-onnx 的 `LICENSE` 上传为保留 14 天的 Actions artifact。需要把一次构建发布成「修复资源」可用的固定附件时：
 
-1. 在 Actions 页手动运行 **Wake word runtime**，选择要构建的分支，`release_tag` 填一个新 tag（必须以 `wake-word-runtime-v` 开头，例如 `wake-word-runtime-v1.13.8-neko.kws3-win-py311`）。不填 `release_tag` 时只上传 artifact，和以往一样。
+1. 在 Actions 页手动运行 **Wake word runtime**，选择要构建的分支，`release_tag` 填一个新 tag。tag 必须以 `wake-word-runtime-v<版本>` 开头，`<版本>` 是这次实际构建的版本（构建脚本里的 `$wakeVersion`，即 `build-manifest.json` 的 `runtime_version`，`+` 写成 `-`），后面可以加 `-<后缀>`，例如当前版本 `1.13.8+neko.kws2` 重新构建时用 `wake-word-runtime-v1.13.8-neko.kws2-win-py311-build2`。版本对不上时 publish job 会在创建任何东西之前失败，免得把旧版本 wheel 发到新版本的 tag 下（附件不能替换）。不填 `release_tag` 时只上传 artifact，和以往一样。
 2. 构建通过后，独立的 publish job（只有它有 `contents: write`）以本次运行的提交为 `--target` 新建这个 tag，并创建一个预发行版（prerelease，不标记为 latest），附件为 wheel、`build-manifest.json` 和 `SHERPA-LICENSE.txt`。tag 或同名 Release（包括草稿）已存在时直接失败，从不替换已有附件；构建前也会先检查一次，避免白跑。
 3. Release 说明和运行摘要里给出新 wheel 的下载地址、字节数和 SHA256。把它们同步到 `main_logic/voice_input/wake_word/runtime_bundle.py` 的 `WHEEL_URL`、`WHEEL_BYTES`、`WHEEL_SHA256`（文件名或版本变化时同时改 `WHEEL_NAME` / `SUPPORTED_RUNTIME_VERSION`），走 PR 合并。
 4. 合并后手动运行 **Wake word runtime URL check**，`mode` 选 `full`，确认转绿。
 
-如果 publish job 在建好 tag 之后失败，重跑会因 tag 已存在而失败；先确认这个 tag 没有被代码引用，再由维护者手动删除 tag 后重跑，或换一个新 tag。
+如果 publish job 在建好 tag 之后失败（例如超时），重跑会因 tag 或同名 Release 已存在而失败。先看这个 Release 和三个附件是否已经完整发布：完整就不用重跑，直接做第 3、4 步。确实需要重建时，先确认这个 tag 没有被代码引用，再由维护者手动删除同名 Release 和 tag 后重跑，或者换一个新 tag。
 
 ## 下载地址巡检
 

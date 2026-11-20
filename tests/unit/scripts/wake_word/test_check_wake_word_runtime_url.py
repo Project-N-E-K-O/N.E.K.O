@@ -203,8 +203,13 @@ def test_ranged_get_failure_is_reported(server, opener):
     assert [method for method, _, _ in server.requests] == ["HEAD", "GET"]
 
 
-@pytest.mark.parametrize("path", ["/wheel", "/redirect-to-head403"], ids=["head-length", "content-range"])
-def test_head_mode_rejects_reported_size_mismatch(server, opener, path):
+@pytest.mark.parametrize(
+    ("path", "ignore_range"),
+    [("/wheel", False), ("/redirect-to-head403", False), ("/head403", True)],
+    ids=["head-length", "content-range", "ignored-range-length"],
+)
+def test_head_mode_rejects_reported_size_mismatch(server, opener, path, ignore_range):
+    server.ignore_range = ignore_range
     with pytest.raises(checker.CheckError, match="size mismatch"):
         checker.check_head(_pins(server, path, size=len(PAYLOAD) + 1), opener=opener)
 

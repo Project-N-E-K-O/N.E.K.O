@@ -33,8 +33,10 @@ permissions:
   contents: read
 
 concurrency:
-  # Publishing runs use their own group so a later push to the same ref cannot
-  # cancel a half-finished release.
+  # Publishing runs use their own group with cancel-in-progress off, so a later
+  # push to the same ref cannot cancel a half-finished release. GitHub keeps at
+  # most one pending run per group: a newer queued publish run replaces an
+  # older queued one, but never the one in progress.
   group: wake-word-runtime-${{ github.ref }}${{ (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') && '-publish' || '' }}
   cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
 
@@ -102,6 +104,8 @@ jobs:
       contents: write
     concurrency:
       # Serialize publishing across refs so two runs cannot race on one tag.
+      # Only one publish job waits at a time; a newer one replaces an older
+      # waiting one (that run is cancelled, nothing is published by it).
       group: wake-word-runtime-publish
       cancel-in-progress: false
     steps:
@@ -137,7 +141,9 @@ jobs:
             echo "::error::build-manifest.json wheel sha256 ($manifest_sha256) does not match the wheel ($sha256)"
             exit 1
           fi
+          runtime_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8-sig"))["runtime_version"])' release-assets/build-manifest.json)
           {
+            echo "runtime_version=$runtime_version"
             echo "wheel_name=$(basename "$wheel")"
             echo "wheel_sha256=$sha256"
             echo "wheel_bytes=$bytes"
@@ -148,6 +154,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          RUNTIME_VERSION: ${{ steps.stage.outputs.runtime_version }}
           WHEEL_NAME: ${{ steps.stage.outputs.wheel_name }}
           WHEEL_SHA256: ${{ steps.stage.outputs.wheel_sha256 }}
           WHEEL_BYTES: ${{ steps.stage.outputs.wheel_bytes }}
@@ -157,6 +164,13 @@ jobs:
           if [[ ! "$RELEASE_TAG" =~ ^wake-word-runtime-v[0-9][0-9A-Za-z._-]*$ ]] ||
              ! git check-ref-format "refs/tags/$RELEASE_TAG"; then
             echo "::error::release_tag must match ^wake-word-runtime-v[0-9][0-9A-Za-z._-]*\$ and be a valid tag name"
+            exit 1
+          fi
+          # Assets cannot be replaced, so the tag must name the version that was
+          # actually built (build-manifest.json runtime_version, "+" written as "-").
+          version_prefix="wake-word-runtime-v${RUNTIME_VERSION//+/-}"
+          if [[ -z "$RUNTIME_VERSION" || ( "$RELEASE_TAG" != "$version_prefix" && "$RELEASE_TAG" != "$version_prefix"-* ) ]]; then
+            echo "::error::release_tag $RELEASE_TAG does not match the built runtime_version $RUNTIME_VERSION; expected $version_prefix or $version_prefix-<suffix>"
             exit 1
           fi
           status=0
@@ -178,6 +192,7 @@ jobs:
           {
             echo "Custom sherpa-onnx wake-word runtime built by $RUN_URL from commit $GITHUB_SHA."
             echo
+            echo "- Runtime version: \`$RUNTIME_VERSION\`"
             echo "- Wheel: \`$WHEEL_NAME\`"
             echo "- Size: $WHEEL_BYTES bytes"
             echo "- SHA256: \`$WHEEL_SHA256\`"

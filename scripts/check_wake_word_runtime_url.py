@@ -164,11 +164,16 @@ def check_head(pins: WheelPins, opener=None, timeout: float = DEFAULT_TIMEOUT_S)
         raise CheckError(f"HEAD failed: {getattr(exc, 'reason', exc)!r}") from exc
     try:
         with _request(opener, pins.url, "GET", timeout, {"Range": "bytes=0-0"}) as response:
-            match = _RANGE_TOTAL.match(response.headers.get("Content-Range", "").strip())
-            if response.status == 206 and match:
-                _check_total_size(int(match.group(1)), pins.size, "Content-Range")
-            # A server that ignores Range answers 200 with the full body; the
-            # response is closed here without reading it.
+            if response.status == 206:
+                # Content-Length is the slice size here; the total is in Content-Range.
+                match = _RANGE_TOTAL.match(response.headers.get("Content-Range", "").strip())
+                _check_total_size(int(match.group(1)) if match else None, pins.size, "Content-Range")
+            else:
+                # A server that ignores Range answers 200 with the full body; its
+                # Content-Length is the file size. The body is never read.
+                length = response.headers.get("Content-Length")
+                _check_total_size(int(length) if length and length.isdigit() else None, pins.size,
+                                  "ranged GET Content-Length")
             return f"ranged GET {response.status} {_display(response.url)}"
     except urllib.error.HTTPError as exc:
         exc.close()
