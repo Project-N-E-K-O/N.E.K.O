@@ -132,16 +132,23 @@ async def get_character_cards():
             file_path = os.path.join(config_mgr.chara_dir, filename)
             try:
                 data = await read_json_async(file_path)
-                if data and data.get('name'):
+                if not isinstance(data, dict):
+                    logger.warning(f"角色卡文件 {filename} 不是 JSON 对象，已跳过")
+                    return None
+                # 本仓库其它写入路径（保存/导出/导入、工坊发布）都用 '档案名' 作卡名，
+                # 只认 'name' 会把这类卡整张静默丢弃，导致文件在 character_cards 里但客户端列表看不到。
+                card_name = data.get('name') or data.get('档案名')
+                if card_name:
                     _sync_catgirl_field_order(data)
                     return {
                         'id': filename[:-11],  # Remove the .chara.json suffix
-                        'name': data['name'],
+                        'name': card_name,
                         'description': data.get('description', ''),
                         'tags': data.get('tags', []),
                         'rawData': data,
                         'path': file_path,
                     }
+                logger.warning(f"角色卡文件 {filename} 缺少卡名（name/档案名），已跳过")
             except Exception as e:
                 logger.error(f"读取角色卡文件 {filename} 时出错: {e}")
             return None
