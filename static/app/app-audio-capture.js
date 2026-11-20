@@ -261,8 +261,22 @@
     // Whether a capture pipeline is actually live right now, whoever owns it.
     // S.isRecording alone is not enough: a device switch tears the old graph
     // down and keeps the flag set until the replacement commits.
+    // The game STT gate is the one sanctioned "recording without the ordinary
+    // pipeline" state: startGameVoiceSttGate() releases the pipeline (S.stream
+    // goes null) and the browser recogniser holds the microphone instead, with
+    // S.gameVoiceSttListening as its success flag. That is a live host
+    // capture, not a reopen.
+    function gameVoiceSttHoldsMicrophone() {
+        return (
+            S.isRecording === true
+            && S.gameVoiceSttGateActive === true
+            && S.gameVoiceSttListening === true
+            && S.isMicMuted !== true
+        );
+    }
+
     function hostMicrophoneCaptureLive() {
-        return hasLiveCommittedMicrophonePipeline();
+        return hasLiveCommittedMicrophonePipeline() || gameVoiceSttHoldsMicrophone();
     }
 
     // A host capture that is being reopened: the recording intent stands but
@@ -275,7 +289,7 @@
             S.isRecording === true
             && S.voiceInputRouteBlocked !== true
             && !S.stream
-            && !hasLiveCommittedMicrophonePipeline()
+            && !hostMicrophoneCaptureLive()
         );
     }
 
@@ -284,7 +298,9 @@
             typeof token === 'number'
             && token > 0
             && token === publishedMicStartToken
-            && hasLiveCommittedMicrophonePipeline()
+            // Still this attempt's capture when the game STT gate took the
+            // microphone over from its pipeline: no newer publish happened.
+            && hostMicrophoneCaptureLive()
         );
     }
 

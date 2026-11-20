@@ -1326,6 +1326,22 @@ async function attributedCommitCase() {
   assert(env.mod.hostMicrophoneCaptureReopening() === false,
          'a fail-closed route is not reopening anything');
   env.S.voiceInputRouteBlocked = false;
+  // The game STT gate released the ordinary pipeline and the browser
+  // recogniser now holds the microphone: live, not reopening.
+  env.S.gameVoiceSttGateActive = true;
+  env.S.gameVoiceSttListening = true;
+  assert(env.mod.hostMicrophoneCaptureLive() === true
+         && env.mod.hostMicrophoneCaptureReopening() === false,
+         'a listening game STT gate is a live host capture, not a reopen');
+  assert(env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === true,
+         "the gate took over this attempt's capture; no newer start published one");
+  // Gate active but its recogniser not (yet / any longer) listening: that is
+  // a restart in progress.
+  env.S.gameVoiceSttListening = false;
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.hostMicrophoneCaptureReopening() === true,
+         'a game STT gate between recogniser runs is reopening');
+  env.S.gameVoiceSttGateActive = false;
   env.S.workletNode = keptWorklet;
   env.S.stream = keptStream;
   // The device goes away: the graph is still published but its track ended.
