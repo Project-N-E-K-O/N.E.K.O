@@ -42,6 +42,7 @@ class ProactiveChatCommand:
     current_track: Any = None
     music_cooldown: bool = False
     mini_game_invite_enabled: bool = True
+    theater_invite_enabled: bool = False
     base_interval_seconds: Any = None
     enabled_modes: Any = None
     enabled_modes_provided: bool = False
@@ -70,6 +71,7 @@ class ProactiveChatCommand:
             mini_game_invite_enabled=bool(
                 payload.get("mini_game_invite_enabled", True)
             ),
+            theater_invite_enabled=bool(payload.get("theater_invite_enabled", False)),
             base_interval_seconds=payload.get("base_interval_seconds"),
             enabled_modes=payload.get("enabled_modes"),
             enabled_modes_provided="enabled_modes" in payload,

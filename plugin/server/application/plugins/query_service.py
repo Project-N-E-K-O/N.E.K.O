@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import dataclasses
 from collections.abc import Mapping
 
+from plugin._types.entry_metadata import ENTRY_PROJECTION_SHAPED_FIELDS, unhandled_entry_contract_fields
 from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
@@ -15,6 +17,7 @@ from plugin.server.application.install_source import (
     _DEFAULT_INSTALL_SOURCE,
     get_install_source_manager,
 )
+from plugin.server.application.plugins.consent_service import consent_summary
 from plugin.server.application.plugins.ui_query_service import _build_plugin_list_actions_from_meta
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
@@ -317,6 +320,7 @@ def _build_entries_from_handlers(
         meta_dict = getattr(meta, "metadata", None)
         if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
             entry_dict["llm_result_fields"] = meta_dict["llm_result_fields"]
+        _carry_contract_fields(entry_dict, meta, context=f"plugin_entry[{entry_id}]")
 
         # Intentionally do not resolve i18n here: the sole caller (_list_plugins_payload), after receiving
         # entries, resolves each entry again with its own plugin_i18n and the same locale.
@@ -325,6 +329,21 @@ def _build_entries_from_handlers(
         entries.append(entry_dict)
 
     return entries, seen
+
+
+def _carry_contract_fields(entry_dict: dict[str, object], source: object, *, context: str) -> None:
+    for name, value in unhandled_entry_contract_fields(source, ENTRY_PROJECTION_SHAPED_FIELDS).items():
+        if isinstance(value, Mapping):
+            try:
+                # The listing is a JSONResponse (allow_nan=False): a field it
+                # cannot encode (non-string keys, cycles, NaN) drops only
+                # itself instead of failing the whole plugin list.
+                json.dumps(value, allow_nan=False)
+                value = _normalize_mapping(value, context=f"{context}.{name}")
+            except (TypeError, ValueError, RecursionError, ServerDomainError):
+                logger.warning("dropping malformed entry field: {}.{}", context, name)
+                continue
+        entry_dict[name] = value
 
 
 def _index_plugin_entry_handlers(
@@ -445,6 +464,11 @@ def _append_entries_from_preview(
         llm_fields_obj = normalized_preview.get("llm_result_fields")
         if isinstance(llm_fields_obj, list):
             entry_dict["llm_result_fields"] = llm_fields_obj
+        _carry_contract_fields(
+            entry_dict,
+            normalized_preview,
+            context=f"plugins[{plugin_id}].entries_preview[{index}]",
+        )
 
         entries.append(entry_dict)
 
@@ -550,6 +574,7 @@ def _prepare_plugin_projection(
     )
     plugin_info["id"] = plugin_id
     plugin_info["autostart_pending"] = plugin_id in autostart_pending_ids
+    plugin_info["consent"] = consent_summary(plugin_id, dict(plugin_meta))
     plugin_info["status"] = _resolve_plugin_status(
         plugin_id=plugin_id,
         plugin_meta=plugin_meta,
@@ -727,10 +752,8 @@ def _append_plugin_fallback(
         "description": fallback_description,
         "entries": [],
     }
-    if isinstance(plugin_meta_obj, Mapping) and (
-        plugin_meta_obj.get("source") == "development" or "development_ref" in plugin_meta_obj
-    ):
-        card["source"] = "development"
+    if isinstance(plugin_meta_obj, Mapping) and isinstance(plugin_meta_obj.get("source"), str):
+        card["source"] = plugin_meta_obj["source"]
     result.append(card)
 
 
@@ -799,16 +822,6 @@ def _build_plugin_list_sync(
             ]
 
             plugin_info["entries"] = entries
-            if plugin_meta.get("source") == "development" or "development_ref" in plugin_meta:
-                # Public cards carry display/status data, not local directory
-                # provenance or detailed runtime errors containing source paths.
-                # The guarded development endpoint provides those details.
-                for field in (
-                    "source_dir", "development_ref", "config_path",
-                    "runtime_load_error_message", "runtime_startup_error",
-                    "static_ui_config",
-                ):
-                    plugin_info.pop(field, None)
             result.append(plugin_info)
         except ServerDomainError as exc:
             _append_plugin_fallback(

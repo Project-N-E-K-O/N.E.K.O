@@ -32,6 +32,7 @@ the same reason.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 
@@ -44,13 +45,14 @@ from memory import (
     FactStore, PersonaManager, ReflectionEngine,
 )
 from memory.cursors import CursorStore
-from memory.event_log import EventLog, Reconciler
+from memory.event_log import EventLog, Reconciler, EVT_LONG_TERM_MEMORY_REPLACED
 from memory.evidence_handlers import register_evidence_handlers as _register_evidence_handlers
 from memory.outbox import Outbox
 from config import (
     EVIDENCE_SIGNAL_CHECK_ENABLED,
     MEMORY_RECHECK_ENABLED,
 )
+from utils.asyncio_executor import configure_default_executor
 from utils.cloudsave_runtime import (
     MaintenanceModeError,
     ROOT_MODE_NORMAL,
@@ -106,6 +108,10 @@ _CHARACTER_SCOPED_WRITE_OPS = frozenset({
     "theater/forget",
     # Retracting a declined archive capsule writes recent and the time index too.
     "theater/retract",
+    # The memory browser's "recompute now" rewrites habitual_phrases.json.
+    "habitual_phrases/recompute",
+    # Restoring what the one-time duplicate cleanup folded away rewrites facts.json.
+    "legacy_dedup/restore",
 })
 _admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
     "admitted_character_context",
@@ -118,6 +124,11 @@ _active_character_request_events: dict[str, asyncio.Event] = {}
 # Tightest is unsubscribe: _release_workshop_character_handles per_call_timeout=2.5s
 # (rename/delete use release_memory_server_character(), 5s).
 _CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS = 2.0
+# Shutdown waits for the queued final stats save only until this long after it
+# began, below the launcher's 12 s Memory budget (graceful_shutdown_timeout and
+# the merged coordinator alike). Past it the wait stops; the save is not
+# cancelled and goes on in the save worker.
+_SHUTDOWN_SAVE_WAIT_DEADLINE_SECONDS = 10.0
 _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
     "/health",
     "/shutdown",
@@ -137,13 +148,18 @@ def _character_write_name_from_path(path: str, method: str) -> str | None:
             break
     if (
         raw_name is None
-        and method == "POST"
+        and method in {"POST", "GET"}
         and path.startswith(_CHARACTER_SCOPED_WRITE_PATH_PREFIX)
     ):
         segments = path[len(_CHARACTER_SCOPED_WRITE_PATH_PREFIX):].split("/")
         # Operation names may contain fixed subpaths but still match complete-string allowlists exactly.
         operation = "/".join(segments[1:])
-        if len(segments) >= 2 and operation in _CHARACTER_SCOPED_WRITE_OPS:
+        if len(segments) >= 2 and (
+            (method == "POST" and operation in _CHARACTER_SCOPED_WRITE_OPS)
+            # The private snapshot uses the normal ensure path, which may
+            # initialize, migrate or synchronize and save persona data.
+            or (method == "GET" and operation == "persona")
+        ):
             raw_name = segments[0]
     if not raw_name:
         return None
@@ -356,6 +372,11 @@ embedding_warmup_worker = None
 # the idle-maintenance loop resolves them). None when bootstrap
 # fails or the embedding service is permanently disabled.
 fact_dedup_resolver = None
+# Pinned important facts (memory/pinned_facts.py): fed by the FactStore's
+# private-chat Stage-1 results, rendered by /new_dialog. Rebuilt with the
+# persona manager on reload; its file locks are module-level, so in-flight
+# writes on the old instance still serialize against the new one.
+pinned_fact_store = None
 
 # Lock protecting reloads.
 _reload_lock = asyncio.Lock()
@@ -499,7 +520,7 @@ async def reload_memory_components(
     extreme last-writer-wins case at most one cursor advance is lost — the next tick
     recovers it.
     """
-    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler, fact_dedup_resolver
+    global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler, fact_dedup_resolver, pinned_fact_store
     requested_resume_names = set(resume_derived_task_names or ())
     capture_characters = None
     requested_resume_generations = dict(resume_derived_task_generations or {})
@@ -566,6 +587,15 @@ async def reload_memory_components(
             except Exception as e:
                 logger.warning(f"[MemoryServer] reload: fact_dedup_resolver 重建失败: {e}")
                 new_fact_dedup_resolver = None
+            # Optional like the dedup resolver above: a failure here costs the
+            # pinned section until the next reload, never the reload itself.
+            try:
+                from memory.pinned_facts import PinnedFactStore
+                new_pinned_fact_store = PinnedFactStore(persona_manager=new_persona)
+                new_facts.attach_pinned_fact_store(new_pinned_fact_store)
+            except Exception as e:
+                logger.warning(f"[MemoryServer] reload: pinned_fact_store 重建失败: {e}")
+                new_pinned_fact_store = None
 
             # Then swap references atomically.
             recent_history_manager = new_recent
@@ -579,6 +609,7 @@ async def reload_memory_components(
             event_log = new_event_log
             reconciler = new_reconciler
             fact_dedup_resolver = new_fact_dedup_resolver
+            pinned_fact_store = new_pinned_fact_store
 
             if old_time_manager is not None and old_time_manager is not new_time:
                 _defer_time_manager_cleanup(old_time_manager)
@@ -811,6 +842,99 @@ enable_shutdown = False
 # Per-character settlement locks block /new_dialog during initial summaries, ensuring fresh data after hot switching.
 _settle_locks: dict[str, asyncio.Lock] = {}
 
+# Foreground callers that a conversation is waiting on, and the summary LLM calls for that
+# character they preempt (#3601): starting a session (or an Offline VLM handoff) cannot proceed
+# before /new_dialog returns, and the main server first waits for its own queued memory writes,
+# which may sit behind a /renew, /settle or /process summary taking minutes with retries.
+# Preempted summaries go to the existing background compression.
+# - waiters: cold-start /new_dialog requests in flight (they also wait for the settle lock);
+# - windows: loop-time deadlines opened by POST /preempt_summary, covering the main server's
+#   wait for its queued writes before it sends that /new_dialog.
+_summary_preemption_waiters: dict[str, int] = {}
+_summary_preemption_windows: dict[str, float] = {}
+_preemptible_summaries: dict[str, set[asyncio.Future]] = {}
+
+
+def _summary_preemption_active(lanlan_name: str) -> bool:
+    if _summary_preemption_waiters.get(lanlan_name, 0) > 0:
+        return True
+    deadline = _summary_preemption_windows.get(lanlan_name)
+    if deadline is None:
+        return False
+    if asyncio.get_running_loop().time() < deadline:
+        return True
+    _summary_preemption_windows.pop(lanlan_name, None)
+    return False
+
+
+def _preempt_running_summaries(lanlan_name: str) -> None:
+    for future in _preemptible_summaries.get(lanlan_name, ()):
+        if not future.done():
+            future.set_result(None)
+
+
+def _open_summary_preemption_window(lanlan_name: str, seconds: float) -> None:
+    """Preempt ``lanlan_name``'s summaries now and any starting in the next ``seconds``.
+
+    The cold-start /new_dialog that follows closes the window when it finishes.
+    """
+    loop = asyncio.get_running_loop()
+    _summary_preemption_windows[lanlan_name] = max(
+        _summary_preemption_windows.get(lanlan_name, 0.0), loop.time() + seconds,
+    )
+    _preempt_running_summaries(lanlan_name)
+
+
+class _preempting_summaries:
+    """Mark a cold-start /new_dialog for ``lanlan_name`` for the duration of the block.
+
+    Entering preempts the character's running summaries; summaries starting before the block
+    exits start out preempted. Exit is synchronous, so it runs before the next settle-lock
+    holder resumes, and the last such exit closes any preemption window.
+    """
+
+    def __init__(self, lanlan_name: str) -> None:
+        self._name = lanlan_name
+
+    def __enter__(self) -> None:
+        _summary_preemption_waiters[self._name] = _summary_preemption_waiters.get(self._name, 0) + 1
+        _preempt_running_summaries(self._name)
+
+    def __exit__(self, *exc_info) -> None:
+        remaining = _summary_preemption_waiters.get(self._name, 0) - 1
+        if remaining > 0:
+            _summary_preemption_waiters[self._name] = remaining
+        else:
+            _summary_preemption_waiters.pop(self._name, None)
+            _summary_preemption_windows.pop(self._name, None)
+
+
+class _summary_preemption:
+    """Yield a future that resolves when a foreground caller preempts ``lanlan_name``'s summaries.
+
+    Wrap a summary-producing ``update_history`` call (/renew, /settle, /process) and pass the
+    future as ``update_history(preempted=...)``.
+    """
+
+    def __init__(self, lanlan_name: str) -> None:
+        self._name = lanlan_name
+        self._future: asyncio.Future | None = None
+
+    def __enter__(self) -> asyncio.Future:
+        future = asyncio.get_running_loop().create_future()
+        if _summary_preemption_active(self._name):
+            future.set_result(None)
+        _preemptible_summaries.setdefault(self._name, set()).add(future)
+        self._future = future
+        return future
+
+    def __exit__(self, *exc_info) -> None:
+        sections = _preemptible_summaries.get(self._name)
+        if sections is not None:
+            sections.discard(self._future)
+            if not sections:
+                _preemptible_summaries.pop(self._name, None)
+
 
 # Strong-reference registry prevents fire-and-forget task garbage collection.
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
@@ -856,6 +980,44 @@ def _get_settle_lock(lanlan_name: str) -> asyncio.Lock:
     if lanlan_name not in _settle_locks:
         _settle_locks[lanlan_name] = asyncio.Lock()
     return _settle_locks[lanlan_name]
+
+
+# A settle-lock wait longer than this logs a stall report (see utils/stall_report.py) and keeps waiting.
+_SETTLE_STALL_REPORT_AFTER_SECONDS = 10.0
+
+
+@asynccontextmanager
+async def _hold_settle_lock_reporting_stalls(lanlan_name: str, where: str):
+    """``async with _get_settle_lock(name)`` that logs once when the wait looks stuck.
+
+    The wait itself is unchanged (same queue position, no timeout); a timer on
+    the loop only reports, including every task's stack, so the holder shows up.
+    """
+    lock = _get_settle_lock(lanlan_name)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    def _report():
+        from utils.stall_report import report_stall
+        report_stall(
+            f"{where} 等待角色 {lanlan_name} 的 settle 锁已 {loop.time() - started:.1f}s，仍在等待",
+            loop=loop,
+        )
+
+    timer = loop.call_later(_SETTLE_STALL_REPORT_AFTER_SECONDS, _report)
+    # Drive the lock through its context-manager protocol: tests stand in
+    # objects that only implement __aenter__/__aexit__.
+    try:
+        await lock.__aenter__()
+    finally:
+        timer.cancel()
+    try:
+        yield
+    except BaseException as error:
+        if not await lock.__aexit__(type(error), error, error.__traceback__):
+            raise
+    else:
+        await lock.__aexit__(None, None, None)
 
 
 def _spawn_background_task(coro) -> asyncio.Task:
@@ -942,6 +1104,9 @@ async def _bootstrap_embedding_worker() -> None:
                 # that captured old managers must finish saving before either
                 # operation can erase through replacement instances.
                 get_sweep_barrier=lambda: _reload_lock,
+                # Inference runs outside that barrier; a name released for a
+                # rename/delete meanwhile must not be written back.
+                is_character_writable=_is_character_publication_admitted,
             )
             return worker
 
@@ -956,11 +1121,19 @@ async def _bootstrap_embedding_worker() -> None:
 
 
 async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
-    from . import evidence_loops, outbox_infra, refine_loops, routes, signal_extraction
+    from . import (
+        evidence_loops,
+        habitual_phrase_loop,
+        outbox_infra,
+        received_extraction,
+        refine_loops,
+        routes,
+        signal_extraction,
+    )
 
     global recent_history_manager, settings_manager, time_manager, fact_store
     global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
-    global embedding_warmup_worker, fact_dedup_resolver
+    global embedding_warmup_worker, fact_dedup_resolver, pinned_fact_store
     global _memory_runtime_init_completed, _memory_background_tasks_started, _recent_sync_wake_task
 
     if _memory_runtime_init_completed:
@@ -1008,6 +1181,9 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         event_log = EventLog()
         persona_manager = PersonaManager(event_log=event_log)
         reflection_engine = ReflectionEngine(fact_store, persona_manager, event_log=event_log)
+        from memory.pinned_facts import PinnedFactStore
+        pinned_fact_store = PinnedFactStore(persona_manager=persona_manager)
+        fact_store.attach_pinned_fact_store(pinned_fact_store)
         cursor_store = CursorStore()
         outbox = Outbox()
         reconciler = Reconciler(event_log)
@@ -1150,7 +1326,17 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(evidence_loops._periodic_idle_maintenance_loop())
             if EVIDENCE_SIGNAL_CHECK_ENABLED:
                 _spawn_background_task(signal_extraction._periodic_signal_extraction_loop())
+            _spawn_background_task(received_extraction._periodic_received_extraction_loop())
+            from memory import organizer
+            from . import long_term_sync
+            # Organizer-only engine work asks this before it runs.
+            organizer.set_gate(long_term_sync.organizes)
+            _spawn_background_task(long_term_sync._periodic_organizer_loop())
             _spawn_background_task(evidence_loops._periodic_archive_sweep_loop())
+            # events.ndjson applied-history pruning; first round 300 s after startup.
+            _spawn_background_task(evidence_loops._periodic_event_log_compact_loop())
+            # Habitual-phrase avoid list: local mining only, idle-gated, about daily per character.
+            _spawn_background_task(habitual_phrase_loop._periodic_habitual_phrase_loop())
             _spawn_background_task(routes._periodic_new_dialog_qps_log_loop())
             if MEMORY_RECHECK_ENABLED:
                 _spawn_background_task(evidence_loops._periodic_slow_memory_recheck_loop())
@@ -1160,6 +1346,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(refine_loops._periodic_reflection_synthesis_loop())
             # Group-memory series 5/7: lightweight scoped refine cron.
             _spawn_background_task(refine_loops._periodic_scoped_refine_loop())
+            # Weekly introspection over the injected persona block.
+            _spawn_background_task(refine_loops._periodic_introspection_loop())
             # Keyed-write auxiliary data: expired staged leftovers and tombstones (key records retained permanently).
             # Background work does not block startup.
             from . import idempotency
@@ -1192,6 +1380,9 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
 @app.on_event("startup")
 async def startup_event_handler():
     """Initialization at application startup"""
+    # Same floor as the main server: Python's default (cpu + 4) leaves low-end machines
+    # with a handful of workers shared by every to_thread read and lock wait.
+    configure_default_executor(asyncio.get_running_loop(), logger=logger)
     blocking_reason = get_storage_startup_blocking_reason(_config_manager)
     if blocking_reason:
         logger.info(
@@ -1275,18 +1466,22 @@ async def internal_reset_confirmed_at():
 async def shutdown_event_handler():
     """Cleanup at application shutdown"""
     logger.info("Memory server正在关闭...")
+    save_wait_deadline = asyncio.get_running_loop().time() + _SHUTDOWN_SAVE_WAIT_DEADLINE_SECONDS
+    # Queue the final save before the first cleanup wait: it runs on the save
+    # worker while cleanup goes on, so a cleanup that stalls (a long-term memory
+    # file commit close() has to wait for, SQLite, embedding), is cancelled or
+    # is killed by the launcher cannot keep it from being queued.
+    token_save = None
+    try:
+        from utils.token_tracker import TokenTracker
+        token_save = TokenTracker.get_instance().submit_save(report_timeout=1.0)
+    except Exception:
+        pass  # Best-effort final flush; atexit retries any unpersisted deltas.
     from .long_term_sync import close as close_long_term_sync
     await close_long_term_sync()
     if _recent_sync_wake_task is not None:
         _recent_sync_wake_task.cancel()
         await asyncio.gather(_recent_sync_wake_task, return_exceptions=True)
-    try:
-        from utils.token_tracker import TokenTracker
-        TokenTracker.get_instance().save()
-    except Exception:
-        # Best-effort final flush — the shutdown path must never fail on
-        # tracker IO, and the periodic save loop already persisted recent data.
-        pass
     # P2 vector worker: kick off stop() as a task before we touch the
     # reload lock so its bounded 2s wait overlaps with manager cleanup
     # below instead of serializing in front of it.
@@ -1338,6 +1533,23 @@ async def shutdown_event_handler():
         await release_embedding_service()
     except Exception as e:
         logger.warning("[Memory] embedding service release 失败: %s", e)
+    # Waited for only now, so persistence cannot delay worker stop or
+    # embedding/SQLite cleanup; it was queued before them (see above). The wait
+    # is bounded (a stuck fsync, or a periodic report queued ahead of it) and
+    # shielded: neither its deadline nor a cancellation cancels the save.
+    # ``timeout_at`` rather than ``wait_for``: on 3.11 ``wait_for`` can turn a
+    # caller's cancellation that races the result into a normal return. Done
+    # is read off the thread's own future, which the event loop learns of only
+    # a turn later.
+    if token_save is not None and not token_save.done():
+        try:
+            async with asyncio.timeout_at(save_wait_deadline):
+                await asyncio.shield(asyncio.wrap_future(token_save))
+        except TimeoutError:
+            if not token_save.done():
+                logger.warning("[Memory] 最终统计保存未在关闭期限内完成，不再等待（保存线程继续执行）")
+        except Exception:
+            pass  # Best-effort final flush; atexit retries any unpersisted deltas.
     logger.info("Memory server已关闭")
 
 

@@ -78,16 +78,18 @@
         </Transition>
       </Teleport>
 
-      <!-- el-input 不继承属性（inheritAttrs: false），data-motion 落不到可见的输入框上，由外层承担。 -->
-      <div class="wb-filter-bar__input" data-motion="resize">
-        <el-input
-          ref="inputRef"
-          :model-value="filterText"
-          clearable
-          :data-yui-guide-id="guideIds?.input"
-          :placeholder="placeholder"
-          @update:model-value="(v: string) => $emit('update:filterText', v)"
-        />
+      <!-- Keep flex line breaking on the slot; resize keyframes belong to its child. -->
+      <div class="wb-filter-bar__input-slot">
+        <div class="wb-filter-bar__input" data-motion="resize">
+          <el-input
+            ref="inputRef"
+            :model-value="filterText"
+            clearable
+            :data-yui-guide-id="guideIds?.input"
+            :placeholder="placeholder"
+            @update:model-value="(v: string) => $emit('update:filterText', v)"
+          />
+        </div>
       </div>
     </div>
     <!-- 分组筛选与视图切换属于同一个“筛选什么、怎么看”的块，共用这一块底色。 -->
@@ -364,9 +366,13 @@ onBeforeUnmount(stopListeners)
   margin-top: 10px;
 }
 
-.wb-filter-bar__input {
+.wb-filter-bar__input-slot {
   flex: 1;
   min-width: 200px;
+}
+
+.wb-filter-bar__input {
+  width: 100%;
 }
 
 .wb-filter-bar__input :deep(.el-input__wrapper) {

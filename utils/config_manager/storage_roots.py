@@ -824,7 +824,7 @@ class StorageRootsMixin:
             return False
 
     def card_face_meta_path(self, name: str):
-        """Return the catgirl card-face metadata sidecar file path (card_faces/{name}.json).
+        """Return the neko card-face metadata sidecar file path (card_faces/{name}.json).
 
         No existence check is performed; callers must handle that themselves. Used only
         for reading/writing sidecar metadata (author, creation time, source, etc.).

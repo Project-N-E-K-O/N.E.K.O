@@ -60,7 +60,9 @@ fi
 echo "[build_frontend] building plugin-manager..."
 (
   cd "$PM_DIR"
-  npm ci
+  if [ ! -x node_modules/.bin/vite ]; then
+    npm ci
+  fi
   npm run build-only
 )
 

@@ -29,6 +29,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -40,6 +41,9 @@ from fastapi.responses import JSONResponse
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json_async, read_json_async
+from utils.config_manager import get_steam_workshop_path
+from utils.frontend_utils import _resolve_workshop_search_dir
+from utils.url_utils import is_utf8_text
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api/model/vrm", tags=["vrm"])
@@ -49,6 +53,7 @@ logger = get_module_logger(__name__, "Main")
 VRM_USER_PATH = "/user_vrm"  
 VRM_STATIC_PATH = "/static/vrm"
 VRM_STATIC_ANIMATION_PATH = "/static/vrm/animation"
+VRM_WORKSHOP_PATH = "/workshop"
 
 # File-upload constants.
 MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
@@ -253,12 +258,16 @@ async def get_vrm_models():
 
         models = []
         seen_urls = set()  # Use a set to deduplicate by URL.
+        skipped = 0  # Non-UTF-8 names cannot be quoted or serialized (#3230).
 
         # 1. Find project VRM files (static/vrm/).
         project_root = config_mgr.project_root
         static_vrm_dir = project_root / "static" / "vrm"
         if static_vrm_dir.exists():
             for vrm_file in _iter_vrm_model_files(static_vrm_dir):
+                if not is_utf8_text(vrm_file.name):
+                    skipped += 1
+                    continue
                 url = f"/static/vrm/{quote(vrm_file.name, safe='')}"
                 # Skip existing URLs to avoid duplicates.
                 if url in seen_urls:
@@ -280,6 +289,9 @@ async def get_vrm_models():
         vrm_dir = config_mgr.vrm_dir
         if vrm_dir.exists():
             for vrm_file in _iter_vrm_model_files(vrm_dir):
+                if not is_utf8_text(vrm_file.name):
+                    skipped += 1
+                    continue
                 url = f"{VRM_USER_PATH}/{quote(vrm_file.name, safe='')}"
                 # Skip existing URLs to avoid duplicates.
                 if url in seen_urls:
@@ -309,6 +321,11 @@ async def get_vrm_models():
                         # Check installation directory for .vrm files.
                         for filename in os.listdir(installed_folder):
                             if filename.lower().endswith('.vrm'):
+                                if not os.path.isfile(os.path.join(installed_folder, filename)):
+                                    continue  # dangling or looping link
+                                if not is_utf8_text(filename):
+                                    skipped += 1
+                                    continue
                                 url = f"/workshop/{item_id}/{quote(filename, safe='')}"
                                 if url in seen_urls:
                                     continue
@@ -331,6 +348,11 @@ async def get_vrm_models():
                             if os.path.isdir(subdir_path):
                                 for filename in os.listdir(subdir_path):
                                     if filename.lower().endswith('.vrm'):
+                                        if not os.path.isfile(os.path.join(subdir_path, filename)):
+                                            continue  # dangling or looping link
+                                        if not (is_utf8_text(subdir) and is_utf8_text(filename)):
+                                            skipped += 1
+                                            continue
                                         url = f"/workshop/{item_id}/{quote(subdir, safe='')}/{quote(filename, safe='')}"
                                         if url in seen_urls:
                                             continue
@@ -350,6 +372,8 @@ async def get_vrm_models():
         except Exception as e:
             logger.error(f"获取创意工坊VRM模型时出错: {e}")
 
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VRM 模型")
         return JSONResponse(content={
             "success": True,
             "models": models
@@ -541,7 +565,7 @@ async def delete_vrm_model(request: Request):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型文件不存在"})
 
         target.unlink()
-        await _cleanup_vrm_emotion_mapping(target.stem)
+        await _cleanup_vrm_model_configs(target.stem)
         logger.info(f"已删除 VRM 模型: {target.name}")
 
         return JSONResponse(content={"success": True, "message": f"VRM 模型 {target.stem} 已删除"})
@@ -583,8 +607,8 @@ def _is_valid_vrm_model_name(model_name: str) -> bool:
     return model_name not in {'', '.', '..'} and re.search(r'[<>:"/\\|?*\x00-\x1f]', model_name) is None
 
 
-def _get_emotion_config_path(model_name: str) -> Path | None:
-    """Get the emotion config file path for a model."""
+def _get_vrm_config_path(model_name: str, suffix: str, *, create_dir: bool) -> Path | None:
+    """Get a per-model config path under static/vrm/configs, rejecting unsafe names."""
     if not _is_valid_vrm_model_name(model_name):
         logger.warning(f"无效的模型名称: {model_name!r}")
         return None
@@ -593,9 +617,10 @@ def _get_emotion_config_path(model_name: str) -> Path | None:
 
     # Store configuration in static/vrm/configs/.
     config_dir = config_mgr.project_root / "static" / "vrm" / "configs"
-    config_dir.mkdir(parents=True, exist_ok=True)
+    if create_dir:
+        config_dir.mkdir(parents=True, exist_ok=True)
 
-    config_path = config_dir / f"{model_name}_emotion.json"
+    config_path = config_dir / f"{model_name}{suffix}"
 
     # Verify resolved paths remain inside config_dir.
     try:
@@ -605,6 +630,32 @@ def _get_emotion_config_path(model_name: str) -> Path | None:
         return None
 
     return config_path
+
+
+def _get_emotion_config_path(model_name: str) -> Path | None:
+    """Get the emotion config file path for a model."""
+    return _get_vrm_config_path(model_name, "_emotion.json", create_dir=True)
+
+
+def _get_physics_config_path(model_name: str) -> Path | None:
+    """Get the physics profile path for a model; read-only, never creates the directory."""
+    return _get_vrm_config_path(model_name, "_physics.json", create_dir=False)
+
+
+def _drop_non_finite(value):
+    """Replace NaN/Infinity with None so the response stays valid JSON.
+
+    Python's json reader accepts NaN, Infinity and overflowing exponents, but the
+    response renderer refuses them and the request would fail with 500. Nulls are
+    skipped by the frontend's Number.isFinite checks, so the finite values still apply.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _drop_non_finite(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_drop_non_finite(item) for item in value]
+    return value
 
 
 def _get_model_path(model_name: str) -> tuple[Path | None, str]:
@@ -625,12 +676,90 @@ def _get_model_path(model_name: str) -> tuple[Path | None, str]:
             config_mgr.ensure_vrm_directory()
         try:
             model_path = _find_vrm_model_file(vrm_dir, model_name)
-        except ValueError:
-            return None, ""
+        except (OSError, RuntimeError, ValueError):
+            # An escaping candidate is refused, never returned; like a looping or
+            # unreadable entry it must not hide the same name in later directories.
+            continue
         if model_path is not None:
             return model_path, url_prefix
 
+    # /models lists Workshop VRMs too, so the emotion manager can pick them (#3379).
+    for item_dir in _iter_workshop_vrm_dirs():
+        try:
+            model_path = _find_vrm_model_file(item_dir, model_name)
+        except (OSError, RuntimeError, ValueError):
+            # An unreadable, looping or escaping entry must not hide models in later items.
+            continue
+        if model_path is not None:
+            return model_path, VRM_WORKSHOP_PATH
+
     return None, ""
+
+
+def _workshop_roots() -> list[Path]:
+    """Workshop roots to search, the Steam root first.
+
+    Startup mounts /workshop at the Steam install root derived from the
+    subscribed items (the same folders /models lists); the configured root
+    (user_mod_folder, cached or default folder) is the fallback mount when
+    Steam is unavailable. Both are searched so a mapping can be saved in either
+    case without a Steam query.
+    """
+    roots = []
+    for getter in (get_steam_workshop_path, _resolve_workshop_search_dir):
+        try:
+            root = getter()
+        except Exception as e:
+            logger.warning(f"获取创意工坊目录失败: {e}")
+            continue
+        if not root:
+            continue
+        try:
+            resolved = Path(root).resolve()
+        except (OSError, RuntimeError):  # Python 3.11 raises RuntimeError on symlink loops
+            continue
+        if resolved.is_dir() and resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def _iter_workshop_vrm_dirs():
+    """Yield installed Workshop item folders and their direct subfolders.
+
+    Mirrors the depth /models scans. Each yielded folder is resolved and must
+    stay inside its parent (item inside root, subfolder inside item), so a
+    symlinked folder cannot widen the boundary _find_vrm_model_file checks.
+    """
+    for root in _workshop_roots():
+        try:
+            item_dirs = sorted(p for p in root.iterdir() if p.name.isascii() and p.name.isdigit())
+        except OSError as e:
+            logger.warning(f"读取创意工坊目录失败: {e}")
+            continue
+        for item_dir in item_dirs:
+            item_dir = _resolved_child_dir(item_dir, root)
+            if item_dir is None:
+                continue
+            yield item_dir
+            try:
+                children = sorted(item_dir.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                child = _resolved_child_dir(child, item_dir)
+                if child is not None:
+                    yield child
+
+
+def _resolved_child_dir(path: Path, parent: Path) -> Path | None:
+    """Resolved directory path, or None if it is not a directory under ``parent``."""
+    try:
+        resolved = path.resolve()
+        if resolved != parent and resolved.is_relative_to(parent) and resolved.is_dir():
+            return resolved
+    except (OSError, RuntimeError):  # Python 3.11 raises RuntimeError on symlink loops
+        pass
+    return None
 
 
 def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:
@@ -640,7 +769,11 @@ def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:
         yield from (path for path in _iter_vrm_model_files(vrm_dir)
                     if path.stem == model_name and path != canonical_path)
     for candidate in candidates():
-        resolved = candidate.resolve()
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError):
+            # A looping link (RuntimeError on 3.11) must not hide a valid case variant.
+            continue
         if not resolved.is_relative_to(vrm_dir.resolve()):
             logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
             raise ValueError("路径越界")
@@ -663,13 +796,16 @@ def _vrm_model_stem_exists(model_name: str, directories) -> bool:
                for directory in directories for path in _iter_vrm_model_files(directory))
 
 
-async def _cleanup_vrm_emotion_mapping(model_name: str):
+async def _cleanup_vrm_model_configs(model_name: str):
     # Built-in/user models and case-variant extensions intentionally share a mapping.
     try:
         config_mgr = get_config_manager()
         directories = [config_mgr.project_root / 'static' / 'vrm', config_mgr.vrm_dir]
         emotion_config = _get_emotion_config_path(model_name)
-        if not emotion_config or not emotion_config.is_file():
+        physics_config = _get_physics_config_path(model_name)
+        has_emotion = bool(emotion_config and emotion_config.is_file())
+        has_physics = bool(physics_config and physics_config.is_file())
+        if not has_emotion and not has_physics:
             return
         workshop = await get_subscribed_workshop_items()
         if not isinstance(workshop, dict) or not workshop.get('success'):
@@ -682,14 +818,31 @@ async def _cleanup_vrm_emotion_mapping(model_name: str):
             if folder.is_dir():
                 directories.append(folder)
                 directories.extend(child for child in folder.iterdir() if child.is_dir())
-        for directory in directories:
-            for model in _iter_vrm_model_files(directory):
-                other_config = emotion_config.parent / f"{model.stem}_emotion.json"
-                if model.stem == model_name or (other_config.is_file() and other_config.samefile(emotion_config)):
-                    return
-        emotion_config.unlink()
+
+        targets = []
+        if has_emotion:
+            targets.append((emotion_config, '_emotion.json'))
+        if has_physics:
+            targets.append((physics_config, '_physics.json'))
+
+        # Each config is handled on its own, so a locked emotion file does not keep the physics one.
+        for config_path, suffix in targets:
+            try:
+                shared = False
+                for directory in directories:
+                    for model in _iter_vrm_model_files(directory):
+                        other_config = config_path.parent / f"{model.stem}{suffix}"
+                        if model.stem == model_name or (other_config.is_file() and other_config.samefile(config_path)):
+                            shared = True
+                            break
+                    if shared:
+                        break
+                if not shared:
+                    config_path.unlink()
+            except Exception as e:
+                logger.warning(f"删除模型配置失败 ({config_path.name}): {e}")
     except Exception as e:
-        logger.warning(f"删除情感映射配置失败: {e}")
+        logger.warning(f"删除模型配置失败: {e}")
 
 
 @router.delete('/model/{model_name}')
@@ -713,9 +866,7 @@ async def delete_vrm_model(model_name: str):
             return JSONResponse(status_code=404, content={"success": False, "error": f"未在用户目录中找到模型 {model_name}，可能是内置模型，无法删除"})
 
         vrm_path.unlink()
-
-        await _cleanup_vrm_emotion_mapping(model_name)
-
+        await _cleanup_vrm_model_configs(model_name)
         logger.info(f"已删除VRM模型: {model_name}")
         return {"success": True, "message": f"模型 {model_name} 已成功删除"}
     except Exception as e:
@@ -751,6 +902,42 @@ async def get_emotion_mapping(model_name: str):
 
     except Exception as e:
         logger.error(f"获取VRM情感映射配置失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)}
+        )
+
+
+@router.get('/physics_profile/{model_name}')
+async def get_physics_profile(model_name: str):
+    """Get the spring bone physics profile of a VRM model."""
+    try:
+        config_path = _get_physics_config_path(model_name)
+
+        if config_path is None:
+            error_msg = f"Invalid model name: {model_name!r}"
+            logger.error(f"获取VRM物理配置失败: {error_msg}")
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": error_msg}
+            )
+
+        if not config_path.is_file():
+            return {"success": True, "config": None, "source": "absent"}
+
+        # utf-8-sig: Unity/C# writers commonly emit a UTF-8 BOM.
+        config = await read_json_async(config_path, encoding="utf-8-sig")
+        if not isinstance(config, dict):
+            logger.warning(f"物理配置文件不是 JSON 对象，回退到默认行为: {config_path.name}")
+            return {"success": True, "config": None, "source": "corrupt"}
+        return {"success": True, "config": _drop_non_finite(config), "source": "file"}
+
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        logger.warning(f"物理配置文件 JSON 损坏，回退到默认行为: {e}")
+        return {"success": True, "config": None, "source": "corrupt"}
+
+    except Exception as e:
+        logger.error(f"获取VRM物理配置失败: {e}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": str(e)}

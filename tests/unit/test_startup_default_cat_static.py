@@ -37,12 +37,16 @@ def test_startup_default_cat_retry_is_deferred_and_user_actions_cancel_it():
     assert "consumeStartupDefaultCatRequest: consumeStartupDefaultCatRequest" in source
 
 
-def test_startup_default_cat_is_cat1_and_has_a_distinct_silence_reason():
+def test_startup_default_cat_and_visit_entry_have_distinct_silence_reasons():
     source = APP_AUTO_GOODBYE.read_text(encoding="utf-8")
 
+    assert "const isVisitCatEntry = detail.visitCatEntry === true;" in source
     assert "const isStartupDefaultCat = detail.startupDefaultForm === 'cat';" in source
-    assert "state.lastReason = isStartupDefaultCat ? 'startup-default-cat' : 'manual-goodbye';" in source
-    assert "source: isStartupDefaultCat ? 'startup-default-form' : 'manual-goodbye'" in source
+    assert "state.lastReason = isVisitCatEntry" in source
+    assert "? 'cat-visit-entry'" in source
+    assert ": (isStartupDefaultCat ? 'startup-default-cat' : 'manual-goodbye');" in source
+    assert ": (isStartupDefaultCat ? 'startup-default-form' : 'manual-goodbye')," in source
+    assert "if (!isVisitCatEntry) syncGoodbyeSilentState(true, state.lastReason);" in source
     assert "setVisualTier(TIER_CAT1" in source
 
 

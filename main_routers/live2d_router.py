@@ -48,7 +48,7 @@ from contextlib import suppress
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
 from utils.logger_config import get_module_logger
-from utils.url_utils import encode_url_path
+from utils.url_utils import drop_non_utf8_entries, encode_url_path, is_utf8_text
 from utils.workshop_utils import get_workshop_path
 
 router = APIRouter(prefix="/api/live2d", tags=["live2d"])
@@ -148,6 +148,42 @@ def _resolve_model_url_to_file_path(path: str, config_manager) -> Path | None:
         workshop_root = get_workshop_path()
         return Path(workshop_root) / Path(*parts[1:]) if workshop_root and len(parts) > 1 else None
     return None
+
+
+def _resolve_sync_model_file(path: str, config_manager) -> Path | None:
+    """Resolve saved catalog selections through the same directory lookup as the renderer."""
+    normalized = unquote(str(path or "").strip().replace("\\", "/"))
+    if normalized.startswith('/'):
+        if not normalized.startswith(('/user_live2d/', '/user_live2d_local/', '/static/', '/workshop/')):
+            return None
+        normalized = normalized[1:]
+    parts = normalized.split("/")
+    if not normalized or ":" in normalized or any(part in {".", ".."} for part in parts):
+        return None
+    direct = _resolve_model_url_to_file_path(path, config_manager)
+    if direct is not None:
+        roots = {
+            'user_live2d': getattr(config_manager, 'readable_live2d_dir', None) or getattr(config_manager, 'live2d_dir', None),
+            'user_live2d_local': getattr(config_manager, 'live2d_dir', None),
+            'static': 'static',
+            'workshop': get_workshop_path(),
+        }
+        root = roots.get(parts[0])
+        if root is None:
+            return None
+        candidate = direct.resolve()
+        return candidate if candidate.is_relative_to(Path(root).resolve()) and candidate.is_file() else None
+    directory, _ = find_model_directory(parts[0])
+    if not directory:
+        return None
+    root = Path(directory).resolve()
+    relative = Path(*parts[1:]) if len(parts) > 1 else Path(parts[0] + ".model3.json")
+    candidate = (root / relative).resolve()
+    return candidate if candidate.is_relative_to(root) and candidate.is_file() else None
+
+
+from services.chat_sync import host as _sync_host
+_sync_host.install_model_file_resolver(_resolve_sync_model_file)
 
 
 def _extract_local_shadow_key(path: str) -> str:
@@ -338,6 +374,7 @@ async def get_live2d_models(simple: bool = False):
     try:
         # Fetch local models first.
         models = find_models()
+        skipped = 0
         
         # Then Steam Workshop models.
         try:
@@ -357,6 +394,9 @@ async def get_live2d_models(simple: bool = False):
                         # Check installation directory for .model3.json.
                         for filename in os.listdir(installed_folder):
                             if filename.endswith('.model3.json'):
+                                if not is_utf8_text(filename):
+                                    skipped += 1
+                                    continue
                                 model_name = os.path.splitext(os.path.splitext(filename)[0])[0]
                                 path_value = _normalize_model_path(f'/workshop/{item_id}/{filename}')
                                 logger.debug(f"添加模型路径: {path_value!r}, item_id类型: {type(item_id)}, filename类型: {type(filename)}")
@@ -375,6 +415,9 @@ async def get_live2d_models(simple: bool = False):
                                 model_name = subdir
                                 json_file = os.path.join(subdir_path, f'{model_name}.model3.json')
                                 if os.path.exists(json_file):
+                                    if not is_utf8_text(model_name):
+                                        skipped += 1
+                                        continue
                                     path_value = _normalize_model_path(f'/workshop/{item_id}/{model_name}/{model_name}.model3.json')
                                     logger.debug(f"添加子目录模型路径: {path_value!r}, item_id类型: {type(item_id)}, model_name类型: {type(model_name)}")
                                     _upsert_model(
@@ -387,6 +430,11 @@ async def get_live2d_models(simple: bool = False):
         except Exception as e:
             logger.error(f"获取创意工坊模型时出错: {e}")
 
+        # One bad name must not empty the whole list (#3230); count only, names may be private.
+        models, dropped = drop_non_utf8_entries(models)
+        skipped += dropped
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 Live2D 模型")
         models = _dedupe_live2d_models_for_display(models)
         
         if simple:
@@ -1578,6 +1626,9 @@ def get_user_models():
         except Exception as e:
             logger.warning(f"扫描用户VRM模型目录时出错: {e}")
 
+        user_models, skipped = drop_non_utf8_entries(user_models)
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的用户模型")
         return {"success": True, "models": user_models}
     except Exception as e:
         logger.error(f"获取用户模型列表失败: {e}")

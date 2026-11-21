@@ -19,6 +19,8 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from config.prompts.prompts_activity import (
+    TOPIC_COMMITMENT_CUE_INTROS,
+    TOPIC_COMMITMENT_CUE_LABELS,
     TOPIC_MEMORY_CUE_INTROS,
     TOPIC_MEMORY_CUE_LABELS,
 )
@@ -58,10 +60,18 @@ def _iter_followup_texts(followup_topics: Iterable[Mapping[str, Any]] | None) ->
     return texts
 
 
+def commitment_cue_text(commitment: Mapping[str, Any] | None) -> str:
+    """The text of a due promise as the cue renders it; "" when there is none."""
+    if not isinstance(commitment, Mapping):
+        return ""
+    return clean_text(commitment.get("text"))
+
+
 def build_topic_hook_prompt(
     lang: str,
     *,
     followup_topics: Iterable[Mapping[str, Any]] | None = None,
+    commitment: Mapping[str, Any] | None = None,
     max_items: int = 3,
 ) -> str:
     """Render old reflection follow-up topics for the proactive prompt.
@@ -70,16 +80,27 @@ def build_topic_hook_prompt(
     owns character voice, timing, and whether to pass. This helper renders only
     old reflection follow-ups; open_threads stay in the activity-state section,
     and the background topic pool delivers through build_topic_hook_callback.
+
+    ``commitment`` (``{text, due}``: a promise of the character's that comes
+    due soon) renders first, under its own intro: it is worth leading with,
+    where the old topics are only there to pick up.
     """
     key = _lang_key(lang)
-    label = TOPIC_MEMORY_CUE_LABELS.get(key, TOPIC_MEMORY_CUE_LABELS["en"])
-    intro = TOPIC_MEMORY_CUE_INTROS.get(key, TOPIC_MEMORY_CUE_INTROS["en"])
+    blocks: list[list[str]] = []
+
+    promise = commitment_cue_text(commitment)
+    if promise:
+        label = TOPIC_COMMITMENT_CUE_LABELS.get(key, TOPIC_COMMITMENT_CUE_LABELS["en"])
+        intro = TOPIC_COMMITMENT_CUE_INTROS.get(key, TOPIC_COMMITMENT_CUE_INTROS["en"])
+        due = clean_text(commitment.get("due"), limit=None)
+        blocks.append([intro, f"- {label.format(due=due)}: {promise}"])
 
     memory_texts = _iter_followup_texts(followup_topics)[:max_items]
-    if not memory_texts:
-        return ""
+    if memory_texts:
+        label = TOPIC_MEMORY_CUE_LABELS.get(key, TOPIC_MEMORY_CUE_LABELS["en"])
+        intro = TOPIC_MEMORY_CUE_INTROS.get(key, TOPIC_MEMORY_CUE_INTROS["en"])
+        blocks.append([intro] + [f"- {label}: {text}" for text in memory_texts])
 
-    lines = [intro]
-    for text in memory_texts:
-        lines.append(f"- {label}: {text}")
-    return "\n".join(lines) + "\n"
+    if not blocks:
+        return ""
+    return "\n".join(line for block in blocks for line in block) + "\n"

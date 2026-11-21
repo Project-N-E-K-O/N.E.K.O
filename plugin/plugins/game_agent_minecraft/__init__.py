@@ -169,7 +169,7 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         # Follow global NEKO_LOG_LEVEL (default INFO). Hardcoded "INFO" previously hid
         # autonomous nudge-loop firing decisions (_log_debug "firing keep_going/
         # in_progress/general nudge") and other DEBUG diagnostics permanently; when investigating
-        # 'the catgirl stops speaking after task completion / self-prompt disappeared', it was impossible to see whether nudges
+        # 'the neko stops speaking after task completion / self-prompt disappeared', it was impossible to see whether nudges
         # fired or reached push. Following the environment variable exposes them when DEBUG is enabled.
         _log_level = (os.environ.get("NEKO_LOG_LEVEL") or "INFO").strip().upper()
         try:
@@ -489,7 +489,7 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
 
     def _format_completion_cue(self, result: Dict[str, Any]) -> str:
         """Render the ``run_claimed_task`` return into a short cue for the
-        dialog LLM. Goal: tell the catgirl what just happened in as few words as
+        dialog LLM. Goal: tell the neko what just happened in as few words as
         possible — she should *know* the outcome, not parrot it. Long
         instructional preambles were repeated verbatim in earlier testing
         ('current inventory ground truth' became literal dialogue), which is

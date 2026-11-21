@@ -21,9 +21,8 @@ Run right after the Nuitka build, before the artifact is uploaded.
 Issue #2898: the nightly ``mac-x64`` backend was arm64. The ``mac-x64`` matrix
 leg ran on the ``macos-15`` runner, which is Apple Silicon -- ``actions/setup-python``
 with ``architecture: x64`` only makes *Python* run under Rosetta, while Nuitka
-still emits a native arm64 binary and Playwright still downloads the host's
-browser build. Nothing in the pipeline looked at the produced Mach-O, so a
-completely unusable Intel build shipped for months.
+still emits a native arm64 binary. Nothing in the pipeline looked at the
+produced Mach-O, so a completely unusable Intel build shipped for months.
 
 The runner label is fixed separately; this gate is what keeps the class of bug
 from coming back silently on any platform, including the Linux arm64 leg where
@@ -34,20 +33,13 @@ a mis-resolved electron-builder/Nuitka target would fail the same way.
 - The main entry binary's CPU type and container format.
 - Every packaged native binary. Three filename shapes, because a plain suffix
   allowlist misses two real ones: versioned ELF sonames such as
-  ``libpython3.11.so.1.0`` (whose ``Path.suffix`` is ``.0``) and the
-  extensionless helpers Nuitka's Playwright plugin packages
-  (``playwright/driver/node``).
+  ``libpython3.11.so.1.0`` (whose ``Path.suffix`` is ``.0``) and executables
+  shipped without any suffix, as helper programs are on macOS and Linux.
 - That the container format matches the target platform. A Windows PE that
   survived inside a macOS bundle has a perfectly matching *architecture*, so
   only the format check catches it -- and this repo does keep all three
   platforms' Steam natives in the source tree, stripped by ``rm -f`` at build
   time.
-- Inside ``playwright_browsers/``, both that no path component carries the
-  *opposite* architecture token (#2898's bad build shipped
-  ``chromium-1208/chrome-mac-arm64`` inside an x64 bundle) and that every
-  bundled binary carries the expected one. The directory check alone is not
-  enough: Playwright also uses tokenless names such as ``chrome-mac``, under
-  which a wrong-arch Chromium would pass unnoticed.
 
 Headers are parsed directly, so this runs identically on all three CI hosts and
 needs neither ``lipo`` nor ``file``.
@@ -93,15 +85,6 @@ _FORMAT_BY_PLATFORM = {"mac": MACHO, "linux": ELF, "win": PE}
 
 _NATIVE_SUFFIXES = (".so", ".dylib", ".pyd", ".dll", ".exe")
 _ARCH_TOKENS = ("x64", "arm64")
-# Vendor catalogs use multiple architecture spellings (chrome-mac-x64 / chrome-linux-arm64 / mac-arm64 ...);
-# blacklisting opposite-architecture tokens withstands Playwright layout changes better than exact directory names.
-_OPPOSITE_TOKENS = {
-    "x64": ("-arm64", "_arm64", "aarch64"),
-    "arm64": ("-x64", "_x64", "-x86_64", "_x86_64", "amd64"),
-}
-_VENDORED_BROWSER_DIR = "playwright_browsers"
-# Bound malformed-directory traversal; normal Chromium packages contain only a few thousand files.
-_BROWSER_SCAN_FILE_LIMIT = 50000
 # PE e_lfanew points to the executable header, usually a few hundred bytes in real files. Use a generous upper limit
 # so forged offsets cannot cause whole-file reads.
 _MAX_PE_HEADER_OFFSET = 4 * 1024 * 1024
@@ -160,7 +143,7 @@ def read_binary(path: Path) -> BinaryInfo | None:
         return BinaryInfo(ELF, [_ELF_MACHINE.get(machine, f"unknown({machine})")])
 
     if magic[:2] == b"MZ":
-        # Every regular browser-tree file passes here, including data files coincidentally starting with MZ.
+        # Every suffixless file in the dist reaches this reader, including data files coincidentally starting with MZ.
         # Headers shorter than 0x40 yield empty slices; struct.unpack would raise struct.error and crash the gate.
         # Forged huge pe_offset values would also make _read_head request unbounded reads. Guard both.
         if len(head) < 0x40:
@@ -212,9 +195,6 @@ def _looks_native(path: Path) -> bool:
 def _iter_native_binaries(dist_root: Path):
     for path in dist_root.rglob("*"):
         if not path.is_file() or path.is_symlink():
-            continue
-        # Test relative paths, excluding dist_root ancestor-directory names.
-        if _VENDORED_BROWSER_DIR in path.relative_to(dist_root).parts:
             continue
         if _looks_native(path):
             yield path
@@ -271,73 +251,6 @@ def check_dist_arch(dist_root: Path, expect_arch: str, platform: str) -> list[st
             f"{len(foreign_format)} native binary/binaries are not {expect_format} "
             f"(wrong platform): {shown}" + (" ..." if len(foreign_format) > 10 else "")
         )
-
-    browser_root = dist_root / _VENDORED_BROWSER_DIR
-    if browser_root.is_dir():
-        tokens = _OPPOSITE_TOKENS.get(expect_arch, ())
-        bad_paths: list[str] = []
-        wrong_binaries: list[str] = []
-        wrong_format: list[str] = []
-        # Check directory names and bytes in one traversal. With two passes, only the second is bounded,
-        # while the first still walks the whole tree, defeating the cap. Do not materialize the tree with sorted();
-        # sort only final printable results.
-        scanned = 0
-        truncated = False
-        for path in browser_root.rglob("*"):
-            if scanned >= _BROWSER_SCAN_FILE_LIMIT:
-                truncated = True
-                break
-            scanned += 1
-            relative = path.relative_to(dist_root)
-            if path.is_dir():
-                if any(
-                    token in part.lower()
-                    for part in path.relative_to(browser_root).parts
-                    for token in tokens
-                ):
-                    bad_paths.append(str(relative))
-                continue
-            if not path.is_file() or path.is_symlink():
-                continue
-            info = read_binary(path)
-            if info is None:
-                continue
-            if info.format != expect_format:
-                # Match dist's rule: a wrong-platform browser can still have the correct architecture
-                # (PE x64 under chrome-mac satisfies x64); only format catches it.
-                wrong_format.append(f"{relative} is {info.format}")
-            elif expect_arch not in info.arches:
-                # Match dist's rule: absence of the expected architecture is invalid, not merely presence of its opposite.
-                # Previously only opposite architectures were banned, assuming Chromium normally ships
-                # one or two 32-bit utilities. That was unsupported speculation and allowed x86 browser
-                # binaries unrestricted into x64 packages.
-                wrong_binaries.append(f"{relative} is {'/'.join(info.arches)}")
-        if bad_paths:
-            issues.append(
-                f"vendored browser tree carries non-{expect_arch} directories: "
-                + ", ".join(sorted(bad_paths)[:5])
-            )
-        if wrong_binaries:
-            shown = ", ".join(sorted(wrong_binaries)[:5])
-            issues.append(
-                f"vendored browser tree contains {len(wrong_binaries)} non-{expect_arch} "
-                f"binary/binaries: {shown}"
-                + (" ..." if len(wrong_binaries) > 5 else "")
-            )
-        if wrong_format:
-            shown = ", ".join(sorted(wrong_format)[:5])
-            issues.append(
-                f"vendored browser tree contains {len(wrong_format)} non-{expect_format} "
-                f"binary/binaries (wrong platform): {shown}"
-                + (" ..." if len(wrong_format) > 5 else "")
-            )
-        if truncated:
-            # Truncation means the tail was never checked. Fail closed, or a wrong-architecture binary
-            # beyond the cap silently passes the entire gate, worse than having no cap.
-            issues.append(
-                f"vendored browser tree exceeds the {_BROWSER_SCAN_FILE_LIMIT}-file scan "
-                "cap, so it could not be fully verified"
-            )
 
     return issues
 

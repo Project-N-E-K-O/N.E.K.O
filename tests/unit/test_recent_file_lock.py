@@ -270,6 +270,25 @@ def _widen_write_window(monkeypatch, seconds: float = 0.02):
     monkeypatch.setattr(recent_file, "atomic_write_json", _slow)
 
 
+def _run_on_private_loop(coro, executor: ThreadPoolExecutor | None = None):
+    """Run *coro* on a throwaway event loop, optionally with its own default executor.
+
+    tests/conftest.py applies nest_asyncio, whose ``asyncio.run()`` reuses the
+    process-wide loop instead of creating one. A default executor installed on
+    that loop would outlive the test, and once shut down it makes every later
+    ``run_in_executor``/``to_thread`` in the same worker fail with "cannot
+    schedule new futures after shutdown". The runner's teardown cancels
+    leftover tasks, closes async generators and waits for the executor's
+    threads before closing the loop, so nothing keeps running after the test.
+    ``loop_factory`` keeps the runner from replacing (and later clearing) the
+    thread's current event loop.
+    """
+    with asyncio.Runner(loop_factory=asyncio.new_event_loop) as runner:
+        if executor is not None:
+            runner.get_loop().set_default_executor(executor)
+        return runner.run(coro)
+
+
 def _run_with_wide_pool(coro_factory, workers: int = 8):
     """Run a coroutine with a default executor big enough for real concurrency.
 
@@ -277,12 +296,7 @@ def _run_with_wide_pool(coro_factory, workers: int = 8):
     runner that is 6 workers, and queueing would hide the very interleaving
     these tests are about.
     """
-    async def _main():
-        loop = asyncio.get_running_loop()
-        loop.set_default_executor(ThreadPoolExecutor(max_workers=workers))
-        return await coro_factory()
-
-    return asyncio.run(_main())
+    return _run_on_private_loop(coro_factory(), ThreadPoolExecutor(max_workers=workers))
 
 
 # ─────────────── T1: concurrent update_history keeps every batch ───────────────
@@ -1858,8 +1872,6 @@ def test_main_server_recent_writers_share_the_memory_server_lock(tmp_path, monke
             errors.append(exc)
 
     async def _go():
-        loop = asyncio.get_running_loop()
-        loop.set_default_executor(ThreadPoolExecutor(max_workers=16))
         await asyncio.gather(
             mgr.update_history([HumanMessage(content="w0")], name, compress=False),
             mgr.update_history([HumanMessage(content="w1")], name, compress=False),
@@ -1867,7 +1879,7 @@ def test_main_server_recent_writers_share_the_memory_server_lock(tmp_path, monke
             asyncio.to_thread(_hammer_read),
         )
 
-    asyncio.run(_go())
+    _run_on_private_loop(_go(), ThreadPoolExecutor(max_workers=16))
 
     assert errors == [], f"并发路径不得抛异常，实际 {errors}"
     contents = [m.content for m in _read_disk(path)]
@@ -2380,6 +2392,128 @@ def test_lock_registry_is_thread_safe(tmp_path):
     assert len({id(lock) for lock in seen}) == 1
 
 
+@pytest.mark.parametrize('entry', ['single', 'access', 'multiple'])
+def test_recent_lock_serializes_separate_processes(tmp_path, entry):
+    import subprocess
+    import sys
+
+    path = tmp_path / 'uncreated-role' / 'recent.json'
+    ready, done = tmp_path / 'ready', tmp_path / 'done'
+    child = '''
+import sys
+from pathlib import Path
+from utils.recent_file import recent_file_access,recent_file_lock
+from utils.file_utils import atomic_write_json
+lock=recent_file_lock(sys.argv[1])
+blocked=not lock.acquire(blocking=False)
+if not blocked:
+    lock.release()
+atomic_write_json(sys.argv[2],blocked)
+with recent_file_access(sys.argv[1]):
+    Path(sys.argv[3]).touch()
+'''
+    scope = (recent_file.recent_file_lock(path) if entry == 'single' else
+             recent_file.recent_file_access(path) if entry == 'access' else
+             recent_file.recent_file_locks([path, tmp_path / 'other.json']))
+    process = None
+    try:
+        with scope:
+            process = subprocess.Popen([sys.executable, '-c', child, str(path), str(ready), str(done)],
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            deadline = time.monotonic() + 5
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert ready.exists(), 'separate reader did not start'
+            assert json.loads(ready.read_text()) is True, 'another process acquired the same file lock'
+            assert not done.exists(), 'another process entered the protected file section'
+        _, stderr = process.communicate(timeout=5)
+        assert process.returncode == 0, stderr
+        assert done.exists()
+        assert not path.parent.exists(), 'locking a stale path must not create a character directory'
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)
+
+
+def test_recent_process_lock_is_released_on_owner_exit(tmp_path):
+    import subprocess
+    import sys
+
+    path, ready = tmp_path / 'recent.json', tmp_path / 'holder-ready'
+    child = '''
+import sys,time
+from utils.recent_file import recent_file_lock
+from utils.file_utils import atomic_write_json
+with recent_file_lock(sys.argv[1]):
+    atomic_write_json(sys.argv[2],True)
+    time.sleep(30)
+'''
+    process = subprocess.Popen([sys.executable, '-c', child, str(path), str(ready)],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    lock = recent_file.recent_file_lock(path)
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        assert lock.acquire(blocking=False) is False
+        process.kill()
+        process.communicate(timeout=5)
+        assert lock.acquire(timeout=3) is True
+        lock.release()
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=5)
+
+
+def test_recent_process_lock_can_be_released_by_another_worker(tmp_path):
+    import subprocess
+    import sys
+
+    path = tmp_path / 'recent.json'
+    lock = recent_file.recent_file_lock(path)
+    lock.acquire()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(lock.release).result(timeout=3)
+    child = '''
+import sys
+from utils.recent_file import recent_file_lock
+lock=recent_file_lock(sys.argv[1])
+assert lock.acquire(blocking=False)
+lock.release()
+'''
+    subprocess.run([sys.executable, '-c', child, str(path)], check=True,
+                   capture_output=True, text=True, timeout=5)
+
+
+def test_recent_lock_failure_releases_both_single_and_previously_acquired_gates(tmp_path, monkeypatch):
+    first = recent_file.recent_file_lock(tmp_path / 'a.json')
+    second = recent_file.recent_file_lock(tmp_path / 'b.json')
+
+    def fail(*args, **kwargs):
+        raise OSError('synthetic OS lock failure')
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(second._file, 'acquire', fail)
+            with pytest.raises(OSError, match='synthetic OS lock failure'):
+                second.acquire()
+            assert not second.locked()
+            with pytest.raises(OSError, match='synthetic OS lock failure'):
+                with recent_file.recent_file_locks([tmp_path / 'a.json', tmp_path / 'b.json']):
+                    pass
+            assert not first.locked() and not second.locked()
+        with recent_file.recent_file_locks([tmp_path / 'a.json', tmp_path / 'b.json']):
+            assert first.locked() and second.locked()
+    finally:
+        for lock in (first, second):
+            if lock.locked():
+                lock.release()
+
+
 @pytest.mark.asyncio
 async def test_recent_file_route_maps_deleted_identity_to_not_found(
     tmp_path, monkeypatch,
@@ -2839,3 +2973,20 @@ def test_review_close_failure_does_not_mask_a_valid_review(tmp_path):
     result = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
 
     assert result[0] == 'patched'
+
+
+@pytest.mark.parametrize('broken', ['{', '{"bad":true}'])
+def test_corrupt_optional_receipt_does_not_block_ordinary_save(tmp_path, broken):
+    import utils.recent_file as recent
+    path = tmp_path / 'recent.json'
+    path.write_text('[]')
+    recent_path = recent.recent_sidecar_path(path, recent._write_receipts_filename(path))
+    from pathlib import Path
+    Path(recent_path).write_text(broken)
+    with recent.recent_file_access(path) as resolved:
+        recent.write_recent_payload_unlocked(resolved, [{'role': 'user', 'content': 'saved'}])
+        with pytest.raises(ValueError, match='^invalid_recent_write_receipt$'):
+            recent.read_recent_write_receipt_unlocked(resolved, 'domain', 'token')
+        with pytest.raises(ValueError, match='^invalid_recent_write_receipt$'):
+            recent.write_recent_payload_unlocked(resolved, [], receipt=('domain', 'token'))
+    assert 'saved' in path.read_text()

@@ -1,3 +1,4 @@
+import { ChatScreenVisibilityProvider, useChatScreenVisibility } from './ChatScreenVisibility';
 import {
   useState,
   useEffect,
@@ -893,12 +894,12 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
     props.chatSurfaceMode === 'full',
   );
   return (
-    <>
+    <ChatScreenVisibilityProvider messages={props.messages || defaultMessages}>
       {props.chatSurfaceMode === 'full'
         ? <FullChatSurface {...props} />
         : <CompactChatApp {...props} />}
       <NekoTooltipLayer />
-    </>
+    </ChatScreenVisibilityProvider>
   );
 }
 
@@ -973,6 +974,7 @@ function CompactChatApp({
   _rollbackKey,
   _avatarToolDeactivationKey,
 }: ChatWindowProps) {
+  const { hiddenMessageIds, isMessageHidden } = useChatScreenVisibility();
   useCompactToolWheelAudioPreload();
   const localAvatarToolCatalog = useLocalAvatarToolCatalog();
   const toolIconItems = localAvatarToolCatalog.registry.items;
@@ -984,7 +986,16 @@ function CompactChatApp({
   const visibleDraft = theaterActive ? theaterDraft : (catLocalTextOnly ? catDraft : draft);
   const guideChatButtonsLocked = useGuideChatButtonLock();
   const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked
-    || (theaterActive && theaterPresentation.phase !== 'awaiting_player');
+    || (theaterActive && (theaterPresentation.sessionEnded === true
+      || !['awaiting_player', 'performing'].includes(theaterPresentation.phase)));
+  const theaterReplyPending = theaterActive
+    && ['loading', 'evaluating'].includes(theaterPresentation.phase);
+  const theaterFreeInputHint = theaterActive && !compactTextEntryLocked
+    && theaterPresentation.phase === 'awaiting_player'
+    && !theaterPresentation.errorMessage
+    && !(theaterPresentation.suggestedInputs ?? []).length
+    ? i18n('theater.freeInputHint', 'No suggested options this time~')
+    : '';
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
   const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
@@ -1067,6 +1078,30 @@ function CompactChatApp({
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
+  useEffect(() => {
+    const resetCompactPreview = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      const streamingTurnIds = detail?.historyRestore === true && detail.conversationReset === false
+        && Array.isArray(detail.streamingTurnIds) ? detail.streamingTurnIds : [];
+      setCompactCaptionState(current => current && !current.isEnded && streamingTurnIds.includes(current.turnId) ? current : null);
+      if (!streamingTurnIds.includes(compactSpeechPreviewTurnIdRef.current)) {
+        compactSpeechPreviewIdRef.current = '';
+        compactSpeechPreviewTextRef.current = '';
+        compactSpeechPreviewTurnIdRef.current = '';
+      }
+      // An empty host replacement also starts a fresh conversation. Keep the
+      // turn guard during ordinary snapshots, which may contain stale streams.
+      if (event.type === 'react-chat-window:messages-cleared'
+        || detail?.conversationReset === true
+        || (event.type === 'react-chat-window:set-messages'
+          && Array.isArray(detail?.messages) && detail.messages.length === 0)) {
+        setCompactAssistantStreamingGap(null);
+      }
+    };
+    const events = ['react-chat-window:messages-cleared', 'react-chat-window:set-messages', 'react-chat-window:messages-replaced'];
+    events.forEach(name => window.addEventListener(name, resetCompactPreview));
+    return () => events.forEach(name => window.removeEventListener(name, resetCompactPreview));
+  }, []);
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
     turnId: string;
     acceptStreaming: boolean;
@@ -1279,7 +1314,7 @@ function CompactChatApp({
   // 避免在一个紧凑输入区里叠放两组选项。
   const compactChoiceInteractionsAllowed = !composerHidden && !catLocalTextOnly;
   const theaterSuggestedOptions: GalgameOption[] = theaterActive
-    && theaterPresentation.phase === 'awaiting_player'
+    && (theaterPresentation.phase === 'awaiting_player' || theaterPresentation.phase === 'performing')
     && theaterDraft.trim().length === 0
     ? (theaterPresentation.suggestedInputs ?? []).slice(0, 3).map((text, index) => ({
         label: String.fromCharCode(65 + index),
@@ -1458,8 +1493,8 @@ function CompactChatApp({
   const compactChoiceLayerOpen = isCompactSurface && compactSurfaceChoicesVisible;
   const compactExportSelectedCount = compactExportSelectedIds.size;
   const compactExportSelectableMessages = useMemo(
-    () => messages.filter(isCompactExportMessageSelectable),
-    [messages],
+    () => messages.filter(message => !isMessageHidden(message) && isCompactExportMessageSelectable(message)),
+    [messages, isMessageHidden],
   );
   const compactExportSelectableIds = useMemo(
     () => new Set(compactExportSelectableMessages.map(message => message.id)),
@@ -1792,12 +1827,16 @@ function CompactChatApp({
     }
   }, [compactExportSelectedIds, compactExportSelectableIds]);
   const surfaceModeClassName = `chat-surface-mode-${chatSurfaceMode}`;
-  const compactMessagePreviewFromMessages = useMemo(() => getCompactMessagePreview(messages), [messages]);
+  const compactMessagePreviewFromMessages = useMemo(
+    () => getCompactMessagePreview(messages.filter(message => !isMessageHidden(message))),
+    [messages, isMessageHidden],
+  );
   const compactCaptionPreview = useMemo<CompactMessagePreview | null>(() => {
     if (!compactCaptionState?.turnId || !compactCaptionState.text) {
       return null;
     }
     const captionMessageId = `compact-caption:${compactCaptionState.turnId}`;
+    if (hiddenMessageIds.has(captionMessageId)) return null;
     return {
       messageId: captionMessageId,
       turnStartId: captionMessageId,
@@ -1809,7 +1848,7 @@ function CompactChatApp({
       isAssistant: true,
       isGuide: false,
     };
-  }, [compactCaptionState]);
+  }, [compactCaptionState, hiddenMessageIds]);
   // 小剧场演绎统一写入历史气泡，胶囊只保留玩家输入职责，不再承担旁白或对白预览。
   const compactMessagePreview = theaterActive
     ? null
@@ -1836,6 +1875,7 @@ function CompactChatApp({
     && !compactMessagePreview
     && !compactSuppressAssistantFallback
     && !!compactSpeechPreviewIdRef.current
+    && !hiddenMessageIds.has(compactSpeechPreviewIdRef.current)
     && !!compactSpeechPreviewTextRef.current;
   const compactSpeechModeActive = compactPreservedSpeechActive
     || (!compactSuppressAssistantFallback
@@ -1851,9 +1891,9 @@ function CompactChatApp({
     : '';
   const compactEmptyStateText = guideChatButtonsLocked
     ? ''
-    : composerHidden
+    : theaterFreeInputHint || (composerHidden
       ? i18n('chat.companionEmptyState', getChatCompanionEmptyStateFallback())
-      : i18n('chat.emptyState', getChatEmptyStateFallback());
+      : i18n('chat.emptyState', getChatEmptyStateFallback()));
   const compactPreviewText = compactSuppressAssistantFallback
     ? compactRestoreEmptyStateAfterTurnEnd
       ? compactEmptyStateText
@@ -6065,7 +6105,8 @@ function CompactChatApp({
       controlsOpen={compactExportControlsOpen}
       choiceLayerAbove={compactChoiceLayerOpen && compactChoiceLayerPlacement === 'above'}
       visibilityState={compactExportHistoryOpen ? 'open' : 'closing'}
-      thinking={focusThinking}
+      thinking={theaterActive ? theaterReplyPending : focusThinking}
+      thinkingLabel={theaterActive ? i18n('theater.waitingReply', 'Preparing the next reply…') : undefined}
       failedStatusLabel={failedStatusLabel}
       onAutoScrollToBottomChange={setCompactExportAutoScrollToBottom}
       onToggleMessage={handleCompactExportToggleMessage}
@@ -6318,7 +6359,7 @@ function CompactChatApp({
                           data-compact-hit-region="true"
                           data-compact-hit-region-id="input:text"
                           data-compact-hit-region-kind="input-text"
-                          placeholder={inputPlaceholder}
+                          placeholder={theaterFreeInputHint || inputPlaceholder}
                           aria-label={inputPlaceholder}
                           rows={1}
                           value={visibleDraft}

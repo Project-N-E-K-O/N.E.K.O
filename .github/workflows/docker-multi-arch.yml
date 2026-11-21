@@ -70,6 +70,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          filter: blob:none
 
       - name: Calculate is_main_commit flag
         id: calc_is_main
@@ -171,6 +172,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          filter: blob:none
 
       # Pre-fetch the embedding weights on the native runner and cache them by
       # revision, so the (QEMU-emulated, throttle-prone) Docker build below never
@@ -340,6 +342,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          filter: blob:none
 
       # Pre-fetch the embedding weights on the native runner and cache them by
       # revision, so the (QEMU-emulated, throttle-prone) Docker build below never

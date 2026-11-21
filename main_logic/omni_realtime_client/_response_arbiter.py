@@ -1555,6 +1555,16 @@ class RealtimeResponseArbiter:
         else:
             self._idle.clear()
 
+    def notify_native_response_started(self, response_id: str | None) -> None:
+        """Hold dispatch for a verified native reply without an announcement."""
+        self._server_response_active = True
+        self._idle.clear()
+        self._remember_seen_response_id(response_id)
+        if response_id is None:
+            self._remember_idless_server_response()
+        else:
+            self._remember_server_response_id(response_id)
+
     def notify_response_created(self, event: dict[str, Any]) -> bool:
         """Attribute an announcement and report whether transport may expose it."""
 

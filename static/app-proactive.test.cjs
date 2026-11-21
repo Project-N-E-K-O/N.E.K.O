@@ -17,7 +17,7 @@ test('tutorial suppression rejects late vision acquisition at every async bounda
         let stopped = 0;
         let promptCalls = 0;
         const stream = { getTracks() { return [{ stop() { stopped += 1; } }]; } };
-        const state = { isRecording: true, proactiveVisionEnabled: true };
+        const state = { isRecording: true, proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true };
         const window = {
             appState: state, appConst: {},
             addEventListener(type, listener) { listeners.set(type, listener); },
@@ -331,7 +331,8 @@ test('overlapping tutorial sources keep vision stopped until the final release',
     const listeners = new Map();
     let intervalCount = 0;
     const window = {
-        appState: { isRecording: true, proactiveVisionEnabled: true, proactiveChatEnabled: false },
+        // The voice-call heartbeat needs Proactive Chat and its Screen Share option on.
+        appState: { isRecording: true, proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true },
         appConst: {},
         addEventListener(type, listener) { listeners.set(type, listener); }
     };
@@ -342,6 +343,7 @@ test('overlapping tutorial sources keep vision stopped until the final release',
         console,
         setInterval() { intervalCount += 1; return intervalCount; },
         clearInterval() {},
+        setTimeout() { return 0; },
         clearTimeout() {}
     });
     const emit = (active, source) => listeners.get('neko:home-tutorial-features-suppressed')({
@@ -580,4 +582,97 @@ test('a screenshot taken before a revocation never rides a later request', () =>
         true,
     );
     assert.equal(crossWindow.screenshot_data, undefined);
+});
+
+test('theater-only proactive mode can schedule independently of mini-games', () => {
+    const state = { proactiveChatEnabled: true, proactiveTheaterInviteEnabled: true };
+    const window = { appState: state, appConst: {}, addEventListener() {} };
+    vm.runInNewContext(source, {
+        window, document: { addEventListener() {}, getElementById() { return null; } },
+        localStorage: { getItem() { return null; } }, console, clearTimeout() {}, clearInterval() {}
+    });
+    assert.equal(window.appProactive.hasAnyChatModeEnabled(), true);
+    assert.equal(window.appProactive.canTriggerProactively(), true);
+    state.proactiveTheaterInviteEnabled = false;
+    assert.equal(!!window.appProactive.hasAnyChatModeEnabled(), false);
+    assert.equal(window.appProactive.canTriggerProactively(), false);
+    state.proactiveMiniGameInviteEnabled = true;
+    assert.equal(window.appProactive.hasAnyChatModeEnabled(), true);
+});
+
+test('typing pushes a nearer proactive tick to 30s after the last input at any interval', async () => {
+    const docListeners = new Map();
+    const timers = new Map();
+    let nextTimer = 0;
+    let now = 1_000_000;
+    class FakeDate extends Date { static now() { return now; } }
+    const state = {
+        isRecording: true,
+        proactiveChatEnabled: true,
+        proactiveNewsChatEnabled: true,
+        proactiveVisionEnabled: false,
+        proactiveChatInterval: 45,
+        _proactiveSchedulerInitialized: true
+    };
+    const window = { appState: state, appConst: {}, addEventListener() {} };
+    vm.runInNewContext(source, {
+        window,
+        Date: FakeDate,
+        document: {
+            addEventListener(type, listener) { docListeners.set(type, listener); },
+            getElementById() { return null; }
+        },
+        localStorage: { getItem() { return null; } },
+        console,
+        setTimeout(fn, ms) { timers.set(++nextTimer, { fn, ms }); return nextTimer; },
+        clearTimeout(id) { timers.delete(id); },
+        clearInterval() {}
+    });
+    const input = { nodeType: 1, matches() { return true; }, disabled: false, readOnly: false };
+
+    window.scheduleProactiveChat();
+    const firstId = state.proactiveChatTimer;
+    assert.equal(timers.get(firstId).ms, 45000);
+
+    // 15s remain when typing starts: the armed timer is kept, not restarted from a full interval.
+    now += 30000;
+    docListeners.get('input')({ target: input });
+    assert.equal(state.proactiveChatTimer, firstId);
+    assert.equal(timers.size, 1);
+
+    // At the original deadline the tick defers to 30s after the input instead of speaking.
+    now += 15000;
+    const { fn } = timers.get(firstId);
+    timers.delete(firstId);
+    await fn();
+    const deferred = timers.get(state.proactiveChatTimer);
+    assert.ok(deferred, 'tick must re-arm for the rest of the input window');
+    assert.equal(deferred.ms, 15000);
+});
+
+
+test('reconnect reports the same live consent a settings save does', () => {
+    const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
+    const start = websocketSource.indexOf('    function syncProactiveVisionConsent(');
+    const end = websocketSource.indexOf('    function ensureWebSocketOpen(', start);
+    const run = (local, appSettings) => {
+        const sent = [];
+        const state = {
+            proactiveVisionEnabled: local,
+            socket: { readyState: 1, send(raw) { sent.push(JSON.parse(raw).enabled); } },
+        };
+        const mod = {};
+        vm.runInNewContext(websocketSource.slice(start, end), {
+            window: { appSettings }, S: state, mod, WebSocket: { OPEN: 1 }, console: { warn() {} },
+        });
+        mod.syncProactiveVisionConsent();
+        return sent;
+    };
+    // app-settings owns the rule (an unseen revocation from another window wins).
+    assert.deepEqual(run(true, { visionConsentForBackend: () => false }), [false]);
+    assert.deepEqual(run(true, { visionConsentForBackend: () => true }), [true]);
+    // Without app-settings, or with an unknown local value, behave as before.
+    assert.deepEqual(run(true, undefined), [true]);
+    assert.deepEqual(run(false, undefined), [false]);
+    assert.deepEqual(run(undefined, { visionConsentForBackend: () => true }), []);
 });

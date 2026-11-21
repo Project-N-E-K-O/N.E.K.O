@@ -71,7 +71,7 @@ def _make_service(
         service,
         "_collect_targets_sync",
         lambda: [
-            module._WatchTarget(plugin_id="demo", root=source_dir, is_development=False)
+            module._WatchTarget(plugin_id="demo", root=source_dir)
         ],
     )
     return service
@@ -274,7 +274,7 @@ async def test_busy_reload_is_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Real-lock case: while a user operation holds the lock, the watcher receives busy within its debounce budget
-    and defers, then retries automatically on later ticks after release (following test_development_plugins'
+    and defers, then retries automatically on later ticks after release (following the operation-lock tests'
     bounded_operation_wait pattern but exercising the full watcher loop)."""
     lifecycle = _FakeLifecycleService(use_real_lock=True)
     service = _make_service(tmp_path, lifecycle, monkeypatch)
@@ -548,7 +548,6 @@ def test_invalid_entry_is_rejected_before_stopping(tmp_path: Path, entry: str) -
 def test_registered_metadata_locates_running_sources(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "different-directory"
     _write_plugin_source(source)
-    monkeypatch.setattr(module.development_store, "list_registration_records_sync", lambda: [])
     monkeypatch.setattr(module.state, "plugins", {
         "demo_1": {"config_path": str(source / "plugin.toml")},
         "stopped": {"config_path": str(source / "plugin.toml")},
@@ -567,7 +566,7 @@ async def test_locked_skip_emits_skipped_event(tmp_path: Path, monkeypatch) -> N
     events = []
     monkeypatch.setattr(module, "emit_lifecycle_event", events.append)
     service = _make_service(tmp_path, SkippingLifecycle(), monkeypatch)
-    await service._reload_target(module._WatchTarget("demo", tmp_path / "demo", False))
+    await service._reload_target(module._WatchTarget("demo", tmp_path / "demo"))
     assert events[-1]["type"] == "plugin_hot_reload_skipped"
     assert events[-1]["reason"] == "not_running"
     assert "demo" not in service._pending
@@ -583,7 +582,7 @@ async def test_zero_debounce_busy_retry_has_backoff(tmp_path: Path, monkeypatch)
     service = _make_service(tmp_path, BusyLifecycle(), monkeypatch)
     monkeypatch.setattr(module, "PLUGIN_HOT_RELOAD_DEBOUNCE", 0)
     before = time.monotonic()
-    await service._reload_target(module._WatchTarget("demo", tmp_path / "demo", False))
+    await service._reload_target(module._WatchTarget("demo", tmp_path / "demo"))
     assert service._pending["demo"] >= before + module._BUSY_RETRY_SECONDS
 
 
@@ -656,15 +655,13 @@ def test_preflight_skips_non_plugin_directories_and_reports_compile_errors(tmp_p
 
 
 def test_preflight_contains_unexpected_validation_errors(tmp_path: Path, monkeypatch) -> None:
-    from plugin.server.application.plugins import development_service
-
     source = tmp_path / "demo"
     _write_plugin_source(source)
 
     def explode(*_args):
         raise RuntimeError("validator bug")
 
-    monkeypatch.setattr(development_service, "_preflight_source_sync", explode)
+    monkeypatch.setattr(module, "preflight_source", explode)
     assert module._preflight_compile_sync(source) == "RuntimeError: validator bug"
 
 
@@ -673,8 +670,8 @@ async def test_tick_drops_due_entry_when_reload_attempt_raises(tmp_path: Path, m
     other_root = tmp_path / "other"
     _write_plugin_source(other_root)
     targets = [
-        module._WatchTarget("demo", tmp_path / "demo", False),
-        module._WatchTarget("other", other_root, False),
+        module._WatchTarget("demo", tmp_path / "demo"),
+        module._WatchTarget("other", other_root),
     ]
     monkeypatch.setattr(service, "_collect_targets_sync", lambda: targets)
     attempted = []
@@ -764,7 +761,7 @@ async def test_reload_target_exposes_the_inflight_plugin_to_the_drain(tmp_path: 
             return {"success": True, "plugin_id": plugin_id}
 
     service = _make_service(tmp_path, _ObservingLifecycle(), monkeypatch)
-    await service._reload_target(module._WatchTarget("demo", tmp_path / "demo", False))
+    await service._reload_target(module._WatchTarget("demo", tmp_path / "demo"))
     assert seen == ["demo"]
     assert service._inflight_target is None
 
@@ -784,7 +781,7 @@ async def test_restart_drain_follows_the_recorded_timeout_while_waiting(tmp_path
     service._stop_event = asyncio.Event()
     service._stop_event.set()
     service._task = task
-    service._inflight_target = module._WatchTarget("demo", tmp_path / "demo", False)
+    service._inflight_target = module._WatchTarget("demo", tmp_path / "demo")
     asyncio.get_running_loop().call_later(0.05, lambda: granted.update(demo=0.4))
     try:
         started = time.monotonic()
@@ -811,7 +808,7 @@ async def test_restart_drain_keeps_the_largest_recorded_timeout(tmp_path: Path, 
     service._stop_event = asyncio.Event()
     service._stop_event.set()
     service._task = task
-    service._inflight_target = module._WatchTarget("demo", tmp_path / "demo", False)
+    service._inflight_target = module._WatchTarget("demo", tmp_path / "demo")
     granted["demo"] = 2.0
     loop = asyncio.get_running_loop()
     loop.call_later(0.05, granted.clear)  # start ended, reload still finishing

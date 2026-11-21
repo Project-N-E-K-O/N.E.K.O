@@ -29,7 +29,7 @@ def test_character_card_manager_load(mock_page: Page, running_server: str):
 
 @pytest.mark.frontend
 def test_add_catgirl(mock_page: Page, running_server: str):
-    """Test adding a new catgirl character."""
+    """Test adding a new neko character."""
     # Capture console logs
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
     
@@ -39,7 +39,7 @@ def test_add_catgirl(mock_page: Page, running_server: str):
         mock_page.goto(url)
         mock_page.wait_for_load_state("networkidle")
         
-        # Click "New Catgirl" button (class selector)
+        # Click "New Neko" button (class selector)
         mock_page.locator(".chara-add-btn").click()
         
         # Wait for form to appear

@@ -21,11 +21,12 @@ working unchanged.
 import contextvars
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from utils.language_utils import normalize_language_code, get_global_language_full
 from utils.logger_config import get_module_logger
@@ -41,9 +42,21 @@ _HANDSHAKE_OVERRIDE_UNSET: Any = object()
 _MAGIC_COMMAND_IMAGE_DROP_REQUEST_MAX = 64
 _VOICE_PROACTIVE_ACK_GRACE_S = 0.05
 _PASSIVE_MEDIA_SESSION_UPDATE_ACK_TIMEOUT_S = 5.0
+# Hot-swap preparation waits this long for /new_dialog, which may be held up by the /renew
+# summary it is meant to include. The old session keeps serving meanwhile, and a timeout only
+# discards the pending session until the next turn retries.
+_HOT_SWAP_NEW_DIALOG_TIMEOUT_S = 60.0
+# Before a foreground /new_dialog: how long to wait for POST /preempt_summary, and then for the
+# connector to send the memory writes queued so far (both best effort, see _flush_memory_writes).
+_PREEMPT_SUMMARY_TIMEOUT_S = 1.0
+_MEMORY_FLUSH_WAIT_S = 1.5
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
 _LIVE_VISION_STREAM_INPUT_TYPES = frozenset({"screen", "camera"})
+# Field the frontend sets on continuous screen/camera frames (manual screen
+# share and the voice-time vision heartbeat). Frames without it are one-shot
+# attachments the user chose to send (screenshot button, pasted image).
+_LIVE_SHARE_FRAME_FIELD = "live_share"
 _CONTEXT_APPEND_DEDUP_TTL_SECONDS = 120.0
 _CONTEXT_APPEND_DEDUP_MAX_ENTRIES = 256
 _CONTEXT_APPEND_READY_FLUSH_MAX_PASSES = 8
@@ -85,6 +98,21 @@ _VOICE_ECHO_MIN_NORMALIZED_CHARS = 6
 _VOICE_ECHO_MIN_WINDOW_CHARS = 10
 _VOICE_ECHO_SIMILARITY_THRESHOLD = 0.88
 _VOICE_ECHO_NORMALIZE_RE = re.compile(r"[\W_]+", re.UNICODE)
+
+
+def _is_live_share_frame(message: Any) -> bool:
+    """Whether ``message`` is a continuous share frame rather than a user attachment.
+
+    Only an explicit ``live_share: true`` counts. Untagged screen/camera
+    frames keep the attachment contract: the bundled web/Electron frontend
+    always tags its live frames, and guessing from a missing ``request_id``
+    could silently drop a photo another client attached on purpose.
+    """
+    return (
+        isinstance(message, dict)
+        and message.get("input_type") in _LIVE_VISION_STREAM_INPUT_TYPES
+        and message.get(_LIVE_SHARE_FRAME_FIELD) is True
+    )
 
 
 def _normalize_voice_echo_text(text: str) -> str:
@@ -328,6 +356,17 @@ class _ReplyTurn:
     turn_ended: bool = False
     taken_over: bool = False
     reply_tail: Any = None
+    observation_id: str = field(default_factory=lambda: uuid4().hex)
+    observation_input_id: str | None = None
+    observation_origin: dict | None = None
+    observation_audio_expected: bool | None = None
+    observation_turn_id: str | None = None
+    observation_started: bool = False
+    observation_closed: bool = False
+    observation_close_reason: str = "unknown"
+
+
+_reply_observation_owner = contextvars.ContextVar("reply_observation_owner", default=None)
 
 
 def _taken_over_reply_turn(kind) -> _ReplyTurn | None:

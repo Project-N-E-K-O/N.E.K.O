@@ -7,9 +7,11 @@
   <link rel="stylesheet" href="/static/game/games/air_basketball/air-basketball.css?v={{ air_basketball_asset_version | default('0') }}">
   <link rel="stylesheet" href="/static/game/games/air_basketball/avatar.css?v={{ air_basketball_asset_version | default('0') }}">
   <link rel="stylesheet" href="/static/game/games/air_basketball/arcade.css?v={{ air_basketball_asset_version | default('0') }}">
-  <link rel="preload" as="image" href="/static/game/games/air_basketball/assets/neko-arcade-lane-v2.webp?v={{ air_basketball_asset_version | default('0') }}">
+  <link rel="stylesheet" href="/static/game/games/air_basketball/shared-court.css?v={{ air_basketball_asset_version | default('0') }}">
+  <link rel="preload" as="image" href="/static/game/games/air_basketball/assets/neko-stage-four-court.webp?v={{ air_basketball_asset_version | default('0') }}">
   <link rel="preload" as="image" href="/static/game/games/air_basketball/assets/neko-basketball.png?v={{ air_basketball_asset_version | default('0') }}">
-  <link rel="preload" as="image" href="/static/game/games/air_basketball/assets/neko-hoop.png?v={{ air_basketball_asset_version | default('0') }}">
+  <link rel="preload" as="image" href="/static/game/games/air_basketball/assets/neko-backboard.webp?v={{ air_basketball_asset_version | default('0') }}">
+  <link rel="preload" as="image" href="/static/game/games/air_basketball/assets/neko-rim.webp?v={{ air_basketball_asset_version | default('0') }}">
   <script>
     (() => {
       const params = new URLSearchParams(window.location.search);
@@ -33,16 +35,17 @@
       <div class="brand"><span class="brand-ball">●</span><span data-i18n="airBasketball.title">空气投篮</span></div>
       <div class="round-clock"><span id="clock-label">剩余</span><strong id="match-clock">60</strong><span id="clock-unit">秒</span></div>
       <div class="header-actions">
+        <button id="pause-match" class="stop-match" type="button" hidden aria-pressed="false" data-i18n="airBasketball.pause">暂停</button>
         <button id="stop-match" class="stop-match" type="button" hidden data-i18n="airBasketball.stopMatch">结束本局</button>
         <button id="sound-toggle" class="round-button" type="button" data-i18n-aria-label="airBasketball.soundOff" data-sound-on-fallback="开启音效" data-sound-off-fallback="关闭音效" aria-label="关闭音效">♪</button>
       </div>
     </header>
 
-    <section class="arcade-floor" data-i18n-aria-label="airBasketball.arenaLabel" aria-label="双人投篮赛场">
+    <section class="arcade-floor shared-court" data-i18n-aria-label="airBasketball.arenaLabel" aria-label="共享篮筐投篮赛场">
       <article class="arcade-machine player-machine" data-side="player">
         <div class="machine-marquee"><span data-i18n="airBasketball.you">你</span><small data-i18n="airBasketball.anglePower">角度 × 力度</small></div>
         <div class="machine-screen">
-          <canvas id="player-court" data-i18n-aria-label="airBasketball.playerArcadeLabel" aria-label="玩家投篮机"></canvas>
+          <canvas id="player-court" data-i18n-aria-label="airBasketball.playerArcadeLabel" aria-label="共享球场玩家侧"></canvas>
           <div class="lane-hud">
             <span><i data-i18n="airBasketball.score">得分</i><b id="player-score">0</b></span>
             <span><i data-i18n="airBasketball.stage">阶段</i><b id="player-stage">1</b></span>
@@ -52,14 +55,9 @@
           <div class="stage-banner"><span data-i18n="airBasketball.stageTarget">下一阶段</span><b id="player-target">12</b></div>
           <div id="player-callout" class="callout"></div>
           <div id="player-combo-burst" class="combo-burst" aria-live="polite"><strong>0</strong><span>COMBO</span></div>
-          <div class="aim-panel" aria-hidden="true">
-            <div><span data-i18n="airBasketball.power">力度</span><b id="player-power">0</b></div>
-            <i><em id="player-power-fill"></em></i>
-            <div><span data-i18n="airBasketball.angle">角度</span><b id="player-angle">0°</b></div>
-          </div>
           <div class="fever-meter player-fever"><span data-i18n="airBasketball.fever">爆发</span><i><em id="player-fever-fill"></em></i></div>
-          <div class="interference-meter focus-meter"><i id="player-focus-fill"></i><span data-i18n="airBasketball.interference">专注</span></div>
-          <div id="player-guide" class="gesture-guide"><span>↗</span><b data-i18n="airBasketball.gestureHint">按住篮球拖动蓄力；向右斜投可以闯入对方球场</b></div>
+          <div class="interference-meter focus-meter"><i id="player-focus-fill"></i><span data-i18n="airBasketball.interference">体力</span></div>
+          <div id="player-guide" class="gesture-guide"><span>↗</span><b data-i18n="airBasketball.gestureHint">按住篮球拖动蓄力，朝中间的共享篮筐投篮；也可砸球或拍打猫娘干扰</b></div>
         </div>
         <div class="machine-controls"><span class="joystick"></span><span class="control-copy" data-i18n="airBasketball.playerControl">由你控制</span><span class="arcade-button"></span></div>
       </article>
@@ -69,7 +67,7 @@
       <article class="arcade-machine neko-machine" data-side="neko">
         <div class="machine-marquee"><span id="opponent-name">N.E.K.O</span><small data-i18n="airBasketball.autoChallenge">自动挑战</small></div>
         <div class="machine-screen">
-          <canvas id="neko-court" data-i18n-aria-label="airBasketball.opponentArcadeLabel" aria-label="猫娘投篮机"></canvas>
+          <canvas id="neko-court" data-i18n-aria-label="airBasketball.opponentArcadeLabel" aria-label="共享球场猫娘侧"></canvas>
           <div class="lane-hud">
             <span><i data-i18n="airBasketball.score">得分</i><b id="neko-score">0</b></span>
             <span><i data-i18n="airBasketball.stage">阶段</i><b id="neko-stage">1</b></span>
@@ -80,7 +78,7 @@
           <div id="neko-callout" class="callout"></div>
           <div id="neko-combo-burst" class="combo-burst" aria-live="polite"><strong>0</strong><span>COMBO</span></div>
           <div class="fever-meter neko-fever"><span data-i18n="airBasketball.fever">爆发</span><i><em id="neko-fever-fill"></em></i></div>
-          <div class="interference-meter focus-meter"><i id="neko-focus-fill"></i><span data-i18n="airBasketball.interference">专注</span></div>
+          <div class="interference-meter focus-meter"><i id="neko-focus-fill"></i><span data-i18n="airBasketball.interference">体力</span></div>
           <div id="neko-interference-hint" class="interference-hint" data-i18n="airBasketball.interfereHint">拖动篮球、篮筐，或拍打猫娘干扰她</div>
           <div class="neko-status"><span class="status-dot"></span><b id="neko-status-text"></b></div>
         </div>
@@ -107,6 +105,13 @@
       </article>
     </section>
 
+    <div id="pause-overlay" class="pause-overlay" hidden>
+      <section class="pause-card" role="status">
+        <strong data-i18n="airBasketball.paused">已暂停</strong>
+        <button id="resume-match" class="stop-match" type="button" data-i18n="airBasketball.resume">继续</button>
+      </section>
+    </div>
+
     <div id="mouse-steal-layer" class="mouse-steal-layer" aria-hidden="true">
       <i id="mouse-steal-tether" class="mouse-steal-tether" aria-hidden="true"></i>
       <div id="stolen-cursor" class="stolen-cursor" aria-hidden="true">
@@ -120,13 +125,14 @@
     </div>
   </main>
 
+  <div id="shot-hint" class="shot-hint" role="status" hidden></div>
   <div id="start-overlay" class="overlay">
     <section class="start-card">
       <div class="logo-ball">🏀</div>
       <p class="eyebrow">PLAYER 1 · VS · <span id="start-opponent-name">N.E.K.O</span></p>
       <h1 data-i18n="airBasketball.title">空气投篮</h1>
-      <p id="start-copy">双方共享同一套专注与计分规则；投篮和捣乱都要把握节奏。</p>
-      <div class="rule-chips"><span data-i18n="airBasketball.ruleAim">角度力度</span><span data-i18n="airBasketball.ruleStage">四段篮筐</span><span data-i18n="airBasketball.ruleFever">连续爆发</span></div>
+      <p id="start-copy">双方共享同一套体力与计分规则；投篮和捣乱都要把握节奏。</p>
+      <div class="rule-chips"><span data-i18n="airBasketball.ruleAim">角度力度</span><span data-i18n="airBasketball.ruleStage">固定篮筐</span><span data-i18n="airBasketball.ruleFever">连续爆发</span></div>
       <div class="mode-picker" role="radiogroup" data-i18n-aria-label="airBasketball.chooseMode" aria-label="选择比赛模式">
         <label>
           <input type="radio" name="match-mode" value="timed" checked>
@@ -152,6 +158,7 @@
   <script src="/static/live2d/live2d-core.js?v={{ static_asset_version | default('0') }}"></script>
   <script src="/static/live2d/live2d-emotion.js?v={{ static_asset_version | default('0') }}"></script>
   <script src="/static/avatar/avatar-touch-gestures.js?v={{ static_asset_version | default('0') }}"></script>
+  <script src="/static/avatar/avatar-click-shake.js?v={{ static_asset_version | default('0') }}"></script>
   <script src="/static/live2d/live2d-model.js?v={{ static_asset_version | default('0') }}"></script>
   <script src="/static/live2d/live2d-interaction.js?v={{ static_asset_version | default('0') }}"></script>
   <script src="/static/live2d/live2d-init.js?v={{ static_asset_version | default('0') }}"></script>

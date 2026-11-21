@@ -186,6 +186,7 @@ async def gemini_asr_worker(
                     config={
                         **({"http_options": {"retry_options": {"attempts": 1}}} if delivery_spans else {}),
                         "temperature": 0,
+                        "thinking_config": {"thinking_level": "minimal"},
                         "response_mime_type": "application/json",
                         "response_json_schema": _GEMINI_RESPONSE_SCHEMA,
                     },

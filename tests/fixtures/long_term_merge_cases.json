@@ -1,0 +1,5980 @@
+{
+ "cases": [
+  {
+   "name": "remote edit reaches an untouched entry",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes green tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes green tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "remote deletion reaches an untouched entry",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      },
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f2",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "local edit survives an unchanged remote",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes green tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes green tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "local deletion survives an unchanged remote",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      },
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f2",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "remote edit wins over a local deletion",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      },
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f2",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes black tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes black tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "remote deletion wins over a local edit",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      },
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f2",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "importance": 9
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a confirmation made here outlives a remote deletion",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "enjoys quiet evenings",
+       "metadata": {
+        "status": "confirmed",
+        "userConfirmCount": 0
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "userConfirmCount": 0
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "userConfirmCount": 1
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "userConfirmCount": 1
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a correction made here outlives a remote deletion",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "enjoys quiet evenings",
+       "metadata": {
+        "status": "pending"
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "pending"
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys loud evenings",
+      "metadata": {
+       "status": "pending",
+       "versionHistory": [
+        {
+         "text": "enjoys quiet evenings",
+         "replacedAt": 2000,
+         "reason": "correction"
+        }
+       ]
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys loud evenings",
+      "metadata": {
+       "status": "pending",
+       "versionHistory": [
+        {
+         "text": "enjoys quiet evenings",
+         "replacedAt": 2000,
+         "reason": "correction"
+        }
+       ]
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a sixth correction is new even though the history still holds five",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "wording 5",
+       "metadata": {
+        "status": "pending",
+        "versionHistory": [
+         {
+          "text": "wording 0",
+          "replacedAt": 1000,
+          "reason": "correction"
+         },
+         {
+          "text": "wording 1",
+          "replacedAt": 1001,
+          "reason": "correction"
+         },
+         {
+          "text": "wording 2",
+          "replacedAt": 1002,
+          "reason": "correction"
+         },
+         {
+          "text": "wording 3",
+          "replacedAt": 1003,
+          "reason": "correction"
+         },
+         {
+          "text": "wording 4",
+          "replacedAt": 1004,
+          "reason": "correction"
+         }
+        ]
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "wording 5",
+      "metadata": {
+       "status": "pending",
+       "versionHistory": [
+        {
+         "text": "wording 0",
+         "replacedAt": 1000,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 1",
+         "replacedAt": 1001,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 2",
+         "replacedAt": 1002,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 3",
+         "replacedAt": 1003,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 4",
+         "replacedAt": 1004,
+         "reason": "correction"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "wording 6",
+      "metadata": {
+       "status": "pending",
+       "versionHistory": [
+        {
+         "text": "wording 1",
+         "replacedAt": 1001,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 2",
+         "replacedAt": 1002,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 3",
+         "replacedAt": 1003,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 4",
+         "replacedAt": 1004,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 5",
+         "replacedAt": 2000,
+         "reason": "correction"
+        }
+       ]
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "wording 6",
+      "metadata": {
+       "status": "pending",
+       "versionHistory": [
+        {
+         "text": "wording 1",
+         "replacedAt": 1001,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 2",
+         "replacedAt": 1002,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 3",
+         "replacedAt": 1003,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 4",
+         "replacedAt": 1004,
+         "reason": "correction"
+        },
+        {
+         "text": "wording 5",
+         "replacedAt": 2000,
+         "reason": "correction"
+        }
+       ]
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a fact only this device has is kept and retires nothing",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "new",
+      "text": "has a cat",
+      "metadata": {
+       "signalJudged": false
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "new",
+      "text": "has a cat",
+      "metadata": {
+       "signalJudged": false
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a fact only the remote has is taken",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "new",
+      "text": "has a cat",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "new",
+      "text": "has a cat",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "without a base both sides are kept",
+   "base": null,
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "here",
+      "text": "has a cat",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "there",
+      "text": "has a dog",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "here",
+      "text": "has a cat",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "there",
+      "text": "has a dog",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "without a base a shared entry merges field by field",
+   "base": null,
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": false,
+       "importance": 7,
+       "absorbed": true,
+       "sourceMessageIds": [
+        "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+       ],
+       "reinforcement": 1
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes green tea",
+      "metadata": {
+       "signalJudged": true,
+       "importance": 4,
+       "absorbed": false,
+       "sourceMessageIds": [
+        "sync:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+       ],
+       "reinforcement": 3
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes green tea",
+      "metadata": {
+       "signalJudged": true,
+       "importance": 7,
+       "absorbed": true,
+       "sourceMessageIds": [
+        "sync:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+       ],
+       "reinforcement": 3
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a fact retired elsewhere does not come back from a device without a base",
+   "base": null,
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "gone",
+      "text": "lives in Paris",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "kept",
+      "text": "has a cat",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "gone",
+       "subject": "master",
+       "text": "retired gone",
+       "sourceMessageIds": [
+        "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+       ]
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "kept",
+      "text": "has a cat",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "gone",
+       "subject": "master",
+       "text": "retired gone",
+       "sourceMessageIds": [
+        "sync:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+       ]
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "flags that only turn true are joined",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": false,
+        "absorbed": false,
+        "importance": 5
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": false,
+       "absorbed": false,
+       "importance": 5
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": false,
+       "absorbed": true,
+       "importance": 6
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "absorbed": false,
+       "importance": 7
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "absorbed": true,
+       "importance": 8
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "the later status and its wording win",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "draft",
+       "metadata": {
+        "status": "pending"
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "draft",
+      "metadata": {
+       "status": "pending"
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "confirmed here",
+      "metadata": {
+       "status": "confirmed",
+       "confirmedAt": 3000
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "promoted there",
+      "metadata": {
+       "status": "promoted",
+       "promotedAt": 4000
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "promoted there",
+      "metadata": {
+       "status": "promoted",
+       "confirmedAt": 3000,
+       "promotedAt": 4000
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a denial here wins over a promotion there",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "draft",
+       "metadata": {
+        "status": "confirmed"
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "draft",
+      "metadata": {
+       "status": "confirmed"
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "denied here",
+      "metadata": {
+       "status": "denied",
+       "voidedAt": 5000
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "promoted there",
+      "metadata": {
+       "status": "promoted",
+       "promotedAt": 4000
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "denied here",
+      "metadata": {
+       "status": "denied",
+       "voidedAt": 5000,
+       "promotedAt": 4000
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "equal status keeps the published wording",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "draft",
+       "metadata": {
+        "status": "pending"
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "draft",
+      "metadata": {
+       "status": "pending"
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "reworded here",
+      "metadata": {
+       "status": "pending"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "reworded there",
+      "metadata": {
+       "status": "pending"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "reworded there",
+      "metadata": {
+       "status": "pending"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "counters add both increments",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "enjoys quiet evenings",
+       "metadata": {
+        "status": "confirmed",
+        "reinforcement": 2,
+        "disputation": 1,
+        "userConfirmCount": 1,
+        "userFactReinforceCount": 3
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "reinforcement": 2,
+       "disputation": 1,
+       "userConfirmCount": 1,
+       "userFactReinforceCount": 3
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "reinforcement": 3,
+       "disputation": 1,
+       "userConfirmCount": 2,
+       "userFactReinforceCount": 4
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "reinforcement": 5,
+       "disputation": 2,
+       "userConfirmCount": 2,
+       "userFactReinforceCount": 3
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "reinforcement": 6,
+       "disputation": 2,
+       "userConfirmCount": 3,
+       "userFactReinforceCount": 4
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "importance stays within one to ten",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true,
+        "importance": 8
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "importance": 8
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "importance": 10
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "importance": 10
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "importance": 10
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a counter the base lacked starts from zero",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "enjoys quiet evenings",
+       "metadata": {
+        "status": "confirmed"
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed"
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "reinforcement": 1
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "reinforcement": 2
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "reinforcement": 3
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a day both devices counted is one day",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "enjoys quiet evenings",
+       "metadata": {
+        "status": "confirmed",
+        "subZeroDays": 1,
+        "subZeroLastIncrementDate": "2026-11-09"
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 1,
+       "subZeroLastIncrementDate": "2026-11-09"
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 2,
+       "subZeroLastIncrementDate": "2026-11-10"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 2,
+       "subZeroLastIncrementDate": "2026-11-10"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 2,
+       "subZeroLastIncrementDate": "2026-11-10"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "days counted on different dates keep the larger count and later date",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "enjoys quiet evenings",
+       "metadata": {
+        "status": "confirmed",
+        "subZeroDays": 1,
+        "subZeroLastIncrementDate": "2026-11-08"
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 1,
+       "subZeroLastIncrementDate": "2026-11-08"
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 2,
+       "subZeroLastIncrementDate": "2026-11-09"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 3,
+       "subZeroLastIncrementDate": "2026-11-11"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 3,
+       "subZeroLastIncrementDate": "2026-11-11"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a larger day count on this device is kept over a smaller published one",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "enjoys quiet evenings",
+       "metadata": {
+        "status": "confirmed",
+        "subZeroDays": 1,
+        "subZeroLastIncrementDate": "2026-11-08"
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 1,
+       "subZeroLastIncrementDate": "2026-11-08"
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 3,
+       "subZeroLastIncrementDate": "2026-11-11"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 2,
+       "subZeroLastIncrementDate": "2026-11-09"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "subZeroDays": 3,
+       "subZeroLastIncrementDate": "2026-11-11"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "last-signal times keep the later one",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "enjoys quiet evenings",
+       "metadata": {
+        "status": "confirmed",
+        "reinLastSignalAt": 100,
+        "updatedAt": 100
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "reinLastSignalAt": 100,
+       "updatedAt": 100
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "reinLastSignalAt": 300,
+       "updatedAt": 300
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "reinLastSignalAt": 200,
+       "updatedAt": 400
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed",
+       "reinLastSignalAt": 300,
+       "updatedAt": 400
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "identifier lists join and honour removals",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "enjoys quiet evenings",
+       "metadata": {
+        "status": "pending",
+        "sourceFactIds": [
+         "f1",
+         "f2",
+         "f3"
+        ]
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "pending",
+       "sourceFactIds": [
+        "f1",
+        "f2",
+        "f3"
+       ]
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "pending",
+       "sourceFactIds": [
+        "f1",
+        "f3",
+        "f5"
+       ]
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "pending",
+       "sourceFactIds": [
+        "f1",
+        "f2",
+        "f4"
+       ]
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "pending",
+       "sourceFactIds": [
+        "f1",
+        "f4",
+        "f5"
+       ]
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "an entry this device exports differently is not a local edit",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "sourceSyncId": "desktop:f1",
+       "createdAt": 0,
+       "updatedAt": 0
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "sourceSyncId": "desktop:f1",
+       "createdAt": 0,
+       "updatedAt": 0
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes green tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes green tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "an entry this device exports differently keeps the published form when nothing changed",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "sourceSyncId": "desktop:f1",
+       "createdAt": 0,
+       "updatedAt": 0
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "sourceSyncId": "desktop:f1",
+       "createdAt": 0,
+       "updatedAt": 0
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a local field change is carried onto the published form",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true,
+        "importance": 5
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "importance": 5,
+       "sourceSyncId": "desktop:f1"
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "importance": 5,
+       "absorbed": true,
+       "sourceSyncId": "desktop:f1"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes green tea",
+      "metadata": {
+       "signalJudged": true,
+       "importance": 5
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes green tea",
+      "metadata": {
+       "signalJudged": true,
+       "importance": 5,
+       "absorbed": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "progress keeps the published order and appends what this device added",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [
+       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ],
+      "b": [
+       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "dddddddddddddddddddddddddddddddd"
+     ],
+     "b": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ]
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "cccccccccccccccccccccccccccccccc"
+     ],
+     "b": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+     ]
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "cccccccccccccccccccccccccccccccc",
+      "dddddddddddddddddddddddddddddddd"
+     ],
+     "b": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+     ]
+    }
+   }
+  },
+  {
+   "name": "progress the publisher already dropped is not added back",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [
+       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       "cccccccccccccccccccccccccccccccc"
+      ],
+      "b": []
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "cccccccccccccccccccccccccccccccc",
+      "dddddddddddddddddddddddddddddddd"
+     ],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [
+      "cccccccccccccccccccccccccccccccc"
+     ],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [
+      "cccccccccccccccccccccccccccccccc",
+      "dddddddddddddddddddddddddddddddd"
+     ],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a published organizer replaces an untouched one",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     },
+     "organizer": {
+      "deviceId": "11111111111111111111111111111111",
+      "renewedAt": 100,
+      "rank": 2
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "organizer": {
+     "deviceId": "11111111111111111111111111111111",
+     "renewedAt": 100,
+     "rank": 2
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "organizer": {
+     "deviceId": "11111111111111111111111111111111",
+     "renewedAt": 200,
+     "rank": 2
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "organizer": {
+     "deviceId": "11111111111111111111111111111111",
+     "renewedAt": 200,
+     "rank": 2
+    }
+   }
+  },
+  {
+   "name": "a higher-ranked claim made here is kept",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     },
+     "organizer": {
+      "deviceId": "22222222222222222222222222222222",
+      "renewedAt": 100,
+      "rank": 1
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "organizer": {
+     "deviceId": "11111111111111111111111111111111",
+     "renewedAt": 500,
+     "rank": 4
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "organizer": {
+     "deviceId": "22222222222222222222222222222222",
+     "renewedAt": 200,
+     "rank": 1
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "organizer": {
+     "deviceId": "11111111111111111111111111111111",
+     "renewedAt": 500,
+     "rank": 4
+    }
+   }
+  },
+  {
+   "name": "an equal-ranked claim made here yields to the published one",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "organizer": {
+     "deviceId": "11111111111111111111111111111111",
+     "renewedAt": 500,
+     "rank": 2
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "organizer": {
+     "deviceId": "22222222222222222222222222222222",
+     "renewedAt": 400,
+     "rank": 2
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "organizer": {
+     "deviceId": "22222222222222222222222222222222",
+     "renewedAt": 400,
+     "rank": 2
+    }
+   }
+  },
+  {
+   "name": "giving up the organizer role is published",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     },
+     "organizer": {
+      "deviceId": "11111111111111111111111111111111",
+      "renewedAt": 100,
+      "rank": 2
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "organizer": {
+     "deviceId": "11111111111111111111111111111111",
+     "renewedAt": 100,
+     "rank": 2
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a claim made here replaces a role given up there",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     },
+     "organizer": {
+      "deviceId": "22222222222222222222222222222222",
+      "renewedAt": 100,
+      "rank": 1
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "organizer": {
+     "deviceId": "11111111111111111111111111111111",
+     "renewedAt": 500,
+     "rank": 2
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "organizer": {
+     "deviceId": "11111111111111111111111111111111",
+     "renewedAt": 500,
+     "rank": 2
+    }
+   }
+  },
+  {
+   "name": "one-off maintenance marks and lineage keep the larger value",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     },
+     "maintenance": {
+      "legacyDedup": 1
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "maintenance": {
+     "legacyDedup": 1,
+     "other": 2
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "maintenance": {
+     "legacyDedup": 2
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "maintenance": {
+     "legacyDedup": 2,
+     "other": 2
+    }
+   }
+  },
+  {
+   "name": "a remote written without reading the base proves no deletion",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      },
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f2",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "lineage": 1
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "lineage": 1
+   }
+  },
+  {
+   "name": "retirements keep the published order then local additions",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [
+       {
+        "id": "r1",
+        "subject": "master",
+        "text": "retired r1",
+        "sourceMessageIds": [
+         "s1"
+        ]
+       }
+      ],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r1",
+       "subject": "master",
+       "text": "retired r1",
+       "sourceMessageIds": [
+        "s1"
+       ]
+      },
+      {
+       "id": "r3",
+       "subject": "master",
+       "text": "retired r3",
+       "sourceMessageIds": [
+        "s3"
+       ]
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r1",
+       "subject": "master",
+       "text": "retired r1",
+       "sourceMessageIds": [
+        "s1"
+       ]
+      },
+      {
+       "id": "r2",
+       "subject": "master",
+       "text": "retired r2",
+       "sourceMessageIds": [
+        "s2"
+       ]
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r1",
+       "subject": "master",
+       "text": "retired r1",
+       "sourceMessageIds": [
+        "s1"
+       ]
+      },
+      {
+       "id": "r2",
+       "subject": "master",
+       "text": "retired r2",
+       "sourceMessageIds": [
+        "s2"
+       ]
+      },
+      {
+       "id": "r3",
+       "subject": "master",
+       "text": "retired r3",
+       "sourceMessageIds": [
+        "s3"
+       ]
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "one retirement changed on both sides joins its sources",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [
+       {
+        "id": "r1",
+        "subject": "master",
+        "text": "retired r1",
+        "sourceMessageIds": [
+         "s1"
+        ]
+       }
+      ],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r1",
+       "subject": "master",
+       "text": "retired r1",
+       "sourceMessageIds": [
+        "s1",
+        "s2"
+       ]
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r1",
+       "subject": "master",
+       "text": "retired r1",
+       "sourceMessageIds": [
+        "s1",
+        "s3"
+       ]
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r1",
+       "subject": "master",
+       "text": "retired r1",
+       "sourceMessageIds": [
+        "s1",
+        "s2",
+        "s3"
+       ]
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a correction without a known time reopens a resolved cutoff",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [
+       {
+        "id": "r1",
+        "subject": "master",
+        "text": "retired r1",
+        "sourceMessageIds": [
+         "s1"
+        ]
+       }
+      ],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r1",
+       "subject": "master",
+       "text": "retired r1",
+       "sourceMessageIds": [
+        "s1"
+       ],
+       "retiredBySourceMessageIds": [
+        "c1"
+       ],
+       "retiredThroughAt": 1000,
+       "retiredThroughAtFromCorrection": true
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r1",
+       "subject": "master",
+       "text": "retired r1",
+       "sourceMessageIds": [
+        "s1"
+       ],
+       "retiredBySourceMessageIds": [
+        "c2"
+       ]
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r1",
+       "subject": "master",
+       "text": "retired r1",
+       "sourceMessageIds": [
+        "s1"
+       ],
+       "retiredBySourceMessageIds": [
+        "c1",
+        "c2"
+       ]
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "two resolved corrections keep the later cutoff",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [
+       {
+        "id": "r1",
+        "subject": "master",
+        "text": "retired r1",
+        "sourceMessageIds": [
+         "s1"
+        ]
+       }
+      ],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r1",
+       "subject": "master",
+       "text": "retired r1",
+       "sourceMessageIds": [
+        "s1"
+       ],
+       "retiredBySourceMessageIds": [
+        "c1"
+       ],
+       "retiredThroughAt": 1000,
+       "retiredThroughAtFromCorrection": true
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r1",
+       "subject": "master",
+       "text": "retired r1",
+       "sourceMessageIds": [
+        "s1"
+       ],
+       "retiredBySourceMessageIds": [
+        "c2"
+       ],
+       "retiredThroughAt": 3000,
+       "retiredThroughAtFromCorrection": true
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r1",
+       "subject": "master",
+       "text": "retired r1",
+       "sourceMessageIds": [
+        "s1"
+       ],
+       "retiredBySourceMessageIds": [
+        "c1",
+        "c2"
+       ],
+       "retiredThroughAt": 3000,
+       "retiredThroughAtFromCorrection": true
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "a retirement the publisher pruned stays pruned",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [
+       {
+        "id": "r1",
+        "subject": "master",
+        "text": "retired r1",
+        "sourceMessageIds": [
+         "s1"
+        ]
+       },
+       {
+        "id": "r2",
+        "subject": "master",
+        "text": "retired r2",
+        "sourceMessageIds": [
+         "s2"
+        ]
+       }
+      ],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r1",
+       "subject": "master",
+       "text": "retired r1",
+       "sourceMessageIds": [
+        "s1"
+       ]
+      },
+      {
+       "id": "r2",
+       "subject": "master",
+       "text": "retired r2",
+       "sourceMessageIds": [
+        "s2"
+       ]
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r2",
+       "subject": "master",
+       "text": "retired r2",
+       "sourceMessageIds": [
+        "s2"
+       ]
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [
+      {
+       "id": "r2",
+       "subject": "master",
+       "text": "retired r2",
+       "sourceMessageIds": [
+        "s2"
+       ]
+      }
+     ],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "confirmations from both sides are kept",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [],
+      "confirmations": [
+       {
+        "fingerprint": "1:2:3",
+        "factId": "f1"
+       }
+      ]
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": [
+      {
+       "fingerprint": "1:2:3",
+       "factId": "f1"
+      },
+      {
+       "fingerprint": "4:5:6",
+       "factId": "f2"
+      }
+     ]
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": [
+      {
+       "fingerprint": "1:2:3",
+       "factId": "f1"
+      },
+      {
+       "fingerprint": "7:8:9",
+       "factId": "f3"
+      }
+     ]
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": [
+      {
+       "fingerprint": "1:2:3",
+       "factId": "f1"
+      },
+      {
+       "fingerprint": "7:8:9",
+       "factId": "f3"
+      },
+      {
+       "fingerprint": "4:5:6",
+       "factId": "f2"
+      }
+     ]
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  },
+  {
+   "name": "cold lists keep the published order then local additions",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     },
+     "cold": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "c1",
+       "status": "retracted",
+       "archivedAt": 500
+      }
+     ]
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c1",
+      "status": "retracted",
+      "archivedAt": 500
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c3",
+      "status": "superseded",
+      "archivedAt": 500,
+      "supersededById": "f1"
+     }
+    ]
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c1",
+      "status": "retracted",
+      "archivedAt": 500
+     },
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r2",
+      "status": "archived",
+      "archivedAt": 500
+     }
+    ]
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c1",
+      "status": "retracted",
+      "archivedAt": 500
+     },
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r2",
+      "status": "archived",
+      "archivedAt": 500
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c3",
+      "status": "superseded",
+      "archivedAt": 500,
+      "supersededById": "f1"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a listed row leaves the entries whatever either side did to it",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      },
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f2",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes green tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "status": "superseded",
+      "archivedAt": 500,
+      "supersededById": "f2"
+     }
+    ]
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "status": "superseded",
+      "archivedAt": 500,
+      "supersededById": "f2"
+     }
+    ]
+   }
+  },
+  {
+   "name": "a listed reflection leaves the entries too",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "text": "enjoys quiet evenings",
+       "metadata": {
+        "status": "pending"
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "pending"
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "confirmed"
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "status": "archived",
+      "archivedAt": 500
+     }
+    ]
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "status": "archived",
+      "archivedAt": 500
+     }
+    ]
+   }
+  },
+  {
+   "name": "without a base a listed row is not brought back as new",
+   "base": null,
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "status": "retracted",
+      "archivedAt": 500
+     }
+    ]
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f2",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "status": "retracted",
+      "archivedAt": 500
+     }
+    ]
+   }
+  },
+  {
+   "name": "a cold row the organizer pruned stays pruned",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     },
+     "cold": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "c1",
+       "status": "retracted",
+       "archivedAt": 500
+      },
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "c2",
+       "status": "retracted",
+       "archivedAt": 500
+      }
+     ]
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c1",
+      "status": "retracted",
+      "archivedAt": 900
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c2",
+      "status": "retracted",
+      "archivedAt": 500
+     }
+    ]
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c2",
+      "status": "retracted",
+      "archivedAt": 500
+     }
+    ]
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c2",
+      "status": "retracted",
+      "archivedAt": 500
+     }
+    ]
+   }
+  },
+  {
+   "name": "a cold row pruned here stays pruned while the remote did not change it",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     },
+     "cold": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "c1",
+       "status": "retracted",
+       "archivedAt": 500
+      },
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "c2",
+       "status": "retracted",
+       "archivedAt": 500
+      }
+     ]
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c2",
+      "status": "retracted",
+      "archivedAt": 500
+     }
+    ]
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c1",
+      "status": "retracted",
+      "archivedAt": 500
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c2",
+      "status": "retracted",
+      "archivedAt": 500
+     }
+    ]
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c2",
+      "status": "retracted",
+      "archivedAt": 500
+     }
+    ]
+   }
+  },
+  {
+   "name": "one row both lists changed takes the later status and the later time",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     },
+     "cold": [
+      {
+       "kind": "reflection",
+       "subject": "relationship",
+       "id": "r1",
+       "status": "archived",
+       "archivedAt": 100
+      },
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "c1",
+       "status": "superseded",
+       "archivedAt": 100,
+       "supersededById": "f2"
+      }
+     ]
+    },
+    "nativeEntries": []
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "status": "archived",
+      "archivedAt": 700
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c1",
+      "status": "superseded",
+      "archivedAt": 600,
+      "supersededById": "f3"
+     }
+    ]
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "status": "archived",
+      "archivedAt": 300
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c1",
+      "status": "retracted",
+      "archivedAt": 200
+     }
+    ]
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "status": "archived",
+      "archivedAt": 700
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "c1",
+      "status": "retracted",
+      "archivedAt": 600
+     }
+    ]
+   }
+  },
+  {
+   "name": "a whole demoted row from an older writer is read as its cold listing",
+   "base": {
+    "document": {
+     "schemaVersion": 3,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "signalJudged": true
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     },
+     "progress": {
+      "a": [],
+      "b": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "archived": true,
+       "archivedAt": 800,
+       "status": "superseded",
+       "supersededById": "f9"
+      }
+     },
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "text": "enjoys quiet evenings",
+      "metadata": {
+       "status": "pending",
+       "archived": true,
+       "archivedAt": 700
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    },
+    "cold": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "status": "superseded",
+      "archivedAt": 800,
+      "supersededById": "f9"
+     },
+     {
+      "kind": "reflection",
+      "subject": "relationship",
+      "id": "r1",
+      "status": "archived",
+      "archivedAt": 700
+     }
+    ]
+   }
+  },
+  {
+   "name": "facts from an older document count as already judged",
+   "base": {
+    "document": {
+     "schemaVersion": 2,
+     "completedAt": 1000,
+     "entries": [
+      {
+       "kind": "fact",
+       "subject": "master",
+       "id": "f1",
+       "text": "likes tea",
+       "metadata": {
+        "importance": 5
+       }
+      }
+     ],
+     "evidence": {
+      "retirements": [],
+      "confirmations": []
+     }
+    },
+    "nativeEntries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "importance": 5
+      }
+     }
+    ]
+   },
+   "local": {
+    "schemaVersion": 3,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "importance": 5
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "new",
+      "text": "has a cat",
+      "metadata": {
+       "signalJudged": false
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   },
+   "remote": {
+    "schemaVersion": 2,
+    "completedAt": 1000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "importance": 5
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f3",
+      "text": "has a dog",
+      "metadata": {}
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    }
+   },
+   "completedAt": 9000,
+   "expected": {
+    "schemaVersion": 3,
+    "completedAt": 9000,
+    "entries": [
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f1",
+      "text": "likes tea",
+      "metadata": {
+       "signalJudged": true,
+       "importance": 5
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "f3",
+      "text": "has a dog",
+      "metadata": {
+       "signalJudged": true
+      }
+     },
+     {
+      "kind": "fact",
+      "subject": "master",
+      "id": "new",
+      "text": "has a cat",
+      "metadata": {
+       "signalJudged": false
+      }
+     }
+    ],
+    "evidence": {
+     "retirements": [],
+     "confirmations": []
+    },
+    "progress": {
+     "a": [],
+     "b": []
+    }
+   }
+  }
+ ]
+}

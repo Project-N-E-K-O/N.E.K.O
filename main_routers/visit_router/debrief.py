@@ -890,7 +890,7 @@ async def _choose(visit_id: str, choice: str, seq: Optional[int], lanlan_name: s
             return 404, {"error": "unknown_or_expired"}
         own_char = await _own_char(state)
         if not own_char or own_char != lanlan_name:
-            # Origin no longer belongs to this catgirl, possibly after old-name reuse: clicking stale blocks must neither
+            # Origin no longer belongs to this neko, possibly after old-name reuse: clicking stale blocks must neither
             # return this preview there nor change its choice.
             return 404, {"error": "unknown_or_expired"}
         current = state["debrief_choice"]

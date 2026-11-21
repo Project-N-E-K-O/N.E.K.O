@@ -411,7 +411,7 @@ async def test_strict_reads_treat_missing_keys_as_absent(tmp_path):
     lambda e: e["chars"].__setitem__("", {}),
 ])
 async def test_strict_reads_reject_damaged_pair_or_char_ids(tmp_path, damage):
-    # Never silently filter bad elements: that would omit their pair / peer catgirl from clear plans.
+    # Never silently filter bad elements: that would omit their pair / peer neko from clear plans.
     import json as _json
 
     from main_logic.visit.subjects import RosterCorruptError

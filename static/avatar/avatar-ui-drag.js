@@ -376,6 +376,13 @@ window.createChatModeToggle = function(options) {
             if (window.proactiveChatEnabled && typeof window.resetProactiveChatBackoff === 'function') {
                 window.resetProactiveChatBackoff();
             }
+            // Proactive vision needs both switches; the stream was released when
+            // one went off and later captures never prompt, so acquire it on this click.
+            // (The main Proactive Chat switch lives in avatar-ui-popup.js.)
+            if (globalVarName === 'proactiveVisionChatEnabled'
+                && typeof window.acquireProactiveVisionAfterUserEnable === 'function') {
+                window.acquireProactiveVisionAfterUserEnable();
+            }
         } else {
             // 关闭时的逻辑：区分主开关和子模式
             const isMainSwitch = globalVarName === 'proactiveChatEnabled';
@@ -424,6 +431,22 @@ window.createChatModeToggle = function(options) {
     wrapper.appendChild(checkbox);
     wrapper.appendChild(indicator);
     wrapper.appendChild(label);
+
+    if (globalVarName === 'proactiveTheaterInviteEnabled') {
+        const enter = document.createElement('button');
+        enter.type = 'button';
+        enter.className = 'theater-market-enter';
+        enter.title = '';
+        enter.setAttribute('data-i18n', 'theater.marketEnter');
+        enter.textContent = window.t ? window.t('theater.marketEnter') : '';
+        enter.addEventListener('pointerdown', event => event.stopPropagation());
+        enter.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (window.nekoTheaterMarket) window.nekoTheaterMarket.open();
+        });
+        wrapper.appendChild(enter);
+    }
 
     window.updateChatModeStyle(checkbox);
 
@@ -479,6 +502,12 @@ window.CHAT_MODE_CONFIG = [
         labelKey: 'settings.toggles.proactiveMiniGameInviteChat',
         tooltipKey: 'settings.toggles.proactiveMiniGameInviteChatTooltip',
         globalVarName: 'proactiveMiniGameInviteEnabled'
+    },
+    {
+        mode: 'theater',
+        labelKey: 'settings.toggles.proactiveTheaterInviteChat',
+        tooltipKey: 'settings.toggles.proactiveTheaterInviteChatTooltip',
+        globalVarName: 'proactiveTheaterInviteEnabled'
     }
 ];
 

@@ -10,6 +10,7 @@
  */
 const TOKEN_STORAGE_KEY = 'neko_bridge_token'
 const LOG_PREFIX = '[market-bridge]'
+export const MARKET_AUTH_CHANGED_EVENT = 'neko-market-auth-changed'
 
 let cachedToken = ''
 let inflightToken: Promise<string> | null = null
@@ -84,7 +85,11 @@ function bridgeUrl(path: string, token: string): string {
 export async function fetchBridge(
   path: string,
   init?: RequestInit,
-  options: { retryOnForbidden?: boolean; throwOnTransportError?: boolean } = {},
+  options: {
+    retryOnForbidden?: boolean
+    throwOnTransportError?: boolean
+    authorizationHeader?: boolean
+  } = {},
 ): Promise<Response | null> {
   const token = await ensureBridgeToken()
   if (!token) {
@@ -92,9 +97,16 @@ export async function fetchBridge(
     return null
   }
 
+  function send(bridgeToken: string): Promise<Response> {
+    if (!options.authorizationHeader) return fetch(bridgeUrl(path, bridgeToken), init)
+    const headers = new Headers(init?.headers)
+    headers.set('Authorization', `Bearer ${bridgeToken}`)
+    return fetch(path, { ...init, headers })
+  }
+
   let res: Response
   try {
-    res = await fetch(bridgeUrl(path, token), init)
+    res = await send(token)
   } catch (err) {
     console.warn(LOG_PREFIX, 'request failed', path, err)
     if (options.throwOnTransportError) throw err
@@ -105,7 +117,7 @@ export async function fetchBridge(
   const freshToken = await ensureBridgeToken(true)
   if (!freshToken) return res
   try {
-    return await fetch(bridgeUrl(path, freshToken), init)
+    return await send(freshToken)
   } catch (err) {
     console.warn(LOG_PREFIX, 'retry failed', path, err)
     if (options.throwOnTransportError) throw err

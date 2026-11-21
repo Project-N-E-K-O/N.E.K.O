@@ -350,3 +350,161 @@ async def test_a_reset_during_a_transfer_is_not_undone(tmp_path, network):
     await download(tmp_path, [("a", "https://a.test/pkg")])
     assert not sources.route_stats_path().exists()
     assert sources._routes == {}
+
+
+@pytest.mark.parametrize("cancel_count", [1, 2])
+async def test_cancel_during_loser_close_drains_the_underlying_stream(monkeypatch, cancel_count):
+    import httpx
+    from plugin.server.infrastructure import package_transfer as transfer_module
+
+    closing = asyncio.Event()
+    release = asyncio.Event()
+    responses = []
+
+    class Body(httpx.AsyncByteStream):
+        def __init__(self):
+            self.close_finished = False
+
+        async def __aiter__(self):
+            yield b"synthetic"
+
+        async def aclose(self):
+            closing.set()
+            await release.wait()
+            self.close_finished = True
+
+    for name in ("a", "b"):
+        responses.append(httpx.Response(200, stream=Body(), request=httpx.Request("GET", f"https://{name}.invalid/pkg")))
+
+    transfer = transfer_module._Transfer(httpx, [("a", "https://a.invalid/pkg"), ("b", "https://b.invalid/pkg")],
+        maximum_bytes=1024, report_progress=lambda *_: None, report_route=lambda *_: None, check_cancelled=lambda: None)
+    first_ready, both_ready = asyncio.Event(), asyncio.Event()
+
+    async def opening(source, url):
+        index = 0 if source == "a" else 1
+        if index == 0:
+            first_ready.set()
+        else:
+            await first_ready.wait()
+            both_ready.set()
+        await both_ready.wait()
+        return transfer_module._Opened(source, url, responses[index], 0, 9, 0, 0)
+
+    transfer._open = opening
+    monkeypatch.setattr(transfer_module, "_hedge_delay", lambda _: 0)
+    task = asyncio.create_task(transfer._open_first())
+    try:
+        await asyncio.wait_for(closing.wait(), 1)
+        # HTTPX marks is_closed before stream.aclose has completed.
+        for _ in range(cancel_count):
+            task.cancel()
+            await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        results = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+        assert isinstance(results[0], asyncio.CancelledError)
+        assert all(response.stream.close_finished for response in responses), (
+            "A response was marked closed before cancellation interrupted its stream cleanup"
+        )
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        # Finish synthetic streams directly; HTTPX does not retry closed responses.
+        for response in responses:
+            await response.stream.aclose()
+
+
+async def test_cancelled_download_closes_winning_response(tmp_path):
+    import httpx
+    from plugin.server.infrastructure.package_transfer import _Opened, _Transfer
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    closing, release_close = asyncio.Event(), asyncio.Event()
+
+    class Body(httpx.AsyncByteStream):
+        close_finished = False
+
+        async def __aiter__(self):
+            yield b'synthetic'
+
+        async def aclose(self):
+            closing.set()
+            await release_close.wait()
+            self.close_finished = True
+    response = httpx.Response(200, stream=Body(), request=httpx.Request('GET', 'https://fast.invalid/package'))
+    transfer = _Transfer(httpx, [('slow', 'https://slow.invalid/package'), ('fast', 'https://fast.invalid/package')], maximum_bytes=1024, report_progress=lambda *_: None, report_route=lambda *_: None, check_cancelled=lambda: None)
+
+    async def opening(source_id, url):
+        if source_id == 'slow':
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+                raise
+        return _Opened(source_id, url, response, 0, 0, 0.0, 0.0)
+    transfer._open = opening
+    task = asyncio.create_task(transfer.run(tmp_path / 'package'))
+    try:
+        await asyncio.wait_for(cancelled.wait(), 2)
+        task.cancel()
+        release.set()
+        await asyncio.wait_for(closing.wait(), 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release_close.set()
+        result = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
+        assert isinstance(result[0], asyncio.CancelledError)
+        assert response.stream.close_finished
+    finally:
+        release.set()
+        release_close.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await response.stream.aclose()
+
+
+@pytest.mark.parametrize("cancel_count", [1, 2])
+async def test_cancel_during_winner_body_cleanup_drains_stream(cancel_count):
+    import io
+
+    reading, closing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class Body(httpx.AsyncByteStream):
+        close_finished = False
+
+        async def __aiter__(self):
+            reading.set()
+            await asyncio.Event().wait()
+            yield b"unreachable"
+
+        async def aclose(self):
+            closing.set()
+            await release.wait()
+            self.close_finished = True
+
+    response = httpx.Response(200, stream=Body(), request=httpx.Request("GET", "https://winner.invalid/pkg"))
+    instance = transfer._Transfer(httpx, [], maximum_bytes=1024,
+        report_progress=lambda *_: None, report_route=lambda *_: None, check_cancelled=lambda: None)
+    opened = transfer._Opened("winner", "https://winner.invalid/pkg", response, 0, 0, 0, 0)
+    task = asyncio.create_task(instance._carry(opened, io.BytesIO()))
+    try:
+        await asyncio.wait_for(reading.wait(), 1)
+        task.cancel()  # Interrupt body consumption and enter the finally block.
+        await asyncio.wait_for(closing.wait(), 1)
+        assert response.is_closed and not response.stream.close_finished
+        for _ in range(cancel_count):
+            task.cancel()  # Interrupt cleanup, not just the preceding download.
+            await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        result = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+        assert isinstance(result[0], asyncio.CancelledError)
+        assert response.stream.close_finished
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await response.stream.aclose()

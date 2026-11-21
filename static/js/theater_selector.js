@@ -48,6 +48,38 @@
         node.setAttribute('aria-label', node.textContent);
         node.setAttribute('data-i18n', key);
         node.setAttribute('data-i18n-aria', key);
+        syncStatusOverflow();
+    }
+    // The status chip is not a control: it only becomes focusable (and gets a hover tooltip)
+    // while its text is cut off by the ellipsis, so keyboard and mouse users can read the full text.
+    function syncStatusOverflow() {
+        var node = $('theater-selector-status');
+        if (!node || !node.classList.contains('theater-status')) return;
+        var focused = document.activeElement === node;
+        // While focused the chip may be expanded in place, so measurements no longer reflect truncation;
+        // keep it focusable until blur re-runs this check (removing tabindex would drop focus).
+        var truncated = focused ? node.hasAttribute('tabindex') : node.scrollWidth > node.clientWidth + 1;
+        if (truncated) {
+            node.setAttribute('tabindex', '0');
+            node.setAttribute('title', node.textContent);
+        } else {
+            node.removeAttribute('tabindex');
+            node.removeAttribute('title');
+        }
+    }
+    function watchStatusOverflow() {
+        var node = $('theater-selector-status');
+        if (!node || !node.classList.contains('theater-status')) return;
+        node.addEventListener('blur', syncStatusOverflow);
+        // i18n rewrites the text through data-i18n without calling setStatus.
+        if (typeof MutationObserver !== 'undefined') {
+            new MutationObserver(syncStatusOverflow).observe(node, { childList: true, characterData: true, subtree: true });
+        }
+        if (typeof ResizeObserver !== 'undefined') {
+            new ResizeObserver(syncStatusOverflow).observe(node);
+        }
+        window.addEventListener('resize', syncStatusOverflow);
+        syncStatusOverflow();
     }
     function setFeedback(text, isError) {
         var node = $('theater-inline-feedback');
@@ -81,7 +113,7 @@
     }
     function setBusy(busy) {
         state.busy = busy;
-        ['theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-end-btn', 'theater-delete-btn', 'theater-forget-memory-btn', 'theater-settings-btn'].forEach(function (id) {
+        ['theater-market-btn', 'theater-import-btn', 'theater-empty-import-btn', 'theater-start-btn', 'theater-continue-btn', 'theater-end-btn', 'theater-delete-btn', 'theater-forget-memory-btn'].forEach(function (id) {
             var node = $(id);
             if (node) node.disabled = busy;
         });
@@ -284,7 +316,8 @@
             lines.push(parts.join('\n'));
         });
         var ending = archive && archive.ending && typeof archive.ending === 'object' ? archive.ending : {};
-        var endingText = [ending.title, ending.summary].filter(Boolean).map(String).join('：');
+        // 旧归档仍保留作者摘要数据；查看时只显示结局标题，收束以完整演出记录为准。
+        var endingText = String(ending.title || '').trim();
         if (endingText) lines.push(t('theater.completedPerformance', '已完成的演绎') + '\n' + endingText);
         return lines.join('\n\n');
     }
@@ -934,7 +967,10 @@
         var message = event && event.data;
         if (!message || typeof message !== 'object') return;
         if (String(message.action || '').indexOf('theater:') === 0 && message.schema !== MESSAGE_SCHEMA) return;
-        if (message.action === 'theater:post-end' && message.story_id && message.session_id && message.end_receipt_id) {
+        if (message.action === 'theater:market-opened' && !state.busy && !state.pendingEnd && !state.memoryPromptActive) {
+            // Market replaces an idle local library left behind after exit; keep unfinished memory decisions.
+            window.close();
+        } else if (message.action === 'theater:post-end' && message.story_id && message.session_id && message.end_receipt_id) {
             postMessage({action: 'theater:post-end-accepted', end_receipt_id: message.end_receipt_id});
             // BroadcastChannel、opener 或重复 ready 都可能重送同一事实；按服务端稳定回执 ID 去重。
             if (state.pendingEnd && state.pendingEnd.end_receipt_id === message.end_receipt_id) return;
@@ -977,13 +1013,24 @@
         });
     }
     document.addEventListener('DOMContentLoaded', function () {
+        // Market entry is only a connection page, never a local selector or end-receipt consumer.
+        if (new URLSearchParams(window.location.search).has('market') && window.nekoTheaterMarket) {
+            window.nekoTheaterMarket.redirectSelector();
+            return;
+        }
         if (typeof BroadcastChannel !== 'undefined') {
             try { state.channel = new BroadcastChannel('neko_page_channel'); state.channel.addEventListener('message', handleCrossWindowMessage); } catch (_) { state.channel = null; }
         }
         window.addEventListener('message', handleCrossWindowMessage);
         // 剧本列表通常先于 i18n 渲染完成；脚本写入的提示、徽章和记忆行没有 data-i18n，语言就绪后需重绘。
         window.addEventListener('localechange', function () { renderStories(); renderDetail(); });
+        watchStatusOverflow();
         bindModalKeyboard();
+        $('theater-market-btn').addEventListener('click', function () {
+            if (state.busy || state.pendingEnd || state.memoryPromptActive) return;
+            // Reuse this window: closing an Electron opener also closes its market child.
+            window.location.assign('/theater?market=browse');
+        });
         $('theater-import-btn').addEventListener('click', function () { $('theater-import-input').click(); });
         $('theater-empty-import-btn').addEventListener('click', function () { $('theater-import-input').click(); });
         $('theater-import-input').addEventListener('change', function () { importStory(this.files && this.files[0]); });
@@ -992,11 +1039,6 @@
         $('theater-end-btn').addEventListener('click', endSession);
         $('theater-delete-btn').addEventListener('click', deleteStory);
         $('theater-forget-memory-btn').addEventListener('click', forgetStoryMemory);
-        var settingsButton = $('theater-settings-btn');
-        if (settingsButton) settingsButton.addEventListener('click', function () {
-            if (state.busy) return;
-            window.location.href = '/theater/settings';
-        });
         loadStories().catch(function () { setStatus('theater.failed', '出错了'); setFeedback(t('theater.storyListFailed', '剧本列表加载失败，请重新加载。'), true); });
         postMessage({ action: 'theater:selector-ready' });
     });

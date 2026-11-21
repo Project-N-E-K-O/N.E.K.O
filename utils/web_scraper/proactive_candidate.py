@@ -184,6 +184,28 @@ def _format_neko_community_phase2_context(
     return "\n".join(lines)
 
 
+def _format_grounded_news_phase2_context(
+    candidate: dict[str, Any], *, language: str
+) -> str:
+    """Restate a selected overseas news candidate's source facts for Phase 2."""
+
+    from config.prompts.prompts_proactive import (
+        get_proactive_news_phase2_context_locale,
+    )
+
+    locale = get_proactive_news_phase2_context_locale(language)
+    lines = [
+        locale["safety"],
+        "<news-candidate-data>",
+        f"{locale['source']}: {_escape_community_card_text(candidate.get('source'))}",
+        f"{locale['title']}: {_escape_community_card_text(candidate.get('title'))}",
+    ]
+    summary = _escape_community_card_text(candidate.get("description_hint") or "")
+    lines.append(f"{locale['summary']}: {summary[:500] or locale['empty_summary']}")
+    lines.extend(["</news-candidate-data>", locale["constraint"]])
+    return "\n".join(lines)
+
+
 async def prepare_selected_web_candidate(
     candidate: dict[str, Any],
     *,
@@ -196,6 +218,12 @@ async def prepare_selected_web_candidate(
     prepared = dict(candidate)
     if prepared.get("mode") == "community":
         return prepared, _format_neko_community_phase2_context(
+            prepared, language=language
+        )
+    if prepared.get("grounded_news"):
+        # Phase 1's own paraphrase may embellish a bare trending term; hand
+        # Phase 2 the source facts instead and forbid going beyond them.
+        return prepared, _format_grounded_news_phase2_context(
             prepared, language=language
         )
     if prepared.get("platform") != "bilibili":

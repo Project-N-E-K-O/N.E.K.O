@@ -30,11 +30,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from typing import Callable
 
 from memory.event_log import (
     EVT_PERSONA_ENTRY_UPDATED,
     EVT_PERSONA_EVIDENCE_UPDATED,
     EVT_PERSONA_FACT_ADDED,
+    EVT_PERSONA_SUPPRESSED,
     EVT_REFLECTION_EVIDENCE_UPDATED,
     EVT_REFLECTION_STATE_CHANGED,
     Reconciler,
@@ -61,6 +63,10 @@ _EVIDENCE_SNAPSHOT_KEYS = (
 # preserves the backoff window / dead-letter logic.
 _REFLECTION_EVIDENCE_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + (
     'last_promote_attempt_at', 'promote_attempt_count',
+    # Explicit user confirmations: lets a reflection resting only on the AI's
+    # own words through the promotion gate (memory.evidence.awaits_user_signal),
+    # so it must survive a crash between event append and view save.
+    'user_confirm_count',
 )
 _PERSONA_ENTRY_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + (
     'merged_from_ids',
@@ -219,6 +225,52 @@ def make_persona_evidence_handler(persona_manager):
             persona_manager._personas[name] = persona
             atomic_write_json(path, persona, indent=2, ensure_ascii=False)
         return changed
+
+    return _apply
+
+
+def make_persona_suppressed_handler(persona_manager):
+    """Build the `persona.suppressed` apply handler (weekly introspection).
+
+    The payload carries the whole ``permanent_suppression`` marker, so
+    replay is a plain idempotent assignment — same shape as the evidence
+    handler above. Without a registered handler this event type would stop
+    every later replay for the character (the reconciler pauses on unknown
+    types), which is why it is registered alongside its first emitter.
+    """
+    from memory.introspection import PERMANENT_SUPPRESSION_KEY
+
+    def _apply(name: str, payload: dict) -> bool:
+        entity_key = payload.get('entity_key')
+        entry_id = payload.get('entry_id')
+        marker = payload.get(PERMANENT_SUPPRESSION_KEY)
+        if not entity_key or not entry_id or not marker:
+            return False
+        path = persona_manager._persona_path(name)
+        if not os.path.exists(path):
+            return False
+        # Load failures propagate, as in the evidence handler: a silent
+        # fallback would advance the sentinel past an unapplied suppression.
+        with open(path, encoding='utf-8') as f:
+            persona = json.load(f)
+        if not isinstance(persona, dict):
+            raise RuntimeError(
+                f"[EvidenceHandler] {path}: 期望 dict，实际 "
+                f"{type(persona).__name__}；view 结构异常，暂停 replay"
+            )
+        section = persona.get(entity_key)
+        if not isinstance(section, dict):
+            return False
+        for e in section.get('facts', []):
+            if not isinstance(e, dict) or e.get('id') != entry_id:
+                continue
+            if e.get(PERMANENT_SUPPRESSION_KEY) == marker:
+                return False
+            e[PERMANENT_SUPPRESSION_KEY] = marker
+            persona_manager._personas[name] = persona
+            atomic_write_json(path, persona, indent=2, ensure_ascii=False)
+            return True
+        return False
 
     return _apply
 
@@ -442,6 +494,7 @@ def make_persona_archive_handler(persona_manager):
         snapshot = payload.get('entry_snapshot')
         shard_changed = False
         if isinstance(snapshot, dict):
+            snapshot = {**snapshot, 'entity_key': entity_key}
             archive_dir = persona_manager._persona_archive_dir(name)
             try:
                 shard_changed = ensure_entry_in_named_shard_sync(
@@ -481,6 +534,128 @@ def make_persona_archive_handler(persona_manager):
         return view_changed or shard_changed
 
     return _apply
+
+
+def _is_reflection_archive_payload(payload: dict) -> bool:
+    """Same test as make_reflection_archive_handler: an archive transition."""
+    return payload.get('to') == 'archived'
+
+
+def _is_persona_archive_payload(payload: dict) -> bool:
+    """Same test as make_persona_archive_handler: carries a shard basename."""
+    return bool(payload.get('archive_shard_path'))
+
+
+def make_archive_copy_check(character_dir: str) -> Callable[[dict], bool]:
+    """Build the ``needs_journal_copy`` predicate for journal compaction.
+
+    Returns a callable ``(record) -> bool``; True means "keep this journal
+    line, it may be the only copy of an archived entry". Archival appends
+    the shard AFTER the event has advanced the sentinel (and callers only
+    log a failed append), so the replay self-heal in the two archive
+    handlers above never runs for it: if the shard write was lost, the
+    event's ``entry_snapshot`` is all that is left.
+
+    Reflection and persona are handled by one table, symmetric by
+    construction: an archive event (reflection.state_changed to
+    'archived' / persona.fact_added with archive_shard_path) whose
+    ``entry_snapshot`` is a dict and whose entry id is a non-empty string
+    is droppable only if some shard of that side holds a record with the
+    same id AND the same archive fingerprint (``archived_at``, else the
+    whole entry). Same id alone is not enough: a restored entry archived a
+    second time has the same id with a newer ``archived_at``, and only its
+    newest copy may be missing from the shards. An unreadable shard keeps
+    every archive event of that side. Anything that is not such an archive
+    event returns False and follows the normal retention rules. Persona
+    copies must also retain the payload's subject; older events without a
+    snapshot remain pinned until their subject is durable in a shard.
+
+    Paths are built from ``character_dir`` without calling the managers'
+    getters, which would create directories. Each side's shards are read
+    at most once per predicate, lazily, and never written.
+    """
+    from memory.archive_shards import (
+        PERSONA_ARCHIVE_DIRNAME,
+        REFLECTION_ARCHIVE_DIRNAME,
+        _list_shard_files,
+        archive_copy_fingerprint,
+        shard_entry_index_sync,
+    )
+
+    sides: dict[str, tuple[str, str, Callable[[dict], bool]]] = {
+        EVT_REFLECTION_STATE_CHANGED: (
+            os.path.join(character_dir, REFLECTION_ARCHIVE_DIRNAME),
+            'reflection_id',
+            _is_reflection_archive_payload,
+        ),
+        EVT_PERSONA_FACT_ADDED: (
+            os.path.join(character_dir, PERSONA_ARCHIVE_DIRNAME),
+            'entry_id',
+            _is_persona_archive_payload,
+        ),
+    }
+    indexes = {}
+    # Identity of each side's shard files as they were when its index was read.
+    signatures: dict[str, tuple | None] = {}
+
+    def _shard_signature(archive_dir: str) -> tuple | None:
+        try:
+            files = []
+            for fn, _, _ in _list_shard_files(archive_dir):
+                st = os.stat(os.path.join(archive_dir, fn))
+                files.append((fn, st.st_ino, st.st_size, st.st_mtime_ns))
+            return tuple(files)
+        except OSError:
+            return None
+
+    def _sources_unchanged() -> bool:
+        """True when every shard read so far is still the file that was indexed.
+
+        Compaction calls this under the write fence before trusting an index
+        built outside it: a restore that swapped the shards in between could
+        otherwise make a missing archive copy look present. Stat only.
+        """
+        return all(sig is not None and _shard_signature(archive_dir) == sig
+                   for archive_dir, sig in signatures.items())
+
+    def _needs_journal_copy(record: dict) -> bool:
+        side = sides.get(record.get('type'))
+        if side is None:
+            return False
+        archive_dir, id_key, is_archive_payload = side
+        payload = record.get('payload')
+        if not isinstance(payload, dict) or not is_archive_payload(payload):
+            return False
+        snapshot = payload.get('entry_snapshot')
+        persona = record.get('type') == EVT_PERSONA_FACT_ADDED
+        subject = payload.get('entity_key') if persona else None
+        if persona and (not isinstance(subject, str) or not subject):
+            return True
+        if not isinstance(snapshot, dict) and not persona:
+            return False
+        entry_id = payload.get(id_key)
+        if not isinstance(entry_id, str) or not entry_id:
+            return False
+        if archive_dir not in indexes:
+            signatures[archive_dir] = _shard_signature(archive_dir)
+            indexes[archive_dir] = (shard_entry_index_sync(archive_dir, by_subject=True) if persona
+                            else shard_entry_index_sync(archive_dir))
+        index = indexes[archive_dir]
+        if index is None:
+            return True
+        fingerprints = index.get((entry_id, subject) if persona else entry_id, frozenset())
+        unknown = index.get((entry_id, None), frozenset()) if persona else frozenset()
+        stamp = snapshot.get('archived_at') if isinstance(snapshot, dict) else payload.get('archived_at')
+        if unknown and (not stamp or archive_copy_fingerprint({'archived_at': stamp}) in unknown):
+            return True
+        if not isinstance(snapshot, dict):
+            return archive_copy_fingerprint({'archived_at': stamp}) not in fingerprints if stamp else not fingerprints
+        if persona and not snapshot.get('archived_at'):
+            snapshot = {**snapshot, 'entity_key': subject}
+        return archive_copy_fingerprint(snapshot) not in fingerprints
+
+    _needs_journal_copy.sources_unchanged = _sources_unchanged
+    return _needs_journal_copy
 
 
 def make_reflection_state_changed_composite(reflection_engine):
@@ -535,6 +710,10 @@ def register_evidence_handlers(
     reconciler.register(
         EVT_PERSONA_ENTRY_UPDATED,
         make_persona_entry_handler(persona_manager),
+    )
+    reconciler.register(
+        EVT_PERSONA_SUPPRESSED,
+        make_persona_suppressed_handler(persona_manager),
     )
     # RFC §3.5.6 + §3.9.6: archive + merge-on-promote both emit
     # EVT_REFLECTION_STATE_CHANGED. Dispatch on `to` inside the composite.

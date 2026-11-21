@@ -1,0 +1,1347 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Task preferences and permission settings."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sys
+from typing import Any
+
+import pytest
+
+from nekoclaw.host.ledger import Ledger
+from nekoclaw.host.permissions import (
+    DEFAULT_MODES,
+    DENIED_BY_SETTINGS,
+    DENIED_BY_USER,
+    DENIED_NO_ANSWER,
+    GrantBinding,
+    GrantScope,
+    PermissionGate,
+    PermissionStore,
+)
+from nekoclaw.host.preferences import INFERRED_MARK, PreferenceStore
+
+
+@pytest.fixture
+async def preferences(tmp_path: Any) -> Any:
+    ledger = Ledger(tmp_path / "ledger.db")
+    yield PreferenceStore(ledger)
+    await ledger.close()
+
+
+# ---------------------------------------------------------------------------
+# Preferences: when they take effect
+# ---------------------------------------------------------------------------
+
+
+async def test_a_stated_preference_applies_at_once(preferences):
+    entry = await preferences.state("查天气默认查上海", kind="default", lanlan_name="Lan")
+
+    assert (entry.origin, entry.active, entry.observations) == ("stated", True, 1)
+    assert await preferences.render("帮我查天气") == "- 查天气默认查上海"
+
+
+async def test_an_inferred_preference_needs_two_observations(preferences):
+    first = await preferences.observe("The user stopped a task done with weather.today: 查上海天气", kind="capability")
+
+    assert (first.origin, first.active, first.observations) == ("inferred", False, 1)
+    assert await preferences.render("weather.today 查上海天气") == ""
+
+    second = await preferences.observe("The user stopped a task done with weather.today: 查北京天气", kind="capability")
+
+    assert second.id == first.id
+    assert (second.active, second.observations) == (True, 2)
+    rendered = await preferences.render("weather today 天气")
+    assert rendered.endswith(INFERRED_MARK)
+    assert "weather.today" in rendered
+
+
+async def test_different_tendencies_do_not_add_up(preferences):
+    await preferences.observe("The user stopped a task done with weather.today: 查上海天气")
+    other = await preferences.observe("Prefers summaries as bullet points in English")
+
+    assert other.observations == 1 and not other.active
+    assert len(await preferences.list()) == 2
+    assert await preferences.list(active_only=True) == []
+
+
+async def test_threshold_is_two(preferences):
+    from config.nekoclaw_settings import PREFERENCE_INFERRED_THRESHOLD
+
+    assert PREFERENCE_INFERRED_THRESHOLD == 2
+
+
+async def _stop(preferences: Any, title: str, target: str) -> Any:
+    from nekoclaw.host.preferences import describe_stop, stop_tendency_prefix
+
+    return await preferences.observe(
+        describe_stop(title, target),
+        kind="capability",
+        lanlan_name="Lan",
+        same_tendency_prefix=stop_tendency_prefix(target),
+    )
+
+
+async def test_stops_of_unrelated_entries_are_not_one_tendency(preferences):
+    # The template words alone make these two sentences look alike.
+    first = await _stop(preferences, "play jazz", "music.play")
+    second = await _stop(preferences, "lock door", "home.lock")
+
+    assert first.id != second.id
+    assert not first.active and not second.active
+    assert all(not item.active for item in await preferences.list())
+
+
+async def test_two_stops_of_the_same_entry_are_one_tendency(preferences):
+    first = await _stop(preferences, "play jazz", "music.play")
+    second = await _stop(preferences, "play some rock", "music.play")
+    # A longer entry name starting the same way is another entry.
+    other = await _stop(preferences, "play jazz", "music.player")
+
+    assert second.id == first.id
+    assert (second.observations, second.active) == (2, True)
+    assert other.id != first.id and not other.active
+
+
+async def test_stating_what_was_inferred_makes_it_stated_and_active(preferences):
+    inferred = await preferences.observe("Use the lifekit plugin for nearby restaurant searches")
+
+    stated = await preferences.state("Use the lifekit plugin for nearby restaurant searches please")
+
+    assert stated.id == inferred.id
+    assert (stated.origin, stated.active) == ("stated", True)
+    assert len(await preferences.list()) == 1
+
+
+async def test_observation_matching_a_stated_preference_changes_nothing(preferences):
+    stated = await preferences.state("Use the lifekit plugin for nearby restaurant searches")
+
+    observed = await preferences.observe("Use the lifekit plugin for nearby restaurant searches")
+
+    assert observed.id == stated.id
+    assert (observed.origin, observed.observations) == ("stated", 1)
+
+
+async def test_stating_the_same_thing_twice_keeps_one_entry(preferences):
+    first = await preferences.state("办完不用主动告诉我", kind="report")
+    second = await preferences.state("办完不用主动告诉我", kind="report")
+
+    assert second.id == first.id
+    assert len(await preferences.list()) == 1
+
+
+async def test_empty_text_is_not_recorded(preferences):
+    assert await preferences.state("   ") is None
+    assert await preferences.observe("") is None
+    assert await preferences.list() == []
+
+
+async def test_a_stored_preference_is_capped_in_tokens(preferences):
+    from config.nekoclaw_settings import PREFERENCE_TEXT_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    entry = await preferences.state(" ".join(f"word{n}" for n in range(400)))
+
+    assert count_tokens(entry.text) <= PREFERENCE_TEXT_MAX_TOKENS
+
+
+async def test_console_can_edit_switch_off_and_remove(preferences):
+    entry = await preferences.observe("Never email results")
+    assert not entry.active
+
+    switched = await preferences.set_active(entry.id, True)
+    assert switched.active
+    edited = await preferences.edit(entry.id, text="Never email results; put them in the notes folder", kind="report")
+    assert (edited.origin, edited.kind) == ("console", "report")
+    removed = await preferences.remove(entry.id)
+    removed_again = await preferences.remove(entry.id)
+    assert (removed, removed_again) == (True, False)
+    assert await preferences.get(entry.id) is None
+
+
+async def test_an_inferred_preference_switched_off_by_hand_stays_off(preferences):
+    await preferences.observe("The user stopped a task done with weather.today: 查上海天气", kind="capability")
+    entry = await preferences.observe("The user stopped a task done with weather.today: 查北京天气", kind="capability")
+    assert entry.active
+
+    await preferences.set_active(entry.id, False)
+    again = await preferences.observe("The user stopped a task done with weather.today: 查广州天气", kind="capability")
+
+    assert again.id == entry.id
+    assert not again.active
+    assert await preferences.render("weather today 天气") == ""
+    # Saying it in so many words still switches it on.
+    stated = await preferences.state(entry.text)
+    assert (stated.id, stated.active) == (entry.id, True)
+
+
+@pytest.mark.parametrize(
+    "text, kind",
+    [
+        ("结果一律用列表汇报", "report"),
+        ("結果一律用清單匯報", "report"),
+        ("Report results as bullet points", "report"),
+        ("結果は箇条書きで報告して", "report"),
+        ("결과는 목록으로 보고해 줘", "report"),
+        ("Присылай результаты списком", "report"),
+        ("Dame los resultados en una lista", "report"),
+        ("Mande os resultados em uma lista", "report"),
+        ("花钱之前先问我", "ask_first"),
+        ("花錢之前先問我", "ask_first"),
+        ("Ask me before spending money", "ask_first"),
+        ("お金を使う前に先に確認して", "ask_first"),
+        ("돈 쓰기 전에 먼저 물어봐", "ask_first"),
+        ("Сначала спроси меня, прежде чем тратить деньги", "ask_first"),
+        ("Pregúntame antes de gastar dinero", "ask_first"),
+        ("Pergunte antes de gastar dinheiro", "ask_first"),
+        ("找餐厅用 lifekit 插件", "capability"),
+        ("找餐廳用 lifekit 外掛", "capability"),
+        ("Use the lifekit plugin for restaurants", "capability"),
+        ("レストラン探しは lifekit プラグインで", "capability"),
+        ("식당은 lifekit 플러그인으로 찾아", "capability"),
+        ("Для ресторанов используй плагин lifekit", "capability"),
+        ("Usa el plugin lifekit para restaurantes", "capability"),
+        ("Use o plugin lifekit para restaurantes", "capability"),
+        ("查天气默认查上海", "default"),
+        ("查天氣預設查台北", "default"),
+        ("Weather lookups are for Shanghai by default", "default"),
+        ("天気はデフォルトで東京", "default"),
+        ("날씨는 기본으로 서울", "default"),
+        ("Погоду по умолчанию смотри для Москвы", "default"),
+        ("El tiempo por defecto de Madrid", "default"),
+        ("O tempo por padrão de Lisboa", "default"),
+        ("周末不要安排", "other"),
+    ],
+)
+def test_a_stated_preference_is_filed_under_its_kind(text, kind):
+    from nekoclaw.host.preferences import preference_kind
+
+    assert preference_kind(text) == kind
+
+
+def test_the_kind_words_cover_every_language():
+    from config.prompts.prompts_nekoclaw_brain import PREFERENCE_KIND_PATTERNS
+
+    assert set(PREFERENCE_KIND_PATTERNS) == {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
+    for patterns in PREFERENCE_KIND_PATTERNS.values():
+        assert set(patterns) == {"ask_first", "report", "capability", "default"}
+
+
+# ---------------------------------------------------------------------------
+# Preferences: what a prompt is given
+# ---------------------------------------------------------------------------
+
+
+async def test_injected_preferences_never_exceed_their_cap(preferences):
+    from config.nekoclaw_settings import PREFERENCE_PROMPT_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    # 150 until the owner had the caps of what a commission is told loosened (2026-11-18).
+    assert PREFERENCE_PROMPT_MAX_TOKENS == 300
+    for number in range(40):
+        await preferences.state(
+            f"For weather task number {number} always use provider {number} and answer in a table with units", kind="default"
+        )
+
+    rendered = await preferences.render("weather task provider table units")
+
+    assert rendered
+    assert count_tokens(rendered) <= PREFERENCE_PROMPT_MAX_TOKENS
+    # Whole entries only: nothing is cut in the middle.
+    assert all(line.startswith("- For weather task number") and line.endswith("units") for line in rendered.splitlines())
+    assert len(rendered.splitlines()) < 40
+
+
+async def test_a_smaller_budget_is_honoured(preferences):
+    from utils.tokenize import count_tokens
+
+    for number in range(10):
+        await preferences.state(f"weather rule {number}: use provider {number}", kind="default")
+
+    assert count_tokens(await preferences.render("weather provider", max_tokens=20)) <= 20
+    assert await preferences.render("weather provider", max_tokens=0) == ""
+
+
+async def test_only_relevant_entries_are_injected(preferences):
+    await preferences.state("查天气默认查上海", kind="default")
+    await preferences.state("Save downloaded music to D:/Music", kind="default")
+
+    assert await preferences.render("明天天气怎么样") == "- 查天气默认查上海"
+    assert await preferences.render("download this music") == "- Save downloaded music to D:/Music"
+    assert await preferences.render("zzz qqq") == ""
+
+
+async def test_a_default_with_a_topic_stays_with_its_topic(preferences):
+    # A default names what it is about; given to every task it would mislead
+    # an unrelated one (Shanghai as the departure city of a train ticket).
+    await preferences.state("查天气默认查上海", kind="default")
+
+    assert await preferences.render("帮我订一张明天去北京的火车票") == ""
+    assert await preferences.render("明天天气怎么样") == "- 查天气默认查上海"
+
+
+async def test_reporting_and_ask_first_rules_apply_to_every_task(preferences):
+    await preferences.state("办完后不用主动说，下次聊到再提", kind="report")
+    await preferences.state("Ask before spending money", kind="ask_first")
+    await preferences.state("Save downloaded music to D:/Music", kind="default")
+
+    rendered = await preferences.render("translate this document")
+
+    assert set(rendered.splitlines()) == {"- 办完后不用主动说，下次聊到再提", "- Ask before spending money"}
+
+
+async def test_switched_off_entries_are_not_injected(preferences):
+    entry = await preferences.state("Ask before spending money", kind="ask_first")
+    await preferences.set_active(entry.id, False)
+
+    assert await preferences.render("buy a ticket") == ""
+
+
+# ---------------------------------------------------------------------------
+# Permissions: the settings file
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def store(tmp_path: Any) -> PermissionStore:
+    return PermissionStore(tmp_path / "nekoclaw" / "permissions.json")
+
+
+async def test_scoped_loan_is_shared_by_the_root_but_bound_to_each_actual_delivery(store):
+    parents = {"first": "root", "second": "root"}
+
+    async def parent_of(actor):
+        return parents.get(actor)
+
+    waiting, answer = asyncio.Event(), asyncio.Event()
+    asked = []
+
+    async def ask(actor, question):
+        asked.append((actor, question))
+        waiting.set()
+        await answer.wait()
+        return "session"
+
+    gate = PermissionGate(store, ask, parent_of)
+    scope = GrantScope("daily", "work-summary", "owner")
+
+    async def deliver(actor, selected=scope):
+        return await gate.check(actor, "managed_delivery", scope=selected, hold_once=True)
+
+    async with asyncio.timeout(5), asyncio.TaskGroup() as group:
+        first = group.create_task(deliver("first"))
+        question = group.create_task(waiting.wait())
+        done, _ = await asyncio.wait((first, question), return_when=asyncio.FIRST_COMPLETED)
+        if first in done:
+            pytest.fail(f"first request ended before asking: {first.result()!r}")
+        second = group.create_task(deliver("second"))
+        await asyncio.sleep(0)
+        answer.set()
+    a, b = first.result(), second.result()
+    assert a.allow and b.allow and len(asked) == 1
+    assert asked[0][1].options == ("session", "once", "deny")
+    assert a.grant_id != b.grant_id
+    shared = gate.authorization_ref(a.grant_id)
+    assert shared == gate.authorization_ref(b.grant_id)
+    gate.end_session("first")
+    assert not gate.grant_active(a.grant_id) and gate.grant_active(b.grant_id)
+    c = await deliver("root")
+    assert gate.authorization_ref(c.grant_id) == shared and len(asked) == 1
+    gate.release_grant(c.grant_id)
+    assert not gate.grant_active(c.grant_id) and gate.grant_active(shared)
+    assert not await gate.valid_grant("other", b.grant_id, "managed_delivery", scope=scope)
+    assert not await gate.valid_grant("second", b.grant_id, "managed_delivery", scope=GrantScope("daily"))
+    for expanded in [GrantScope("daily", "private-summary", "owner"), GrantScope("daily", "work-summary", "group")]:
+        assert (await deliver("second", expanded)).allow
+    assert (await deliver("new-commission")).allow
+    assert len(asked) == 4
+    gate.revoke_grant(shared)
+    assert not gate.grant_active(b.grant_id)
+    assert (await deliver("second")).allow and len(asked) == 5
+
+
+async def test_external_message_starts_a_fresh_approval_branch_without_resetting_siblings(store):
+    parents = {"child": "root", "grandchild": "child", "other": "root"}
+
+    async def parent_of(cid):
+        return parents.get(cid)
+
+    asker = Asker("session")
+    gate = PermissionGate(store, asker, parent_of)
+    scope = GrantScope("builtin", "browser")
+
+    async def borrow(cid):
+        return await gate.check(cid, "browser", scope=scope, hold_once=True)
+
+    first = await borrow("child")
+    original = gate.authorization_ref(first.grant_id)
+    descendant = await borrow("grandchild")
+    assert gate.authorization_ref(descendant.grant_id) == original
+    gate.received_external_input("child")
+    assert not gate.grant_active(first.grant_id) and not gate.grant_active(descendant.grant_id)
+    assert not await gate.valid_grant("child", original, "browser", scope=scope)
+    assert gate.authorization_ref((await borrow("other")).grant_id) == original
+    assert len(asker.asked) == 1
+    fresh = await borrow("child")
+    assert fresh.asked and gate.authorization_ref(fresh.grant_id) != original
+    assert gate.authorization_ref((await borrow("grandchild")).grant_id) == gate.authorization_ref(fresh.grant_id)
+    assert len(asker.asked) == 2
+    gate.end_session("root")
+    assert not gate.grant_active(original) and not gate.grant_active(fresh.grant_id)
+
+
+async def test_widening_a_rule_keeps_parallel_answers_and_queued_approvals(store):
+    pending = asyncio.Event()
+    answer = asyncio.Event()
+
+    async def ask(actor, _question):
+        if actor == "queued":
+            return "once"
+        if actor == "second":
+            pending.set()
+            await answer.wait()
+            return "once"
+        return "always"
+
+    gate = PermissionGate(store, ask)
+    queued = await gate.check("queued", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+    async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
+        second = tasks.create_task(gate.check("second", "browser", scope=GrantScope("browser", "second"), hold_once=True))
+        await pending.wait()
+        first = await gate.check("first", "browser", scope=GrantScope("browser", "first"), hold_once=True)
+        answer.set()
+    assert first.allow and second.result().allow and second.result().asked
+    assert gate.grant_active(queued.grant_id) and gate.grant_active(second.result().grant_id)
+    await store.set_mode("browser", "allow")
+    assert gate.grant_active(queued.grant_id)
+    await store.set_mode("browser", "first_ask")
+    await store.set_mode("browser", "allow")
+    assert not gate.grant_active(queued.grant_id)
+
+
+@pytest.mark.parametrize("mode", ["allow", "first_ask"])
+async def test_dsh_native_request_must_outlive_its_first_settings_read(store, monkeypatch, mode):
+    await store.set_mode("run_command", mode)
+    ask = Asker("once")
+    gate = PermissionGate(store, ask)
+    read = store.mode
+
+    async def end_during_read(category, key=None):
+        current = await read(category, key)
+        gate.end_run("commission")
+        return current
+
+    monkeypatch.setattr(store, "mode", end_during_read)
+    decision = await gate.check_native("commission", "run_command", detail={"tool": "native"})
+    assert not decision.allow and not ask.asked
+
+
+async def test_retired_binding_during_mode_read_denies_the_scoped_fast_path(store, monkeypatch):
+    await store.set_mode("browser", "allow")
+    gate = PermissionGate(store)
+    binding = GrantBinding()
+    scope = GrantScope("builtin", "browser", bindings=(binding,))
+    mode = store.mode
+
+    async def retire(category, key=None):
+        value = await mode(category, key)
+        binding.active = False
+        return value
+
+    monkeypatch.setattr(store, "mode", retire)
+    assert not (await gate.check("c", "browser", scope=scope)).allow
+
+
+@pytest.mark.parametrize("failure", ["ended_during_save", "question_unavailable"])
+async def test_live_peer_rechecks_after_the_other_request_cannot_finish(store, monkeypatch, failure):
+    async def parent(cid):
+        return None if cid == "root" else "root"
+
+    asked = []
+    entered, release, joining = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def ask(cid, _question):
+        asked.append(cid)
+        if failure == "question_unavailable" and cid == "first":
+            entered.set()
+            await release.wait()
+            raise RuntimeError("no session to ask")
+        return "always" if failure == "ended_during_save" else "once"
+
+    gate = PermissionGate(store, ask, parent)
+    scope = GrantScope("builtin", "browser")
+    mode = store.mode
+    persist = store.set_mode
+
+    async def write(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await persist(*args, **kwargs)
+
+    peer_reads = 0
+
+    async def read(*args, **kwargs):
+        nonlocal peer_reads
+        result = await mode(*args, **kwargs)
+        if asyncio.current_task() is peer and result == "first_ask":
+            peer_reads += 1
+            if peer_reads == 2:
+                joining.set()
+        return result
+
+    monkeypatch.setattr(store, "set_mode", write)
+    peer = None
+    async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
+        first = tasks.create_task(gate.check("first", "browser", scope=scope, hold_once=True))
+        await entered.wait()
+        monkeypatch.setattr(store, "mode", read)
+        peer = tasks.create_task(gate.check("second", "browser", scope=scope, hold_once=True))
+        # The second caller reads the policy again after resolving its ancestry,
+        # then joins the in-flight approval without a further asynchronous step.
+        await joining.wait()
+        if failure == "ended_during_save":
+            gate.end_run("first")
+        release.set()
+    assert not first.result().allow
+    assert peer.result().allow and gate.grant_active(peer.result().grant_id)
+    assert asked == (["first"] if failure == "ended_during_save" else ["first", "second"])
+
+
+async def test_unrelated_setting_does_not_defeat_scoped_always_approval(store):
+    async def ask(_actor, _question):
+        await store.set_mode("run_command", "deny")
+        return "always"
+
+    gate = PermissionGate(store, ask)
+    result = await gate.check("c", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+    assert result.allow and result.asked and gate.grant_active(result.grant_id)
+    assert await store.mode("browser") == "allow"
+
+
+@pytest.mark.parametrize("new_mode, expected", [("always_ask", True), ("deny", False)])
+async def test_a_tightening_during_confirmation_never_persists_the_wider_answer(store, new_mode, expected):
+    async def ask(_actor, _question):
+        await store.set_mode("browser", new_mode)
+        return "always"
+
+    gate = PermissionGate(store, ask)
+    reply = await gate.check("c", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+    assert reply.allow is expected and await store.mode("browser") == new_mode
+    assert not gate.session_grants("c") and not gate.run_grants("c")
+    if expected:
+        assert gate.grant_active(reply.grant_id)
+        gate.release_grant(reply.grant_id)
+        assert not gate.grant_active(reply.grant_id)
+    else:
+        assert reply.reason == DENIED_BY_SETTINGS
+
+
+async def test_mcp_default_tightens_only_servers_that_inherit_it(store):
+    gate = PermissionGate(store, Asker("once"))
+    await store.set_mode("mcp_server", "allow", "named")
+    explicit = await gate.check("a", "mcp_server", key="named", scope=GrantScope("named"), hold_once=True)
+    inherited = await gate.check("a", "mcp_server", key="other", scope=GrantScope("other"), hold_once=True)
+    await store.set_mode("mcp_server", "deny")
+    assert gate.grant_active(explicit.grant_id) and not gate.grant_active(inherited.grant_id)
+    await store.set_mode("mcp_server", "allow", "other")
+    assert not gate.grant_active(inherited.grant_id)
+
+
+async def test_expanded_settings_do_not_silently_approve_every_data_recipient(store):
+    await store.set_mode("managed_delivery", "allow")
+    gate = PermissionGate(store, Asker("once"))
+    scope = GrantScope("daily", "work-summary", "owner")
+    assert not (await gate.check("commission", "managed_delivery")).allow
+    checked = await gate.check("commission", "managed_delivery", scope=scope)
+    assert checked.asked and checked.allow and gate.grant_active(checked.grant_id)
+    await store.set_mode("browser", "deny")
+    assert gate.grant_active(checked.grant_id)
+    await store.set_mode("managed_delivery", "deny")
+    await store.set_mode("managed_delivery", "first_ask")
+    assert not gate.grant_active(checked.grant_id)
+
+
+@pytest.mark.parametrize("ends", ["root", "child"])
+async def test_late_scoped_confirmation_does_not_authorize_a_cancelled_operation(store, ends):
+    gate = PermissionGate(store)
+
+    async def parent_of(actor):
+        return "root" if actor == "child" else None
+
+    async def ask(actor, question):
+        gate.end_session(ends)
+        return "session"
+
+    gate.set_parent_lookup(parent_of)
+    gate.set_asker(ask)
+    result = await gate.check("child", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+    assert not result.allow and not result.grant_id
+
+
+@pytest.mark.parametrize("transition,actor,allowed", [
+    ("end_run", "child", False), ("end_session", "child", False),
+    ("end_session", "root", False), ("end_session", "unrelated", True),
+])
+async def test_scoped_lookup_is_bound_to_the_run_that_requested_it(store, transition, actor, allowed):
+    gate = PermissionGate(store)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def parent_of(cid):
+        entered.set()
+        await release.wait()
+        return "root" if cid == "child" else None
+
+    ask = Asker("once")
+    gate.set_asker(ask)
+    gate.set_parent_lookup(parent_of)
+
+    async def check():
+        return await gate.check("child", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+
+    pending = asyncio.create_task(check())
+    await entered.wait()
+    getattr(gate, transition)(actor)
+    release.set()
+    result = await pending
+    assert result.allow is allowed and bool(result.grant_id) is allowed
+    assert len(ask.asked) == int(allowed)
+    assert (await check()).allow  # the next genuine request belongs to the current run
+
+
+async def test_defaults_of_the_design(store):
+    assert DEFAULT_MODES == {
+        "workdir_files": "allow",
+        "outside_read": "first_ask",
+        "outside_write": "first_ask",
+        "run_command": "first_ask",
+        "other": "allow",
+        "keyboard_mouse": "first_ask",
+        "browser": "first_ask",
+        "plugin_entry": "allow",
+        "managed_delivery": "first_ask",
+        "mcp_server": "first_ask",
+    }
+    for category, mode in DEFAULT_MODES.items():
+        assert await store.mode(category) == mode
+    # Each MCP server starts at the category's default.
+    assert await store.mode("mcp_server", "notes") == "first_ask"
+    # A category nobody defined is never silently allowed.
+    assert await store.mode("something_new") == "always_ask"
+
+
+async def test_no_file_is_written_until_a_setting_changes(store, tmp_path):
+    await store.mode("run_command")
+    assert not (tmp_path / "nekoclaw" / "permissions.json").exists()
+
+    await store.set_mode("run_command", "allow")
+
+    saved = json.loads((tmp_path / "nekoclaw" / "permissions.json").read_text(encoding="utf-8"))
+    assert saved == {"version": 1, "categories": {"run_command": "allow"}, "mcp_servers": {}}
+
+
+async def test_settings_survive_a_restart(store, tmp_path):
+    await store.set_mode("run_command", "deny")
+    await store.set_mode("mcp_server", "allow", "notes")
+
+    again = PermissionStore(tmp_path / "nekoclaw" / "permissions.json")
+
+    assert await again.mode("run_command") == "deny"
+    assert await again.mode("mcp_server", "notes") == "allow"
+    assert await again.mode("mcp_server", "other-server") == "first_ask"
+    snapshot = await again.snapshot()
+    assert snapshot["categories"]["run_command"] == "deny"
+    assert snapshot["categories"]["plugin_entry"] == "allow"
+    assert snapshot["mcp_servers"] == {"notes": "allow"}
+
+
+async def test_unknown_mode_is_rejected(store):
+    with pytest.raises(ValueError):
+        await store.set_mode("run_command", "sometimes")
+
+
+@pytest.mark.parametrize("content", ["{not json", "[]"])
+async def test_a_damaged_file_denies_everything(tmp_path, content):
+    path = tmp_path / "permissions.json"
+    path.write_text(content, encoding="utf-8")
+
+    store = PermissionStore(path)
+
+    # The user's settings are unknown, so nothing falls back to a default that allows.
+    assert await store.mode("run_command") == "deny"
+    assert await store.mode("plugin_entry") == "deny"
+
+
+async def test_server_names_edited_by_hand_are_read_as_they_are_looked_up(tmp_path):
+    path = tmp_path / "permissions.json"
+    path.write_text(json.dumps({"mcp_servers": {" github ": "deny", "  ": "allow"}}), encoding="utf-8")
+
+    store = PermissionStore(path)
+
+    # Stripped, as ``mode`` strips the name it is asked about; a blank key is the "*" slot.
+    assert await store.mode("mcp_server", "github") == "deny"
+    assert await store.mode("mcp_server") == "allow"
+
+
+async def test_an_unknown_mode_in_the_file_falls_back_to_the_default(tmp_path):
+    path = tmp_path / "permissions.json"
+    path.write_text(json.dumps({"categories": {"run_command": "bogus"}}), encoding="utf-8")
+
+    store = PermissionStore(path)
+
+    assert await store.mode("run_command") == "first_ask"
+    assert await store.mode("plugin_entry") == "allow"
+
+
+# ---------------------------------------------------------------------------
+# Permissions: one decision
+# ---------------------------------------------------------------------------
+
+
+class Asker:
+    def __init__(self, choice: str = "once") -> None:
+        self.choice = choice
+        self.asked: list[tuple[str, Any]] = []
+
+    async def __call__(self, commission_id: str, ask: Any) -> str:
+        self.asked.append((commission_id, ask))
+        return self.choice
+
+
+async def test_allowed_category_is_not_asked_about(store):
+    asker = Asker()
+    gate = PermissionGate(store, asker)
+
+    decision = await gate.check("c1", "plugin_entry")
+
+    assert decision.allow is True
+    assert asker.asked == []
+
+
+async def test_denied_category_is_refused_without_asking(store):
+    await store.set_mode("run_command", "deny")
+    asker = Asker()
+
+    decision = await PermissionGate(store, asker).check("c1", "run_command")
+
+    assert (decision.allow, decision.reason) == (False, DENIED_BY_SETTINGS)
+    assert asker.asked == []
+
+
+async def test_first_ask_once_allows_this_request_only(store):
+    asker = Asker("once")
+    gate = PermissionGate(store, asker)
+
+    first = await gate.check("c1", "run_command", detail={"command": "dir"})
+    second = await gate.check("c1", "run_command", detail={"command": "del x"})
+
+    assert first.allow and second.allow
+    # Asked again the next time: "once" stores nothing.
+    assert [ask.detail for _cid, ask in asker.asked] == [{"command": "dir"}, {"command": "del x"}]
+    assert asker.asked[0][1].options == ("always", "session", "once", "deny")
+    assert await store.mode("run_command") == "first_ask"
+
+
+async def test_first_ask_always_turns_the_category_to_allow(store, tmp_path):
+    asker = Asker("always")
+    gate = PermissionGate(store, asker)
+
+    assert (await gate.check("c1", "run_command")).allow
+    assert (await gate.check("c2", "run_command")).allow
+
+    assert len(asker.asked) == 1
+    assert await store.mode("run_command") == "allow"
+    assert await PermissionStore(tmp_path / "nekoclaw" / "permissions.json").mode("run_command") == "allow"
+
+
+async def test_declining_refuses_and_stores_nothing(store):
+    asker = Asker("deny")
+    gate = PermissionGate(store, asker)
+
+    decision = await gate.check("c1", "outside_write", detail={"path": "C:/x"})
+
+    assert (decision.allow, decision.reason) == (False, DENIED_BY_USER)
+    assert await store.mode("outside_write") == "first_ask"
+
+
+async def test_always_ask_never_offers_or_stores_always(store):
+    await store.set_mode("run_command", "always_ask")
+    asker = Asker("always")
+    gate = PermissionGate(store, asker)
+
+    assert (await gate.check("c1", "run_command")).allow
+    assert (await gate.check("c1", "run_command")).allow
+
+    assert len(asker.asked) == 2
+    assert asker.asked[0][1].options == ("once", "deny")
+    assert await store.mode("run_command") == "always_ask"
+
+
+async def test_each_mcp_server_is_asked_about_separately(store):
+    asker = Asker("always")
+    gate = PermissionGate(store, asker)
+
+    assert (await gate.check("c1", "mcp_server", key="notes")).allow
+    assert (await gate.check("c1", "mcp_server", key="notes")).allow
+    assert (await gate.check("c1", "mcp_server", key="calendar")).allow
+
+    assert [(ask.category, ask.key) for _cid, ask in asker.asked] == [
+        ("mcp_server", "notes"),
+        ("mcp_server", "calendar"),
+    ]
+    assert await store.mode("mcp_server", "notes") == "allow"
+    assert await store.mode("mcp_server", "mail") == "first_ask"
+
+
+async def test_what_is_asked_each_time_is_asked_whatever_the_settings_and_earlier_answers(store):
+    from nekoclaw.host.permissions import BROWSER_REOPEN
+
+    await store.set_mode("browser", "allow")
+    asker = Asker("once")
+    gate = PermissionGate(store, asker)
+
+    first = await gate.ask_each_time("c1", BROWSER_REOPEN, detail={"tool": "browser_click"})
+    second = await gate.ask_each_time("c1", BROWSER_REOPEN)
+
+    assert (first.allow, first.asked, second.allow) == (True, True, True)
+    # Asked both times, with two answers on offer, and nothing was kept of either.
+    assert [(cid, ask.category, ask.key, ask.options) for cid, ask in asker.asked] == [
+        ("c1", BROWSER_REOPEN, None, ("once", "deny")),
+        ("c1", BROWSER_REOPEN, None, ("once", "deny")),
+    ]
+    assert asker.asked[0][1].detail == {"tool": "browser_click"}
+    assert await store.mode(BROWSER_REOPEN) == "always_ask"
+
+
+@pytest.mark.parametrize(
+    ("choice", "allow", "reason"),
+    [
+        ("once", True, None),
+        # Wider than what was offered: it covers this once.
+        ("always", True, None),
+        ("session", True, None),
+        ("deny", False, DENIED_BY_USER),
+        ("maybe", False, DENIED_BY_USER),
+    ],
+)
+async def test_what_is_asked_each_time_is_allowed_only_by_an_approval(store, choice, allow, reason):
+    decision = await PermissionGate(store, Asker(choice)).ask_each_time("c1", "browser_reopen")
+
+    assert (decision.allow, decision.reason, decision.asked) == (allow, reason, allow)
+    assert await store.mode("browser_reopen") == "always_ask"
+
+
+async def test_what_is_asked_each_time_is_refused_when_nobody_can_be_asked(store):
+    async def broken(commission_id: str, ask: Any) -> str:
+        raise RuntimeError("the commission has no session")
+
+    nobody = await PermissionGate(store).ask_each_time("c1", "browser_reopen")
+    failed = await PermissionGate(store, broken).ask_each_time("c1", "browser_reopen")
+
+    assert (nobody.allow, nobody.reason) == (False, DENIED_NO_ANSWER)
+    assert (failed.allow, failed.reason) == (False, DENIED_NO_ANSWER)
+
+
+async def test_an_approval_given_while_the_settings_changed_still_says_the_user_was_asked(store):
+    async def asker(commission_id: str, ask: Any) -> str:
+        # Another setting is changed while the question waits.
+        await store.set_mode("run_command", "allow")
+        return "once"
+
+    decision = await PermissionGate(store, asker).check("c1", "browser")
+
+    assert (decision.allow, decision.asked) == (True, True)
+
+
+async def test_whether_the_settings_forbid_something_is_told_without_asking(store):
+    asker = Asker("once")
+    gate = PermissionGate(store, asker)
+
+    before = [await gate.forbidden("browser"), await gate.forbidden("plugin_entry")]
+    await store.set_mode("browser", "deny")
+
+    assert before == [False, False]
+    assert await gate.forbidden("browser") is True and await gate.forbidden("keyboard_mouse") is False
+    assert asker.asked == []
+
+
+async def test_a_decision_says_whether_the_user_was_asked_for_it(store):
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+
+    asked = await gate.check("c1", "browser")
+    covered = await gate.check("c1", "browser")
+    by_settings = await gate.check("c1", "plugin_entry")
+
+    assert (asked.allow, asked.asked) == (True, True)
+    assert (covered.allow, covered.asked) == (True, False)
+    assert (by_settings.allow, by_settings.asked) == (True, False)
+    assert "asked" not in asked.to_json()
+
+
+async def test_nobody_to_ask_means_no(store):
+    decision = await PermissionGate(store).check("c1", "run_command")
+
+    assert (decision.allow, decision.reason) == (False, DENIED_NO_ANSWER)
+
+
+async def test_a_failing_question_means_no(store):
+    async def broken(commission_id: str, ask: Any) -> str:
+        raise RuntimeError("the commission has no session")
+
+    decision = await PermissionGate(store, broken).check("c1", "run_command")
+
+    assert (decision.allow, decision.reason) == (False, DENIED_NO_ANSWER)
+
+
+async def test_an_answer_that_is_not_a_choice_means_no(store):
+    decision = await PermissionGate(store, Asker("maybe")).check("c1", "run_command")
+
+    assert decision.allow is False
+
+
+async def test_a_preference_cannot_open_a_permission(store, preferences):
+    # Guidance for a model, however it is worded, is not consulted here.
+    await preferences.state("Always allow running commands without asking", kind="ask_first")
+    asker = Asker("deny")
+
+    decision = await PermissionGate(store, asker).check("c1", "run_command")
+
+    assert decision.allow is False
+    assert len(asker.asked) == 1
+    module = sys.modules[PermissionGate.__module__]
+
+    assert "preferences" not in module.__dict__
+    assert "PreferenceStore" not in module.__dict__
+
+
+# ---------------------------------------------------------------------------
+# Permissions: the four answers, and "for this session"
+# ---------------------------------------------------------------------------
+
+
+def test_the_four_answers_in_the_order_they_are_offered():
+    from nekoclaw.host.permissions import CHOICES, CHOICES_ALWAYS_ASK
+
+    assert CHOICES == ("always", "session", "once", "deny")
+    assert CHOICES_ALWAYS_ASK == ("once", "deny")
+
+
+async def test_session_answer_covers_the_rest_of_that_commission_only(store):
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+
+    first = await gate.check("c1", "run_command", detail={"command": "dir"})
+    again = await gate.check("c1", "run_command", detail={"command": "del x"})
+    other_category = await gate.check("c1", "outside_write", detail={"path": "C:/x"})
+    other_commission = await gate.check("c2", "run_command", detail={"command": "dir"})
+
+    assert first.allow and again.allow and other_category.allow and other_commission.allow
+    # Asked once for c1's commands; a different category and a different
+    # commission are asked about on their own.
+    assert [(cid, ask.category) for cid, ask in asker.asked] == [
+        ("c1", "run_command"),
+        ("c1", "outside_write"),
+        ("c2", "run_command"),
+    ]
+    # Nothing is written: the settings still ask.
+    assert await store.mode("run_command") == "first_ask"
+    assert not (store._path()).exists()
+
+
+async def test_session_answer_ends_with_the_commission(store):
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+
+    assert (await gate.check("c1", "run_command")).allow
+    assert gate.session_grants("c1") == {("run_command", None)}
+    gate.end_session("c1")
+
+    assert gate.session_grants("c1") == frozenset()
+    assert (await gate.check("c1", "run_command")).allow
+    assert len(asker.asked) == 2
+
+
+async def test_a_session_answer_that_comes_in_after_the_commission_ended_is_not_kept(store):
+    gate = PermissionGate(store)
+
+    async def answered_as_it_ended(commission_id: str, ask: Any) -> str:
+        # The commission ended (stopped, or it got stuck) with the question still open.
+        gate.end_session(commission_id)
+        return "session"
+
+    gate.set_asker(answered_as_it_ended)
+
+    decision = await gate.check("c1", "run_command", detail={"command": "dir"})
+
+    # The request that asked is covered. Nothing is left for a later run of
+    # that commission, which would otherwise never be asked again.
+    assert decision.allow
+    assert gate.session_grants("c1") == frozenset()
+
+
+async def test_asking_leaves_nothing_behind_for_a_commission_that_gave_no_session_answer(store):
+    gate = PermissionGate(store, Asker("once"))
+
+    assert (await gate.check("c1", "run_command")).allow
+    assert gate.session_grants("c1") == frozenset()
+    gate.end_session("c1")
+
+    assert gate._session_grants == {}
+
+
+async def test_session_answer_is_per_mcp_server(store):
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+
+    assert (await gate.check("c1", "mcp_server", key="notes")).allow
+    assert (await gate.check("c1", "mcp_server", key="notes")).allow
+    assert (await gate.check("c1", "mcp_server", key="calendar")).allow
+
+    assert [ask.key for _cid, ask in asker.asked] == ["notes", "calendar"]
+
+
+async def test_the_parents_are_looked_up_only_for_a_mode_that_can_use_them(store):
+    looked_up: list[str] = []
+
+    async def parent_of(commission_id: str) -> Any:
+        looked_up.append(commission_id)
+        return None
+
+    gate = PermissionGate(store, Asker("once"), parent_of=parent_of)
+
+    # Allowed outright (the usual case for a plugin entry), forbidden, and
+    # asked every time: none of them can use a session answer.
+    assert (await gate.check("c1", "plugin_entry")).allow
+    await store.set_mode("browser", "deny")
+    assert not (await gate.check("c1", "browser")).allow
+    await store.set_mode("keyboard_mouse", "always_ask")
+    assert (await gate.check("c1", "keyboard_mouse")).allow
+    assert looked_up == []
+
+    assert (await gate.check("c1", "run_command")).allow
+    assert looked_up == ["c1"]
+
+
+async def test_a_task_agent_started_by_another_is_covered_by_its_session_answer(store):
+    parents = {"child": "parent", "grandchild": "child"}
+
+    async def parent_of(commission_id: str) -> Any:
+        return parents.get(commission_id)
+
+    asker = Asker("session")
+    gate = PermissionGate(store, asker, parent_of=parent_of)
+
+    assert (await gate.check("parent", "run_command")).allow
+    assert (await gate.check("child", "run_command")).allow
+    assert (await gate.check("grandchild", "run_command")).allow
+    # What the child is allowed does not reach up to the parent or across to a sibling.
+    assert (await gate.check("child", "outside_write")).allow
+    assert (await gate.check("parent", "outside_write")).allow
+
+    assert [(cid, ask.category) for cid, ask in asker.asked] == [
+        ("parent", "run_command"),
+        ("child", "outside_write"),
+        ("parent", "outside_write"),
+    ]
+
+
+async def test_a_parent_lookup_that_fails_leaves_only_its_own_answers(store):
+    async def broken(commission_id: str) -> Any:
+        raise RuntimeError("ledger closed")
+
+    asker = Asker("session")
+    gate = PermissionGate(store, asker, parent_of=broken)
+
+    assert (await gate.check("c1", "run_command")).allow
+    assert (await gate.check("c1", "run_command")).allow
+
+    assert len(asker.asked) == 1
+
+
+async def test_deny_in_the_settings_beats_a_session_answer(store):
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+    assert (await gate.check("c1", "run_command")).allow
+
+    await store.set_mode("run_command", "deny")
+    decision = await gate.check("c1", "run_command")
+
+    assert (decision.allow, decision.reason) == (False, DENIED_BY_SETTINGS)
+
+
+async def test_always_ask_offers_no_session_answer_and_keeps_asking(store):
+    await store.set_mode("run_command", "always_ask")
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+
+    # An approval wider than what was offered covers the one request.
+    assert (await gate.check("c1", "run_command")).allow
+    assert (await gate.check("c1", "run_command")).allow
+
+    assert len(asker.asked) == 2
+    assert asker.asked[0][1].options == ("once", "deny")
+    assert gate.session_grants("c1") == frozenset()
+
+
+async def test_a_session_answer_given_before_the_category_was_set_to_ask_every_time_no_longer_counts(store):
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+    assert (await gate.check("c1", "run_command")).allow
+
+    await store.set_mode("run_command", "always_ask")
+    asker.choice = "once"
+    assert (await gate.check("c1", "run_command")).allow
+
+    assert len(asker.asked) == 2
+
+
+async def test_an_answer_that_is_none_of_the_four_is_a_refusal(store):
+    gate = PermissionGate(store, Asker("sure"))
+
+    decision = await gate.check("c1", "run_command")
+
+    assert (decision.allow, decision.reason) == (False, DENIED_BY_USER)
+
+
+async def test_deny_refuses_this_request_and_changes_nothing(store):
+    asker = Asker("deny")
+    gate = PermissionGate(store, asker)
+
+    assert not (await gate.check("c1", "run_command")).allow
+    asker.choice = "once"
+    assert (await gate.check("c1", "run_command")).allow
+
+    assert await store.mode("run_command") == "first_ask"
+    assert gate.session_grants("c1") == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# Permissions: "once" for the keyboard and mouse and for the browser lasts the run
+# ---------------------------------------------------------------------------
+
+
+def test_the_categories_whose_once_lasts_the_run():
+    from nekoclaw.host.permissions import DEFAULT_MODES, RUN_SCOPED_CATEGORIES
+
+    assert RUN_SCOPED_CATEGORIES == {"keyboard_mouse", "browser"}
+    # Both ask before the first step unless the user set them otherwise.
+    assert {DEFAULT_MODES[category] for category in RUN_SCOPED_CATEGORIES} == {"first_ask"}
+
+
+@pytest.mark.parametrize("mode", ["first_ask", "always_ask"])
+@pytest.mark.parametrize("category", ["keyboard_mouse", "browser"])
+async def test_once_for_the_desktop_or_the_browser_covers_the_rest_of_the_run(store, category, mode):
+    await store.set_mode(category, mode)
+    asker = Asker("once")
+    gate = PermissionGate(store, asker)
+
+    first = await gate.check("c1", category, detail={"tool": "step one"})
+    second = await gate.check("c1", category, detail={"tool": "step two"})
+    third = await gate.check("c1", category, detail={"tool": "step three"})
+
+    assert first.allow and second.allow and third.allow
+    # Asked before the first step only: a task is many clicks and keys.
+    assert [ask.detail for _cid, ask in asker.asked] == [{"tool": "step one"}]
+    assert gate.run_grants("c1") == {(category, None)}
+    # Nothing is stored for longer than the run.
+    assert await store.mode(category) == mode
+    assert gate.session_grants("c1") == frozenset()
+
+    gate.end_run("c1")
+
+    assert gate.run_grants("c1") == frozenset()
+    assert (await gate.check("c1", category, detail={"tool": "next run"})).allow
+    assert [ask.detail for _cid, ask in asker.asked] == [{"tool": "step one"}, {"tool": "next run"}]
+
+
+async def test_once_for_the_run_covers_neither_another_category_nor_another_commission(store):
+    asker = Asker("once")
+    gate = PermissionGate(store, asker)
+
+    assert (await gate.check("c1", "browser")).allow
+    assert (await gate.check("c1", "keyboard_mouse")).allow
+    assert (await gate.check("c2", "browser")).allow
+    assert (await gate.check("c1", "browser")).allow
+
+    assert [(cid, ask.category) for cid, ask in asker.asked] == [
+        ("c1", "browser"),
+        ("c1", "keyboard_mouse"),
+        ("c2", "browser"),
+    ]
+    # One commission's run ending leaves the other's as it is.
+    gate.end_run("c1")
+    assert gate.run_grants("c2") == {("browser", None)}
+    assert (await gate.check("c2", "browser")).allow
+    assert len(asker.asked) == 3
+
+
+async def test_once_for_the_run_does_not_cover_a_task_agent_the_commission_started(store):
+    parents = {"child": "lead"}
+
+    async def parent_of(commission_id: str) -> Any:
+        return parents.get(commission_id)
+
+    asker = Asker("once")
+    gate = PermissionGate(store, asker, parent_of=parent_of)
+
+    assert (await gate.check("lead", "browser")).allow
+    assert (await gate.check("child", "browser")).allow
+    assert (await gate.check("lead", "browser")).allow
+    assert (await gate.check("child", "browser")).allow
+
+    # The task agent has runs of its own, so it asks for itself.
+    assert [cid for cid, _ask in asker.asked] == ["lead", "child"]
+    assert gate.run_grants("lead") == gate.run_grants("child") == {("browser", None)}
+
+    # "For this session" is what the lead's task agents share.
+    gate.end_run("lead")
+    gate.end_run("child")
+    asker.choice = "session"
+    assert (await gate.check("lead", "browser")).allow
+    assert (await gate.check("child", "browser")).allow
+    assert [cid for cid, _ask in asker.asked] == ["lead", "child", "lead"]
+
+
+async def test_the_end_of_the_commission_drops_what_was_allowed_for_its_run(store):
+    asker = Asker("once")
+    gate = PermissionGate(store, asker)
+    assert (await gate.check("c1", "keyboard_mouse")).allow
+    assert gate.run_grants("c1") == {("keyboard_mouse", None)}
+
+    gate.end_session("c1")
+
+    assert gate.run_grants("c1") == frozenset()
+    assert gate._run_grants == {} and gate._session_grants == {}
+    assert (await gate.check("c1", "keyboard_mouse")).allow
+    assert len(asker.asked) == 2
+
+
+async def test_once_for_any_other_category_still_covers_the_one_request(store):
+    asker = Asker("once")
+    gate = PermissionGate(store, asker)
+
+    for category, key in (("run_command", None), ("outside_write", None), ("mcp_server", "notes")):
+        assert (await gate.check("c1", category, key=key)).allow
+        assert (await gate.check("c1", category, key=key)).allow
+
+    assert [ask.category for _cid, ask in asker.asked] == [
+        "run_command",
+        "run_command",
+        "outside_write",
+        "outside_write",
+        "mcp_server",
+        "mcp_server",
+    ]
+    assert gate.run_grants("c1") == frozenset()
+
+
+@pytest.mark.parametrize("ended", ["end_run", "end_session"])
+async def test_a_once_answer_that_comes_in_after_the_run_ended_is_kept_for_nobody(store, ended):
+    gate = PermissionGate(store)
+
+    async def answered_as_it_ended(commission_id: str, ask: Any) -> str:
+        # The run ended (it was stopped, say) with the question still open.
+        getattr(gate, ended)(commission_id)
+        return "once"
+
+    gate.set_asker(answered_as_it_ended)
+
+    decision = await gate.check("c1", "keyboard_mouse")
+
+    # The request that asked is covered. Nothing is left for the next run,
+    # which would otherwise never be asked.
+    assert decision.allow
+    assert gate.run_grants("c1") == frozenset()
+
+
+async def test_declining_leaves_nothing_for_the_run(store):
+    asker = Asker("deny")
+    gate = PermissionGate(store, asker)
+
+    assert not (await gate.check("c1", "browser")).allow
+    assert gate.run_grants("c1") == frozenset()
+    asker.choice = "once"
+    assert (await gate.check("c1", "browser")).allow
+
+    assert len(asker.asked) == 2
+
+
+async def test_an_answer_wider_than_offered_lasts_the_run_where_once_does(store):
+    await store.set_mode("browser", "always_ask")
+    asker = Asker("always")
+    gate = PermissionGate(store, asker)
+
+    assert (await gate.check("c1", "browser")).allow
+    assert (await gate.check("c1", "browser")).allow
+
+    # Narrowed to "once", which for the browser is the run.
+    assert len(asker.asked) == 1
+    assert asker.asked[0][1].options == ("once", "deny")
+    assert gate.run_grants("c1") == {("browser", None)}
+    assert gate.session_grants("c1") == frozenset()
+    assert await store.mode("browser") == "always_ask"
+
+
+async def test_deny_in_the_settings_beats_what_was_allowed_for_the_run(store):
+    asker = Asker("once")
+    gate = PermissionGate(store, asker)
+    assert (await gate.check("c1", "keyboard_mouse")).allow
+
+    await store.set_mode("keyboard_mouse", "deny")
+    decision = await gate.check("c1", "keyboard_mouse")
+
+    assert (decision.allow, decision.reason) == (False, DENIED_BY_SETTINGS)
+    assert len(asker.asked) == 1
+
+
+async def test_a_session_answer_for_the_browser_outlasts_the_run(store):
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+
+    assert (await gate.check("c1", "browser")).allow
+    gate.end_run("c1")
+    assert (await gate.check("c1", "browser")).allow
+
+    assert len(asker.asked) == 1
+    assert gate.session_grants("c1") == {("browser", None)}
+    assert gate.run_grants("c1") == frozenset()
+    gate.end_session("c1")
+    assert (await gate.check("c1", "browser")).allow
+    assert len(asker.asked) == 2
+
+
+
+@pytest.mark.parametrize("lang", ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"])
+def test_the_question_about_opening_the_browser_again_is_worded_in_every_language(lang):
+    from config.prompts.prompts_nekoclaw_brain import PERMISSION_CATEGORY_TEXTS, PERMISSION_OPTION_NAMES
+    from nekoclaw.host.permissions import BROWSER_REOPEN, CHOICES_ALWAYS_ASK, PermissionAsk
+    from nekoclaw.host.reports import render_question
+
+    ask = PermissionAsk(
+        category=BROWSER_REOPEN, key=None, detail={"tool": "browser_click"}, options=CHOICES_ALWAYS_ASK
+    ).to_json()
+    words = PERMISSION_CATEGORY_TEXTS[lang]
+
+    text = render_question("plan the trip", ask, lang)
+
+    # Its own words, not those of "something else", and not those of operating the browser as such.
+    assert words[BROWSER_REOPEN] in text and words[BROWSER_REOPEN] != words["browser"]
+    assert "{" not in text and "browser_click" not in text
+    names = PERMISSION_OPTION_NAMES[lang]
+    assert names["once"] in text and names["deny"] in text
+    assert names["always"] not in text and names["session"] not in text

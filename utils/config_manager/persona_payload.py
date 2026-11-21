@@ -417,9 +417,9 @@ def _render_ai_context_fields(
 ) -> dict[str, tuple[str, str]]:
     """Render synthetic fields as ``{field: (text, source_fingerprint)}``.
 
-    entity indicates whether this payload is the catgirl (neko) or the master, which decides
+    entity indicates whether this payload is the neko (``neko``) or the master, which decides
     the person used in rename records: the master's records go into the master section of the
-    catgirl persona and must be second person, never first person.
+    neko persona and must be second person, never first person.
 
     ``lang`` pins the sentence. When it is absent, rendering follows the
     process language, including any active ``language_context``.

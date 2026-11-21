@@ -47,7 +47,7 @@ token 引导允许可信 Origin、可信完整 Referer（忽略页面路径）�
 
 FastAPI 在解析 JSON/multipart 请求体之后才执行路由依赖，因此带请求体的插件服务器变更路由使用 route class 守卫（各路由模块以 `mutation_router` 注册）。`PluginMutationGuardedRoute` 与 `PluginPageMutationGuardedRoute` 都在读取请求体之前校验，差别只在 token 是否必需；被拒绝的上传不会落盘或进入临时文件。档位按调用方选择，不按是否带请求体选择。
 
-开发插件（带 `registration_id` 或已登记开发目录）的生命周期与配置写入先通过上述共享守卫，再由处理器执行 `require_development_access`；两者都要满足。开发访问的 Origin 只接受精确的 scheme/host/port 集合（主服务、插件服务与 Vite 默认端口，可由 `NEKO_DEVELOPMENT_ALLOWED_ORIGINS` 整体替换），不再接受任意 loopback 端口。
+工作台项目（外部源码插件）的生命周期与配置写入和其他插件一样，只经过上述共享守卫；登记项目的接口同样受该守卫保护。
 
 这套保护防止跨站网页借用浏览器执行插件操作，不是远程访问登录认证。公网访问的身份认证、网络隔离、防火墙仍属于部署层责任；这些措施不能替代应用的 CSRF 校验。安全修复不得通过禁用官方 NAS/Docker 访问来规避兼容问题。
 

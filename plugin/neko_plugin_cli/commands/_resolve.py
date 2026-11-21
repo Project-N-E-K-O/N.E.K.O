@@ -14,11 +14,13 @@ def parse_github_repository_remote(remote_url: str) -> str | None:
     """Return owner/repository for a supported GitHub remote URL."""
     owner = r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*"
     repository = r"[A-Za-z0-9._-]+?"
+    # Optional user[:token]@, as credential helpers and clones by username write it.
+    userinfo = r"(?:[^@/\s]+@)?"
     patterns = (
-        rf"https?://github\.com/(?P<repo>{owner}/{repository})(?:\.git)?/?$",
-        rf"git@github\.com:(?P<repo>{owner}/{repository})(?:\.git)?$",
-        rf"ssh://git@github\.com/(?P<repo>{owner}/{repository})(?:\.git)?/?$",
-        rf"ssh://git@ssh\.github\.com:443/(?P<repo>{owner}/{repository})(?:\.git)?/?$",
+        rf"https?://{userinfo}github\.com/(?P<repo>{owner}/{repository})(?:\.git)?/?$",
+        rf"{userinfo}github\.com:(?P<repo>{owner}/{repository})(?:\.git)?/?$",
+        rf"ssh://{userinfo}github\.com/(?P<repo>{owner}/{repository})(?:\.git)?/?$",
+        rf"ssh://{userinfo}ssh\.github\.com:443/(?P<repo>{owner}/{repository})(?:\.git)?/?$",
     )
     value = remote_url.strip()
     for pattern in patterns:

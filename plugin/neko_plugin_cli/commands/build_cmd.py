@@ -7,7 +7,7 @@ import hashlib
 import sys
 from pathlib import Path
 
-from ..core import build_bundle, build_plugin
+from .. import core
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dirs
@@ -62,7 +62,7 @@ def _handle_bundle(args: argparse.Namespace, *, plugin_dirs: list[Path], target_
         else target_dir / f"{bundle_id}.neko-bundle"
     )
     try:
-        result = build_bundle(
+        result = core.build_bundle(
             plugin_dirs,
             output_path,
             bundle_id=bundle_id,
@@ -107,7 +107,7 @@ def _handle_single(args: argparse.Namespace, *, plugin_dirs: list[Path], target_
             else target_dir / f"{plugin_dir.name}.neko-plugin"
         )
         try:
-            result = build_plugin(plugin_dir, output_path, keep_staging=args.keep_staging)
+            result = core.build_plugin(plugin_dir, output_path, keep_staging=args.keep_staging)
         except Exception as exc:
             failed_count += 1
             print(f"[FAIL] {plugin_dir.name}: {exc}", file=sys.stderr)

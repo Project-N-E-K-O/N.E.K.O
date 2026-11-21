@@ -17,7 +17,7 @@
 Card-Assist Router
 
 Four endpoints powering the in-app AI assistant that helps users author a
-catgirl character card (Character Card Manager -> "AI-assisted generation"
+neko character card (Character Card Manager -> "AI-assisted generation"
 button):
 
   POST /api/card-assist/clarify   — return 2-4 chip-style clarifying questions
@@ -700,7 +700,7 @@ async def refine(request: Request):
 #
 # Unlike the one-shot wizard flow in clarify/generate/refine, /chat maintains a conversation:
 # the frontend sends messages history + current card state + available field keys; the LLM acts as
-# the character-definition assistant catgirl (YUI by default, later the developer cat), replying to the user and
+# the character-definition assistant neko (YUI by default, later the developer cat), replying to the user and
 # emitting structured actions for the frontend form when needed.
 # ============================================================================
 

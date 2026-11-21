@@ -27,6 +27,7 @@ class TtsRuntimeRecord:
     retired: bool = False
     shutdown_sent: bool = False
     supports_runtime_overlap: bool = True
+    audio_done_timeout_ms: int | None = None
     cleanup_task: asyncio.Task | None = None
     fallback_task: asyncio.Task | None = None
     cleanup_complete: asyncio.Event = field(default_factory=asyncio.Event)

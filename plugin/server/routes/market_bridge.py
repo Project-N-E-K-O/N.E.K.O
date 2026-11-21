@@ -17,21 +17,28 @@ import errno
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import time
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable, Literal, TYPE_CHECKING, get_args
+from typing import Annotated, Any, Iterable, Literal, TYPE_CHECKING, get_args
 from urllib.parse import quote, urlparse, urlencode
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 if TYPE_CHECKING:
     import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import Path as PathParam
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.deployment import has_forwarding_metadata
+from utils.social_base import social_base_url, validate_http_url
 
+from plugin.server.application.plugins.capability_analysis_service import (
+    notify_install_committed,
+)
 from plugin.server.application.plugin_cli import get_plugin_cli_service
 from plugin.logging_config import get_logger
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
@@ -656,7 +663,9 @@ _CATALOG_RESPONSE_HEADERS = frozenset(
 )
 
 
-async def _proxy_market_catalog(request: Request, upstream_path: str) -> Response:
+async def _proxy_market_catalog(
+    request: Request, upstream_path: str, *, query: tuple[str, ...] | None = None,
+) -> Response:
     """Proxy a fixed public catalog path through the local same-origin API."""
 
     base_url = _normalized_base_url(MARKET_API_URL)
@@ -671,8 +680,11 @@ async def _proxy_market_catalog(request: Request, upstream_path: str) -> Respons
 
     httpx = await ensure_httpx()
     upstream_url = f"{base_url}/api/v1{upstream_path}"
-    if request.url.query:
-        upstream_url = f"{upstream_url}?{request.url.query}"
+    query_string = request.url.query if query is None else urlencode([
+        (name, value) for name, value in request.query_params.multi_items() if name in query
+    ])
+    if query_string:
+        upstream_url = f"{upstream_url}?{query_string}"
 
     started_at = time.monotonic()
     try:
@@ -805,6 +817,575 @@ async def market_catalog_plugin(request: Request, plugin_id: str) -> Response:
     return await _proxy_market_catalog(
         request,
         f"/plugins/{quote(plugin_id, safe='')}",
+    )
+
+
+@router.get("/catalog/api/v1/zones")
+async def market_catalog_zones(request: Request) -> Response:
+    """Proxy the Market's public zone list; the submission form picks one from it."""
+
+    return await _proxy_market_catalog(request, "/zones")
+
+
+# -- Review submission proxy --
+#
+# The publish workbench drives the Market review flow (preflight, draft,
+# submit, revision, workspace, withdraw) through these routes. They reuse the
+# same desktop OAuth login the Market download already uses: the access token
+# is attached as a server-side ``Authorization: Bearer`` header and never
+# reaches the browser, exactly like ``_report_market_install_best_effort``. Every call must carry
+# the bridge token (``_verify_token``, as the other ``/market`` write endpoints
+# require) and come from the local plugin manager: a remote Market page paired
+# through ``/token-exchange`` holds the token too, but must not act on the
+# Market as this desktop's signed-in user.
+_SUBMISSION_RESPONSE_HEADERS = _CATALOG_RESPONSE_HEADERS
+_SUBMISSION_ID_PATTERN = re.compile(r"\A(?:[0-9]{1,19}|[0-9a-fA-F-]{8,36})\Z")
+# The Market ``/mine`` query parameters; anything else (notably the bridge
+# ``token``) stays local.
+_SUBMISSION_MINE_QUERY_PARAMS = ("q", "status", "decision", "page", "page_size")
+
+
+def _validated_submission_id(submission_id: str) -> str:
+    """Accept only a numeric id or a uuid; refuse anything that could reshape the path."""
+    if not _SUBMISSION_ID_PATTERN.match(submission_id):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "market_submission_id_invalid", "message": "invalid submission id"},
+        )
+    return submission_id
+
+
+async def _authenticated_market_token() -> dict[str, Any]:
+    """Return a valid desktop OAuth token, or raise the local 409 the UI localizes.
+
+    ``market_auth_required`` and ``market_auth_pending`` (the login has not yet
+    resolved its account subject) are decided here, before anything is
+    forwarded, so an unauthenticated workbench never reaches the Market with an
+    empty Authorization header.
+    """
+    token_data = await _ensure_valid_oauth_token()
+    if not token_data or not token_data.get("access_token"):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "market_auth_required", "message": "Market login is required"},
+        )
+    if not _oauth_subject_is_verified(token_data):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "market_auth_pending",
+                "message": "the Market login has not finished resolving the account",
+            },
+        )
+    return token_data
+
+
+async def _email_unverified_response(access_token: str) -> JSONResponse | None:
+    """Return ``market_email_unverified`` when a Market 403 came from its email gate.
+
+    ``require_verified_user`` answers 403 with a localized string, the same
+    shape as the route's ownership 403s, so the text cannot tell them apart.
+    That dependency runs before the route body, so for a user whose Market
+    account reports ``email_verified: false`` the 403 is the email gate.
+    """
+    user = await _fetch_market_user(access_token)
+    if user is None or user.get("email_verified") is not False:
+        return None
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": "the Market account email is not verified",
+            "code": "market_email_unverified",
+        },
+    )
+
+
+_FEEDBACK_SESSION_HEADER = "X-Market-Feedback-Session"
+# Set on a successful write whose login switched mid-flight: posted, but not by the current account.
+_FEEDBACK_SESSION_CHANGED_HEADER = "X-Market-Feedback-Session-Changed"
+
+
+def _feedback_session(token: dict[str, Any] | None) -> str:
+    if not token or not token.get("access_token") or not _oauth_subject_is_verified(token):
+        return ""
+    # Older saved logins may predate session_id. Their creation time survives
+    # refresh; without either, fall back to the subject alone. Never key on the
+    # access token: a routine refresh rotates it and would read as an account switch.
+    login = token.get("session_id") or token.get("created_at") or ""
+    identity = json.dumps([login, token["subject"]], separators=(",", ":"))
+    return hmac.new(_BRIDGE_TOKEN.encode(), identity.encode(), "sha256").hexdigest()
+
+
+def _current_feedback_session() -> str:
+    return _feedback_session(_read_json_file(_OAUTH_TOKEN_FILE))
+
+
+def _check_feedback_session(session: str, expected: str | None = None) -> None:
+    current = _current_feedback_session()
+    if not session or session != current or (expected is not None and expected != session):
+        raise HTTPException(status_code=409, detail={"code": "market_feedback_session_changed"})
+
+
+async def _proxy_market_authenticated(
+    request: Request,
+    *,
+    method: str,
+    upstream_path: str,
+    query: tuple[str, ...] = (),
+    forward_body: bool = False,
+    requires_verified_email: bool = False,
+    api_path: str = "/api/v1/review/submissions",
+    surface: Literal["submission", "feedback"] = "submission",
+) -> Response:
+    """Proxy a fixed, authenticated route using the server-held Market token.
+
+    The request carries the server-held access token; the browser only ever
+    sends the bridge token, verified here. Only the ``query`` parameters named
+    by the caller are forwarded. A single 401 triggers one refresh-and-retry
+    (the pattern the OAuth endpoints use). An auth, network or redirect
+    failure returns only a local code; so does a 403 from the Market's email
+    gate when ``requires_verified_email`` names a ``require_verified_user``
+    route. Any other business 4xx/5xx the Market authored is passed through
+    unchanged (status + body) so the UI can localize by its ``code`` and show
+    its ``detail``.
+    """
+    feedback = surface == "feedback"
+    label = "Market feedback" if feedback else "Market submissions"
+    verb = "is" if feedback else "are"
+    _verify_token(
+        None if feedback else request.query_params.get("token"),
+        authorization=request.headers.get("authorization"),
+    )
+    _require_local_bridge_token_access(request)
+    base_url = _normalized_base_url(MARKET_API_URL)
+    if not base_url:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": f"{label} {verb} not configured",
+                "code": f"market_{surface}_not_configured",
+            },
+        )
+
+    body = await request.body() if forward_body else None
+    upstream_url = f"{base_url}{api_path}{upstream_path}"
+    forwarded_query = [
+        (name, value) for name, value in request.query_params.multi_items() if name in query
+    ]
+    if forwarded_query:
+        upstream_url = f"{upstream_url}?{urlencode(forwarded_query)}"
+
+    httpx = await ensure_httpx()
+    rejected_token: str | None = None
+    feedback_session = request.headers.get(_FEEDBACK_SESSION_HEADER)
+    if feedback and method != "GET" and not feedback_session:
+        raise HTTPException(status_code=409, detail={"code": "market_feedback_session_changed"})
+    started_at = time.monotonic()
+    for attempt in range(2):
+        token_data = await _authenticated_market_token()
+        if rejected_token is not None:
+            token_data = await _ensure_valid_oauth_token(force_refresh=True, rejected_access_token=rejected_token)
+            if not token_data or not token_data.get("access_token"):
+                break
+        if feedback:
+            active_session = _feedback_session(token_data)
+            _check_feedback_session(active_session, feedback_session)
+            feedback_session = active_session
+        access_token = token_data["access_token"]
+        headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+        language = request.headers.get("accept-language")
+        if language and language.isascii():
+            headers["Accept-Language"] = language
+        if forward_body:
+            headers["Content-Type"] = "application/json"
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(15.0, connect=3.0),
+                follow_redirects=False,
+            ) as client:
+                upstream = await client.request(
+                    method, upstream_url, headers=headers, content=body
+                )
+        except httpx.HTTPError as exc:
+            elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+            logger.warning(
+                "[market-{}] request failed "
+                "category={} status=unavailable request_id=unavailable "
+                "elapsed_ms={} origin={}",
+                surface,
+                _market_auth_network_failure_category(exc),
+                elapsed_ms,
+                _market_api_log_origin(),
+            )
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "detail": f"{label} {verb} temporarily unavailable",
+                    "code": f"market_{surface}_unavailable",
+                },
+            )
+
+        sent_after_session_change = False
+        if feedback and feedback_session and _current_feedback_session() != feedback_session:
+            # The login switched while the request was in flight. A read, or a
+            # write the Market refused (below 500), is stale for the new account.
+            # A write the Market already applied must not be reported as failed,
+            # or the UI would invite the user to post it again under the new
+            # account. A 5xx may or may not have been applied: pass it through so
+            # the UI treats it as uncertain rather than as a definite refusal.
+            if method == "GET" or (not upstream.is_success and upstream.status_code < 500):
+                raise HTTPException(status_code=409, detail={"code": "market_feedback_session_changed"})
+            sent_after_session_change = upstream.is_success
+            logger.info(
+                "[market-{}] write {} after session change status={} request_id={} origin={}",
+                surface,
+                "applied" if sent_after_session_change else "uncertain",
+                upstream.status_code,
+                _safe_market_request_id(upstream.headers.get("x-request-id")),
+                _market_api_log_origin(),
+            )
+        if upstream.status_code == 401:
+            # A rejected credential never passes its upstream body through: the
+            # first time, refresh once and retry; a second rejection means the
+            # saved login is no longer usable and must be re-done.
+            logger.info(
+                "[market-{}] request rejected "
+                "category=credential_rejected status=401 request_id={} "
+                "elapsed_ms={} origin={}",
+                surface,
+                _safe_market_request_id(upstream.headers.get("x-request-id")),
+                max(0, round((time.monotonic() - started_at) * 1000)),
+                _market_api_log_origin(),
+            )
+            if attempt == 0:
+                rejected_token = access_token
+                continue
+            break
+
+        if 300 <= upstream.status_code < 400:
+            logger.warning(
+                "[market-{}] request failed "
+                "category=redirect_rejected status={} request_id={} origin={}",
+                surface,
+                upstream.status_code,
+                _safe_market_request_id(upstream.headers.get("x-request-id")),
+                _market_api_log_origin(),
+            )
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "detail": f"{label} returned an unsafe redirect",
+                    "code": f"market_{surface}_redirect_rejected",
+                },
+            )
+
+        if upstream.status_code == 403 and requires_verified_email:
+            unverified = await _email_unverified_response(access_token)
+            if unverified is not None:
+                logger.info(
+                    "[market-{}] request rejected "
+                    "category=email_unverified status=403 request_id={} origin={}",
+                    surface,
+                    _safe_market_request_id(upstream.headers.get("x-request-id")),
+                    _market_api_log_origin(),
+                )
+                return unverified
+
+        if upstream.status_code >= 400:
+            elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+            logger.warning(
+                "[market-{}] request failed "
+                "category={} status={} request_id={} elapsed_ms={} origin={}",
+                surface,
+                _market_auth_http_failure_category(upstream.status_code),
+                upstream.status_code,
+                _safe_market_request_id(upstream.headers.get("x-request-id")),
+                elapsed_ms,
+                _market_api_log_origin(),
+            )
+
+        response_headers = {
+            name: value
+            for name, value in upstream.headers.items()
+            if name.lower() in _SUBMISSION_RESPONSE_HEADERS
+        }
+        if feedback:
+            response_headers["cache-control"] = "no-store"
+            if sent_after_session_change:
+                # The old session is gone; do not hand it back as current.
+                response_headers[_FEEDBACK_SESSION_CHANGED_HEADER] = "1"
+            elif upstream.is_success and feedback_session:
+                response_headers[_FEEDBACK_SESSION_HEADER] = feedback_session
+                response_headers["X-Market-Web-Url"] = MARKET_WEB_URL
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            headers=response_headers,
+        )
+
+    # Both attempts saw a rejected credential; the login must be re-done.
+    return JSONResponse(
+        status_code=401,
+        content={
+            "detail": "Market rejected the login credential",
+            "code": "market_auth_rejected",
+        },
+    )
+
+
+@router.get("/feedback")
+async def market_feedback_list(request: Request) -> Response:
+    return await _proxy_market_authenticated(
+        request, method="GET", api_path="/api/v1/me/plugin-feedback", upstream_path="",
+        query=("kind", "status", "plugin_id", "cursor", "limit"), surface="feedback",
+    )
+
+
+@router.post("/feedback/mark-read")
+async def market_feedback_mark_read(request: Request) -> Response:
+    return await _proxy_market_authenticated(
+        request, method="POST", api_path="/api/v1/me/plugin-feedback", upstream_path="/mark-read",
+        forward_body=True, surface="feedback",
+    )
+
+
+_MarketThreadId = Annotated[int, PathParam(ge=1, le=2**31 - 1)]
+
+
+async def _proxy_market_conversation(
+    request: Request,
+    path: str,
+    *,
+    query: tuple[str, ...] = (),
+    message: bool = False,
+) -> Response:
+    if request.method == "GET" and not request.headers.get("authorization"):
+        return await _proxy_market_catalog(request, path, query=query)
+    try:
+        return await _proxy_market_authenticated(
+            request,
+            method=request.method,
+            api_path="/api/v1",
+            upstream_path=path,
+            query=query,
+            forward_body=message,
+            requires_verified_email=request.method == "POST",
+            surface="feedback",
+        )
+    except HTTPException as exc:
+        if (
+            request.method == "GET"
+            and not request.headers.get(_FEEDBACK_SESSION_HEADER)
+            and isinstance(exc.detail, dict)
+            and exc.detail.get("code") in {"market_auth_required", "market_auth_pending"}
+        ):
+            return await _proxy_market_catalog(request, path, query=query)
+        raise
+
+
+@router.get("/conversations/plugins/{plugin_id}/comments")
+async def market_conversation_comments(request: Request, plugin_id: _MarketThreadId) -> Response:
+    return await _proxy_market_conversation(
+        request, f"/plugins/{plugin_id}/comments", query=("after_id", "limit"),
+    )
+
+
+@router.post("/conversations/plugins/{plugin_id}/comments/messages")
+async def market_conversation_comment(request: Request, plugin_id: _MarketThreadId) -> Response:
+    return await _proxy_market_conversation(request, f"/plugins/{plugin_id}/comments/messages", message=True)
+
+
+@router.get("/conversations/plugins/{plugin_id}/issues")
+async def market_conversation_issues(request: Request, plugin_id: _MarketThreadId) -> Response:
+    return await _proxy_market_conversation(
+        request, f"/plugins/{plugin_id}/issues", query=("before_id", "state", "limit"),
+    )
+
+
+@router.get("/conversations/plugins/{plugin_id}/issues/{issue_id}")
+async def market_conversation_issue(
+    request: Request, plugin_id: _MarketThreadId, issue_id: _MarketThreadId,
+) -> Response:
+    return await _proxy_market_conversation(request, f"/plugins/{plugin_id}/issues/{issue_id}")
+
+
+@router.get("/conversations/plugins/{plugin_id}/issues/{issue_id}/messages")
+async def market_conversation_issue_messages(
+    request: Request, plugin_id: _MarketThreadId, issue_id: _MarketThreadId,
+) -> Response:
+    return await _proxy_market_conversation(
+        request, f"/plugins/{plugin_id}/issues/{issue_id}/messages", query=("after_id", "limit"),
+    )
+
+
+@router.post("/conversations/plugins/{plugin_id}/issues/{issue_id}/{action}")
+async def market_conversation_issue_action(
+    request: Request,
+    plugin_id: _MarketThreadId,
+    issue_id: _MarketThreadId,
+    action: Literal["messages", "close", "reopen"],
+) -> Response:
+    return await _proxy_market_conversation(
+        request, f"/plugins/{plugin_id}/issues/{issue_id}/{action}", message=action == "messages",
+    )
+
+
+# At most 100 public profiles per query; this is far above their real size.
+_AVATAR_QUERY_MAX_BYTES = 512 * 1024
+_AVATAR_URL_MAX_LENGTH = 2048
+
+
+class MarketFeedbackAvatarQuery(BaseModel):
+    user_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+@router.post("/feedback/avatars")
+async def market_feedback_avatars(request: Request, payload: MarketFeedbackAvatarQuery) -> JSONResponse:
+    _verify_token(authorization=request.headers.get("authorization"))
+    _require_local_bridge_token_access(request)
+    user_ids = list(dict.fromkeys(map(str, payload.user_ids)))
+    httpx = await ensure_httpx()
+    try:
+        base = validate_http_url(social_base_url(), name="NEKO_SOCIAL_BASE_URL")
+        async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
+            async with client.stream(
+                "POST", f"{base}/api/v1/public-profiles/query", json={"user_ids": user_ids}
+            ) as upstream:
+                upstream.raise_for_status()
+                declared = upstream.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > _AVATAR_QUERY_MAX_BYTES:
+                    raise ValueError("avatar query response too large")
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in upstream.aiter_bytes(64 * 1024):
+                    size += len(chunk)
+                    if size > _AVATAR_QUERY_MAX_BYTES:
+                        raise ValueError("avatar query response too large")
+                    chunks.append(chunk)
+        body = json.loads(b"".join(chunks))
+    except (httpx.HTTPError, ValueError, RecursionError):
+        return JSONResponse({}, status_code=502)
+    profiles = body.get("profiles") if isinstance(body, dict) else None
+    avatars = {}
+    if isinstance(profiles, dict):
+        for user_id in user_ids:
+            profile = profiles.get(user_id)
+            avatar = profile.get("avatar") if isinstance(profile, dict) else None
+            if not isinstance(avatar, dict) or avatar.get("kind") != "image":
+                continue
+            url = avatar.get("url")
+            if (
+                isinstance(url, str)
+                and url.startswith("https://")
+                and len(url) <= _AVATAR_URL_MAX_LENGTH
+            ):
+                avatars[user_id] = url
+    return JSONResponse(avatars, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/submissions/mine")
+async def market_submission_mine(request: Request) -> Response:
+    return await _proxy_market_authenticated(
+        request, method="GET", upstream_path="/mine", query=_SUBMISSION_MINE_QUERY_PARAMS
+    )
+
+
+@router.get("/publication-requests/{plugin_id}")
+async def market_publication_requests(request: Request, plugin_id: int) -> Response:
+    if plugin_id < 1 or plugin_id >= 2**31:
+        raise HTTPException(422, "Invalid Market plugin ID")
+    return await _proxy_market_authenticated(
+        request, method="GET", api_path="/api/v1/plugins",
+        upstream_path=f"/{plugin_id}/versions/publication-requests",
+        query=("request_id", "limit", "offset"), requires_verified_email=True,
+    )
+
+
+@router.post("/submissions/preflight")
+async def market_submission_preflight(request: Request) -> Response:
+    # The Market takes an untyped dict here, so the body is forwarded as sent.
+    return await _proxy_market_authenticated(
+        request,
+        method="POST",
+        upstream_path="/preflight",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
+@router.post("/submissions/repository-preview")
+async def market_submission_repository_preview(request: Request) -> Response:
+    return await _proxy_market_authenticated(
+        request,
+        method="POST",
+        upstream_path="/repository-preview",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
+@router.post("/submissions/drafts")
+async def market_submission_create_draft(request: Request) -> Response:
+    return await _proxy_market_authenticated(
+        request,
+        method="POST",
+        upstream_path="/drafts",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
+@router.put("/submissions/{submission_id}/draft")
+async def market_submission_update_draft(request: Request, submission_id: str) -> Response:
+    return await _proxy_market_authenticated(
+        request,
+        method="PUT",
+        upstream_path=f"/{_validated_submission_id(submission_id)}/draft",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
+@router.post("/submissions/{submission_id}/submit")
+async def market_submission_submit(request: Request, submission_id: str) -> Response:
+    return await _proxy_market_authenticated(
+        request,
+        method="POST",
+        upstream_path=f"/{_validated_submission_id(submission_id)}/submit",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
+@router.post("/submissions/{submission_id}/revision")
+async def market_submission_create_revision(request: Request, submission_id: str) -> Response:
+    return await _proxy_market_authenticated(
+        request,
+        method="POST",
+        upstream_path=f"/{_validated_submission_id(submission_id)}/revision",
+        forward_body=True,
+        requires_verified_email=True,
+    )
+
+
+@router.get("/submissions/{submission_id}/workspace")
+async def market_submission_workspace(request: Request, submission_id: str) -> Response:
+    # A login-only Market route; no query parameter is forwarded.
+    return await _proxy_market_authenticated(
+        request,
+        method="GET",
+        upstream_path=f"/{_validated_submission_id(submission_id)}/workspace",
+    )
+
+
+@router.post("/submissions/{submission_id}/withdraw")
+async def market_submission_withdraw(request: Request, submission_id: str) -> Response:
+    # The Market withdraw route needs only a login, not a verified email.
+    return await _proxy_market_authenticated(
+        request,
+        method="POST",
+        upstream_path=f"/{_validated_submission_id(submission_id)}/withdraw",
+        forward_body=True,
     )
 
 
@@ -3328,11 +3909,13 @@ def _market_numeric_plugin_id(plugin_id: str | None) -> str | None:
 
 def _client_download_params(
     *,
+    operation: str,
+    event_id: str,
     version: str | None,
     channel: str | None,
     package_sha256: str | None,
 ) -> dict[str, str]:
-    params = {"source": "client"}
+    params = {"source": "client", "operation": operation, "event_id": event_id}
     if version and version.strip():
         params["version"] = version.strip()[:50]
     if channel and channel.strip():
@@ -3346,22 +3929,26 @@ def _client_download_params(
 async def _post_market_download_count(
     market_id: str,
     *,
+    operation: str,
+    event_id: str,
     version: str | None,
     channel: str | None,
     package_sha256: str | None,
 ) -> None:
-    base_url = _normalized_base_url(MARKET_API_URL)
-    if not base_url:
-        return
-    url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/download"
     started_at = time.monotonic()
     try:
+        base_url = _normalized_base_url(MARKET_API_URL)
+        if not base_url:
+            return
+        url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/download"
         # Phase timeouts do not bound a response that keeps trickling in.
         async with asyncio.timeout(_MARKET_RELEASE_CHECK_TIMEOUT):
             async with _market_catalog_client() as client:
                 response = await client.post(
                     url,
                     params=_client_download_params(
+                        operation=operation,
+                        event_id=event_id,
                         version=version,
                         channel=channel,
                         package_sha256=package_sha256,
@@ -3387,34 +3974,61 @@ async def _post_market_download_count(
 
 def _record_market_download_best_effort(
     payload: MarketInstallRequest,
+    task_id: str,
 ) -> None:
-    """Count a finished first install without a Market login.
+    """Report a successful plugin-center download without a Market login.
 
-    Only ``mode="install"`` counts. Upgrades, reinstalls and replacing a
-    built-in copy keep a plugin the user already had, so they do not add to
-    the public download count. The HTTP call runs in the background so a slow
-    or failed Market does not delay the local install result.
+    An override installs the Market package over a bundled copy and counts
+    as an install.
+
+    Send the HTTP request in the background so the local operation completes
+    independently of Market's response.
     """
 
-    if payload.mode != "install":
-        return
     market_id = _market_numeric_plugin_id(payload.plugin_id)
     if market_id is None:
         return
-    task = asyncio.create_task(
-        _post_market_download_count(
-            market_id,
-            version=payload.version,
-            channel=payload.channel,
-            package_sha256=payload.package_sha256,
-        ),
-        name="market-download-count",
+    operation = "install" if payload.mode == "override_builtin" else payload.mode
+    # Repeated reports for the same task must reuse the same event ID.
+    event_id = str(uuid5(NAMESPACE_URL, f"market-download:{task_id}"))
+    request = _post_market_download_count(
+        market_id,
+        operation=operation,
+        event_id=event_id,
+        version=payload.version,
+        channel=payload.channel,
+        package_sha256=payload.package_sha256,
     )
+    try:
+        task = asyncio.create_task(request, name="market-download-count")
+    except Exception as exc:
+        request.close()
+        logger.warning(
+            "[market-download-count] scheduling failed plugin_id={} error={} errno={}",
+            market_id,
+            type(exc).__name__,
+            exc.errno if isinstance(exc, OSError) else None,
+        )
+        return
     _download_count_tasks.add(task)
     task.add_done_callback(_download_count_tasks.discard)
 
 
 async def _report_market_install_best_effort(
+    payload: MarketInstallRequest,
+    task: dict[str, Any],
+) -> None:
+    try:
+        await _report_market_install(payload, task)
+    except Exception as exc:
+        logger.warning(
+            "[market-install-report] unexpected failure error={} errno={}",
+            type(exc).__name__,
+            exc.errno if isinstance(exc, OSError) else None,
+        )
+
+
+async def _report_market_install(
     payload: MarketInstallRequest,
     task: dict[str, Any],
 ) -> None:
@@ -3611,9 +4225,6 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
                 code="invalid_mode",
                 message=f"unknown mode: {payload.mode}",
             )
-        _record_market_download_best_effort(payload)
-        await _report_market_install_best_effort(payload, task)
-        _finalize_task_success(task, started_at, log_ctx)
     except _TaskCancelled as exc:
         _finalize_task_cancelled(task, exc, started_at, log_ctx)
     except _TaskError as exc:
@@ -3630,6 +4241,10 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
             started_at,
             log_ctx,
         )
+    else:
+        _finalize_task_success(task, started_at, log_ctx)
+        _record_market_download_best_effort(payload, task_id)
+        await _report_market_install_best_effort(payload, task)
 
 
 # ─── Task error / finalisers ─────────────────────────────────────────
@@ -4026,7 +4641,7 @@ async def _replace_market_plugin_transaction(
     else:
         validate_manual_backup = None
     try:
-        return await replace_plugin(
+        result = await replace_plugin(
             layout=layout,
             install_new=install_new,
             additional_targets=additional_targets,
@@ -4035,6 +4650,8 @@ async def _replace_market_plugin_transaction(
             validate_channel_specific=validate_channel_specific,
             on_rollback_start=on_rollback_start,
         )
+        notify_install_committed(result.install_result)
+        return result
     except ReplacePluginError:
         if rollback_install_source is not None:
             await rollback_install_source()
@@ -4242,6 +4859,7 @@ async def _do_upgrade(
                 on_conflict="fail",
                 install_source_override=market_override,
                 _preserve_autostart_plugin_id=installed_plugin_id,
+                _analyze_after_commit=False,
             )
 
         async def rollback_install_source() -> None:

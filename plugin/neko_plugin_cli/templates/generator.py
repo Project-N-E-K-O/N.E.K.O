@@ -14,10 +14,11 @@ from plugin._types.plugin_types import (
 )
 
 from ..core.build_rules import VENDOR_SYNC_GLOBS
+from ..core.lint import RUFF_LINT_SPEC
+from . import agent_kit
 
 _PYTHON_PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
-_PLUGIN_RUFF_VERSION = "0.12.4"
 MARKET_ACTIONS_NEKO_REPOSITORY = "Project-N-E-K-O/N.E.K.O"
 MARKET_ACTIONS_NEKO_REF = "main"
 MARKET_ACTIONS_MANAGED_HEADER = (
@@ -51,6 +52,7 @@ class PluginSpec:
     create_gitignore: bool = True
     create_vscode: bool = True
     create_github_actions: bool = False
+    create_agent_kit: bool = True
     quick_start: bool = False
 
     @property
@@ -76,7 +78,7 @@ class PluginDevelopmentLayout:
 
     plugin_id: str
     is_default_source: bool
-    repo_root_from_workspace: str
+    repo_root_from_workspace: str | None
 
     def readme_cli_prefix(self) -> str:
         if self.is_default_source:
@@ -120,9 +122,11 @@ class PluginDevelopmentLayout:
         *,
         plugin_id: str,
         target_dir: Path,
-        repo_root: Path,
+        repo_root: Path | None,
     ) -> PluginDevelopmentLayout:
         resolved_target = target_dir.resolve()
+        if repo_root is None:
+            return cls(plugin_id, False, None)
         resolved_repo_root = repo_root.resolve()
         default_target = resolved_repo_root / "plugin" / "plugins" / plugin_id
         try:
@@ -138,105 +142,61 @@ class PluginDevelopmentLayout:
         )
 
 
+def render_plugin_files(
+    spec: PluginSpec,
+    target_dir: Path,
+    *,
+    repo_root: Path | None,
+) -> dict[Path, str]:
+    """Render one standard scaffold without touching the filesystem."""
+    if spec.plugin_type not in SCAFFOLDABLE_PLUGIN_TYPES:
+        raise ValueError(format_unsupported_scaffold_type(spec.plugin_type))
+    if not _PYTHON_PLUGIN_ID_RE.fullmatch(spec.plugin_id):
+        raise ValueError("plugin_id must be a valid Python package name: use letters, numbers, and underscores only")
+    layout = PluginDevelopmentLayout.resolve(
+        plugin_id=spec.plugin_id, target_dir=target_dir, repo_root=repo_root,
+    )
+    files = {
+        Path("plugin.toml"): _render_plugin_toml(spec),
+        Path("config.example.toml"): _render_config_example_toml(spec),
+        Path("__init__.py"): _render_init_py(spec),
+    }
+    if spec.create_pyproject:
+        files[Path("pyproject.toml")] = _render_pyproject_toml(spec)
+    if spec.create_readme:
+        files[Path("README.md")] = _render_readme_md(spec, layout)
+    if spec.create_tests:
+        files[Path("tests/test_smoke.py")] = _render_smoke_test(spec)
+    if spec.create_gitignore:
+        files[Path(".gitignore")] = _render_gitignore()
+    if spec.create_vscode:
+        files[Path(".vscode/settings.json")] = _render_vscode_settings(layout)
+        files[Path(".vscode/tasks.json")] = _render_vscode_tasks(spec, layout)
+    if spec.create_github_actions:
+        files[Path("ruff.toml")] = render_ruff_config()
+        files[Path(".github/workflows/verify.yml")] = render_verify_workflow(spec)
+        files[Path(".github/workflows/release.yml")] = render_release_workflow(spec)
+    if spec.create_agent_kit:
+        files[Path("AGENTS.md")] = _render_agents_md(spec, layout)
+        files[Path("CLAUDE.md")] = agent_kit.render_claude_md()
+        files.update(agent_kit.skill_files())
+    return files
+
+
 def generate_plugin(
     spec: PluginSpec,
     target_dir: Path,
     *,
-    repo_root: Path,
+    repo_root: Path | None,
 ) -> list[Path]:
-    """Generate all scaffold files and return the list of created paths."""
-    if spec.plugin_type not in SCAFFOLDABLE_PLUGIN_TYPES:
-        raise ValueError(format_unsupported_scaffold_type(spec.plugin_type))
-    if not _PYTHON_PLUGIN_ID_RE.fullmatch(spec.plugin_id):
-        raise ValueError(
-            "plugin_id must be a valid Python package name: use letters, numbers, and underscores only"
-        )
-    layout = PluginDevelopmentLayout.resolve(
-        plugin_id=spec.plugin_id,
-        target_dir=target_dir,
-        repo_root=repo_root,
-    )
+    """Write exactly the same files returned by the preview renderer."""
+    files = render_plugin_files(spec, target_dir, repo_root=repo_root)
     target_dir.mkdir(parents=True, exist_ok=True)
-    created: list[Path] = []
-
-    # plugin.toml
-    toml_path = target_dir / "plugin.toml"
-    toml_path.write_text(_render_plugin_toml(spec), encoding="utf-8", newline="\n")
-    created.append(toml_path)
-
-    # config.example.toml
-    config_example_path = target_dir / "config.example.toml"
-    config_example_path.write_text(
-        _render_config_example_toml(spec),
-        encoding="utf-8",
-        newline="\n",
-    )
-    created.append(config_example_path)
-
-    # __init__.py
-    init_path = target_dir / "__init__.py"
-    init_path.write_text(_render_init_py(spec), encoding="utf-8", newline="\n")
-    created.append(init_path)
-
-    # pyproject.toml (optional)
-    if spec.create_pyproject:
-        pyproject_path = target_dir / "pyproject.toml"
-        pyproject_path.write_text(_render_pyproject_toml(spec), encoding="utf-8", newline="\n")
-        created.append(pyproject_path)
-
-    if spec.create_readme:
-        readme_path = target_dir / "README.md"
-        readme_path.write_text(
-            _render_readme_md(spec, layout),
-            encoding="utf-8",
-            newline="\n",
-        )
-        created.append(readme_path)
-
-    if spec.create_tests:
-        tests_dir = target_dir / "tests"
-        tests_dir.mkdir(parents=True, exist_ok=True)
-        smoke_path = tests_dir / "test_smoke.py"
-        smoke_path.write_text(_render_smoke_test(spec), encoding="utf-8", newline="\n")
-        created.append(smoke_path)
-
-    if spec.create_gitignore:
-        gitignore_path = target_dir / ".gitignore"
-        gitignore_path.write_text(_render_gitignore(), encoding="utf-8", newline="\n")
-        created.append(gitignore_path)
-
-    if spec.create_vscode:
-        vscode_dir = target_dir / ".vscode"
-        vscode_dir.mkdir(parents=True, exist_ok=True)
-        settings_path = vscode_dir / "settings.json"
-        settings_path.write_text(
-            _render_vscode_settings(layout), encoding="utf-8", newline="\n"
-        )
-        created.append(settings_path)
-
-        tasks_path = vscode_dir / "tasks.json"
-        tasks_path.write_text(
-            _render_vscode_tasks(spec, layout),
-            encoding="utf-8",
-            newline="\n",
-        )
-        created.append(tasks_path)
-
-    if spec.create_github_actions:
-        ruff_config_path = target_dir / "ruff.toml"
-        ruff_config_path.write_text(render_ruff_config(), encoding="utf-8", newline="\n")
-        created.append(ruff_config_path)
-
-        workflow_dir = target_dir / ".github" / "workflows"
-        workflow_dir.mkdir(parents=True, exist_ok=True)
-        workflow_path = workflow_dir / "verify.yml"
-        workflow_path.write_text(render_verify_workflow(spec), encoding="utf-8", newline="\n")
-        created.append(workflow_path)
-        release_workflow_path = workflow_dir / "release.yml"
-        release_workflow_path.write_text(render_release_workflow(spec), encoding="utf-8", newline="\n")
-        created.append(release_workflow_path)
-
-    return created
+    for relative, content in files.items():
+        path = target_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8", newline="\n")
+    return [target_dir / relative for relative in files]
 
 
 def generate_repo_support_files(
@@ -245,8 +205,13 @@ def generate_repo_support_files(
     *,
     repo_root: Path,
     overwrite: bool = False,
+    skipped_agent_kit: list[Path] | None = None,
 ) -> list[Path]:
-    """Generate repository support files for an existing plugin directory."""
+    """Generate repository support files for an existing plugin directory.
+
+    Agent kit targets kept because they exist (without ``overwrite``) are
+    appended to ``skipped_agent_kit`` as relative paths.
+    """
     if not target_dir.is_dir():
         raise FileNotFoundError(f"plugin directory not found: {target_dir}")
 
@@ -255,6 +220,13 @@ def generate_repo_support_files(
         target_dir=target_dir,
         repo_root=repo_root,
     )
+    # Rendered before any write: a missing agent kit raises here instead of
+    # leaving the other support files half-written.
+    agent_kit_files: dict[Path, str] = {}
+    if spec.create_agent_kit:
+        agent_kit_files[Path("AGENTS.md")] = _render_agents_md(spec, layout)
+        agent_kit_files[Path("CLAUDE.md")] = agent_kit.render_claude_md()
+        agent_kit_files.update(agent_kit.skill_files())
     created: list[Path] = []
 
     if spec.create_readme:
@@ -321,6 +293,23 @@ def generate_repo_support_files(
             created=created,
             overwrite=overwrite,
         )
+
+    # Per file, like the other support files: an existing skill snapshot only
+    # gets its missing files unless overwrite is set.
+    for relative, content in agent_kit_files.items():
+        path = target_dir / relative
+        if agent_kit.passes_through_symlink(target_dir, relative):
+            # e.g. CLAUDE.md -> AGENTS.md, or .agents -> a shared folder:
+            # writing through it would change the link target (another guide,
+            # another project's skill). Deliberate, so not reported: --overwrite
+            # keeps it too.
+            continue
+        if path.exists() and not overwrite:
+            if skipped_agent_kit is not None:
+                skipped_agent_kit.append(relative)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_support_file(path, content, created=created, overwrite=overwrite)
 
     return created
 
@@ -575,10 +564,79 @@ dependencies = []
 # Repository support files
 # ---------------------------------------------------------------------------
 
+def _render_agents_md(
+    spec: PluginSpec,
+    layout: PluginDevelopmentLayout,
+) -> str:
+    # Mirror the README: ID commands only resolve under plugin/plugins, so
+    # projects elsewhere get path-based commands.
+    if layout.repo_root_from_workspace is None:
+        def command(name: str, suffix: str = "") -> str:
+            return f"uv run neko-plugin {name} <path-to-this-directory>{suffix}"
+
+        context = "From a N.E.K.O source checkout, pass this directory's path:"
+    else:
+        def command(name: str, suffix: str = "") -> str:
+            return layout.readme_plugin_command(name, suffix=suffix)
+
+        context = (
+            "From the N.E.K.O repository root:"
+            if layout.is_default_source
+            else "From this directory:"
+        )
+    return agent_kit.render_agents_md(
+        spec.plugin_id,
+        command_context=context,
+        check_command=command("check"),
+        lint_command=command("lint"),
+        sync_command=command("sync", " --clean"),
+        precheck_command=command("precheck"),
+        build_command=command("build"),
+    )
+
+
+def _render_readme_ruff_instructions(spec: PluginSpec) -> str:
+    # Only projects with the Market workflows get ruff.toml. The version comes
+    # from RUFF_LINT_SPEC, which a unit test pins to the reusable Market
+    # workflows that the generated verify/release workflows call.
+    if not spec.create_github_actions:
+        return ""
+    return f'''From this plugin repository root:
+
+```bash
+uvx ruff=={RUFF_LINT_SPEC.version} check --ignore-noqa --config ruff.toml .
+```
+'''
+
+
 def _render_readme_md(
     spec: PluginSpec,
     layout: PluginDevelopmentLayout,
 ) -> str:
+    if layout.repo_root_from_workspace is None:
+        ruff_instructions = _render_readme_ruff_instructions(spec)
+        if ruff_instructions:
+            ruff_instructions = "\n" + ruff_instructions
+        return f'''# {spec.name or spec.plugin_id}
+
+{spec.description}
+
+## Development / 开发
+
+Open this folder in your editor. Add it to the Plugin studio in N.E.K.O's plugin manager
+when you are ready to run it. Runtime entries must use `async def`.
+
+在编辑器中打开本目录。需要运行时，在 N.E.K.O 插件管理器的「插件制作工作台」中添加此目录。
+运行时入口使用 `async def`。
+
+- ID: `{spec.plugin_id}`
+- Entry: `{spec.entry_point}`
+- Version: `{spec.version}`
+- GitHub repository: `{_market_repo_name(spec.plugin_id)}`
+
+Dependencies belong in `pyproject.toml` and the plugin's own `vendor/` directory.
+The standard GitHub workflows verify and build the plugin using N.E.K.O.
+{ruff_instructions}'''
     name = spec.name or spec.plugin_id
     description = spec.description or "Describe what this plugin does and how to configure it."
     sync_command = layout.readme_plugin_command("sync", suffix=" --clean")
@@ -645,15 +703,9 @@ Python 运行时依赖声明在 `pyproject.toml` 中，并在打包时同步到 
 Python ランタイム依存関係は `pyproject.toml` に宣言し、パッケージ化時に
 `vendor/` へ同期します。生成された `vendor/` はコミットせず、ローカルビルドと
 CI が公開前チェックで再生成します。'''
-    ruff_instructions = ""
-    if spec.create_github_actions:
-        ruff_instructions = f'''From this plugin repository root:
-
-```bash
-uvx ruff=={_PLUGIN_RUFF_VERSION} check --ignore-noqa --config ruff.toml .
-```
-
-'''
+    ruff_instructions = _render_readme_ruff_instructions(spec)
+    if ruff_instructions:
+        ruff_instructions += "\n"
     return f'''# {name}
 
 {description}
@@ -753,6 +805,8 @@ store.db
 
 def _render_vscode_settings(layout: PluginDevelopmentLayout) -> str:
     repo_root = layout.repo_root_from_workspace
+    if repo_root is None:
+        return json.dumps({"python.analysis.extraPaths": ["${workspaceFolder}/vendor"]}, indent=2) + "\n"
     analysis_path = (
         repo_root
         if Path(repo_root).is_absolute()
@@ -772,6 +826,8 @@ def _render_vscode_tasks(
     spec: PluginSpec,
     layout: PluginDevelopmentLayout,
 ) -> str:
+    if layout.repo_root_from_workspace is None:
+        return json.dumps({"version": "2.0.0", "tasks": []}, indent=2) + "\n"
     sync_command = layout.vscode_plugin_command("sync", suffix=" --clean")
     check_command = layout.vscode_plugin_command("check")
     release_check_command = layout.vscode_plugin_command("check -r")
@@ -853,6 +909,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:

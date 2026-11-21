@@ -937,6 +937,10 @@ async def _preview_reflect(
     )
     lang = get_global_language()
     prompt = get_reflection_prompt(lang)
+    # Production fills these from vector recall; with none available both
+    # render empty, which is what the testbench mirrors.
+    prompt = prompt.replace("{RELATED_CONTEXT_BLOCK}", "")
+    prompt = prompt.replace("{EXISTING_IMPRESSIONS_BLOCK}", "")
     prompt = prompt.replace("{FACTS}", facts_text)
     prompt = prompt.replace("{LANLAN_NAME}", character)
     prompt = prompt.replace("{MASTER_NAME}", master_display)
@@ -1751,6 +1755,10 @@ async def _build_reflect_wire(
     )
     lang = get_global_language()
     prompt = get_reflection_prompt(lang)
+    # Production fills these from vector recall; with none available both
+    # render empty, which is what the testbench mirrors.
+    prompt = prompt.replace("{RELATED_CONTEXT_BLOCK}", "")
+    prompt = prompt.replace("{EXISTING_IMPRESSIONS_BLOCK}", "")
     prompt = prompt.replace("{FACTS}", facts_text)
     prompt = prompt.replace("{LANLAN_NAME}", character)
     prompt = prompt.replace("{MASTER_NAME}", master_display)

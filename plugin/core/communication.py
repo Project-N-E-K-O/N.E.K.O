@@ -14,6 +14,8 @@ from typing import Any, Awaitable, Callable, ClassVar, Dict, Optional, TypeVar
 
 from plugin._types.entry_metadata import entry_contract_fields
 from plugin._types.exceptions import PluginExecutionError
+from plugin.core.call_registry import CallLink, current_delivery_link
+from plugin.core.capability_policy import policy_enabled
 from plugin.core.rpc import RpcPeer, RpcRemoteError
 from plugin.core.zmq_transport import (
     CH_COMM,
@@ -296,10 +298,12 @@ class PluginCommunicationResourceManager:
         if not was_closed and self.process_status is not None:
             from plugin.core.state import state
             try:
-                state.plugin_comm_queue.put_nowait({"type": "RPC_DISCONNECT", "from_plugin": self.plugin_id,
-                    "_rpc_connection_id": self._connection_id})
-            except asyncio.QueueFull:
-                self.logger.warning("RPC disconnect notification queue is full: plugin_id={}", self.plugin_id)
+                ingress = state.plugin_control_ingress
+                if ingress is not None:
+                    ingress.notify_disconnect({"type": "RPC_DISCONNECT", "from_plugin": self.plugin_id,
+                        "_rpc_connection_id": self._connection_id})
+            except RuntimeError:
+                self.logger.warning("RPC disconnect owner is unavailable: plugin_id={}", self.plugin_id)
 
     # ── send commands (downlink) ─────────────────────────────────
 
@@ -344,16 +348,60 @@ class PluginCommunicationResourceManager:
         )
 
     async def trigger(self, entry_id: str, args: dict, timeout: float | None = PLUGIN_TRIGGER_TIMEOUT) -> Any:
-        return await self._run_on_owner_loop(self._trigger_local(entry_id, args, timeout))
+        # Read the call site's link on its own loop, then pass it explicitly.
+        return await self._run_on_owner_loop(
+            self._trigger_local(entry_id, args, timeout, call_link=current_delivery_link())
+        )
 
-    async def _trigger_local(self, entry_id: str, args: dict, timeout: float | None = PLUGIN_TRIGGER_TIMEOUT) -> Any:
+    async def _trigger_local(
+        self,
+        entry_id: str,
+        args: dict,
+        timeout: float | None = PLUGIN_TRIGGER_TIMEOUT,
+        *,
+        call_link: CallLink | None = None,
+    ) -> Any:
         req_id = str(uuid.uuid4())
         self.logger.debug(
             "[CommManager] TRIGGER plugin_id={}, entry_id={}, req_id={}",
             self.plugin_id, entry_id, req_id,
         )
         msg = {"type": "TRIGGER", "req_id": req_id, "entry_id": entry_id, "args": args, "timeout": timeout}
-        return await self._send_command_and_wait_local(req_id, msg, timeout, f"entry {entry_id}")
+        return await self._send_delivery(
+            req_id, msg, timeout, f"entry {entry_id}",
+            event_type="plugin_entry", event_id=entry_id, call_link=call_link,
+        )
+
+    async def _send_delivery(
+        self,
+        req_id: str,
+        msg: dict,
+        timeout: float | None,
+        error_context: str,
+        *,
+        event_type: str,
+        event_id: str,
+        call_link: CallLink | None,
+    ) -> Any:
+        """Send one TRIGGER / TRIGGER_CUSTOM, registered for the call chain."""
+        if not policy_enabled():
+            return await self._send_command_and_wait_local(req_id, msg, timeout, error_context)
+        from plugin.server.application.plugins import capability_gate
+
+        record = capability_gate.begin_call(self.plugin_id, req_id, event_type, event_id, call_link)
+        if record is None:
+            return await self._send_command_and_wait_local(req_id, msg, timeout, error_context)
+        # Next to args, never inside them: entry arguments and _ctx are unchanged.
+        msg["_call_chain"] = capability_gate.chain_payload(record)
+        started = time.monotonic()
+        failure: BaseException | None = None
+        try:
+            return await self._send_command_and_wait_local(req_id, msg, timeout, error_context)
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
+            capability_gate.end_call(record, capability_gate.result_code(failure), started)
 
     async def trigger_custom_event(
         self,
@@ -363,7 +411,9 @@ class PluginCommunicationResourceManager:
         timeout: float = PLUGIN_TRIGGER_TIMEOUT,
     ) -> Any:
         return await self._run_on_owner_loop(
-            self._trigger_custom_event_local(event_type, event_id, args, timeout)
+            self._trigger_custom_event_local(
+                event_type, event_id, args, timeout, call_link=current_delivery_link()
+            )
         )
 
     async def get_ui_context(self, context_id: str = "main", timeout: float = 5.0) -> Any:
@@ -384,6 +434,8 @@ class PluginCommunicationResourceManager:
         event_id: str,
         args: dict,
         timeout: float = PLUGIN_TRIGGER_TIMEOUT,
+        *,
+        call_link: CallLink | None = None,
     ) -> Any:
         req_id = str(uuid.uuid4())
         self.logger.info(
@@ -398,8 +450,9 @@ class PluginCommunicationResourceManager:
             "args": args,
             "timeout": timeout,
         }
-        return await self._send_command_and_wait_local(
+        return await self._send_delivery(
             req_id, msg, timeout, f"custom event {event_type}.{event_id}",
+            event_type=event_type, event_id=event_id, call_link=call_link,
         )
 
     async def send_freeze_command(self, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Dict[str, Any]:
@@ -458,8 +511,13 @@ class PluginCommunicationResourceManager:
         await self._run_on_owner_loop(self._send_stop_command_local(timeout))
 
     async def _send_stop_command_local(self, timeout: float = 0.5) -> None:
+        # A timeout only stops waiting. Cancelling the send would withdraw a
+        # STOP still queued behind a backlog; kept, it reaches a child that
+        # catches up, and transport.close() settles it otherwise.
+        stop_send = asyncio.ensure_future(self.transport.send_command({"type": "STOP"}))
+        stop_send.add_done_callback(lambda task: task.cancelled() or task.exception())
         try:
-            await asyncio.wait_for(self.transport.send_command({"type": "STOP"}), timeout=timeout)
+            await asyncio.wait_for(asyncio.shield(stop_send), timeout=timeout)
             self.logger.debug("Sent STOP to plugin {}", self.plugin_id)
         except asyncio.TimeoutError:
             self.logger.warning("Sending STOP to plugin {} timed out after {}s", self.plugin_id, timeout)
@@ -470,7 +528,12 @@ class PluginCommunicationResourceManager:
         await self._run_on_owner_loop(self._send_plugin_response_local(msg))
 
     async def _send_plugin_response_local(self, msg: dict) -> None:
-        await self.transport.send_response(msg)
+        msg = dict(msg)
+        bounded = msg.pop("_bounded_downlink", False) is True
+        if bounded:
+            await self.transport.send_response(msg, bounded=True)
+        else:
+            await self.transport.send_response(msg)
 
     # ── status drain (sync, called from routes) ──────────────────
 
@@ -717,6 +780,13 @@ class PluginCommunicationResourceManager:
         se = self._shutdown_event
         if se and se.is_set():
             return
+        if msg.get("type") == "MESSAGE_PUSH":
+            # Internal field: never forwarded, whatever either side's setting.
+            parent = msg.pop("_rpc_parent_request_id", None)
+            if policy_enabled():
+                from plugin.server.application.plugins import capability_gate
+
+                capability_gate.check(self.plugin_id, parent, "messages.push", "MESSAGE_PUSH")
         await self._forward_message(msg)
 
     def _publish_message_to_plane(self, msg: Dict[str, Any]) -> bool:
@@ -822,7 +892,8 @@ class PluginCommunicationResourceManager:
             self._publish_message_to_plane(msg)
 
         if PLUGIN_LOG_MESSAGE_FORWARD:
-            log_content = _format_log_text(msg.get("content", ""))
+            content = msg.get("content", "")
+            content_length = len(content) if isinstance(content, str) else 0
             window = PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS
             if window and window > 0:
                 now_ts = time.monotonic()
@@ -831,7 +902,7 @@ class PluginCommunicationResourceManager:
                     msg.get("source", "unknown"),
                     msg.get("priority", 0),
                     msg.get("description", ""),
-                    log_content,
+                    _format_log_text(content),
                 )
                 last_key = self._last_forward_log_key
                 last_ts = self._last_forward_log_time
@@ -840,21 +911,21 @@ class PluginCommunicationResourceManager:
                     return
                 if last_key is not None and self._last_forward_log_repeat_count > 0:
                     self.logger.info(
-                        "[MESSAGE FORWARD] (suppressed {} duplicates for Plugin: {} | Source: {} | Priority: {} | Description: {})",
+                        "[MESSAGE FORWARD] (suppressed {} duplicates for Plugin: {} | Source: {} | Priority: {})",
                         self._last_forward_log_repeat_count,
-                        last_key[0], last_key[1], last_key[2], last_key[3],
+                        last_key[0], last_key[1], last_key[2],
                     )
                 self._last_forward_log_key = key
                 self._last_forward_log_time = now_ts
                 self._last_forward_log_repeat_count = 0
 
             self.logger.info(
-                "[MESSAGE FORWARD] Plugin: {} | Source: {} | Priority: {} | Description: {} | Content: {}",
+                "[MESSAGE FORWARD] Plugin: {} | Source: {} | Priority: {} | Message ID: {} | Content length: {}",
                 self.plugin_id,
                 msg.get("source", "unknown"),
                 msg.get("priority", 0),
-                msg.get("description", ""),
-                log_content,
+                msg.get("message_id", ""),
+                content_length,
             )
 
     # ── plugin-to-plugin comm routing ────────────────────────────
@@ -863,12 +934,19 @@ class PluginCommunicationResourceManager:
         """Forward a plugin-to-plugin request to the central comm queue."""
         try:
             from plugin.core.state import state
-            comm_queue = state.plugin_comm_queue
-            if comm_queue is not None:
-                trusted_msg = dict(msg)
-                trusted_msg["from_plugin"] = self.plugin_id
-                trusted_msg["_rpc_connection_id"] = self._connection_id
-                await comm_queue.put(trusted_msg)
+            from plugin.core.rpc import RpcClosedError, rpc_reply
+            trusted_msg = dict(msg)
+            trusted_msg["from_plugin"] = self.plugin_id
+            trusted_msg["_rpc_connection_id"] = self._connection_id
+            try:
+                ingress = state.plugin_control_ingress
+                if ingress is None:
+                    raise RpcClosedError("Plugin control router is not running")
+                await ingress.enqueue(trusted_msg, is_current=lambda: not self._closed)
+            except (asyncio.QueueFull, RpcClosedError, TimeoutError) as exc:
+                if msg.get("type") not in {"RPC_CANCEL", "RPC_DISCONNECT"}:
+                    code = "BUSY" if isinstance(exc, asyncio.QueueFull) else ("DEADLINE_EXCEEDED" if isinstance(exc, TimeoutError) else "CONNECTION_CLOSED")
+                    await asyncio.wait_for(self.send_plugin_response(rpc_reply(trusted_msg, error={"code": code, "message": "Plugin control request was not admitted"})), timeout=0.25)
         except Exception as e:
             self.logger.warning("Failed to route comm message from plugin {}: {}", self.plugin_id, e)
 

@@ -122,6 +122,9 @@ class LLMSessionManager(
         # Live browser consent can arrive before the settings POST is persisted.
         self._proactive_vision_enabled: bool | None = None
         self._proactive_vision_revocation_epoch: int = 0
+        # Bumped only when screen consent goes from allowed to revoked (not on a
+        # declined proactive screenshot); voice-turn live frames are fenced by it.
+        self._screen_consent_revocation_epoch: int = 0
         self._avatar_position: dict | None = None  # Frontend normalized Avatar coordinates {centerX, centerY, width, height}.
         # One-shot handoff slot between request_fresh_screenshot and resolve_screenshot_request.
         # Deliberately separate from _avatar_position, overwritten by every stream_data (screen-share frames,
@@ -314,9 +317,14 @@ class LLMSessionManager(
             'computer_use_enabled': False,
             'browser_use_enabled': False,
             'user_plugin_enabled': False,
-            'openclaw_enabled': False,
-            'openclaw_ready': False,
         }
+        # What the current turn has noted about its tool calls (TurnMixin.
+        # _close_turn_tool_state resets these when the turn ends).
+        self._turn_acted_through_tools = False
+        self._turn_has_spoken = False
+        self._tool_wait_bubble = False
+        # The user's own words of the current turn (text input or transcript).
+        self._latest_user_utterance = ''
         
         # Mode flag: 'audio' or 'text'.
         self.input_mode = 'audio'
@@ -411,6 +419,9 @@ class LLMSessionManager(
         # Input buffering prevents loss during session initialization.
         self.session_ready = False  # Whether session is fully ready.
         self.pending_input_data = []  # Pending input data: [message_dict, ...].
+        # Monotonic time of the last frontend ``screen_share_stopped``; live share
+        # frames that reached the router before it are stale.
+        self._live_share_stopped_at = 0.0
         self.pending_context_appends: list[dict] = []
         self._context_append_sequence = 0
         self._context_append_request_ids: OrderedDict[tuple[Any, ...], float] = OrderedDict()
@@ -506,7 +517,7 @@ class LLMSessionManager(
 
         # Downstream-consumer gate for activity_guess narration, consumed only by proactive
         # Phase 2. Two cases have no reader, wasting an expensive emotion-tier call:
-        #   ① goodbye_silent (idle catgirl silence): Phase 2 immediately exits;
+        #   ① goodbye_silent (idle neko silence): Phase 2 immediately exits;
         #   ② no online WebSocket (ordinary disconnection / End Session): proactive delivery impossible.
         # Tracker outlives sessions; End Session does not cancel heartbeat (break-reminder / contextual-popup
         # rules must continue), so skip LLM through this gate without consumers. Otherwise after page closure

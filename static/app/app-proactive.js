@@ -56,10 +56,8 @@
     const PROACTIVE_LEADER_HEARTBEAT_MS = 5000;
     const PROACTIVE_LEADER_TTL_MS = 15000;
     const PROACTIVE_LEADER_RECHECK_MS = 8000; // 非 leader 的自检周期
-    const PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS = 30;
+    // 打字时下次搭话距最后一次聚焦/输入至少留这么久；剩余时间本来更长的不受影响。
     const PROACTIVE_CHAT_INPUT_MIN_DELAY_MS = 30000;
-    // 连续打字时合并重新排程，避免每个按键都清掉定时器；截止时间本身仍每次刷新。
-    const PROACTIVE_CHAT_INPUT_RESCHEDULE_MIN_MS = 400;
     // 定时器可能略早于截止时间触发。这个余量内视为同一窗口已经结束，避免聚焦状态下多等一轮。
     const PROACTIVE_CHAT_INPUT_SLOWDOWN_SLACK_MS = 250;
 
@@ -107,7 +105,6 @@
     let _proactiveLeaderHeartbeatTimer = null;
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
     let _chatInputSlowdownUntil = 0;
-    let _chatInputSlowdownRescheduleAt = 0;
     const _homeTutorialSuppressionSources = new Set();
 
     function isProactiveVisionEnabledNow() {
@@ -129,6 +126,52 @@
     }
 
     mod.isProactiveVisionEnabledNow = isProactiveVisionEnabledNow;
+
+    // Whether the speech-time vision heartbeat may look at the screen right now.
+    // Every heartbeat start entry, the per-tick re-check and every "keep the
+    // screen stream during a call" decision use this one function; change the
+    // rule here only. It requires privacy mode off, Proactive Chat on and its
+    // Screen Share option on. Turning any of them off wins from either side:
+    // the latest saved setting (another window may have saved first) or this
+    // window's own value (the local save may have failed).
+    function canProactiveVisionRunDuringSpeech() {
+        return isVisionConsentHeldNow()
+            && isSwitchOnNow('proactiveChatEnabled')
+            && isSwitchOnNow('proactiveVisionChatEnabled');
+    }
+
+    function isSwitchOnNow(key) {
+        if (!S[key]) return false;
+        try {
+            var raw = localStorage.getItem('project_neko_settings');
+            if (raw) {
+                var saved = JSON.parse(raw);
+                if (saved && saved[key] === false) return false;
+            }
+        } catch (_) { }
+        return true;
+    }
+
+    // Screen consent alone, shared by text-chat vision and stream acquisition;
+    // the speech gate above may add conditions on top of it. Both this
+    // window's value and the latest saved setting must allow it, so a
+    // revocation on either side (including a failed local save) wins.
+    // (window.proactiveVisionEnabled is bound to S.proactiveVisionEnabled.)
+    function isVisionConsentHeldNow() {
+        return !!S.proactiveVisionEnabled && isProactiveVisionEnabledNow();
+    }
+
+    // Whether proactive vision (speech heartbeat or text-chat screenshots)
+    // still needs the cached screen stream. The single keep-the-stream rule
+    // for app-screen and releaseProactiveVisionStream.
+    function holdsProactiveVisionStream() {
+        // The speech heartbeat (during a call) and text-chat screenshots need
+        // the same switches today, so the speech gate answers for both. Split
+        // this if their conditions ever diverge.
+        return canProactiveVisionRunDuringSpeech();
+    }
+    mod.holdsProactiveVisionStream = holdsProactiveVisionStream;
+    mod.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
 
     // 每次撤回授权递增。截图之后递增过，这张图就属于撤权前：即使随后又重新
     // 开启，也不能随请求发出——后端只能察觉它收到请求之后的撤权。
@@ -439,42 +482,30 @@
         return element.disabled !== true && element.readOnly !== true;
     }
 
-    function _getChatInputSlowdownDelay(baseIntervalSeconds) {
-        const interval = Number(baseIntervalSeconds);
-        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
-            return 0;
-        }
+    function _getChatInputSlowdownDelay() {
         // 截止时间只在聚焦或实际输入时刷新。复查和再次排程都取剩余时间，
         // 输入框还聚焦也不能把等待重置成完整的 30 秒。
         return Math.max(0, _chatInputSlowdownUntil - Date.now());
     }
 
-    function _markChatInputSlowdownWindow(baseIntervalSeconds) {
-        const interval = Number(baseIntervalSeconds);
-        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
-            return;
-        }
-        _chatInputSlowdownUntil = Date.now() + Math.max(PROACTIVE_CHAT_INPUT_MIN_DELAY_MS, interval * 1000);
+    function _markChatInputSlowdownWindow() {
+        _chatInputSlowdownUntil = Date.now() + PROACTIVE_CHAT_INPUT_MIN_DELAY_MS;
     }
 
     function _chatInputSlowdownApplies() {
-        return !!(S.proactiveChatEnabled && hasAnyChatModeEnabled()
-            && Number(S.proactiveChatInterval) <= PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS);
+        return !!(S.proactiveChatEnabled && hasAnyChatModeEnabled());
     }
 
-    // 聚焦只打开一次输入窗口。之后每次实际输入都把截止时间往后推，并重新排定判定。
-    // 排程做了短合并，但截止时间每次都更新；到点时若窗口仍未结束，会再判一次而不是直接搭话。
+    // 聚焦或每次实际输入都把截止时间刷新到 30 秒后，不论搭话间隔多长。
+    // 已排好的定时器不重排：剩余时间不足 30 秒的，到点时由
+    // _deferProactiveChatForInputSlowdown 补到窗口结束再判；本来就超过 30 秒的照原时间触发。
     function _refreshChatInputSlowdown(options) {
         if (!_chatInputSlowdownApplies()) return;
-        _markChatInputSlowdownWindow(S.proactiveChatInterval);
+        _markChatInputSlowdownWindow();
         if (!options || options.fromPeer !== true) {
             _proactiveBroadcast('chat_input_focus_slowdown');
         }
-        const now = Date.now();
-        if (S.proactiveChatTimer && now - _chatInputSlowdownRescheduleAt < PROACTIVE_CHAT_INPUT_RESCHEDULE_MIN_MS) {
-            return;
-        }
-        _chatInputSlowdownRescheduleAt = now;
+        if (S.proactiveChatTimer) return;
         scheduleProactiveChat();
     }
 
@@ -605,7 +636,7 @@
             }
             // 接班：如果当前正在录音，启动 vision-during-speech
             try {
-                if (S.isRecording) startProactiveVisionDuringSpeech();
+                if (S.isRecording && canProactiveVisionRunDuringSpeech()) startProactiveVisionDuringSpeech();
             } catch (e) {
                 console.warn('[Proactive] 接班时启动 vision-during-speech 失败:', e);
             }
@@ -698,7 +729,7 @@
         return S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveCommunityChatEnabled ||
             S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
             S.proactiveMusicEnabled || S.proactiveMemeEnabled ||
-            S.proactiveMiniGameInviteEnabled;
+            S.proactiveMiniGameInviteEnabled || S.proactiveTheaterInviteEnabled;
     }
     mod.hasAnyChatModeEnabled = hasAnyChatModeEnabled;
 
@@ -812,7 +843,7 @@
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
-            !S.proactiveMiniGameInviteEnabled) {
+            !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
             return false;
         }
 
@@ -820,7 +851,7 @@
         if (S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
-            !S.proactiveMiniGameInviteEnabled) {
+            !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
             return isProactiveVisionEnabledNow();
         }
 
@@ -828,7 +859,7 @@
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
-            !S.proactiveMiniGameInviteEnabled) {
+            !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
             return S.proactivePersonalChatEnabled;
         }
 
@@ -1053,7 +1084,7 @@
 
         // 输入放缓 floor 跟 fixed/tier 模式正交：用户在打字时不该被主动搭话打断，
         // 不管处于屏幕专注态还是常规态。两边都套这个下限。
-        var inputSlowdownDelay = _getChatInputSlowdownDelay(baseInterval);
+        var inputSlowdownDelay = _getChatInputSlowdownDelay();
         if (inputSlowdownDelay > 0) {
             delay = Math.max(delay, inputSlowdownDelay);
         }
@@ -1218,7 +1249,7 @@
             if (S.isRecording) {
                 var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 var voiceModes = [];
-                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
+                if (canProactiveVisionRunDuringSpeech()) {
                     voiceModes.push('vision');
                 }
                 console.log('[ProactiveChat] 语音模式快速路径，modes: [' + voiceModes.join(', ') + ']');
@@ -1234,11 +1265,10 @@
                     voice_mode: true,
                     // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                     // 与 source-driven sources 解耦，不进 enabled_modes 数组。
+                    theater_invite_enabled: !!S.proactiveTheaterInviteEnabled,
                     mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled
                 };
                 _applyProactiveLanguagePayload(voiceProactivePayload, lanlanName);
-                var voiceProactiveBody = JSON.stringify(voiceProactivePayload);
-
                 async function _sendVoiceProactive() {
                     var hdrs = { 'Content-Type': 'application/json' };
                     if (voiceProactiveSec && typeof voiceProactiveSec.getMutationHeaders === 'function') {
@@ -1248,10 +1278,17 @@
                     if (_inputSlowdownStillBlocksSend()) {
                         return null;
                     }
+                    // A switch may have gone off while the headers were
+                    // fetched (also before a CSRF retry): drop vision then,
+                    // keeping the field as an explicit empty list.
+                    if (voiceProactivePayload.enabled_modes.length > 0
+                        && !canProactiveVisionRunDuringSpeech()) {
+                        voiceProactivePayload.enabled_modes = [];
+                    }
                     return fetch('/api/proactive_chat', {
                         method: 'POST',
                         headers: hdrs,
-                        body: voiceProactiveBody,
+                        body: JSON.stringify(voiceProactivePayload),
                     });
                 }
 
@@ -1316,7 +1353,7 @@
             // 收集所有启用的搭话方式
             // 视觉搭话：需要同时开启主动搭话和自主视觉
             // 同时触发 vision 和 window 模式
-            if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
+            if (holdsProactiveVisionStream()) {
                 availableModes.push('vision');
                 availableModes.push('window');
             }
@@ -1371,7 +1408,7 @@
             // 如果没有选择任何搭话方式，跳过本次搭话——除非 mini-game 邀请独立开着
             // （那条路径与 enabled_modes 解耦，后端短路通道仍可能掷骰投递邀请）。
             if (availableModes.length === 0) {
-                if (!S.proactiveMiniGameInviteEnabled) {
+                if (!S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
                     console.log('未选择任何搭话方式，跳过本次搭话');
                     return;
                 }
@@ -1390,6 +1427,7 @@
                 music_cooldown: (typeof window.isMusicCooldown === 'function') ? window.isMusicCooldown() : false,
                 // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                 // 与 source-driven sources 解耦，不进 enabled_modes 数组。
+                theater_invite_enabled: !!S.proactiveTheaterInviteEnabled,
                 mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled,
                 // 屏幕专注态后端会按 [0, 0.5×base] 注入间隔抖动，需要知道
                 // 当前用户配置的 baseInterval。后端 propensity 非屏幕专注态
@@ -1447,7 +1485,7 @@
 
                 // await 期间用户可能切换模式，重新过滤可用模式
                 var latestModes = [];
-                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
+                if (holdsProactiveVisionStream()) {
                     latestModes.push('vision', 'window');
                 }
                 if (S.proactiveNewsChatEnabled && S.proactiveChatEnabled) {
@@ -1564,7 +1602,7 @@
             requestBody.music_cooldown = !!musicCooldownBeforeRequest;
             if (musicOccupiedBeforeRequest || musicRateLimitedBeforeRequest || musicCooldownBeforeRequest) {
                 requestBody.enabled_modes = requestBody.enabled_modes.filter(function (mode) { return mode !== 'music'; });
-                if (requestBody.enabled_modes.length === 0 && !S.proactiveMiniGameInviteEnabled) {
+                if (requestBody.enabled_modes.length === 0 && !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
                     return;
                 }
             }
@@ -1997,6 +2035,10 @@
     // ======================== proactive vision during speech ========================
 
     var proactiveVisionFrameInFlight = false;
+    // Set when a fresh frame was asked for while one was still being captured
+    // (e.g. a quick off -> on toggle, which also voids that frame): send the
+    // fresh one as soon as the capture in flight finishes.
+    var proactiveVisionFrameRetryAfterInFlight = false;
 
     /**
      * 发送单帧屏幕数据（统一使用 acquireOrReuseCachedStream → captureFrameFromStream → 后端兜底）
@@ -2004,12 +2046,23 @@
     async function sendOneProactiveVisionFrame() {
         if (proactiveVisionFrameInFlight) return;
         proactiveVisionFrameInFlight = true;
+        var frameSent = false;
         try {
-            if (!isProactiveVisionEnabledNow() || !S.isRecording) {
+            if (!canProactiveVisionRunDuringSpeech() || !S.isRecording) {
                 stopProactiveVisionDuringSpeech();
                 return;
             }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+            // A revocation during this capture voids the frame, even if
+            // consent is granted again before it would be sent.
+            // Only an actual "not allowed now" stops the heartbeat: after a
+            // revoke-then-regrant a newer heartbeat may already be running.
+            var revocationSeqAtStart = proactiveVisionRevocationSeq;
+            var offSeqAtStart = _speechVisionOffSeq;
+            var frameStale = function () {
+                return revocationSeqAtStart !== proactiveVisionRevocationSeq
+                    || offSeqAtStart !== _speechVisionOffSeq;
+            };
 
             var rememberedWindowCapture = { required: false, allowed: true };
             if (typeof window.prepareRememberedWindowCapture === 'function') {
@@ -2048,7 +2101,13 @@
             }
 
             // Native desktop shells return encoded frames instead of a
-            // Chromium MediaStream.
+            // Chromium MediaStream. Do not start that capture once consent is gone.
+            if (!dataUrl && S.selectedScreenSourceId && !canProactiveVisionRunDuringSpeech()) {
+                stopProactiveVisionDuringSpeech();
+                releaseProactiveVisionStream();
+                return;
+            }
+            if (!dataUrl && S.selectedScreenSourceId && frameStale()) return;
             if (!dataUrl && S.selectedScreenSourceId) {
                 var desktopProvider = getDesktopProvider();
                 if (desktopProvider
@@ -2098,6 +2157,14 @@
                 return;
             }
 
+            // Do not start a desktop screenshot once consent is gone.
+            if (!dataUrl && !canProactiveVisionRunDuringSpeech()) {
+                stopProactiveVisionDuringSpeech();
+                releaseProactiveVisionStream();
+                return;
+            }
+            if (!dataUrl && frameStale()) return;
+
             // 后端 pyautogui 兜底
             if (!dataUrl) {
                 var backendResult = await fetchBackendScreenshot();
@@ -2124,10 +2191,14 @@
             // 把竞态中已存入的屏幕流一并释放（抑制开始时的释放看不到尚未
             // 存入的流），否则 OS 采集指示灯会亮到空闲清理。
             var suppressedByTutorial = isHomeTutorialFeatureSuppressed();
-            var visionDisabled = !isProactiveVisionEnabledNow();
+            var visionDisabled = !canProactiveVisionRunDuringSpeech();
             if (visionDisabled || !S.isRecording || suppressedByTutorial) {
                 stopProactiveVisionDuringSpeech();
                 if (suppressedByTutorial || visionDisabled) releaseProactiveVisionStream();
+                return;
+            }
+            if (frameStale()) {
+                console.log('[ProactiveVision] 采集期间发生过撤权，丢弃这一帧');
                 return;
             }
             if (rememberedWindowCapture && rememberedWindowCapture.required
@@ -2143,12 +2214,21 @@
                 S.socket.send(JSON.stringify(
                     buildStreamDataMessage(dataUrl, visionInputType, null, captureType)
                 ));
+                frameSent = true;
                 console.log('[ProactiveVision] 发送单帧屏幕数据');
             }
         } catch (e) {
             console.error('sendOneProactiveVisionFrame 失败:', e);
         } finally {
             proactiveVisionFrameInFlight = false;
+            if (proactiveVisionFrameRetryAfterInFlight) {
+                proactiveVisionFrameRetryAfterInFlight = false;
+                // The frame in flight already went out (it was not voided):
+                // that is the fresh frame, do not send a second one.
+                if (!frameSent && S.proactiveVisionFrameTimer) {
+                    sendOneProactiveVisionFrame();
+                }
+            }
         }
     }
     mod.sendOneProactiveVisionFrame = sendOneProactiveVisionFrame;
@@ -2180,13 +2260,13 @@
         }
 
         // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
-        if (!isProactiveVisionEnabledNow() || !S.isRecording) return;
+        if (!canProactiveVisionRunDuringSpeech() || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
         if (screenButton && screenButton.classList.contains('active')) return; // 手动共享时不启动
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
-            if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()
+            if (!canProactiveVisionRunDuringSpeech() || !S.isRecording || isGoodbyeActive()
                 || isHomeTutorialFeatureSuppressed()) {
                 stopProactiveVisionDuringSpeech();
                 return;
@@ -2216,6 +2296,78 @@
         }
     }
     mod.stopProactiveVisionDuringSpeech = stopProactiveVisionDuringSpeech;
+
+    // Bring the speech heartbeat in line with the switches after any of them
+    // changed (this window's save or another window's saved settings). Off:
+    // stop the heartbeat and, on the allowed -> not allowed change, release
+    // the screen stream so the capture indicator goes out. On: start it when
+    // in a call. Settings are saved often, so this must be idempotent.
+    var _speechVisionAllowedLast = null;
+    // Bumped whenever a sync finds speech vision not allowed (a switch or
+    // privacy mode went off), so a frame captured before an off -> on toggle
+    // is dropped even though the gate is open again when it completes.
+    var _speechVisionOffSeq = 0;
+    function syncProactiveVisionDuringSpeech() {
+        var allowed = canProactiveVisionRunDuringSpeech();
+        var wasAllowed = _speechVisionAllowedLast;
+        _speechVisionAllowedLast = allowed;
+        if (!allowed) {
+            _speechVisionOffSeq += 1;
+            stopProactiveVisionDuringSpeech();
+            if (wasAllowed !== false) {
+                releaseProactiveVisionStream();
+            }
+            return;
+        }
+        if (S.isRecording && !S.proactiveVisionFrameTimer) {
+            startProactiveVisionDuringSpeech();
+            // Re-enabled during a call: send a fresh frame now instead of
+            // after one full interval, so a voice nudge in that gap cannot
+            // describe a frame cached before the switch was turned off.
+            requestFreshProactiveVisionFrame();
+        }
+    }
+
+    // Send a fresh frame now, or right after the capture in flight finishes
+    // (that one may be voided by an off -> on toggle). Heartbeat only.
+    function requestFreshProactiveVisionFrame() {
+        if (!S.proactiveVisionFrameTimer) return;
+        if (proactiveVisionFrameInFlight) {
+            proactiveVisionFrameRetryAfterInFlight = true;
+            return;
+        }
+        sendOneProactiveVisionFrame();
+    }
+
+    // Called from a switch the user just turned on (a click, so a capture
+    // picker may be shown). In a browser the stream was released when a
+    // switch went off, and the captures that use it never prompt, so ask for
+    // it here: for the speech heartbeat in a call and for text-chat
+    // screenshots outside one (whichever switch was turned on last).
+    var _userEnableAcquireInFlight = null;
+    function acquireProactiveVisionAfterUserEnable() {
+        if (!holdsProactiveVisionStream()) return;
+        // A manual share picker, or one opened by an earlier click, is
+        // already open: do not open a second one.
+        if (typeof window.isScreenSharingStartPending === 'function'
+            && window.isScreenSharingStartPending() === true) return;
+        if (_userEnableAcquireInFlight) return;
+        _userEnableAcquireInFlight = acquireProactiveVisionStream();
+        _userEnableAcquireInFlight.finally(function () {
+            _userEnableAcquireInFlight = null;
+        }).catch(function () { });
+        _userEnableAcquireInFlight.then(function (ok) {
+            // The frame sent when the switch came back on had no stream yet
+            // in a browser; send one now that it is here.
+            if (ok === true && S.isRecording) {
+                requestFreshProactiveVisionFrame();
+            }
+        }).catch(function (e) {
+            console.warn('[ProactiveVision] 开关开启后重新获取屏幕流失败:', e);
+        });
+    }
+    mod.acquireProactiveVisionAfterUserEnable = acquireProactiveVisionAfterUserEnable;
+    mod.syncProactiveVisionDuringSpeech = syncProactiveVisionDuringSpeech;
 
     function stopProactiveChatSchedule() {
         if (S.proactiveChatTimer) {
@@ -2524,10 +2676,14 @@
         }
         if (isHomeTutorialFeatureSuppressed()) return false;
 
+        // Consent may be revoked while the remembered window was being checked.
+        if (!holdsProactiveVisionStream()) return false;
+
         // 策略1: 无记忆窗口约束时测试后端 pyautogui（静默，无弹窗）
         if (!rememberedWindowCapture || !rememberedWindowCapture.required) {
             var backendResult = await fetchBackendScreenshot();
             if (isHomeTutorialFeatureSuppressed()) return false;
+            if (!holdsProactiveVisionStream()) return false;
             if (backendResult.dataUrl) {
                 console.log('[主动视觉] 后端 pyautogui 可用，无需前端流');
                 return true;
@@ -2543,6 +2699,11 @@
             return false;
         }
         if (stream) {
+            // Consent revoked while the picker was open: do not keep the stream.
+            if (!holdsProactiveVisionStream()) {
+                releaseProactiveVisionStream();
+                return false;
+            }
             if (rememberedWindowCapture && rememberedWindowCapture.required
                 && typeof rememberedWindowCapture.isCurrent === 'function'
                 && !rememberedWindowCapture.isCurrent()) {
@@ -2567,8 +2728,6 @@
             console.log('[主动视觉] 手动屏幕共享活跃中，不释放流');
             return;
         }
-
-        var privacyBlocksVision = !isProactiveVisionEnabledNow();
         // 教程抑制期间设置内存保持用户真值（开），但视觉属于被暂停面：
         // 不能因「设置仍开着」而保留屏幕流，抑制期的 stop 三件套必须真正释放。
         // 浏览器 getDisplayMedia 流释放后需要新的用户手势才能重新申请。
@@ -2576,15 +2735,17 @@
         // 用户重新开麦或启用视觉；这里仍释放自动采集以停止 OS 录屏指示。
         var suppressionBlocksVision = isHomeTutorialFeatureSuppressed();
 
-        // 如果正在录音（语音模式），流可能正在被使用，不释放
-        if (S.isRecording && !privacyBlocksVision && !suppressionBlocksVision) {
-            console.log('[主动视觉] 语音模式活跃中，不释放流');
+        // A manual share still starting (picker open) may be about to use it;
+        // tutorial suppression still releases, as before.
+        if (!suppressionBlocksVision
+            && typeof window.isScreenSharingStartPending === 'function'
+            && window.isScreenSharingStartPending() === true) {
             return;
         }
 
-        // 如果主动搭话+主动视觉Chat仍活跃，保留流
-        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && !privacyBlocksVision && !suppressionBlocksVision) {
-            console.log('[主动视觉] 主动搭话视觉仍活跃，不释放流');
+        // Speech heartbeat or text-chat vision may still use the stream: keep it.
+        if (!suppressionBlocksVision && holdsProactiveVisionStream()) {
+            console.log('[主动视觉] 主动视觉仍在使用屏幕流，不释放流');
             return;
         }
 
@@ -2617,7 +2778,7 @@
         // 可静默重建的桌面源/后端截图可以恢复；浏览器 getDisplayMedia
         // 不能由教程解锁事件重新授权，后端不可用时需用户手势重新获取。
         try {
-            if (S.isRecording) {
+            if (S.isRecording && canProactiveVisionRunDuringSpeech()) {
                 startProactiveVisionDuringSpeech();
             }
         } catch (e) {
@@ -2701,6 +2862,10 @@
     window.stopProactiveChatSchedule = stopProactiveChatSchedule;
     window.startProactiveVisionDuringSpeech = startProactiveVisionDuringSpeech;
     window.stopProactiveVisionDuringSpeech = stopProactiveVisionDuringSpeech;
+    window.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
+    window.holdsProactiveVisionStream = holdsProactiveVisionStream;
+    window.syncProactiveVisionDuringSpeech = syncProactiveVisionDuringSpeech;
+    window.acquireProactiveVisionAfterUserEnable = acquireProactiveVisionAfterUserEnable;
     window.acquireProactiveVisionStream = acquireProactiveVisionStream;
     window.releaseProactiveVisionStream = releaseProactiveVisionStream;
     window.scheduleProactiveChat = scheduleProactiveChat;

@@ -60,7 +60,7 @@ _sse_clients: dict[str, list[asyncio.Queue]] = {}
 _sse_clients_lock = asyncio.Lock()
 # Maximum per-client queue buffer (slow/blocked clients cannot grow it indefinitely); discard new messages when full.
 _SSE_QUEUE_MAX = 100
-# Push body limit (bytes): 1MB, enough for catgirl avatar chat overlays while bounding memory from malicious local chunked requests.
+# Push body limit (bytes): 1MB, enough for neko avatar chat overlays while bounding memory from malicious local chunked requests.
 _PUSH_MAX_BODY = 1024 * 1024
 # Trusted Origin hosts (loopback): push broadcasts accept absent Origin (plugin backend/non-browser) or local pages only.
 _TRUSTED_ORIGIN_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -288,6 +288,13 @@ def _get_mime_type(file_path: Path) -> str:
         ".eot": "application/vnd.ms-fontobject",
     }
     return mime_map.get(suffix, "application/octet-stream")
+
+
+@router.get("/plugin-ui-sdk/display.js")
+async def plugin_display_sdk():
+    """Shared, framework-free display client for static plugin pages."""
+    sdk_file = Path(__file__).resolve().parents[3] / "static" / "plugin-ui-sdk" / "display.js"
+    return FileResponse(sdk_file, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
 
 
 @router.get("/plugin/{plugin_id}/ui")

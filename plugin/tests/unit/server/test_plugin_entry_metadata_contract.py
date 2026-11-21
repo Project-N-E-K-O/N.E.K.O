@@ -94,7 +94,7 @@ def test_wire_payload_preserves_slotted_and_legacy_entry_contract(legacy):
 async def test_registered_entry_survives_ipc_http_listing_and_agent_projection(
     isolated_registry, monkeypatch, declared
 ):
-    from brain.task_executor import DirectTaskExecutor
+    from nekoclaw.host.selection import routable_plugins, visible_entries
     from utils.result_parser import parse_plugin_result
 
     config = {"entries": manifest_entries()} if declared else {}
@@ -137,10 +137,10 @@ async def test_registered_entry_survives_ipc_http_listing_and_agent_projection(
     assert entries["probe"]["metadata"]["agent_auto"] is False
     assert entries["consult"]["timeout"] == 100
     assert entries["consult"]["llm_result_fields"] == ["summary"]
-    executor = object.__new__(DirectTaskExecutor)
-    assert [e["id"] for e in executor._agent_visible_plugin_entries(plugin)] == [
-        "consult"
-    ]
+    # The projection the host's plugin selection works on: the entry switched
+    # off with ``agent_auto`` is gone, the plugin itself stays routable.
+    assert [e["id"] for e in visible_entries(plugin)] == ["consult"]
+    assert [p["id"] for p in routable_plugins([plugin])] == ["contract"]
     assert (
         parse_plugin_result(
             {"summary": "New evidence", "response": {"private": True}},
@@ -744,3 +744,356 @@ def test_slotted_wire_payload_has_no_hand_copied_controls():
     assert set(payload) <= identity | set(ENTRY_CONTRACT_FIELDS)
     assert payload["timeout"] == 100
     assert payload["quick_action_config"] == {"icon": None, "priority": 0}
+
+
+def test_router_entries_reach_the_execution_table_with_their_timeout(isolated_registry):
+    """`__routers__` entries must reach event_handlers, or execution uses the global default timeout."""
+    from plugin.sdk.plugin import PluginRouter
+
+    class Router(PluginRouter):
+        @plugin_entry(id="slow", timeout=120)
+        async def slow(self):
+            pass
+
+        @plugin_entry(id="probe", timeout=1)
+        async def shadowed(self):
+            pass
+
+    class Plugin(ContractPlugin):
+        __routers__ = [Router]
+
+    registry.scan_static_metadata("contract", Plugin, {}, {})
+    assert state.event_handlers["contract.slow"].meta.timeout == 120
+    assert state.event_handlers["contract:plugin_entry:slow"].meta.timeout == 120
+    # An entry on the plugin class itself wins; the router does not override it
+    assert state.event_handlers["contract.probe"].meta.timeout == 5
+    assert ("contract", "slow") not in registry.plugin_entry_method_map
+
+
+def test_router_instance_entries_use_the_prefixed_runtime_id(isolated_registry):
+    """A prefixed router instance registers `x_slow`, the id runtime and preview use; non-entries stay out."""
+    from plugin.sdk.plugin import PluginRouter, lifecycle
+
+    class Router(PluginRouter):
+        @plugin_entry(id="slow", timeout=120)
+        async def slow(self):
+            pass
+
+        @lifecycle(id="startup")
+        async def startup(self, **_):
+            pass
+
+    class Plugin(ContractPlugin):
+        __routers__ = [Router(prefix="x_")]
+
+    registry.scan_static_metadata("contract", Plugin, {}, {})
+    assert state.event_handlers["contract.x_slow"].meta.timeout == 120
+    assert "contract.slow" not in state.event_handlers
+    assert not any("startup" in key for key in state.event_handlers)
+    preview_ids = {e["id"] for e in registry._extract_entries_preview("contract", Plugin, {}, {})}
+    assert "x_slow" in preview_ids and "slow" not in preview_ids
+
+
+def test_malformed_routers_do_not_break_plugin_scan(isolated_registry):
+    class Plugin(ContractPlugin):
+        __routers__ = 42  # not iterable
+
+    registry.scan_static_metadata("contract", Plugin, {}, {})
+    assert state.event_handlers["contract.probe"].meta.timeout == 5
+
+
+def test_router_id_clashes_resolve_the_same_on_host_and_worker(isolated_registry):
+    """Host timeout must belong to the handler the worker runs: last router wins, plugin class beats routers."""
+    from unittest.mock import MagicMock
+
+    from plugin.sdk.plugin import NekoPluginBase, PluginRouter
+
+    class First(PluginRouter):
+        @plugin_entry(id="dup", timeout=1)
+        async def dup(self):
+            pass
+
+    class Second(PluginRouter):
+        @plugin_entry(id="dup", timeout=120)
+        async def dup(self):
+            pass
+
+        @plugin_entry(id="probe", timeout=60)
+        async def probe(self):
+            pass
+
+    class Plugin(ContractPlugin, NekoPluginBase):
+        __routers__ = [First, Second]
+
+        def __init__(self, ctx):
+            super().__init__(ctx)
+            for router_cls in self.__routers__:
+                self.include_router(router_cls())
+
+    registry.scan_static_metadata("contract", Plugin, {}, {})
+    runtime = Plugin(MagicMock()).collect_entries()
+    for eid in ("dup", "probe"):
+        assert state.event_handlers[f"contract.{eid}"].meta.timeout == runtime[eid].meta.timeout
+    assert runtime["dup"].meta.timeout == 120
+    assert runtime["probe"].meta.timeout == 5
+
+
+def test_router_entry_clashes_across_event_types_resolve_the_same_on_host_and_worker(isolated_registry):
+    """Host and worker share one id per plugin_entry; a same-id handler of another event type must not take it over."""
+    from unittest.mock import MagicMock
+
+    from plugin.sdk.plugin import NekoPluginBase, PluginRouter, message
+
+    class EntryRouter(PluginRouter):
+        @plugin_entry(id="sync", timeout=120)
+        async def sync(self):
+            pass
+
+        @plugin_entry(id="pull", timeout=90)
+        async def pull(self):
+            pass
+
+    class MessageRouter(PluginRouter):
+        @message(id="probe")
+        async def on_probe(self, **_):
+            pass
+
+        @message(id="pull")
+        async def on_pull(self, **_):
+            pass
+
+    class Plugin(ContractPlugin, NekoPluginBase):
+        __routers__ = [EntryRouter, MessageRouter]
+
+        def __init__(self, ctx):
+            super().__init__(ctx)
+            for router_cls in self.__routers__:
+                self.include_router(router_cls())
+
+        @message(id="sync")
+        async def on_sync(self, **_):
+            pass
+
+    registry.scan_static_metadata("contract", Plugin, {}, {})
+    runtime = Plugin(MagicMock()).collect_entries()
+    # class @message vs router entry, class entry vs router @message, earlier router entry vs later router @message
+    for eid in ("sync", "probe", "pull"):
+        assert runtime[eid].meta.event_type == "plugin_entry"
+        assert state.event_handlers[f"contract.{eid}"].meta.timeout == runtime[eid].meta.timeout
+    assert runtime["sync"].meta.timeout == 120
+    assert runtime["probe"].meta.timeout == 5
+    assert runtime["pull"].meta.timeout == 90
+
+
+def test_a_broken_router_does_not_drop_entries_of_other_routers(isolated_registry):
+    from plugin.sdk.plugin import PluginRouter
+
+    class Good(PluginRouter):
+        @plugin_entry(id="slow", timeout=120)
+        async def slow(self):
+            pass
+
+    class _Unlistable(type):
+        def __dir__(cls):
+            raise RuntimeError("broken router")
+
+    class Broken(metaclass=_Unlistable):
+        pass
+
+    class Plugin(ContractPlugin):
+        __routers__ = [Good, Broken]
+
+    registry.scan_static_metadata("contract", Plugin, {}, {})
+    assert state.event_handlers["contract.slow"].meta.timeout == 120
+    preview_ids = {e["id"] for e in registry._extract_entries_preview("contract", Plugin, {}, {})}
+    assert "slow" in preview_ids
+
+
+def _router_plugin():
+    """A plugin whose only entry lives on a ``__routers__`` router (#3066)."""
+    from plugin.sdk.plugin import PluginRouter
+
+    class SlowRouter(PluginRouter):
+        @plugin_entry(id="slow", name="Slow", timeout=5)
+        async def slow(self):
+            pass
+
+    class Plugin:
+        __routers__ = [SlowRouter]
+
+    return Plugin
+
+
+@pytest.mark.parametrize("configured_timeout", [2, 100])
+def test_manifest_overrides_reach_router_entry_handlers_without_a_warning(
+    isolated_registry, monkeypatch, configured_timeout
+):
+    """A ``[[entries]]`` override on a router id lands on the host handler, not only on the preview."""
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        registry,
+        "logger",
+        SimpleNamespace(
+            warning=lambda message, *args, **_: warnings.append(message.format(*args)),
+            debug=lambda *_, **__: None,
+            info=lambda *_, **__: None,
+        ),
+    )
+    plugin = _router_plugin()
+    config = {"entries": [{"id": "slow", "name": "Configured", "timeout": configured_timeout}]}
+
+    registry.scan_static_metadata("contract", plugin, config, {})
+
+    for key in ("contract.slow", "contract:plugin_entry:slow"):
+        meta = state.event_handlers[key].meta
+        assert meta.timeout == configured_timeout
+        assert meta.name == "Configured"
+    assert not [w for w in warnings if "has no handler" in w], warnings
+    listed: list = []
+    query_service._append_entries_from_preview(
+        plugin_id="contract",
+        plugin_meta={
+            "entries_preview": registry._extract_entries_preview("contract", plugin, config, {})
+        },
+        entries=listed,
+        seen=set(),
+    )
+    running, _ = query_service._build_entries_from_handlers(
+        plugin_id="contract", handlers_snapshot=dict(state.event_handlers)
+    )
+    assert running == listed
+
+
+@pytest.mark.parametrize("configured_timeout", [2, 100])
+async def test_runs_without_ctx_timeout_use_the_configured_router_entry_timeout(
+    isolated_registry, configured_timeout
+):
+    """``/runs`` without ``_ctx.entry_timeout`` reads the handler table; a router entry must be in it."""
+    from plugin.runs import trigger_service
+
+    class Host:
+        def __init__(self):
+            self.timeouts: list = []
+
+        async def trigger(self, entry_id, args, timeout):
+            self.timeouts.append(timeout)
+            return {"ok": True}
+
+    config = {"entries": [{"id": "slow", "timeout": configured_timeout}]}
+    registry.scan_static_metadata("contract", _router_plugin(), config, {})
+    host = Host()
+    await trigger_service._execute_trigger(
+        host=host, plugin_id="contract", entry_id="slow", args={}, trace_id="t"
+    )
+    assert host.timeouts == [configured_timeout]
+
+
+def _write_router_package(plugin_dir: Path, manifest_extra: str = "") -> dict:
+    from plugin.neko_plugin_cli.core.metadata_probe import derive_plugin_metadata
+
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.toml").write_text(
+        '[plugin]\nid="contract"\nname="Contract"\nversion="1.0.0"\ntype="plugin"\n'
+        'entry="plugin.plugins.contract:ContractPlugin"\n' + manifest_extra,
+        encoding="utf-8",
+    )
+    (plugin_dir / "__init__.py").write_text(
+        "from plugin.sdk.plugin import NekoPluginBase, PluginRouter, neko_plugin, plugin_entry\n"
+        "class SlowRouter(PluginRouter):\n"
+        '    @plugin_entry(id="slow", timeout=120)\n'
+        "    async def slow(self): return {}\n"
+        "@neko_plugin\nclass ContractPlugin(NekoPluginBase):\n"
+        "    __routers__ = [SlowRouter]\n"
+        '    @plugin_entry(id="fast", timeout=3)\n'
+        "    async def fast(self): return {}\n",
+        encoding="utf-8",
+    )
+    return derive_plugin_metadata(plugin_dir)
+
+
+def test_a_pre_router_handler_v4_artifact_is_rescanned_once_and_rewritten(
+    tmp_path: Path, isolated_registry
+):
+    """A v4 file may predate host router handlers; schema 5 makes the start path repair it once.
+
+    Such a file matches every source fingerprint and this machine's build
+    environment, yet lists the router entry ``slow`` without a handler.
+    Reusing it would leave ``slow`` on the global default timeout. The file
+    is refused like any older schema, the scan the start path then runs
+    rewrites it in place, and the next start reuses the rewritten file.
+    """
+    from plugin.server.application.plugins import lifecycle_service
+    from plugin.server.infrastructure import packaged_metadata
+
+    plugin_dir = tmp_path / "contract"
+    payload = _write_router_package(plugin_dir, '[[entries]]\nid="slow"\ntimeout=100\n')
+    assert payload["schema_version"] == 5
+    assert payload["handlers"]["contract.slow"]["timeout"] == 100
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    config_path = plugin_dir / "plugin.toml"
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+    def load():
+        return lifecycle_service._read_packaged_isolated_metadata(
+            config_path, "contract", conf=config, pdata=config["plugin"]
+        )
+
+    stale = copy.deepcopy(payload)
+    stale["schema_version"] = 4
+    for key in ("contract.slow", "contract:plugin_entry:slow"):
+        del stale["handlers"][key]
+    meta_path.write_text(json.dumps(stale), encoding="utf-8")
+    assert load() is None
+
+    # What start_plugin does after the refusal: snapshot, scan, rewrite.
+    before_scan = lifecycle_service._snapshot_package_tree_for_rebuild(
+        config_path, plugin_id="contract", conf=config, pdata=config["plugin"]
+    )
+    assert before_scan is not None
+    lifecycle_service._refresh_scanned_packaged_metadata(
+        config_path,
+        "contract",
+        metadata_scanner.IsolatedPluginMetadata(
+            payload["entries"], payload["handlers"], payload["entry_methods"]
+        ),
+        before_scan=before_scan,
+        conf=config,
+        pdata=config["plugin"],
+    )
+    assert json.loads(meta_path.read_text(encoding="utf-8"))["schema_version"] == 5
+
+    loaded = load()
+    assert loaded is not None
+    metadata_scanner.install_isolated_plugin_metadata("contract", loaded)
+    assert state.event_handlers["contract.slow"].meta.timeout == 100
+    assert lifecycle_service._snapshot_package_tree_for_rebuild(
+        config_path, plugin_id="contract", conf=config, pdata=config["plugin"]
+    ) is None
+
+
+def test_lifekit_router_entries_list_the_same_from_handlers_as_from_preview(isolated_registry):
+    """lifekit's router entries now list from host handlers; no preview field may change or vanish."""
+    lifekit_meta = (
+        Path(__file__).resolve().parents[3] / "plugins" / "lifekit" / "plugin.meta.json"
+    )
+    payload = json.loads(lifekit_meta.read_text(encoding="utf-8"))
+    metadata_scanner.install_isolated_plugin_metadata(
+        "lifekit",
+        metadata_scanner.IsolatedPluginMetadata(
+            payload["entries"], payload["handlers"], payload["entry_methods"]
+        ),
+    )
+    running, _ = query_service._build_entries_from_handlers(
+        plugin_id="lifekit", handlers_snapshot=dict(state.event_handlers)
+    )
+    listed: list = []
+    query_service._append_entries_from_preview(
+        plugin_id="lifekit",
+        plugin_meta={"entries_preview": payload["entries"]},
+        entries=listed,
+        seen=set(),
+    )
+    by_id = {entry["id"]: entry for entry in running}
+    assert set(by_id) == {entry["id"] for entry in listed}
+    for preview_entry in listed:
+        assert by_id[preview_entry["id"]] == preview_entry

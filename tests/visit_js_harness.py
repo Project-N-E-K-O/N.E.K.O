@@ -257,7 +257,7 @@ async function joinedController(side, credsExtra) {
   return h;
 }
 const kinds = (log) => log.map((e) => e[0]);
-// Servers opened the catgirl voice (OD-15 v4 plan A gate)
+// Servers opened the neko voice (OD-15 v4 plan A gate)
 const VOICE_ON = { publish: { codec: 'h264', bitrate_kbps: 528, audio: true, audio_kbps: 32, fps: 30 } };
 """
 

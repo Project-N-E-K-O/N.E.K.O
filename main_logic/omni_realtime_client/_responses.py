@@ -1424,8 +1424,16 @@ class _ResponseMixin:
         events_before_text: tuple[Dict[str, Any], ...] = (),
         on_rejected: Optional[Callable[[str], None]] = None,
         on_completed: Optional[Callable[[], None]] = None,
+        admission_check: Optional[Callable[[], bool]] = None,
     ) -> Optional[ResponseTicket]:
         """Inject a user-role text item and explicitly trigger a response.
+
+        ``admission_check`` is evaluated again before each queued event is
+        handed to the transport (Gemini: before the tool wait and before the
+        SDK send). Refused before the first event, nothing is sent and the
+        call fails. Refused after an earlier event of the batch was already
+        written, the arbiter stops the batch and attempts a compensating
+        delete of the committed item; that item did reach the provider.
 
         Used by the voice-mode proactive path (agent task callbacks /
         plugin push_message ai_behavior="respond") to surface a rendered
@@ -1502,11 +1510,17 @@ class _ResponseMixin:
             gemini_text = "\n".join(gemini_text_parts)
             proactive_session = self._gemini_session
             proactive_scope = getattr(self, "_tool_scope_generation", 0)
+            if admission_check is not None and not admission_check():
+                # Checked before the tool wait too: settling may give up on a
+                # running tool, which is wasted if this inject is then refused.
+                raise RuntimeError("Gemini proactive inject admission rejected")
             await self._settle_tools_before_gemini_proactive()
             if self._gemini_session is not proactive_session:
                 # The settle is an await: a teardown OR a replacement session
                 # can land inside it, and this inject belongs to neither.
                 raise RuntimeError("Gemini session not available for proactive inject")
+            if admission_check is not None and not admission_check():
+                raise RuntimeError("Gemini proactive inject admission rejected")
             if proactive_scope != getattr(self, "_tool_scope_generation", 0):
                 # A real user turn began while we waited. Sending now would put
                 # this notification inside their turn, and Gemini treats client
@@ -1773,6 +1787,7 @@ class _ResponseMixin:
                 expected_item_id=expected_item_id,
                 expected_item_role="user",
                 priority=20,
+                admission_check=admission_check,
             )
             await asyncio.shield(ticket.sent)
             if self._fatal_error_occurred or self.ws is None:
@@ -2254,6 +2269,7 @@ class _ResponseMixin:
         language: str = "zh",
         user_turn_active: Optional[Callable[[], bool]] = None,
         session_owned: Optional[Callable[[], bool]] = None,
+        vision_allowed: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Inject a text turn and explicitly request proactive speech.
 
@@ -2265,6 +2281,10 @@ class _ResponseMixin:
         Pending native visual context is sent immediately before the text turn.
         Standard StepFun remains the only non-native realtime provider: when a
         VISION_MODEL description is available, it is injected as text first.
+
+        ``vision_allowed`` lets the caller withhold that visual context (screen
+        source not enabled, or consent revoked). It is read again right before
+        the frame is sent; an error reading it counts as not allowed.
         """
         # ── Guard checks ──────────────────────────────────────────────
         if self._fatal_error_occurred:
@@ -2384,8 +2404,18 @@ class _ResponseMixin:
         # attempt until the matching description exists, or we would select a
         # screen-aware prompt without injecting any visual context and then
         # incorrectly mark the frame consumed.
+        def _vision_permitted() -> bool:
+            if vision_allowed is None:
+                return True
+            try:
+                return bool(vision_allowed())
+            except Exception:
+                return False
+
+        vision_permitted = _vision_permitted()
         has_pending_frame = (
-            self._latest_image_b64 is not None
+            vision_permitted
+            and self._latest_image_b64 is not None
             and not self._proactive_image_consumed
         )
         if (
@@ -2408,10 +2438,13 @@ class _ResponseMixin:
             getattr(self, "_raw_visual_delivery_blocked", False)
             and not external_visual_delivery
         )
-        has_vision = self._image_recognized_this_turn or (
-            (self._supports_native_image or external_visual_delivery)
-            and has_pending_frame
-            and not raw_delivery_fenced
+        has_vision = vision_permitted and (
+            self._image_recognized_this_turn
+            or (
+                (self._supports_native_image or external_visual_delivery)
+                and has_pending_frame
+                and not raw_delivery_fenced
+            )
         )
         # Snapshot the current image so concurrent stream_image() calls don't
         # cause us to mark a newer frame as consumed.
@@ -2478,6 +2511,14 @@ class _ResponseMixin:
                 )
                 return False
             external_visual_delivery = current_external_visual_delivery
+
+        # Consent may be revoked while SID rotation yields. The prompt was
+        # chosen with vision, so skip the turn instead of sending the frame.
+        if has_vision and not _vision_permitted():
+            logger.info(
+                "prompt_ephemeral: skipped — visual context no longer allowed"
+            )
+            return False
 
         if (
             has_vision
@@ -2684,6 +2725,24 @@ class _ResponseMixin:
                 },
             },)
 
+        # Consent may also be revoked while the image is staged or analyzed
+        # (external analysis can take seconds). Do not send the screen-aware
+        # turn; account for a raw frame already in provider context exactly
+        # like the activity race below.
+        if has_vision and not _vision_permitted():
+            if (
+                snapshot_image_b64
+                and self._supports_native_image
+                and (not external_visual_delivery or _raw_frame_sent)
+            ):
+                _mark_snapshot_consumed_if_current()
+            else:
+                _remove_visual_rejection_handler()
+            logger.info(
+                "prompt_ephemeral: skipped — visual context revoked during visual inject"
+            )
+            return False
+
         # Re-check activity after any image await. A user or AI turn that won
         # during the visual send must preempt this proactive response.create.
         # The manager can also replace this client during the await; a retired
@@ -2744,6 +2803,10 @@ class _ResponseMixin:
             }
             if events_before_text:
                 inject_kwargs["events_before_text"] = events_before_text
+            if has_vision and vision_allowed is not None:
+                # The visual context and screen-aware text can wait in the
+                # response queue; re-check consent when they are dispatched.
+                inject_kwargs["admission_check"] = _vision_permitted
             proactive_ticket = await self.inject_text_and_request_response(
                 text,
                 **inject_kwargs,

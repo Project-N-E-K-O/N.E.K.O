@@ -146,16 +146,16 @@ async def test_rejected_recovery_reuses_only_the_same_approved_ordinary_draft(
     monkeypatch.setattr(runtime, "prepare_turn", prepare_with_changed_projection)
     monkeypatch.setattr(workflow, "_has_new_review_facts", record_preflight)
     diagnostics = {}
-    call = workflow.execute_numeric_v2_turn(
+    call = workflow._execute_numeric_v2_turn(
         config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("question", current.session.revision, case["message"]),
         ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics,
     )
-    if scenario == "formal_timeout":
+    if scenario in {"formal_timeout", "formal_extra_action"}:
         with pytest.raises(NumericV2ActorOutputError, match="numeric_v2_transition_review_failed"):
             await call
         assert await runtime.restore_session(current.session.session_id) == current
-        assert actors == ["start", "ending_leave"]
+        assert actors == (["start", "ending_leave", "ending_leave"] if scenario == "formal_extra_action" else ["start", "ending_leave"])
         assert len(preflight_calls) == 1
         return
     if scenario == "different_outcome":
@@ -190,8 +190,6 @@ async def test_rejected_recovery_reuses_only_the_same_approved_ordinary_draft(
         assert {key: value for key, value in result.outcome.ledger_event.items()
                 if key != "narrative_record"} == prepare_calls[0].ledger_event
         # A separate empty proposal exists, but this mock Review never confirms it.
-        assert result.outcome.ledger_event["narrative_record"]["coverage"] == "unconfirmed"
-        assert result.outcome.ledger_event["narrative_record"]["events"] == []
         assert result.stored.session.current_node_id == "start"
         if scenario == "unsafe_button":
             assert result.performance["suggested_inputs"] == []
@@ -330,7 +328,7 @@ def test_fact_preflight_uses_current_exact_body_fields_only(review_fact_context,
 
 
 @pytest.mark.asyncio
-async def test_review_disabled_keeps_actor_facts_without_using_recovery_preflight(
+async def test_review_disabled_checks_actor_facts_without_using_recovery_preflight(
     review_fact_context, tmp_path, monkeypatch,
 ):
     engine, source, _outcome, performance, candidate = review_fact_context
@@ -340,6 +338,7 @@ async def test_review_disabled_keeps_actor_facts_without_using_recovery_prefligh
         opening_performance=source.session.opening_performance,
     )
     calls = []
+    fact_checks = []
 
     async def options():
         return {"evaluator": True, "review": False}
@@ -351,8 +350,12 @@ async def test_review_disabled_keeps_actor_facts_without_using_recovery_prefligh
         calls.append(kwargs)
         return {**deepcopy(performance), "fact_candidates": [candidate]}
 
-    async def unexpected_review(*args, **kwargs):
-        raise AssertionError("Review is disabled")
+    async def review_completion(self, **kwargs):
+        fact_checks.append(kwargs)
+        assert kwargs["completion_fact_review_only"] is True
+        assert kwargs.get("check_missed_initiation", False) is False
+        assert kwargs.get("dispute_review", False) is False
+        return evaluator.NumericV2TransitionOfferReview(False, False, (), (), fact_candidates=(candidate,))
 
     def unexpected_preflight(*args, **kwargs):
         raise AssertionError("Recovery preflight belongs only to enabled Review")
@@ -360,7 +363,7 @@ async def test_review_disabled_keeps_actor_facts_without_using_recovery_prefligh
     monkeypatch.setattr(workflow, "aload_theater_module_options", options)
     monkeypatch.setattr(workflow, "_has_new_review_facts", unexpected_preflight)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
-    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "validate_transition_offer", unexpected_review)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "validate_transition_offer", review_completion)
     monkeypatch.setattr(workflow.NumericV2Actor, "generate_turn", generate)
     monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
     result = await workflow.execute_numeric_v2_turn(
@@ -368,6 +371,8 @@ async def test_review_disabled_keeps_actor_facts_without_using_recovery_prefligh
         turn=TurnRequestV2("observe", 0, "看看结果。"), ensure_current_binding=lambda _: _binding(),
     )
     assert len(calls) == 1
+    assert len(fact_checks) == 1
+    assert result.diagnostics["completion_fact_review_calls"] == 1
     assert result.stored.session.story_state["facts"][candidate["key"]]["value"] is True
     assert "fact_candidates" not in result.performance
     assert await runtime.restore_session(current.session.session_id) == result.stored

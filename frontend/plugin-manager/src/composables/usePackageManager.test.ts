@@ -119,7 +119,7 @@ beforeEach(() => {
 })
 
 describe('usePackageManager external plugin selection', () => {
-  it.each([true, false])('builds all listed managed sources without implicit development sources (refs=%s)', async (withRefs) => {
+  it.each([true, false])('builds every listed source through the build-all API (refs=%s)', async (withRefs) => {
     vi.mocked(getPluginCliPlugins).mockResolvedValue({
       count: 1,
       plugins: ['demo_plugin'],
@@ -139,12 +139,10 @@ describe('usePackageManager external plugin selection', () => {
     await manager.handleBuild()
 
     expect(buildPluginCli).toHaveBeenCalledExactlyOnceWith({
-      mode: 'selected',
-      plugin_refs: withRefs ? [{ root_id: 'builtin', directory_name: 'demo_plugin' }] : undefined,
-      plugins: withRefs ? undefined : ['demo_plugin'],
+      mode: 'all',
       target_dir: undefined,
       keep_staging: false,
-    }, { timeout: 300_000 })
+    })
     expect(manager.packageRef.value.package).toBe('/packages/demo.neko-plugin')
     expect(manager.activeTab.value).toBe('inspect')
   })

@@ -993,6 +993,15 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         message,
                     )
                     continue
+                if message.get("action") == "screen_share_stopped":
+                    # stopRecording() tears the share down before its
+                    # pause_session, so a superseded recorder sends this too:
+                    # closing it here would lose that pause. Only the socket
+                    # that still owns voice may clear frames (its own share);
+                    # any other old socket's notice is dropped.
+                    if _owns_voice_connection():
+                        session_manager[lanlan_name].handle_screen_share_stopped()
+                    continue
                 if _is_voice_path_message(message) and _owns_voice_connection():
                     await _dispatch_voice_message_while_superseded(message)
                     continue
@@ -1063,6 +1072,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 session_manager[lanlan_name].update_proactive_vision_consent(
                     message.get("enabled")
                 )
+                continue
+
+            if action == "screen_share_stopped":
+                # The frontend's manual screen share ended (any way: stop
+                # button, the browser/system ending the track, a capture
+                # failure, the voice session ending). Forget its frames.
+                session_manager[lanlan_name].handle_screen_share_stopped()
                 continue
 
             if action == "goodbye_state":
@@ -1326,6 +1342,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # its task started later.
                 message = _stamp_user_input_ingress(message)
                 stream_mgr = session_manager[lanlan_name]
+                if input_type in {"screen", "camera"}:
+                    # Screen consent at arrival, before validation awaits: a
+                    # revocation meanwhile must still reach this frame.
+                    # Server-owned, like the ingress time above.
+                    message = {
+                        **message,
+                        "_visual_input_consent_epoch": getattr(
+                            stream_mgr, "_screen_consent_revocation_epoch", 0
+                        ),
+                    }
                 _record_stream_engagement_ingress(
                     stream_mgr,
                     message,
@@ -1386,6 +1412,24 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
                         await _visit_display.refuse_orphan_line(websocket, message.get("request_id"))
                         continue
+                # Only ordinary, selected text is observed here. Keep the original
+                # request_id and message publication semantics untouched.
+                if input_type == "text" and isinstance(message.get("data"), str) and message["data"].strip():
+                    try:
+                        from main_logic.agent_event_bus import schedule_conversation_fact_observed_best_effort
+                        from services.chat_sync.source import is_chat_input_source
+
+                        if is_chat_input_source(message.get("source")):
+                            input_id = uuid.uuid4().hex
+                            message = {**message, "_conversation_input_id": input_id}
+                            schedule_conversation_fact_observed_best_effort(
+                                lanlan_name, fact="input.submitted", payload={
+                                    "input_id": input_id, "text": message["data"],
+                                    "input_source": "text",
+                                },
+                            )
+                    except Exception:
+                        logger.debug("Conversation input observation failed", exc_info=True)
                 # [DIAG] Missing STT after character switches: verify frontend audio arrival.
                 # _input_type_dbg = message.get("input_type")
                 # _data = message.get("data")
@@ -1611,10 +1655,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s reason={greeting_reason or '-'} → skip (refresh/reconnect)")
 
             elif action == "cat_greeting_check":
-                # On returning from cat form to catgirl, frontend requests a dedicated greeting based on time spent as a cat.
+                # On returning from cat form to neko, frontend requests a dedicated greeting based on time spent as a cat.
                 # Symmetric with greeting_check but timed independently: use the server-observed goodbye cycle as threshold;
                 # frontend duration is diagnostic only and cannot increase it. Do not inspect conversation gaps.
-                # Do not restore Agent intent; that signals first session entry, unlike returning to catgirl form.
+                # Do not restore Agent intent; that signals first session entry, unlike returning to neko form.
                 reported_duration, cat_tier, cat_was_auto, episode = _normalize_cat_greeting_check(message)
                 cat_duration = session_manager[lanlan_name].consume_goodbye_cycle_duration()
                 if cat_duration is None:
@@ -1686,6 +1730,30 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     turn_id=message.get("turnId") or message.get("turn_id") or "",
                     source=message.get("source") or "audio_playback",
                 )
+                try:
+                    from main_logic.agent_event_bus import schedule_conversation_fact_observed_best_effort
+
+                    def optional_id(value):
+                        return value if isinstance(value, str) and value.strip() else None
+
+                    stop_reason = message.get("stopReason")
+                    if stop_reason not in ("completed", "interrupted", "canceled", "error", "fallback", "unknown"):
+                        stop_reason = "unknown"
+                    schedule_conversation_fact_observed_best_effort(
+                        lanlan_name,
+                        fact="playback.started" if action == "voice_play_start" else "playback.stopped",
+                        payload={
+                            "character": lanlan_name,
+                            "reply_id": optional_id(message.get("replyId")),
+                            "presentation_id": optional_id(message.get("presentationId")),
+                            "presenter_id": optional_id(message.get("presenterId")),
+                            "turn_id": optional_id(message.get("turnId") or message.get("turn_id")),
+                            "state": "playing" if action == "voice_play_start" else "stopped",
+                            "stop_reason": None if action == "voice_play_start" else stop_reason,
+                        },
+                    )
+                except Exception:
+                    logger.debug("[plugin-bus] playback observation not published", exc_info=True)
 
             elif action == "visit_bind":
                 from main_routers.visit_router import display_socket as _visit_display

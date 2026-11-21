@@ -56,6 +56,7 @@ if TYPE_CHECKING:
 
     # ⚠ Never import loguru. The actual type of the logger field is plugin.logging_config.PluginLoggerAdapter.
     from plugin.logging_config import PluginLoggerAdapter as LoguruLogger
+    from plugin.sdk.shared.core.call_chain_view import CallChainView
     from plugin.sdk.shared.core.types import PushMessageRejected, PushMessageResult
 
 
@@ -63,6 +64,18 @@ _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plu
 
 _CURRENT_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_run_id", default=None)
 _CURRENT_LANLAN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_lanlan", default=None)
+
+
+def _attach_parent_request_id(payload: Dict[str, Any]) -> None:
+    """Let the host attribute this push to the invocation that made it."""
+    from plugin.core.capability_policy import policy_enabled
+    from plugin.core.rpc import current_request_id
+
+    if not policy_enabled():
+        return
+    parent = current_request_id()
+    if parent is not None:
+        payload["_rpc_parent_request_id"] = parent
 
 
 def _is_submission_backpressure(error: BaseException) -> bool:
@@ -217,6 +230,12 @@ class _BusHub:
         return ConversationClient(self._ctx)
 
     @functools.cached_property
+    def conversations_v2(self):
+        from plugin.core.bus.conversations import ConversationV2Client
+
+        return ConversationV2Client(self._ctx)
+
+    @functools.cached_property
     def frames(self) -> "FrameClient":
         from plugin.core.bus.frames import FrameClient
 
@@ -258,6 +277,7 @@ class PluginContext:
     _plugin_comm_queue: Optional[Any] = None  # Inter-plugin communication queue (provided by the main process)
     _rpc_peer: Optional[RpcPeer] = field(default=None, init=False, repr=False)
     _rpc_closed: bool = field(default=False, init=False, repr=False)
+    _conversation_watchers: Dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _runtime_lock: Any = field(
         default_factory=threading.Lock,
         init=False,
@@ -395,15 +415,42 @@ class PluginContext:
 
     def close(self) -> None:
         """Close this context and terminate all its outstanding requests."""
+        from plugin.core.bus.rev import _watcher_pop
+
         self._model_gateway_closed = True
         with self._runtime_lock:
             self._rpc_closed = True
             peer = self._rpc_peer
+            watchers = tuple(self._conversation_watchers.items())
+            self._conversation_watchers.clear()
+        for sid, watcher in watchers:
+            _watcher_pop(sid)
+            try:
+                watcher._on_host_closed()
+            except Exception:
+                pass
         if peer is not None:
             peer.close()
         models = getattr(self, "_models", None)
         if models is not None:
             models.close()
+
+    def _register_conversation_watcher(self, sub_id: str, watcher: object) -> None:
+        from plugin.core.bus.rev import _watcher_set
+
+        with self._runtime_lock:
+            if self._rpc_closed:
+                raise RuntimeError("Plugin context is closed")
+            _watcher_set(sub_id, watcher)
+            self._conversation_watchers[sub_id] = watcher
+
+    def _unregister_conversation_watcher(self, sub_id: str) -> None:
+        from plugin.core.bus.rev import _watcher_pop
+
+        with self._runtime_lock:
+            if sub_id in self._conversation_watchers:
+                self._conversation_watchers.pop(sub_id)
+                _watcher_pop(sub_id)
 
     def __del__(self) -> None:  # pragma: no cover - best-effort safety net
         try:
@@ -557,6 +604,13 @@ class PluginContext:
     def current_lanlan(self) -> Optional[str]:
         """Recipient of this invocation, never the last caller on another task."""
         return _CURRENT_LANLAN.get()
+
+    @property
+    def call_chain(self) -> "CallChainView":
+        """Read-only view of how this invocation was reached; never None (see CallChainView)."""
+        from plugin.sdk.shared.core.call_chain_view import current_call_chain
+
+        return current_call_chain(self.plugin_id)
 
     @property
     def handler_ctx(self) -> Optional[str]:
@@ -1403,6 +1457,9 @@ class PluginContext:
                 oversized = _reject_if_payload_too_large(authenticated_payload)
                 if oversized is not None:
                     return oversized
+                # After the size check, so the local verdict is unchanged; the
+                # host removes it before the record is stored or published.
+                _attach_parent_request_id(authenticated_payload)
                 fast_put = getattr(
                     self.message_queue,
                     "put_fast_nowait",

@@ -1,91 +1,95 @@
 # Plugin CLI and Debugging
 
-This is the first-version debugging index. Prefer existing CLI and tests over ad hoc scripts.
-
-For the complete check/test matrix, read `plugin-checks-and-tests.md`.
+The command reference and the debugging order. What each check covers and
+how to test is in `plugin-checks-and-tests.md`; creating a plugin is in
+`plugin-creation-workflow.md`.
 
 ## Invocation
 
-Use the project uv environment:
+The CLI runs only from a N.E.K.O source checkout: `uv run neko-plugin
+<command> <plugin>` from the checkout root, where `<plugin>` is an id under
+the checkout's plugin root or a path to `<plugin_dir>`. For a plugin project
+created outside the checkout while a checkout is reachable (Route A in
+`AGENTS.md`), use the command lines in its Verify block as written. Confirm
+arguments with `--help`; help output may be preceded by app start-up log lines, which are
+not a failure unless the command exits non-zero or prints `[FAIL]`.
+
+Without a checkout (desktop build) no `neko-plugin` command runs: say so
+instead of guessing. App buttons still work (they are not the CLI):
+Start/Reload on the plugin page, its Logs tab, and Build package in the Plugin
+studio. To run checks, offer the setup below.
+
+## Setting Up Route A
+
+A source checkout is the recommended way to develop plugins: every check runs
+there. Ask the user first and do nothing until they agree; it installs tools
+and downloads N.E.K.O's source. Source of these steps: the
+[README quick start](https://github.com/Project-N-E-K-O/N.E.K.O#quick-start-source).
+
+- Tools: [git](https://git-scm.com/downloads) and
+  [uv](https://docs.astral.sh/uv/) (it fetches Python 3.11 if needed); to run
+  N.E.K.O from source, also Node.js `^22.12.0 || >=24.0.0`.
+- Time: for a non-developer, plan on roughly half an hour to an hour the first
+  time, mostly installing tools and downloading (a rough estimate; it depends
+  on the connection).
+
+For checks only:
 
 ```bash
-uv run neko-plugin --help
+git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
+cd N.E.K.O
+uv sync
 ```
 
-The CLI entrypoint is also exposed as `neko-plugin` by `pyproject.toml`, but repo-local agent work should prefer `uv run neko-plugin ...`.
+Then run the Verify lines of the plugin's `AGENTS.md` from that folder,
+replacing `<path-to-this-directory>` with the plugin's path.
 
-Some CLI help output may include app initialization logs before the argparse output. Do not treat those logs as failure unless the command exits non-zero or prints `[FAIL]`.
+To also try the plugin in the source version:
 
-## Standard Plugin Creation
+1. Fully quit the desktop app first; the two cannot run at the same time.
+2. In the checkout: `./build_frontend.sh` (Windows: `.\build_frontend.bat`),
+   then `uv run python launcher.py`.
+3. Open the address the launcher prints in a browser.
 
-Create standard plugins through the CLI. Do not hand-create the initial directory, `plugin.toml`, or entry class.
+The source version mostly uses the same user data as the desktop app, so
+installed plugins and settings are usually still there.
 
-```bash
-uv run neko-plugin init <plugin_id> --type plugin --name "<Plugin Name>"
-```
+## Commands
 
-Adapter variant:
+| Command | What it does |
+|---|---|
+| `init <id> --type plugin\|adapter --name "<Name>"` | scaffold a plugin (only when none exists yet) |
+| `setup-repo <plugin>` | add missing support files (README, tests, `.gitignore`, `.vscode`, `--github-actions`) to an existing plugin |
+| `create-repo <plugin>` | create the GitHub repository with `gh` and set it as `origin` (the Market needs a public repository) |
+| `check <plugin>` | manifest, entries, dependencies; `-s/--strict` makes missing support files errors |
+| `check -r <plugin>` | release check: strict check, tests in `tests/`, package build, hash verification; `--skip-tests`; `--market-release` adds repository, tag, and workflow rules |
+| `lint <plugin>` | the pinned ruff check Market CI runs (`--ignore-noqa`: `# noqa` has no effect) |
+| `sync <plugin> --clean` | rebuild `vendor/` from `pyproject.toml` |
+| `precheck <plugin>` | lint, `sync --clean`, and `check -r`, as Market CI runs them |
+| `build <plugin>` | build a `.neko-plugin` package into the CLI's own `target/` folder |
+| `analyze <plugin> <plugin>...` | bundle candidates: ids, SDK versions, shared dependencies |
+| `publish <plugin>` | push the release tag, wait for the GitHub Release, notify the Market |
+| `install <package>` | installs nothing: prints that packages are imported through the Plugin Center and exits with code 2 |
 
-```bash
-uv run neko-plugin init <plugin_id> --type adapter --name "<Plugin Name>"
-```
-
-`init` creates the editable source directly at `plugin/plugins/<plugin_id>/`. The same directory is initialized as the plugin's own Git repository and includes the standard Market workflows. Do not develop from a second source copy, a symlink, or an imported package.
-
-## CLI Source Map
-
-CLI entrypoints and commands live under:
-
-- `plugin/neko_plugin_cli/__main__.py`
-- `plugin/neko_plugin_cli/cli.py`
-- `plugin/neko_plugin_cli/commands/`
-
-Public command modules include:
-
-- `init_cmd.py`
-- `check_cmd.py`
-- `analyze_cmd.py`
-- `deps_cmd.py`
-- `build_cmd.py`
-- `install_cmd.py`
-- `publish_cmd.py`
-
-Registered command families include `init`, `setup-repo`, `check`, `sync`,
-`build`, `install`, `analyze`, and `publish`.
-
-Internal implementation helpers include `release_cmd.py` and `validate_cmd.py`. They are imported by public commands such as `check` and `publish`, but they are not registered as direct CLI command families.
-
-Before using a command, run CLI help or read the command module enough to confirm arguments.
+Validation order before reporting done: `check` → `lint` → `sync --clean` →
+`precheck`. Outside the checkout's built-in plugin folder, `check -r` and
+`precheck` fail on uncommitted changes (CI builds the pushed commit, not the
+working tree); do not commit for the user unasked, report the result.
+Dependencies, Market rules, and limits: `dependencies-and-market.md`.
 
 ## Debugging Order
 
-1. Identify `plugin_id`.
-2. Inspect `plugin/plugins/<plugin_id>/plugin.toml`.
-3. Check Identity Lock and manifest fields.
-4. Inspect the entry class and decorators.
-5. Run `uv run neko-plugin check <plugin_id|plugin_path>` unless the symptom clearly points elsewhere.
-6. Search tests for the failing surface.
-7. Run the smallest CLI command, unit test, or trigger path that reproduces the issue.
-8. Fix only inside `plugin/plugins/<plugin_id>/` unless escalation is confirmed.
+1. Is the plugin running, stopped, manual-start, crashed, or load-failed?
+   Read its log (Logs tab) first.
+2. Read `plugin.toml` and check the Identity Lock (`core-plugin-contract.md`).
+3. Read the entry class and its decorators.
+4. Run `check` unless the symptom clearly points elsewhere.
+5. Match the symptom: start-up, loops, timers, reload in `runtime-model.md`;
+   dependency errors in `dependencies-and-market.md`; the symptom table in
+   `AGENTS.md`.
+6. Reproduce with the smallest command or plugin test.
+7. Fix only inside `<plugin_dir>`. If the cause is in N.E.K.O itself, stop
+   and escalate (`execution-boundary.md`).
 
-## Useful Source Areas
-
-- Trigger execution: `plugin/runs/trigger_service.py`
-- Start/stop lifecycle: `plugin/server/application/plugins/lifecycle_service.py`
-- Registry refresh: `plugin/server/application/plugins/registry_service.py`
-- Config reads/writes: `plugin/server/application/config/`
-- Runtime logs: `plugin/server/logs.py`
-
-These are read context by default, not write workspace.
-
-## Tests To Search
-
-For the full test map, read `plugin-checks-and-tests.md`.
-
-- lifecycle/load/start failures: `plugin/tests/unit/server/test_plugins_lifecycle_service.py`
-- manifest/config edits: `plugin/tests/unit/server/test_config_updates.py`
-- CLI routes and package operations: `plugin/tests/unit/server/test_plugin_cli_route.py`
-- plugin source resolver: `plugin/tests/unit/server/test_plugin_cli_source_resolver.py`
-- UI manifest behavior: `plugin/tests/unit/server/test_plugin_ui_manifest.py`
-
-Use `rg` to locate examples for the specific entry, CLI command, or error message.
+Host source, platform tests, and logs are read-only context. They are useful
+when the plugin's behaviour contradicts these guides; the code wins.

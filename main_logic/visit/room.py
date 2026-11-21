@@ -348,8 +348,8 @@ class VisitRoom:
         self.peer_cat_lines_total = 0
         self.own_line_starts: deque[float] = deque()
         self._last_human_key: Optional[tuple[int, int]] = None
-        # Sort keys of counted catgirl lines: human lines may finalize after newer catgirl lines;
-        # recompute catgirl sentences since the latest human interjection in Lamport order instead of clearing directly.
+        # Sort keys of counted neko lines: human lines may finalize after newer neko lines;
+        # recompute neko sentences since the latest human interjection in Lamport order instead of clearing directly.
         self._cat_line_keys: list[tuple[int, int]] = []
 
         # Lamport clock.
@@ -393,7 +393,7 @@ class VisitRoom:
 
         # Rate limits.
         self._own_text_sends: deque[float] = deque()
-        # Local catgirl lines started but awaiting text{final}: each must send text on finalization, reserving a slot on start,
+        # Local neko lines started but awaiting text{final}: each must send text on finalization, reserving a slot on start,
         # preventing intervening human lines from taking the final slot and pushing finalized text above the hard cap.
         self._own_text_reserved: set[str] = set()
 
@@ -809,7 +809,7 @@ class VisitRoom:
         opened = self._peer_meta.pop(ln, None)
         self._peer_open.discard(ln)
         if opened is not None and self._meta_mismatch(ev, opened):
-            # A line has only one interpretation: human first fragments interrupt/count human interjection, then catgirl
+            # A line has only one interpretation: human first fragments interrupt/count human interjection, then neko
             # finalization bypasses the six-sentence count. Drop as a protocol anomaly instead of using both interpretations.
             self._peer_done.add(ln)
             kind = self._count_anomaly("line_meta_mismatch")

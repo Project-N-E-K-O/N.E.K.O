@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Catgirl visit (cross-machine visiting) constants.
+"""Neko visit (cross-machine visiting) constants.
 
 Single source of truth for every number of the visit infrastructure
 (``docs/design/visit-infrastructure.md`` §4.8). Grouped by axis; each
@@ -39,6 +39,13 @@ settings page hides the visit group; data management endpoints and background
 tasks (upload retry, crash recovery, forget replay) keep running. Python code
 must reference this constant, never the env var name. Operators can still set
 ``NEKO_VISIT_ENABLED=0`` for an emergency rollback."""
+
+VISIT_CAT_SCENE_ENABLED = _read_bool_env("VISIT_CAT_SCENE_ENABLED", True)
+"""Cat-scene release gate, read from ``NEKO_VISIT_CAT_SCENE_ENABLED``.
+
+On by default once the three implementation stages are closed; operators can
+set it to ``0`` as a rollback.  The per-visit user choice still decides whether
+the room uses the data-only cat runtime or the legacy dialogue runtime."""
 
 NEKO_VISIT_ALLOW_NONLOCAL = _read_bool_env("VISIT_ALLOW_NONLOCAL", False)
 """Escape hatch for non-loopback / reverse-proxy deployments (default off).
@@ -304,6 +311,12 @@ VISIT_PEER_CTL_PER_S = 4
 VISIT_PEER_LOSSY_PER_S = 2
 """Per-sender receive limit of lossy messages per second."""
 
+VISIT_PEER_MOTION_PER_S = 12
+"""Per-sender receive limit for latest-wins cat motion samples."""
+
+VISIT_PEER_WORLD_PER_S = 20
+"""Per-sender limit for each reliable and latest-wins cat shared-world channel."""
+
 VISIT_PEER_RECV_BPS = 10240
 """Per-sender receive byte limit at the ``recv`` entry (10 KB/s)."""
 
@@ -436,6 +449,16 @@ VISIT_VIDEO_KBPS = 528
 
 VISIT_AUDIO_KBPS = 32
 """Voice track bitrate cap (mono 48 kHz Opus, OD-15 v4): video 528 + voice 32 + data <= 40 stays within 600."""
+
+VISIT_RX_GUARD_RATIO = 1.5
+"""Receiver-side bitrate guard (LiveKit has no server-side per-track cap): inbound video above
+``video_kbps`` x this, or voice above ``VISIT_AUDIO_KBPS`` x this, counts as over the tier.
+Mirrored by ``RX_GUARD_RATIO`` in ``static/visit/transport/loader.js``."""
+
+VISIT_RX_GUARD_WINDOW_S = 10
+"""Seconds the inbound bitrate must stay over the guard before the receiver unsubscribes that
+track and ends the visit with ``peer_protocol_violation`` (local self-protection only, never
+grounds for a ban). Mirrored by ``RX_GUARD_WINDOW_MS`` in ``loader.js``."""
 
 VISIT_DATA_KBPS_MAX = 40
 """Data channel budget (= 5 KB/s)."""

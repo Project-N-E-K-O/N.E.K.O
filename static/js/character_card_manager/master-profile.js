@@ -311,6 +311,7 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
     if (!form) return;
     const fieldName = normalizeCharacterFieldName(input.name);
     if (!fieldName || fieldName === '档案名' || fieldName === 'voice_id') return;
+    if (fieldName === 'chat_sync_enabled') return;
     const { data, duplicateKey, fieldOrder } = collectCharacterFields(form, {
         baseData: { '档案名': catgirlName },
         excludeFieldNames: ['档案名', 'voice_id'],

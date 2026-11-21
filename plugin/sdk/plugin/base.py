@@ -10,6 +10,11 @@ try:
 except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
+from plugin._types.entry_metadata import (
+    ENTRY_PROJECTION_SHAPED_FIELDS,
+    detached_copy,
+    unhandled_entry_contract_fields,
+)
 from plugin.sdk.shared.constants import EVENT_META_ATTR, NEKO_PLUGIN_META_ATTR, NEKO_PLUGIN_TAG
 from plugin.sdk.shared.core.base import DEFAULT_PLUGIN_VERSION as _DEFAULT_PLUGIN_VERSION
 from plugin.sdk.shared.core.base import NekoPluginBase as _SharedNekoPluginBase
@@ -19,12 +24,15 @@ from plugin.sdk.shared.core.base_runtime import (
     resolve_plugin_data_dir,
     resolve_plugin_dir,
     resolve_plugin_runtime_config_path,
+    resolve_plugin_shared_dir,
+    resolve_shared_reads,
+    join_shared_path,
     resolve_plugin_storage_dir,
 )
 from plugin.sdk.shared.core.events import EventHandler, EventMeta
 from plugin.sdk.shared.core.types import PushMessageResult
 from plugin.sdk.shared.i18n import PluginI18n, load_plugin_i18n_from_meta
-from plugin.sdk.shared.models.exceptions import EntryConflictError
+from plugin.sdk.shared.models.exceptions import EntryConflictError, ValidationError
 
 from .llm_tool import (
     LlmToolMeta,
@@ -34,6 +42,28 @@ from .llm_tool import (
 )
 
 DEFAULT_PLUGIN_VERSION = _DEFAULT_PLUGIN_VERSION
+
+
+def _entry_listing(entry_id: str, meta: object, *, enabled: bool, dynamic: bool) -> dict[str, Any]:
+    """One ``list_entries`` item; contract fields not shaped here are carried as-is."""
+    listing: dict[str, Any] = {
+        "id": entry_id,
+        "name": getattr(meta, "name", entry_id),
+        "description": getattr(meta, "description", ""),
+        "event_type": getattr(meta, "event_type", "plugin_entry"),
+        "kind": getattr(meta, "kind", "action"),
+        "enabled": enabled,
+        "dynamic": dynamic,
+        "auto_start": bool(getattr(meta, "auto_start", False)),
+        "timeout": getattr(meta, "timeout", None),
+        "model_validate": bool(getattr(meta, "model_validate", True)),
+        "input_schema": dict(getattr(meta, "input_schema", None) or {}),
+        "llm_result_fields": list(getattr(meta, "llm_result_fields", None) or []),
+        "llm_result_schema": dict(getattr(meta, "llm_result_schema", None) or {}),
+        "metadata": dict(getattr(meta, "metadata", None) or {}),
+    }
+    listing.update(unhandled_entry_contract_fields(meta, ENTRY_PROJECTION_SHAPED_FIELDS))
+    return listing
 
 
 class PluginMeta(_SharedPluginMeta):
@@ -140,6 +170,49 @@ class NekoPluginBase(_SharedNekoPluginBase):
         base = resolve_plugin_cache_dir(self.ctx)
         return base.joinpath(*parts) if parts else base
 
+    def shared_path(self, *parts: str) -> Path:
+        """Return a path in the directory this plugin publishes for other plugins.
+
+        ``<data root>/plugin_shared/<this plugin's id>/``. This plugin writes
+        there; other plugins read it with :meth:`shared_path_of`. Unlike the
+        private state it is kept when the plugin is removed. The directory is
+        not created by this call.
+        """
+        path = join_shared_path(resolve_plugin_shared_dir(self.plugin_id), parts)
+        if path is None:
+            raise ValidationError(
+                "a shared path must stay inside the plugin's shared directory",
+                code="shared_bad_path",
+                plugin_id=self.plugin_id,
+            )
+        return path
+
+    def shared_path_of(self, plugin_id: str, *parts: str) -> Path:
+        """Return a path in another plugin's shared directory, for reading.
+
+        The manifest must name that plugin under ``[plugin.shared] reads``;
+        otherwise :class:`ValidationError` is raised. The files belong to the
+        plugin that published them: read them, do not write them. Nothing
+        enforces that (plugins are not sandboxed from each other); it is an
+        agreement between plugins, not a security boundary.
+        """
+        wanted = str(plugin_id or "").strip()
+        if not wanted or wanted not in resolve_shared_reads(self.ctx):
+            raise ValidationError(
+                f"plugin {self.plugin_id!r} does not declare that it reads the shared files of {wanted!r}; "
+                'add it to [plugin.shared] reads in plugin.toml',
+                code="shared_not_declared",
+                plugin_id=self.plugin_id,
+            )
+        path = join_shared_path(resolve_plugin_shared_dir(wanted), parts)
+        if path is None:
+            raise ValidationError(
+                "a shared path must stay inside the publishing plugin's shared directory",
+                code="shared_bad_path",
+                plugin_id=self.plugin_id,
+            )
+        return path
+
     @property
     def metadata(self) -> dict[str, Any]:
         value = self.ctx.metadata
@@ -177,8 +250,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
         Use this for character-aware text like
         ``\"Immediately describe the latest screen to {MASTER_NAME}...\"`` instead of hardcoded
         ``\"user\"`` / ``\"master\"`` / ``\"owner\"``, which feel generic and
-        misbehave on multi-character setups. See PLUGIN_DEVELOPMENT_GUIDE.md
-        ("Writing role-aware text") for details.
+        misbehave on multi-character setups. See docs/plugins/push-message.md
+        ("Role-aware text") for details.
         """
         return await self.ctx.finish(**kwargs)
 
@@ -189,7 +262,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         any text in ``parts``) MAY contain ``{MASTER_NAME}`` /
         ``{LANLAN_NAME}`` placeholders; the host substitutes them at the
         injection boundary, per session. See :meth:`finish` for the rationale
-        and PLUGIN_DEVELOPMENT_GUIDE.md ("Writing role-aware text") for the
+        and docs/plugins/push-message.md ("Role-aware text") for the
         full guide.
 
         The returned receipt only reports immediate local submission.  It is
@@ -268,6 +341,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
         llm_schema = getattr(meta, "llm_result_schema", None)
         if isinstance(llm_schema, Mapping):
             meta_dict["llm_result_schema"] = dict(llm_schema)
+        # Any contract field not shaped above travels as-is, so a field added to
+        # ENTRY_CONTRACT_FIELDS reaches the host without editing this payload.
+        meta_dict.update(unhandled_entry_contract_fields(meta, ENTRY_PROJECTION_SHAPED_FIELDS))
         self._notify_host_comm({
             "type": "ENTRY_UPDATE",
             "action": "register",
@@ -346,9 +422,12 @@ class NekoPluginBase(_SharedNekoPluginBase):
         auto_start: bool = False,
         timeout: float | None = None,
         llm_result_fields: list[str] | None = None,
+        output_schema: dict[str, Any] | None = None,
     ) -> bool:
         if not callable(handler):
             raise TypeError("handler must be callable")
+        if output_schema is not None and not isinstance(output_schema, Mapping):
+            raise TypeError("output_schema must be a JSON schema mapping or None")
         if not isinstance(entry_id, str) or not entry_id.strip():
             raise ValueError("entry_id must be a non-empty string")
         if timeout is not None:
@@ -369,6 +448,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
             auto_start=auto_start,
             timeout=timeout,
             llm_result_fields=llm_result_fields,
+            # Nested levels too: a caller reusing its dict cannot change the contract.
+            output_schema=detached_copy(output_schema) if output_schema is not None else None,
             metadata={"dynamic": True, "enabled": True},
         )
         if timeout is not None:
@@ -428,44 +509,23 @@ class NekoPluginBase(_SharedNekoPluginBase):
             enabled = bool(dynamic_item.get("enabled", True)) if dynamic_item is not None else True
             if enabled is False and not include_disabled:
                 continue
-            entries.append({
-                "id": entry_id,
-                "name": getattr(meta, "name", entry_id),
-                "description": getattr(meta, "description", ""),
-                "event_type": getattr(meta, "event_type", "plugin_entry"),
-                "kind": getattr(meta, "kind", "action"),
-                "enabled": enabled is not False,
-                "dynamic": entry_id in self._dynamic_entries,
-                "auto_start": bool(getattr(meta, "auto_start", False)),
-                "timeout": getattr(meta, "timeout", None),
-                "model_validate": bool(getattr(meta, "model_validate", True)),
-                "input_schema": dict(getattr(meta, "input_schema", None) or {}),
-                "llm_result_fields": list(getattr(meta, "llm_result_fields", None) or []),
-                "llm_result_schema": dict(getattr(meta, "llm_result_schema", None) or {}),
-                "metadata": dict(getattr(meta, "metadata", None) or {}),
-            })
+            entries.append(_entry_listing(
+                entry_id,
+                meta,
+                enabled=enabled is not False,
+                dynamic=entry_id in self._dynamic_entries,
+            ))
             seen.add(entry_id)
         if include_disabled:
             for entry_id, item in self._dynamic_entries.items():
                 if entry_id in seen:
                     continue
-                meta = item.get("meta")
-                entries.append({
-                    "id": entry_id,
-                    "name": getattr(meta, "name", entry_id),
-                    "description": getattr(meta, "description", ""),
-                    "event_type": getattr(meta, "event_type", "plugin_entry"),
-                    "kind": getattr(meta, "kind", "action"),
-                    "enabled": bool(item.get("enabled", True)),
-                    "dynamic": True,
-                    "auto_start": bool(getattr(meta, "auto_start", False)),
-                    "timeout": getattr(meta, "timeout", None),
-                    "model_validate": bool(getattr(meta, "model_validate", True)),
-                    "input_schema": dict(getattr(meta, "input_schema", None) or {}),
-                    "llm_result_fields": list(getattr(meta, "llm_result_fields", None) or []),
-                    "llm_result_schema": dict(getattr(meta, "llm_result_schema", None) or {}),
-                    "metadata": dict(getattr(meta, "metadata", None) or {}),
-                })
+                entries.append(_entry_listing(
+                    entry_id,
+                    item.get("meta"),
+                    enabled=bool(item.get("enabled", True)),
+                    dynamic=True,
+                ))
         return entries
 
     def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:

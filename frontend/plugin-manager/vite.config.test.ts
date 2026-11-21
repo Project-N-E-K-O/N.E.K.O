@@ -36,6 +36,22 @@ describe('Vite Market proxy', () => {
     expect(patterns.some((pattern) => pattern.test('/knowledge'))).toBe(false)
   })
 
+  it('forwards the feedback bridge but keeps the author workbench route on Vite', () => {
+    const proxy = (config as {
+      server?: { proxy?: Record<string, unknown> }
+    }).server?.proxy ?? {}
+    const patterns = Object.keys(proxy).map((pattern) => new RegExp(pattern))
+    const isProxied = (path: string) => patterns.some((pattern) => pattern.test(path))
+
+    expect(isProxied('/market/feedback?kind=issue')).toBe(true)
+    expect(isProxied('/market/feedback/mark-read')).toBe(true)
+    expect(isProxied('/market/feedback/avatars')).toBe(true)
+    expect(isProxied('/market/feedback/other')).toBe(false)
+    expect(isProxied('/market/conversations/plugins/8/comments/messages')).toBe(true)
+    expect(isProxied('/market/conversations/plugins/8/issues/4/messages?after_id=30')).toBe(true)
+    expect(isProxied('/ui/workbench/feedback')).toBe(false)
+  })
+
   it('forwards only the hosted document API namespace during local development', () => {
     const proxy = (config as {
       server?: { proxy?: Record<string, unknown> }

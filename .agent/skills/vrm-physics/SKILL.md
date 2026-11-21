@@ -7,6 +7,25 @@ description: Debugging and fixing VRM SpringBone physics issues in three-vrm, in
 
 This skill covers common issues with VRM hair/clothing physics using `@pixiv/three-vrm` and how to fix them.
 
+## How This Repository Does It (read first)
+
+Collider and joint tuning goes through `static/vrm/vrm-physics-profile.js`, called from `VRMManager._applyPhysicsProfile()` in `static/vrm/vrm-manager.js`:
+
+- With a usable `static/vrm/configs/{model}_physics.json` (served by `GET /api/model/vrm/physics_profile/{model}`), matched colliders get the profile radius and matched joints get the profile settings.
+- Otherwise every collider falls back to `VrmPhysicsProfile.DEFAULT_REDUCTION` (0.5). The repository ships no profile, so this is what users see today.
+
+When one model's hair looks wrong, write a profile for that model instead of changing the global factor or adding another reduction pass. The file format, matching rules, known limitations, and the open questions before making this user-facing are in `docs/frontend/vrm.md` (section "Per-model physics profile").
+
+Runtime fields the scaling code depends on; keep them consistent if you touch this area:
+
+| Field | Meaning |
+|-------|---------|
+| `collider._rawOriginalRadius` | Radius as imported from the VRM, recorded once |
+| `collider._originalRadius` | Baseline at scale 1 (profile radius, or raw × 0.5); `setModelScale` multiplies it by the scale |
+| `joint._originalHitRadius` | Set only for joints whose `hit_radius` came from a profile; only these joints scale `hitRadius` |
+
+The snippets below are general three-vrm background. Do not paste them into the app as-is: the app already applies the reduction and scaling once, and a second pass compounds them.
+
 ## Common Symptoms
 
 1. **Hair flies upward** or explodes outward on load
@@ -215,7 +234,7 @@ Model was not properly configured in Unity/Blender:
 ## Recommended Initialization Code
 
 > [!CAUTION]
-> **Empirical Fix Notice**: The `COLLIDER_REDUCTION = 0.5` value is empirically determined from testing multiple VRM models. While the underlying UniVRM bug is documented, we cannot mathematically prove 50% is correct for all models. **If you encounter hair physics issues, adjust this value first.**
+> **Empirical Fix Notice**: The `COLLIDER_REDUCTION = 0.5` value is empirically determined from testing multiple VRM models. While the underlying UniVRM bug is documented, we cannot mathematically prove 50% is correct for all models. **In this repository, if one model's hair physics is wrong, give that model a physics profile (see "How This Repository Does It") rather than changing the global value.**
 
 ```javascript
 function initializeVRMPhysics(vrm) {

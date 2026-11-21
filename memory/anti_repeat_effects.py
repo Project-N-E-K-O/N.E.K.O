@@ -302,6 +302,7 @@ def _response_key(response_id: str) -> str:
 def _empty_counters() -> dict[str, int]:
     return {
         "soft_hint_injected": 0,
+        "phrase_hint_injected": 0,
         "detected": 0,
         "regen_triggered": 0,
         "regen_guard_passed": 0,
@@ -1161,9 +1162,10 @@ class AntiRepeatEffectStore:
             self._cache[name] = payload
             return self._stage_unlocked(name)
 
-    def stage_soft_hint(
+    def _stage_hint_counter(
         self,
         name: str,
+        counter: str,
         *,
         now: float | None = None,
     ) -> tuple[str, dict[str, Any], int]:
@@ -1176,11 +1178,27 @@ class AntiRepeatEffectStore:
                 _utc_day(timestamp), _empty_bucket()
             )
             counters = bucket.setdefault("counters", _empty_counters())
-            counters["soft_hint_injected"] = (
-                int(counters.get("soft_hint_injected", 0)) + 1
-            )
+            counters[counter] = int(counters.get(counter, 0)) + 1
             self._cache[name] = payload
             return self._stage_unlocked(name)
+
+    def stage_soft_hint(
+        self,
+        name: str,
+        *,
+        now: float | None = None,
+    ) -> tuple[str, dict[str, Any], int]:
+        """Count one session start that carried the recent-topics hint."""
+        return self._stage_hint_counter(name, "soft_hint_injected", now=now)
+
+    def stage_phrase_hint(
+        self,
+        name: str,
+        *,
+        now: float | None = None,
+    ) -> tuple[str, dict[str, Any], int]:
+        """Count one session start that carried the habitual-phrase avoid list."""
+        return self._stage_hint_counter(name, "phrase_hint_injected", now=now)
 
     async def aflush_staged(
         self,
@@ -1225,6 +1243,9 @@ class AntiRepeatEffectStore:
 
     def record_soft_hint(self, name: str, *, now: float | None = None) -> None:
         self._flush_snapshot(*self.stage_soft_hint(name, now=now))
+
+    def record_phrase_hint(self, name: str, *, now: float | None = None) -> None:
+        self._flush_snapshot(*self.stage_phrase_hint(name, now=now))
 
     def query_effects(
         self,
@@ -1597,5 +1618,17 @@ def record_anti_repeat_soft_hint(character_name: str) -> None:
     except Exception as exc:
         logger.debug(
             "[AntiRepeatEffects] soft-hint record skipped: %s",
+            type(exc).__name__,
+        )
+
+
+def record_anti_repeat_phrase_hint(character_name: str) -> None:
+    """Best-effort habitual-phrase hint counter without the phrases themselves."""
+    try:
+        store = get_anti_repeat_effect_store()
+        store.flush_staged_detached(store.stage_phrase_hint(character_name))
+    except Exception as exc:
+        logger.debug(
+            "[AntiRepeatEffects] phrase-hint record skipped: %s",
             type(exc).__name__,
         )

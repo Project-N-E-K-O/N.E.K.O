@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""N.E.K.O. Servers client for catgirl visits (design §5 PR-07, contract §4.7).
+"""N.E.K.O. Servers client for neko visits (design §5 PR-07, contract §4.7).
 
 Six calls, all through ``get_external_http_client()`` with redirects off:
 
@@ -652,7 +652,7 @@ class VisitCredentials:
     invite_expires_at: Optional[float] = None
     cross_region: bool = False
     audio: bool = False
-    """Servers' ``publish.audio`` (OD-15 v4): only a literal ``true`` allows the catgirl voice tracks."""
+    """Servers' ``publish.audio`` (OD-15 v4): only a literal ``true`` allows the neko voice tracks."""
     entitlement: Optional[Mapping[str, Any]] = None
     account: str = ""
     """Community ``local_user_id`` that fetched these credentials (owns the room side)."""

@@ -852,7 +852,7 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
                     or interaction_context["mentions_all"]
                 )
                 # Store is_reply_to_bot separately, not merged into is_at_bot:
-                #   - replying to the catgirl should not skip the buffer (only a direct @ does)
+                #   - replying to the neko should not skip the buffer (only a direct @ does)
                 #   - Attention Gate distinguishes @ vs. reply via is_direct_at
                 result["is_reply_to_bot"] = is_reply_to_bot
 
@@ -1101,7 +1101,7 @@ class OneBotClient(NapCatActionsMixin, ConnectionBase):
             "echo": echo,
         }
 
-        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending_actions[echo] = future
         try:
             await self._main_client.send(json.dumps(payload))

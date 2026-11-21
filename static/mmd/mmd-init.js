@@ -378,6 +378,7 @@
             '/static/mmd/mmd-animation.js',
             ...(!lightweightEmbed ? [
                 '/static/avatar/avatar-touch-gestures.js',
+                '/static/avatar/avatar-click-shake.js',
                 '/static/mmd/mmd-interaction.js',
                 '/static/mmd/mmd-cursor-follow.js'
             ] : []),

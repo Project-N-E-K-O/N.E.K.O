@@ -86,7 +86,7 @@ async def _test_openai_compatible(url: str, api_key: str, model: str = "gpt-3.5-
     """Test an OpenAI-compatible REST API endpoint.
 
     Uses the project's ChatOpenAI client (same as actual conversations) to send
-    a minimal chat completion request (bounded by CONNECTIVITY_TEST_MAX_TOKENS).
+    a minimal chat completion request (bounded by the provider's test budget).
     This ensures the test exercises the exact same auth and request path as
     real usage.
 
@@ -102,14 +102,18 @@ async def _test_openai_compatible(url: str, api_key: str, model: str = "gpt-3.5-
     those use different protocols and will need dedicated test paths.
     """
     from utils.llm_client import ChatOpenAI as _ChatOpenAI
-    from config import CONNECTIVITY_TEST_MAX_TOKENS
+    from config import CONNECTIVITY_TEST_MAX_TOKENS, OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
 
     try:
+        endpoint = urllib.parse.urlsplit(url)
+        max_tokens = CONNECTIVITY_TEST_MAX_TOKENS
+        if endpoint.scheme.lower() == "https" and endpoint.hostname == "api.openai.com":
+            max_tokens = max(max_tokens, OPENAI_CONNECTIVITY_TEST_MAX_TOKENS)
         client = _ChatOpenAI(
             model=model,
             base_url=url,
             api_key=api_key or "sk-placeholder",
-            max_completion_tokens=CONNECTIVITY_TEST_MAX_TOKENS,
+            max_completion_tokens=max_tokens,
             timeout=10.0,
             max_retries=0,
         )
@@ -160,6 +164,21 @@ def _classify_openai_error(e: Exception, is_free: bool = False) -> dict:
         # Free-tier API: 400 means the service is reachable and the key was not rejected.
         if is_free and status == 400:
             return {"success": True}
+        # Match only the known output-exhaustion response, and never return
+        # provider-supplied text: error bodies may echo credentials or prompts.
+        body = getattr(e, "body", None)
+        if isinstance(body, dict):
+            detail = body.get("error", body)
+            if isinstance(detail, dict) and status == 400:
+                message = detail.get("message")
+                if isinstance(message, str) and message.startswith(
+                    "Could not finish the message because max_tokens or model output limit was reached."
+                ):
+                    return {
+                        "success": False,
+                        "error": "测试请求的输出额度不足",
+                        "error_code": "output_limit",
+                    }
         return {"success": False, "error": f"HTTP {status}", "error_code": "unknown"}
 
     # Fallback

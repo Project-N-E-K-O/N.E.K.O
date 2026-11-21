@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -13,6 +14,25 @@ from plugin.server.routes import plugin_ui
 
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("bundled", [False, True])
+def test_static_display_sdk_is_served_without_a_running_plugin(bundled, tmp_path, monkeypatch):
+    if bundled:
+        source = Path(plugin_ui.__file__).resolve().parents[3] / "static" / "plugin-ui-sdk" / "display.js"
+        target = tmp_path / "static" / "plugin-ui-sdk" / "display.js"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(source.read_bytes())
+        monkeypatch.setattr(plugin_ui, "__file__", str(tmp_path / "plugin" / "server" / "routes" / "plugin_ui.py"))
+    app = FastAPI()
+    app.include_router(plugin_ui.router)
+    with TestClient(app) as client:
+        response = client.get("/plugin-ui-sdk/display.js")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/javascript")
+    assert response.headers["cache-control"] == "no-cache"
+    assert "NekoPluginDisplay" in response.text
+    assert "display.requestMode" in response.text
 
 
 @pytest.mark.parametrize("forwarded", [False, True])

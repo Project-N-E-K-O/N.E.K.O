@@ -100,6 +100,9 @@ describe('plugin store reload bookkeeping', () => {
     const store = usePluginStore()
 
     const starting = store.start('demo')
+    // The consent gate runs before the start request; wait for the mocked
+    // call so releaseStart exists.
+    await vi.waitFor(() => expect(startPlugin).toHaveBeenCalled())
     // The new host reads its saved configuration while starting, so a save that lands in
     // the meantime describes a configuration it cannot have read yet.
     setPendingReload('demo', true)

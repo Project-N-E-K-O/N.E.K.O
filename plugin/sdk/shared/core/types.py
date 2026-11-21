@@ -20,6 +20,7 @@ from .cards import ChatCard, PluginView
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
+    from .call_chain_view import CallChainView
 
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -154,6 +155,11 @@ class PluginModelsProtocol(Protocol):
 class ReplyTailProtocol(Protocol):
     version: int
 
+    async def subscribe(self, entry_id: str, *, role: str | None = None,
+                        handler_timeout: float = 15.0, timeout: float = 5.0) -> dict: ...
+
+    async def unsubscribe(self, entry_id: str, *, timeout: float = 5.0) -> dict: ...
+
     async def register(self, context: dict, *, registration_id: str, parts: list,
                        ai_behavior: str = "blind", timeout: float = 5.0) -> dict: ...
 
@@ -165,6 +171,9 @@ class ReplyTailProtocol(Protocol):
 class PluginContextProtocol(Protocol):
     @property
     def images(self) -> PluginImagesProtocol: ...
+
+    @property
+    def call_chain(self) -> "CallChainView": ...
 
     @property
     def models(self) -> PluginModelsProtocol: ...

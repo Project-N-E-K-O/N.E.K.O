@@ -33,9 +33,11 @@ from utils.external_route_registry import RouteClaim
 from utils.language_utils import get_global_language_full
 from uuid import uuid4
 from ._shared import (
+    _reply_observation_owner,
     _TEXT_SESSION_INPUT_TYPES,
     _IMAGE_INPUT_TYPES,
     _LIVE_VISION_STREAM_INPUT_TYPES,
+    _is_live_share_frame,
     FRONTEND_START_SESSION_TIMEOUT_SECONDS,
     logger,
 )
@@ -97,7 +99,10 @@ class StreamingMixin:
                 "code": "MEMORY_SERVER_COOLDOWN",
                 "details": {"wait_time": time_left}
             })))
-            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+            turn_end_msg = {'type': 'system', 'data': 'turn end'}
+            if self._close_turn_tool_state():
+                turn_end_msg['acted_through_tools'] = True
+            self.sync_message_queue.put(turn_end_msg)
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
         return True
@@ -157,7 +162,11 @@ class StreamingMixin:
                     # session to text; continue dropping plain text. avatar_drop_image/user_image,
                     # however, are explicit one-shot attachments and must retain their offline-vision contract. screen /
                     # camera continue using valid realtime paths. Audio never appears during buffering.
+                    # Symmetrically, live share frames buffered while the session was rebuilt as text are
+                    # stale environment frames, not attachments: a text session would keep them as the
+                    # user's next message images and resend them on every later turn.
                     dropped_text_for_voice = 0
+                    dropped_live_frames_for_text = 0
                     for index, message in enumerate(pending_messages):
                         msg_input_type = message.get("input_type")
                         # Keep the current item in the rollback window until
@@ -184,6 +193,13 @@ class StreamingMixin:
                                 ):
                                     self.note_stream_input_ingress(message)
                                     dropped_text_for_voice += 1
+                                    next_unprocessed = index + 1
+                                    continue
+                                if (
+                                    _is_live_share_frame(message)
+                                    and self._live_share_frame_targets_text_session()
+                                ):
+                                    dropped_live_frames_for_text += 1
                                     next_unprocessed = index + 1
                                     continue
                                 result = await self._process_stream_input(
@@ -216,6 +232,13 @@ class StreamingMixin:
                             self.lanlan_name,
                             dropped_text_for_voice,
                         )
+                    if dropped_live_frames_for_text:
+                        logger.info(
+                            "[%s] _flush_pending_input_data: dropped %d cached live share "
+                            "frame(s) because final session is text mode",
+                            self.lanlan_name,
+                            dropped_live_frames_for_text,
+                        )
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -231,6 +254,55 @@ class StreamingMixin:
             async with self.input_cache_lock:
                 release_gate()
     
+    def _live_share_frame_targets_text_session(self) -> bool:
+        """Whether a live share frame would land in the text session's attachment queue.
+
+        Independent ASR stages live frames in Core even over an offline
+        session (voice mode), so only the plain text mode counts here.
+        """
+        return (
+            isinstance(self.session, OmniOfflineClient)
+            and getattr(self, "_asr_route_mode", "blocked") != "independent"
+        )
+
+    def _is_stale_live_share_frame(self, message: dict) -> bool:
+        """A live share frame that reached the server before the last ``screen_share_stopped``."""
+        if not _is_live_share_frame(message):
+            return False
+        captured_at = message.get("_visual_input_ingress_time")
+        return (
+            isinstance(captured_at, (int, float))
+            and float(captured_at) <= getattr(self, "_live_share_stopped_at", 0.0)
+        )
+
+    def handle_screen_share_stopped(self) -> None:
+        """Forget live share frames once the frontend reports that the share ended.
+
+        Frames still buffered, replaying or validating carry an earlier
+        router ingress time and are dropped by ``_is_stale_live_share_frame``;
+        frames already cached for later turns are cleared here. A text
+        session never holds live frames (they are dropped on arrival), and
+        user attachments are not touched: live frames carry no
+        ``request_id``, a screenshot the user attached does.
+
+        Frames already owned by an independent-ASR turn in progress stay
+        with it: they were captured while the share was on, during the
+        user's own utterance. Stopping a share is not a consent revocation.
+        """
+        self._live_share_stopped_at = time.monotonic()
+        # Independent ASR keeps the latest live frame for the next voice turn.
+        self._discard_independent_live_frames()
+        discard = getattr(self.session, "discard_live_share_frames", None)
+        if callable(discard):
+            try:
+                discard()
+            except Exception:
+                logger.warning(
+                    "[%s] failed to discard cached live share frames",
+                    self.lanlan_name,
+                    exc_info=True,
+                )
+
     def _should_drop_live_vision_stream(self, input_type: str | None) -> bool:
         """Deliberately checked at each stream boundary; callers may enter below stream_data."""
         return input_type in _LIVE_VISION_STREAM_INPUT_TYPES and self.is_goodbye_silent()
@@ -753,6 +825,8 @@ class StreamingMixin:
                     self._publish_user_utterance_to_plugin_bus(
                         record_data,
                         is_voice_source=False,
+                        **({"input_id": message["_conversation_input_id"]}
+                           if message.get("_conversation_input_id") else {}),
                     )
 
                     # Dispatch above synchronously extracts and persists ban-topic instructions. If it found
@@ -771,36 +845,6 @@ class StreamingMixin:
                     await self._dispatch_mini_game_invite_keyword(
                         record_data,
                     )
-
-                    openclaw_magic_command = self._normalize_explicit_openclaw_magic_command(data)
-                    if (
-                        openclaw_magic_command
-                        and self._is_agent_enabled()
-                        and self.agent_flags.get("openclaw_enabled", False)
-                        and self.agent_flags.get("openclaw_ready", False)
-                    ):
-                        self._session_turn_count += 1
-                        self._clear_text_pending_images()
-                        self._mark_magic_command_image_drop_request(message.get("request_id"))
-                        await self.mirror_user_input(
-                            data,
-                            metadata={
-                                "source": "openclaw",
-                                "kind": "magic_command",
-                                "command": openclaw_magic_command,
-                            },
-                            request_id=message.get("request_id"),
-                        )
-                        await self._emit_agent_callback_turn_end(message.get("request_id"))
-                        # An owed wrap-up is not settled here: typed input only
-                        # reaches this through _process_stream_input, whose hold
-                        # (_with_owed_wrap_up_held) pays it once this input has
-                        # been handled; a settle here would return at once.
-                        self._fire_task(self._publish_openclaw_magic_command(openclaw_magic_command))
-                        logger.info("[%s] text input sent explicit openclaw magic command", self.lanlan_name)
-                        if _turn_context_job is not None:
-                            _turn_context_job.cancel()
-                        return
 
                     # Text mode: **prefix this user message's content in place** with pending agent-task
                     # callbacks. LLM treats them as additional context accompanying the user's current utterance,
@@ -888,14 +932,18 @@ class StreamingMixin:
                             speech_id=new_user_sid,
                             request_id=text_request_id,
                         )
-                        # Record consumed tool context as provenance, even when
-                        # this reply also contains ordinary conversation. Current
-                        # sync policy stores the whole mixed reply locally; later
-                        # tool sync must change the policy, not disguise its origin.
+                        reply_turn.observation_input_id = message.get("_conversation_input_id")
+                        reply_turn.observation_audio_expected = bool(self.use_tts)
+                        reply_turn.observation_origin = {
+                            "kind": "user_interaction" if is_chat_input_source(message_source) else "system",
+                            "is_proactive": False,
+                            "plugin_id": None,
+                            "task_id": None,
+                        }
+                        # A reply to synthetic input (not typed into the chat
+                        # box) is never stored as a chat original.
                         if not is_chat_input_source(message_source):
                             mark_turn_origin(self, new_user_sid, 'system')
-                        elif _agent_cb_ctx:
-                            mark_turn_origin(self, new_user_sid, 'agent')
                         # Path A (inline) focused cognition: score this user message and, if
                         # over the bar, run THIS reply thinking-on. Scored on
                         # ``record_data`` (= memory_text or data) — the user-VISIBLE
@@ -1017,7 +1065,15 @@ class StreamingMixin:
                                 stream_text_kwargs.pop("turn_context")
                             # No await before the following call: this captures the actual client receiving this turn.
                             reply_turn.session = self.session
-                            await self.session.stream_text(data, **stream_text_kwargs)
+                            if is_chat_input_source(message_source):
+                                from main_logic.reply_tail import reply_tail_registry
+
+                                reply_tail_registry.prepare_reply(self, reply_turn, user_text=record_data)
+                            observation_token = _reply_observation_owner.set(reply_turn)
+                            try:
+                                await self.session.stream_text(data, **stream_text_kwargs)
+                            finally:
+                                _reply_observation_owner.reset(observation_token)
                         finally:
                             # stream_text claims the staged attachments (or puts them
                             # back on failure); release ledger entries for claimed ones.
@@ -1088,6 +1144,10 @@ class StreamingMixin:
 
                         if not self.is_active or self.session is not target_session:
                             return
+                        # Checked after validation: the share may have stopped
+                        # while this frame was still being decoded.
+                        if self._is_stale_live_share_frame(message):
+                            return
 
                         independent_live_frame = (
                             input_type in _LIVE_VISION_STREAM_INPUT_TYPES
@@ -1101,6 +1161,9 @@ class StreamingMixin:
                                 source=input_type,
                                 request_id=message.get("request_id"),
                                 captured_at=captured_at,
+                                consent_epoch=message.get(
+                                    "_visual_input_consent_epoch"
+                                ),
                             )
                             # Keep the active Realtime adapter's provider-neutral
                             # latest-frame cache warm for proactive observation,
@@ -1132,6 +1195,15 @@ class StreamingMixin:
 
                         # In text mode (OmniOfflineClient), store images without sending immediately.
                         elif isinstance(target_session, OmniOfflineClient):
+                            # A live share frame is not something the user chose
+                            # to attach. Queued here it would ride the next text
+                            # message and stay in history for later turns. Same
+                            # rule as the pending-input replay.
+                            if (
+                                _is_live_share_frame(message)
+                                and self._live_share_frame_targets_text_session()
+                            ):
+                                return
                             # screen/camera validation runs in background; the same request's slash shortcut
                             # may already have executed, so recheck before buffering to avoid attaching its screenshot to the next message.
                             if self._should_drop_magic_command_image(message.get("request_id")):

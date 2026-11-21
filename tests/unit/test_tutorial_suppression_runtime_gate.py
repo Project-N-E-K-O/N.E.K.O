@@ -50,6 +50,7 @@ PROACTIVE_KEYS = (
     "proactiveMusicEnabled",
     "proactiveMemeEnabled",
     "proactiveMiniGameInviteEnabled",
+    "proactiveTheaterInviteEnabled",
 )
 
 TUTORIAL_SUPPRESSION_SOURCES = (
@@ -193,7 +194,7 @@ def test_central_gate_and_vision_wiring_in_app_proactive():
         "function startProactiveVisionDuringSpeech() {", 1
     )[1].split("mod.startProactiveVisionDuringSpeech", 1)[0]
     assert start_fn.index("isHomeTutorialFeatureSuppressed()") < start_fn.index(
-        "!isProactiveVisionEnabledNow() || !S.isRecording"
+        "!canProactiveVisionRunDuringSpeech() || !S.isRecording"
     )
     tick = start_fn.split("setInterval(async function () {", 1)[1]
     assert "|| isHomeTutorialFeatureSuppressed()) {" in tick
@@ -203,7 +204,8 @@ def test_central_gate_and_vision_wiring_in_app_proactive():
         "mod.releaseProactiveVisionStream", 1
     )[0]
     assert "var suppressionBlocksVision = isHomeTutorialFeatureSuppressed();" in release_fn
-    assert release_fn.count("!privacyBlocksVision && !suppressionBlocksVision") == 2
+    # One keep-the-stream rule, and tutorial suppression still overrides it.
+    assert release_fn.count("!suppressionBlocksVision && holdsProactiveVisionStream()") == 1
 
     # With multiple sources, reattach only after last active:false; click-guide has another release edge.
     assert "function rearmProactiveVisionAfterSuppression()" in source
@@ -240,16 +242,18 @@ def test_settings_driven_stream_sites_consult_the_gate():
         ) >= min_occurrences, f"{path.name} 缺少教程抑制闸门"
 
     screen = APP_SCREEN_PATH.read_text(encoding="utf-8")
+    # Keep-the-stream decisions go through the shared rule, and tutorial
+    # suppression still wins over it.
     assert screen.count(
-        "var proactiveVisionActive = !tutorialHoldsVision && S.proactiveVisionEnabled"
+        "var proactiveVisionActive = !tutorialHoldsVision && isProactiveVisionHoldingStream();"
     ) == 2
 
     buttons = APP_BUTTONS_PATH.read_text(encoding="utf-8")
-    assert "if (S.proactiveVisionEnabled && !tutorialHoldsVision) {" in buttons
+    assert "if (speechVisionAllowed && !tutorialHoldsVision) {" in buttons
 
     audio = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
     assert (
-        "const shouldRestartProactiveVision = S.proactiveVisionEnabled && S.isRecording && !tutorialHoldsVision;"
+        "const shouldRestartProactiveVision = speechVisionAllowed && S.isRecording && !tutorialHoldsVision;"
         in audio
     )
 

@@ -10,6 +10,10 @@ Git repository. Its immutable byte identity is pinned in `manifest.json`.
 - ModelScope ID: `iic/speech_campplus_sv_zh_en_16k-common_advanced`
 - ModelScope revision: `v1.0.0`
 - ONNX exporter/distributor: `k2-fsa/sherpa-onnx`
+- Pinned download: the sherpa-onnx maintainer's Hugging Face mirror
+  `csukuangfj/speaker-embedding-models` at commit
+  `0743f301363dec56491a490f6d6cbc9d67f9a3bf` (the original 2024 export; the
+  mutable `speaker-recongition-models` GitHub release was re-exported later)
 - License: Apache License 2.0
 
 Copyright (c) Alibaba Cloud and the 3D-Speaker contributors.

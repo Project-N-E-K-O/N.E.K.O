@@ -1,49 +1,171 @@
 # Agent System
 
-The Agent system turns completed conversation turns into optional background tasks. It is split across the Main Server, which owns chat sessions and user delivery, and the Agent Server, which assesses requests, dispatches tools, and tracks task state.
+The Agent system (named NekoClaw in the interface) is how the character gets things done outside the conversation. The main dialogue model decides whether something is to be done and says so with a tool call. The NekoClaw host inside the Agent Server keeps the record, decides who does the work, runs it, and reports back. Nothing analyses a finished turn on its own initiative: the former per-turn analyzer and its execution channels have been removed.
+
+Two terms are used throughout: a **commission** is one thing the character handed over, and a **task agent** is an execution session that works on a commission in several steps. The interface shows a task agent to the user as a "familiar"; code, routes, and field values use `task_agent`.
 
 ## Runtime components
 
 ```text
-Main Server                                  Agent Server (:48915)
-┌──────────────────────────┐                 ┌──────────────────────────────┐
-│ LLMSessionManager        │                 │ DirectTaskExecutor           │
-│ cross_server.py          │  analyze queue  │  ├─ unified channel assess  │
-│ MainServerAgentBridge    │ ──────────────> │  ├─ user-plugin assess      │
-│                          │ <────────────── │  └─ dedupe / task tracking  │
-│ pending_agent_callbacks  │  result/events  │                              │
-└──────────────────────────┘                 │ channel adapters             │
-                                             └──────────────────────────────┘
+Main Server                                   Agent Server (:48915)
+┌───────────────────────────┐                 ┌──────────────────────────────────┐
+│ LLMSessionManager         │  HTTP           │ NekoClaw host (nekoclaw/host/)   │
+│  tools: dispatch_task     │ ──────────────> │  ├─ task brain                   │
+│         query_tasks       │ <── receipt ─── │  │   ledger · decision model     │
+│ cross_server.py           │                 │  ├─ task agent manager           │
+│ MainServerAgentBridge     │  ZeroMQ         │  ├─ capability gateway           │
+│ pending_agent_callbacks   │ ─ turn check ─> │  └─ permissions                  │
+│                           │ <── reports ─── │ embedded plugin service (:48916) │
+└───────────────────────────┘                 └──────────────────────────────────┘
 ```
 
-The live executor is `DirectTaskExecutor` in `brain/task_executor.py`. The older Planner / Processor / Analyzer pipeline no longer exists. A `TaskDeduper` remains, but it prevents duplicate dispatches; it is not a post-execution analyzer.
+There is one host per Agent process. Startup only registers how the host reads the process's switches (`app/agent_server/nekoclaw_mount.py`). The ledger file, the agent runtime, and the gateway listener are created the first time they are needed.
 
-The Agent Server is served by `app/agent_server/__main__.py`. Its implementation is split across `api_runtime.py`, `api_routes.py`, `channels/`, `registry.py`, `tracker.py`, and `results.py`.
+## The two task tools
 
-## From conversation to task
+While the master switch and at least one capability switch are on, `main_logic/core/tool_calling.py` registers two built-in tools for the main dialogue model. Each takes one natural-language sentence and no identifier; which commission a sentence is about is worked out by the host. The definitions are in `config/prompts/prompts_task_tools.py`.
 
-1. `main_logic/cross_server.py` builds a bounded recent-message view at `turn end` or `session end`. User images for the current turn can be attached to that view.
-2. `publish_analyze_request_reliably()` sends an `analyze_request` with an `event_id`. The Main Server waits briefly for `analyze_ack` and retries once on timeout.
-3. The Agent Server rejects the request if the master switch is off. It also redacts previously cancelled user turns and applies recent-task deduplication.
-4. `DirectTaskExecutor.analyze_and_execute()` evaluates enabled channels. User plugins use their own discovery and two-stage entry selection path; the other channels share a unified assessment.
-5. The selected channel creates a registry task, emits `task_update` events, performs the work, and emits a structured `task_result`.
-6. The Main Server forwards live task updates to the browser and queues task results on the matching `LLMSessionManager`. Text sessions can deliver callbacks immediately; voice sessions may defer them until an injection or hot-swap boundary.
+| Tool | Argument | Use |
+|---|---|---|
+| `dispatch_task` | `task` | Hand over something to do. Additions, changes of mind, stop requests, and the user's answer to a pending question also go through it |
+| `query_tasks` | `question` | Ask what is under way, how a commission is going, or whether something can be done. An empty question lists what is under way |
 
-Agent callbacks are deliberately not analyzed again, preventing result delivery from recursively spawning another task.
+The handlers call `POST /nekoclaw/dispatch` and `POST /nekoclaw/query` on the Agent Server and wait at most 2.5 seconds for the whole request. If the Agent Server cannot be reached, or turns the request down without acting on it (a 4xx status), the tool result states that the task was not handed over. If the request went out and no answer came back in time, or the Agent Server answered with an error of its own (a 5xx status), it states that it is not known whether the task was handed over (the Agent Server may be carrying it out all the same) and tells the model to check with a query instead of dispatching again. Proactive chat requests carry neither tool.
+
+## Inside the host
+
+### Task brain
+
+- **Ledger.** One SQLite file, `<data root>/nekoclaw/ledger.db`, holds the commissions, their events, the sessions task agents work in, an outbox of reports, and task preferences. A commission is `queued`, `working`, `waiting_user`, `done`, `blocked`, `failed`, or `cancelled`. The status changes in a single function; `done` and `cancelled` are final, so a late result cannot overwrite a stop.
+- **Dispatch, first round (waited for).** Local matching decides whether the sentence is a stop request, an answer, an addition, or a repeat of something under way, whether keywords or BM25 find candidate plugins, and whether a task agent can be started. A sentence that adds to a commission a task agent finished, or was stopped on, within the last day becomes a commission of its own. The second round chooses for it as for any other: a plugin that is picked does it, and only when it is handed to a task agent does it go on in that one's session; one that adds to a commission that failed takes that commission up again. The receipt says "already under way", "nothing can do this" (with the reason), or "accepted". No model is called, except for one small-model screen when nothing matches locally and no task agent can be started. After one second the receipt is "received" and the conclusion follows as a report.
+- **Dispatch, second round (in the background).** The decision model (`nekoclaw/host/decision.py`) selects a plugin entry and fills in its arguments with one model call. When all plugin descriptions together exceed 3000 tokens, a coarse stage first keeps the union of keyword hits, the ten best BM25 matches, and a small-model screen. Plugins come first: a task that one entry can finish is called directly through the plugin service's `/runs` protocol. If no entry fits, or the task needs several steps, the commission goes to a task agent. The model can also answer that neither can do it, or that it is not a task at all; nothing is started then. An answer naming a plugin or entry that does not exist is not asked about again: it is treated as no entry fitting. If this round overturns the receipt, the character is told at once.
+- **Query.** Never calls a model. Progress is read from the ledger, and "can this be done" reuses the first round's local matching without filing anything. The line of a commission a task agent worked on says how many tokens it has used so far, when any usage is on record for it (none is when the model's provider reports no usage).
+
+### Task agents
+
+A task agent works in a session of the built-in agent runtime (`nekoclaw/runtime/`), which runs in a subprocess started on demand. A session is a conversation that is kept and can be gone on with, and the ledger has a row for each. A commission filed under a project is worked on in that project's one session; a commission that follows up an earlier one, in that one's session; any other, and every task agent started by a task agent, in a session of its own. A session takes one commission at a time: the next one stays `queued` until the one before it is done, failed, stopped or blocked, and also while that one waits for the user. At most ten sessions are at work at the same time; further commissions stay `queued`. The runtime's session is opened when a commission starts and closed when it ends; what was said stays on disk, and the next commission of the session goes on from it.
+
+What a commission is (the dispatched sentence, the user's own words, how the user wants such things done, the plugin entries picked for it, the files the repository it works in keeps for agents) is the message that opens it in its session; it is not part of the system prompt. A commission that starts in a session in which nothing was said yet is also handed an excerpt of the main dialogue in that message: the last things the character and the user said before the dispatch, word for word, 1,000 tokens at the most, marked as background and not as instructions. Each message is one line there: line breaks and runs of blanks inside a message are folded into single spaces. Beyond that the task agent does not receive the conversation history of the main dialogue. The system prompt and the tool definitions a session was first opened with are kept in its directory (`system.json`) and used again whenever it is opened, so the head of its requests stays the same from one commission to the next. What differs from one session to the next in the system prompt (the working directory, the reply language) comes last. What is in front of it is the same for two sessions that are offered the same tools and given the same instructions by the host (the same character, the same project and its rules), so their requests share a longer head; whether a provider reads that head from its cache is up to the provider. They are put together anew only after the conversation was summed up: until then a tool that is gone answers that it cannot be used right now, and a built-in tool that came since is not offered. A session's conversation is managed for a preset context window of 200,000 tokens and summed up from 170,000 on; the user may set both for a model (the built-in free model is managed for 128,000, because it cuts a longer request off without saying so). Once the model's provider refuses a request as too long, the session and those after it are managed for a smaller window by themselves (the window the provider states, or the length of the refused request when it states none), and the user is told once to set the model's context length.
+
+A task agent runs on the agent model and can start task agents of its own. When it asks the user a question or needs a permission, the commission is `waiting_user` until the character passes the answer on with `dispatch_task`.
+
+What every model request used (requests, input, output, cache reads, cache writes) is kept in the ledger, with the session and with the commission; what a task agent started by another uses counts for the commission that started it as well. One commission may use five million tokens by default (what every request sent and got back, cache reads included). The limit is looked at once a step, before the step's model request, against what the ledger has by then: when that much is used, the built-in runtime stops there (a tool that is running is not cut off; within a step, a summary of the conversation or a retry after a request was refused as too long is not looked at again, so a little more than the limit can be used), the commission becomes `waiting_user`, and the user is asked once, as for a permission; the question says how much was used and how much more is asked for. Allowed, it gets five million more and asks again when those are used; refused, the task agent is told to hand over what it has and to say what is missing, within four more steps (a model request each; a summary of the conversation on the way, or a retry after a request was refused as too long, is not counted): the commission is recorded as blocked, or as done when the task agent reports that it is in fact complete. dsh makes its requests by itself and has no such place to stop at: usage is counted there, the limit is not applied.
+
+A session can be forked: what was said in it is copied into a new session (up to the last place where it is whole, every tool call with its result), which keeps the system prompt and the tool definitions of the one it was copied from, so its requests begin exactly as that one's do. The session that is copied may be at work and is not disturbed. The copy shares the working directory of the other, so it is not given the tools that write files, run commands or call capabilities, and the gateway refuses its calls as well: it reads and answers. What was said in a session is not removed while a copy of it is being made, or while a commission is at work in one of its copies. Only a session of the built-in runtime can be forked. One session asking another a question is answered in such a copy (see below).
+
+The host can also sum up the conversation of a project session that has been idle for a long time, so that the next commission carries less of the old conversation. That is one more model request, made by the host itself, and it is off by default (`TASK_AGENT_IDLE_COMPACT_ENABLED`). When it is on, nothing is summed up while NekoClaw is switched off, once the daily quota is used up, or after the user stopped everything (until something new is to be worked on in the session), and a commission that arrives for the session cuts a summary under way short. The commission then waits for the runtime to close the session the host had open, for 30 seconds at the most; when the runtime does not say that it has, the commission fails with that as its reason and can be handed in again. When no whole summary comes back (the request fails, ends at its length limit, or the model calls a tool instead of writing one), the conversation stays as it was.
+
+### Sessions writing to one another, and wakes
+
+A task agent can find other sessions, read what they left, write to them, ask them a question, and ask to be woken later. Five tools of the runtime do this, each carried out by the host: `list_sessions` looks through session names, projects and the titles of their latest commissions for words (no model is asked) and returns ten rows a page, among the 300 sessions last in use that can be written to (an older one is not found; one whose exact name or whole id is known can be given to `read_session` or `message_session` directly); `read_session` hands back the results and reviews of a session's latest commissions, or the places in its conversation record where some words occur, or one stretch of that record of at most 2,000 tokens (a record is never handed over whole; a session kept by dsh has results and reviews only, and its conversation record cannot be read); `message_session` writes a note to another session; `schedule_wake` asks to be started again after a delay of at least ten minutes; `ask_session` asks another session a question, which a temporary copy of that session's conversation answers. The copy is made only of a session with a commission under way and kept by the built-in runtime; it reads files and changes nothing, makes at most eight model requests, and is worked on as a task agent the asker started: what it uses counts with the asker's commission, it is stopped with it, and its answer comes back to the asker as a message, framed as what a model wrote from that session's conversation. The other session is not told. A session asks at most six questions an hour, which count with its notes. Sessions of every character can be found, read and written to, and each row and each note says which character the session works for. A session is named by its name or its id; where a name is how another session's id begins, or two characters each have a session of that name, the host lists the whole ids of those sessions and asks for the one that is meant. A task agent started by another task agent can find and read sessions; it writes to its own team only, asks nobody, and sets no wake.
+
+Every turn belongs to a commission. What a commission asked for itself (a time it set, word of a note it sent) wakes that commission: when its run ends with such a request still pending, it **rests**: its status stays `working`, the ledger records since when it rests, the runtime's session is closed, and it gives up its place and its session, so later commissions of the same project are worked on meanwhile. In two cases it does not rest, its session stays open and it keeps its place, so later commissions of the same project still wait: while task agents it started are still at work (their results start its next run), and while a background command of the session is still running whose end would start its next run (closing the session would end the command). In both, a request that comes due is handed to the open session, and the commission is not queued again. One that rests is queued again when the time comes, and goes on from what was said. A report of ready, blocked or failed, and a stop, drop what it had pending. A commission that rests is not failed when the host restarts; what it waits for is on record and is picked up by the first call that does work in the host, never at startup. A note for a session goes to the commission the session is at: steered into the one at work before its next model request, waking the one that rests, kept back while one waits for the user. With no commission under way, one is filed in that session for the note (it follows up the session's last commission, takes a place, counts against the quota, asks the user where it has to, and reports to the character that session works for, along with her next turn unless its task agent asks otherwise).
+
+Notes and wake requests are rows of the ledger (`messages`, `wake_requests`), written first and handed over afterwards, like reports. A note is handed over inside a frame the host makes at that moment: it names the session that wrote it, says that it is not from the user and carries none of the user's permissions, and puts the note between two marker lines that carry a random string made for that one occasion, every line of the note indented. What `read_session` returns, and what a sender is told when the turn its note began is over (`notify_when_done`; after 12 hours without that it is told so instead), is framed the same way. When what another session wrote is handed to a commission under way, what the user had allowed that commission "for this session" is forgotten and asked again: a note carries nobody's permissions, and the host does not leave that to the model. One note is at most 1,500 tokens; a session writes at most one note every 60 seconds to the same session, and at most 20 an hour in all, to however many sessions; at most 50 wait for one session; a commission filed for a note may have one more filed by a note of its own, and that one writes to nobody. A session may have ten wakes pending and be woken at its own asking 300 times a day. Nothing is woken while NekoClaw is switched off or the free daily quota is used up; the requests stay. Stopping everything drops the notes that were not handed over yet, and ends resting commissions along with the rest; while the commissions are being stopped the host hands nothing over, what was written meanwhile is dropped when the stop is through, and a commission that was stopped writes no more notes. To hand something over, the host first puts on record which commission it is handed to and then says it to the session; it is on record as taken once the runtime reports that the text is in the session's conversation and written to its record (in dsh: once the turn that carried it is over). What another session wrote, and what the host says of a time that has come, is sent to the session marked as not the user's own words: in the built-in runtime it entitles the run to nothing that only the user's own words do (setting a goal, say). dsh does not look at that mark yet: there a run that was given only such words can still set or change a goal. What could not be said, and what a session closed without taking, is put back for the next time, except where a stop of everything came in between; what was still on its way when the host process ended is handed over again after the next start, and what a stop of everything dropped stays dropped through a restart. When the host shuts down it stops handing over first, and what was not handed over stays on record for the next start.
+
+Files in another session's working directory, and the tool output it kept, are read without asking the user (unless reading outside the working directory is forbidden in the settings, which forbids `read_session` as well); its conversation record is read through `read_session` only, under whatever name a path leads to it, and not by searching the contents of the directory that holds it either (its names may be listed, and the directories inside it are searched as ever); nothing is written into another session's own directory, not from a working directory that happens to contain it either.
+
+### Task agent space
+
+What task agents keep for later commissions is in `<data root>/nekoclaw/task_agent_space/` (`nekoclaw/host/space.py`): plain text that only the host writes, one copy per user, shared by every task agent. It holds rules the user writes (`AGENTS.md`), an index with one line per entry (`MEMORY.md`), and the entries themselves, one file each (`memory/*.md`): reusable findings, reflections on what went wrong, pointers to where something is found, and how a project stands. There is one such set for all projects and one per project (`projects/<project>/`); commissions that belong to no project are filed under `_daily`.
+
+- **When a session is first opened**, the rules and the two indexes are added to the host's part of its system prompt (the description of the environment and the reply language come after that part), within 2100 tokens in total, headings and notices of what was cut included; a session that is opened again keeps what it was opened with until its conversation is summed up. Nothing is added while the space holds nothing. The entries are read when they are needed: a task agent reads anything in the space with its file tools without asking and cannot write there; a shell command that points at the space's directory, or would run inside it, is put to the user every time, whatever was allowed for commands before (and stays forbidden when commands are forbidden). What it wants kept goes through its `note_lesson` tool; corrections and approvals from the user become task preferences instead.
+- **Whether a note takes effect** is told by the host, without asking a model. A task agent says how it knows what it files (verified, observed or inferred; it must say, and a note that does not is turned down) and may name files that show it (it need not). A verified note takes effect at once; an observed one needs a file that exists in the working directory of the commission or of its project (a file outside both counts only while the user has set reading outside the working directory to be always allowed); an inferred one, like an observed one with no such file, waits until a second commission files the same (a commission and the task agents it started count as one commission; the same note is one with the same title or the same text; case, white space and the punctuation at either end of a word are evened out before the two are compared, while a mark inside a word is kept, so `a.b` and `a. b` are not the same; in text that puts no spaces between words, as Chinese and Japanese do, the punctuation of a sentence goes as well, so `先核对，再提交` is the same as `先核对再提交`), or until a task agent checks it and files it once more under its title as verified, or files the same text as observed with a file that exists. A note that waits is a pending entry: a file like any other that says in its front matter that it is not confirmed, in no index, so a task agent comes upon it only by searching the directory. At most 30 wait in a layer; one that nobody filed again for 90 days is deleted when the tidying of the space gets to it (the space is tidied after commissions end and looks at up to 500 entry files a time, so it may stay longer while nothing is commissioned or while there are more files than that), and one that goes may be filed again. An entry expires once every file it rests on is found to be gone (the file stays, its line leaves the index); a file that cannot be looked at just then (one outside the working directories once the user no longer allows reading there unasked, or one on a disk that does not answer) counts as neither there nor gone, and does not make the entry expire. An entry the user removed in the console is remembered so that the same note is not kept again (each layer keeps its own record, so a note removed from one project may still be kept in another, or for every project; a file deleted by hand leaves no such record; only the latest 1000 removals of a layer are remembered; and when the record cannot be written, the entry is removed all the same and may be kept again). What a review or the summary of an archived project makes is judged by the same rules, except that a global one is taken for inferred whatever files it names: the files of one project do not show that it holds for every project. Its files are kept with it for reference only: they neither have it take effect nor have it expire. A review keeps what a later commission could not tell from the files and would work differently for knowing: what went wrong and the way around it, a way that worked where the obvious one did not, what would have saved time. It leaves out what the files, the repository's own documents or their history show, and what the commission did.
+- **When it works in a repository**, a task agent is also given, with the message that opens each commission, a list of the files that repository keeps for agents (`AGENTS.md`, `CLAUDE.md`, `.agent/rules/` and the like): paths and sizes only. The host reads none of them and never makes them part of the instructions; the task agent reads the ones that bear on its work, as reference material. There is no list when the repository keeps no such files, or when looking for them took too long (a folder on a share that does not answer): the commission starts all the same. (dsh is the exception: by itself it reads the `AGENTS.md` and `CLAUDE.md` between the working directory and the repository's root as instructions.)
+- **A commission is filed under a project** when the dispatched sentence or the user's own words contain the project's name. No model is asked for this. It is then worked on in the project's session, after the commissions of that project that came before it.
+- **After a commission ends**, one call of the summary model writes a review (`projects/<project>/reviews/<commission id>.md`), files up to two entries (a commission that was stopped is reviewed as well, and files none), and may name the project the commission belongs to. It runs in the background once the report has been stored, and at most once per commission. A commission with fewer than three tool calls, a direct plugin call, and a task agent started by another task agent are not reviewed; a failed commission is reviewed only after it has stayed failed for a day, because it is often taken up again.
+- **Tidying** follows the end of a commission, at most every six hours, and never runs at startup. A project with no commission for 30 days is moved to `archive/<year>/<project>/` with a summary (one model call) and comes back when a commission names it again. The transcript and the stored tool output of a session are removed 30 days after the last change of any commission worked on in it, and not while one of them is under way, waits for the user or is blocked; its working directory is never removed. Last, a model looks over the entries of a layer (all projects, or one project in use) in which an entry the host made was added to or changed since the layer was last looked over, and that has at least two such entries that have not expired: one model call a layer, at most two layers a round, the layers looked over longest ago first. It only names changes, and the host checks each one before it makes it: two entries in effect that say the same thing become one; a pending one that says what one in effect says counts as seen again there, and expires with its text left out of that entry (nobody checked it, and a page the task agent read may have written it); two pending ones become one, which takes effect when two commissions have seen it by then, unless another entry, in effect or expired, has its title; an entry a newer one in effect contradicts expires for good (it does not come back for its files, only when it is filed again); an entry easily taken for another gets its title with words of its own text added, its title kept whole; and a word like "yesterday" is replaced by a date, and by nothing but a date. The model has read the pending notes, which a page may have written, so what it asks for is checked to say nothing new. An entry the user wrote is never changed; the one of two entries that is merged into the other goes, its texts being in the other, and nothing else is deleted; an entry that changed while the model looked at it is left as it is.
+
+The session directories (`<data root>/nekoclaw/task_agents/projects/<project>/sessions/<session id>/`; a session made for a commission has that commission's id) are a separate tree on purpose: a working directory is full of links and stays where it is when the storage location is changed, while the space moves with the rest of the user's data.
+
+### dsh: the optional agent runtime
+
+dsh (DeepSeek Harness) is a second agent runtime a user may download (`nekoclaw/dsh/`); the built-in one is always there. Nothing changes for a user without dsh: its modules are not imported and no process is started.
+
+- **Which one** (`nekoclaw/host/runtimes.py`). A session is given its runtime when a commission is first taken up in it, the ledger records it, and it keeps it. A new commission runs on dsh when dsh is installed, the user has not chosen "built-in only", and the commission's model is reached through an OpenAI-compatible API; otherwise it runs on the built-in runtime. A commission taken up again goes back to the runtime it began in, because only that runtime can read what was said in its session; a task agent started by a task agent runs where the one that started it runs.
+- **When dsh cannot be used.** If dsh does not come up, its permission guard is not confirmed to have loaded, or it opens no session for the commission, the commission runs on the built-in runtime instead and the reason is recorded in the commission's events; dsh is not tried for new commissions for the next 5 minutes. A commission that began on dsh starts over on the built-in runtime once dsh has been removed. When the dsh process exits mid-way, the commissions it was working on fail and can be taken up again.
+- **How it is connected** (`driver.py`, `acp.py`). dsh is a child process spoken to over standard input and output with ACP (JSON-RPC). One process carries several sessions, is started when first needed, and exits after all its sessions have been idle for 5 minutes. The driver translates ACP notifications into the same events the built-in runtime sends, so the rest of the host does not tell the two apart.
+- **Model requests** (`forward.py`, `endpoint.py`). dsh sends its model requests to a forwarder on the loopback address, which puts in the real model name and key, adds the parameters each provider needs, and passes them on to the address the user configured. The key is never given to dsh, and the usage of every request is read by the forwarder. The forwarder listens on a random port, each dsh process has its own random token, and any request carrying an `Origin` header is refused.
+- **Permissions** (`profile.py`). dsh's own sandbox is switched off; a guard shipped with its configuration makes dsh ask before every tool call, and each of those questions is decided by the same permission code of the host. A call through the capability gateway is ruled on, and the user asked, before it is sent; the gateway does not ask again when the call arrives.
+- **The host's tools** (`host_tools.py`). Reporting, noting lessons, web search and fetch, and child task agents are offered to dsh as an MCP service, from the same definitions the built-in runtime uses; dsh's own web search and fetch are switched off, so a page is fetched from public addresses only, as on the built-in runtime. The capability gateway is mounted into dsh directly over MCP.
+- **Where it is installed** (`install.py`). `<data root>/nekoclaw/dsh/` holds the program, dsh's own configuration and its session logs; it does not move with a storage migration. The version downloaded is pinned and the file is checked against its sha256 and size.
+
+A few things differ from the built-in runtime on dsh: something added mid-way reaches the task agent only when its current stretch of work has ended; a reply arrives whole rather than word by word; one call through the capability gateway may take 60 seconds at most; there is no tool that asks the user and waits in place, so a report that waits for an answer is used instead; and dsh sums a conversation up on its own without saying so, so what a session was told at first is not told again after that, and a group of built-in tools is not handed over anew.
+
+### Capability gateway and permissions
+
+Besides its own file and command tools, a task agent reaches everything through the capability gateway (`nekoclaw/host/gateway.py`): an MCP service on the loopback address, started when the first task agent needs it, with one token per commission. It serves:
+
+- plugin entries that are visible to routing, one tool each, called through the same `/runs` code as a direct call;
+- the tools of MCP servers configured in the `mcp_adapter` plugin;
+- the built-in tools for keyboard-and-mouse control and for browser control, described in the next section. Only task agents can call them.
+
+A task agent's tool list holds two tools of the gateway and no others, whichever commission it works on and whether or not anything can be called at the moment: `capability_search` finds a capability by what it does, and `capability_call` calls one by name. A plugin that is installed, or a browser that is switched on, while a session lasts is reached through them without the session's tool list changing. The entries the task brain picked for a commission are told, with their names and arguments, in the message that opens the commission.
+
+Permissions are stored in `<data root>/nekoclaw/permissions.json`. Each category is `first_ask`, `always_ask`, `allow`, or `deny`. By default, plugin entries and file access inside the working directory are allowed, while reading or writing outside the working directory, commands, keyboard-and-mouse, the browser, and each MCP server ask on first use. `deny` also keeps a plugin or an MCP server out of direct calls. For keyboard-and-mouse and the browser, an approval given for a single request lasts until the task agent's current run is over, because their tools are single clicks and key presses.
+
+### Built-in tools: keyboard and mouse, browser
+
+Keyboard-and-mouse control and browser control are two groups of built-in tools (`nekoclaw/builtin/`, in the Agent process). A task agent calls them one step at a time from its own loop, next to its file and command tools, and sees the result of each step before it decides the next. Neither group runs a loop of its own, and no call to them asks a model. The definitions the model sees are in `config/prompts/prompts_nekoclaw_builtin.py`. The gateway does not list them among a task agent's tools: every request carries one line about each group, with the call the group is started with (open a page, take a screenshot). That first call is made through `capability_call` and is carried out; when it goes well its answer brings, in front of what the call returned, how the group is used and the definitions of its tools (at most 2000 tokens a group). From then on the tools are called by name through `capability_call`. A task that does not start with that call loads the group through `capability_search` with `group`. Any other call made before its group was handed over is not carried out and is answered with the group. Once the runtime has summed the conversation up, a group handed over before that is handed over again the next time one of its tools is called.
+
+- **Keyboard and mouse.** One tool, `computer`, whose `action` argument is `screenshot`, `click`, `move`, `drag`, `scroll`, `type`, `key`, or `wait`. It works from screenshots: coordinates are integers from 0 to 999 on both axes whatever the size of the screen, and every call returns a screenshot taken after the action. A coordinate outside that range is refused.
+- **Browser.** Fifteen tools named `browser_*`: navigate, take a snapshot, click, hover, fill a field, fill a form, type text, press a key, take a screenshot, list, select, open and close pages, wait for text, and handle a dialog. A page is read as a text snapshot of its accessibility tree in which every element carries a uid, and an action names its element by that uid. A uid that is not in the latest snapshot is refused. A snapshot is cut at 3000 tokens and says where to read on from. Only `http://` and `https://` addresses can be opened.
+
+The browser is one the user has installed: Chrome, Edge, Brave, or Chromium, in that order; on Windows the system's default browser comes first when it is one of them. It is driven over its debugging protocol (the Chrome DevTools Protocol on a WebSocket), without a browser automation library. By default it is started with a profile directory of its own, `<data root>/nekoclaw/browser_profile`: a site logged into there stays logged in, and the user's everyday logins are not available. The user can instead have the tools drive the browser they are already using. That needs Chrome 144 or later, the user switches remote debugging on at `chrome://inspect/#remote-debugging`, and the browser asks for approval at each connection. The choice is kept in `<data root>/nekoclaw/browser.json`; a browser installed in an unusual place is named there as `executable`, or with the `NEKO_BROWSER_PATH` environment variable.
+
+A browser the tools started is not closed between tasks: when a task ends or is stopped, its window and pages stay, and the next task goes on with the same browser. The application closes it only when the browser settings are saved with a change, or when it quits. When every task is stopped (`end_all`), when the browser tools or the Agent master switch are switched off, or when the agent model stops answering and the switch is turned off automatically, a browser that has a window stays open, so the user can go on reading what is in it; no call of the browser tools is carried out while they are off. One that was started without a window (`headless`) is closed in all of these cases, as before. The application stays connected to a browser it leaves open, so that browser still cannot reach the application's own service ports. A browser the user is already using is never closed by the application; it only disconnects.
+
+When the user closes that window themselves, the application does not open it again by itself. The next time a task agent calls a browser tool, the task waits for the user (as it does for a permission), and they are asked whether the browser may be opened again: allow it this once, or refuse. This is asked each time the browser was closed, whatever the permission setting for the browser is, and there is no time limit on the answer. A browser that crashed cannot be told from one that was closed, and is asked about in the same way.
+
+No browser is shipped with the application and none is downloaded at start. Playwright is a test dependency only, and `browser-use` is not a dependency. When no usable browser is installed, browser control is not ready and reports that none was found (`AGENT_BROWSER_NOT_FOUND`).
+
+`computer` and `browser_take_screenshot` return pictures, so they are offered only to a task agent whose model can see pictures. A model counts as able to until its provider refuses a request because it carried a picture; that request is sent once more without pictures, and the model is recorded in `<data root>/nekoclaw/model_capabilities.json`. A task agent's context keeps the three most recent screenshots, counted across all of these tools together.
+
+There is one desktop and one browser. A commission occupies a group from its first call until its task agent's run ends, it starts waiting for the user, or it ends. A commission and the task agents it started share one occupation. Another commission that needs the group waits up to 120 seconds and is then told which commission has it.
+
+When a commission begins or stops occupying a group, the Agent process sends a `builtin_activity` event, and the Main Server forwards it to every connected page as an `agent_builtin_activity` WebSocket message. The pages pass it on as a `neko-agent-builtin-activity` DOM event and draw nothing themselves. `GET /api/agent/builtin/activity` returns the current occupations, and `POST /api/agent/builtin/stop` stops the commission that holds one; both are described in [Agent REST API](/api/rest/agent).
+
+## Reports back to the conversation
+
+Every report is written to the ledger's outbox first and then sent to the Main Server over ZeroMQ. A failed send is retried after one second, doubling up to five minutes. Reports that an earlier process left unsent go out when the host is next used.
+
+| Outbox kind | Meaning | Sent as |
+|---|---|---|
+| `task_result` | How a commission ended | `task_result` event |
+| `question` | A commission waits for the user's answer or approval | `proactive_message` event |
+| `correction` | The second round or the turn check found that what the character said does not hold | `proactive_message` event |
+| `receipt` | Conclusion of a first round that outlasted its one-second budget | `proactive_message` event |
+
+The Main Server queues a report on the matching `LLMSessionManager` and delivers it in one of the existing modes: `proactive` wakes the character to speak, `passive` rides along with her next turn, and a `silent` result is not reported to her at all. Text sessions can deliver at once; voice sessions may defer until an injection or hot-swap boundary. The turn in which she relays a report is not sent to the turn check below.
+
+A dialogue session is replaced every few turns and keeps no task record. Each new session calls `GET /nekoclaw/brief` and is told what is still under way. Every change of a commission is also sent as a `task_update` event for the [Task HUD](/architecture/task-hud-system).
+
+## Turn check
+
+When a turn that the user started ends and the character called no tool that acts (memory recall, knowledge lookup, and `query_tasks` do not count), `main_logic/cross_server.py` sends a `turn_check_request` with the user's words and her reply. `publish_turn_check_reliably()` waits briefly for `turn_check_ack` and retries once. Turns she started herself, agent-callback turns, and image-only turns are not sent.
+
+The host first applies a gate that costs nothing: the turn is skipped when the input-time intent score is known and below 0.2, no plugin keyword occurs in the user's words, and every routable plugin declares keywords. A turn that passes costs one small-model call with one of four verdicts.
+
+| Verdict | What follows |
+|---|---|
+| Nothing to do, or she declined on purpose | Nothing |
+| She said it cannot be done, but local matching finds a way | She is told and corrects herself |
+| She agreed to do it but did not dispatch | It is dispatched for her, and she is told |
+| She said it is done, but the ledger has no such commission | She is told and corrects herself |
+
+The check has no authority of its own. A commission is filed only because the character dispatched it or agreed out loud.
 
 ## Transport map
 
-The process bridge uses synchronous ZeroMQ sockets on background receive threads so it also works with the Windows Proactor event loop.
+HTTP carries control and queries on `127.0.0.1:48915`; the embedded plugin service listens on `127.0.0.1:48916`. Events use synchronous ZeroMQ sockets on background receive threads, which also works with the Windows Proactor event loop.
 
 | Default address | Pattern | Direction | Purpose |
 |---|---|---|---|
 | `tcp://127.0.0.1:48961` | PUB / SUB | Main → Agent | Session and lifecycle events |
-| `tcp://127.0.0.1:48963` | PUSH / PULL | Main → Agent | Reliable `analyze_request` queue |
-| `tcp://127.0.0.1:48962` | PUSH / PULL | Agent → Main | ACKs, status, task updates, and results |
+| `tcp://127.0.0.1:48963` | PUSH / PULL | Main → Agent | Reliable `turn_check_request` queue |
+| `tcp://127.0.0.1:48962` | PUSH / PULL | Agent → Main | ACKs, status, task updates, and reports |
 
-The ports can be overridden with `NEKO_ZMQ_SESSION_PUB_PORT`, `NEKO_ZMQ_ANALYZE_PUSH_PORT`, and `NEKO_ZMQ_AGENT_PUSH_PORT`. Agent HTTP control defaults to `127.0.0.1:48915`; the embedded user-plugin service defaults to `127.0.0.1:48916`.
-
-There is no HTTP fallback for Agent → Main result delivery. If the ZeroMQ bridge is unavailable, the event is not delivered.
+The ports can be overridden with `NEKO_ZMQ_SESSION_PUB_PORT`, `NEKO_ZMQ_ANALYZE_PUSH_PORT`, and `NEKO_ZMQ_AGENT_PUSH_PORT`. Agent → Main events have no HTTP fallback. Reports wait in the outbox until the bridge takes them; `task_update` and status events are best effort.
 
 ## Capability state
 
@@ -51,56 +173,41 @@ The authoritative state is exposed through Main Server proxies under `/api/agent
 
 | State | Meaning |
 |---|---|
-| `analyzer_enabled` / UI `agent_enabled` | Master assessment switch |
-| `computer_use_enabled` | Vision-guided desktop interaction |
-| `browser_use_enabled` | Browser automation |
-| `user_plugin_enabled` | Installed user-plugin execution |
-| `openclaw_enabled` | OpenClaw standalone-agent channel |
+| `analyzer_enabled` / UI `agent_enabled` | Master switch |
+| `computer_use_enabled` | Keyboard-and-mouse tools for task agents |
+| `browser_use_enabled` | Browser tools for task agents |
+| `user_plugin_enabled` | Plugin entries, for direct calls and through the gateway |
 
-Managers and the Agent Server initialize these switches off. Persisted runtime intent can be restored after the first real `greeting_check`, so “off at construction” does not mean every new page load resets the user's choice.
+Managers and the Agent Server initialize these switches off. Persisted runtime intent is restored after the first real `greeting_check`, so "off at construction" does not reset the user's choice on every page load. Keyboard-and-mouse and browser control additionally require the agent model's connectivity check to pass (`app/agent_server/model_probe.py`). Keyboard-and-mouse also requires that input can be sent on this machine, and browser control that a usable browser is installed.
 
-Enabling a switch is not enough on its own: API readiness and channel capability probes can still block dispatch. OpenClaw also exposes a separate readiness state while its enable probe is pending.
+## Stopping, limits, and restarts
 
-## Routing rules
-
-For non-plugin channels, the first executable result in this order wins:
-
-```python
-_CHANNEL_PRIORITY = ["qwenpaw", "browser_use", "computer_use"]
-```
-
-`qwenpaw` maps to `OpenClawAdapter`, a compatibility-facing adapter for an external QwenPaw service. N.E.K.O does not ship that service process or guarantee its model and tool permissions. The channel becomes a candidate only after the configured health check reports ready. User plugins are assessed separately and are not an item in `_CHANNEL_PRIORITY`.
-
-QwenPaw commands `/clear`, `/new`, `/stop`, and `/daemon approve` use a dedicated magic-command classification path. Ordinary requests still go through availability checks and the shared non-plugin assessment.
-
-User-plugin routing first performs deterministic filtering (`brain/plugin_filter.py`), then asks the LLM to select a plugin entry with validated `plugin_id`, `entry_id`, and arguments. Plugin execution timeouts come from entry metadata when present, with the project default as fallback.
-
-## Concurrency, cancellation, and retention
-
-- Analyze-and-dispatch work is serialized to prevent near-simultaneous turn-end events from creating duplicate tasks.
-- Computer Use has an explicit queue and runs one desktop-control task at a time. Browser and remote-agent adapters maintain their own active-task guards.
-- Cancelling a task first marks the registry entry `cancelled` and cancels its wrapper task, then starts provider-specific teardown in the background. Late provider results must not overwrite that terminal state.
-- QwenPaw cancellation forwards a stop request to the external service and is cooperative and best effort. A local `cancelled` state does not prove that the service had not already performed an irreversible action.
-- Completed, failed, and cancelled registry entries are retained for five minutes and cleaned at most once per minute.
-- A user plugin may return `deferred: true`. The task remains `running` until `/api/agent/tasks/{task_id}/complete` is called or the one-hour deferred timeout marks it failed.
-
-## Correction feedback
-
-`POST /api/agent/tasks/{task_id}/correction` accepts feedback only after a Browser Use or Computer Use task reaches a terminal state, and only to correct one of those tools to the other. The executor writes redacted and truncated events to `correction_memory.json` in the active configuration directory, retaining at most 300 entries. This file is separate from character memory and plugin `bus.memory`.
-
-Before later unified channel assessments, lightweight keyword matching selects at most three relevant events. There is currently no equivalent correction path for QwenPaw, user plugins, or a specific plugin entry ID.
+- Stopping writes `cancelled` first, then cancels the plugin run (`POST /runs/{run_id}/cancel` on the plugin service) or closes the task agent's session. `POST /admin/control` with `end_all`, and turning the master switch off, stop every commission under way.
+- The desktop and the browser are each occupied by one commission at a time, as described under the built-in tools; within an occupation, calls are carried out one after the other. Stopping a commission cancels the call under way and frees what it occupied. A click or a navigation that was already sent is not undone.
+- A plugin may return `deferred: true`. The commission stays `working` until `/api/agent/tasks/{task_id}/complete` is called, or fails after one hour.
+- When a host starts after a restart, commissions the previous process left `queued`, `working`, or `waiting_user` are marked `failed` and reported with the character's next turn. Deferred commissions are kept until their deadline, and commissions that rest are kept as they are: what they wait for is on record.
+- The Agent process keeps ended tasks in its HUD view for five minutes.
 
 ## Implementation map
 
 | Concern | Current implementation |
 |---|---|
-| Turn-end trigger and recent context | `main_logic/cross_server.py` |
+| Task tools and their handlers | `main_logic/core/tool_calling.py`, `config/prompts/prompts_task_tools.py` |
+| Turn-end trigger for the turn check | `main_logic/cross_server.py` |
 | ZeroMQ bridge and ACK/retry | `main_logic/agent_event_bus.py` |
-| Assessment and routing | `brain/task_executor.py` |
-| Plugin candidate filtering | `brain/plugin_filter.py` |
+| Dispatch, query, turn check | `nekoclaw/host/task_brain.py` |
+| Plugin selection and the decision model | `nekoclaw/host/selection.py`, `decision.py` |
+| Ledger, outbox, reports | `nekoclaw/host/ledger.py`, `outbox.py`, `reports.py` |
+| Notes between sessions, wakes, reading another session's record | `nekoclaw/host/wakes.py`, `records.py`, `task_agents.py`, `config/prompts/prompts_nekoclaw_sessions.py` |
+| Task agents and the agent runtime | `nekoclaw/host/task_agents.py`, `nekoclaw/runtime/` |
+| dsh: the optional agent runtime and the choice of runtime | `nekoclaw/dsh/`, `nekoclaw/host/runtimes.py`, `config/prompts/prompts_nekoclaw_dsh.py` |
+| Task agent space: entries, indexes, reviews, archiving | `nekoclaw/host/space.py`, `space_keeper.py`, `config/prompts/prompts_nekoclaw_space.py` |
+| Capability list, gateway, permissions | `nekoclaw/host/capabilities.py`, `gateway.py`, `permissions.py` |
+| Keyboard-and-mouse and browser tools | `nekoclaw/builtin/`, `config/prompts/prompts_nekoclaw_builtin.py` |
+| Occupation of the desktop and the browser; which models see pictures | `nekoclaw/host/leases.py`, `model_capabilities.py` |
+| Calls to plugin entries (`/runs`) | `nekoclaw/host/plugin_runs.py` |
+| Host mounting, HUD view, switches and events of the built-in tools, agent model probe | `app/agent_server/nekoclaw_mount.py`, `nekoclaw_builtins.py`, `model_probe.py` |
 | Agent lifecycle and HTTP API | `app/agent_server/api_runtime.py`, `api_routes.py` |
-| Channel dispatch | `app/agent_server/channels/` |
-| Task registry and retention | `app/agent_server/registry.py` |
 | Result delivery to chat | `main_logic/core/proactive.py` |
 
-See [Agent REST API](/api/rest/agent) for the public control endpoints and [Task HUD System](/architecture/task-hud-system) for task visualization.
+See [Agent REST API](/api/rest/agent) for the public control endpoints and [Agent Server API](/api/agent-server) for the internal routes.

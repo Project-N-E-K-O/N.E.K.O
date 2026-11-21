@@ -79,6 +79,7 @@ from .status import (  # noqa: F401
     get_pending_notices,
     ack_pending_notices,
 )
+from . import remote_access  # noqa: F401
 from .prompt_flows import (  # noqa: F401
     get_seven_day_tutorial_state,
     put_seven_day_tutorial_state,

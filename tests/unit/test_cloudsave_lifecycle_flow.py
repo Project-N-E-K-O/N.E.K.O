@@ -2,6 +2,7 @@ import contextlib
 import json
 import shutil
 import asyncio
+from concurrent.futures import Future
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -410,12 +411,23 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
         assert main_server._preload_task is not None
 
 
+def _shutdown_tracker_stub(on_submit=lambda: None):
+    """Model synchronous submission and a separately awaitable save result."""
+    def submit(**kwargs):
+        on_submit()
+        result = Future()
+        result.set_result(None)
+        return result
+
+    return SimpleNamespace(submit_save=Mock(side_effect=submit))
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_snapshot():
     from app import main_server
 
-    fake_tracker = SimpleNamespace(save=Mock())
+    fake_tracker = _shutdown_tracker_stub()
 
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
@@ -427,7 +439,7 @@ async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_sna
          patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker):
         await main_server.on_shutdown()
 
-    fake_tracker.save.assert_called_once_with()
+    fake_tracker.submit_save.assert_called_once_with(report_timeout=1.0)
     run_cloudsave_action.assert_awaited_once_with(
         "upload_existing_snapshot",
         reason="main_server_shutdown_remote_upload",
@@ -454,9 +466,7 @@ def _patched_shutdown_steps(cleanup_order: list[str], step_factory):
     """Patch every on_shutdown cleanup with a recorder built by ``step_factory``."""
     from app import main_server
 
-    fake_tracker = SimpleNamespace(
-        save=Mock(side_effect=lambda: cleanup_order.append("token"))
-    )
+    fake_tracker = _shutdown_tracker_stub(lambda: cleanup_order.append("token"))
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
         stack.enter_context(patch.object(main_server, "_preload_task", None))
@@ -677,10 +687,13 @@ async def test_main_server_shutdown_waits_for_cloudsave_upload_without_deadline(
 
     assert deadlines["Steam Auto-Cloud shutdown staged snapshot upload"] is None
     assert deadlines["voice identity cleanup"] is None
+    # Token persistence now also runs in an independent worker. Normal exit
+    # waits for its terminal state; cancellation is bounded by the shared budget.
+    assert deadlines["token usage save"] is None
     assert all(
         deadline is not None
         for what, deadline in deadlines.items()
-        if what not in ("Steam Auto-Cloud shutdown staged snapshot upload", "voice identity cleanup")
+        if what not in ("Steam Auto-Cloud shutdown staged snapshot upload", "voice identity cleanup", "token usage save")
     )
 
 
@@ -1277,7 +1290,7 @@ def test_main_server_resets_sync_shutdown_events_after_startup_rollback():
 async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing_snapshot():
     from app import main_server
 
-    fake_tracker = SimpleNamespace(save=Mock())
+    fake_tracker = _shutdown_tracker_stub()
     run_cloudsave_action = AsyncMock(return_value={"success": True, "action": "uploaded"})
     manager_with_resampler = SimpleNamespace(audio_resampler=object())
     existing_steamworks = SimpleNamespace()
@@ -1304,7 +1317,7 @@ async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing
     assert mock_release.await_count == 2
     mock_release.assert_any_await("角色A", reason="Steam Auto-Cloud pre-shutdown release: 角色A")
     mock_release.assert_any_await("角色B", reason="Steam Auto-Cloud pre-shutdown release: 角色B")
-    fake_tracker.save.assert_called_once_with()
+    fake_tracker.submit_save.assert_called_once_with(report_timeout=1.0)
 
 
 @pytest.mark.unit
@@ -1312,7 +1325,7 @@ async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing
 async def test_main_server_shutdown_continues_when_memory_release_returns_false():
     from app import main_server
 
-    fake_tracker = SimpleNamespace(save=Mock())
+    fake_tracker = _shutdown_tracker_stub()
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
@@ -1336,7 +1349,7 @@ async def test_main_server_shutdown_continues_when_memory_release_returns_false(
         "Steam Auto-Cloud shutdown staged snapshot upload skipped because pre-shutdown release failed for: %s",
         "角色B",
     )
-    fake_tracker.save.assert_called_once_with()
+    fake_tracker.submit_save.assert_called_once_with(report_timeout=1.0)
 
 
 @pytest.mark.unit
@@ -1367,7 +1380,7 @@ async def test_shutdown_server_async_defers_memory_server_stop_until_main_shutdo
 async def test_main_server_shutdown_requests_memory_server_stop_after_snapshot_upload_when_deferred():
     from app import main_server
 
-    fake_tracker = SimpleNamespace(save=Mock())
+    fake_tracker = _shutdown_tracker_stub()
     call_order = []
     start_config = {
         "browser_mode_enabled": True,
@@ -1435,6 +1448,65 @@ async def test_main_shutdown_uses_one_cancel_budget_for_all_steps(monkeypatch):
             await asyncio.gather(
                 caller, *list(main_server._SHUTDOWN_STEP_TASKS), return_exceptions=True
             )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_shutdown_submits_real_save_after_cancel_budget_expires(tmp_path, monkeypatch):
+    """No wait budget must still enqueue the final delta without blocking exit."""
+    import atexit
+    import threading
+
+    from app import main_server
+    from utils import token_tracker
+    from utils.token_tracker import reporting
+
+    monkeypatch.setattr(main_server, "_SHUTDOWN_CANCELLED_BUDGET_SECONDS", 0.05)
+    monkeypatch.setattr(token_tracker, "get_config_manager", lambda: SimpleNamespace(config_dir=tmp_path))
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", True)
+    tracker = token_tracker.TokenTracker()
+    atexit.unregister(tracker._atexit_save)
+    tracker.record("test-model", 2, 1, 3)
+    entered, release_voice = asyncio.Event(), asyncio.Event()
+    release_worker = threading.Event()
+    blocker = reporting._SAVE_EXECUTOR.submit(release_worker.wait, 5)
+    submitted = []
+    original_submit = tracker.submit_save
+
+    def submit(**kwargs):
+        future = original_submit(**kwargs)
+        submitted.append(future)
+        return future
+
+    monkeypatch.setattr(tracker, "submit_save", submit)
+
+    def record(name):
+        async def step(*args, **kwargs):
+            if name == "voice":
+                entered.set()
+                await release_voice.wait()
+        return step
+
+    with _patched_shutdown_steps([], record), patch.object(token_tracker.TokenTracker, "get_instance", return_value=tracker):
+        caller = asyncio.create_task(main_server.on_shutdown())
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            caller.cancel("exit")
+            done, _ = await asyncio.wait({caller}, timeout=0.5)
+            assert done, "saving must not extend the shared shutdown budget"
+            with pytest.raises(asyncio.CancelledError, match="exit"):
+                caller.result()
+            assert len(submitted) == 1
+            assert not submitted[0].done(), "the save worker is still occupied"
+        finally:
+            release_voice.set()
+            release_worker.set()
+            caller.cancel()
+            await asyncio.gather(caller, *list(main_server._SHUTDOWN_STEP_TASKS), return_exceptions=True)
+            await asyncio.wrap_future(blocker)
+            if submitted:
+                await asyncio.wrap_future(submitted[0])
+    assert json.loads(tracker._storage_path.read_text())["recent_records"][0]["tt"] == 3
 
 
 @pytest.mark.unit

@@ -12,6 +12,7 @@ from pathlib import Path
 import sqlite3
 import threading
 from uuid import uuid4
+import weakref
 
 from filelock import FileLock, Timeout
 
@@ -19,6 +20,50 @@ from filelock import FileLock, Timeout
 DATABASES = ('sources.sqlite3', 'state.sqlite3', 'originals.sqlite3', 'profiles.sqlite3', 'scheduler.sqlite3')
 _registry = {}
 _registry_lock = threading.RLock()
+# Every ChatSyncWriter, including one a newer writer replaced in _registry but a runtime still holds.
+_FORK_RESET_WRITERS = weakref.WeakSet()
+# (exception type name, message) of rebuilds that failed in this fork child; see _reset_file_locks_after_fork.
+_FORK_RESET_FAILURES: list = []
+
+
+def _reset_file_locks_after_fork():
+    """Rebuild registered writers' cross-process locks in a fork child (Linux ``multiprocessing`` default).
+
+    Writers constructed before a fork stay in the child's registry. Since filelock 4 an
+    inherited FileLock raises on use, so each writer gets a fresh one (see
+    ``ChatSyncWriter._reset_after_fork``). The parent's on-disk lock state is unaffected:
+    a lock it still holds keeps excluding the child through the new descriptor. The
+    child runs only the forking thread, so the set is iterated without the guard.
+    Spawn children (and every child on Windows) re-import this module and never run
+    the hook. Forkserver workers are forked from the server process, so they run it
+    only if that process imported this module.
+    """
+    # CPython only prints an at-fork hook's exception, so one failure must not leave the rest inherited.
+    global _registry_lock
+    # Module guard first: one another parent thread held at fork would never be released
+    # here. Replacing it is safe even if the forking thread holds it: its `with` block
+    # releases the object it acquired. Every reader looks the name up at call time.
+    _registry_lock = threading.RLock()
+    _FORK_RESET_FAILURES.clear()  # A grandchild must not inherit its parent's record.
+    for writer in list(_FORK_RESET_WRITERS):
+        try:
+            writer._reset_after_fork()
+        except Exception as exc:
+            # No output here: a write to a full, unread stdout pipe would block the hook
+            # and the child's start. A lock left unrebuilt still fails loudly on use
+            # (filelock raises "inherited across fork"); the cause is kept for inspection.
+            # A summary, not the exception: its traceback would keep the object and this frame alive.
+            try:
+                message = str(exc)
+            except Exception:  # A failing __str__ must not stop the remaining rebuilds.
+                message = '<unprintable exception>'
+            _FORK_RESET_FAILURES.append((type(exc).__name__, message))
+
+
+# Only locks are rebuilt, not module state: fork children that may inherit it mid-update (plugin
+# processes) never import this module, as tests/unit/test_plugin_does_not_import_fork_unsafe_state.py checks.
+if hasattr(os, 'register_at_fork'):
+    os.register_at_fork(after_in_child=_reset_file_locks_after_fork)
 
 
 class WriterQuarantined(ValueError):
@@ -51,13 +96,38 @@ class ChatSyncWriter:
         self.path = Path(witness_path).resolve() if witness_path is not None else None
         self._local = threading.local()
         self._mutex = threading.RLock()
-        self._file_lock = FileLock(str(self.path) + '.lock', timeout=10) if self.path else None
+        self._file_lock = self._new_file_lock()
+        _FORK_RESET_WRITERS.add(self)
         self._initializing = False
         self._fresh = False
         self._fault = False
         self._trusted_heads = None
         with _registry_lock:
             _registry[self.directory] = self
+
+    def _new_file_lock(self):
+        return FileLock(str(self.path) + '.lock', timeout=10) if self.path else None
+
+    def _reset_after_fork(self):
+        """Give a fork child its own FileLock and, unless the forking thread holds it, a fresh mutex.
+
+        filelock 4 rejects instances inherited across fork. A mutex another parent
+        thread held at fork time would stay locked forever: that thread does not
+        exist in the child. A mutex the forking thread holds is kept so its release
+        works; replacing one also drops the state that thread guarded with it.
+        """
+        # In-process state first: it cannot fail, so a failed FileLock rebuild below
+        # never leaves the child trusting heads or a gate it inherited.
+        # local_visibility_trusted() vouches only for heads this process verified itself.
+        self._trusted_heads = None
+        # RLock._is_owned is private but present in CPython's C and Python RLocks (project pins 3.11).
+        if not self._mutex._is_owned():
+            self._mutex = threading.RLock()
+            # Set only under the mutex by initialize()/recover(), whose finally never runs here.
+            # Left True it would skip _check_locked(); cleared, the child rereads the witness,
+            # which recover() marks quarantined before staging.
+            self._initializing = False
+        self._file_lock = self._new_file_lock()
 
     @contextmanager
     def locked(self):

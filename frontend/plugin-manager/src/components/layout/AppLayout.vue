@@ -1,5 +1,6 @@
 <template>
   <div class="app-root">
+    <component :is="displayDialogComponent" v-if="displayDialogComponent" />
     <div class="window-titlebar">
       <div class="titlebar-left">
         <img src="@/assets/paw.png" alt="" class="titlebar-paw" draggable="false" />
@@ -89,18 +90,39 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch, type WatchStopHandle } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, shallowRef, watch, type Component, type ShallowRef, type WatchStopHandle } from 'vue'
 import MotionTransition from '@/motion/MotionTransition.vue'
 import Sidebar from './Sidebar.vue'
 import Header from './Header.vue'
+import { usePluginDisplayDialog } from '@/composables/usePluginDisplayDialog'
 import { useI18n } from 'vue-i18n'
 import { useConnectionStore } from '@/stores/connection'
 import { useWorkspaceFocus } from '@/composables/useWorkspaceFocus'
+import { retryableModule } from '@/utils/retryableModule'
+import { ElMessage } from 'element-plus'
 
 const { t } = useI18n()
 const connectionStore = useConnectionStore()
 const { focused: workspaceFocused } = useWorkspaceFocus()
 const sidebarCollapsed = ref(false)
+
+const loadPluginDisplayDialog = retryableModule(
+  () => import('@/components/plugin/PluginDisplayDialog.vue'),
+)
+const { confirmation: displayConfirmation, captureLoadFailure } = usePluginDisplayDialog()
+const displayDialogComponent: ShallowRef<Component | null> = shallowRef(null)
+// Retain a loaded dialog, but release the request if its optional chunk fails.
+watch(displayConfirmation, (confirmation) => {
+  if (!confirmation || displayDialogComponent.value) return
+  const failRequest = captureLoadFailure()
+  void loadPluginDisplayDialog().then(
+    (module) => { displayDialogComponent.value = module.default },
+    (error) => {
+      if (failRequest?.(error instanceof Error ? error.message : String(error)))
+        ElMessage.error(t('plugins.ui.loadError'))
+    },
+  )
+}, { immediate: true })
 
 // The update check, its popup and the install-progress UI stay off the
 // cold-start path (payload-budget e2e): the store is imported when the boot

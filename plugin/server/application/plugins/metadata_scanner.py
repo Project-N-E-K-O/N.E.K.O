@@ -25,7 +25,7 @@ from typing import Any, BinaryIO, Mapping
 
 import psutil
 
-from plugin._types.entry_metadata import entry_contract_fields
+from plugin._types.entry_metadata import drop_unset_opt_in_fields, entry_contract_fields
 from plugin._types.events import EventHandler, EventMeta
 from plugin._types.isolated_metadata import (
     IsolatedPluginMetadata,
@@ -333,6 +333,7 @@ def _event_meta_payload(meta: object) -> dict[str, object]:
             "dynamic": False,
         }
     payload.update(entry_contract_fields(meta))
+    drop_unset_opt_in_fields(payload)
     quick_action_config = payload.get("quick_action_config")
     if is_dataclass(quick_action_config) and not isinstance(quick_action_config, type):
         # This SDK field has a structured wire contract. Do not change how the
@@ -438,6 +439,9 @@ def _worker_main(protocol_fd: int | None = None) -> None:
         request_obj = json.loads(sys.stdin.buffer.readline().decode("utf-8"))
         if not isinstance(request_obj, dict):
             raise TypeError("metadata scan request must be an object")
+        from plugin.logging_config import setup_plugin_logging
+
+        setup_plugin_logging("PluginServer", own_root=True)
         result = _scan_in_worker(request_obj)
     except BaseException as exc:
         result = {

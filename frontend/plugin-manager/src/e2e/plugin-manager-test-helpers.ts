@@ -70,6 +70,9 @@ export async function isolateAppearanceApis(page: Page) {
   await page.route('**/market/oauth/status', (route) =>
     route.fulfill({ json: { authenticated: false, auth_state: 'disconnected' } })
   )
+  await page.route('**/market/feedback?*', route =>
+    route.fulfill({ status: 409, json: { detail: { code: 'market_auth_required' } } })
+  )
   await page.route('**/market/installed?*', (route) => route.fulfill({ json: { items: [] } }))
   await page.route('**/plugin-cli/plugins', (route) =>
     route.fulfill({ json: { plugins: [], plugin_refs: [], count: 0 } })
@@ -156,6 +159,7 @@ export function collectVueResolutionWarnings(page: Page) {
 }
 
 export async function stubCorePluginManagerApis(page: Page) {
+  await page.route('**/plugin-consent/notices*', (route) => route.fulfill({ json: [] }))
   await page.route('**/security/csrf-token', (route) =>
     route.fulfill({ json: { csrf_token: 'e2e-csrf-token' } })
   )
@@ -211,7 +215,12 @@ export function contrastFailures(page: Page, selectors: string[], minimum = 4.5)
         const color = rgba(getComputedStyle(element).backgroundColor)
         const alpha = color[3]! / 255
         if (alpha === 1) return color.slice(0, 3)
-        const parent = background(element.parentElement)
+        // Card content is painted over its sibling surface, which owns the
+        // fill during reflow. Resolve that layer before compositing children.
+        const surface = element.classList.contains('plugin-card__content')
+          ? element.parentElement!.querySelector(':scope > .plugin-card__surface')
+          : null
+        const parent = background(surface ?? element.parentElement)
         return color
           .slice(0, 3)
           .map((value, index) => value * alpha + parent[index]! * (1 - alpha))

@@ -245,11 +245,6 @@ class SessionOwnershipMixin:
 
     def _close_connection_record(self, record, *, initiating_task=None):
         record.retired = True
-        tool_owner = getattr(self, "_chat_original_tool_owner", None)
-        if tool_owner is not None and tool_owner[0] is record.session:
-            # Provenance must not keep a retired client and its provider socket
-            # alive after the manager's normal connection registry is pruned.
-            self._chat_original_tool_owner = None
         # A failed close leaves the physical state unknown and therefore keeps
         # capacity reserved. A later retirement attempt may retry the provider
         # close and release that slot only after a confirmed success.
@@ -666,7 +661,7 @@ class SessionOwnershipMixin:
                     record.handoff_error = exc
                     logger.exception("Session memory settlement failed during retirement")
             elif record.was_active and not callable(after_memory_settlement) and not record.memory_boundary_sent:
-                self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
+                self.sync_message_queue.put(self._session_end_message())
                 record.memory_boundary_sent = True
             if not by_server and record.was_active and record.session is not None and not record.departure_notified:
                 try:

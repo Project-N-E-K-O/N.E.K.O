@@ -879,6 +879,10 @@ const safeT = (_key, fallback) => fallback;
 const rememberScreenSourceLabel = () => {};
 const stopScreenSharing = async () => {};
 const resetScreenSharingControls = () => { results.controlsReset = true; };
+const isManualScreenShareEngaged = () => true;
+const isScreenShareRunningOrStarting = () => true;
+let screenShareStopNoticeSeq = 0;
+const notifyScreenShareStopped = () => { screenShareStopNoticeSeq += 1; results.shareStopNotices = (results.shareStopNotices || 0) + 1; };
 function stopScreening() {
   nativeCaptureGeneration += 1;
   activeNativeCaptureSourceId = null;
@@ -949,6 +953,8 @@ def _run_active_media_stream_reconciliation(
     sources: list[dict[str, str]],
     *,
     play_pending: bool = False,
+    restart_starts: bool = True,
+    cancelled_during_restart: bool = False,
 ) -> dict:
     screen_src = _screen_src()
     script = """
@@ -1009,6 +1015,10 @@ const scheduleScreenCaptureIdleCheck = () => {};
 const safeT = (_key, fallback) => fallback;
 const rememberScreenSourceLabel = () => {};
 const resetScreenSharingControls = () => { results.controlsReset = true; };
+const isManualScreenShareEngaged = () => true;
+const isScreenShareRunningOrStarting = () => true;
+let screenShareStopNoticeSeq = 0;
+const notifyScreenShareStopped = () => { screenShareStopNoticeSeq += 1; results.shareStopNotices = (results.shareStopNotices || 0) + 1; };
 const stopButton = () => ({ disabled: false });
 const screenButton = () => ({ classList: { contains: () => true } });
 const cancelPendingScreenSharingStart = () => false;
@@ -1036,10 +1046,21 @@ __RECONCILE__
   await Promise.resolve();
   await Promise.resolve();
   if (senderTick) await senderTick();
+  await new Promise((resolve) => setImmediate(resolve));
   results.selected = S.selectedScreenSourceId;
   console.log(JSON.stringify(results));
 })();
 """
+    if cancelled_during_restart:
+        # The user stops while the restart waits: the stop path sends its own notice.
+        script = script.replace(
+            "const startScreenSharing = async () => { results.restarted = true; };",
+            "const startScreenSharing = async () => { results.restarted = true; notifyScreenShareStopped(); };",
+        )
+    script = script.replace(
+        "const isScreenShareRunningOrStarting = () => true;",
+        "const isScreenShareRunningOrStarting = () => %s;" % ("true" if restart_starts else "false"),
+    )
     script = (
         script
         .replace("__START_STREAM__", _fn(screen_src, "startScreenVideoStreaming"))
@@ -1097,6 +1118,29 @@ def test_title_remap_stops_active_media_stream_before_it_sends_the_old_source():
     assert out["selected"] == "window:new"
     assert out["stopped"] is True
     assert out["sent"] == []
+    # A remap restarts the share on the new source: no stop notice.
+    assert out.get("shareStopNotices") is None
+
+
+@pytest.mark.unit
+def test_title_remap_whose_restart_ends_without_a_share_notifies_backend():
+    out = _run_active_media_stream_reconciliation(
+        [{"id": "window:new", "name": "Editor"}],
+        restart_starts=False,
+    )
+    assert out["restarted"] is True
+    assert out.get("shareStopNotices") == 1
+
+
+@pytest.mark.unit
+def test_title_remap_restart_cancelled_by_the_user_sends_one_notice():
+    out = _run_active_media_stream_reconciliation(
+        [{"id": "window:new", "name": "Editor"}],
+        restart_starts=False,
+        cancelled_during_restart=True,
+    )
+    assert out["restarted"] is True
+    assert out.get("shareStopNotices") == 1
 
 
 @pytest.mark.unit
@@ -1134,6 +1178,8 @@ def test_rejected_remembered_window_stops_active_media_stream(
     assert out["selected"] is None, expected_status
     assert out["stopped"] is True, expected_status
     assert out["sent"] == [], expected_status
+    # The share ends here, so the backend is told (screen_share_stopped).
+    assert out.get("shareStopNotices") == 1, expected_status
 
 
 @pytest.mark.unit
@@ -1338,8 +1384,15 @@ const S = {
   selectedScreenSourceId: __SOURCE_ID__
 };
 let proactiveVisionFrameInFlight = false;
+let proactiveVisionFrameRetryAfterInFlight = false;
 let visionEnabled = true;
 const isProactiveVisionEnabledNow = () => visionEnabled;
+// The speech gate and consent follow the same flag here; the switch rules
+// themselves are covered by tests/frontend/proactive_speech_vision_gate.test.cjs.
+const canProactiveVisionRunDuringSpeech = () => visionEnabled;
+const isVisionConsentHeldNow = () => visionEnabled;
+let proactiveVisionRevocationSeq = 0;
+let _speechVisionOffSeq = 0;
 let tutorialSuppressed = false;
 const isHomeTutorialFeatureSuppressed = () => tutorialSuppressed;
 const stopProactiveVisionDuringSpeech = () => { results.stopped += 1; };
@@ -1446,6 +1499,8 @@ def test_proactive_vision_enable_does_not_accept_backend_for_remembered_window()
 const results = { backendCalls: 0, streamCalls: 0 };
 const isHomeTutorialFeatureSuppressed = () => false;
 const releaseProactiveVisionStream = () => {};
+const isVisionConsentHeldNow = () => true;
+const holdsProactiveVisionStream = () => true;
 const window = {
   prepareRememberedWindowCapture: async () => ({
     required: true,

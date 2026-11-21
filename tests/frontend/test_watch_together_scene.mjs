@@ -341,6 +341,8 @@ cleanExit.game.dispose=()=>{cleanDisposed=true;};
 await window.nekoBeforeWindowClose();
 assert.equal(cleanDisposed,true,'successful cleanup disposes the scene before closing');
 assert.ok(cleanExit.calls.some(call=>call.action==='watch' && call.payload.event?.type==='exit'));
+assert.deepEqual(cleanExit.calls.filter(call=>call.action==='watch' && call.payload.action==='start').map(call=>call.payload.automatic),[false],
+  'a Play-button viewing session is labelled manual for usage counts');
 const slowExit=await fixture(false,false,{total_tokens:1});
 await slowExit.elements.get('play').onclick();
 let finishExit,slowDisposed=false;
@@ -616,6 +618,8 @@ continuous.elements.get('video').ended=true;continuous.emit({type:'ended'});
 await waitFor(()=>plays===2,()=>JSON.stringify({plays,routeStarts,routeEnds,status:continuous.elements.get('status').textContent,next:continuous.elements.get('next-status').textContent}));
 assert.equal(plays,2,'ended automatically loads and plays the prepared next item');
 assert.equal(routeStarts,1);assert.equal(routeEnds,0,'speech takeover stays active across videos');
+assert.deepEqual(continuous.calls.filter(call=>call.action==='watch' && call.payload.action==='start').map(call=>call.payload.automatic),[true,true],
+  'each automatic viewing session is labelled automatic for usage counts');
 await continuous.elements.get('watch-stop').onclick();
 assert.equal(routeEnds,1);assert.equal(continuous.elements.get('automatic-enabled').checked,false);
 

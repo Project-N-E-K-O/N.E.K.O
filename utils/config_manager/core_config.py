@@ -68,6 +68,7 @@ from copy import deepcopy
 from urllib.parse import urlparse, urlunparse
 
 from config import DEFAULT_CONFIG_DATA, GEOIP_FORCE_NON_MAINLAND
+from utils.dashscope_region import dashscope_http_url_from_base
 from utils.gptsovits_config import normalize_gsv_api_url
 from utils.steam_state import get_steamworks
 
@@ -1090,7 +1091,10 @@ class CoreConfigMixin:
         _assist_api_provider = core_cfg.get('assistApi')
         if not _assist_api_provider:
             _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
-        _fallback_providers = {_core_api_provider, _assist_api_provider}
+        # An assist-only provider (absent from core_api_providers) can never be coreApi, so
+        # coreApiKey always belongs to another vendor; it must not be sent to that provider.
+        _core_capable_providers = set(get_core_api_profiles())
+        _fallback_providers = {_core_api_provider, _assist_api_provider} & _core_capable_providers
         _core_key_fallback = config['CORE_API_KEY'] if config['CORE_API_KEY'] != 'free-access' else ''
 
         def _fb(provider: str) -> str:
@@ -1121,8 +1125,11 @@ class CoreConfigMixin:
         config['ASSIST_API_KEY_CLAUDE'] = core_cfg.get('assistApiKeyClaude', '') or _fb('claude')
         config['ASSIST_API_KEY_OPENROUTER'] = core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter')
         config['ASSIST_API_KEY_ORCAROUTER'] = core_cfg.get('assistApiKeyOrcarouter', '') or _fb('orcarouter')
-        # Requesty is assist-only; a realtime core key cannot authenticate its router.
+        # Requesty, Opper and Atlas Cloud are assist-only; a realtime core key cannot
+        # authenticate their gateways and must not be sent to them.
         config['ASSIST_API_KEY_REQUESTY'] = core_cfg.get('assistApiKeyRequesty', '')
+        config['ASSIST_API_KEY_OPPER'] = core_cfg.get('assistApiKeyOpper', '')
+        config['ASSIST_API_KEY_ATLASCLOUD'] = core_cfg.get('assistApiKeyAtlascloud', '')
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
@@ -1256,19 +1263,21 @@ class CoreConfigMixin:
             if use_mimo_token_plan
             else assist_api_key_fields.get(assist_api_value)
         )
-        is_requesty_assist = assist_api_value == 'requesty'
+        is_assist_only = assist_api_value not in _core_capable_providers
         derived_key = ''
         if key_field:
             derived_key = config.get(key_field, '')
-            if derived_key and not is_requesty_assist:
+            # AUDIO_API_KEY authenticates CosyVoice and names its voice bucket; an
+            # assist-only provider's text key is neither, so it must not replace it.
+            if derived_key and not is_assist_only:
                 config['AUDIO_API_KEY'] = derived_key
 
         # AUDIO_API_KEY also backs CosyVoice and saved voice buckets; preserve
         # its legacy fallback independently of the text router credential.
         if not config['AUDIO_API_KEY']:
             config['AUDIO_API_KEY'] = _core_key_fallback
-        if derived_key or is_requesty_assist:
-            # Requesty's missing dedicated key must stay empty for text/Agent.
+        if derived_key or is_assist_only:
+            # An assist-only provider's missing key must stay empty for text/Agent.
             config['OPENROUTER_API_KEY'] = derived_key
         elif not config['OPENROUTER_API_KEY']:
             config['OPENROUTER_API_KEY'] = _core_key_fallback
@@ -1458,6 +1467,20 @@ class CoreConfigMixin:
                 # without realtime support, the snapshot already falls back to follow_core. URL/model/key
                 # overrides must follow that same path, avoiding leftover autofilled values.
                 provider = config.get(f'{prefix}ModelProvider', '')
+                if prefix == 'tts' and provider == 'deepseek':
+                    # The hosted worker uses the DeepSeek key book and fixed endpoint.
+                    # Retain a saved DashScope slot for existing CosyVoice clones,
+                    # without sending another provider's saved key to DashScope.
+                    saved_url = str(core_cfg.get('ttsModelUrl') or '').strip()
+                    dashscope_http_url = dashscope_http_url_from_base(saved_url)
+                    if dashscope_http_url:
+                        # Cloud clones must not land in the local WebSocket voice bucket.
+                        config[url_key] = (
+                            dashscope_http_url if saved_url.lower().startswith(('ws://', 'wss://')) else saved_url
+                        )
+                        config[model_key] = str(core_cfg.get('ttsModelId') or '').strip()
+                        config[apikey_key] = str(core_cfg.get('ttsModelApiKey') or '').strip()
+                    continue
                 # follow_core / follow_assist URLs are readonly frontend-linked hints autofilled by
                 # static/js/api_key_settings.js: onCustomModelProviderChange, not evidence
                 # of user-selected custom deployments. Only omni/tts are affected:

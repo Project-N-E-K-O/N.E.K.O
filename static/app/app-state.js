@@ -159,6 +159,9 @@
         gameVoiceSttSessionId: '',
         gameVoiceSttRecognition: null,
         gameVoiceSttListening: false,
+        // Set only once the recogniser confirms it started (onstart);
+        // gameVoiceSttListening is already true while start() is pending.
+        gameVoiceSttCapturing: false,
         gameVoiceSttStopping: false,
         gameVoiceSttRestartTimer: null,
         gameVoiceSttUnsupportedNotified: false,
@@ -260,6 +263,7 @@
         proactiveMusicEnabled: true,
         proactiveMemeEnabled: true,
         proactiveMiniGameInviteEnabled: true,
+        proactiveTheaterInviteEnabled: true,
         mergeMessagesEnabled: false,
         proactiveChatTimer: null,
         proactiveChatBackoffLevel: 0,
@@ -609,7 +613,7 @@
     const proactiveKeys = [
         'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled', 'proactiveCommunityChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-        'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
+        'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled', 'proactiveTheaterInviteEnabled',
         'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled', 'autoMemoryRecallEnabled',
         'proactiveChatInterval', 'proactiveVisionInterval', 'avatarReactionBubbleEnabled',
         'slopFilterEnabled', 'visitEnabled', 'visitVoiceEnabled',

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import importlib
 import importlib.machinery
 import importlib.util
@@ -15,7 +14,6 @@ import socket
 import sys
 import threading
 import time
-import types
 import uuid
 import weakref
 from datetime import datetime, timezone
@@ -34,10 +32,12 @@ from plugin.core.communication import (
     PluginCommunicationResourceManager,
 )
 from plugin.core.context import PluginContext
+from plugin.sdk.shared.core.call_chain_view import call_chain_scope
 from plugin.core.entry_executor import EntryExecutor, execute_entry_command
-from plugin.core.entry_points import normalize_plugin_entry_point
+from plugin.core.entry_points import normalize_plugin_entry_point, plugin_package_matches_directory
 from plugin.core.model_gateway_access import model_gateway_access
 from plugin.core.state import state
+from plugin.core.source_imports import ensure_plugins_namespace as _ensure_plugins_namespace
 from plugin.logging_config import logger
 from plugin.sdk import PERSIST_ATTR
 
@@ -74,23 +74,21 @@ from plugin.settings import (
 from utils import process_creation
 
 
-def _sanitize_plugin_id(raw: Any, max_len: int = 64) -> str:
-    s = str(raw)
-    safe = "".join(c if (c.isalnum() or c in ("-", "_")) else "_" for c in s)
-    safe = safe.strip("_-")
-    if not safe:
-        safe = hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()[:16]
-    if len(safe) > max_len:
-        digest = hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()[:12]
-        safe = f"{safe[:max_len - 13]}_{digest}"
-    return safe
+from plugin.logging_layout import sanitize_log_identifier as _sanitize_plugin_id
 
 
 def _resolve_current_storage_layout() -> dict[str, Any]:
     from utils.config_manager import get_config_manager
-    from utils.storage_layout import resolve_storage_layout
+    from utils.storage_layout import build_storage_layout
 
-    return resolve_storage_layout(get_config_manager())
+    # The launcher has already selected the runtime layout. Reading the default
+    # policy again can redirect an isolated or recovering instance's plugins.
+    manager = get_config_manager(migrate=False)
+    return build_storage_layout(
+        selected_root=manager.app_docs_dir,
+        anchor_root=manager.anchor_root,
+        source="active_runtime",
+    )
 
 
 def _refresh_child_storage_layout_env(logger_obj: Any) -> None:
@@ -117,7 +115,7 @@ def _refresh_child_storage_layout_env(logger_obj: Any) -> None:
 # Drop inherited host HTTP sockets after fork.
 # ============================================================================
 
-# Plugins use bare multiprocessing.Process, hence fork on POSIX; children inherit the entire
+# Where plugins use fork, children inherit the entire
 # host descriptor table, including HTTP listeners and every accepted browser connection.
 # Children never read them, and TCP disconnects only when the last reference closes;
 # closing host copies therefore sends no FIN. Browsers/internal httpx-pool callers retain
@@ -166,9 +164,7 @@ def _iter_open_fds() -> Iterator[int]:
     Fork inheritance applies only where per-process fd directories are enumerable: Linux /proc/self/fd,
     macOS/BSD fdescfs /dev/fd, both process-local numeric listings. Without either,
     enumerate nothing, typically Windows spawn where children re-execute without host descriptors.
-    macOS multiprocessing also defaults to spawn, but merged packaged mode explicitly
-    forks through app/main_server/__init__.py set_start_method,
-    making /dev/fd required coverage rather than optional support.
+    Raw forks can also run this hook on macOS, where /dev/fd is available.
     """
     for directory in ("/proc/self/fd", "/dev/fd"):
         try:
@@ -242,6 +238,9 @@ if hasattr(os, "register_at_fork"):
     # POSIX only; spawn platforms re-execute children and inherit no such descriptors.
     os.register_at_fork(after_in_child=_close_inherited_host_sockets)
     _FORK_SOCKET_HOOK_REGISTERED = True
+    # A parent thread may hold stdout/stderr buffer locks at fork; see the hook.
+    from plugin._logging_runtime import reopen_inherited_std_streams as _reopen_inherited_std_streams
+    os.register_at_fork(after_in_child=_reopen_inherited_std_streams)
 
 
 # ============================================================================
@@ -261,38 +260,13 @@ def _setup_plugin_logger(plugin_id: str, project_root: Path) -> Any:
     Returns:
         PluginLoggerAdapter bound to plugin_id.
     """
-    safe_pid = _sanitize_plugin_id(plugin_id)
-    # Let plugin/logging_config.get_logger() derive the correct service namespace.
-    os.environ["NEKO_PLUGIN_SERVICE_NAME"] = f"Plugin_{safe_pid}"
-
-    # Children first add project roots to sys.path, or utils.logger_config imports fail below.
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
+    from plugin.logging_config import get_logger, setup_plugin_logging
+    from plugin.logging_layout import plugin_log_service_name
 
-    try:
-        from utils.logger_config import setup_logging as _bootstrap_setup_logging
-        _bootstrap_setup_logging(
-            service_name=f"Plugin_{safe_pid}",
-            silent=True,
-            # Collect child-plugin logs under logs/plugin/, separate from PluginServer/
-            # Main/Memory/Agent host logs at logs/ top level.
-            log_subdir="plugin",
-        )
-    except Exception:
-        # RobustLoggerConfig provides multilevel fallback; this is last resort, never hide root causes.
-        pass
-
-    from plugin.logging_config import get_logger
-    return get_logger(f"plugin.{safe_pid}").bind(plugin_id=plugin_id)
-
-
-def _setup_logging_interception(logger: Any, project_root: Path) -> None:
-    """Compatibility noop: host logging already uses stdlib, requiring no interception.
-
-    Preserve signatures for old callers; ensure project_root is on sys.path only.
-    """
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
+    setup_plugin_logging(plugin_log_service_name(plugin_id), own_root=True)
+    return get_logger(f"plugin.{_sanitize_plugin_id(plugin_id)}").bind(plugin_id=plugin_id)
 
 
 # Parent UI-context default wait budget, matching CommManager.get_ui_context.
@@ -495,29 +469,6 @@ def _is_target_module_missing(exc: ModuleNotFoundError, module_path: str) -> boo
     return bool(missing_name and (missing_name == module_path or module_path.startswith(f"{missing_name}.")))
 
 
-def _ensure_plugins_namespace(plugin_root: Path, logger: Any) -> None:
-    """Create a namespace without exposing sibling installations."""
-
-    existing = sys.modules.get("plugins")
-    if existing is None or getattr(existing, "__path__", None) is None:
-        module = types.ModuleType("plugins")
-        module.__package__ = "plugins"
-        module.__path__ = []
-        module.__spec__ = importlib.machinery.ModuleSpec("plugins", loader=None, is_package=True)
-        if module.__spec__ is not None:
-            module.__spec__.submodule_search_locations = module.__path__
-        sys.modules["plugins"] = module
-        logger.info("[Plugin Process] Created plugins namespace for: {}", plugin_root)
-        return
-
-    existing.__path__ = []
-    spec = getattr(existing, "__spec__", None)
-    if spec is None:
-        spec = importlib.machinery.ModuleSpec("plugins", loader=None, is_package=True)
-        existing.__spec__ = spec
-    spec.submodule_search_locations = existing.__path__
-    logger.debug("[Plugin Process] Cleared inherited plugins namespace search paths")
-
 def _evict_plugin_module_tree(plugin_module_path: str) -> None:
     """Remove one synthetic plugin package without disturbing its siblings."""
 
@@ -583,7 +534,7 @@ def _evict_cached_plugin_source(module_path: str, config_path: Path, logger: Any
     except OSError as exc:
         logger.debug("[Plugin Process] Failed to resolve plugin directory for cache eviction: {}", exc)
         return
-    if plugin_id != plugin_dir.name:
+    if not plugin_package_matches_directory(plugin_id, plugin_dir.name):
         return
 
     package_prefixes = (f"plugins.{plugin_id}", f"plugin.plugins.{plugin_id}")
@@ -620,7 +571,7 @@ def _import_current_plugin_from_config(module_path: str, config_path: Path, logg
         logger.debug("[Plugin Process] Failed to resolve plugin directory for import fallback: {}", exc)
         return None
 
-    if parts[1] != plugin_dir.name:
+    if not plugin_package_matches_directory(parts[1], plugin_dir.name):
         logger.debug(
             "[Plugin Process] Import fallback skipped because module '{}' does not match plugin dir '{}'",
             module_path,
@@ -714,7 +665,7 @@ def _import_plugin_module(module_path: str, config_path: Path | None, logger: An
         canonical = module_path.removeprefix("plugin.")
         parts = canonical.split(".")
         directory = config_path.resolve().parent
-        if len(parts) < 2 or parts[0] != "plugins" or parts[1] != directory.name:
+        if len(parts) < 2 or parts[0] != "plugins" or not plugin_package_matches_directory(parts[1], directory.name):
             raise ValueError("Source-only plugin module must match its source directory")
         package = ".".join(parts[:2])
         _evict_plugin_module_tree(package)
@@ -926,12 +877,6 @@ def _plugin_process_runner(
     project_root = _find_project_root(config_path)
     logger = _setup_plugin_logger(plugin_id, project_root)
     
-    # Configure logging interception.
-    try:
-        _setup_logging_interception(logger, project_root)
-    except Exception as e:
-        logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
-
     # Fork inherited the host descriptor table; hooks already dropped HTTP sockets
     # (see _close_inherited_host_sockets above). Leave one observable trace here.
     released_sockets = inherited_host_sockets_closed()
@@ -1084,6 +1029,9 @@ def _plugin_process_runner(
                 logger.debug("[Plugin Process] Could not read startup config through SDK: {}", type(e).__name__)
 
         # Configuration overrides instance defaults, preserving old checkpoint fallback order.
+        from plugin.sdk.shared.storage.state import PluginStatePersistence
+
+        valid_persist_modes = PluginStatePersistence.VALID_PERSIST_MODES
         freezable_keys = getattr(instance, "__freezable__", []) or []
         persist_mode = getattr(instance, "__persist_mode__", None)
         if persist_mode is None:
@@ -1093,7 +1041,7 @@ def _plugin_process_runner(
             state_cfg = effective_cfg.get("plugin_state", {})
             if isinstance(state_cfg, dict):
                 cfg_persist_mode = state_cfg.get("persist_mode")
-                if cfg_persist_mode in ("auto", "manual", "off"):
+                if cfg_persist_mode in valid_persist_modes:
                     persist_mode = cfg_persist_mode
                     logger.debug("[Plugin Process] persist_mode from effective config: {}", persist_mode)
             # Backward-compatible old [plugin_checkpoint] settings.
@@ -1101,7 +1049,7 @@ def _plugin_process_runner(
                 checkpoint_cfg = effective_cfg.get("plugin_checkpoint", {})
                 if isinstance(checkpoint_cfg, dict):
                     cfg_freeze_mode = checkpoint_cfg.get("freeze_mode")
-                    if cfg_freeze_mode in ("auto", "manual", "off"):
+                    if cfg_freeze_mode in valid_persist_modes:
                         persist_mode = cfg_freeze_mode
                         logger.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", persist_mode)
         except Exception as e:
@@ -1539,7 +1487,10 @@ def _plugin_process_runner(
         async def _execute_command(msg: dict):
             logger.info("[Plugin Process] {} entry={} req_id={}", msg.get("type"),
                         msg.get("event_id") or msg.get("entry_id"), msg.get("req_id"))
-            ret = await execute_entry_command(executor, msg)
+            # Host-built call-chain view for ctx.call_chain; covers function,
+            # router and dynamic entries alike since all run through the executor.
+            with call_chain_scope(plugin_id, msg.get("_call_chain")):
+                ret = await execute_entry_command(executor, msg)
             try:
                 await asyncio.to_thread(res_sender.put, ret, timeout=10.0)
             except Exception:
@@ -1653,6 +1604,9 @@ def _plugin_process_runner(
             # this instead of sending into a void (Codex).
             try:
                 ctx._downlink_ready.set()
+                from plugin.core.bus.rev import notify_receiver_ready
+
+                notify_receiver_ready()
             except Exception:
                 logger.exception("[Plugin Process] failed to mark downlink ready")
 
@@ -1933,7 +1887,12 @@ class PluginHost:
         # Only the three child->host uplinks carry tokens; downlinks carry no credentials.
         self.transport = HostTransport()
 
-        self._process_stop_event: Any = multiprocessing.Event()
+        context = multiprocessing
+        if sys.platform == "darwin" and multiprocessing.get_start_method() == "fork":
+            # The merged server selects fork. Native networking (e.g. getaddrinfo)
+            # can crash in a forked child of the multithreaded macOS host.
+            context = multiprocessing.get_context("spawn")
+        self._process_stop_event: Any = context.Event()
         self._startup_options: dict[str, object] = {"startup_failure": "warn"}
         self._model_gateway_token = ""
         self._model_gateway_starting = False
@@ -1944,7 +1903,7 @@ class PluginHost:
 
         # POSIX fork inherits all host fds; _close_inherited_host_sockets
         # drops HTTP sockets inside children, described above.
-        self.process = multiprocessing.Process(
+        self.process = context.Process(
             target=_plugin_process_runner,
             args=(
                 plugin_id,

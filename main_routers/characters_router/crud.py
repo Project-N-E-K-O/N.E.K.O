@@ -1038,7 +1038,7 @@ async def get_characters(request: Request):
                 fields_to_translate=['昵称']
             )
 
-        # Translate catgirl data concurrently for performance.
+        # Translate neko data concurrently for performance.
         if '猫娘' in characters_data and isinstance(characters_data['猫娘'], dict):
             async def translate_catgirl(name, data):
                 if isinstance(data, dict):
@@ -1092,7 +1092,7 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commi
     if new_name in characters['猫娘']:
         return JSONResponse({'success': False, 'error': '新档案名已存在'}, status_code=400)
 
-    # If renaming the active catgirl, cache its WebSocket first;
+    # If renaming the active neko, cache its WebSocket first;
     # notify only after all persistence and reload succeeds, preventing frontend switches to uncommitted state.
     is_current_catgirl = characters.get('当前猫娘') == old_name
 
@@ -1347,7 +1347,7 @@ async def _rename_catgirl_transaction(
             # Rename the authoritative character source.
             characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
             _append_profile_rename_event(characters['猫娘'][new_name], old_name, new_name)
-            # Update the current catgirl too if it is the renamed character.
+            # Update the current neko too if it is the renamed character.
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name
             if sync_commit is None:
@@ -1377,7 +1377,7 @@ async def _rename_catgirl_transaction(
                 catgirl_name=new_name,
             )
 
-            # Fast path: remove the old name and start one catgirl slot with the new name.
+            # Fast path: remove the old name and start one neko slot with the new name.
             # Equivalent to delete old + add new, without traversing the other N-1 characters.
             remove_one_catgirl = get_remove_one_catgirl()
             init_one_catgirl = get_init_one_catgirl()
@@ -1559,7 +1559,7 @@ async def _rename_catgirl_transaction(
 
 @router.get('/current_catgirl')
 async def get_current_catgirl():
-    """Get the name of the currently active catgirl."""
+    """Get the name of the currently active neko."""
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
     current_catgirl = characters.get('当前猫娘', '')
@@ -1568,7 +1568,7 @@ async def get_current_catgirl():
 
 @router.post('/current_catgirl')
 async def set_current_catgirl(request: Request):
-    """Set the currently active catgirl."""
+    """Set the currently active neko."""
     data = await request.json()
     catgirl_name = data.get('catgirl_name', '') if data else ''
 
@@ -1605,7 +1605,7 @@ async def set_current_catgirl(request: Request):
         latest_characters['当前猫娘'] = catgirl_name
         await _config_manager.asave_characters(latest_characters)
     # Fast path: switching changes only 当前猫娘; per-k prompt / voice_id / thread remain unchanged,
-    # requiring only refreshed globals. With 20 catgirls this reduces O(N) to O(1).
+    # requiring only refreshed globals. With 20 nekos this reduces O(N) to O(1).
     switch_current_catgirl_fast = get_switch_current_catgirl_fast()
     await switch_current_catgirl_fast()
 
@@ -1827,7 +1827,7 @@ async def add_catgirl(request: Request):
         if '猫娘' not in characters:
             characters['猫娘'] = {}
 
-        # Create catgirl data, saving nonempty fields only.
+        # Create neko data, saving nonempty fields only.
         catgirl_data = {}
         for k, v in created_data.items():
             if k != '档案名' and v:
@@ -1847,7 +1847,7 @@ async def add_catgirl(request: Request):
         )
         pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 
-        # Fast path: allocate resources and start a thread only for catgirl key, without affecting others.
+        # Fast path: allocate resources and start a thread only for neko key, without affecting others.
         init_one_catgirl = get_init_one_catgirl()
         await init_one_catgirl(key, is_new=True)
 
@@ -2000,7 +2000,7 @@ async def update_catgirl(name: str, request: Request):
         session_manager = get_session_manager()
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
 
-        # For the active catgirl, end only the current voice session; refresh session_manager voice_id below.
+        # For the active neko, end only the current voice session; refresh session_manager voice_id below.
         if is_current_catgirl and name in session_manager and session_manager[name].is_active:
             logger.info(f"检测到 {name} 的voice_id已变更（{old_voice_id} -> {new_voice_id}），准备结束当前语音会话...")
             notify_session_ended = getattr(session_manager[name], "send_session_ended_by_server", None)
@@ -2018,12 +2018,12 @@ async def update_catgirl(name: str, request: Request):
 
         if is_current_catgirl:
             # Fast path: refresh only the edited character's session_manager prompt/voice_id;
-            # leave the other N-1 catgirls unchanged.
+            # leave the other N-1 nekos unchanged.
             init_one_catgirl = get_init_one_catgirl()
             await init_one_catgirl(name, is_new=False)
             logger.info("配置已重新加载，新的voice_id已生效")
         else:
-            # Noncurrent catgirls were previously rescued by full initialization on the next switch. Fast-path switches
+            # Noncurrent nekos were previously rescued by full initialization on the next switch. Fast-path switches
             # no longer do that, so explicitly refresh session_manager[name] here.
             # init_one_catgirl updates only that manager's prompt/voice_id, without touching its current session.
             init_one_catgirl = get_init_one_catgirl()
@@ -2165,7 +2165,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
-    # Check whether this is the currently used catgirl.
+    # Check whether this is the currently used neko.
     current_catgirl = characters.get('当前猫娘', '')
     if name == current_catgirl:
         return JSONResponse({'success': False, 'error': '不能删除当前正在使用的猫娘！请先切换到其他猫娘后再删除。'}, status_code=400)
@@ -2597,7 +2597,7 @@ async def set_microphone(request: Request):
 
         # Save configuration
         await _config_manager.asave_characters(characters_data)
-        # Microphone ID is frontend-only (read solely by get_microphone), affecting no catgirl prompt /
+        # Microphone ID is frontend-only (read solely by get_microphone), affecting no neko prompt /
         # voice_id / session_manager, so no initialization is needed.
 
         return {"success": True}

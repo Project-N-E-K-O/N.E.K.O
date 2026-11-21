@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Identity ticket verification for catgirl visits (design §4.7, OD-01 v2).
+"""Identity ticket verification for neko visits (design §4.7, OD-01 v2).
 
 Ticket wire format
 ------------------

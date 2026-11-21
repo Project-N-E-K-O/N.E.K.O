@@ -180,7 +180,7 @@ def test_cat_mind_return_lifecycle_uses_committed_and_completed_boundaries():
 
     viewport_guard = handler.index("if (!preReturnViewportReady.ready) {")
     commit = handler.index("I.publishCatLocalActive(false")
-    show_model = handler.index("modelDisplayReady = await I.showCurrentModel()")
+    show_model = handler.index("modelDisplayReady = await I.showCurrentModel(")
     show_model_guard = handler.index("if (modelDisplayReady === false) {")
     composer_restore = handler.index(
         "postGoodbyeChatComposerHiddenState(false, 'return-complete')"
@@ -389,16 +389,16 @@ def test_cat_mind_runners_report_results_without_legacy_entries():
     assert sleep_stop_block.index("_stopNekoIdleSoundAudio(_nekoIdleSleepSoundState);") < sleep_stop_block.index(
         "_reportNekoCatMindStateActionResult("
     )
-    assert "_clearNekoIdleThoughtBubbleForTier(tier);" in sleep_stop_block
+    assert "_clearNekoIdleThoughtBubbleForTier(tier, options.poppingAudio);" in sleep_stop_block
     social_ended_block = social_block.split("audio.addEventListener('ended', () => {", 1)[1].split(
         "}, { once: true });",
         1,
     )[0]
     assert "_isNekoCatMindStateActionRunCurrent(_nekoIdleCat1AmbientSoundState, run, audio)" in social_ended_block
     assert social_ended_block.index("_isNekoCatMindStateActionRunCurrent") < social_ended_block.index(
-        "_clearNekoIdleThoughtBubbleForTier(_NEKO_IDLE_TIER_CAT1);"
+        "_clearNekoIdleThoughtBubbleForTier(_NEKO_IDLE_TIER_CAT1, audio);"
     )
-    assert social_ended_block.index("_clearNekoIdleThoughtBubbleForTier(_NEKO_IDLE_TIER_CAT1);") < social_ended_block.index(
+    assert social_ended_block.index("_clearNekoIdleThoughtBubbleForTier(_NEKO_IDLE_TIER_CAT1, audio);") < social_ended_block.index(
         "_reportNekoCatMindStateActionRunResult("
     )
 
@@ -1537,6 +1537,7 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
         const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => now }}, console }};
         vm.createContext(context);
         vm.runInContext(source, context);
+        vm.runInContext('Math.random = () => 0.99;', context);
         let providerCalls = 0;
         let actionRequests = 0;
         let actionResults = 0;
@@ -1558,6 +1559,7 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
           }},
           dryRun(actionId) {{
             providerCalls += 1;
+            if (actionId === 'cat1_inactive_sad') return {{ allowed: false, reason: 'unit-disabled' }};
             return actionId === 'cat1_play_yarn'
               ? {{ allowed: false, reason: 'near_chat_unavailable' }}
               : {{ allowed: true, reason: 'allowed' }};
@@ -1570,9 +1572,10 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
         }}));
         timers.shift()();
         const decision = win.nekoCatMind.getDebugSnapshot().lastDecision;
-        assert.equal(providerCalls, 4);
+        assert.equal(providerCalls, 6);
             assert.equal(decision.reason, 'action_request_dispatched');
         assert.ok(decision.candidates.some((item) => item.actionId === 'cat1_eat_snack' && item.reason === 'allowed'));
+        assert.ok(decision.candidates.some((item) => item.actionId === 'cat1_inactive_sad' && item.reason === 'unit-disabled'));
         assert.ok(decision.candidates.some((item) => item.actionId === 'cat1_play_yarn' && item.reason === 'near_chat_unavailable'));
         assert.ok(decision.candidates.some((item) => item.actionId === 'cat2_nap_feedback' && item.reason === 'tier_not_allowed'));
         const rejectedPlay = decision.candidates.find((item) => item.actionId === 'cat1_play_yarn');
@@ -1608,7 +1611,7 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
           }}));
           assert.equal(timers.length, 1);
           timers.shift()();
-          assert.equal(providerCalls, 4);
+          assert.equal(providerCalls, 6);
           assert.equal(actionRequests, 1);
           const gated = win.nekoCatMind.getDebugSnapshot().lastDecision;
           assert.equal(gated.outcome, 'quiet');
@@ -2517,6 +2520,9 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
               return {{ ...runtimeGates }};
             }},
             dryRun(actionId) {{
+              if (actionId === 'cat1_idle_random') {{
+                return {{ allowed: false, reason: 'idle_random_disabled_for_scoring_envelope' }};
+              }}
               const allowed = providerNearChatAvailable ||
                 (profile.soloSmallMove === true && actionId === 'cat1_small_move') ||
                 actionId === 'cat1_social_ping' || actionId === 'cat1_eat_snack';

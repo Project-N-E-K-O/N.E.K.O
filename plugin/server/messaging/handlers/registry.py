@@ -16,8 +16,16 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         handle_plugin_config_update,
     )
     from plugin.server.messaging.handlers.system_config import handle_plugin_system_config_get
-    from plugin.server.messaging.handlers.memory import handle_memory_query
+    from plugin.server.messaging.handlers.memory import (
+        handle_memory_query,
+        handle_memory_search,
+        handle_memory_persona_get,
+    )
     from plugin.server.messaging.handlers.user_context import handle_user_context_get
+    from plugin.server.messaging.handlers.conversations import (
+        handle_conversation_reply_get,
+        handle_conversation_interaction_get,
+    )
     from plugin.server.messaging.handlers.export import handle_export_push
     from plugin.server.messaging.handlers.run_update import handle_run_update
     from plugin.server.messaging.handlers.events import handle_event_get
@@ -32,7 +40,12 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         handle_bus_unsubscribe,
     )
 
-    return {
+    from plugin.server.application.plugins.capability_gate import (
+        CAPABILITY_BY_OPERATION,
+        capability_checked,
+    )
+
+    handlers: dict[str, RequestHandler] = {
         "PLUGIN_TO_PLUGIN": handle_plugin_to_plugin,
         "PLUGIN_QUERY": handle_plugin_query,
         "PLUGIN_CONFIG_GET": handle_plugin_config_get,
@@ -44,6 +57,10 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         "PLUGIN_CONFIG_REPLACE": handle_plugin_config_replace,
         "PLUGIN_SYSTEM_CONFIG_GET": handle_plugin_system_config_get,
         "MEMORY_QUERY": handle_memory_query,
+        "MEMORY_SEARCH": handle_memory_search,
+        "MEMORY_PERSONA_GET": handle_memory_persona_get,
+        "CONVERSATION_REPLY_GET": handle_conversation_reply_get,
+        "CONVERSATION_INTERACTION_GET": handle_conversation_interaction_get,
         "USER_CONTEXT_GET": handle_user_context_get,
         "EXPORT_PUSH": handle_export_push,
         "RUN_UPDATE": handle_run_update,
@@ -55,3 +72,7 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         "BUS_SUBSCRIBE": handle_bus_subscribe,
         "BUS_UNSUBSCRIBE": handle_bus_unsubscribe,
     }
+    # Every judged operation gets the same decision entry point (one table).
+    for operation, capability in CAPABILITY_BY_OPERATION.items():
+        handlers[operation] = capability_checked(capability, handlers[operation])
+    return handlers

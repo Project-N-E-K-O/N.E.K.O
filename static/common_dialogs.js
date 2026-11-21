@@ -957,6 +957,7 @@
     function createModal(config) {
         return new Promise((resolve) => {
             const modalConfig = config || {};
+            const returnFocus = document.activeElement;
             const isAutostartRetentionSkin = modalConfig.skin === 'autostart-retention';
             const isTheaterSkin = modalConfig.skin === 'theater';
             const isDecisionPrompt = modalConfig.type === 'decision';
@@ -992,7 +993,7 @@
             }
             dialog.setAttribute('role', 'dialog');
             dialog.setAttribute('aria-modal', 'true');
-            dialog.setAttribute('aria-label', modalConfig.title || 'Dialog');
+            dialog.setAttribute('aria-label', modalConfig.ariaLabel || modalConfig.title || modalConfig.message || 'Dialog');
             if (modalConfig.maxWidth) {
                 dialog.style.maxWidth = String(modalConfig.maxWidth);
             }
@@ -1165,6 +1166,10 @@
                 // 动画与 DOM 清理均为 200ms；保持末帧，避免两者调度错开时闪回可见状态。
                 overlay.style.animation = 'fadeOut 0.2s ease-out forwards';
                 setTimeout(() => {
+                    const active = document.activeElement;
+                    const shouldRestoreFocus = !active || active === document.body
+                        || (typeof dialog.contains === 'function' && dialog.contains(active))
+                        || modalFocusables().includes(active);
                     if (overlay.parentNode) {
                         overlay.parentNode.removeChild(overlay);
                     }
@@ -1176,6 +1181,14 @@
                         });
                     }
                     restoreObscuredUi();
+                    if (shouldRestoreFocus && returnFocus && typeof returnFocus.focus === 'function'
+                        && (returnFocus.isConnected === undefined || returnFocus.isConnected)) {
+                        try {
+                            returnFocus.focus({ preventScroll: true });
+                        } catch (error) {
+                            // The opener may have been removed while the modal was open.
+                        }
+                    }
                     resolve(value);
                 }, 200);
             }
@@ -1312,6 +1325,15 @@
             dialog.appendChild(footer);
             overlay.appendChild(dialog);
 
+            function modalFocusables() {
+                const controls = [];
+                if (input && !input.disabled && typeof input.focus === 'function') controls.push(input);
+                footer.querySelectorAll('.modal-btn').forEach((button) => {
+                    if (!button.disabled && typeof button.focus === 'function') controls.push(button);
+                });
+                return controls;
+            }
+
             // 点击遮罩层关闭（可选）
             if (modalConfig.closeOnClickOutside !== false) {
                 overlay.addEventListener('click', (e) => {
@@ -1323,6 +1345,25 @@
 
             // ESC 键关闭
             const escHandler = (e) => {
+                const openOverlays = document.querySelectorAll('.modal-overlay');
+                if (openOverlays.length > 0 && openOverlays[openOverlays.length - 1] !== overlay) return;
+                if (e.key === 'Tab') {
+                    const focusable = modalFocusables();
+                    const first = focusable[0];
+                    const last = focusable[focusable.length - 1];
+                    const activeIndex = focusable.indexOf(document.activeElement);
+                    if (!first) {
+                        if (typeof e.preventDefault === 'function') e.preventDefault();
+                        dialog.focus();
+                    } else if (e.shiftKey && activeIndex <= 0) {
+                        if (typeof e.preventDefault === 'function') e.preventDefault();
+                        last.focus();
+                    } else if (!e.shiftKey && (activeIndex === -1 || activeIndex === focusable.length - 1)) {
+                        if (typeof e.preventDefault === 'function') e.preventDefault();
+                        first.focus();
+                    }
+                    return;
+                }
                 if (modalConfig.closeOnEscape === false) {
                     return;
                 }
@@ -1421,6 +1462,7 @@
         const promise = createModal({
             type: 'confirm',
             title: title,
+            ariaLabel: options.ariaLabel,
             message: message,
             okText: options.okText,
             cancelText: options.cancelText,
@@ -1504,9 +1546,6 @@
  */
 (function() {
     'use strict';
-
-    // Pages can reuse dialogs while retaining their existing keyboard and zoom behavior.
-    if (document.currentScript?.dataset.dialogsOnly === 'true') return;
     
     // 禁用 Ctrl+/-、Ctrl+0 和 Ctrl/Cmd+W 键盘快捷键
     document.addEventListener('keydown', function(event) {

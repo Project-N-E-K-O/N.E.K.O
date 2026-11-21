@@ -144,10 +144,14 @@
         return install(canvas, {
             enabled,
             hitTest: event => interaction._hitTestModel(event.clientX, event.clientY),
-            begin(points) {
+            begin(points, gesture) {
                 interaction._cancelGuidedMovement?.({ invalidateInteraction: true });
                 const model = getModel();
                 pinch = null;
+                // 只有单指首次按下才可能是点按；捏合后剩下的那根手指不算
+                interaction._clickShakeTap = points.length === 1 && !gesture?.pinched
+                    ? global.NekoAvatarClickShake?.tapStart(points[0]) || null
+                    : null;
                 if (points.length === 1) {
                     // Resume from the remaining contact without another hit test: it may
                     // now lie outside the shrunken model, but still owns this gesture.

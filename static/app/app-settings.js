@@ -536,6 +536,10 @@
     // 「没见过 branch 」当首启代名——升级用户也都没见过 branch，那个口径会误伤他们的
     // 既有偏好。offline 首启错过 branch 时 marker 留着，下次在线再补
     const _FIRST_LAUNCH_PENDING_KEY = '_neko_first_launch_branch_pending';
+    // 主动搭话间隔默认值 A/B 实验组（与 utils/token_tracker/telemetry.py 的 _TELEMETRY_BRANCHES
+    // 对齐）。控制组 main 用 app-state.js 的 DEFAULT_PROACTIVE_CHAT_INTERVAL（15s）。
+    const _PROACTIVE_INTERVAL_AB_BRANCH = 'proactive_interval_40s';
+    const _PROACTIVE_INTERVAL_AB_VALUE = 40;
     const _SHARED_SETTINGS_KEYS = [
         'proactiveChatEnabled',
         'proactiveVisionEnabled',
@@ -547,6 +551,7 @@
         'proactiveMusicEnabled',
         'proactiveMemeEnabled',
         'proactiveMiniGameInviteEnabled',
+        'proactiveTheaterInviteEnabled',
         'mergeMessagesEnabled',
         'focusModeEnabled',
         'focusCognitionEnabled',
@@ -566,7 +571,8 @@
         'textGuardMaxLength',
         'renderQuality',
         'targetFrameRate',
-        'forgeDropEffectsEnabled'
+        'forgeDropEffectsEnabled',
+        'modelClickShakeEnabled'
     ];
 
     function _normalizeIndependentAsrProviderPreference(value) {
@@ -590,6 +596,7 @@
             proactiveMusicEnabled: true,
             proactiveMemeEnabled: true,
             proactiveMiniGameInviteEnabled: true,
+            proactiveTheaterInviteEnabled: true,
             mergeMessagesEnabled: false,
             focusModeEnabled: false,
             focusCognitionEnabled: true,
@@ -654,6 +661,7 @@
             proactiveMusicEnabled: S.proactiveMusicEnabled,
             proactiveMemeEnabled: S.proactiveMemeEnabled,
             proactiveMiniGameInviteEnabled: S.proactiveMiniGameInviteEnabled,
+            proactiveTheaterInviteEnabled: S.proactiveTheaterInviteEnabled,
             mergeMessagesEnabled: S.mergeMessagesEnabled,
             focusModeEnabled: S.focusModeEnabled,
             focusCognitionEnabled: S.focusCognitionEnabled,
@@ -1186,18 +1194,107 @@
         }
     }
 
+    // Another window may have turned privacy mode on before its storage event
+    // reached this window. Returns that revocation's write token, or null.
+    // Read-only. Only a revocation carrying the key's own write token counts
+    // (the explicit write, or the knownKeyWrites token that window's later
+    // unrelated saves keep carrying) and only when it is newer than what this
+    // window already holds -- the storage listener's per-key write-token
+    // comparison and its server-floor check. The listener's pending-key and
+    // server-merge revision rules are not repeated: in those races this may
+    // revoke where the listener would keep a pending value for a moment, and
+    // the revoking window's own event, arriving next, settles the same way.
+    // An incidental stale "false" another window copied along in an
+    // unrelated save is not a choice and is ignored.
+    function _unseenVisionRevocationToken() {
+        const key = 'proactiveVisionEnabled';
+        let stored = null;
+        try {
+            const raw = localStorage.getItem('project_neko_settings');
+            stored = raw ? JSON.parse(raw) : null;
+        } catch (_) {
+            return null;
+        }
+        if (!stored || stored[key] !== false) return null;
+        const meta = _readSharedWriteMeta(stored);
+        if (!meta || meta.writerId === _SHARED_WRITER_ID) return null;
+        const token = meta.changedKeys.indexOf(key) !== -1
+            ? meta
+            : meta.knownKeyWrites[key];
+        if (!_sharedWriteTokenOutranks(token, _knownSharedKeyWrites[key])) return null;
+        // Same server-floor check as the listener: a write the server has
+        // since superseded is not a pending revocation.
+        const keyToken = meta.knownKeyWrites[key];
+        if (keyToken && Number.isInteger(keyToken.confirmedRevision)
+            && Number.isInteger(_knownServerKeyRevisions[key])
+            && keyToken.confirmedRevision < _knownServerKeyRevisions[key]) return null;
+        return token;
+    }
+
+    // Live screen consent this window reports to the backend and acts on
+    // (settings save, cross-window sync, WebSocket reconnect): this window's
+    // value, overridden by an unseen revocation from another window. A failed
+    // local save does not change it: this window's own value is used. (If that
+    // save failed AND another window's newer revocation is stored, this
+    // reports "not allowed" even for a fresh local enable: the safe side.)
+    function visionConsentForBackend() {
+        if (S.proactiveVisionEnabled !== true) return S.proactiveVisionEnabled;
+        return !_unseenVisionRevocationToken();
+    }
+
+    // Saving this window's stale "allowed" copy would overwrite an unseen
+    // revocation in localStorage and the server body. Adopt it first, the way
+    // the storage listener will once the event arrives. A value this window
+    // changed since its last sync is newer intent and stays.
+    function _adoptUnseenVisionRevocation(value) {
+        const key = 'proactiveVisionEnabled';
+        if (value !== true) return value;
+        if (_settingsBaseline
+            && Object.prototype.hasOwnProperty.call(_settingsBaseline, key)
+            && _settingsBaseline[key] !== value) return value;
+        const token = _unseenVisionRevocationToken();
+        if (!token) return value;
+        _rememberSharedKeyWrites([key], token);
+        // Record it as a cross-window change, as the listener does, so a 412
+        // conflict merge keeps it instead of restoring the server's older
+        // "allowed" (see preservedKeys in syncSettingsToServer).
+        _noteCrossWindowMutations({ [key]: false }, [key]);
+        // Even when this window toggled the key before (it stays in the dirty
+        // set), the adopted value is another window's choice: roll the
+        // baseline so this save and the next do not claim it as this
+        // window's explicit write with a fresh write id.
+        if (_settingsBaseline) {
+            _settingsBaseline[key] = false;
+        }
+        return false;
+    }
+
+    // Privacy mode, Proactive Chat and its Screen Share option together
+    // decide whether the voice-call heartbeat may look at the screen. Run
+    // after every save and every cross-window sync, like the privacy check.
+    function syncSpeechVisionWithSwitches() {
+        try {
+            if (typeof window.syncProactiveVisionDuringSpeech === 'function') {
+                window.syncProactiveVisionDuringSpeech();
+            }
+        } catch (error) {
+            console.warn('[app-settings] 同步语音主动视觉失败:', error);
+        }
+    }
+
     function stopVisionAfterPrivacyEnabled() {
+        const consent = visionConsentForBackend();
         // Screenshots taken before a revocation must not ride a later request,
         // even if consent is re-enabled before that request is sent.
         if (window.appProactive && typeof window.appProactive.noteProactiveVisionConsent === 'function') {
-            window.appProactive.noteProactiveVisionConsent(S.proactiveVisionEnabled);
+            window.appProactive.noteProactiveVisionConsent(consent);
         }
         // Notify live work before the queued settings POST reaches disk. Reconnect
         // repeats this snapshot; enabling still needs persisted backend consent.
         if (window.appWebSocket && typeof window.appWebSocket.syncProactiveVisionConsent === 'function') {
-            window.appWebSocket.syncProactiveVisionConsent(S.proactiveVisionEnabled);
+            window.appWebSocket.syncProactiveVisionConsent(consent);
         }
-        if (S.proactiveVisionEnabled !== false) return;
+        if (consent !== false) return;
 
         try {
             if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
@@ -1623,9 +1720,11 @@
         const currentProactive = typeof window.proactiveChatEnabled !== 'undefined'
             ? window.proactiveChatEnabled
             : S.proactiveChatEnabled;
-        const currentVision = typeof window.proactiveVisionEnabled !== 'undefined'
-            ? window.proactiveVisionEnabled
-            : S.proactiveVisionEnabled;
+        const currentVision = _adoptUnseenVisionRevocation(
+            typeof window.proactiveVisionEnabled !== 'undefined'
+                ? window.proactiveVisionEnabled
+                : S.proactiveVisionEnabled
+        );
         const currentVisionChat = typeof window.proactiveVisionChatEnabled !== 'undefined'
             ? window.proactiveVisionChatEnabled
             : S.proactiveVisionChatEnabled;
@@ -1675,6 +1774,9 @@
         const currentMiniGameInviteChat = typeof window.proactiveMiniGameInviteEnabled !== 'undefined'
             ? window.proactiveMiniGameInviteEnabled
             : S.proactiveMiniGameInviteEnabled;
+        const currentTheaterInviteChat = typeof window.proactiveTheaterInviteEnabled !== 'undefined'
+            ? window.proactiveTheaterInviteEnabled
+            : S.proactiveTheaterInviteEnabled;
         const currentAvatarReactionBubble = typeof window.avatarReactionBubbleEnabled !== 'undefined'
             ? window.avatarReactionBubbleEnabled
             : S.avatarReactionBubbleEnabled;
@@ -1717,6 +1819,9 @@
         const currentForgeDropEffects = typeof window.forgeDropEffectsEnabled !== 'undefined'
             ? window.forgeDropEffectsEnabled
             : true;
+        const currentModelClickShake = typeof window.modelClickShakeEnabled !== 'undefined'
+            ? window.modelClickShakeEnabled
+            : true;
 
         // 读取字幕设置（统一走 subtitle-shared store，避免多处直接写 localStorage）
         const subtitleStore = window.nekoSubtitleShared;
@@ -1741,6 +1846,7 @@
             proactiveMusicEnabled: currentMusicChat,
             proactiveMemeEnabled: currentMemeChat,
             proactiveMiniGameInviteEnabled: currentMiniGameInviteChat,
+            proactiveTheaterInviteEnabled: currentTheaterInviteChat,
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
             focusCognitionEnabled: currentFocusCognition,
@@ -1763,6 +1869,7 @@
             humanoidLocalTrackingEnabled: currentHumanoidLocalTracking,
             lockedHoverFadeEnabled: currentLockedHoverFade,
             forgeDropEffectsEnabled: currentForgeDropEffects,
+            modelClickShakeEnabled: currentModelClickShake,
             subtitleEnabled: currentSubtitleEnabled,
             userLanguage: currentUserLanguage
         };
@@ -1790,6 +1897,7 @@
         S.proactiveMusicEnabled = currentMusicChat;
         S.proactiveMemeEnabled = currentMemeChat;
         S.proactiveMiniGameInviteEnabled = currentMiniGameInviteChat;
+        S.proactiveTheaterInviteEnabled = currentTheaterInviteChat;
         S.mergeMessagesEnabled = currentMerge;
         S.focusModeEnabled = currentFocus;
         S.focusCognitionEnabled = currentFocusCognition;
@@ -1807,6 +1915,7 @@
         S.renderQuality = currentRenderQuality;
         S.targetFrameRate = currentTargetFrameRate;
         stopVisionAfterPrivacyEnabled();
+        syncSpeechVisionWithSwitches();
         // 同步字幕设置到共享状态
         S.subtitleEnabled = currentSubtitleEnabled;
         S.userLanguage = currentUserLanguage;
@@ -1933,7 +2042,8 @@
                     settings.proactivePersonalChatEnabled !== undefined ||
                     settings.proactiveMusicEnabled !== undefined ||
                     settings.proactiveMemeEnabled !== undefined ||
-                    settings.proactiveMiniGameInviteEnabled !== undefined;
+                    settings.proactiveMiniGameInviteEnabled !== undefined ||
+                    settings.proactiveTheaterInviteEnabled !== undefined;
                     if (!hasNewFlags) {
                         // 根据旧的视觉偏好决定迁移策略
                         if (settings.proactiveVisionEnabled === false) {
@@ -1976,6 +2086,7 @@
                 S.proactiveMusicEnabled = settings.proactiveMusicEnabled ?? true;
                 S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? true;
                 S.proactiveMiniGameInviteEnabled = settings.proactiveMiniGameInviteEnabled ?? true;
+                S.proactiveTheaterInviteEnabled = settings.proactiveTheaterInviteEnabled ?? true;
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
@@ -2042,6 +2153,15 @@
                     window.forgeDropEffectsEnabled = true;
                 }
 
+                // 点击模型原地颤动反馈设置
+                if (typeof settings.modelClickShakeEnabled === 'boolean') {
+                    window.modelClickShakeEnabled = settings.modelClickShakeEnabled;
+                } else if (typeof settings.modelClickShakeEnabled === 'string') {
+                    window.modelClickShakeEnabled = settings.modelClickShakeEnabled === 'true';
+                } else {
+                    window.modelClickShakeEnabled = true;
+                }
+
                 // 同步到运行中的实例
                 if (typeof window.live2dManager !== 'undefined' && window.live2dManager && typeof window.live2dManager.setFullscreenTrackingEnabled === 'function') {
                     window.live2dManager.setFullscreenTrackingEnabled(window.live2dFullscreenTrackingEnabled === true);
@@ -2071,7 +2191,7 @@
                 // 首次启动：隐私模式按用户地区分流（仅中国地区默认关闭隐私 / vision 开）。
                 // 历史上这里挂过隐私默认值实验（privacy_default_off_v2，已退役）和屏幕分享
                 // 来源默认值实验（vision_chat_default_off，已合并进 main、默认回到「开」），
-                // 现都不再做首启覆写，仅保留地区分流。
+                // 现都不再做首启覆写，仅保留地区分流。搭话间隔实验的覆写在下方 branch 决议后做。
                 if (_isUserRegionChina()) {
                     S.proactiveVisionEnabled = true;
                 }
@@ -2080,6 +2200,7 @@
                 S.proactiveMusicEnabled = true;
                 S.proactiveMemeEnabled = true;
                 S.proactiveMiniGameInviteEnabled = true;
+                S.proactiveTheaterInviteEnabled = true;
                 // 首次启动默认 token 上限 300（tiktoken o200k_base）
                 S.textGuardMaxLength = 300;
                 window.textGuardMaxLength = 300;
@@ -2092,6 +2213,7 @@
                 window.humanoidLocalTrackingEnabled = false;
                 window.lockedHoverFadeEnabled = true;
                 window.forgeDropEffectsEnabled = true;
+                window.modelClickShakeEnabled = true;
 
                 // 首启专属 marker：告诉下方异步合并块「这次仍在等首次 settings/telemetry
                 // 决议」。升级用户走的是 if (saved) 分支不会写这个，于是不会被误判成首启
@@ -2115,6 +2237,7 @@
             window.humanoidLocalTrackingEnabled = false;
             window.lockedHoverFadeEnabled = true;
             window.forgeDropEffectsEnabled = true;
+            window.modelClickShakeEnabled = true;
         }
 
         // 以下逻辑不依赖本地 JSON 解析结果，始终执行
@@ -2248,9 +2371,9 @@
                 // 启动不再尝试。GET 失败则 marker 留着，下次在线启动重新决议。原本这里还会
                 // 对实验组 vision_chat_default_off 把屏幕分享来源（proactiveVisionChatEnabled）
                 // 首启默认翻成「关」，现该实验已合并进 main、默认回到控制组「开」（见
-                // app-state.js / loadSettings 的 ?? true），故不再做首启覆写；仅保留 marker
-                // 决议时序——情境弹窗 app-context-prompt.js 靠下方 neko:telemetry-branch-resolved
-                // 广播判断 settings 已就绪。
+                // app-state.js / loadSettings 的 ?? true），故不再做该覆写；marker 决议时序
+                // 仍供下方搭话间隔实验覆写使用，情境弹窗 app-context-prompt.js 也靠下方
+                // neko:telemetry-branch-resolved 广播判断 settings 已就绪。
                 const branchResolutionFinalized = !!(telemetryBranch && _firstLaunchPending);
                 if (branchResolutionFinalized) {
                     try { localStorage.removeItem(_FIRST_LAUNCH_PENDING_KEY); } catch (_) {}
@@ -2319,6 +2442,26 @@
                     }
                 }
 
+                // A/B 实验组 proactive_interval_40s（全地区）：真·首启时把主动搭话间隔默认值
+                // 从控制组 DEFAULT_PROACTIVE_CHAT_INTERVAL（15s）改成 40s。守卫：服务器没存过
+                // 间隔偏好、用户在 GET 期间（含其他窗口）没改过、本地仍是控制组默认值。放在
+                // 基线滚动之前，覆写值算默认值而不是用户改动。
+                const serverHasIntervalPref = !!serverSettings
+                    && serverSettings.proactiveChatInterval !== undefined;
+                const userTouchedInterval = _dirtySettingsKeys.has('proactiveChatInterval')
+                    || _pendingSettingsKeys.has('proactiveChatInterval')
+                    || (_crossWindowKeyMutationVersions.proactiveChatInterval || 0)
+                        > mutationVersionAtGetStart;
+                if (branchResolutionFinalized
+                        && telemetryBranch === _PROACTIVE_INTERVAL_AB_BRANCH
+                        && !serverHasIntervalPref
+                        && !userTouchedInterval
+                        && S.proactiveChatInterval === C.DEFAULT_PROACTIVE_CHAT_INTERVAL) {
+                    S.proactiveChatInterval = _PROACTIVE_INTERVAL_AB_VALUE;
+                    hasUpdate = true;
+                    console.log('[app-settings] A/B 实验组', telemetryBranch, '：主动搭话间隔默认', _PROACTIVE_INTERVAL_AB_VALUE, '秒');
+                }
+
                 // Roll the baseline to the merged state BEFORE the writeback
                 // save below: server-applied values must not be misattributed
                 // as user-dirty by the writeback's own userInitiated diff.
@@ -2337,6 +2480,7 @@
                     window.proactiveMusicEnabled = S.proactiveMusicEnabled;
                     window.proactiveMemeEnabled = S.proactiveMemeEnabled;
                     window.proactiveMiniGameInviteEnabled = S.proactiveMiniGameInviteEnabled;
+                    window.proactiveTheaterInviteEnabled = S.proactiveTheaterInviteEnabled;
                     window.mergeMessagesEnabled = S.mergeMessagesEnabled;
                     window.focusModeEnabled = S.focusModeEnabled;
                     window.focusCognitionEnabled = S.focusCognitionEnabled;
@@ -2866,6 +3010,7 @@
                 ));
             }
             stopVisionAfterPrivacyEnabled();
+            syncSpeechVisionWithSwitches();
             if (changed && typeof window.scheduleProactiveChat === 'function') {
                 window.scheduleProactiveChat();
             }
@@ -2940,7 +3085,7 @@
         }
 
         // 如果已开启主动搭话且选择了搭话方式，立即启动定时器
-        if (S.proactiveChatEnabled && (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveCommunityChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled)) {
+        if (S.proactiveChatEnabled && (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveCommunityChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled || S.proactiveTheaterInviteEnabled)) {
             // 主动搭话启动自检
             console.log('========== 主动搭话启动自检 ==========');
             console.log('[自检] proactiveChatEnabled: ' + S.proactiveChatEnabled);
@@ -2967,7 +3112,7 @@
         } else {
             console.log('[App] 主动搭话未满足启动条件，跳过调度器启动:');
             console.log('  - proactiveChatEnabled: ' + S.proactiveChatEnabled);
-            console.log('  - 任意搭话模式启用: ' + (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveCommunityChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled));
+            console.log('  - 任意搭话模式启用: ' + (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveCommunityChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled || S.proactiveTheaterInviteEnabled));
         }
 
         // 所有步骤完成后，最后才设置初始化成功的标志
@@ -2977,6 +3122,7 @@
     // ======================== 导出 ========================
 
     mod.saveSettings = saveSettings;
+    mod.visionConsentForBackend = visionConsentForBackend;
     mod.loadSettings = loadSettings;
     mod.syncSettingsToServer = syncSettingsToServer;
     mod.getConversationSettings = getConversationSettings;

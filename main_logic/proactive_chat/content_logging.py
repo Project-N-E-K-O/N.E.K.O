@@ -60,6 +60,20 @@ def _log_news_content(lanlan_name: str, news_content: dict):
             print(f"[{lanlan_name}] 成功获取小黑盒首页内容:")
             for title in titles:
                 print(f"  - {title}")
+    google_trends_data = news_content.get("google_trends") or {}
+    if google_trends_data.get("success"):
+        words = [item.get("word", "") for item in (google_trends_data.get("trending") or [])[:5]]
+        if words:
+            print(f"[{lanlan_name}] 成功获取Google Trends({google_trends_data.get('geo', '')}):")
+            for word in words:
+                print(f"  - {word}")
+    steam_data = news_content.get("steam") or {}
+    if steam_data.get("success"):
+        titles = [game.get("title", "") for game in (steam_data.get("games") or [])[:5]]
+        if titles:
+            print(f"[{lanlan_name}] 成功获取Steam商店热门:")
+            for title in titles:
+                print(f"  - {title}")
 
     tieba_data = news_content.get("tieba", {}) or {}
     if tieba_data.get("success"):

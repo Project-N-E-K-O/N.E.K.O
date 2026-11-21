@@ -60,6 +60,9 @@ from ._shared import (
     _START_LLM_CONCURRENT_ABORTED,
     _ORPHAN_SESSION_REAPER_TASKS,
     _PASSIVE_MEDIA_SESSION_UPDATE_ACK_TIMEOUT_S,
+    _HOT_SWAP_NEW_DIALOG_TIMEOUT_S,
+    _PREEMPT_SUMMARY_TIMEOUT_S,
+    _MEMORY_FLUSH_WAIT_S,
 )
 from .callback_render import (
     _build_callback_instruction,
@@ -73,6 +76,10 @@ from .callback_render import (
 # facade patch would no longer reach this module's methods.
 from main_logic import core as _core_facade
 from .session_records import start_phase
+from .multimodal_turn import (
+    multimodal_turn_after_revocation,
+    multimodal_turn_attachment_kwargs,
+)
 
 class LifecycleMixin:
     """Session lifecycle methods (see module docstring)."""
@@ -832,7 +839,7 @@ class LifecycleMixin:
     @property
     def is_starting(self) -> bool:
         """The window where the start_session coroutine is running but is_active isn't True yet.
-        Externals (e.g. the catgirl-switch path) use this to decide whether to keep
+        Externals (e.g. the neko-switch path) use this to decide whether to keep
         the current manager instance, avoiding replacing a manager mid-initialization
         and leaking an orphan session.
         """
@@ -1579,22 +1586,60 @@ class LifecycleMixin:
                 raise TimeoutError("TTS runtime was not ready before startup deadline")
             await asyncio.sleep(min(0.02, remaining))
 
-    def _new_dialog_request_kwargs(self) -> dict:
-        """Share explicit-locale provenance across initial and hot-swap bootstrap."""
-        request_kwargs = {"timeout": 5.0}
+    def _new_dialog_request_kwargs(self, *, foreground: bool = True) -> dict:
+        """Share explicit-locale provenance across initial and hot-swap bootstrap.
+
+        A foreground caller (session start, Offline VLM handoff) holds up the conversation
+        until /new_dialog returns, so it asks the memory server to preempt a summary running
+        under the settle lock (#3601). Hot-swap preparation runs beside the live session: it
+        waits for that summary instead, with a longer timeout, because a failure there only
+        postpones the swap.
+        """
+        params = {}
         if getattr(self, "_user_language_explicit", False):
-            request_kwargs["params"] = {"language": self.user_language}
+            params["language"] = self.user_language
         elif getattr(self, "_conversation_render_language", None):
-            request_kwargs["params"] = {
-                "render_language": self._conversation_render_language,
-            }
+            params["render_language"] = self._conversation_render_language
+        if foreground:
+            params["preempt_summary"] = "true"
+        request_kwargs = {
+            "timeout": 5.0 if foreground else _HOT_SWAP_NEW_DIALOG_TIMEOUT_S,
+        }
+        if params:
+            request_kwargs["params"] = params
         return request_kwargs
+
+    async def _flush_memory_writes(self, client, lanlan_name, port) -> None:
+        """Let this character's queued memory writes reach the memory server before /new_dialog.
+
+        The connector sends them one at a time, so the latest turns may wait behind a /renew,
+        /settle or /process summary taking minutes (#3601). Preempt the summaries first, then
+        wait, bounded, for the connector to send everything queued so far. Best effort: on a
+        failure or timeout /new_dialog may only miss those latest turns, which still land later.
+        """
+        try:
+            await client.post(
+                f"http://127.0.0.1:{port}/preempt_summary/{lanlan_name}",
+                timeout=_PREEMPT_SUMMARY_TIMEOUT_S,
+            )
+        except Exception as e:
+            logger.debug(f"[{lanlan_name}] 打断摘要请求失败，继续开会话: {type(e).__name__}: {e}")
+        queue = getattr(self, "sync_message_queue", None)
+        if queue is None:
+            return
+        done = asyncio.get_running_loop().create_future()
+        queue.put({'type': 'system', 'data': 'memory flush', '_memory_flush_done': done})
+        try:
+            await asyncio.wait_for(asyncio.shield(done), timeout=_MEMORY_FLUSH_WAIT_S)
+        except asyncio.TimeoutError:
+            logger.warning(f"[{lanlan_name}] 等待记忆写入发出超时（{_MEMORY_FLUSH_WAIT_S}s），开场上下文可能缺最近几轮")
 
     async def _start_session_fetch_new_dialog(self, lanlan_name, port):
         """Independent task: fetch the /new_dialog response. Kicked off before the gather,
         deliberately avoiding the GIL contention window during TTS worker startup."""
         from utils.internal_http_client import get_internal_http_client
         _mem_client = get_internal_http_client()
+        await self._flush_memory_writes(_mem_client, lanlan_name, port)
         try:
             resp = await _mem_client.get(
                 f"http://127.0.0.1:{port}/new_dialog/{lanlan_name}",
@@ -1829,7 +1874,14 @@ class LifecycleMixin:
                         or self.session is not current
                     ):
                         return False
-                    if visual_still_owned is not None and not visual_still_owned():
+                    # Screen consent revoked since the freeze: only the user's
+                    # own screenshots may go (None: none left, send as text).
+                    sendable_turn = multimodal_turn_after_revocation(
+                        turn, getattr(self, '_screen_consent_revocation_epoch', 0)
+                    )
+                    if sendable_turn is None or (
+                        visual_still_owned is not None and not visual_still_owned()
+                    ):
                         # Apply the same criterion as the slow path below: this fast path also crosses
                         # prepare_external_voice_turn / handle_interruption /
                         # several awaits in handle_new_message / ensure_tts_pipeline_alive,
@@ -1845,9 +1897,11 @@ class LifecycleMixin:
                             # unlike the slow path's exception; preserve that behavior.
                             return False
                         logger.info(
-                            '[%s] Offline submit lost frame ownership mid-flight; '
+                            '[%s] Offline submit %s mid-flight; '
                             'submitting turn %s without its frames',
                             self.lanlan_name,
+                            'saw screen consent revoked' if sendable_turn is None
+                            else 'lost frame ownership',
                             turn.turn_id,
                         )
                         delivered = await submit_text(
@@ -1858,11 +1912,14 @@ class LifecycleMixin:
                         return delivered is not False
                     delivered = await submit(
                         turn.transcript,
-                        turn.images,
+                        sendable_turn.images,
                         turn_id=turn.turn_id,
                         # Capture channel frozen alongside these frames. Without it, offline handling labels
                         # both screen and camera frames as user.
                         source=turn.source,
+                        # Which sampled frames are screenshots the user attached
+                        # (only passed when there is one).
+                        **multimodal_turn_attachment_kwargs(sendable_turn),
                         # Turn-attached context: the offline session handles this turn on the fast path,
                         # so retrieval excludes its own resident knowledge.
                         **context_kwargs,
@@ -2160,7 +2217,14 @@ class LifecycleMixin:
                     or self.session is not candidate
                 ):
                     return False
-                if visual_still_owned is not None and not visual_still_owned():
+                # Screen consent revoked since the freeze: only the user's
+                # own screenshots may go (none left: send as text).
+                sendable_turn = multimodal_turn_after_revocation(
+                    turn, getattr(self, '_screen_consent_revocation_epoch', 0)
+                )
+                if sendable_turn is None or (
+                    visual_still_owned is not None and not visual_still_owned()
+                ):
                     # Ownership was lost during the long sequence of candidate connection / promotion / TTS pipeline startup / tool synchronization
                     # awaits, the longest window in this chain;
                     # operation_is_current covers route identity only, not frame ownership.
@@ -2169,9 +2233,11 @@ class LifecycleMixin:
                     # offline, sending this turn as text only. Returning False would make callers report
                     # ASR_MULTIMODAL_TURN_FAILED and lose the user's entire utterance.
                     logger.info(
-                        '[%s] Offline VLM handoff lost frame ownership mid-flight; '
+                        '[%s] Offline VLM handoff %s mid-flight; '
                         'submitting turn %s without its frames',
                         self.lanlan_name,
+                        'saw screen consent revoked' if sendable_turn is None
+                        else 'lost frame ownership',
                         turn.turn_id,
                     )
                     submit_text = getattr(
@@ -2191,10 +2257,11 @@ class LifecycleMixin:
                     raise RuntimeError('OFFLINE_MULTIMODAL_SUBMIT_UNAVAILABLE')
                 delivered = await submit(
                     turn.transcript,
-                    turn.images,
+                    sendable_turn.images,
                     turn_id=turn.turn_id,
                     # As above: frame-bus channel labels travel with frames.
                     source=turn.source,
+                    **multimodal_turn_attachment_kwargs(sendable_turn),
                 )
                 return delivered is not False
             finally:
@@ -2736,7 +2803,7 @@ class LifecycleMixin:
             try:
                 resp = await _hs_client.get(
                     f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}",
-                    **self._new_dialog_request_kwargs(),
+                    **self._new_dialog_request_kwargs(foreground=False),
                 )
             except httpx.ConnectError:
                 raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {self.memory_server_port})")
@@ -4413,8 +4480,7 @@ class LifecycleMixin:
         """Queue a terminal memory settlement followed by one local callback."""
         completion = asyncio.get_running_loop().create_future()
         self.sync_message_queue.put({
-            'type': 'system',
-            'data': 'session end',
+            **self._session_end_message(),
             '_after_memory_settlement': callback,
             '_memory_settlement_done': completion,
         })

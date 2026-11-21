@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from main_routers import storage_location_router as storage_location_router_module
 from main_routers.shared_state import init_shared_state
 from utils.cloudsave_runtime import CLOUDSAVE_DISABLED_ENV, ROOT_MODE_MAINTENANCE_READONLY
+from utils import native_directory
 from utils import storage_location_bootstrap as storage_location_bootstrap_module
 from utils.config_manager import ConfigManager
 from utils.config_manager import storage_roots as storage_roots_module
@@ -1635,10 +1636,10 @@ def test_storage_location_pick_directory_reports_cancelled_selection(tmp_path):
 
 @pytest.mark.unit
 def test_storage_location_pick_directory_uses_windows_native_picker(tmp_path):
-    with patch.object(storage_location_router_module.sys, "platform", "win32"):
+    with patch.object(native_directory.sys, "platform", "win32"):
         with patch.object(
-            storage_location_router_module,
-            "_pick_directory_via_powershell",
+            native_directory,
+            "_pick_via_powershell",
             return_value=str((tmp_path / "picked-win").resolve()),
         ) as powershell_picker:
             selected_root = storage_location_router_module._pick_storage_location_directory(start_path=str(tmp_path))
@@ -1652,25 +1653,21 @@ def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
     selected_root = str((tmp_path / "picked-win").resolve())
 
     with patch.object(
-        storage_location_router_module,
-        "_resolve_executable_name",
+        native_directory,
+        "_find_executable",
         return_value="powershell.exe",
     ), patch.object(
-        storage_location_router_module.shutil,
-        "which",
-        return_value="powershell.exe",
-    ), patch.object(
-        storage_location_router_module.subprocess,
+        native_directory.subprocess,
         "run",
-        return_value=storage_location_router_module.subprocess.CompletedProcess(
+        return_value=native_directory.subprocess.CompletedProcess(
             args=[],
             returncode=0,
             stdout=selected_root + "\n",
             stderr="",
         ),
     ) as run_mock:
-        result = storage_location_router_module._pick_directory_via_powershell(
-            start_path=str(tmp_path)
+        result = native_directory._pick_via_powershell(
+            start_path=str(tmp_path), title="请选择存储位置目录"
         )
 
     assert result == selected_root
@@ -1685,14 +1682,65 @@ def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
 
 
 @pytest.mark.unit
+def test_windows_picker_keeps_quotes_and_commands_out_of_the_script(tmp_path):
+    title = "x’; Start-Process calc; ‘"
+    start = str(tmp_path / "Bob’s 'plugins'")
+    with patch.object(native_directory, "_find_executable", return_value="powershell.exe"), patch.object(
+        native_directory.subprocess, "run",
+        return_value=native_directory.subprocess.CompletedProcess([], 0, stdout=start, stderr=""),
+    ) as run:
+        assert native_directory._pick_via_powershell(start_path=start, title=title) == start
+    command = run.call_args.args[0]
+    assert title not in command[-1] and start not in command[-1]
+    assert run.call_args.kwargs["env"]["NEKO_PICK_TITLE"] == title
+    assert run.call_args.kwargs["env"]["NEKO_PICK_START"] == start
+    assert run.call_args.kwargs["encoding"] == "utf-8"
+    assert "[Console]::Out.WriteLine" in command[-1]
+
+
+def test_windows_picker_console_protocol_round_trips_unicode_paths(tmp_path):
+    if native_directory.sys.platform != "win32":
+        pytest.skip("Windows PowerShell protocol")
+    executable = native_directory._find_executable("powershell.exe")
+    if executable is None:
+        pytest.skip("PowerShell unavailable")
+    setting = native_directory._POWERSHELL_SCRIPT.splitlines()[0]
+    value = str(tmp_path / "中文😀")
+    result = native_directory.subprocess.run(
+        [executable, "-NoProfile", "-Command", setting + "; [Console]::Out.WriteLine($env:NEKO_PICK_START)"],
+        env={**native_directory.os.environ, "NEKO_PICK_START": value},
+        capture_output=True, text=True, encoding="utf-8", check=True,
+    )
+    assert result.stdout.strip() == value
+
+
+def test_open_directory_reports_invalid_normalization_as_directory_error(tmp_path):
+    with pytest.raises(native_directory.NativeDirectoryError) as caught:
+        native_directory.open_directory(str(tmp_path) + "\0")
+    assert caught.value.code == "DIRECTORY_UNAVAILABLE"
+
+
+def test_linux_display_failure_tries_the_next_available_picker(tmp_path):
+    results = [
+        native_directory.subprocess.CompletedProcess([], 1, "", "cannot open display"),
+        native_directory.subprocess.CompletedProcess([], 0, str(tmp_path), ""),
+    ]
+    with patch.object(native_directory, "_find_executable", side_effect=lambda *args: args[0]), patch.object(
+        native_directory, "_run_picker", side_effect=results,
+    ) as run:
+        assert native_directory._pick_via_linux_dialog(start_path="", title="Folder") == str(tmp_path)
+    assert run.call_count == 2
+
+
+@pytest.mark.unit
 def test_storage_location_pick_directory_propagates_native_unavailable_on_linux(tmp_path):
     """Raise if Linux native dialog unavailable; no tkinter fallback (project policy excludes tk)."""
-    with patch.object(storage_location_router_module.sys, "platform", "linux"):
+    with patch.object(native_directory.sys, "platform", "linux"):
         with patch.object(
-            storage_location_router_module,
-            "_pick_directory_via_linux_dialog",
-            side_effect=storage_location_router_module._DirectoryPickerUnavailable(
-                "directory_picker_unavailable",
+            native_directory,
+            "_pick_via_linux_dialog",
+            side_effect=native_directory.NativeDirectoryError(
+                "DIRECTORY_PICKER_UNAVAILABLE",
                 "native picker unavailable",
             ),
         ) as linux_picker:
@@ -4459,6 +4507,33 @@ def test_v1_migration_left_entries_are_copied_over_at_the_next_launch(tmp_path):
 
 
 @pytest.mark.unit
+def test_v1_catch_up_leaves_retained_plugin_installations_in_place(tmp_path):
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    plugin_file = ".neko-plugin-installations/plugins/example/plugin.toml"
+    source_plugin = source_root / plugin_file
+    source_plugin.parent.mkdir(parents=True)
+    source_plugin.write_text('[plugin]\nid = "example"\n', encoding="utf-8")
+    (source_root / "plugins.lock.json").write_text('{"entries":[]}', encoding="utf-8")
+    scoped_lock = "plugins.0123456789abcdef.lock.json"
+    (source_root / scoped_lock).write_text('{"entries":[]}', encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert (target_root / "pngtuber" / "set" / "idle.png").is_file()
+    assert not (target_root / plugin_file).exists()
+    assert not (target_root / "plugins.lock.json").exists()
+    response = _cleanup_request(tmp_path, source_root)
+    assert response.status_code == 409, response.json()
+    assert response.json()["error_code"] == "retained_source_cleanup_incomplete"
+    assert scoped_lock in response.json()["remaining_entries"]
+    assert source_plugin.is_file()
+    assert (source_root / "plugins.lock.json").is_file()
+    assert (source_root / scoped_lock).is_file()
+    assert not (target_root / scoped_lock).exists()
+
+
+@pytest.mark.unit
 def test_v1_catch_up_leaves_an_entry_the_new_root_already_has(tmp_path):
     source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
     (target_root / "pngtuber").mkdir()
@@ -5078,3 +5153,57 @@ def test_storage_cleanup_leaves_the_root_while_entries_remain(tmp_path, monkeypa
     assert second.status_code == 200, second.json()
     assert not source_root.exists()
     assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] == "cleaned"
+
+
+_LEDGER = "nekoclaw/ledger.db"
+_LEDGER_LOG = "nekoclaw/ledger.db-wal"
+
+
+def _v1_migration_that_left_a_ledger_behind(tmp_path):
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (source_root / "nekoclaw").mkdir()
+    (source_root / _LEDGER).write_bytes(b"the old root's ledger")
+    (source_root / _LEDGER_LOG).write_bytes(b"commits of the old root")
+    return source_root, target_root
+
+
+def _ledger_files(root) -> dict:
+    return {name: (root / name).read_bytes() for name in (_LEDGER, _LEDGER_LOG) if (root / name).exists()}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "new_root",
+    [
+        # No ledger yet: half a pair, should the catch-up be stopped between the two, would be
+        # taken for the new root's own ledger the next time, and the log never follow.
+        {},
+        # Its own ledger, closed down in order: the old root's log is not put next to it.
+        {_LEDGER: b"made at the new root"},
+        # A log without its ledger: the old root's ledger is not put next to it.
+        {_LEDGER_LOG: b"commits of nobody knows what"},
+    ],
+)
+def test_v1_catch_up_leaves_a_ledger_and_its_log_in_the_old_root(tmp_path, new_root):
+    source_root, target_root = _v1_migration_that_left_a_ledger_behind(tmp_path)
+    (source_root / "nekoclaw" / "permissions.json").write_text('{"browser": "always"}', encoding="utf-8")
+    for name, content in new_root.items():
+        (target_root / name).parent.mkdir(exist_ok=True)
+        (target_root / name).write_bytes(content)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert _ledger_files(target_root) == new_root
+    copied = load_storage_migration(reloaded_manager).get("copied_entries") or {}
+    assert not {_LEDGER, _LEDGER_LOG} & set(copied)
+    # What stands on its own is caught up as before.
+    assert (target_root / "nekoclaw" / "permissions.json").read_text(encoding="utf-8") == '{"browser": "always"}'
+    assert (target_root / "pngtuber" / "set" / "idle.png").is_file()
+    # The pair is still whole in the old root, and cleanup names it instead of taking it away.
+    pair = {_LEDGER: b"the old root's ledger", _LEDGER_LOG: b"commits of the old root"}
+    assert _ledger_files(source_root) == pair
+    response = _cleanup_request(tmp_path, source_root)
+    assert response.status_code == 409, response.json()
+    assert {_LEDGER, _LEDGER_LOG} <= set(response.json()["remaining_entries"])
+    assert _ledger_files(source_root) == pair

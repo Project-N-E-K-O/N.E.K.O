@@ -6,6 +6,7 @@ import uuid
 from .engine import Engine, SpeechCueTooLarge
 from . import media
 from .library import application_library
+from .telemetry import count
 
 jobs = {}
 tasks = set()
@@ -137,6 +138,8 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
                 print(f"Watch preparation persistence failed: {type(exc).__name__}")
             finally:
                 job["persistence_complete"] = True
+                count("watch_together_prepared", source="discovery" if automatic else "manual",
+                      outcome=str(job.get("status") or "unknown")[:24])
 
     task = asyncio.create_task(run())
     tasks.add(task)

@@ -225,8 +225,13 @@ async def _commit_proactive_delivery(
     master_name: str,
     log: logging.Logger | None = None,
     round_id: str | None = None,
+    vision_consent_epoch: int | None = None,
 ) -> DeliveryCommit:
-    """Build, feed, and atomically finish one proactive delivery."""
+    """Build, feed, and atomically finish one proactive delivery.
+
+    ``vision_consent_epoch`` is the revocation epoch the round started under;
+    the screenshot is staged for the next user turn only while it still holds.
+    """
     active_logger = log or logger
     # The TTS/commit critical sections recheck round ownership themselves.
     delivery_round = {"expected_round_id": round_id} if round_id is not None else {}
@@ -338,6 +343,7 @@ async def _commit_proactive_delivery(
             action_note=action_note,
             source_tag=delivered_tag,
             vision_screenshot_b64=staged_screenshot,
+            vision_consent_epoch=vision_consent_epoch,
             **delivery_round,
         )
     except Exception as exc:
@@ -401,6 +407,66 @@ async def _commit_proactive_delivery(
     )
 
 
+class CommitmentOffer:
+    """The promise a Phase 2 prompt carries, recorded as offered once the model answered.
+
+    Recorded whatever the answer rather than on delivery only, so a round
+    that ends in a pass still counts as an offer and the promise is not picked
+    again next round. ``mark_model_replied`` (the Phase 2 ``on_model_reply``
+    hook) only sets a flag: it runs inside the stream, where nothing may be
+    awaited. The record itself goes out after generation
+    (``record_if_offered``); a round retired before the model was made, or a
+    stream that failed before any reply, records nothing, and whatever did
+    not land is left to the delivery record (``unrecorded_ids``).
+    """
+
+    def __init__(
+        self,
+        lanlan_name: str,
+        commitment_ids: list[Any],
+        *,
+        memory_server_port: int = MEMORY_SERVER_PORT,
+    ) -> None:
+        self._lanlan_name = lanlan_name
+        self._ids = list(commitment_ids)
+        self._memory_server_port = memory_server_port
+        self._model_replied = False
+        self._landed = False
+
+    def mark_model_replied(self) -> None:
+        self._model_replied = True
+
+    async def record_if_offered(self) -> None:
+        if self._ids and self._model_replied and not self._landed:
+            self._landed = await _record_commitment_offer(
+                self._lanlan_name, self._ids, memory_server_port=self._memory_server_port,
+            )
+
+    @property
+    def unrecorded_ids(self) -> list[Any]:
+        return [] if self._landed else list(self._ids)
+
+
+async def _record_commitment_offer(
+    lanlan_name: str,
+    commitment_ids: list[Any],
+    *,
+    memory_server_port: int = MEMORY_SERVER_PORT,
+) -> bool:
+    """POST the offer of these promises to /record_surfaced; True once the store wrote it."""
+    try:
+        response = await _get_internal_http_client().post(
+            f"http://127.0.0.1:{memory_server_port}/record_surfaced/{lanlan_name}",
+            json={"reflection_ids": [], "commitment_ids": list(commitment_ids)},
+            timeout=2.0,
+        )
+        body = response.json() if response.status_code == 200 else {}
+    except Exception as exc:
+        logger.debug("[%s] 承诺提供记录失败，投递时再记: %s", lanlan_name, exc)
+        return False
+    return isinstance(body, dict) and body.get("commitments_recorded") is True
+
+
 async def _record_committed_delivery(
     *,
     mgr: Any,
@@ -411,6 +477,7 @@ async def _record_committed_delivery(
     active_channels: list[str],
     has_unfinished_thread: bool,
     surfaced_reflection_ids: list[Any],
+    surfaced_commitment_ids: list[Any] | None = None,
     selected_web_link: dict[str, Any] | None,
     selected_web_topic_key: str | None,
     web_parsed: dict[str, Any] | None,
@@ -467,14 +534,19 @@ async def _record_committed_delivery(
     try:
         memory_base = f"http://127.0.0.1:{memory_server_port}"
         memory_client = _get_internal_http_client()
-        if surfaced_reflection_ids:
+        commitment_ids = list(surfaced_commitment_ids or [])
+        if surfaced_reflection_ids or commitment_ids:
             await memory_client.post(
                 f"{memory_base}/record_surfaced/{lanlan_name}",
-                json={"reflection_ids": surfaced_reflection_ids},
+                json={
+                    "reflection_ids": list(surfaced_reflection_ids),
+                    "commitment_ids": commitment_ids,
+                },
                 timeout=5.0,
             )
             print(
-                f"[{lanlan_name}] 记录 surfaced 反思: {len(surfaced_reflection_ids)} 条"
+                f"[{lanlan_name}] 记录 surfaced 反思: {len(surfaced_reflection_ids)} 条，"
+                f"承诺: {len(commitment_ids)} 条"
             )
     except Exception as exc:
         active_logger.debug(

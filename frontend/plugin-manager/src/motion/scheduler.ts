@@ -20,6 +20,7 @@ type Run = {
   leaving: Set<Element>
   running: number
   superseded: boolean
+  restoreGroups: (() => void)[]
 }
 
 const motionAttribute = 'data-motion-running'
@@ -54,7 +55,7 @@ export function cancelLeave(element: Element) {
 export async function transitionLayout(scope: HTMLElement, mutate: () => void | Promise<void>) {
   const laidOut = [...hooks].flatMap(hook => hook() ?? [])
   const first = motionSuppressed() ? undefined : snapshot(scope)
-  const run: Run = { scope, started: [], leaving: new Set(), running: 0, superseded: false }
+  const run: Run = { scope, started: [], leaving: new Set(), running: 0, superseded: false, restoreGroups: [] }
   supersede(run)
   // Lay the end state out with the scope's transition styles on (a drawer
   // panel slides outside its rail), so it is measured where it animates.
@@ -67,7 +68,19 @@ export async function transitionLayout(scope: HTMLElement, mutate: () => void | 
   }
   if (run !== latest) return
   const plan = first ? planTransition(scope, first, snapshot(scope)) : []
+  // Keep each contained group at its final flex footprint while its buttons
+  // resize, so intermediate widths do not change sibling positions. Width
+  // animation still needs layout; this does not make it compositor-only.
+  // Measure before grid hooks launch effects, then freeze after all target
+  // measurements so these writes never interleave with geometry reads.
+  const groups = plan.length ? [...scope.querySelectorAll<HTMLElement>('[data-motion-group]')].map(element => ({
+    element, width: element.getBoundingClientRect().width, previous: element.style.width,
+  })) : []
   for (const after of laidOut) after()
+  for (const { element, width, previous } of groups) {
+    element.style.width = `${width}px`
+    run.restoreGroups.push(() => { element.style.width = previous })
+  }
   launch(run, plan)
   releaseUnanimated(run)
 }
@@ -100,6 +113,10 @@ function launch(run: Run, plans: Plan[]) {
 function settle(run: Run, plan: Plan) {
   if (plan.leave && !run.superseded) release(plan.element)
   run.running--
+  if (!run.running) {
+    for (const restore of run.restoreGroups) restore()
+    run.restoreGroups = []
+  }
   if (!run.running && latest === run) run.scope.removeAttribute(motionAttribute)
 }
 

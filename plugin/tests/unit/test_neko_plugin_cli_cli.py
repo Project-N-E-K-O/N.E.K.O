@@ -2,17 +2,27 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
+import shutil
 import subprocess
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
-from plugin.neko_plugin_cli.commands import init_cmd
+from plugin.neko_plugin_cli.commands import init_cmd, release_cmd
+from plugin.neko_plugin_cli.commands._resolve import parse_github_repository_remote
 from plugin.neko_plugin_cli.commands.validate_cmd import validate_plugin_dir
+from plugin.neko_plugin_cli.core.toml_utils import load_toml
 from plugin.neko_plugin_cli.paths import CliDefaults
-from plugin.neko_plugin_cli.templates.generator import PluginSpec, generate_plugin
+from plugin.neko_plugin_cli.templates import agent_kit
+from plugin.neko_plugin_cli.templates.generator import (
+    PluginSpec,
+    generate_plugin,
+    render_release_workflow,
+)
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -53,6 +63,15 @@ def _make_plugin_dir(tmp_path: Path, plugin_id: str = "cli_demo") -> Path:
         encoding="utf-8",
     )
     return plugin_dir
+
+
+def _commit_all(repo: Path) -> None:
+    """Commit the scaffold: check --release rejects files CI would not check out."""
+    for args in (
+        ["add", "-A"],
+        ["-c", "user.name=CLI Test", "-c", "user.email=cli@example.com", "commit", "-qm", "scaffold"],
+    ):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
 
 
 def _tamper_package(package_path: Path, target_name: str) -> None:
@@ -405,14 +424,16 @@ def test_validate_does_not_descend_into_skipped_dirs(tmp_path: Path, monkeypatch
     (plugin_dir / "pkg").mkdir()
     (plugin_dir / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
     visited = []
-    real_walk = validate_cmd.os.walk
+    import os
+
+    real_walk = os.walk
 
     def walk(top, *args, **kwargs):
         for entry in real_walk(top, *args, **kwargs):
             visited.append(Path(entry[0]).relative_to(plugin_dir))
             yield entry
 
-    monkeypatch.setattr(validate_cmd.os, "walk", walk)
+    monkeypatch.setattr(os, "walk", walk)
     files = validate_cmd._plugin_python_files(plugin_dir)
 
     assert plugin_dir / "pkg" / "mod.py" in files
@@ -421,6 +442,47 @@ def test_validate_does_not_descend_into_skipped_dirs(tmp_path: Path, monkeypatch
         path.parts and path.parts[0] in {".vendor.backup-0a1b2c3d", "vendor", ".venv"}
         for path in visited
     )
+
+
+def test_symlink_validation_prunes_the_excluded_root_directories(tmp_path, monkeypatch):
+    import os
+    from plugin.neko_plugin_cli.commands import validate_cmd
+
+    for name in ("vendor", ".git"):
+        (tmp_path / name / "deep").mkdir(parents=True)
+    original = os.scandir
+
+    def scan(path):
+        assert Path(path) not in {tmp_path / "vendor", tmp_path / ".git"}
+        return original(path)
+
+    monkeypatch.setattr(os, "scandir", scan)
+    issues = []
+    validate_cmd._check_symlink_tree(tmp_path, issues)
+    assert issues == []
+
+
+def test_validate_plugin_dir_knows_the_shared_table(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    manifest = plugin_dir / "plugin.toml"
+    plain = manifest.read_text(encoding="utf-8")
+
+    def issues_with(shared: str) -> list[str]:
+        manifest.write_text(plain.replace("[plugin.sdk]", shared + "\n[plugin.sdk]"), encoding="utf-8")
+        return [f"{level}: {message}" for level, message in validate_plugin_dir(plugin_dir) if "shared" in message]
+
+    # As the documents say to write it: nothing to say about it.
+    assert issues_with('[plugin.shared]\nreads = ["weather", "calendar"]\n') == []
+    assert issues_with("[plugin.shared]\n") == []
+    # One id without the brackets is what the plugin is run with, too.
+    assert issues_with('[plugin.shared]\nreads = "weather"\n') == []
+    assert issues_with('[plugin.shared]\nreads = ""\n') == ["error: [plugin.shared].reads[0] must be a non-empty string"]
+    assert issues_with("[plugin.shared]\nreads = 5\n") == ["error: [plugin.shared].reads must be a list of strings"]
+    assert issues_with('[plugin.shared]\nreads = ["weather", ""]\n') == [
+        "error: [plugin.shared].reads[1] must be a non-empty string"
+    ]
+    (unknown,) = issues_with('[plugin.shared]\nreads = ["weather"]\nwrites = ["weather"]\n')
+    assert unknown.startswith("warning:") and "[plugin.shared]" in unknown and "writes" in unknown
 
 
 def test_validate_plugin_dir_accepts_install_declaration_and_i18n_directory(
@@ -755,6 +817,345 @@ def test_validate_plugin_dir_accepts_previous_plugin_ids(tmp_path: Path) -> None
     issues = validate_plugin_dir(plugin_dir, strict=False)
 
     assert not any("previous_ids is not a recognized" in message for _level, message in issues)
+
+
+def test_validate_plugin_dir_accepts_declared_plugin_entries(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    _append_raw_install_declaration(
+        plugin_dir,
+        """
+        [[plugin.entries]]
+        id = "self_check"
+        name = "Self Check"
+        description = "Return plugin version and readiness"
+        """,
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert not any("[plugin].entries is not a recognized" in message for _level, message in issues)
+    assert not any(
+        "[plugin].entries" in message and "is not a recognized" in message
+        for _level, message in issues
+    )
+
+
+def test_validate_plugin_dir_accepts_entry_contract_and_display_fields(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    _append_raw_install_declaration(
+        plugin_dir,
+        """
+        [[plugin.entries]]
+        id = "self_check"
+        name = "Self Check"
+        description = "Return plugin version and readiness"
+        input_schema = { query = "string" }
+        timeout = 30
+        auto_start = true
+        """,
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert not any(
+        "[plugin].entries" in message and "is not a recognized" in message
+        for _level, message in issues
+    )
+
+
+def test_validate_plugin_dir_accepts_empty_and_warns_keyed_entries(tmp_path: Path) -> None:
+    empty = _make_plugin_dir(tmp_path / "empty")
+    manifest_path = empty / "plugin.toml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            "[plugin]\n",
+            "[plugin]\nentries = []\n",
+        ),
+        encoding="utf-8",
+    )
+
+    empty_issues = validate_plugin_dir(empty)
+
+    assert not any("[plugin].entries is not a recognized" in message for _level, message in empty_issues)
+    assert not any(level == "error" and "entries" in message for level, message in empty_issues)
+
+    keyed = _make_plugin_dir(tmp_path / "keyed")
+    _append_raw_install_declaration(
+        keyed,
+        """
+        [plugin.entries.self_check]
+        name = "Self Check"
+        description = "Return plugin version and readiness"
+        """,
+    )
+
+    keyed_issues = validate_plugin_dir(keyed)
+
+    assert not any("[plugin].entries is not a recognized" in message for _level, message in keyed_issues)
+    assert not any("self_check is not a recognized" in message for _level, message in keyed_issues)
+    assert not any(
+        "[plugin].entries" in message and "is not a recognized" in message
+        for _level, message in keyed_issues
+    )
+    assert not any(level == "error" and "entries" in message for level, message in keyed_issues)
+    keyed_warnings = [
+        message for level, message in keyed_issues
+        if level == "warning" and message.startswith("[plugin].entries as a keyed table is not applied")
+    ]
+    assert len(keyed_warnings) == 1
+    assert "[[plugin.entries]]" in keyed_warnings[0]
+    assert "运行时不会生效" in keyed_warnings[0]
+    assert "実行時に反映されず" in keyed_warnings[0]
+    assert not any(
+        "keyed table" in message for _level, message in empty_issues
+    )
+
+
+def test_validate_plugin_dir_rejects_scalar_entries(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    manifest_path = plugin_dir / "plugin.toml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            "[plugin]\n",
+            '[plugin]\nentries = "self_check"\n',
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert any(
+        level == "error" and message.startswith("[plugin].entries must be a table or array of tables / ")
+        and "必须是表或表数组" in message and "テーブルの配列" in message
+        for level, message in issues
+    )
+    assert not any("[plugin].entries is not a recognized" in message for _level, message in issues)
+
+
+def test_validate_plugin_dir_warns_unknown_entry_field(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    _append_raw_install_declaration(
+        plugin_dir,
+        """
+        [[plugin.entries]]
+        id = "self_check"
+        not_a_field = true
+        """,
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert ("warning", "[plugin].entries[0].not_a_field is not a recognized plugin.toml field") in issues
+    assert not any("[plugin].entries is not a recognized" in message for _level, message in issues)
+
+
+def test_validate_plugin_dir_accepts_string_entry_items(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    manifest_path = plugin_dir / "plugin.toml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            "[plugin]\n",
+            '[plugin]\nentries = ["self_check", "  "]\n',
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert not any(level == "error" and "[plugin].entries" in message for level, message in issues)
+    assert not any("[plugin].entries[0]" in message for _level, message in issues)
+    assert any(
+        level == "warning" and message.startswith("[plugin].entries[1] is a blank entry id / ")
+        for level, message in issues
+    )
+
+
+def test_validate_plugin_dir_rejects_non_table_non_string_entry_item(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    manifest_path = plugin_dir / "plugin.toml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            "[plugin]\n",
+            '[plugin]\nentries = [3, ["self_check"]]\n',
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    for index in (0, 1):
+        assert any(
+            level == "error"
+            and message.startswith(f"[plugin].entries[{index}] must be a table or entry id string / ")
+            and "必须是表或入口 id 字符串" in message
+            and "テーブルまたはエントリ id 文字列である必要があります" in message
+            for level, message in issues
+        )
+
+
+def test_validate_plugin_dir_warns_when_entry_id_is_missing(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    _append_raw_install_declaration(
+        plugin_dir,
+        """
+        [[plugin.entries]]
+        name = "Missing id"
+        description = "Skipped by the registry"
+
+        [[plugin.entries]]
+        id = "self_check"
+        name = "Self Check"
+        description = "Still validated"
+        """,
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert any(
+        level == "warning" and message.startswith("[plugin].entries[0].id is missing or blank / ")
+        and "缺失或为空" in message and "未指定または空です" in message
+        for level, message in issues
+    )
+    assert not any(level == "error" and "[plugin].entries" in message for level, message in issues)
+    assert not any("[plugin].entries is not a recognized" in message for _level, message in issues)
+    assert not any(
+        "[plugin].entries[1]" in message and "is not a recognized" in message
+        for _level, message in issues
+    )
+
+
+@pytest.mark.parametrize("keyed", [False, True])
+@pytest.mark.parametrize("oversized", [False, True])
+@pytest.mark.parametrize("dimension", ["entries", "fields", "field_name", "entry_key"])
+def test_entry_validation_bounds(dimension: str, oversized: bool, keyed: bool) -> None:
+    from plugin.neko_plugin_cli.commands import validate_cmd
+
+    count = 1
+    entry_id = "self_check"
+    item = {"id": entry_id}
+    if dimension == "entries":
+        count = validate_cmd._PLUGIN_ENTRIES_MAX + int(oversized)
+    elif dimension == "fields":
+        item.update({f"unknown_{index}": True for index in range(
+            validate_cmd._PLUGIN_ENTRY_FIELDS_MAX - 1 + int(oversized)
+        )})
+    elif dimension == "field_name":
+        item["x" * (validate_cmd._PLUGIN_ENTRY_KEY_LENGTH_MAX + int(oversized))] = True
+    elif dimension == "entry_key":
+        entry_id = "x" * (validate_cmd._PLUGIN_ENTRY_KEY_LENGTH_MAX + int(oversized))
+        item["id"] = entry_id
+
+    entries = {entry_id: item} if keyed else [item] * count
+    if keyed and dimension == "entries":
+        entries = {str(index): item for index in range(count)}
+    issues: list[tuple[str, str]] = []
+
+    validate_cmd._check_entries(entries, issues)
+
+    # List IDs are values, not diagnostic labels, and need no length bound.
+    if oversized and (dimension != "entry_key" or keyed):
+        assert len(issues) == 1
+        level, message = issues[0]
+        assert level == "error"
+        assert len(message.split(" / ")) == 3
+        assert len(message) < 400
+    else:
+        assert not any(level == "error" for level, _message in issues)
+
+
+def test_entry_validation_does_not_stringify_nested_id() -> None:
+    from plugin.neko_plugin_cli.commands.validate_cmd import _check_entries
+
+    nested: object = "id"
+    for _ in range(2000):
+        nested = [nested]
+    issues: list[tuple[str, str]] = []
+
+    _check_entries([{"id": nested}], issues)
+
+    assert issues == []
+
+
+@pytest.mark.parametrize("entry_id", [None, "", "   ", False, 0, [], {}])
+def test_entry_validation_warns_for_falsey_ids(entry_id: object) -> None:
+    from plugin.neko_plugin_cli.commands.validate_cmd import _check_entries
+
+    issues: list[tuple[str, str]] = []
+    _check_entries([{"id": entry_id}], issues)
+
+    assert len(issues) == 1
+    level, message = issues[0]
+    assert level == "warning"
+    assert "is missing or blank" in message
+    assert "缺失或为空" in message
+    assert "未指定または空です" in message
+
+
+def _entry_field_issues(item: dict[str, object], keyed: bool) -> list[tuple[str, str]]:
+    from plugin.neko_plugin_cli.commands.validate_cmd import _check_entries
+
+    issues: list[tuple[str, str]] = []
+    if keyed:
+        _check_entries({"run": item}, issues)
+        prefix = "[plugin].entries.run."
+    else:
+        _check_entries([{"id": "run", **item}], issues)
+        prefix = "[plugin].entries[0]."
+    return [(level, message) for level, message in issues if message.startswith(prefix)]
+
+
+@pytest.mark.parametrize("keyed", [False, True])
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, None),
+        (False, None),
+        ("false", "error"),
+        ("no", "error"),
+        ("yes", "error"),
+        ("", "error"),
+        (1, "error"),
+        ("maybe", "error"),
+    ],
+)
+@pytest.mark.parametrize("field", ["auto_start", "enabled", "dynamic", "model_validate", "quick_action"])
+def test_entry_validation_checks_bool_fields(field: str, value: object, expected: str | None, keyed: bool) -> None:
+    issues = _entry_field_issues({field: value}, keyed)
+
+    if expected is None:
+        assert issues == []
+    else:
+        assert [level for level, _message in issues] == [expected]
+        assert f".{field}" in issues[0][1]
+        if isinstance(value, str):
+            assert "reads any non-empty string as true" in issues[0][1]
+
+
+@pytest.mark.parametrize("keyed", [False, True])
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (30, []),
+        (2.5, []),
+        (0, []),
+        ("30", ["warning"]),
+        (-5, ["warning"]),
+        ("-5", ["warning", "warning"]),
+        ("thirty", ["error"]),
+        (True, ["error"]),
+        ([30], ["error"]),
+        (float("nan"), ["error"]),
+        (float("inf"), ["error"]),
+        ("inf", ["error"]),
+        (10**400, ["error"]),
+        (str(10**400), ["error"]),
+    ],
+)
+def test_entry_validation_checks_timeout(value: object, expected: list[str], keyed: bool) -> None:
+    issues = _entry_field_issues({"timeout": value}, keyed)
+
+    assert [level for level, _message in issues] == expected
+    assert all(".timeout" in message for _level, message in issues)
 
 
 def test_validate_plugin_dir_accepts_i18n_ui_surface_title(tmp_path: Path) -> None:
@@ -1336,6 +1737,7 @@ def test_init_adapter_can_build_market_release_package(
         )
         == 0
     )
+    _commit_all(plugin_dir)
     monkeypatch.setenv(
         "GITHUB_REPOSITORY",
         "alice/n.e.k.o_plugin_adapter_demo",
@@ -1415,6 +1817,334 @@ def test_setup_repo_generates_support_templates_for_explicit_plugin_path(
     assert '"nekoPlugin.repoRoot":' in settings
     assert '"cwd": "${config:nekoPlugin.repoRoot}"' in tasks
     assert "${workspaceFolder}" in tasks
+
+
+def test_setup_repo_adds_agent_kit_and_preserves_existing_files_unless_overwrite(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "setup_agents")
+    setup_args = [
+        "setup-repo",
+        str(plugin_dir),
+        "--no-readme",
+        "--no-tests",
+        "--no-gitignore",
+        "--no-vscode",
+    ]
+
+    assert neko_plugin_cli.main(setup_args) == 0
+    agents_md = plugin_dir / "AGENTS.md"
+    skill_dir = plugin_dir / agent_kit.SKILL_TARGET_DIR
+    skill_entry = skill_dir / "SKILL.md"
+    reference = skill_dir / "references" / "runtime-model.md"
+    snapshot = agent_kit.skill_files()
+    # Same renderer as init, so the explicit-path commands are included.
+    assert "neko-plugin lint ." in agents_md.read_text(encoding="utf-8")
+    assert "neko-plugin precheck ." in agents_md.read_text(encoding="utf-8")
+    assert (plugin_dir / "CLAUDE.md").read_text(encoding="utf-8") == agent_kit.render_claude_md()
+    assert all(
+        (plugin_dir / relative).read_text(encoding="utf-8") == content
+        for relative, content in snapshot.items()
+    )
+
+    agents_md.write_text("# custom guide\n", encoding="utf-8")
+    skill_entry.write_text("# custom skill\n", encoding="utf-8")
+    reference.unlink()
+    assert neko_plugin_cli.main(setup_args) == 0
+    assert agents_md.read_text(encoding="utf-8") == "# custom guide\n"
+    assert skill_entry.read_text(encoding="utf-8") == "# custom skill\n"
+    assert reference.read_text(encoding="utf-8") == snapshot[
+        agent_kit.SKILL_TARGET_DIR / "references" / "runtime-model.md"
+    ]
+
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+    assert "neko-plugin lint ." in agents_md.read_text(encoding="utf-8")
+    assert skill_entry.read_text(encoding="utf-8") == snapshot[
+        agent_kit.SKILL_TARGET_DIR / "SKILL.md"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("stamp", "warned"),
+    [
+        (None, False),  # no snapshot at all: nothing to refresh
+        ("", True),  # snapshot without a stamp (generated before stamping)
+        ("0.0.1", True),
+        ("current", False),
+        ("99.0.0", False),
+    ],
+)
+def test_check_warns_about_a_stale_agent_kit_without_changing_the_exit_code(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    stamp: str | None,
+    warned: bool,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "kit_demo")
+    if stamp is not None:
+        skill_entry = plugin_dir / agent_kit.SKILL_TARGET_DIR / "SKILL.md"
+        skill_entry.parent.mkdir(parents=True)
+        version = agent_kit.CLI_VERSION if stamp == "current" else stamp
+        header = f'---\nname: neko-plugin\nmetadata:\n  neko-plugin-cli-version: "{version}"\n---\n' if version else ""
+        skill_entry.write_text(f"{header}# skill\n", encoding="utf-8")
+
+    exit_code = neko_plugin_cli.main(["check", str(plugin_dir)])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert ("agent kit snapshot is older than this neko-plugin CLI" in out) is warned
+    # Some Windows temp paths (e.g. a user name with "!") get the placeholder.
+    target = release_cmd._shell_quote(str(plugin_dir)) or release_cmd._PLUGIN_DIR_PLACEHOLDER
+    refresh = f"setup-repo {target} --overwrite --no-readme --no-tests --no-gitignore --no-vscode"
+    assert (refresh in out) is warned
+
+
+def test_refresh_hint_never_prints_a_windows_path_cmd_would_expand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+
+    assert release_cmd._shell_quote(r"C:\work\demo dir") == r'"C:\work\demo dir"'
+    assert release_cmd._shell_quote(r"C:\work\%K%\demo") is None
+    # PowerShell expands these inside double quotes.
+    assert release_cmd._shell_quote(r"C:\work\$tmp\demo") is None
+    assert release_cmd._shell_quote("C:\\work\\a`b\\demo") is None
+    # cmd with delayed expansion expands !NAME! inside double quotes.
+    assert release_cmd._shell_quote(r"C:\work\plugin!KIT!") is None
+    fix = release_cmd._suggest_fix(
+        "agent kit snapshot is older than this neko-plugin CLI: ...",
+        plugin_id="demo",
+        plugin_dir=PureWindowsPath(r"C:\work\%K%\demo"),
+    )
+    assert 'setup-repo "<plugin directory>" --overwrite' in fix
+    assert "%K%" not in fix
+
+
+def test_setup_repo_points_kept_agent_kit_files_at_their_official_sources(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "kept_kit")
+    setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
+
+    assert neko_plugin_cli.main(setup_args) == 0
+    assert "[SKIPPED]" not in capsys.readouterr().out
+
+    (plugin_dir / "AGENTS.md").write_text("# my guide\n", encoding="utf-8")
+    reference = plugin_dir / agent_kit.SKILL_TARGET_DIR / "references" / "runtime-model.md"
+    reference.unlink()
+    assert neko_plugin_cli.main(setup_args) == 0
+    out = capsys.readouterr().out
+    prefix = agent_kit.SOURCE_URL_PREFIX
+    assert (
+        f"[SKIPPED] AGENTS.md -> {prefix}plugin/neko_plugin_cli/templates/agent_guides/AGENTS.md.tmpl" in out
+    )
+    assert (
+        f"[SKIPPED] .agents/skills/neko-plugin/SKILL.md -> {prefix}.agent/skills/neko-plugin/SKILL.md" in out
+    )
+    # The missing reference was written, so it is not reported as kept.
+    assert "references/runtime-model.md ->" not in out
+    assert out.count("[SKIPPED]") == len(agent_kit.skill_files()) + 1  # + CLAUDE.md
+    assert "--overwrite" in out
+    assert (plugin_dir / "AGENTS.md").read_text(encoding="utf-8") == "# my guide\n"
+
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+    assert "[SKIPPED]" not in capsys.readouterr().out
+
+
+def test_agent_kit_source_urls_name_files_in_this_repository() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    targets = [Path("AGENTS.md"), Path("CLAUDE.md"), *agent_kit.skill_files()]
+
+    for target in targets:
+        url = agent_kit.source_url(target)
+        assert url is not None and url.startswith(agent_kit.SOURCE_URL_PREFIX), target
+        assert (repo_root / url.removeprefix(agent_kit.SOURCE_URL_PREFIX)).is_file(), url
+    assert agent_kit.source_url(Path("README.md")) is None
+
+
+def test_setup_repo_overwrite_leaves_symlinked_guides_alone(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "linked_kit")
+    setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
+    assert neko_plugin_cli.main(setup_args) == 0
+    claude_md = plugin_dir / "CLAUDE.md"
+    claude_md.unlink()
+    try:
+        claude_md.symlink_to("AGENTS.md")
+    except OSError:
+        pytest.skip("symlinks are not available here")
+    agents_md = (plugin_dir / "AGENTS.md").read_text(encoding="utf-8")
+
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+
+    assert "CLAUDE.md ->" not in capsys.readouterr().out
+    assert claude_md.is_symlink()
+    assert (plugin_dir / "AGENTS.md").read_text(encoding="utf-8") == agents_md
+
+
+def test_setup_repo_overwrite_never_writes_through_a_linked_skill_folder(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "shared_kit")
+    shared = tmp_path / "shared-skills"
+    (shared / "neko-plugin").mkdir(parents=True)
+    (shared / "neko-plugin" / "SKILL.md").write_text("# shared skill\n", encoding="utf-8")
+    (plugin_dir / ".agents").mkdir()
+    try:
+        (plugin_dir / ".agents" / "skills").symlink_to(shared, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available here")
+    setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
+
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+
+    assert (shared / "neko-plugin" / "SKILL.md").read_text(encoding="utf-8") == "# shared skill\n"
+    assert sorted(path.name for path in (shared / "neko-plugin").iterdir()) == ["SKILL.md"]
+    assert (plugin_dir / "AGENTS.md").is_file()
+    assert ".agents/skills" not in capsys.readouterr().out
+
+
+def test_check_leaves_a_linked_skill_snapshot_to_its_owner(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "linked_snapshot")
+    shared = tmp_path / "shared-skills"
+    (shared / "neko-plugin").mkdir(parents=True)
+    (shared / "neko-plugin" / "SKILL.md").write_text("# unstamped shared skill\n", encoding="utf-8")
+    (plugin_dir / ".agents").mkdir()
+    try:
+        (plugin_dir / ".agents" / "skills").symlink_to(shared, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available here")
+
+    # check already rejects the link itself; a refresh hint on top could never
+    # clear, because setup-repo --overwrite skips linked targets.
+    neko_plugin_cli.main(["check", str(plugin_dir)])
+    captured = capsys.readouterr()
+    assert "must not contain symbolic links" in captured.err
+    assert "agent kit snapshot" not in captured.out
+
+
+def test_agent_kit_guards_treat_a_windows_junction_as_a_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "junction_kit")
+    # A junction is a real directory to is_symlink() on Python 3.11; only
+    # readlink reveals it, so fake readlink for this one directory.
+    junction = plugin_dir / ".agents" / "skills"
+    (junction / "neko-plugin").mkdir(parents=True)
+    shared_skill = junction / "neko-plugin" / "SKILL.md"
+    shared_skill.write_text("# unstamped shared skill\n", encoding="utf-8")
+    real_readlink = os.readlink
+
+    def readlink(path, *args, **kwargs):
+        if Path(path) == junction:
+            return str(tmp_path / "shared-skills")
+        return real_readlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "readlink", readlink)
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
+
+    setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+    assert shared_skill.read_text(encoding="utf-8") == "# unstamped shared skill\n"
+    assert sorted(path.name for path in (junction / "neko-plugin").iterdir()) == ["SKILL.md"]
+    assert (plugin_dir / "AGENTS.md").is_file()
+
+
+def test_check_ignores_an_agent_kit_snapshot_it_cannot_read(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "unreadable_kit")
+    skill_entry = plugin_dir / agent_kit.SKILL_TARGET_DIR / "SKILL.md"
+    skill_entry.parent.mkdir(parents=True)
+    skill_entry.write_bytes(b"\xff\xfe not utf-8 \x80")
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
+
+
+def test_check_ignores_an_agent_kit_it_cannot_inspect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "locked_kit")
+    real_is_file = Path.is_file
+
+    def denied(path: Path) -> bool:
+        if path.name == "SKILL.md":
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", denied)
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("parent", ["repo", "my $HOME (copy)"])
+def test_suggested_refresh_only_rewrites_the_agent_kit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    parent: str,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / parent, "refresh_kit")
+    assert neko_plugin_cli.main(["setup-repo", str(plugin_dir)]) == 0
+    skill_entry = plugin_dir / agent_kit.SKILL_TARGET_DIR / "SKILL.md"
+    skill_entry.write_text("# old snapshot\n", encoding="utf-8")
+    readme = plugin_dir / "README.md"
+    readme.write_text("# my readme\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    fix = next(line for line in capsys.readouterr().out.splitlines() if "setup-repo" in line and "--overwrite" in line)
+    # Parse the command the way the user's shell would; the path may hold
+    # spaces, "$" and parentheses.
+    refresh = fix.split("fix: neko-plugin ", 1)[1].split(" --no-vscode", 1)[0] + " --no-vscode"
+    if os.name == "nt":
+        arguments = [arg.strip('"') for arg in shlex.split(refresh, posix=False)]
+        if any(char in str(plugin_dir) for char in release_cmd._WINDOWS_EXPANDING_CHARS):
+            # No Windows quoting keeps such a path literal in both cmd and
+            # PowerShell, so the hint names a placeholder for the user to fill.
+            assert arguments[1] == "<plugin directory>"
+            arguments[1] = str(plugin_dir)
+    else:
+        arguments = shlex.split(refresh)
+        # A real shell must not expand anything in the quoted path.
+        target = refresh.removeprefix("setup-repo ").split(" --overwrite", 1)[0]
+        echoed = subprocess.run(["sh", "-c", f"printf %s {target}"], capture_output=True, text=True, check=True)
+        assert echoed.stdout == str(plugin_dir)
+    assert arguments[1] == str(plugin_dir)
+    assert neko_plugin_cli.main(arguments) == 0
+
+    assert readme.read_text(encoding="utf-8") == "# my readme\n"
+    assert agent_kit.snapshot_cli_version(skill_entry.read_text(encoding="utf-8")) == agent_kit.CLI_VERSION
+    capsys.readouterr()
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
+
+
+def test_check_does_not_flag_a_freshly_generated_agent_kit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "fresh_kit")
+    assert neko_plugin_cli.main(["setup-repo", str(plugin_dir)]) == 0
+    capsys.readouterr()
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
 
 
 def test_setup_repo_upgrade_github_actions_adds_only_managed_action_files(
@@ -1568,6 +2298,45 @@ def test_setup_repo_upgrade_github_actions_replaces_recognized_legacy_templates(
         )
     captured = capsys.readouterr()
     assert captured.out.count("[UPGRADE]") == 3
+
+
+def test_setup_repo_upgrade_github_actions_adds_attestation_permissions(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "legacy_demo")
+    release_workflow = plugin_dir / ".github" / "workflows" / "release.yml"
+    release_workflow.parent.mkdir(parents=True)
+    # Managed caller emitted before the reusable workflow signed provenance.
+    release_workflow.write_text(
+        "# Generated by neko-plugin\n"
+        "# managed-template: plugin-market-actions-v1\n"
+        "name: Release N.E.K.O Plugin\n\n"
+        "on:\n  push:\n    tags:\n      - \"v*\"\n  workflow_dispatch:\n\n"
+        "permissions:\n  contents: write\n\n"
+        "jobs:\n  release:\n"
+        "    uses: Project-N-E-K-O/N.E.K.O/.github/workflows/"
+        "plugin-market-release.yml@main\n"
+        "    with:\n      plugin-id: legacy_demo\n"
+        "      neko-repository: Project-N-E-K-O/N.E.K.O\n"
+        "      neko-ref: main\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        neko_plugin_cli.main(
+            ["setup-repo", str(plugin_dir), "--upgrade-github-actions"]
+        )
+        == 0
+    )
+
+    assert "[UPGRADE] .github/workflows/release.yml" in capsys.readouterr().out
+    assert release_workflow.read_text(encoding="utf-8") == render_release_workflow(
+        PluginSpec(plugin_id="legacy_demo")
+    )
+    assert "  id-token: write\n  attestations: write\n" in release_workflow.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_setup_repo_upgrade_github_actions_replaces_real_inline_legacy_workflows(
@@ -1775,6 +2544,7 @@ def test_market_release_check_enforces_repo_and_tag_conventions(
         )
         == 0
     )
+    _commit_all(tmp_path / "n.e.k.o_plugin_market_demo")
 
     monkeypatch.setenv("GITHUB_REPOSITORY", "alice/n.e.k.o_plugin_market_demo")
     monkeypatch.setenv("GITHUB_REF_NAME", "v0.1.0")
@@ -1852,12 +2622,12 @@ def test_market_release_check_rejects_legacy_non_market_plugin_id(
     assert "Market plugin ID must match ^[a-z][a-z0-9_]*$" in error
 
 
-def test_setup_repo_git_skips_when_inside_existing_repo(
+def test_setup_repo_git_skips_when_plugin_has_its_own_repo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugin_dir = _make_plugin_dir(tmp_path / "repo")
-    (tmp_path / "repo" / ".git").mkdir()
+    (plugin_dir / ".git").mkdir()
     calls: list[list[str]] = []
 
     def fake_run_git(command: list[str], *, cwd: Path) -> None:
@@ -1870,37 +2640,62 @@ def test_setup_repo_git_skips_when_inside_existing_repo(
     assert calls == []
 
 
-def test_git_remote_requires_new_repository(tmp_path: Path) -> None:
+def test_setup_repo_git_initializes_plugin_inside_a_parent_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A parent checkout (such as N.E.K.O itself) is not the plugin's repository.
     plugin_dir = _make_plugin_dir(tmp_path / "repo")
     (tmp_path / "repo" / ".git").mkdir()
+    calls: list[tuple[list[str], Path]] = []
 
-    with pytest.raises(RuntimeError, match="--remote"):
+    def fake_run_git(command: list[str], *, cwd: Path) -> None:
+        calls.append((command, cwd))
+
+    monkeypatch.setattr(init_cmd, "_run_git", fake_run_git)
+
+    assert init_cmd._initialize_git_repo(plugin_dir) is True
+
+    assert calls == [
+        (["init"], plugin_dir),
+        (["symbolic-ref", "HEAD", "refs/heads/main"], plugin_dir),
+    ]
+
+
+def test_git_remote_requires_new_repository(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo")
+    (plugin_dir / ".git").mkdir()
+
+    with pytest.raises(RuntimeError, match="--remote") as exc_info:
         init_cmd._initialize_git_repo(plugin_dir, remote="https://example.invalid/demo.git")
+
+    assert "remote add origin https://example.invalid/demo.git" in str(exc_info.value)
 
 
 def test_git_preflight_remote_fails_before_writing_files(tmp_path: Path) -> None:
-    target_dir = tmp_path / "repo" / "demo_plugin"
-    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    plugin_dir = _make_plugin_dir(tmp_path / "repo")
+    (plugin_dir / ".git").mkdir()
+    before = sorted(path.name for path in plugin_dir.iterdir())
 
     with pytest.raises(RuntimeError, match="--remote"):
         init_cmd._preflight_git_request(
-            target_dir,
+            plugin_dir,
             initialize_git=True,
             remote="https://example.invalid/demo.git",
         )
 
-    assert not target_dir.exists()
+    assert sorted(path.name for path in plugin_dir.iterdir()) == before
 
 
-def test_git_preflight_skips_git_binary_check_inside_existing_repo(
+def test_git_preflight_skips_git_binary_check_when_plugin_has_its_own_repo(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target_dir = tmp_path / "repo" / "demo_plugin"
-    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    plugin_dir = _make_plugin_dir(tmp_path / "repo")
+    (plugin_dir / ".git").mkdir()
     monkeypatch.setattr(init_cmd.shutil, "which", lambda _: None)
 
-    init_cmd._preflight_git_request(target_dir, initialize_git=True)
+    init_cmd._preflight_git_request(plugin_dir, initialize_git=True)
 
 
 def test_validate_walk_raises_on_an_unreadable_subtree(tmp_path: Path, monkeypatch) -> None:
@@ -1921,3 +2716,418 @@ def test_validate_walk_raises_on_an_unreadable_subtree(tmp_path: Path, monkeypat
     monkeypatch.setattr(os, "scandir", scandir)
     with pytest.raises(OSError):
         validate_cmd._plugin_python_files(plugin_dir)
+
+
+
+def _init_committed(tmp_path: Path, plugin_id: str = "gate_demo") -> Path:
+    plugin_dir = tmp_path / f"n.e.k.o_plugin_{plugin_id}"
+    assert neko_plugin_cli.main(["init", plugin_id, "--output", str(plugin_dir)]) == 0
+    _commit_all(plugin_dir)
+    return plugin_dir
+
+
+def _release_check(plugin_dir: Path, target: Path, *extra: str) -> int:
+    return neko_plugin_cli.main(
+        ["check", str(plugin_dir), "--release", "--skip-tests", "--target-dir", str(target), *extra]
+    )
+
+
+def test_release_check_rejects_files_ci_would_not_check_out(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _init_committed(tmp_path)
+    assert _release_check(plugin_dir, tmp_path / "target-clean") == 0
+    capsys.readouterr()
+
+    subprocess.run(["git", "rm", "-q", "--cached", "README.md"], cwd=plugin_dir, check=True)
+
+    assert _release_check(plugin_dir, tmp_path / "target") == 1
+    err = capsys.readouterr().err
+    assert "[ERROR] git working tree has uncommitted or untracked files: README.md" in err
+    assert "CI checks the pushed commit" in err
+
+    # Plain check stays a diagnosis: the same state is only a warning.
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "[WARNING] git working tree has uncommitted or untracked files: README.md" in capsys.readouterr().out
+
+
+def test_release_check_rejects_a_scaffold_without_any_commit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = tmp_path / "n.e.k.o_plugin_fresh_demo"
+    assert neko_plugin_cli.main(["init", "fresh_demo", "--output", str(plugin_dir)]) == 0
+
+    assert _release_check(plugin_dir, tmp_path / "target") == 1
+    assert "[ERROR] git working tree has uncommitted or untracked files: .agents/" in capsys.readouterr().err
+
+
+def test_repository_diagnosis_only_warns_without_own_repository(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    defaults = neko_plugin_cli.resolve_default_paths()
+
+    for release in (False, True):
+        assert release_cmd._diagnose_repository(plugin_dir, defaults=defaults, release=release) == [
+            ("warning", "plugin source directory does not have its own git repository")
+        ]
+
+
+def test_release_check_ignores_the_git_state_of_a_plugin_mounted_in_a_neko_tree(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch,
+) -> None:
+    # Market CI copies the plugin, together with any .git it carries, into
+    # plugin/plugins/<id> of a N.E.K.O checkout; that copy is not a checkout to judge.
+    source = tmp_path / "n.e.k.o_plugin_mounted_demo"
+    assert neko_plugin_cli.main(["init", "mounted_demo", "--output", str(source)]) == 0
+    mounted = tmp_path / "neko" / "plugin" / "plugins" / "mounted_demo"
+    shutil.copytree(source, mounted)
+    capsys.readouterr()
+    from plugin.neko_plugin_cli.paths import CliDefaults
+    root = tmp_path / "neko"
+    monkeypatch.setattr(neko_plugin_cli, "resolve_default_paths", lambda: CliDefaults(
+        root / "plugin", root / "target", root / "plugin/plugins", root / "profiles",
+    ))
+
+    assert _release_check(mounted, tmp_path / "target") == 0
+    assert "uncommitted or untracked" not in capsys.readouterr().err
+
+
+def test_release_check_enforces_market_plugin_id_without_market_release(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _init_committed(tmp_path, "id_demo")
+    plugin_toml = plugin_dir / "plugin.toml"
+    plugin_toml.write_text(
+        plugin_toml.read_text(encoding="utf-8").replace('id = "id_demo"', 'id = "IdDemo"'),
+        encoding="utf-8",
+    )
+    _commit_all(plugin_dir)
+
+    assert _release_check(plugin_dir, tmp_path / "target") == 1
+    assert "Market plugin ID must match ^[a-z][a-z0-9_]*$, got IdDemo" in capsys.readouterr().err
+
+
+def test_market_release_reads_origin_and_release_workflow_at_repository_root(tmp_path: Path) -> None:
+    repo = tmp_path / "monorepo"
+    plugin_dir = _make_plugin_dir(repo / "plugins")
+    (repo / ".github" / "workflows").mkdir(parents=True)
+    (repo / ".github" / "workflows" / "release.yml").write_text("on: push\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/alice/n.e.k.o_plugin_cli_demo.git"],
+        cwd=repo,
+        check=True,
+    )
+    defaults = neko_plugin_cli.resolve_default_paths()
+
+    root = release_cmd._repository_root(plugin_dir, defaults)
+    assert root == repo.resolve()
+    issues = release_cmd._diagnose_market_release(
+        plugin_dir,
+        repository_root=root,
+        plugin_id="cli_demo",
+        version="0.0.1",
+        github_repository="",
+        ref_name="v0.0.1",
+    )
+    assert [issue for issue in issues if issue[0] == "error"] == []
+
+
+@pytest.mark.parametrize(
+    ("remote", "expected"),
+    [
+        ("https://user@github.com/o/n.e.k.o_plugin_a", "o/n.e.k.o_plugin_a"),
+        ("https://x-access-token:abc@github.com/o/repo.git", "o/repo"),
+        ("git@github.com:o/repo.git/", "o/repo"),
+        ("ssh://user@github.com/o/repo.git", "o/repo"),
+        ("https://github.com/o/n.e.k.o_plugin_a.git", "o/n.e.k.o_plugin_a"),
+        ("https://user@evil.example/github.com/o/repo", None),
+        ("https://a@b@github.com/o/repo", None),
+    ],
+)
+def test_parse_github_repository_remote_accepts_userinfo(remote: str, expected: str | None) -> None:
+    assert parse_github_repository_remote(remote) == expected
+
+
+def test_load_toml_names_a_utf8_bom(tmp_path: Path) -> None:
+    path = tmp_path / "plugin.toml"
+    path.write_bytes(b"\xef\xbb\xbf[plugin]\nid = \"x\"\n")
+
+    with pytest.raises(ValueError, match="starts with a UTF-8 BOM; save it as UTF-8 without BOM"):
+        load_toml(path)
+
+
+def test_validator_reads_gitignore_and_json_saved_with_a_bom(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "n.e.k.o_plugin_bom_demo"
+    assert neko_plugin_cli.main(["init", "bom_demo", "--output", str(plugin_dir)]) == 0
+    for relative in (".gitignore", ".vscode/settings.json"):
+        path = plugin_dir / relative
+        path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+
+    messages = [message for _severity, message in validate_plugin_dir(plugin_dir, strict=True)]
+    assert not [message for message in messages if message.startswith(".gitignore should include")]
+    assert not [message for message in messages if ".vscode/settings.json" in message]
+
+
+def test_scaffold_has_no_lifecycle_warnings(tmp_path: Path) -> None:
+    # Lifecycle hooks are optional at runtime (plugin/core/host.py runs them only when defined).
+    plugin_dir = tmp_path / "n.e.k.o_plugin_quiet_demo"
+    assert neko_plugin_cli.main(["init", "quiet_demo", "--output", str(plugin_dir)]) == 0
+
+    assert not [message for _severity, message in validate_plugin_dir(plugin_dir, strict=True) if "@lifecycle" in message]
+
+
+def test_release_check_runs_out_of_tree_tests_like_ci(tmp_path: Path) -> None:
+    plugin_dir = _init_committed(tmp_path, "pytest_demo")
+    tests_dir = plugin_dir / "tests"
+    entry = (plugin_dir / "plugin.toml").read_text(encoding="utf-8").split('entry = "', 1)[1].split('"', 1)[0]
+    module, class_name = entry.split(":")
+    canonical = module.removeprefix("plugin.")
+    (plugin_dir / "helper.py").write_text("VALUE = object()\n", encoding="utf-8")
+    # Both names must resolve identically even during initial conftest loading.
+    (tests_dir / "conftest.py").write_text(
+        "import importlib\n"
+        f"assert importlib.import_module('{module}') is importlib.import_module('{canonical}')\n"
+        f"assert importlib.import_module('{module}.helper') is importlib.import_module('{canonical}.helper')\n",
+        encoding="utf-8",
+    )
+    (tests_dir / "test_ci_alignment.py").write_text(
+        f"from {module} import {class_name}\n\n\n"
+        "async def test_async_runs_in_auto_mode():\n"
+        f"    assert {class_name}\n",
+        encoding="utf-8",
+    )
+    _commit_all(plugin_dir)
+
+    assert (
+        neko_plugin_cli.main(
+            ["check", str(plugin_dir), "--release", "--target-dir", str(tmp_path / "target")]
+        )
+        == 0
+    )
+    # Nothing was written into the N.E.K.O checkout to make the import work.
+    assert not (neko_plugin_cli.resolve_default_paths().plugins_root / "pytest_demo").exists()
+
+
+def test_external_repository_can_use_a_plugin_plugins_subdirectory(tmp_path):
+    from plugin.neko_plugin_cli.commands import release_cmd
+    root = tmp_path / "external"
+    source = root / "plugin" / "plugins" / "demo"
+    source.mkdir(parents=True)
+    subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
+    defaults = neko_plugin_cli.resolve_default_paths()
+    assert release_cmd._repository_root(source, defaults) == root.resolve()
+
+
+def test_external_test_import_hook_does_not_require_a_checkout_pytest_ini(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import release_cmd
+    from plugin.neko_plugin_cli.paths import CliDefaults
+    source = tmp_path / "demo"
+    (source / "tests").mkdir(parents=True)
+    root = tmp_path / "checkout"
+    root.mkdir()
+    defaults = CliDefaults(root / "plugin", root / "target", root / "plugin/plugins", root / "profiles")
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "")
+    monkeypatch.setattr(release_cmd.subprocess, "run", run)
+    assert release_cmd._run_tests(source, plugin_id="demo", defaults=defaults, skip_tests=False) == "passed"
+    command, kwargs = calls[0]
+    assert "-c" not in command
+    assert command[command.index("-p") + 1] == "plugin.neko_plugin_cli.plugin_import_alias"
+    assert kwargs["env"][release_cmd.PLUGIN_SOURCE_ENV] == str(source)
+
+
+def _validate_with_extra_toml(tmp_path: Path, extra: str) -> list[tuple[str, str]]:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            "[plugin_runtime]",
+            f"{extra}\n\n[plugin_runtime]",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    return validate_plugin_dir(plugin_dir, strict=True)
+
+
+@pytest.mark.parametrize("backend", ["file", "memory", "off", "File", ""])
+def test_validate_plugin_dir_accepts_runtime_plugin_state_backends(tmp_path: Path, backend: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\nbackend = "{backend}"')
+
+    assert not any("[plugin_state].backend" in message for _level, message in issues)
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "disabled"])
+def test_validate_plugin_dir_rejects_plugin_state_backend_runtime_refuses(tmp_path: Path, backend: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\nbackend = "{backend}"')
+
+    assert ("error", "[plugin_state].backend must be one of: file, memory, off") in issues
+
+
+def test_plugin_state_backends_match_sdk_runtime() -> None:
+    from plugin.sdk.shared.models.exceptions import InvalidArgumentError
+    from plugin.sdk.shared.storage.state import PluginStatePersistence
+
+    for backend in ("file", "memory", "off", "File", ""):
+        PluginStatePersistence.normalize_backend(backend)
+    for backend in ("sqlite", "disabled"):
+        with pytest.raises(InvalidArgumentError):
+            PluginStatePersistence.normalize_backend(backend)
+
+
+@pytest.mark.parametrize("persist_mode", ["auto", "manual", "off"])
+def test_validate_plugin_dir_accepts_runtime_plugin_state_persist_modes(tmp_path: Path, persist_mode: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\npersist_mode = "{persist_mode}"')
+
+    assert not any("[plugin_state].persist_mode" in message for _level, message in issues)
+
+
+@pytest.mark.parametrize("persist_mode", ["always", "disabled", "Auto"])
+def test_validate_plugin_dir_rejects_plugin_state_persist_mode_runtime_ignores(
+    tmp_path: Path, persist_mode: str
+) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\npersist_mode = "{persist_mode}"')
+
+    errors = [message for level, message in issues if level == "error" and "[plugin_state].persist_mode" in message]
+    assert len(errors) == 1
+    assert errors[0].split("\n")[0] == "[plugin_state].persist_mode must be one of: auto, manual, off"
+
+
+@pytest.mark.parametrize(("persist_mode", "replacement"), [("always", "auto"), ("disabled", "off")])
+def test_plugin_state_persist_mode_error_adds_eight_locale_migration_hint(
+    tmp_path: Path, persist_mode: str, replacement: str
+) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\npersist_mode = "{persist_mode}"')
+
+    (message,) = [m for level, m in issues if level == "error" and "[plugin_state].persist_mode" in m]
+    lines = message.split("\n")
+    assert lines[0] == "[plugin_state].persist_mode must be one of: auto, manual, off"
+    hint = dict(line.strip().split(": ", 1) for line in lines[1:])
+    assert list(hint) == ["en", "zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt"]
+    assert hint["en"] == f'use "{replacement}" instead of "{persist_mode}"'
+    assert all(f'"{replacement}"' in text and f'"{persist_mode}"' in text for text in hint.values())
+
+
+def test_plugin_state_persist_mode_error_without_migration_is_one_line(tmp_path: Path) -> None:
+    issues = _validate_with_extra_toml(tmp_path, '[plugin_state]\npersist_mode = "Auto"')
+
+    assert ("error", "[plugin_state].persist_mode must be one of: auto, manual, off") in issues
+
+
+def test_host_applies_the_persist_modes_check_accepts() -> None:
+    from plugin.sdk.shared.storage.state import PluginStatePersistence
+
+    assert PluginStatePersistence.VALID_PERSIST_MODES == ("auto", "manual", "off")
+    # Read the source instead of importing the host module.
+    source = (Path(__file__).resolve().parents[2] / "core" / "host.py").read_text(encoding="utf-8")
+    # The host reads both [plugin_state] and the legacy [plugin_checkpoint] through the shared constant.
+    assert source.count("in valid_persist_modes") == 2
+    assert '("auto", "manual", "off")' not in source
+
+
+def test_validate_plugin_dir_accepts_plugin_database_table(tmp_path: Path) -> None:
+    baseline = validate_plugin_dir(_make_plugin_dir(tmp_path / "baseline"), strict=True)
+    issues = _validate_with_extra_toml(tmp_path, '[plugin.database]\nenabled = true\nname = "notes.db"')
+
+    assert issues == baseline
+    assert not any("database" in message for _level, message in issues)
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        ("[plugin.database]\nname = 5", ("error", "[plugin.database].name must be a string")),
+        ("[plugin.database]\nenabled = 3", ("error", "[plugin.database].enabled must be a boolean")),
+        ("[plugin_state]\nbackend = 1", ("error", "[plugin_state].backend must be one of: file, memory, off")),
+    ],
+)
+def test_validate_plugin_dir_rejects_non_string_storage_values(
+    tmp_path: Path, extra: str, expected: tuple[str, str]
+) -> None:
+    assert expected in _validate_with_extra_toml(tmp_path, extra)
+
+
+def test_validate_plugin_dir_rejects_non_table_plugin_database(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            'type = "plugin"', 'type = "plugin"\ndatabase = "plugin.db"', 1
+        ),
+        encoding="utf-8",
+    )
+
+    assert ("error", "[plugin.database] must be a table") in validate_plugin_dir(plugin_dir, strict=True)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../escape.db", "sub/notes.db", ".", "C:notes.db", "C:\\\\notes.db", "notes?.db", "a|b.db", "CON", "nul.db", "com1.db", "COM\u00b9.db", "lpt\u00b2.db", "CONIN$", "notes.db.", "notes.db "],
+)
+def test_validate_plugin_dir_rejects_plugin_database_name_runtime_refuses(tmp_path: Path, name: str) -> None:
+    from plugin.sdk.shared.storage.database import PluginDatabase
+
+    if name in {"../escape.db", "sub/notes.db", ".", "C:\\\\notes.db"}:  # refused by the SDK on every OS
+        with pytest.raises(ValueError):
+            PluginDatabase._normalize_db_name(name)
+
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin.database]\nname = "{name}"')
+
+    (message,) = [m for level, m in issues if level == "error" and "[plugin.database].name" in m]
+    lines = message.split("\n")
+    assert lines[0].startswith("[plugin.database].name must be a plain file name that also works on Windows")
+    assert [line.strip().split(":", 1)[0] for line in lines[1:]] == ["zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt"]
+    assert all(line.strip().split(": ", 1)[1].startswith("[plugin.database].name") for line in lines[1:])
+
+
+@pytest.mark.parametrize("name", ["", "notes.db", "console.db", "com10.db", "lpt.db"])
+def test_validate_plugin_dir_accepts_windows_safe_plugin_database_name(tmp_path: Path, name: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin.database]\nname = "{name}"')
+
+    assert not any("[plugin.database]" in message for _level, message in issues)
+
+
+def test_validate_plugin_dir_warns_unknown_plugin_database_key(tmp_path: Path) -> None:
+    issues = _validate_with_extra_toml(tmp_path, '[plugin.database]\nenabled = true\npath = "x.db"')
+
+    assert ("warning", "[plugin.database].path is not a recognized plugin.toml field") in issues
+
+
+@pytest.mark.parametrize("table", ["plugin.database", "plugin.store"])
+@pytest.mark.parametrize("enabled", ['"false"', '"no"'])
+def test_validate_plugin_dir_rejects_string_storage_enabled(tmp_path: Path, table: str, enabled: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f"[{table}]\nenabled = {enabled}")
+
+    assert (
+        "error",
+        f"[{table}].enabled must be true/false, not a string; the SDK reads any non-empty string as true",
+    ) in issues
+
+
+@pytest.mark.parametrize("table", ["plugin.database", "plugin.store"])
+@pytest.mark.parametrize("enabled", ["true", "false"])
+def test_validate_plugin_dir_accepts_boolean_storage_enabled(tmp_path: Path, table: str, enabled: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f"[{table}]\nenabled = {enabled}")
+
+    assert not any(f"[{table}]" in message for _level, message in issues)
+
+
+@pytest.mark.parametrize("backend", ["file", "sqlite", "anything"])
+def test_validate_plugin_dir_warns_plugin_store_backend_is_not_read(tmp_path: Path, backend: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin.store]\nenabled = true\nbackend = "{backend}"')
+
+    store_issues = [(level, message) for level, message in issues if "[plugin.store]" in message]
+    assert len(store_issues) == 1
+    level, message = store_issues[0]
+    assert level == "warning"
+    lines = message.split("\n")
+    assert lines[0] == "[plugin.store].backend is not read by the runtime and has no effect"
+    assert [line.strip().split(":", 1)[0] for line in lines[1:]] == ["zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt"]
+    assert all(line.strip().split(": ", 1)[1].startswith("[plugin.store].backend") for line in lines[1:])

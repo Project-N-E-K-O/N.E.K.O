@@ -52,6 +52,42 @@ def _key_path() -> Path:
     return Path(get_config_manager().memory_dir).parent / "instance_access.key"
 
 
+def instance_key_is_configured() -> bool:
+    return bool(os.environ.get("NEKO_INSTANCE_ACCESS_KEY", "").strip())
+
+
+def _write_instance_key(path: Path) -> str:
+    """Publish complete key bytes while holding the key's cross-process lock."""
+    key = secrets.token_urlsafe(32)
+    fd, temporary = tempfile.mkstemp(prefix=".instance-key-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(key)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Windows readers can briefly deny replacing a file they hold open.
+        for attempt in range(8):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError as exc:
+                if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 7:
+                    raise
+                time.sleep(0.025)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return key
+
+
+def rotate_instance_key() -> None:
+    if instance_key_is_configured():
+        raise ValueError("Instance key is configured by the environment")
+    path = _key_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(path) + ".lock", timeout=5):
+        _write_instance_key(path)
+
+
 def instance_key() -> str:
     """Load one shared key; create it privately without printing credentials."""
     configured = os.environ.get("NEKO_INSTANCE_ACCESS_KEY", "").strip()
@@ -84,25 +120,7 @@ def instance_key() -> str:
         except FileNotFoundError:
             key = ""
         if not key:
-            key = secrets.token_urlsafe(32)
-            fd, temporary = tempfile.mkstemp(prefix=".instance-key-", dir=path.parent)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                    stream.write(key)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                # Windows readers may briefly deny replacement of a legacy empty file.
-                # Retain atomic publication and retry only sharing/access conflicts.
-                for attempt in range(8):
-                    try:
-                        os.replace(temporary, path)
-                        break
-                    except PermissionError as exc:
-                        if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 7:
-                            raise
-                        time.sleep(0.025)
-            finally:
-                Path(temporary).unlink(missing_ok=True)
+            key = _write_instance_key(path)
     if len(key) < 32:
         raise ValueError("instance key file is incomplete")
     return key
@@ -575,7 +593,9 @@ class InstanceAccessMiddleware:
             f'<p>{html.escape(message)}</p>{warning}<form method="post" action="{LOGIN_PATH}">'
             f'<input type="hidden" name="challenge" value="{challenge}">'
             f'<input type="hidden" name="return_path" value="{html.escape((request.url.path + ("?" + request.url.query if request.url.query else "")) if request.url.path != LOGIN_PATH else "/", quote=True)}">'
-            f'<label>{html.escape(strings["key"])} <input type="password" name="key" required autocomplete="current-password"></label>'
+            f'<label>{html.escape(strings["key"])} <input type="password" name="key" required '
+            'autocomplete="current-password" aria-describedby="instance-access-key-help"></label>'
+            f'<p id="instance-access-key-help">{html.escape(strings["keyHelp"])}</p>'
             f'<button {"disabled" if not allowed else ""}>{html.escape(strings["connect"])}</button></form></main></html>',
             status_code=401,
             # no-referrer makes Chromium's native form POST Origin opaque

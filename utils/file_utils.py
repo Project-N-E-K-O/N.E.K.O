@@ -18,6 +18,7 @@ import asyncio
 import errno
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -827,10 +828,23 @@ def move_aside(path: str | os.PathLike[str], suffix: str) -> Path | None:
     return target
 
 
-def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:
-    """Atomically replace a text file in the same directory."""
+def atomic_write_text(
+    path: str | os.PathLike[str],
+    content: str,
+    *,
+    encoding: str = "utf-8",
+    create_parents: bool = True,
+) -> None:
+    """Atomically replace a text file in the same directory.
+
+    ``create_parents=False`` refuses to recreate a missing parent directory:
+    the temp-file creation then raises FileNotFoundError and nothing is
+    written. For writers that must not resurrect a directory deleted under
+    them (a removed character, for instance).
+    """
     target_path = Path(path)
-    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parents:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
     _sweep_stale_tmp_if_due(target_path)
 
     # Custom exclusive creation without tempfile.mkstemp raises immediately rather than retrying forever.
@@ -887,7 +901,19 @@ def atomic_write_json(
     indent: int | None = 2,
     **json_kwargs: Any,
 ) -> None:
-    """Serialize JSON and atomically replace the destination file."""
+    """Serialize JSON and atomically replace the destination file.
+
+    ``NaN`` / ``Infinity`` are rejected by default (M-001 / P0-1b). They are not
+    valid JSON, ``json.load`` accepts them again, and the failure then surfaces
+    far away -- as a 500 when the value is eventually rendered with
+    ``allow_nan=False``. Rejecting them here means the bad value fails loudly at
+    the write that produced it instead of corrupting the file silently.
+
+    A caller that genuinely needs a non-finite value can pass ``allow_nan=True``
+    explicitly, which keeps the exception reviewable. ``ValueError`` is raised
+    before the file is touched, so the previous content survives.
+    """
+    json_kwargs.setdefault("allow_nan", False)
     content = json.dumps(
         data,
         ensure_ascii=ensure_ascii,
@@ -895,6 +921,73 @@ def atomic_write_json(
         **json_kwargs,
     )
     atomic_write_text(path, content, encoding=encoding)
+
+
+def is_json_number(value: Any) -> bool:
+    """Return True for a JSON number; ``bool`` subclasses ``int`` but is not one."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_finite_json_value(value: Any) -> bool:
+    """Default scrub predicate: only what ``allow_nan=False`` would refuse."""
+    return not isinstance(value, float) or math.isfinite(value)
+
+
+def scrub_non_finite_numbers(
+    value: Any,
+    *,
+    prefix: str = "",
+    is_finite: Callable[[Any], bool] | None = None,
+    on_drop: Callable[[str], None] | None = None,
+) -> Any:
+    """Return ``value`` with every non-finite number deleted, shape preserved.
+
+    ``json.load`` accepts the non-standard ``NaN`` / ``Infinity`` literals that
+    ``atomic_write_json`` refuses to emit (M-001), so any code that reads a JSON
+    file and writes a payload derived from it -- migrating a legacy root,
+    rewriting a config, updating one key of a preference store -- fails as a
+    whole when that file still carries a poisoned number. Removing only the
+    offending values keeps every entry, and every key around them, alive.
+
+    Containers are copied, never mutated, so a caller can keep using its input
+    (and roll back cleanly when the write fails). ``is_finite`` decides whether
+    a number may stay; the default keeps every finite number, including
+    integers that JavaScript could not represent, because this helper only
+    removes what the JSON writer would reject. ``on_drop`` receives the dotted
+    path (``a.b[0]``) of each removed value so the caller can log it.
+    """
+    checker = is_finite if is_finite is not None else _is_finite_json_value
+    if isinstance(value, dict):
+        cleaned: dict[Any, Any] = {}
+        for key, item in value.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if isinstance(item, (dict, list)):
+                cleaned[key] = scrub_non_finite_numbers(
+                    item, prefix=path, is_finite=is_finite, on_drop=on_drop
+                )
+            elif is_json_number(item) and not checker(item):
+                if on_drop is not None:
+                    on_drop(path)
+            else:
+                cleaned[key] = item
+        return cleaned
+    if isinstance(value, list):
+        cleaned_items: list[Any] = []
+        for index, item in enumerate(value):
+            path = f"{prefix}[{index}]"
+            if isinstance(item, (dict, list)):
+                cleaned_items.append(
+                    scrub_non_finite_numbers(
+                        item, prefix=path, is_finite=is_finite, on_drop=on_drop
+                    )
+                )
+            elif is_json_number(item) and not checker(item):
+                if on_drop is not None:
+                    on_drop(path)
+            else:
+                cleaned_items.append(item)
+        return cleaned_items
+    return value
 
 
 def read_json_tolerating_replace(

@@ -2,19 +2,21 @@ import { expect, type Page } from '@playwright/test'
 import { PREVIEW_ORIGIN, appearanceTest, installCardLayoutFixture } from './plugin-manager-test-helpers'
 
 type Rect = { x: number; y: number; w: number; h: number }
-type Frame = { t: number; compact: boolean; running: boolean; rects: (Rect | null)[] }
+type Frame = { t: number; compact: boolean; running: boolean; marketArrowOffset: number; rects: (Rect | null)[] }
 type Recording = {
   labels: string[]
   frames: Frame[]
   // Index of the first frame rendered after the click that opens or closes the drawer.
   clickFrame: number
   secondClickFrame: number | null
+  filterSamples: { t: number; heights: number[] }[]
 }
 type RecordOptions = {
   toggle: string
   panel: string
   duration: number
   secondClickAt: number | null
+  denseFilter?: boolean
 }
 
 const COMPONENTS = ['x', 'y', 'w', 'h'] as const
@@ -185,13 +187,19 @@ function returnIssues(recording: Recording): string[] {
 // Seek the real Web Animations in fixed 16ms steps. Wall-clock RAF gaps on a
 // busy runner are missing observations, not evidence of a geometry snap.
 // The page clock advances the production cleanup timers on that same timeline.
-async function recordDrawerMotion(page: Page, options: RecordOptions): Promise<Recording> {
+async function recordDrawerMotion(
+  page: Page,
+  options: RecordOptions,
+  onFrame?: (time: number) => Promise<void>,
+): Promise<Recording> {
   await page.clock.install()
   try {
     await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000))
-    const recorder = await page.evaluateHandle(({ toggle, panel, secondClickAt }) => {
+    const recorder = await page.evaluateHandle(({ toggle, panel, secondClickAt, denseFilter }) => {
       const workbench = document.querySelector<HTMLElement>('.plugin-workbench')!
       const header = document.querySelector<HTMLElement>('.workbench-header')!
+      const marketButton = header.querySelector<HTMLElement>('.market-trigger')!
+      const marketArrow = marketButton.querySelector<HTMLElement>('.market-trigger__arrow')!
       const tracked: Element[] = []
       const track = (element: Element | null) => {
         if (element && !tracked.includes(element)) tracked.push(element)
@@ -233,12 +241,35 @@ async function recordDrawerMotion(page: Page, options: RecordOptions): Promise<R
         animations.push({ animation, started: performance.now(), end })
         return animation
       }
-      const recording: Recording = { labels, frames: [], clickFrame: -1, secondClickFrame: null }
+      const filter = workbench.querySelector<HTMLElement>('.plugin-workbench__main .wb-filter-bar')!
+      const filterRows = [filter, ...filter.querySelectorAll<HTMLElement>(
+        '.wb-filter-bar__controls, .wb-filter-bar__footer',
+      )]
+      const recording: Recording = { labels, frames: [], clickFrame: -1, secondClickFrame: null, filterSamples: [] }
       const start = performance.now()
+      let sampledAt = start
       let clickTime = 0
       return {
         recording,
         advance() {
+          const now = performance.now()
+          // Flex line breaking can change for less than one display frame.
+          // Seek every millisecond in the browser, without 480 protocol calls.
+          if (denseFilter) {
+            for (let time = sampledAt + 1; time <= now; time++) {
+              let active = false
+              for (const { animation, started, end } of animations) {
+                if (animation.playState === 'idle' || animation.playState === 'finished' || time < started) continue
+                animation.currentTime = Math.min(time - started, end)
+                active = true
+              }
+              if (active) recording.filterSamples.push({
+                t: time - start,
+                heights: filterRows.map(element => element.offsetHeight),
+              })
+            }
+            sampledAt = now
+          }
           for (const { animation, started, end } of animations) {
             if (animation.playState === 'idle' || animation.playState === 'finished') continue
             const elapsed = performance.now() - started
@@ -255,6 +286,7 @@ async function recordDrawerMotion(page: Page, options: RecordOptions): Promise<R
             t,
             compact: header.classList.contains('workbench-header--compact'),
             running: workbench.hasAttribute('data-motion-running'),
+            marketArrowOffset: marketArrow.getBoundingClientRect().left - marketButton.getBoundingClientRect().left,
             rects: tracked.map(rectOf),
           })
           if (recording.clickFrame < 0) {
@@ -292,6 +324,7 @@ async function recordDrawerMotion(page: Page, options: RecordOptions): Promise<R
             })
             .toBe(true)
         }
+        await onFrame?.(time)
         if (time < options.duration) await page.clock.runFor(16)
       }
       return await recorder.evaluate((state) => state.recording)
@@ -304,25 +337,35 @@ async function recordDrawerMotion(page: Page, options: RecordOptions): Promise<R
   }
 }
 
-async function openPluginWorkbench(page: Page) {
+async function openPluginWorkbench(page: Page, width = 1600, updateCheckReady?: Promise<void>) {
   await installCardLayoutFixture(page)
   // The fixture reports a newer version; keep the boot update popup off the header.
-  await page.route('**/market/catalog/api/v1/plugins/latest-versions?*', route =>
-    route.fulfill({ json: { items: [{ plugin_id: '42', version: '1.0.0' }] } })
-  )
+  await page.route('**/market/catalog/api/v1/plugins/latest-versions?*', async route => {
+    await updateCheckReady
+    await route.fulfill({ json: { items: [{ plugin_id: '42', version: '1.0.0' }] } })
+  })
+  await installMarketCatalog(page)
   await page.emulateMedia({ reducedMotion: 'no-preference' })
   // At this width opening a drawer flips the header to its compact layout.
-  await page.setViewportSize({ width: 1600, height: 1000 })
-  // The boot update check starts a while after mount; wait for its request so
-  // its label swap cannot land inside a recording.
+  await page.setViewportSize({ width, height: 1000 })
+  // Most recordings start after boot; a held response exercises a label swap
+  // inside the transition instead.
   const bootCheck = page.waitForRequest('**/market/catalog/api/v1/plugins/latest-versions?*')
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
   await expect(page.locator('.plugin-card')).toHaveCount(8)
   await expect(page.locator('.plugin-workbench')).toBeVisible()
   await bootCheck
-  await expect(page.locator('[data-yui-guide-id="plugin-list-update-check"]')).not.toHaveClass(/is-loading/)
-  // Cards enter with their own animation on load; record only from a settled layout.
-  await page.waitForFunction(() => document.getAnimations().length === 0)
+  const checking = page.locator('[data-yui-guide-id="plugin-list-update-check"]')
+  if (updateCheckReady) {
+    await expect(checking).toHaveClass(/is-loading/)
+    // The loading spinner is infinite; the cards' entrances must still settle.
+    await page.waitForFunction(() => document.getAnimations().every(animation =>
+      animation.effect!.getComputedTiming().iterations === Infinity,
+    ))
+  } else {
+    await expect(checking).not.toHaveClass(/is-loading/)
+    await page.waitForFunction(() => document.getAnimations().length === 0)
+  }
 }
 
 // Let a fully opened drawer finish its open animation before recording the close.
@@ -330,6 +373,37 @@ async function openDrawerFully(page: Page, toggle: string, panel: string) {
   await page.locator(toggle).click()
   await expect(page.locator(panel)).toBeVisible()
   await page.waitForTimeout(1000)
+}
+
+async function installMarketCatalog(page: Page) {
+  await page.route('**/market/catalog/api/v1/plugins?*', route => route.fulfill({ json: {
+    items: [
+      { id: 101, slug: 'fixture-one', name: 'Fixture One', description: 'First catalog item', is_featured: true },
+      { id: 102, slug: 'fixture-two', name: 'Fixture Two', description: 'Second catalog item', is_featured: false },
+    ],
+    total: 2, page: 1, page_size: 100, total_pages: 1,
+  } }))
+}
+
+function expectStableFilterRows(recording: Recording) {
+  expect(recording.filterSamples.length, 'dense samples cover the running transition').toBeGreaterThanOrEqual(480)
+  const final = recording.filterSamples.at(-1)!.heights
+  const changes = recording.filterSamples.filter(sample =>
+    sample.heights.some((height, index) => Math.abs(height - final[index]!) > TOLERANCE),
+  )
+  expect(changes, 'filter, controls and footer keep their laid-out heights throughout the animation').toEqual([])
+}
+
+async function expectMotionCleanedUp(page: Page) {
+  await expect(page.locator('.plugin-workbench')).not.toHaveAttribute('data-motion-running')
+  // The package panel retains a finished CSS entrance with fill: both.
+  // Layout-owned Web Animations must be cancelled, independently of that CSS.
+  expect(await page.evaluate(() => document.getAnimations().filter(animation =>
+    !(animation instanceof CSSAnimation) && !(animation instanceof CSSTransition),
+  ).map(animation => (animation.effect as KeyframeEffect).target?.nodeName))).toEqual([])
+  expect(await page.locator('.plugin-workbench__main .wb-filter-bar__input').evaluate(element =>
+    element.getAttribute('style'),
+  )).toBeNull()
 }
 
 appearanceTest('market drawer opens with monotonic, snap-free geometry that settles', async ({ page }) => {
@@ -499,3 +573,249 @@ appearanceTest(
     }
   }
 )
+
+appearanceTest.describe('filter bar layout and interaction', () => {
+  appearanceTest.use({ appLocale: 'zh-CN' })
+
+  for (const width of [1448, 1920]) {
+    appearanceTest(`update response during drawer motion keeps header labels stable at ${width}px`, async ({ page }) => {
+      let releaseUpdate!: () => void
+      const updateCheckReady = new Promise<void>(resolve => { releaseUpdate = resolve })
+      try {
+        await openPluginWorkbench(page, width, updateCheckReady)
+        const workbench = page.locator('.plugin-workbench')
+        const header = page.locator('.workbench-header')
+        const checking = page.locator('[data-yui-guide-id="plugin-list-update-check"]')
+        const recording = await recordDrawerMotion(page, {
+          toggle: MARKET_TOGGLE, panel: MARKET_PANEL, duration: RUN_MS, secondClickAt: null,
+        }, async time => {
+          if (time === 208) {
+            await expect(workbench).toHaveAttribute('data-motion-running')
+            await expect(checking).toHaveClass(/is-loading/)
+            releaseUpdate()
+            await expect(checking).not.toHaveClass(/is-loading/)
+          }
+          if (width === 1448 && [256, 400].includes(time)) {
+            await expect(workbench).toHaveAttribute('data-motion-running')
+            await expect(header).toHaveClass(/workbench-header--compact/)
+          }
+        })
+        expect(compactIssues(recording), 'content completion does not reverse the header layout').toEqual([])
+        const arrowSteps = recording.frames.slice(1).map((frame, i) =>
+          frame.marketArrowOffset - recording.frames[i]!.marketArrowOffset,
+        )
+        expect(
+          arrowSteps.every(step => step >= -TOLERANCE) || arrowSteps.every(step => step <= TOLERANCE),
+          'the market arrow moves in one direction relative to its button',
+        ).toBe(true)
+        await expectMotionCleanedUp(page)
+      } finally {
+        releaseUpdate()
+      }
+    })
+  }
+
+  for (const width of [1472, 1280]) {
+    appearanceTest(`filter rows stay stable at ${width}px during market open and close`, async ({ page }) => {
+      await openPluginWorkbench(page, width)
+      for (const direction of ['open', 'close']) {
+        const recording = await recordDrawerMotion(page, {
+          toggle: MARKET_TOGGLE, panel: MARKET_PANEL, duration: RUN_MS,
+          secondClickAt: null, denseFilter: true,
+        })
+        expectStableFilterRows(recording)
+        const input = recording.labels.findIndex(label => label.startsWith('wb-filter-bar__input '))
+        expect(input).toBeGreaterThanOrEqual(0)
+        expect(monotonicIssues(recording, input, `${direction} input`)).toEqual([])
+        await expectMotionCleanedUp(page)
+      }
+    })
+  }
+
+  appearanceTest('filter rows stay stable when the market drawer reverses mid-open', async ({ page }) => {
+    await openPluginWorkbench(page, 1472)
+    const recording = await recordDrawerMotion(page, {
+      toggle: MARKET_TOGGLE, panel: MARKET_PANEL, duration: RUN_MS,
+      secondClickAt: 200, denseFilter: true,
+    })
+    expectStableFilterRows(recording)
+    expect(recording.secondClickFrame).not.toBeNull()
+    expect(reversalIssues(recording, recording.secondClickFrame!)).toEqual([])
+    expect(returnIssues(recording)).toEqual([])
+    await expectMotionCleanedUp(page)
+  })
+
+  appearanceTest('filter rows and the open layout survive a reversal mid-close', async ({ page }) => {
+    await openPluginWorkbench(page, 1472)
+    await openDrawerFully(page, MARKET_TOGGLE, MARKET_PANEL)
+    const recording = await recordDrawerMotion(page, {
+      toggle: MARKET_TOGGLE, panel: MARKET_PANEL, duration: RUN_MS,
+      secondClickAt: 200, denseFilter: true,
+    })
+    expectStableFilterRows(recording)
+    expect(recording.secondClickFrame).not.toBeNull()
+    expect(reversalIssues(recording, recording.secondClickFrame!)).toEqual([])
+    expect(returnIssues(recording)).toEqual([])
+    await expectMotionCleanedUp(page)
+  })
+
+  appearanceTest('switching from market to package keeps filter rows and input focus stable', async ({ page }) => {
+    await openPluginWorkbench(page, 1472)
+    await openDrawerFully(page, MARKET_TOGGLE, MARKET_PANEL)
+    const input = page.locator('.plugin-workbench__main .wb-filter-bar').getByRole('textbox')
+    await input.focus()
+    const recording = await recordDrawerMotion(page, {
+      toggle: PACKAGE_TOGGLE, panel: PACKAGE_PANEL, duration: RUN_MS,
+      secondClickAt: null, denseFilter: true,
+    }, async time => {
+      if ([128, 256, 400].includes(time)) await expect(input).toBeFocused()
+    })
+    expectStableFilterRows(recording)
+    await expect(page.locator(MARKET_PANEL)).toBeHidden()
+    await expect(page.locator(PACKAGE_PANEL)).toBeVisible()
+    await expectMotionCleanedUp(page)
+  })
+
+  appearanceTest('input focus and selection survive both drawer directions and the clear button still works', async ({ page }) => {
+    await openPluginWorkbench(page, 1472)
+    const bar = page.locator('.plugin-workbench__main .wb-filter-bar')
+    const input = bar.getByRole('textbox')
+    await input.fill('猫娘小游戏')
+    await page.waitForFunction(() => document.getAnimations().length === 0)
+    for (const direction of ['open', 'close']) {
+      await input.focus()
+      await input.evaluate(element => (element as HTMLInputElement).setSelectionRange(1, 3))
+      await recordDrawerMotion(page, {
+        toggle: MARKET_TOGGLE, panel: MARKET_PANEL, duration: RUN_MS, secondClickAt: null,
+      }, async time => {
+        if (![128, 256, 400].includes(time)) return
+        await expect(input, `${direction} at ${time}ms`).toBeFocused()
+        await expect(input).toHaveValue('猫娘小游戏')
+        expect(await input.evaluate(element => {
+          const input = element as HTMLInputElement
+          return [input.selectionStart, input.selectionEnd]
+        })).toEqual([1, 3])
+      })
+      await expectMotionCleanedUp(page)
+    }
+    await input.hover()
+    await bar.locator('.el-input__clear').click()
+    await expect(input).toHaveValue('')
+    await expect(page.locator('.plugin-workbench__main .plugin-card')).toHaveCount(8)
+  })
+
+  appearanceTest('composition commits and clear clicks work while the market drawer moves', async ({ page }) => {
+    await openPluginWorkbench(page, 1472)
+    const bar = page.locator('.plugin-workbench__main .wb-filter-bar')
+    const input = bar.getByRole('textbox')
+    const cards = page.locator('.plugin-workbench__main .plugin-card')
+    await input.focus()
+    await input.evaluate(element => {
+      const input = element as HTMLInputElement
+      input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }))
+      input.value = '猫'
+      input.dispatchEvent(new InputEvent('input', {
+        bubbles: true, data: '猫', inputType: 'insertCompositionText', isComposing: true,
+      }))
+    })
+    await recordDrawerMotion(page, {
+      toggle: MARKET_TOGGLE, panel: MARKET_PANEL, duration: RUN_MS, secondClickAt: null,
+    }, async time => {
+      if (time === 128) {
+        await expect(input).toBeFocused()
+        await expect(input).toHaveValue('猫')
+        await expect(cards).toHaveCount(8)
+      }
+      if (time === 256) {
+        await input.evaluate(element => element.dispatchEvent(
+          new CompositionEvent('compositionend', { bubbles: true, data: '猫' }),
+        ))
+      }
+      if (time === 400) {
+        await expect(cards).toHaveCount(1)
+        const box = (await input.boundingBox())!
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+        const clear = bar.locator('.el-input__clear')
+        await expect(clear).toBeVisible()
+        const clearBox = (await clear.boundingBox())!
+        await page.mouse.click(clearBox.x + clearBox.width / 2, clearBox.y + clearBox.height / 2)
+        await expect(input).toHaveValue('')
+      }
+    })
+    await expect(cards).toHaveCount(8)
+    await expectMotionCleanedUp(page)
+  })
+
+  appearanceTest('exposed rules remain clickable before either transition ends and Tab returns to search', async ({ page }) => {
+    await openPluginWorkbench(page, 1472)
+    const trigger = page.locator('[data-yui-guide-id="plugin-list-filter-rules"]')
+    const input = page.locator('.plugin-workbench__main .wb-filter-bar').getByRole('textbox')
+    for (const direction of ['open', 'close']) {
+      await recordDrawerMotion(page, {
+        toggle: MARKET_TOGGLE, panel: MARKET_PANEL, duration: RUN_MS, secondClickAt: null,
+      }, async time => {
+        // Earlier in the open, the drawer's rail still covers this point.
+        if (time === 256) {
+          await expect(page.locator('.plugin-workbench'), direction).toHaveAttribute('data-motion-running')
+          const box = (await trigger.boundingBox())!
+          const hit = await trigger.evaluate(element => {
+            const box = element.getBoundingClientRect()
+            const target = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)
+            return { isTrigger: element.contains(target), target: target?.outerHTML.slice(0, 300) }
+          })
+          expect(hit.isTrigger, `the drawn rules button receives the pointer: ${JSON.stringify(hit)}`).toBe(true)
+          await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+          await expect(page.locator('.wb-filter-rules-dropdown')).toBeVisible()
+        }
+        if (time === 400) {
+          await page.keyboard.press('Escape')
+          await expect(trigger).toBeFocused()
+          await page.keyboard.press('Tab')
+          await expect(input).toBeFocused()
+        }
+      })
+      await expectMotionCleanedUp(page)
+    }
+  })
+
+  for (const mode of ['embedded', 'standalone']) {
+    appearanceTest(`market ${mode} search keeps narrow wrapping, filtering, clearing and rule focus`, async ({ page }) => {
+      await openPluginWorkbench(page)
+      if (mode === 'embedded') {
+        await openDrawerFully(page, MARKET_TOGGLE, MARKET_PANEL)
+        await page.setViewportSize({ width: 720, height: 1000 })
+      } else {
+        await page.goto(`${PREVIEW_ORIGIN}/ui/market`)
+        await page.setViewportSize({ width: 320, height: 1000 })
+      }
+      const market = page.locator('[data-yui-guide-id="market-panel-root"]')
+      const bar = market.locator('.wb-filter-bar')
+      const input = bar.getByRole('textbox')
+      await expect(market.getByText('Fixture One', { exact: true })).toBeVisible()
+      await expect(market.getByText('Fixture Two', { exact: true })).toBeVisible()
+      const layout = await bar.evaluate(element => {
+        const controls = element.querySelector('.wb-filter-bar__controls')!.getBoundingClientRect()
+        const rules = element.querySelector('.wb-filter-bar__rules-trigger')!.getBoundingClientRect()
+        const input = element.querySelector('.wb-filter-bar__input')!.getBoundingClientRect()
+        return { controls, rules, input }
+      })
+      expect(layout.input.top).toBeGreaterThanOrEqual(layout.rules.bottom)
+      expect(layout.input.width).toBeGreaterThanOrEqual(200)
+      expect(layout.input.right).toBeLessThanOrEqual(layout.controls.right + TOLERANCE)
+      await input.fill('Fixture One')
+      await expect(market.getByText('Fixture Two', { exact: true })).toHaveCount(0)
+      await input.hover()
+      await bar.locator('.el-input__clear').click()
+      await expect(input).toHaveValue('')
+      await expect(market.getByText('Fixture Two', { exact: true })).toBeVisible()
+      const rules = bar.locator('.wb-filter-bar__rules-trigger')
+      await rules.focus()
+      await page.keyboard.press('Enter')
+      const panel = page.locator('.wb-filter-rules-dropdown')
+      await expect(panel.getByRole('button').first()).toBeFocused()
+      await panel.getByRole('button').first().click()
+      await expect(input).toBeFocused()
+      await expect(input).not.toHaveValue('')
+    })
+  }
+})
