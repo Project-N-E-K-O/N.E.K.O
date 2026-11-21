@@ -4499,6 +4499,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         textSpan.setAttribute('data-text', text);
     }
 
+    // Find the option for a freshly uploaded VMD. The upload response's
+    // file_path is built from the same raw file name as the list URL that
+    // loadMMDAnimations() stores in option.value (escaping happens only at
+    // load time), so an exact string match is unambiguous even when a
+    // built-in animation shares the file name.
+    function findUploadedMMDAnimationOption(options, uploadResult) {
+        const filePath = uploadResult && typeof uploadResult.file_path === 'string'
+            ? uploadResult.file_path
+            : '';
+        if (!filePath) return null;
+        return Array.from(options || []).find(opt => opt && opt.value === filePath) || null;
+    }
+
     async function loadMMDAnimations() {
         try {
             const data = await RequestHelper.fetchJson('/api/model/mmd/animations');
@@ -8301,11 +8314,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // 恢复选择状态
                     if (mmdAnimationSelect) {
                         // 优先选择新上传的动画，否则恢复之前的选择
-                        const newFilename = result.filename || file.name;
-                        const newOption = Array.from(mmdAnimationSelect.options).find(opt => {
-                            const optFilename = opt.getAttribute('data-filename') || opt.textContent;
-                            return optFilename === newFilename;
-                        });
+                        const newOption = findUploadedMMDAnimationOption(mmdAnimationSelect.options, result);
                         
                         if (newOption) {
                             mmdAnimationSelect.value = newOption.value;
