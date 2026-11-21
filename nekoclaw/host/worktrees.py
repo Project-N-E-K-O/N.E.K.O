@@ -64,8 +64,8 @@ from nekoclaw.host.repo_docs import repository_root
 
 REF_PREFIX = "refs/nekoclaw/worktrees/"
 """Refs this module keeps a worktree's commits under: ``<prefix><id>/start``,
-where a landing merges from, and ``<prefix><id>/landed``, what of it is in the
-project already."""
+where the next landing merges from (where the worktree started, then what last
+landed, or the project snapshot conflicts were prepared against)."""
 
 IDENTITY = {
     "GIT_AUTHOR_NAME": "NekoClaw",
@@ -203,8 +203,9 @@ class Worktree:
 
     ``id`` is the name of its directory; ``repo_root`` the user's repository
     it was made from; ``subpath`` where the project directory is inside it;
-    ``start`` the commit a landing merges from (where the worktree started,
-    or the project's snapshot ``prepare_conflicts`` last took).
+    ``start`` the commit the next landing merges from when the handle was
+    made; landings move it on, and what they read is the ref it is kept in
+    (``REF_PREFIX``), so an older handle does no harm.
     """
 
     id: str
@@ -316,7 +317,14 @@ class FromRef(Start):
     ref: str
 
     async def commit(self, manager: WorktreeManager, repo_root: Path) -> str:
-        return await manager._resolve_commit(repo_root, self.ref)
+        commit = await manager._resolve_commit(repo_root, self.ref)
+        listed = await manager._git(repo_root, "ls-tree", "-r", "-z", "--name-only", commit)
+        filtered = await manager._filtered(
+            repo_root, [name for name in listed.stdout.split(b"\0") if name], source=commit
+        )
+        if filtered:
+            raise WorktreeUnavailable(CONTENT_FILTERS, f"{filtered} in {self.ref} goes through a content filter")
+        return commit
 
 
 # -- how a result lands -------------------------------------------------------
@@ -654,15 +662,18 @@ class WorktreeManager:
         staged = await self._git(root, "ls-files", "-z", "--stage")
         return any(entry.startswith(b"160000 ") for entry in staged.stdout.split(b"\0"))
 
-    async def _filtered(self, root: Path, names: list[bytes]) -> str | None:
+    async def _filtered(self, root: Path, names: list[bytes], source: str | None = None) -> str | None:
         """Return a path git would pass through a ``filter`` (from any attributes file), or None.
 
         Such filters are programs the user configured: a snapshot would run
         them, and what they make in a worktree need not match the project.
+        With ``source`` the attributes are read from that tree, as a
+        checkout of it would.
         """
         checked = await self._git(
             root,
             "check-attr",
+            *([f"--source={source}"] if source else []),
             "--stdin",
             "-z",
             "filter",
@@ -712,6 +723,14 @@ class WorktreeManager:
             files = [name for name in names if not name.endswith("/")]
             skipped = nested + await asyncio.to_thread(_too_large, root, files, settings.WORKTREE_UNTRACKED_MAX_BYTES)
             specs = ["."] + [f":(exclude,literal,top){name.rstrip('/')}" for name in skipped]
+            # What is to be added is checked again each time: a filter may
+            # have been set up, or a file it applies to made, since.
+            cached = await self._git(root, "ls-files", "-z", "--cached", env=env)
+            adding = [name for name in cached.stdout.split(b"\0") if name]
+            adding += [name.encode("utf-8", "surrogateescape") for name in files if name not in skipped]
+            filtered = await self._filtered(root, adding)
+            if filtered:
+                raise WorktreeUnavailable(CONTENT_FILTERS, f"{filtered} goes through a content filter")
             await self._git(
                 root,
                 "add",
@@ -742,8 +761,7 @@ class WorktreeManager:
         return (await self._git(root, *args, tree, env=IDENTITY)).lines()[0]
 
     async def _has_changes(self, repo_root: Path, path: Path, worktree_id: str, start: str) -> bool:
-        # After a landing, what is not landed is what changed since.
-        start = await self._try_resolve(repo_root, _landed_ref(worktree_id)) or start
+        start = await self._try_resolve(repo_root, _start_ref(worktree_id)) or start
         now = await self._snapshot(path, "nekoclaw: worktree result")
         # Files left out of the snapshot (large, or a repository of its own)
         # were made in the worktree: the project's are never copied into it.
@@ -762,7 +780,7 @@ class WorktreeManager:
             "--name-only",
             "--no-messages",
             "--merge-base",
-            worktree.start,
+            await self._try_resolve(root, _start_ref(worktree.id)) or worktree.start,
             current.commit,
             result.commit,
             check=False,
@@ -782,7 +800,9 @@ class WorktreeManager:
         if merged.returncode == 1:
             return MergeResult("conflict", conflicts=tuple(dict.fromkeys(parts[1:])), **common)
         if merged_tree == current.tree:
-            await self._git(root, "update-ref", _landed_ref(worktree.id), result.commit)
+            # What the worktree holds is in the project: the next landing
+            # merges from here, or it would meet these changes again.
+            await self._git(root, "update-ref", _start_ref(worktree.id), result.commit)
             return MergeResult("unchanged", **common)
         files = await self._changes(root, current.tree, merged_tree)
         counted = dict(
@@ -824,7 +844,7 @@ class WorktreeManager:
                 elif not await self._reads_back(root, merged_tree, files):
                     detail = "the files did not read back as merged"
                 else:
-                    await self._git(root, "update-ref", _landed_ref(worktree.id), result.commit)
+                    await self._git(root, "update-ref", _start_ref(worktree.id), result.commit)
                     return MergeResult("landed", **counted)
             except BaseException:
                 # Cancelled, timed out or git failed after writing may have
@@ -1086,10 +1106,6 @@ def _worktree_id(target: Path) -> str:
 
 def _start_ref(worktree_id: str) -> str:
     return f"{REF_PREFIX}{worktree_id}/start"
-
-
-def _landed_ref(worktree_id: str) -> str:
-    return f"{REF_PREFIX}{worktree_id}/landed"
 
 
 def _decode(raw: bytes) -> str:

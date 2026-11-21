@@ -658,7 +658,7 @@ async def test_conflict_prepared_resolved_and_landed(repo: Path, manager: Worktr
     assert read(repo / "a.txt") == b"one\ntwo\nproject and worktree\nfour\nfive\n"
     assert read(repo / "extra.txt") == b"extra\n"
     reopened = await manager.open(repo, tree.path)
-    assert reopened == prepared
+    assert reopened == replace(prepared, start=landed.result)  # the landing moved it on
 
 
 async def test_prepare_conflicts_refuses_a_changed_worktree(repo: Path, manager: WorktreeManager, base: Path) -> None:
@@ -680,7 +680,8 @@ async def test_prepare_conflicts_refuses_a_landing(repo: Path, manager: Worktree
     assert landed.status == "landed"
     with pytest.raises(WorktreeError):
         await manager.prepare_conflicts(tree, landed)
-    assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == tree.start
+    # The landing moved the start on to what landed; preparing did not move it.
+    assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == landed.result
 
 
 async def test_kinds_of_change(repo: Path, manager: WorktreeManager, base: Path) -> None:
@@ -805,7 +806,7 @@ async def test_project_in_a_subdirectory(repo: Path, manager: WorktreeManager, b
     assert read(repo / "src" / "app.py") == b"print('changed in the worktree')\n"
     assert read(repo / "README.md") == b"# changed outside the project directory\n"
     reopened = await manager.open(repo / "src", tree.path)
-    assert reopened == tree
+    assert reopened == replace(tree, start=landed.result)
 
 
 async def test_large_untracked_files_left_out(repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any) -> None:
@@ -1172,6 +1173,7 @@ async def test_merge_that_git_cannot_do_raises(repo: Path, manager: WorktreeMana
     tree = await manager.create(repo, base / "w1")
     write(tree.path / "a.txt", "changed\n")
     before = digest(repo)
+    git(repo, "update-ref", "-d", f"{REF_PREFIX}w1/start")  # so the handle's start is used
     with pytest.raises(worktrees.GitError):
         await manager.merge_back(Worktree(tree.id, tree.repo_root, tree.path, "", "0" * 40))
     assert digest(repo) == before
@@ -1619,3 +1621,49 @@ async def test_patch_and_attribute_settings_from_the_environment_are_not_taken(
     write(repo / ".gitattributes", "*.txt filter=crypt\n")
     monkeypatch.setenv("GIT_ATTR_SOURCE", "4b825dc642cb6eb9a060e54bf8d69288fbee4904")  # the empty tree
     assert (await manager.probe(repo)).reason == CONTENT_FILTERS
+
+
+# -- review round 4 -------------------------------------------------------------
+
+
+async def test_landing_twice_merges_from_what_landed(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "one\ntwo\nB\nfour\nfive\n")
+    first = await manager.merge_back(tree)
+    assert first.status == "landed"
+    assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == first.result
+    write(tree.path / "a.txt", "one\ntwo\nC\nfour\nfive\n")
+    write(repo / "b.txt", "the user, meanwhile\n")
+    second = await manager.merge_back(tree)  # the old handle: the ref is what counts
+    assert second.status == "landed", second.conflicts
+    assert read(repo / "a.txt") == b"one\ntwo\nC\nfour\nfive\n"
+    assert read(repo / "b.txt") == b"the user, meanwhile\n"
+    assert (await manager.merge_back(tree)).status == "unchanged"
+
+
+async def test_a_filter_set_up_in_a_worktree_is_refused_at_landing(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / ".gitattributes", "*.secret filter=crypt\n")
+    write(tree.path / "key.secret", "hidden\n")
+    before = digest(repo)
+    with pytest.raises(WorktreeUnavailable) as raised:
+        await manager.merge_back(tree)
+    assert raised.value.reason == CONTENT_FILTERS and "key.secret" in raised.value.detail
+    assert digest(repo) == before
+
+
+async def test_a_ref_whose_tree_has_a_filter_is_refused(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    git(repo, "checkout", "-q", "-b", "filtered")
+    write(repo / ".gitattributes", "*.bin filter=lfs\n")
+    write(repo / "model.bin", "pointer\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "filtered")
+    git(repo, "checkout", "-q", "main")
+    assert (await manager.probe(repo)).usable
+    with pytest.raises(WorktreeUnavailable) as raised:
+        await manager.create(repo, base / "w1", FromRef("filtered"))
+    assert raised.value.reason == CONTENT_FILTERS
+    assert not exists(base / "w1") and git(repo, "for-each-ref", REF_PREFIX) == ""
+    assert (await manager.create(repo, base / "w2", FromRef("main"))).id == "w2"
