@@ -1,4 +1,25 @@
+import subprocess
+import sys
+
+import pytest
+
 from scripts import register_protocol
+
+
+def _fake_commands(monkeypatch, returncodes=None, missing=()):
+    """Replace subprocess.run; record argv and return per-command exit codes."""
+    calls: list[list[str]] = []
+    returncodes = returncodes or {}
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        name = args[0].rsplit("/", 1)[-1]
+        if name in missing:
+            raise FileNotFoundError(2, "No such file or directory", args[0])
+        return subprocess.CompletedProcess(args, returncodes.get(name, 0))
+
+    monkeypatch.setattr(register_protocol.subprocess, "run", fake_run)
+    return calls
 
 
 def test_linux_desktop_exec_quotes_python_path_with_spaces() -> None:
@@ -16,7 +37,7 @@ def test_linux_desktop_entry_sets_repo_working_directory(
     monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(register_protocol, "PYTHON_EXE", "/opt/N E K O/bin/python")
     monkeypatch.setattr(register_protocol, "PROJECT_ROOT", project_root)
-    monkeypatch.setattr(register_protocol.os, "system", lambda _cmd: 0)
+    _fake_commands(monkeypatch)
 
     assert register_protocol._register_linux() is True
 
@@ -82,7 +103,7 @@ def test_macos_helper_sets_repo_context(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(register_protocol, "PYTHON_EXE", "/opt/N E K O/bin/python")
     monkeypatch.setattr(register_protocol, "PROJECT_ROOT", project_root)
-    monkeypatch.setattr(register_protocol.os, "system", lambda _cmd: 0)
+    _fake_commands(monkeypatch)
 
     assert register_protocol._register_macos() is True
 
@@ -92,3 +113,93 @@ def test_macos_helper_sets_repo_context(monkeypatch, tmp_path) -> None:
     assert f"cd '{project_root}' || exit 1" in content
     assert f"export PYTHONPATH='{project_root}'${{PYTHONPATH:+:$PYTHONPATH}}" in content
     assert "exec '/opt/N E K O/bin/python' -m plugin.server.market_protocol_handler \"$@\"" in content
+
+
+def test_linux_register_runs_xdg_mime_and_optional_refresh(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    calls = _fake_commands(monkeypatch)
+
+    assert register_protocol._register_linux() is True
+
+    apps_dir = tmp_path / ".local" / "share" / "applications"
+    assert calls == [
+        ["xdg-mime", "default", "neko-protocol-handler.desktop", "x-scheme-handler/neko"],
+        ["update-desktop-database", str(apps_dir)],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("returncodes", "missing"),
+    [({"xdg-mime": 3}, ()), ({}, ("xdg-mime",))],
+    ids=["nonzero", "missing"],
+)
+def test_linux_register_fails_when_xdg_mime_fails(
+    monkeypatch, tmp_path, capsys, returncodes, missing,
+) -> None:
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    _fake_commands(monkeypatch, returncodes=returncodes, missing=missing)
+
+    assert register_protocol._register_linux() is False
+
+    out = capsys.readouterr().out
+    assert "[FAIL]" in out
+    assert "[OK]" not in out
+
+
+@pytest.mark.parametrize(
+    ("returncodes", "missing"),
+    [({"update-desktop-database": 1}, ()), ({}, ("update-desktop-database",))],
+    ids=["nonzero", "missing"],
+)
+def test_linux_register_tolerates_optional_refresh_failure(
+    monkeypatch, tmp_path, returncodes, missing,
+) -> None:
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    _fake_commands(monkeypatch, returncodes=returncodes, missing=missing)
+
+    assert register_protocol._register_linux() is True
+
+
+def test_macos_register_runs_lsregister_without_shell(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    calls = _fake_commands(monkeypatch)
+
+    assert register_protocol._register_macos() is True
+
+    app_dir = tmp_path / "Applications" / "NekoProtocolHandler.app"
+    assert calls == [[register_protocol.LSREGISTER, "-R", str(app_dir)]]
+
+
+@pytest.mark.parametrize(
+    ("returncodes", "missing"),
+    [({"lsregister": 1}, ()), ({}, ("lsregister",))],
+    ids=["nonzero", "missing"],
+)
+def test_macos_register_fails_when_lsregister_fails(
+    monkeypatch, tmp_path, capsys, returncodes, missing,
+) -> None:
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    _fake_commands(monkeypatch, returncodes=returncodes, missing=missing)
+
+    assert register_protocol._register_macos() is False
+
+    out = capsys.readouterr().out
+    assert "[FAIL]" in out
+    assert "[OK]" not in out
+
+
+@pytest.mark.parametrize("system", ["Linux", "Darwin"])
+def test_cli_exits_nonzero_when_required_command_fails(
+    monkeypatch, tmp_path, system,
+) -> None:
+    import runpy
+
+    monkeypatch.setattr(register_protocol.platform, "system", lambda: system)
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(sys, "argv", ["register_protocol.py"])
+    _fake_commands(monkeypatch, returncodes={"xdg-mime": 1, "lsregister": 1})
+
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_path(register_protocol.__file__, run_name="__main__")
+
+    assert exc_info.value.code == 1

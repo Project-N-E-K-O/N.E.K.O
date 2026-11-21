@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import tarfile
+from urllib.parse import urlsplit
 
 
 OFFICIAL_URL = "https://github.com/Project-N-E-K-O/N.E.K.O.git"
@@ -65,8 +66,59 @@ def official_required(repo):
     if len(urls) != 1:
         raise ValueError("origin must have exactly one configured URL.")
     url = urls[0]
-    if url.rstrip("/").removesuffix(".git") != OFFICIAL_URL.removesuffix(".git"):
-        raise ValueError(f"origin is not the configured official repository: {url}")
+    if repo_identity(url) != repo_identity(OFFICIAL_URL):
+        raise ValueError(
+            f"origin is not the configured official repository: {url}\n"
+            "Accepted forms: https://github.com/Project-N-E-K-O/N.E.K.O(.git), "
+            "git@github.com:Project-N-E-K-O/N.E.K.O(.git), "
+            "ssh://git@github.com/Project-N-E-K-O/N.E.K.O(.git).\n"
+            "If this checkout should follow the official repository, run:\n"
+            f"  git remote set-url origin {OFFICIAL_URL}\n"
+            "Transport rewrites such as url.<base>.insteadOf keep working."
+        )
+
+
+# Schemes that address a GitHub repository over an authenticated or encrypted
+# transport, mapped to their default port. Plain http:// and git:// are left
+# out on purpose: this identity gates code that is fetched and merged locally.
+_URL_SCHEME_PORTS = {"https": 443, "ssh": 22, "git+ssh": 22, "ssh+git": 22}
+# scp-like syntax: [user@]host:path, where the first colon precedes any slash.
+_SCP_LIKE = re.compile(r"^(?:[^@/:]+@)?(?P<host>[^@/:]+):(?P<path>[^/].*)$")
+
+
+def repo_identity(url):
+    """Normalize a remote URL to ``(host, owner/repo)`` or ``None``.
+
+    Equivalent HTTPS, ``ssh://`` and scp-like ``git@host:owner/repo`` forms map
+    to the same identity; case, a trailing slash and ``.git`` are ignored.
+    """
+    url = url.strip()
+    if "://" in url:
+        try:
+            parts = urlsplit(url)
+            port = parts.port
+        except ValueError:
+            return None
+        default_port = _URL_SCHEME_PORTS.get(parts.scheme)
+        if default_port is None or port not in (None, default_port):
+            return None
+        if parts.query or parts.fragment:
+            return None
+        host, path = parts.hostname, parts.path
+    else:
+        match = _SCP_LIKE.match(url)
+        if match is None:
+            return None
+        host, path = match["host"], match["path"]
+    if not host:
+        return None
+    path = path.strip("/")
+    if path.lower().endswith(".git"):
+        path = path[: -len(".git")]
+    segments = path.split("/")
+    if len(segments) != 2 or not all(segments):
+        return None
+    return host.lower(), path.lower()
 
 
 def index_flags_required(repo):
