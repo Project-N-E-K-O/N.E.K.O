@@ -1,9 +1,12 @@
 """Preparation adapter uses the character's provider-neutral official TTS cache."""
 import asyncio
 import json
+import os
+import re
 import uuid
+from urllib.parse import quote, urlparse
 
-from .engine import Engine, SpeechCueTooLarge
+from .engine import Engine, SpeechCueTooLarge, endpoint_host
 from . import media
 from .library import application_library
 from .telemetry import count
@@ -11,6 +14,171 @@ from .telemetry import count
 jobs = {}
 tasks = set()
 pending_confirmations = {}
+
+MAX_CAUSE_DEPTH = 4
+MAX_CAUSE_MESSAGE_CHARS = 200
+# Provider messages can be large; bound the regex work before redacting.
+_REDACTION_INPUT_CHARS = 2000
+_DATA_URL = re.compile(r"\bdata:[^\s,]{0,100},\S*", re.IGNORECASE)
+_SECRET_PATTERNS = (
+    # h11 / httpx reject a malformed header with only its raw value in the
+    # message (e.g. a key with stray whitespace), so no header name labels it.
+    (re.compile(r"\b(Illegal header (?:value|name))\b[^\r\n]*", re.IGNORECASE), r"\1 ***"),
+    (re.compile(r"\b(Authorization['\"]?\s*[:=]\s*['\"]?)(?:[A-Za-z]+\s+)?[^\s'\",;}]+", re.IGNORECASE), r"\1***"),
+    (re.compile(r"\bBearer\s+[^\s'\",;}]+", re.IGNORECASE), "Bearer ***"),
+    (re.compile(r"\bsk-[A-Za-z0-9_\-]+"), "sk-***"),
+    # Everything after a Cookie / Set-Cookie header name is credentials (quoted
+    # or not, any number of pairs): mask to the end of the line. Over-masking
+    # a one-line repr or JSON that embeds the header is the safe side.
+    (re.compile(r"\b(Cookie['\"]?\s*[:=]\s*)[^\r\n]+", re.IGNORECASE), r"\1***"),
+    # Quoted values run to the closing quote, or to the end of the bounded
+    # input when truncation cut the quote off.
+    (re.compile(r"\b([A-Za-z_\-]{0,32}(?:key|token|secret|password|cookie)['\"]?\s*[:=]\s*)"
+                r"(?:'[^']*'?|\"[^\"]*\"?|[^\s&'\",;}]+)", re.IGNORECASE), r"\1***"),
+)
+# A URL does not end on sentence punctuation (``…to http://127.0.0.1:7890.``).
+# ``]`` may close an IPv6 host; an unbalanced one is given back in _url_origin.
+_URL = re.compile(r"\b([A-Za-z][A-Za-z0-9+.\-]{0,15})://[^\s'\"<>]*[^\s'\"<>.,;:!?)}]")
+_SHORT_SECRET_CHARS = 8
+
+
+def _url_origin(match):
+    url, closing = match.group(0), ""
+    # ``(see [http://h:1/x])``: the bracket belongs to the sentence, not the URL.
+    while url.endswith("]") and url.count("]") > url.count("["):
+        url, closing = url[:-1], closing + "]"
+    host = endpoint_host(url)
+    if host is None:
+        # An unreadable port must not cost the host name as well.
+        try:
+            host = urlparse(url).hostname
+            host = f"[{host}]" if host and ":" in host else host
+        except ValueError:
+            host = None
+    return f"{match.group(1)}://{host or '?'}{closing}"
+
+
+def _secret_variants(secrets):
+    """Configured credentials as they may appear in messages, longest first.
+
+    Returns ``(substrings, words)``: long forms are masked anywhere; a short
+    key (common on local compatible services) only as a whole word, so it
+    does not cut ordinary words apart.
+    """
+    variants, words = set(), set()
+    for secret in secrets or ():
+        if isinstance(secret, str):
+            for value in (secret, secret.strip()):
+                # Also as a bytes/str repr escapes it and as a URL encodes it.
+                forms = (value, repr(value)[1:-1], repr(value.encode("utf-8", "replace"))[2:-1], quote(value, safe=""))
+                variants.update(form for form in forms if len(form.strip()) >= _SHORT_SECRET_CHARS)
+            short = secret.strip()
+            # Placeholder keys (``a``, ``1234``) would mask ordinary words and
+            # ports, the very details these diagnostics are for.
+            if 4 <= len(short) < _SHORT_SECRET_CHARS and not short.isdigit():
+                words.add(short)
+    return sorted(variants, key=len, reverse=True), sorted(words, key=len, reverse=True)
+
+
+def redact_error_message(message, secrets=()) -> str:
+    """Keep an exception message useful for diagnosis without credentials, URL paths or home directory.
+
+    ``secrets`` are configured credentials, masked wherever they appear:
+    pattern rules cannot recognise an unlabelled raw key.
+    """
+    text = str(message)
+    # Before truncating, so a length cut can never leave half a key behind.
+    substrings, words = _secret_variants(secrets)
+    for secret in substrings:
+        text = text.replace(secret, "***")
+    # Lone surrogates (non-UTF-8 file names) would break the UTF-8 timeline write.
+    text = text[:_REDACTION_INPUT_CHARS].encode("utf-8", "backslashreplace").decode("utf-8")
+    text = _DATA_URL.sub("data:***", text)
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    # URLs keep only scheme and host[:port]: paths and queries may carry keys or IDs.
+    text = _URL.sub(_url_origin, text)
+    # Short keys last: a key such as ``https`` or ``token`` must not erase the
+    # scheme or label the rules above rely on.
+    for word in words:
+        text = re.sub(rf"(?<![\w\-]){re.escape(word)}(?![\w\-])", "***", text)
+    # OSError messages carry local paths (Windows ones repr-escaped, or with
+    # forward slashes as ffmpeg prints them); users paste these logs into
+    # public issues.
+    home = os.path.expanduser("~")
+    if len(home) > 1:
+        for form in (home.replace("\\", "\\\\"), home, home.replace("\\", "/")):
+            text = text.replace(form, "~")
+    if len(text) > MAX_CAUSE_MESSAGE_CHARS:
+        text = text[:MAX_CAUSE_MESSAGE_CHARS] + "…"
+    return text
+
+
+def _error_layer(exc, secrets=()) -> dict:
+    errno = getattr(exc, "errno", None)
+    layer = {"type": type(exc).__name__,
+             "errno": errno if isinstance(errno, int) and not isinstance(errno, bool) else None}
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        # Provider status errors embed the response body, which may echo
+        # request content; keep only the status and the provider error code.
+        code = getattr(exc, "code", None)
+        # Some OpenAI-compatible services use numeric codes (e.g. 1301).
+        if isinstance(code, int) and not isinstance(code, bool):
+            code = str(code)
+        layer.update(status_code=status, code=redact_error_message(code, secrets)[:64] if isinstance(code, str) else None,
+                     message=None)
+        return layer
+    try:
+        layer["message"] = redact_error_message(exc, secrets)
+    except Exception:
+        layer["message"] = None
+    return layer
+
+
+def error_cause_chain(exc, limit=MAX_CAUSE_DEPTH, secrets=()):
+    """Describe the exception and up to ``limit - 1`` underlying causes.
+
+    Provider SDKs wrap transport failures (for example an httpx ReadError with
+    an errno) in a generic connection error, so the class name alone does not
+    tell a dropped oversized request from DNS, TLS or proxy failures.
+    """
+    chain, seen = [], set()
+    while isinstance(exc, BaseException) and len(chain) < limit and id(exc) not in seen:
+        seen.add(id(exc))
+        chain.append(_error_layer(exc, secrets))
+        # Explicit None checks: exceptions may define __len__/__bool__. Honour
+        # ``raise ... from None``: a context hidden on purpose stays hidden
+        # (the openai SDK raises status errors that way over httpx's error).
+        if exc.__cause__ is not None:
+            exc = exc.__cause__
+        elif exc.__suppress_context__:
+            exc = None
+        else:
+            exc = exc.__context__
+    return chain
+
+
+def preparation_error_detail(exc, engine=None, *, vision=True) -> dict:
+    """Structural failure detail: no prompt, danmaku, model output or frame data.
+
+    ``vision=False`` still masks the engine's credentials but leaves out the
+    vision request and endpoint, for failures that are not about them.
+    """
+    secrets = getattr(engine, "diagnostic_secrets", None)
+    secrets = tuple(secrets) if isinstance(secrets, (tuple, list)) else ()
+    detail = {"chain": error_cause_chain(exc, secrets=secrets)}
+    request = getattr(engine, "last_vision_request", None)
+    endpoint = getattr(engine, "vision_endpoint", None)
+    # Only a failure with a vision request in flight is about the vision
+    # endpoint; speech or download failures must not read as one.
+    if vision and isinstance(request, dict):
+        detail["last_vision_request"] = dict(request)
+        if isinstance(endpoint, dict):
+            host, model = endpoint.get("host"), endpoint.get("model")
+            detail.update(vision_host=host if isinstance(host, str) else None,
+                          vision_model=redact_error_message(model, secrets)[:100] if isinstance(model, str) else None)
+    return detail
 
 
 def is_available(manager) -> bool:
@@ -106,6 +274,7 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
 
     async def run():
         staging = library.root / "preparations"
+        engine = None
         try:
             engine = Engine(staging, synthesize, character, language=language, persona=persona)
             async with asyncio.timeout(1800) as deadline:
@@ -124,7 +293,15 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
             raise
         except Exception as exc:
             job.update(status="error", stage="Preparation failed", stage_key="prepareFailed", error=type(exc).__name__)
-            print(f"Watch preparation failed: {type(exc).__name__}")
+            try:
+                detail = preparation_error_detail(exc, engine)
+            except Exception as detail_error:
+                # Diagnostics must never keep the job from its terminal state.
+                detail = {"chain": [{"type": type(exc).__name__}], "detail_error": type(detail_error).__name__}
+            job["error_detail"] = detail
+            # print, not logger (privacy rule): messages come from providers.
+            print(f"Watch preparation failed: {type(exc).__name__} "
+                  f"{json.dumps(detail, default=str)}")
         finally:
             folder = staging / job["id"]
             try:
@@ -135,7 +312,14 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
                 # Keep staged artifacts for recovery, but give polling clients a
                 # terminal state even when the history transaction never commits.
                 job.update(status="error", stage="Saving preparation failed", stage_key="saveFailed", error=type(exc).__name__)
-                print(f"Watch preparation persistence failed: {type(exc).__name__}")
+                # The detail must describe this failure, not an earlier preparation error.
+                try:
+                    job["error_detail"] = preparation_error_detail(exc, engine, vision=False)
+                except Exception as detail_error:
+                    job["error_detail"] = {"chain": [{"type": type(exc).__name__}],
+                                           "detail_error": type(detail_error).__name__}
+                print(f"Watch preparation persistence failed: {type(exc).__name__} "
+                      f"{json.dumps(job['error_detail'], default=str)}")
             finally:
                 job["persistence_complete"] = True
                 count("watch_together_prepared", source="discovery" if automatic else "manual",
