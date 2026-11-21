@@ -1260,10 +1260,12 @@ class DshRuntime:
                     browser = session.spec.gateway.opening_browser_context
                 if browser is None and registered is not None:
                     browser = registered == {BUILTIN_GROUP_BROWSER}
-                groups, browser = classify_device_intent(text, browser_context=browser)
-                if text.number > session.device_focus_input:
-                    session.device_browser_context = browser
-                    session.device_focus_input = text.number
+                groups, target = classify_device_intent(text, browser_context=browser, inherit_target=False)
+                if target is not None:
+                    browser = target
+                    if text.number > session.device_focus_input:
+                        session.device_browser_context = target
+                        session.device_focus_input = text.number
             for group in groups:
                 if registered is None or group in registered:
                     session.device_intents[group] = max(text.number, session.device_intents.get(group, 0))

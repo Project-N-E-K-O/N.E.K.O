@@ -41,8 +41,7 @@ _QUOTED = re.compile(
 _CLAUSE = re.compile(
     r"[，,。；;！？!?\n]|\.(?:\s+|$)|\b(?:but|then|instead|however)\b|(?=\bwithout\b)|"
     r"\band\s+(?=(?:describe|translate|explain)\b)|[并並](?=描述|翻译|翻譯|解释|解釋)|"
-    r"但是|不过|不過|然后|然後|接着|接著|改为|改為|改用|再(?=打开|打開|点击|點擊|截|按|用)",
-    re.I,
+    r"但是|不过|不過|然后|然後|接着|接著|改为|改為|改用|再(?=打开|打開|点击|點擊|截|按|用)"
 )
 # A mention in prose, code, help or a prohibition is a poor reason to load
 # the group. A subsequent affirmative instruction gets its own clause.
@@ -105,11 +104,11 @@ _DESKTOP_TARGET = re.compile(
     r"\b(?:desktop|taskbar|start menu|system tray|file explorer|finder)\b"
 )
 _SWITCH_TARGET = re.compile(r"切[换換][到至]|[转轉]到|回到|返回|\b(?:switch(?: over)?|go back|return) to\b")
-_APP_TARGET = re.compile(r"记事本|記事本|应用|應用|程序|程式|窗口|視窗|\b(?:notepad|app|application|window)\b")
-# An explicit switch to a bare product name, e.g. "Switch to Excel" or
-# "切换到 Microsoft Excel". A return/navigation verb alone is not an app switch.
-_SWITCH_TO_NAME = re.compile(
-    r"(?i:\bswitch(?: over)? to\s+|切[换換][到至]\s*)[A-Z][A-Za-z0-9+-]*(?: +[A-Z][A-Za-z0-9+-]*)*\s*$"
+# Match the destination of the switch. Settings and language names can be
+# capitalized just like an application, so a title-cased word is not evidence.
+_APP_TARGET = re.compile(
+    r"应用|應用|程序|程式|窗口|視窗|\b(?:app|application|window)\b|"
+    r"^\s*(?:the\s+)?(?:记事本|記事本|notepad|(?:microsoft\s+)?excel)\s*$"
 )
 
 
@@ -120,21 +119,22 @@ def select_device_groups(text: str, *, browser_context: bool = False) -> tuple[s
 
 
 def classify_device_intent(
-    text: str, *, browser_context: bool | None = False,
+    text: str, *, browser_context: bool | None = False, inherit_target: bool = True,
 ) -> tuple[tuple[str, ...], bool | None]:
     """Return device groups and the click target for the next instruction.
 
     When the initial surface is still unknown, unrelated input keeps it unknown.
+    With inherit_target=False, unrelated input returns no target; the initial
+    surface still locates an unqualified click.
     A switch away from the browser can change the target without needing a tool.
     """
-    next_browser_context = browser_context
-    text = unicodedata.normalize("NFKC", text)
+    next_browser_context = browser_context if inherit_target else None
+    text = unicodedata.normalize("NFKC", text).casefold()
     text = _URL.sub("https:// ", text)
     text = _QUOTED.sub(lambda m: "https:// " if m[0][1:-1].strip() == "https://" else " ", text)
     groups: set[str] = set()
     web_context = browser_context
-    for original in _CLAUSE.split(text):
-        clause = original.casefold()
+    for clause in _CLAUSE.split(text):
         if _NON_ACTION.search(clause):
             continue
         # Words like page and tabs also name source files, modules and indentation.
@@ -155,7 +155,7 @@ def classify_device_intent(
         desktop_target = bool(_DESKTOP_TARGET.search(clause))
         desktop_action = bool(_DESKTOP_ACTION.search(clause))
         switches_away = (
-            not web_target and switch and (desktop_target or _APP_TARGET.search(clause) or _SWITCH_TO_NAME.search(original))
+            not web_target and switch and (desktop_target or _APP_TARGET.search(clause[switch.end():]))
         )
         if switches_away and not code:
             next_browser_context = False

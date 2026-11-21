@@ -148,7 +148,9 @@ def test_an_earlier_browser_only_disambiguates_an_unqualified_click(text, expect
 @pytest.mark.parametrize(("text", "focus"), [
     ("Switch to Notepad", False), ("切换到记事本", False),
     ("Switch to Excel", False), ("切换到 Excel", False), ("Switch to Microsoft Excel", False),
-    ("switch to dark mode", True),
+    ("switch to excel", False), ("切换到EXCEL", False),
+    ("Switch to Chinese", True), ("Switch to Dark Mode", True),
+    ("Switch to Example", True), ("Switch to the Example app", False),
     ("Summarize the file.", True), ("Don't switch to Notepad", True),
     ('Translate "Switch to Notepad"', True),
 ])
@@ -165,6 +167,14 @@ def test_unrelated_input_preserves_an_unknown_click_target_until_the_registry_an
 
     assert classify_device_intent("Continue.", browser_context=None) == ((), None)
     assert classify_device_intent("Switch to Notepad", browser_context=None) == ((), False)
+
+
+def test_receipts_can_distinguish_unrelated_input_from_an_explicit_target():
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent("Continue.", browser_context=False, inherit_target=False) == ((), None)
+    assert classify_device_intent("Switch to Notepad", browser_context=False, inherit_target=False) == ((), False)
+    assert classify_device_intent("Click OK", browser_context=True, inherit_target=False) == ((BROWSER,), True)
 
 
 @pytest.mark.parametrize(("instruction", "groups", "focus"), [
