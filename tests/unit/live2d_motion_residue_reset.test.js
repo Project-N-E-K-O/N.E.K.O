@@ -178,6 +178,20 @@ test('a saved parameter fades from motion-plus-offset to the saved value through
     } finally { f.release(); }
 });
 
+test('a named saved key wins over a param_N alias of the same parameter, as in the saved-parameter layer', async () => {
+    const f = await fixture();
+    try {
+        const index = f.core.getParameterIndex('ParamArmLA01');
+        for (const saved of [{ ParamArmLA01: 0, [`param_${index}`]: 4 }, { [`param_${index}`]: 4, ParamArmLA01: 0 }]) {
+            f.manager.savedModelParameters = saved;
+            f.manager._shouldApplySavedParams = true;
+            assert.equal(f.manager._resolveParameterResetTarget(f.core, index), 0);
+        }
+        f.manager.savedModelParameters = { [`param_${index}`]: 4 };
+        assert.equal(f.manager._resolveParameterResetTarget(f.core, index), 4, 'an index-only key is still honoured');
+    } finally { f.release(); }
+});
+
 test('the saved-parameter layer stops deferring when the fade layer is not running', async () => {
     const f = await fixture();
     try {

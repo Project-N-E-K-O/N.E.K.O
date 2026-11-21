@@ -768,11 +768,17 @@ Live2DManager.prototype._getSavedParameterResetTargets = function(coreModel) {
     }
     const targets = new Map();
     if (saved && typeof saved === 'object') {
+        // 与保存参数层相同的别名规则：同一参数既有命名键又有 param_N 时以命名键为准。
+        const fromIndexKey = new Map();
         for (const [key, value] of Object.entries(saved)) {
             const numeric = Number(value);
             if (!Number.isFinite(numeric)) continue;
             const index = live2dResolveResetParameterIndex(this, coreModel, key);
-            if (index >= 0) targets.set(index, numeric);
+            if (index < 0) continue;
+            const isIndexKey = /^(?:param_)?\d+$/.test(String(key));
+            if (targets.has(index) && isIndexKey && !fromIndexKey.get(index)) continue;
+            targets.set(index, numeric);
+            fromIndexKey.set(index, isIndexKey);
         }
     }
     this._savedParameterResetTargetCache = { coreModel, saved, revision, targets };
