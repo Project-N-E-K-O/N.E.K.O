@@ -103,7 +103,13 @@ async def load_recommendation_context(expected_owner: dict) -> RecommendationCon
                 community=owner["community"] or "",
                 bearer=snapshot["access_token"] if owner["community"] else "",
                 account_id=str(owner["user_id"] or ""),
-                community_identity_known=bool(owner["community"]) or not snapshot.get("access_token"),
+                # A legacy session (token without local_user_id) cannot be tied
+                # to an account, so it uses the guest profile and guest feed.
+                community_identity_known=(
+                    bool(owner["community"])
+                    or not snapshot.get("access_token")
+                    or not snapshot.get("local_user_id")
+                ),
                 save_chat=save_chat,
                 load_chat_sources=load_chat_sources,
             )

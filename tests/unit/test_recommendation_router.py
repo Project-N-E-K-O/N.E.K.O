@@ -40,6 +40,26 @@ async def create():
 
 
 @pytest.mark.asyncio
+async def test_legacy_session_without_user_id_uses_the_guest_community_feed(client):
+    _, snapshot = client
+    del snapshot["local_user_id"]
+    owner = await routes.capture_owner()
+    assert owner["user_id"] is None
+    context = await routes.load_recommendation_context(owner)
+    assert context.allows_guest_community
+    assert not context.bearer and not context.community and not context.account_id
+
+
+@pytest.mark.asyncio
+async def test_mismatched_owner_still_withholds_the_guest_community_feed(client):
+    _, snapshot = client
+    owner = await routes.capture_owner()
+    snapshot["local_user_id"] = "b"
+    context = await routes.load_recommendation_context(owner)
+    assert not context.allows_guest_community
+
+
+@pytest.mark.asyncio
 async def test_personalization_follows_local_feedback_and_separates_accounts(client, monkeypatch):
     http, snapshot = client
     signed_in = dict(snapshot)

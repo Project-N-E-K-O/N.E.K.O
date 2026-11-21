@@ -555,8 +555,10 @@ async def test_sync_imports_valid_snapshot_entries_and_skips_untrusted_ones(
     remote = PreferenceEvent("e" * 64, "夜景摄影", "all", "explicit", 1, now)
     skewed = PreferenceEvent("d" * 64, "独立解谜", "all", "explicit", 1, now + 3600)
     newer_shape = {**asdict(remote), "id": "c" * 64, "feature": "机械键盘", "weight": 2}
+    requests = []
 
     def handle(request):
+        requests.append(json.loads(request.content))
         return httpx.Response(
             200,
             json={
@@ -587,12 +589,28 @@ async def test_sync_imports_valid_snapshot_entries_and_skips_untrusted_ones(
             attribution_context=attribution,
         )
         await runtime._sync_chat_interests()
-    assert store.pending_chat_interests(owner) == []
+        assert store.pending_chat_interests(owner) == []
+        assert store.local_preferences(owner).profile.features("news") == {
+            "蛙泳换气",
+            "夜景摄影",
+        }
+        # Skipped entries keep the revision unacknowledged so they are retried.
+        assert runtime._chat_interest_revision is None
+
+        import time as time_module
+
+        real_time = time_module.time
+        monkeypatch.setattr(time_module, "time", lambda: real_time() + 3600)
+        await runtime._sync_chat_interests()
+    assert all("known_revision" not in body for body in requests)
+    assert len(requests) == 2
     assert store.local_preferences(owner).profile.features("news") == {
         "蛙泳换气",
         "夜景摄影",
+        "独立解谜",
     }
-    assert runtime._chat_interest_revision == (owner["key"], "f" * 64)
+    # The newer-schema entry is still skipped, so the snapshot stays unacknowledged.
+    assert runtime._chat_interest_revision is None
 
 
 @pytest.mark.asyncio

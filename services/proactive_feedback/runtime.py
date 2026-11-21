@@ -395,7 +395,13 @@ class ProactiveFeedbackRuntime:
                 if sent or received:
                     if not await asyncio.to_thread(self._commit_chat_interests, owner, token, sent, received):
                         return
-                self._chat_interest_revision = (owner["key"], revision) if revision else None
+                # Acknowledge the revision only after a complete import. With
+                # skipped entries, omit known_revision so the next cycle gets
+                # the full snapshot again and can retry them.
+                complete = len(received) == len(reply.get("events") or [])
+                self._chat_interest_revision = (
+                    (owner["key"], revision) if revision and complete else None
+                )
         except (SyncFailure, httpx.HTTPError, OSError, sqlite3.Error, RuntimeError, TimeoutError, ValueError, LockException):
             # The next cycle retries from SQLite without altering feedback sync state.
             pass
