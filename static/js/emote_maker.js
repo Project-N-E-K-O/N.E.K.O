@@ -897,7 +897,6 @@
         // 选中的场景也要落盘：以前只在导入和关页时存，所以"重新打开"或从模板库
         // 切回来永远落回第一个场景，用户挑的那个丢了。
         persistTemplateSession();
-        persistTemplateToLibrary();
     }
 
     function restoreState(snapshot) {
@@ -907,7 +906,6 @@
         forgetStageFrames();
         renderAll();
         persistTemplateSession();
-        persistTemplateToLibrary();
         void stateStageSession?.refresh();
         if (hadPreview) {
             const scene = getSelectedScene();
@@ -1262,7 +1260,6 @@
                 recordChange('templateSkins', next);
                 applyNativeCharacterState();
                 persistTemplateSession();
-                persistTemplateToLibrary();
             });
             row.append(name, select);
             children.push(row);
@@ -1327,7 +1324,6 @@
                 target.attachment = replacement ? select.value.slice('attachment:'.length) : null;
                 recordChange('templateSlots', next);
                 persistTemplateSession();
-                persistTemplateToLibrary();
             });
             row.dataset.searchText = searchTerms.join('\n').toLocaleLowerCase();
             row.append(title, select);
@@ -3413,7 +3409,6 @@
         state.shots = shots;
         // 组跟着模板走：换一个形象不该看到上一个形象的分组
         persistTemplateSession();
-        persistTemplateToLibrary();
     }
 
     function selectGroup(id) {
@@ -4804,7 +4799,6 @@
         applyNativeCharacterState({ render: true });
         updateHistoryButtons();
         persistTemplateSession();
-        persistTemplateToLibrary();
         renderChangedPartColors();
     }
 
@@ -6202,7 +6196,6 @@
                 state.nodeGraph = after;
                 persistNodeGraph();
                 persistTemplateSession();
-                persistTemplateToLibrary();
                 rememberHistory(before, after, restoreStageGraph);
             },
             onClose: () => {
@@ -6223,7 +6216,6 @@
         stateStageSession?.setGraph(state.nodeGraph);
         persistNodeGraph();
         persistTemplateSession();
-        persistTemplateToLibrary();
         renderPackPanel();
     }
 
@@ -6268,6 +6260,10 @@
             groups: (Array.isArray(state.groups) ? state.groups : []).map((group) => ({ ...group })),
             shots: (Array.isArray(state.shots) ? state.shots : []).map((shot) => ({ ...shot })),
             packSceneIds: { ...(state.packSceneIds || {}) },
+            nodeGraph: state.nodeGraph || null,
+            packName: state.packName || '',
+            packFormat: state.packFormat === 'layered' ? 'layered' : 'flat',
+            packPriority: state.packPriority === 'emotion' ? 'emotion' : 'talking',
             character: {
                 skins: pick(state.templateSkins),
                 slots: pick(state.templateSlots),
@@ -6280,14 +6276,7 @@
     }
 
     function persistTemplateSession() {
-        const snapshot = snapshotTemplateSession();
-        if (!snapshot) return;
-        lastTemplate = snapshot;
-        try {
-            localStorage.setItem(LAST_TEMPLATE_KEY, JSON.stringify(snapshot));
-        } catch (_) {
-            // 存不下只影响"下次还记得"，不影响当前会话。
-        }
+        persistTemplateToLibrary();
     }
 
     function loadTemplateSession() {
@@ -6358,15 +6347,17 @@
     }
 
     function persistTemplateToLibrary({ withThumb = false, sourceName = '' } = {}) {
-        if (!templateLibraryModule || !templatePackage) return;
-        const key = currentTemplateKey();
-        const snapshot = key ? snapshotTemplateSession() : null;
+        const snapshot = snapshotTemplateSession();
         if (!snapshot) return;
-        // 这些是"每个模板各一份"的绑定与导出选择，全局那份只是当前模板的镜像
-        snapshot.nodeGraph = state.nodeGraph || null;
-        snapshot.packName = state.packName || '';
-        snapshot.packFormat = state.packFormat === 'layered' ? 'layered' : 'flat';
-        snapshot.packPriority = state.packPriority === 'emotion' ? 'emotion' : 'talking';
+        // Every save entry point writes the same complete snapshot to both
+        // stores before a later restore can choose either copy.
+        lastTemplate = snapshot;
+        try {
+            localStorage.setItem(LAST_TEMPLATE_KEY, JSON.stringify(snapshot));
+        } catch (_) { /* In-memory recovery remains available. */ }
+        if (!templateLibraryModule) return;
+        const key = currentTemplateKey();
+        if (!key) return;
         const existing = templateLibraryModule.find(templateLibraryState, key);
         const thumb = withThumb ? templateThumbDataUrl() : '';
         try {
@@ -8198,7 +8189,6 @@
         forgetStageFrames();
         void stateStageSession?.refresh();
         persistTemplateSession();
-        persistTemplateToLibrary();
     }
 
     function bindAdjustment(key) {
@@ -8394,12 +8384,16 @@
             const saved = templateLibraryModule?.find(templateLibraryState, restoreKey || nextKey);
             const fingerprint = templateFingerprint(nextPackage);
             const sameSession = lastTemplate?.fingerprint === fingerprint;
-            const savedGraph = saved?.session?.nodeGraph || (sameSession ? state.nodeGraph : null);
+            const restoredSession = saved?.session
+                ? { ...saved.session, ...(sameSession ? lastTemplate : {}), fingerprint }
+                : (sameSession ? lastTemplate : null);
+            const savedGraph = restoredSession && Object.hasOwn(restoredSession, 'nodeGraph')
+                ? restoredSession.nodeGraph : (sameSession ? state.nodeGraph : null);
             resetTemplateSession();
-            if (saved?.session) {
+            if (restoredSession) {
                 // The last-open snapshot may contain edits saved by an older
                 // page that did not yet update the library on every change.
-                lastTemplate = { ...saved.session, ...(sameSession ? lastTemplate : {}), fingerprint };
+                lastTemplate = restoredSession;
             }
             if (builtinPackage) {
                 state.nodeGraph = null;
@@ -8428,7 +8422,6 @@
             );
             // 库条目要先落进 templateLibraryState 再 renderAll：网格画的是那份状态，
             // 顺序反了就会出现"模板已载入、卡片却还没画出来"的窗口（自动化和手快都会撞上）
-            persistTemplateSession();
             rememberLoadedTemplate();
             persistTemplateToLibrary({ withThumb: true, sourceName });
             renderAll();
@@ -8732,7 +8725,6 @@
         window.addEventListener('localechange', renderAll);
         window.addEventListener('pagehide', () => {
             persistTemplateSession();
-            persistTemplateToLibrary();
             spineRendererGeneration += 1;
             disposeSpineRenderer();
             releaseTemplateAssetStore();

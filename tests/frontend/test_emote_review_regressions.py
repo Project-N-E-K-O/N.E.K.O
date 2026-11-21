@@ -239,6 +239,27 @@ def test_exports_wait_for_an_active_preview_capture(editor, mode):
     assert set(result["trace"][1:]) == {result["requested"]}, result
 
 
+def test_reimport_keeps_the_latest_basic_assignments_and_exports_them(editor):
+    _import(editor, spine_zip())
+    editor.locator('#inspector-tab-export').click()
+    editor.locator('#pack-format').select_option('flat', force=True)
+    editor.locator('#export-resolution').select_option('128', force=True)
+    editor.locator('#pack-scene-talking').select_option('animation:idle1', force=True)
+    snapshots = editor.evaluate("""() => {
+        const library=JSON.parse(localStorage.getItem('neko-emote-maker-template-library'));
+        const recent=JSON.parse(localStorage.getItem('neko-emote-maker-last-template'));
+        const saved=library.entries.find(entry=>entry.key===library.currentKey).session;
+        return {recent:recent.packSceneIds.talking_image, library:saved.packSceneIds.talking_image};
+    }""")
+    assert snapshots == {'recent':'animation:idle1','library':'animation:idle1'}
+    _import(editor, spine_zip(), 'same-template.zip')
+    assert editor.evaluate('reviewEditor.state.packSceneIds.talking_image') == 'animation:idle1'
+    with editor.expect_download(timeout=45000) as download:
+        editor.locator('#pack-export-btn').click()
+    with zipfile.ZipFile(download.value.path()) as package:
+        assert any(name.endswith('/talking.gif') for name in package.namelist()), package.namelist()
+
+
 def test_png_shot_exports_the_recorded_pose_instead_of_time_zero(editor):
     _import(editor, spine_zip())
     result = editor.evaluate("""async () => {
