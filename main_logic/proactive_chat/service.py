@@ -765,6 +765,10 @@ async def handle_proactive_chat(
                     enabled_modes=command.enabled_modes,
                     enabled_modes_provided=command.enabled_modes_provided,
                 ),
+                # The epoch this request started under, like the text path:
+                # a revocation or switch-off during the awaits above (e.g.
+                # the mini-game invite push) must already end its vision.
+                vision_consent_epoch=vision_consent_epoch,
             )
             if delivered:
                 # Chat counter for1h+10 chats cooldown: voice nudge counts as proactive delivery,

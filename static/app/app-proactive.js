@@ -173,6 +173,8 @@
     mod.holdsProactiveVisionStream = holdsProactiveVisionStream;
     mod.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
 
+    // Also bumped when Proactive Chat or its Screen Share option takes vision
+    // from allowed to not allowed (syncProactiveVisionDuringSpeech).
     // 每次撤回授权递增。截图之后递增过，这张图就属于撤权前：即使随后又重新
     // 开启，也不能随请求发出——后端只能察觉它收到请求之后的撤权。
     var proactiveVisionRevocationSeq = 0;
@@ -191,7 +193,9 @@
         if (!requestBody.screenshot_data && !requestBody.window_title
             && modes.indexOf('vision') === -1 && modes.indexOf('window') === -1) return false;
         // 另一窗口的撤权先落 localStorage，本窗口的同步事件可能还没到，序号未变。
-        if (seqAtCapture === proactiveVisionRevocationSeq && isProactiveVisionEnabledNow()) return false;
+        // holdsProactiveVisionStream also reads the Proactive Chat and Screen
+        // Share switches, so one turned off elsewhere counts too.
+        if (seqAtCapture === proactiveVisionRevocationSeq && holdsProactiveVisionStream()) return false;
         delete requestBody.screenshot_data;
         delete requestBody.screenshot_allow_desktop_fallback;
         delete requestBody.avatar_position;
@@ -1251,6 +1255,7 @@
                 var voiceModes = [];
                 if (canProactiveVisionRunDuringSpeech()) {
                     voiceModes.push('vision');
+                    noteProactiveVisionInUse();
                 }
                 console.log('[ProactiveChat] 语音模式快速路径，modes: [' + voiceModes.join(', ') + ']');
                 // 故意不带 base_interval_seconds / 不读 next_schedule_fixed_mode：
@@ -1356,6 +1361,7 @@
             if (holdsProactiveVisionStream()) {
                 availableModes.push('vision');
                 availableModes.push('window');
+                noteProactiveVisionInUse();
             }
 
             // 新闻搭话：使用微博热议、贴吧与小黑盒首页内容
@@ -2263,6 +2269,7 @@
         if (!canProactiveVisionRunDuringSpeech() || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
         if (screenButton && screenButton.classList.contains('active')) return; // 手动共享时不启动
+        noteProactiveVisionInUse();
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
@@ -2297,16 +2304,40 @@
     }
     mod.stopProactiveVisionDuringSpeech = stopProactiveVisionDuringSpeech;
 
+    // Tell the backend that proactive vision just went from allowed to not
+    // allowed, so a proactive round already in flight (a voice nudge looking
+    // at the screen, a text round carrying a screenshot) stops using it. The
+    // switches only gate new requests here; privacy mode has its own
+    // consent message, which also clears frame caches -- this one does not.
+    function invalidateProactiveVisionRounds() {
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+        try {
+            S.socket.send(JSON.stringify({ action: 'proactive_vision_invalidate' }));
+        } catch (error) {
+            console.warn('[ProactiveVision] in-flight vision invalidation failed:', error);
+        }
+    }
+
     // Bring the speech heartbeat in line with the switches after any of them
     // changed (this window's save or another window's saved settings). Off:
     // stop the heartbeat and, on the allowed -> not allowed change, release
-    // the screen stream so the capture indicator goes out. On: start it when
-    // in a call. Settings are saved often, so this must be idempotent.
+    // the screen stream so the capture indicator goes out and end in-flight
+    // rounds' screen access on the backend. On: start it when in a call.
+    // Settings are saved often, so this must be idempotent.
     var _speechVisionAllowedLast = null;
     // Bumped whenever a sync finds speech vision not allowed (a switch or
     // privacy mode went off), so a frame captured before an off -> on toggle
     // is dropped even though the gate is open again when it completes.
     var _speechVisionOffSeq = 0;
+    // Settings load does not run the sync above, so a window can start
+    // proactive rounds with vision while _speechVisionAllowedLast is still
+    // null. Record "allowed" wherever this window actually starts using the
+    // screen (a round asking for vision, the speech heartbeat), so the first
+    // switch-off after that still sends the invalidation. Only ever records
+    // true: a "not allowed" read during early startup proves nothing.
+    function noteProactiveVisionInUse() {
+        _speechVisionAllowedLast = true;
+    }
     function syncProactiveVisionDuringSpeech() {
         var allowed = canProactiveVisionRunDuringSpeech();
         var wasAllowed = _speechVisionAllowedLast;
@@ -2315,7 +2346,20 @@
             _speechVisionOffSeq += 1;
             stopProactiveVisionDuringSpeech();
             if (wasAllowed !== false) {
+                // A text-chat screenshot taken before this must not ride its
+                // request even if the switches come back on before it is sent
+                // (discardVisionRevokedSince).
+                proactiveVisionRevocationSeq += 1;
                 releaseProactiveVisionStream();
+            }
+            // Only on a real change seen by this window. Not on its first sync
+            // (wasAllowed null), which may run before its settings loaded and
+            // would end another window's legitimate round; every open window
+            // sees the change through the cross-window sync and sends this.
+            // Only when a switch did it: a privacy-mode revocation already
+            // sends proactive_vision_consent, which moves the same epoch.
+            if (wasAllowed === true && isVisionConsentHeldNow()) {
+                invalidateProactiveVisionRounds();
             }
             return;
         }
