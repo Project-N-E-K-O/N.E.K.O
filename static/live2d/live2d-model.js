@@ -3352,7 +3352,15 @@ Live2DManager.prototype.installMouthOverride = function() {
                             const currentVal = coreModel.getParameterValueByIndex(entry.idx);
                             const offset = entry.offset;
 
-                            if (motionWrittenParamIndices.has(entry.idx)) {
+                            const residueState = motionWrittenParamIndices.has(entry.idx)
+                                || typeof this._getMotionResidueParameterState !== 'function'
+                                ? null : this._getMotionResidueParameterState(entry.idx);
+                            if (residueState === 'fading') {
+                                // 动作残留淡出层正把它平滑拉回保存值，本帧不抢写。
+                                continue;
+                            }
+                            if (motionWrittenParamIndices.has(entry.idx) || residueState === 'handoff') {
+                                // 动作刚放手的交接帧保持动作末值加偏移，淡出从这里开始，不跳变。
                                 entry.motionValue = currentVal;
                                 coreModel.setParameterValueByIndex(entry.idx, currentVal + offset);
                             } else {

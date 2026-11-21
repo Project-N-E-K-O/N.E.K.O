@@ -797,7 +797,8 @@ Live2DManager.prototype._installMotionResidueFade = function(model = this.curren
     if (previous && previous.model === model && previous.internalModel === internalModel
         && previous.coreModel === coreModel) return true;
     this._uninstallMotionResidueFade();
-    const state = { model, internalModel, coreModel, touched: new Map(), fades: new Map(), listener: null };
+    const state = { model, internalModel, coreModel, touched: new Map(), fades: new Map(), listener: null,
+        updateCount: 0, wrapperSeen: new Map() };
     state.listener = () => this._updateMotionResidueFade(state);
     internalModel.on('afterMotionUpdate', state.listener);
     this._motionResidueFade = state;
@@ -813,6 +814,7 @@ Live2DManager.prototype._uninstallMotionResidueFade = function(state = this._mot
     } catch (_) {}
     state.touched.clear();
     state.fades.clear();
+    state.wrapperSeen.clear();
     if (this._motionResidueFade === state) this._motionResidueFade = null;
 };
 
@@ -826,6 +828,18 @@ Live2DManager.prototype._getCurrentMotionResidueFade = function() {
 Live2DManager.prototype._isMotionResidueFading = function(index) {
     const state = this._getCurrentMotionResidueFade();
     return !!state && state.fades.has(index);
+};
+
+// 给保存参数包装层用：'fading' 表示淡出层正在写这个参数；'handoff' 表示动作刚放手、
+// 本帧 afterMotionUpdate 才开始淡出；其余返回 null，包装层照原逻辑写保存值。
+// 包装层上一次问过之后淡出层没再跑（没有 afterMotionUpdate），就不再让出，避免参数卡住。
+Live2DManager.prototype._getMotionResidueParameterState = function(index) {
+    const state = this._getCurrentMotionResidueFade();
+    if (!state || !state.touched.has(index)) return null;
+    if (state.wrapperSeen.get(index) === state.updateCount) return null;
+    state.wrapperSeen.set(index, state.updateCount);
+    if (this._isMotionResidueResetSuspended()) return null;
+    return state.fades.has(index) ? 'fading' : 'handoff';
 };
 
 // 把参数交给淡出层，返回已接管的参数 ID；没装上或被暂停时返回空集合，调用方自己即时复位。
@@ -851,6 +865,7 @@ Live2DManager.prototype._isMotionResidueParamProtected = function(paramId, coreM
 
 Live2DManager.prototype._updateMotionResidueFade = function(state = this._motionResidueFade, now = performance.now()) {
     if (!state || this._motionResidueFade !== state) return;
+    state.updateCount++;
     const { model, internalModel, coreModel } = state;
     if (this.currentModel !== model || model.destroyed || model.internalModel !== internalModel
         || internalModel.coreModel !== coreModel) {
@@ -1112,6 +1127,7 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
         let phase = 0;          // 0 = 采集含表情, 1 = 采集无表情 & 计算 delta, 2 = 淡出
         const valuesA = [];     // Phase 0 采集的全参数值（按索引）
         const deltaByIndex = {}; // { 参数索引: 差值 }
+        const motionResidueAtPhase0 = new Set(); // Phase 0 时正在淡出的动作残留参数
         let startTime = 0;
 
         const onBeforeUpdate = function() {
@@ -1137,6 +1153,10 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
                 for (let i = 0; i < paramCount; i++) {
                     try { valuesA[i] = cm.getParameterValueByIndex(i); }
                     catch (e) { valuesA[i] = 0; }
+                    // 动作残留淡出可能在 Phase 1 之前结束，按采样时的状态一并排除。
+                    if (typeof self._isMotionResidueFading === 'function' && self._isMotionResidueFading(i)) {
+                        motionResidueAtPhase0.add(i);
+                    }
                 }
 
                 // 停止表情源（下一帧生效），不停止 motion
@@ -1166,6 +1186,7 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
                 for (let i = 0; i < paramCount; i++) {
                     if (live2dExpressionOwnsAmplitude(self, `param_${i}`, cm)) continue;
                     // 动作残留淡出层这两帧之间改的值不是表情叠加量。
+                    if (motionResidueAtPhase0.has(i)) continue;
                     if (typeof self._isMotionResidueFading === 'function' && self._isMotionResidueFading(i)) continue;
                     try {
                         const b = cm.getParameterValueByIndex(i);

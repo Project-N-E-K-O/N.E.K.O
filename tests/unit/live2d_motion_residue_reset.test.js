@@ -48,6 +48,7 @@ async function fixture() {
         else native.update(f.core, seconds);
         events.emit('afterMotionUpdate');
         f.core.saveParameters();
+        events.emit('beforeModelUpdate');
         f.core.update();
         f.core.loadParameters();
     };
@@ -130,6 +131,87 @@ test('a saved user parameter returns to its saved value instead of the moc defau
         f.frames(12, { rawMotion: true });
         assert.equal(f.value('ParamArmLA01'), 4);
         assert.equal(f.value('ParamCheek'), f.defaultOf('ParamCheek'));
+    } finally { f.release(); }
+});
+
+test('a saved parameter fades from motion-plus-offset to the saved value through the saved-parameter layer', async () => {
+    const f = await fixture();
+    try {
+        f.apply({ ParamArmLA01: 4 });
+        assert.equal(f.manager._shouldApplySavedParams, true);
+        assert.equal(await f.model.motion('PreviewAll', 0, 3), true);
+        const trace = [];
+        for (let i = 0; i < 40; i++) {
+            f.frame();
+            trace.push({ value: f.value('ParamArmLA01'), playing: f.native.queueManager._motions.length > 0 });
+        }
+        const end = trace.findIndex(item => !item.playing);
+        assert.ok(end > 0, 'the motion finished');
+        const peak = trace[end - 1].value;
+        assert.ok(peak > 14, 'the saved offset is composed onto the motion value while it plays');
+        const after = trace.slice(end).map(item => item.value);
+        assert.ok(after.some(value => value > 5 && value < peak - 1), 'the reset passes through intermediate values');
+        for (let i = 1; i < after.length; i++) {
+            assert.ok(after[i] <= after[i - 1] + 1e-6, 'the saved parameter never jumps back up');
+        }
+        assert.ok(Math.abs(after[0] - peak) < 3, 'no jump to the saved value on the hand-off frame');
+        assert.equal(after[after.length - 1], 4);
+
+        // 中途停止：队列在两帧之间被清空，下一帧包装层先于淡出层看到这个参数。
+        assert.equal(await f.model.motion('PreviewAll', 0, 3), true);
+        f.frames(10);
+        const beforeStop = f.value('ParamArmLA01');
+        assert.ok(beforeStop > 10);
+        f.native.stopAllMotions();
+        f.frame();
+        assert.ok(Math.abs(f.value('ParamArmLA01') - beforeStop) < 3, 'the hand-off frame keeps motion plus offset');
+        f.frames(12);
+        assert.equal(f.value('ParamArmLA01'), 4);
+    } finally { f.release(); }
+});
+
+test('the saved-parameter layer stops deferring when the fade layer is not running', async () => {
+    const f = await fixture();
+    try {
+        f.apply({ ParamArmLA01: 4 });
+        assert.equal(await f.model.motion('PreviewAll', 0, 3), true);
+        f.frames(10);
+        f.native.stopAllMotions();
+        f.frame();
+        assert.ok(f.value('ParamArmLA01') > 10, 'hand-off keeps motion plus offset');
+        // 不再发 afterMotionUpdate：淡出层停摆时，保存参数层下一帧就照旧写回保存值。
+        for (let i = 0; i < 2; i++) {
+            f.runtime.context.clock += 33;
+            f.native.update(f.core, f.runtime.context.clock / 1000);
+            f.core.saveParameters();
+            f.core.update();
+            f.core.loadParameters();
+        }
+        assert.equal(f.value('ParamArmLA01'), 4);
+    } finally { f.release(); }
+});
+
+test('an expression smooth reset does not re-add a residue fade that finished between its two samples', async () => {
+    const f = await fixture();
+    try {
+        const index = f.core.getParameterIndex('ParamArmLA01');
+        assert.equal(await f.model.motion('PreviewAll', 0, 3), true);
+        while (f.native.queueManager._motions.length > 0) f.frame();
+        while (!f.manager._isMotionResidueFading(index)) f.frame();
+        const start = f.runtime.context.clock;
+        while (f.runtime.context.clock - start < 250) f.frame(25);
+        assert.equal(f.manager._isMotionResidueFading(index), true);
+        const rendered = [];
+        const reset = f.manager.smoothResetToInitialState(800);
+        f.events.on('beforeModelUpdate', () => rendered.push(f.value('ParamArmLA01')));
+        f.frame(30);    // Phase 0：仍在淡出
+        assert.equal(f.manager._isMotionResidueFading(index), true);
+        f.frame(30);    // 淡出结束，Phase 1 计算差分
+        assert.equal(f.manager._isMotionResidueFading(index), false);
+        for (let i = 0; i < 30; i++) f.frame(30);
+        await reset;
+        assert.equal(rendered[1], f.defaultOf('ParamArmLA01'), 'the finished fade is not counted as an expression delta');
+        assert.ok(rendered.slice(1).every(value => value === f.defaultOf('ParamArmLA01')), 'no rebound while the reset fades out');
     } finally { f.release(); }
 });
 

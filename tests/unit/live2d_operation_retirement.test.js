@@ -158,6 +158,11 @@ test(`real SDK natural completion restores motion-only parameters with Idle=${id
         }
         assert.ok(events.includes('finish:2'), 'real SDK emits completion before its priority is reset');
         assert.equal(events.includes('start:Idle:1'), idle, 'real SDK idle admission follows registered resources');
+        // 真实帧序里每次 motion 更新之后都会发 afterMotionUpdate；残留（含保存值偏移）在那里平滑拉回。
+        for (let i = 1; i <= 12; i++) {
+            f.runtime.context.clock += 40;
+            f.model.internalModel.events.emit('afterMotionUpdate');
+        }
         assert.equal(f.value('ParamAngleX'), saved === null ? baseline : saved, 'natural retirement and the saved layer recover the accepted parameter');
         assert.equal(f.manager._activeActionMotionOperation, null);
         assert.equal(f.manager.motionTimer, null);
