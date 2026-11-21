@@ -639,7 +639,7 @@ class TaskAgentSession(SessionInbox):
             managed_tool(tool, self._host, self.session_id, workdir, tuple(readable), self.jobs,
                          spill=spill, cap=lambda *args: self.context.cap_tool_result(*args)) for tool in builtins
         ]
-        managed = {wrapped.name for original, wrapped in zip(builtins, executors) if wrapped is not original}
+        self._managed_tools = {wrapped.name for original, wrapped in zip(builtins, executors) if wrapped is not original}
         if spec.gateway is not None:
             # Capabilities the host serves (plugin entries, MCP tools) join the
             # built-in tools. The host decides permissions for them itself.
@@ -714,7 +714,7 @@ class TaskAgentSession(SessionInbox):
                     # Those the session was opened without, and any other
                     # the model is told of that is not there now. (Never
                     # one that is there after all.)
-                    withheld=((frozenset(spec.disabled_tools) | {tool.name for tool in self._tools}) - there) | managed,
+                    withheld=((frozenset(spec.disabled_tools) | {tool.name for tool in self._tools}) - there) | self._managed_tools,
                 ),
                 after_tool_call=self._after_tool_call,
                 finish_turn=self._finish_turn,
@@ -1546,7 +1546,9 @@ class TaskAgentSession(SessionInbox):
     async def _after_tool_call(
         self, call: ToolCall, result: AgentToolResult, is_error: bool
     ) -> tuple[AgentToolResult, bool]:
-        result = await self.context.cap_tool_result(call.name, call.id, result)
+        # Managed results, including tool errors, were capped under their source receipt.
+        if call.name not in self._managed_tools:
+            result = await self.context.cap_tool_result(call.name, call.id, result)
         reminder = self._repeat.observe(call.name, call.arguments)
         if reminder is not None:
             self.deliver_notice("repeat_tool", reminder)
@@ -1659,6 +1661,8 @@ class TaskAgentSession(SessionInbox):
             async with job.output_lock:
                 if self.jobs.pending_notices.get(job_id) is not notice:
                     continue
+                if self._abort_requested or self._closing:
+                    return added_tokens
                 try:
                     ruling = await self._host.call(self.session_id, "execution_action", {
                         "phase": "job_notice", "receipt": job.origin,

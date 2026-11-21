@@ -509,6 +509,9 @@ async def test_direct_multimodal_final_submits_raw_image_once() -> None:
         source="screen",
         # Gemini awaits compression before actual sending; the ownership predicate must accompany it.
         visual_still_owned=ANY,
+        # So must screen consent, with the per-frame IDs it keeps by.
+        screen_consent_holds=ANY,
+        image_request_ids=("screen-1",),
     )
     # Pass this turn record's own source, not an accidentally equal literal.
     assert runtime.session.submit_multimodal_turn.await_args.kwargs["source"] == (
@@ -597,16 +600,16 @@ async def test_revocation_after_freeze_sends_live_only_turn_as_text(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "request_id,owned_after_revocation",
-    [(None, False), ("req-1", True)],
-)
+@pytest.mark.parametrize("request_id", [None, "req-1"])
 async def test_revocation_while_the_provider_compresses_drops_live_frames(
-    request_id, owned_after_revocation,
+    request_id,
 ) -> None:
-    """The predicate handed to the provider also re-checks screen consent.
+    """The provider gets a separate screen-consent predicate and per-frame IDs.
 
-    Gemini re-runs it after compressing the frames, right before its send.
+    Gemini re-runs it after compressing the frames, right before its send. A
+    revocation there turns the consent predicate False but leaves ownership
+    alone: the provider then drops only the frames without a request_id, so a
+    screenshot the user attached still goes (issue #3807).
     """
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "openai")
@@ -615,13 +618,14 @@ async def test_revocation_while_the_provider_compresses_drops_live_frames(
     runtime.session.get_multimodal_turn_delivery = MagicMock(
         return_value="direct_atomic"
     )
-    owned: list = []
+    seen: list = []
 
     async def revoke_while_compressing(*_args, **kwargs):
-        cb = kwargs["visual_still_owned"]
-        owned.append(cb())
+        owned = kwargs["visual_still_owned"]
+        consent = kwargs["screen_consent_holds"]
+        seen.append((owned(), consent(), tuple(kwargs["image_request_ids"])))
         runtime._screen_consent_revocation_epoch += 1  # privacy mode on
-        owned.append(cb())
+        seen.append((owned(), consent(), tuple(kwargs["image_request_ids"])))
 
     runtime.session.submit_multimodal_turn = AsyncMock(
         side_effect=revoke_while_compressing
@@ -640,7 +644,10 @@ async def test_revocation_while_the_provider_compresses_drops_live_frames(
         VoiceTranscriptEvent(turn_token=token, provider="openai", text="look here")
     )
 
-    assert owned == [True, owned_after_revocation]
+    assert seen == [
+        (True, True, (request_id,)),
+        (True, False, (request_id,)),
+    ]
 
 
 @pytest.mark.unit

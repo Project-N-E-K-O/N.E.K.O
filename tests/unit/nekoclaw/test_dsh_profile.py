@@ -91,6 +91,54 @@ checkProjection().catch(error => { console.error(error); process.exitCode = 1 })
 """, capture_output=True, check=True, cwd=tmp_path)
 
 
+def test_job_read_queue_survives_missing_results_and_cancelled_waiters(tmp_path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is needed to exercise the pinned profile hook directly")
+    (tmp_path / "guard.mjs").write_text(profile.GUARD_SOURCE, encoding="utf-8")
+    run_node_stdin(node, """
+const assert = require('node:assert/strict')
+async function check() {
+    const { apply } = await import('./guard.mjs')
+    const hooks = {}
+    const approval = { request: async ({callId}) => {
+        if (callId.endsWith('/throws')) throw new Error('permission transport failed')
+        return 'allowed-once'
+    } }
+    apply({ on: (name, fn) => { hooks[name] = fn }, get: () => approval, inject: () => {} },
+          { executions: ['job_output'], readBytes: 1024 })
+    const agent = { session: { header: { id: 'session' } } }
+    const called = []
+    function read(callId) {
+        const control = new AbortController()
+        const exec = { name: 'job_output', agent, callId, arguments: {job_id: 'job-1'}, signal: control.signal }
+        const result = hooks['tools/execute'](exec, async () => {
+            called.push(callId)
+            return {value: {text: callId + ' '}}
+        })
+        return {exec, control, result}
+    }
+    await assert.rejects(read('throws').result, /transport failed/)
+    const first = read('first')
+    assert.equal((await first.result).value.text, 'first ')
+    const waiting = read('waiting')
+    const last = read('last')
+    waiting.control.abort()
+    await assert.rejects(waiting.result, {name: 'AbortError'})
+    assert.deepEqual(called, ['first'])
+    first.control.abort()  // No final result for this read.
+    assert.equal((await last.result).value.text, 'first last ')
+    hooks['tools/result'](first.exec, {})  // A late acknowledgement cannot consume the new batch.
+    hooks['tools/result'](last.exec, {})
+    const next = read('next')
+    assert.equal((await next.result).value.text, 'next ')
+    hooks['tools/result'](next.exec, {})
+}
+const deadline = setTimeout(() => { console.error('job read queue stalled'); process.exit(1) }, 3000)
+check().catch(error => { console.error(error); process.exitCode = 1 }).finally(() => clearTimeout(deadline))
+""", capture_output=True, check=True, cwd=tmp_path)
+
+
 def test_nothing_is_uploaded() -> None:
     rows = _rows()
     # dsh sends the session log and the plugin list along with model requests unless told not to.

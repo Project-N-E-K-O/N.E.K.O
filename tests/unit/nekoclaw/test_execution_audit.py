@@ -244,3 +244,44 @@ def test_search_display_escapes_undecodable_filename_bytes(tmp_path):
 
     path = tmp_path / "name\udcfe"
     assert display_path(path, tmp_path).encode("utf-8") == b"name\\udcfe"
+
+
+@pytest.mark.parametrize("tool_error", [False, True])
+async def test_final_result_cap_keeps_the_source_receipt(tmp_path, monkeypatch, tool_error):
+    from nekoclaw.runtime.host import HostCallbacks
+    from nekoclaw.runtime.tools import web
+    from nekoclaw.runtime.tools.protected_outputs import OUTPUT_SCOPE
+    from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish, make_spec, open_session, say
+
+    async def fetch(_):
+        if tool_error:
+            raise ValueError("private-fixture-error")
+        return "private-fixture-result"
+
+    async def audit(_, payload):
+        return {"allow": True, "receipt": "source-fixture"}
+
+    monkeypatch.setattr(web, "web_fetch", fetch)
+    llm = ScriptedLLM([[call("web_fetch", {"url": "https://example.invalid"}, "fetch"),
+                        finish("tool_calls")], [say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=audit))
+    spill = session.context.spill
+    caps = []
+
+    async def cap(context, name, call_id, result):
+        # Exercise a preview whose long footer would trigger another spill if capped again.
+        path = spill.save("fixture", result.text)
+        scope = OUTPUT_SCOPE.get()
+        caps.append((name, scope.receipt if scope else None, path))
+        return result
+
+    monkeypatch.setattr(type(session.context), "cap_tool_result", cap)
+    try:
+        session.prompt("Use the fixture.")
+        await events.wait_ended()
+        assert [(name, receipt) for name, receipt, _ in caps] == [("web_fetch", "source-fixture")]
+        path = caps[0][2]
+        assert path in spill.protected and not path.exists()
+        assert events.of("tool_end")[-1]["is_error"] is tool_error
+    finally:
+        await session.close()

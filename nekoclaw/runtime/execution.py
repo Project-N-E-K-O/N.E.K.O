@@ -15,7 +15,8 @@ from pathlib import Path
 
 from nekoclaw.runtime.tools.protected_outputs import OUTPUT_SCOPE, OutputScope
 from nekoclaw.runtime.host import HostBridge
-from nekoclaw.runtime.loop.tools import AgentTool
+from nekoclaw.runtime.loop.messages import TextContent
+from nekoclaw.runtime.loop.tools import AgentTool, AgentToolResult
 from nekoclaw.runtime.permissions import classify
 from nekoclaw.runtime.tools.base import ToolAborted, ToolCallInfo, ToolError, run_cancellable
 
@@ -127,9 +128,17 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
             spill_binding = OUTPUT_SCOPE.set(protected)
             job_binding = JOB_HANDOFF.set(handoff)
             try:
-                result = await tool.execute(call_id, arguments, signal, update if on_update else None)
+                failed = False
+                try:
+                    result = await tool.execute(call_id, arguments, signal, update if on_update else None)
+                except (asyncio.CancelledError, ToolAborted):
+                    raise
+                except Exception as exc:
+                    # The loop presents tool exceptions as text. Apply the same
+                    # protected size limits before that text leaves this adapter.
+                    failed = True
+                    result = AgentToolResult(content=[TextContent(text=str(exc))])
                 if protected and result.text:
-                    from nekoclaw.runtime.loop.messages import TextContent
                     from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
 
                     if len(result.text.encode("utf-8")) > READ_MAX_BYTES:
@@ -161,7 +170,9 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
             if await finish("failed"):
                 raise
         else:
-            if await finish("completed"):
+            if await finish("failed" if failed else "completed"):
+                if failed:
+                    raise ToolError(result.text) from None
                 if handoff and handoff.acknowledge:
                     handoff.acknowledge()
                 # These registered tools have only a model-content recipient.

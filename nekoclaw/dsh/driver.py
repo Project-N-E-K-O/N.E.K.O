@@ -970,9 +970,21 @@ class DshRuntime:
                 return {}
             if action in {"save", "save_job"}:
                 content = request.get("text")
+                prefix = None
+                if action == "save_job":
+                    if not isinstance(content, dict):
+                        raise ValueError()
+                    prior = content.get("prefix")
+                    if prior is not None:
+                        prefix = spill.protected.get(Path(prior)) if isinstance(prior, str) else None
+                        if prefix is None or prefix.origin != receipt:
+                            raise ValueError()
+                    content = content.get("delta")
                 if not isinstance(content, str):
                     raise ValueError()
                 path = await asyncio.to_thread(spill.save, tool, content)
+                if path is not None and prefix is not None:
+                    spill.protected[path].prepend(prefix)
                 if path is None:
                     raise OSError()
                 if action == "save":

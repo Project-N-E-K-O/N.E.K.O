@@ -159,8 +159,8 @@ async def test_pinned_dsh_reuses_source_when_searching_retained_text(tmp_path):
         await runtime.shutdown()
 
 
-@pytest.mark.parametrize("post_block", [False, True])
-async def test_pinned_native_job_output_checks_the_command_source(tmp_path, monkeypatch, post_block):
+@pytest.mark.parametrize(("post_block", "retained"), [(False, False), (True, False), (True, True)])
+async def test_pinned_native_job_output_checks_the_command_source(tmp_path, monkeypatch, post_block, retained):
     import re
 
     binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
@@ -168,6 +168,34 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path, monk
         pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to the pinned dsh executable")
     shell, command = (("pwsh", "Write-Output kept-job-text; Start-Sleep -Seconds 2; Write-Output later-text")
                       if os.name == "nt" else ("bash", "echo kept-job-text; sleep 2; echo later-text"))
+    if retained:
+        import asyncio
+        from shlex import quote
+        from nekoclaw.runtime.tools import fs
+
+        monkeypatch.setattr(fs, "READ_MAX_BYTES", 512)
+        saved_calls = []
+        retained_output = DshRuntime._retained_output
+
+        async def observe_save(runtime, token, request):
+            result = await retained_output(runtime, token, request)
+            if request.get("action") == "save_job":
+                saved_calls.append(request["call"])
+            return result
+
+        monkeypatch.setattr(DshRuntime, "_retained_output", observe_save)
+        marker = tmp_path / "release-job"
+        ready = tmp_path / "output-ready"
+        if os.name == "nt":
+            release_path = str(marker).replace("'", "''")
+            ready_path = str(ready).replace("'", "''")
+            command = ("Write-Output ('a' * 1024); Write-Output kept-job-text; "
+                       f"[IO.File]::WriteAllText('{ready_path}', 'ready'); "
+                       f"while (!(Test-Path -LiteralPath '{release_path}')) "
+                       "{ Start-Sleep -Milliseconds 50 }; Write-Output later-text")
+        else:
+            command = ("printf '%01024d\\n' 0; echo kept-job-text; "
+                       f"touch {quote(str(ready))}; while [ ! -f {quote(str(marker))} ]; do sleep .05; done; echo later-text")
     begins = []
     lists = []
     if post_block:
@@ -185,8 +213,14 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path, monk
                 return {"allow": True, "receipt": f"list-{len(lists)}", "origins": allowed}
             if payload["tool"] == "job_output":
                 attempt = sum(p["tool"] == "job_output" for p in begins)
+                if retained and attempt == 1:
+                    async with asyncio.timeout(10):
+                        while not ready.exists():
+                            await asyncio.sleep(.02)
                 return {"allow": True, "receipt": f"read-{attempt}"}
             return {"allow": True, "receipt": "original-command"}
+        if retained and (payload["phase"], payload.get("receipt")) == ("finish", "read-1"):
+            marker.touch()
         return {"allow": post_block or (payload["phase"], payload.get("receipt")) != ("finish", "read-1")}
 
     events = Recorder()
@@ -208,8 +242,22 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path, monk
         if job_ids and len(lists) < 2:
             return [sse_tool_call("job_list", {}, f"list{len(lists)}"), sse_finish("tool_calls")]
         attempt = sum(p["tool"] == "job_output" for p in begins)
+        if retained and attempt == 1:
+            return [sse_tool_call("job_output", {"job_id": job_ids[0], "wait": True}, f"output{i}", index=i - 1)
+                    for i in (1, 2)] + [sse_finish("tool_calls")]
+        if retained and attempt == 3 and not any(m.get("tool_call_id") == "verify-spill" for m in messages):
+            for msg in messages:
+                if msg.get("tool_call_id") not in {"output1", "output2"}:
+                    continue
+                match = re.search(re.escape(str(tmp_path)) + r"[^\n]*?-job_output\.txt", msg["content"])
+                if match:
+                    return [sse_tool_call("grep", {"path": match.group(), "pattern": "kept-job-text|later-text"},
+                                          "verify-spill"), sse_finish("tool_calls")]
         if attempt < 3:
-            return [sse_tool_call("job_output", {"job_id": job_ids[0], "wait": attempt > 0}, f"output{attempt}"),
+            args = {"job_id": job_ids[0], "wait": attempt > 0}
+            if retained and attempt == 0:
+                args.update(wait=True, timeout_ms=300)
+            return [sse_tool_call("job_output", args, f"output{attempt}"),
                     sse_finish("tool_calls")]
         return [sse_text("Done"), sse_finish()]
 
@@ -230,9 +278,19 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path, monk
                   if m["role"] == "tool" and m.get("tool_call_id", "").startswith("output")}
         assert ("fixture post block" if post_block else "could not be delivered") in output["output0"]
         assert "kept-job-text" not in output["output0"]
-        assert "kept-job-text" in output["output1"] and "later-text" in output["output1"]
-        assert "kept-job-text" not in output["output2"] and "later-text" not in output["output2"]
+        if retained:
+            assert saved_calls[0] == "output0" and len(saved_calls) == 2, saved_calls
+            assert [p.get("origins") for p in begins if p["tool"] == "grep"] == [["original-command"]]
+            verified = next(msg["content"] for req in server.requests for msg in req["messages"]
+                            if msg.get("tool_call_id") == "verify-spill")
+            assert "kept-job-text" in verified and "later-text" in verified, verified
+            assert sum("Use grep" in output[key] for key in ("output1", "output2")) == 1
+        else:
+            assert "kept-job-text" in output["output1"] and "later-text" in output["output1"]
+            assert "kept-job-text" not in output["output2"] and "later-text" not in output["output2"]
     finally:
+        if retained:
+            marker.touch()
         await runtime.shutdown()
 
 

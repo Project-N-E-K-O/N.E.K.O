@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import io
+import itertools
 import tempfile
 import threading
 from contextvars import ContextVar
@@ -61,6 +62,12 @@ class _OutputReader(io.RawIOBase):
         return written
 
 
+@dataclass(frozen=True, slots=True)
+class _OutputBatch:
+    previous: _OutputBatch | None
+    spans: tuple[tuple[int, int], ...]
+
+
 class ProtectedOutput:
     """Only the owning session can resolve this result and its original authorization."""
 
@@ -68,6 +75,7 @@ class ProtectedOutput:
         self.origin = origin
         self.spool = spool
         self.spans: list[tuple[int, int]] = []
+        self._prefix: _OutputBatch | None = None
 
     def write(self, data: bytes) -> None:
         if not data:
@@ -83,6 +91,19 @@ class ProtectedOutput:
             else:
                 self.spans.append((start, size))
 
+    def prepend(self, previous: ProtectedOutput) -> None:
+        """Include a prior private batch without rereading or modifying its bytes."""
+        if previous.spool is not self.spool or previous.origin != self.origin:
+            raise ValueError("unrelated retained output")
+        with self.spool.lock:
+            self._prefix = _OutputBatch(previous._prefix, tuple(previous.spans))
+
     def reader(self):
         with self.spool.lock:
-            return io.BufferedReader(_OutputReader(self.spool, tuple(self.spans)))
+            batches = [tuple(self.spans)]
+            prefix = self._prefix
+        while prefix is not None:
+            batches.append(prefix.spans)
+            prefix = prefix.previous
+        spans = itertools.chain.from_iterable(reversed(batches))
+        return io.BufferedReader(_OutputReader(self.spool, spans))

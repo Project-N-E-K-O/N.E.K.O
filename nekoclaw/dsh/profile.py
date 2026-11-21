@@ -178,12 +178,7 @@ export function apply(ctx, config) {
   const jobReads = new WeakMap()
   const jobResults = new Map()
   if (executions.size) ctx.on('tools/result', (exec, result) => {
-    const key = identity(exec)
-    const finish = jobResults.get(key)
-    if (finish) {
-      jobResults.delete(key)
-      finish(!result.isError)
-    }
+    jobResults.get(identity(exec))?.(!result.isError)
   })
   async function withJobRead(exec, execute) {
     if (exec.name !== 'job_output' || !exec.agent || exec.parent !== undefined) return execute()
@@ -192,17 +187,45 @@ export function apply(ctx, config) {
     const id = exec.arguments?.job_id
     let pending = reads.get(id)
     if (!pending) reads.set(id, pending = {})
+    const key = identity(exec)
     const previous = pending.turn
-    let release
-    const turn = new Promise(resolve => { release = resolve })
+    let release, cancelWait
+    const done = new Promise(resolve => { release = resolve })
+    const cancelled = new Promise(resolve => { cancelWait = resolve })
+    const turn = previous ? previous.then(() => done) : done
     pending.turn = turn
-    jobResults.set(identity(exec), delivered => {
-      if (delivered) delete pending.result
+    let executing = false
+    const abort = () => {
+      cancelWait()
+      if (!executing) finish(false)
+    }
+    const finish = delivered => {
+      if (jobResults.get(key) !== finish) return
+      jobResults.delete(key)
+      exec.signal.removeEventListener('abort', abort)
+      if (delivered) {
+        delete pending.path
+        delete pending.text
+      }
       release()
-      if (pending.turn === turn && !pending.result) reads.delete(id)
-    })
-    await previous
-    return execute(pending)
+      turn.then(() => {
+        if (pending.turn === turn && !pending.path && !pending.text) reads.delete(id)
+      })
+    }
+    jobResults.set(key, finish)
+    exec.signal.addEventListener('abort', abort, {once: true})
+    try {
+      if (previous && !exec.signal.aborted) await Promise.race([previous, cancelled])
+      exec.signal.throwIfAborted()
+      executing = true
+      return await execute(pending)
+    } catch (error) {
+      finish(false)
+      throw error
+    } finally {
+      executing = false
+      if (exec.signal.aborted) finish(false)
+    }
   }
   const projections = new Map()
   const identity = exec => JSON.stringify([exec.agent?.session.header.id, exec.callId])
@@ -265,7 +288,7 @@ export function apply(ctx, config) {
     return withJobRead(exec, async pending => {
       if (!await confirm(exec.parent === undefined ? 'direct' : 'nested')) return refused()
       const session = exec.agent.session.header.id
-      let result = pending?.result, display
+      let result, display
       try {
         if (exec.name === 'read' || exec.name === 'grep') {
           const saved = await request(session, exec.callId, 'read', undefined, exec.signal)
@@ -275,16 +298,16 @@ export function apply(ctx, config) {
         if (pending) {
           // Always run the native read with this call's wait and timeout.
           // A refused batch contributes only its unread text, never stale status.
-          const prefix = pending.result?.value?.text ?? ''
           const latest = await next()
           if (latest.isError) result = latest
           else {
-            const value = {...latest.value, text: prefix + latest.value.text}
-            pending.result = result = {value}
-            if (Buffer.byteLength(value.text) > config.readBytes) {
-              const ref = await request(session, exec.callId, 'save_job', value.text)
-              pending.result = result = {value: {...value, text: hint + ' ' + ref.path}}
+            pending.text = (pending.text ?? '') + (latest.value.text ?? '')
+            if ((pending.path && pending.text) || Buffer.byteLength(pending.text) > config.readBytes) {
+              const ref = await request(session, exec.callId, 'save_job', {prefix: pending.path, delta: pending.text})
+              pending.path = ref.path
+              pending.text = ''
             }
+            result = {value: {...latest.value, text: pending.path ? hint + ' ' + pending.path : pending.text}}
           }
         } else {
           result ??= await next()
