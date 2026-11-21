@@ -48,6 +48,38 @@
         node.setAttribute('aria-label', node.textContent);
         node.setAttribute('data-i18n', key);
         node.setAttribute('data-i18n-aria', key);
+        syncStatusOverflow();
+    }
+    // The status chip is not a control: it only becomes focusable (and gets a hover tooltip)
+    // while its text is cut off by the ellipsis, so keyboard and mouse users can read the full text.
+    function syncStatusOverflow() {
+        var node = $('theater-selector-status');
+        if (!node || !node.classList.contains('theater-status')) return;
+        var focused = document.activeElement === node;
+        // While focused the chip may be expanded in place, so measurements no longer reflect truncation;
+        // keep it focusable until blur re-runs this check (removing tabindex would drop focus).
+        var truncated = focused ? node.hasAttribute('tabindex') : node.scrollWidth > node.clientWidth + 1;
+        if (truncated) {
+            node.setAttribute('tabindex', '0');
+            node.setAttribute('title', node.textContent);
+        } else {
+            node.removeAttribute('tabindex');
+            node.removeAttribute('title');
+        }
+    }
+    function watchStatusOverflow() {
+        var node = $('theater-selector-status');
+        if (!node || !node.classList.contains('theater-status')) return;
+        node.addEventListener('blur', syncStatusOverflow);
+        // i18n rewrites the text through data-i18n without calling setStatus.
+        if (typeof MutationObserver !== 'undefined') {
+            new MutationObserver(syncStatusOverflow).observe(node, { childList: true, characterData: true, subtree: true });
+        }
+        if (typeof ResizeObserver !== 'undefined') {
+            new ResizeObserver(syncStatusOverflow).observe(node);
+        }
+        window.addEventListener('resize', syncStatusOverflow);
+        syncStatusOverflow();
     }
     function setFeedback(text, isError) {
         var node = $('theater-inline-feedback');
@@ -992,6 +1024,7 @@
         window.addEventListener('message', handleCrossWindowMessage);
         // 剧本列表通常先于 i18n 渲染完成；脚本写入的提示、徽章和记忆行没有 data-i18n，语言就绪后需重绘。
         window.addEventListener('localechange', function () { renderStories(); renderDetail(); });
+        watchStatusOverflow();
         bindModalKeyboard();
         $('theater-market-btn').addEventListener('click', function () {
             if (state.busy || state.pendingEnd || state.memoryPromptActive) return;
