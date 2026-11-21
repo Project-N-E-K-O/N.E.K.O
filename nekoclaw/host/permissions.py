@@ -523,7 +523,9 @@ class PermissionGate:
     ) -> PermissionDecision:
         """Check host-verified scope when available; older callers retain their category contract."""
         if scope is not None:
-            return await self._check_scoped(commission_id, category, key, scope, detail, hold_once)
+            return await self._check_scoped(
+                commission_id, category, key, scope, detail, hold_once, allow_always=scope.provider != "dsh-stock",
+            )
         if category == "managed_delivery":
             return PermissionDecision(False, DENIED_NO_ANSWER)
         mode = await self._store.mode(category, key)

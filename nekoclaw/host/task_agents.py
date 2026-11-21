@@ -5072,12 +5072,12 @@ class TaskAgentManager:
                 return {"allow": False, "reason": DENIED_BY_SETTINGS}
             if sources and tool in {"read", "grep"} and category == "workdir_files":
                 answer = {"allow": source_live() and not await self._permissions.forbidden(category)}
-            elif kind == "runtime" and (tool in JOB_TOOLS or tool == "web_fetch"):
+            elif tool in JOB_TOOLS or (kind == "runtime" and tool == "web_fetch"):
                 if category != "other":
                     return {"allow": False}
                 decision = await self._permissions.check(
                     commission, category, detail={"tool": tool, "content_to": label},
-                    scope=GrantScope("builtin-runtime", f"{tool}:{scope_ref}", recipient),
+                    scope=GrantScope("dsh-stock" if native else "builtin-runtime", f"{tool}:{scope_ref}", recipient),
                 )
                 if decision.grant_id:
                     grants.append(decision.grant_id)

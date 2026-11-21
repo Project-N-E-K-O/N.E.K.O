@@ -1272,3 +1272,39 @@ async def test_a_directory_that_is_not_a_sessions_is_not_asked_about_in_dsh(host
     assert host.space_keeper._clean(elsewhere, "c1") == "nothing"
     assert host.space_keeper._clean(misnamed, "c1") == "nothing"
     assert installation.forgotten == []
+
+
+@pytest.mark.parametrize(("mode", "choice", "expected"), [("auto", "once", 0), ("first_ask", "session", 1), ("always_ask", "once", 3)])
+async def test_stock_job_list_uses_the_other_tool_policy(tmp_path, mode, choice, expected):
+    from nekoclaw.dsh import profile
+    from nekoclaw.dsh.driver import DshRuntime
+    from tests.unit.nekoclaw.fake_openai_server import FakeOpenAIServer, sse_finish, sse_text, sse_tool_call
+
+    binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
+    if not binary:
+        pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to run the stock dsh test")
+    def factory(on_event, callbacks, installation):
+        return DshRuntime(on_event, callbacks, launch=lambda: profile.DshLaunch(home=tmp_path / "dsh", executable=Path(binary)))
+
+    replies = iter([[sse_tool_call("job_list", {}, f"list{i}"), sse_finish("tool_calls")] for i in range(3)])
+    questions = []
+    async def answer(_, ask):
+        questions.append(ask)
+        return choice
+    with FakeOpenAIServer(lambda _: next(replies, [sse_text("Done"), sse_finish()])) as model:
+        async def model_config():
+            return dict(model="fixture", base_url=model.base_url, api_key="local", auto_extra_body=False)
+        host = make_host(tmp_path, task_agent_model=model_config, decision_llm=FakeDecisionLLM(),
+                         plugins_enabled=lambda: False, dsh=Installation(installed=True), dsh_runtime_factory=factory)
+        try:
+            await host.permission_store.set_mode("other", mode)
+            host.permissions.set_asker(answer)
+            await _dispatch(host, "Check the fixture jobs")
+            await wait_until(lambda: len(model.requests) >= 4, timeout=90, what="all three stock job reads")
+            assert len(questions) == expected
+            assert all(ask.category == "other" and "always" not in ask.options for ask in questions)
+            for i, req in enumerate(model.requests[1:4]):
+                message = next(m for m in req["messages"] if m.get("tool_call_id") == f"list{i}")
+                assert "no background jobs" in message["content"].lower()
+        finally:
+            await host.shutdown()
