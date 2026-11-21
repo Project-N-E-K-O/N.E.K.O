@@ -5,18 +5,29 @@ LLM が会話中にプラグインの機能を「呼び出せる」ようにし�
 天気は？」と聞いたときに LLM が自動的に呼び出し、結果を待って最終
 応答を生成します。
 
-::: warning plugin entry とは別です
-`@llm_tool(name="get_weather")` は conversation-time tool を main_server の `/api/tools` registry に登録します。`@plugin_entry(id="get_weather")` は Plugin Manager、cross-plugin call、別系統の Agent（ネコクロー、NekoClaw）route 用 runtime entry です。SDK 内部は IPC reuse のため LLM tool handler を reserved dynamic entry（`__llm_tool__...`）として保持しますが、この実装詳細によって 2 つの public API が同じになるわけではありません。この prefix を持つ entry を呼ぶのはメインの対話モデルだけで、Agent の plugin 選択にも task agent にも渡されません。
-:::
+## `@plugin_entry` と `@llm_tool` の選び方 {#choosing-an-entry-type}
+
+| | `@plugin_entry` | `@llm_tool` |
+|---|---|---|
+| 何か | プラグインのランタイムエントリー | メインの対話モデルのツール一覧に入るツール（main_server の `/api/tools` registry） |
+| 誰が使うか | Plugin Manager、他のプラグイン、Hosted UI のアクション、Agent（ネコクロー、NekoClaw）の plugin 選択（Agent 側のモデルが選んで呼び出す） | メインの対話モデル（会話中に直接呼び出す） |
+| いつ使うか | **既定の、推奨される形**。プラグインの機能はこれで公開する | **控えめに**。メインの対話モデルが直接呼び出す必要がある少数の機能だけ |
+
+登録された LLM tool の schema はすべてリクエストと一緒にモデルへ送られるため、
+ツールが増えるほどモデルのツール一覧が長くなります。1 つのプラグインに必要な
+LLM tool は通常ごく少数です。`@plugin_entry` で表現できる機能は plugin entry の
+ままにしてください。SDK 内部は IPC reuse のため LLM tool の handler を reserved
+dynamic entry（`__llm_tool__...`）として保持しますが、この prefix を持つ entry は
+Agent の plugin 選択にも task agent にも渡されないため、2 つの API は混ざりません。
 
 このメカニズムは `main_logic/tool_calling.py` の `ToolRegistry` に
 よって支えられ、ツール呼び出しをサポートする全ての provider
 （OpenAI / Gemini / GLM / Qwen Omni / StepFun など）に対して統一的に
 抽象化されています。
 
-## TL;DR — 推奨パス：`@llm_tool`
+## ツールをモデルに公開するとき：`@llm_tool` を使う（生の HTTP 登録は使わない）
 
-通常の `NekoPluginBase` プラグインを書いているなら、**SDK の `@llm_tool`
+通常の `NekoPluginBase` プラグインがツールを対話モデルに公開するときは、**SDK の `@llm_tool`
 デコレーターを使ってください**。登録 / 解除 / コールバックルーティング /
 shutdown クリーンアップを SDK が肩代わりするので、ボイラープレートはゼロ：
 
@@ -53,9 +64,8 @@ class WeatherPlugin(NekoPluginBase):
 helper が **やらない** こと：`main_server` の再起動や初回起動レースからの
 自動復旧。登録はプラグインスタートアップ時に一度だけ発火し、その瞬間
 `main_server` が到達不能ならツールはモデルから不可視のままです —
-プラグインを reload するか、命令的に `register_llm_tool` を呼び直すまで
-復活しません。本ページ末尾の "What Happens When main_server Restarts"
-セクションが resilience パターンを詳述しています。
+プラグインを reload するか、ツールを登録し直すまで復活しません。安全な手順は
+本ページ末尾の「main_server 再起動時の挙動」を参照してください。
 
 このドキュメントの残りは下層の HTTP コントラクトと、それを直接叩く必要が
 ある場面を説明します。
@@ -82,9 +92,9 @@ helper が **やらない** こと：`main_server` の再起動や初回起動�
 - プラグインが JSON 結果を返し、main_server が LLM にフィードバック
   して生成を続行
 
-この層を直接叩くのは SDK helper で済まないケースのみ — プラグインプロセス
-の外で独自の HTTP server を立てる場合や、NekoPluginBase 以外のコンテキスト
-（外部スクリプト等）から登録する場合など。
+この層はホスト内部の契約で、プラグインのコードからは使いません。直接叩くのは
+ホスト側のコードや、プラグインプロセスの外で動く連携（NekoPluginBase 以外の
+コンテキストからツールを登録する外部サービスなど）だけです。
 
 ### 第 2 層 — `@llm_tool` SDK helper（プラグインの推奨）
 
@@ -112,6 +122,15 @@ main_server からの dispatch も同じ IPC trigger 配管（`@plugin_entry`
 と完全に同じ）でプラグインへ戻ります。
 
 ## 登録エンドポイント
+
+::: warning プラグインのコード向けではない
+プラグインプロセスから `main_server`（や localhost 上の他の N.E.K.O サーバー）を
+直接呼んだり、コールバック受信用に独自の HTTP server を立てたりしないでください。
+ポートやアドレスはインストールや開発インスタンスごとに異なり、これらのエンド
+ポイントは内部用で予告なく変わり、SDK の権限チェックも迂回してしまいます。
+プラグインでは `@llm_tool` か `self.register_llm_tool(...)` を使ってください。
+以下はホスト側と外部連携のための説明です。
+:::
 
 すべてのエンドポイントは `MAIN_SERVER_PORT`（デフォルト `48911`）に
 マウントされ、`verify_local_access` が `127.0.0.1` / `::1` /
@@ -219,10 +238,16 @@ LLM がツール呼び出しを発火すると、main_server が `callback_url` 
 `is_error: true` の場合、LLM は呼び出し失敗を認識してスキップしたり
 別のツールを選んだりします。
 
-`callback_url` は `127.0.0.1:<plugin_port>` 上の任意のパスで OK。
-プラグインは自前で HTTP server を立てて受信します。
+`callback_url` はループバックアドレス上の任意のパスで OK。`@llm_tool` を使う
+場合、このルートはプラグインサーバーが提供します
+（`/api/llm-tools/callback/{plugin_id}/{tool_name}`）。自前の server が必要なのは、
+生 HTTP で登録する外部連携だけです。
 
-## 完全なライフサイクル例
+## 完全なライフサイクル例（生 HTTP、外部連携向け）
+
+このパターンはプラグインプロセスの外で動く連携向けです。リトライループは
+この例自身の実装です。`@llm_tool` はプラグインに登録、コールバックの
+ルーティング、後片付けを提供しますが、登録は一度だけでリトライはしません。
 
 ```python
 import asyncio
@@ -268,36 +293,50 @@ async def unregister_on_shutdown():
         pass  # main_server も死んでいるなら諦める
 ```
 
-プラグインのライフサイクルフックにバインド：
-
-```python
-from plugin.sdk.plugin import NekoPluginBase, neko_plugin
-
-@neko_plugin
-class WeatherPlugin(NekoPluginBase):
-    async def on_start(self):
-        # 非同期で登録（プラグイン起動メインフローをブロックしない）
-        asyncio.create_task(register_with_retry())
-        # コールバック受信用の HTTP server も起動（FastAPI / aiohttp など）
-        ...
-
-    async def on_shutdown(self):
-        await unregister_on_shutdown()
-```
+これを `NekoPluginBase` プラグインに組み込まないでください。ライフサイクル
+メソッドは `@lifecycle(id=...)` を付けたときだけ実行され（普通の `on_start` /
+`on_shutdown` メソッドは呼ばれません）、`startup` は独立した `asyncio.run` で
+実行されるため、その中で `asyncio.create_task` で作成したタスクは `startup` が
+戻った時点でキャンセルされます。また、プラグインプロセスは `main_server` を呼んだり
+自前の HTTP server を立てたりしてはいけません（「登録エンドポイント」冒頭の警告を
+参照）。プラグインでは `@llm_tool` が登録、コールバックのルーティング、
+後片付けをまとめて行います。
 
 ## main_server 再起動時の挙動
 
 ⚠️ **重要**：`tool_registry` は `LLMSessionManager` のインメモリ属性
-なので、**main_server 再起動で全部失われます**。プラグイン側で対応が
-必要：
+なので、**main_server 再起動で全部失われます**。
 
-- **プラグインが main_server より長生き**（より一般的）：プラグインは
+`@llm_tool` を使うプラグインの復旧は、ユーザー（またはユーザーが呼ぶエントリー）
+が起点になります。プラグインには main_server の再起動を検知する正規の手段がなく、
+main_server を自分でポーリングしてもいけません。
+
+- 推奨：プラグインを再読み込みする。新しいプロセスがすべての `@llm_tool` を
+  登録し直します。
+- 再読み込みしない場合：`self.unregister_llm_tool(name)` の後に
+  `self.register_llm_tool(...)` を呼ぶ（ローカルに同名ツールが残ったまま
+  登録すると、ホストへ通知する前に `EntryConflictError` になります）。元の
+  登録時の引数はすべて渡し直してください。特に `role` と `reply_tail` は、
+  省略するとデフォルトの `role=None`（全キャラクターから見える）と
+  `reply_tail=False` になります。
+
+どちらの方法でも、ホストが登録を記録するのは、登録が届いた時点で該当する
+キャラクターのセッションマネージャーが少なくとも 1 つ存在する場合だけです
+（`role=None` なら任意のキャラクター、それ以外は `role` のキャラクター）。記録された
+登録はそれらのキャラクターに反映され、後から作られる該当キャラクターにも自動で
+復元されます。該当するキャラクターがまだない場合（キャラクターが未読み込み、または
+`role` のキャラクターが利用できない）、登録は記録されず、後からツールが自動で
+出てくることもありません。キャラクターが利用可能になってから復旧してください。
+
+プラグインプロセスの外で動く生 HTTP の連携は、自分で対応が必要です：
+
+- **連携が main_server より長生き**（より一般的）：外部プロセスは
   ハートビート / 接続切断を監視し、復旧後に **再登録** する必要があり
-  ます。最も簡単な方法はバックグラウンドタスクで定期的に
+  ます。最も簡単な方法は、その外部プロセスのバックグラウンドタスクで定期的に
   `GET /api/tools?role=...` を確認し、無ければ再登録すること
-- **プラグインが main_server と運命共同体**：プラグイン起動フックで
-  `register_with_retry` を呼んでいれば、main_server 再起動時に
-  プラグインも再起動するので、自動的に再登録される
+- **連携が main_server と運命共同体**：外部プロセスが起動時に
+  `register_with_retry` を呼び、main_server と一緒に再起動されるなら、
+  自動的に再登録される
 
 ## 猫娘切り替え
 
@@ -374,8 +413,14 @@ wire 同期完了まで `await` したい場合は
     parameters: dict | None = None, # JSON Schema、デフォルトは引数なし
     timeout: float = 30.0,          # 1 回の呼び出しタイムアウト（秒、≤ 300）
     role: str | None = None,        # None = 全グローバル、または特定キャラ名
+    reply_tail: bool = False,       # 元の返信の画像コンテキスト（_ctx.host_reply）を受け取る
 )
 ```
+
+`reply_tail=True` にすると、元の返信の画像コンテキストが `_ctx.host_reply`
+としてハンドラーに渡されるため、ハンドラーは `_ctx` か `**kwargs` を受け取る
+必要があります。リアルタイム音声と古いフロントエンドでは提供されません。
+[元の返信の末尾画像](/plugin-reply-tail)を参照してください。
 
 デコレートされたメソッドは、解析済み JSON 引数を kwargs として受け取ります。
 シグネチャに `*` を入れて keyword-only を強制すると、誤って位置引数で
@@ -403,6 +448,7 @@ self.register_llm_tool(
     handler=my_async_callable,
     timeout=30.0,
     role=None,
+    reply_tail=False,
 )
 ```
 
@@ -433,7 +479,7 @@ handler 内で `raise` した場合も LLM にエラーが返されます（例�
 - IPC 通知（`LLM_TOOL_REGISTER`）はプラグインホストキューに buffer
   されます。通知到着時 `main_server` がまだ起動していない場合、登録呼び
   出しは失敗してホスト側で warning ログが出ます — `main_server` が
-  起動した後にプラグイン reload か命令的 API で登録し直してください。
+  起動した後に「main_server 再起動時の挙動」の手順で復旧してください。
 - プラグイン停止時、`lifecycle_service.stop_plugin` が
   `plugin/server/messaging/llm_tool_registry.py::clear_plugin_tools` を
   呼び、`POST /api/tools/clear` をボディ
