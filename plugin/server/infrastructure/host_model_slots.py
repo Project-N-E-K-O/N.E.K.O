@@ -90,6 +90,10 @@ def client_headers(protocol: str, base_url: str) -> dict[str, str]:
     return {}
 
 
+# Request fields a provider extra_body must never inject into plugin calls.
+_PLUGIN_OWNED_FIELDS = frozenset({"tools", "tool_choice", "parallel_tool_calls", "functions", "function_call"})
+
+
 def adapt_host_follow_request(slot: ModelSlot, request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     """Shape a host-follow OpenAI request the way the main app sends it.
 
@@ -103,7 +107,7 @@ def adapt_host_follow_request(slot: ModelSlot, request: dict[str, Any]) -> tuple
       (``get_token_limit_field``), value unchanged;
     - the task agent extra_body (``get_agent_extra_body`` +
       ``rewrite_router_reasoning``) is merged in, never overriding a field the
-      request already carries;
+      request already carries and never adding tools;
     - provider cache headers (``get_cache_kwargs``) are returned for the send.
 
     Manual slots and the Messages protocol pass through unchanged. The result
@@ -130,7 +134,13 @@ def adapt_host_follow_request(slot: ModelSlot, request: dict[str, Any]) -> tuple
     if effort is not None:
         adapted.setdefault("reasoning_effort", effort)
     for key, value in (extra or {}).items():
-        # Explicit plugin parameters (and validated core fields) win.
+        # Only model settings (e.g. thinking controls) are merged. Tools stay
+        # under the plugin's control: a provider default such as step-2-mini's
+        # built-in web_search would otherwise bypass the tool_calling
+        # capability check done in prepare_chat_request. Explicit plugin
+        # parameters (and validated core fields) win.
+        if key in _PLUGIN_OWNED_FIELDS:
+            continue
         if key not in adapted:
             adapted[key] = copy.deepcopy(value)
     headers = {

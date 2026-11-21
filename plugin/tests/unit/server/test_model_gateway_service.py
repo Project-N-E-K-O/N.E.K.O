@@ -983,6 +983,17 @@ async def test_host_follow_adaptation_never_overrides_request_fields(monkeypatch
     assert body["model"] == "qwen3.8-flash"
 
 
+async def test_host_follow_never_injects_provider_tools():
+    gateway, sent = capture_gateway()
+    # step-2-mini's registered extra_body carries a built-in web_search tool.
+    slot = host_follow_slot("step-2-mini", "https://api.stepfun.com/v1")
+    await gateway.complete(slot, request_body())
+    body, _ = sent[0]
+    # A plain text call must stay plain: tools are the plugin's decision.
+    assert "tools" not in body
+    assert "tool_choice" not in body
+
+
 async def test_host_follow_stream_and_retry_reuse_the_adapted_request():
     bodies = []
 

@@ -87,7 +87,9 @@ field the endpoint honours (`config.providers.get_token_limit_field`, e.g.
 `max_tokens` for DeepSeek and GLM, value unchanged); the task agent
 `extra_body` (`get_agent_extra_body` + `rewrite_router_reasoning`, e.g.
 thinking off) is merged in without overriding any field the request already
-carries; and provider cache headers from `get_cache_kwargs` are added. The
+carries, and its tool fields (`tools`, `tool_choice`, ...; e.g. step-2-mini's
+built-in web_search) are never injected, so tool use stays the plugin's
+decision and the `tool_calling` capability check holds; and provider cache headers from `get_cache_kwargs` are added. The
 stream_options retry re-derives the same request. Manual slots and the
 Messages protocol are sent unadapted.
 
