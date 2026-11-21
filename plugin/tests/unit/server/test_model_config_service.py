@@ -588,6 +588,35 @@ def test_list_slots_during_maintenance_serves_existing_document(config_env, monk
     }
 
 
+@pytest.mark.parametrize("failure", [OSError("disk full"), PermissionError("read-only")])
+def test_list_slots_serves_existing_document_when_seeding_cannot_write(config_env, monkeypatch, failure):
+    cm, service, _ = config_env
+    # A readable older document whose directory cannot be written.
+    cm.config_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(cm.get_runtime_config_path(CONFIG_FILENAME), {
+        "schema_version": 1,
+        "slots": {"slot_" + "d" * 32: {
+            "name": "Legacy manual", "protocol": "openai_chat",
+            "base_url": "https://legacy.test/v1", "model": "legacy-model", "api_key": "legacy-key",
+        }},
+        "bindings": {}, "binding_versions": {},
+    })
+
+    def failing_save(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(cm, "save_json_config", failing_save)
+    # The store reports MODEL_CONFIG_WRITE_FAILED; listing must stay readable.
+    listed = service.list_slots()
+    assert [slot["name"] for slot in listed["slots"]] == ["Legacy manual"]
+    assert listed["slots"][0]["api_key"] != "legacy-key"
+    # Seeding retries once the directory is writable again.
+    monkeypatch.delattr(cm, "save_json_config")
+    assert {slot["name"] for slot in service.list_slots()["slots"]} == {
+        "Legacy manual", "Familiar model",
+    }
+
+
 def test_explicit_unbind_survives_reinstall_auto_bind(config_env):
     _, service, _ = config_env
     first = service.ensure_host_follow_binding("beta")

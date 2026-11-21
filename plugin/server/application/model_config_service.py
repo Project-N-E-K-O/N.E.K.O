@@ -20,6 +20,9 @@ from plugin.server.domain.model_config import (
 from plugin.server.infrastructure.config_paths import get_plugin_manifest_path
 from plugin.server.infrastructure.model_config_store import ModelConfigStore
 from utils.http.url import same_endpoint
+from plugin.logging_config import get_logger
+
+logger = get_logger("server.model_config")
 
 Requirements = dict[PluginModelUsageId, PluginModelRequirementSchema]
 _requirements_adapter = TypeAdapter(Requirements)
@@ -144,12 +147,15 @@ class ModelConfigService:
             try:
                 config = self.store.update(self._seed_change)
             except Exception as exc:
-                # A read-only storage window (maintenance) must not hide slots
-                # that remain readable; serve this document and retry later.
-                from utils.cloudsave_runtime import MaintenanceModeError
-
-                if not isinstance(exc, MaintenanceModeError):
-                    raise
+                # Seeding is best-effort, like ensure_default_slots: a storage
+                # window that cannot be written (maintenance, full disk,
+                # read-only directory, locked file) must not hide slots that
+                # remain readable. Serve the document already read and retry
+                # on the next open.
+                logger.warning(
+                    "Default model slot seeding skipped: error={}, code={}",
+                    type(exc).__name__, getattr(exc, "code", None),
+                )
         return {"schema_version": config.schema_version, "slots": [self._view(config, key) for key in config.slots]}
 
     def _seed_change(self, config: PluginModelsConfig) -> PluginModelsConfig:

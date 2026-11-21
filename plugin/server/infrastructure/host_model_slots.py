@@ -90,8 +90,12 @@ def client_headers(protocol: str, base_url: str) -> dict[str, str]:
     return {}
 
 
-# Request fields a provider extra_body must never inject into plugin calls.
-_PLUGIN_OWNED_FIELDS = frozenset({"tools", "tool_choice", "parallel_tool_calls", "functions", "function_call"})
+# Request fields a provider extra_body must never inject into plugin calls:
+# tool use and the streaming shape are the plugin's (and gateway's) decision.
+_PLUGIN_OWNED_FIELDS = frozenset({
+    "tools", "tool_choice", "parallel_tool_calls", "functions", "function_call",
+    "stream", "stream_options", "n",
+})
 
 
 def adapt_host_follow_request(slot: ModelSlot, request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
@@ -141,6 +145,8 @@ def adapt_host_follow_request(slot: ModelSlot, request: dict[str, Any]) -> tuple
         # parameters (and validated core fields) win.
         if key in _PLUGIN_OWNED_FIELDS:
             continue
+        # Deliberately unlike forward.py's body.update(extra) (provider wins):
+        # here the plugin's explicit request wins over provider defaults.
         if key not in adapted:
             adapted[key] = copy.deepcopy(value)
     headers = {
