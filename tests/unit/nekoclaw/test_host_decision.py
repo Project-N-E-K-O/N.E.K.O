@@ -954,6 +954,26 @@ async def test_whether_a_commission_is_a_side_question_is_read_from_the_small_mo
     assert "What the user said: where's the chart?" in messages[1]["content"]
 
 
+@pytest.mark.parametrize("which", ["dispatched", "user_said"])
+async def test_a_side_question_too_long_to_be_shown_whole_is_not_told_and_not_asked(which):
+    from config.nekoclaw_settings import DISPATCH_TEXT_MAX_TOKENS, DISPATCH_USER_TEXT_MAX_TOKENS
+    from nekoclaw.host.decision import LexicalDecisionModel
+
+    asked: list[Any] = []
+
+    class Model:
+        async def complete(self, tier: str, messages: list[dict[str, Any]], **_: Any) -> str:
+            asked.append(messages)
+            return '{"side_question": true}'
+
+    # What was said since stands at the end, where a cut would drop it.
+    long = "where is the chart " * (max(DISPATCH_TEXT_MAX_TOKENS, DISPATCH_USER_TEXT_MAX_TOKENS) + 1) + "and rename it"
+    args = (long, "where is it") if which == "dispatched" else ("where is it", long)
+    assert await LexicalDecisionModel(Model()).side_question(*args) is None
+    assert asked == []
+    assert await LexicalDecisionModel(Model()).side_question("where is it", "where is it") is True
+
+
 async def test_a_side_question_that_cannot_be_asked_is_not_told():
     from nekoclaw.host.decision import LexicalDecisionModel
 

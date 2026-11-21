@@ -749,15 +749,20 @@ class LexicalDecisionModel:
         """
         from config.nekoclaw_settings import DISPATCH_TEXT_MAX_TOKENS, DISPATCH_USER_TEXT_MAX_TOKENS
         from config.prompts.prompts_nekoclaw_brain import TASK_BRAIN_SIDE_QUESTION_PROMPT, build_side_question_request
-        from utils.tokenize import truncate_to_tokens
+        from utils.tokenize import count_tokens
 
+        if count_tokens(dispatch_text) > DISPATCH_TEXT_MAX_TOKENS or count_tokens(user_text) > DISPATCH_USER_TEXT_MAX_TOKENS:
+            # Too long to be shown whole, and what is cut off (the end, where
+            # what was said since stands) may well be work: not told, and
+            # it waits for the session, with no request made.
+            return None
         messages = [
             {"role": "system", "content": TASK_BRAIN_SIDE_QUESTION_PROMPT},
             {
                 "role": "user",
                 "content": build_side_question_request(
-                    task=truncate_to_tokens(dispatch_text, DISPATCH_TEXT_MAX_TOKENS),
-                    user_said=truncate_to_tokens(user_text, DISPATCH_USER_TEXT_MAX_TOKENS),
+                    task=dispatch_text,
+                    user_said=user_text,
                     # (Cut already: ``TASK_AGENT_FORK_PENDING_QUESTION_MAX_TOKENS``.)
                     waiting_for=waiting_for,
                 ),
