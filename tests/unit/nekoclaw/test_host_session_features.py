@@ -1026,9 +1026,12 @@ async def _idle_work_over(host: Any) -> None:
     await manager.settle()
 
 
+@pytest.mark.parametrize("brief_result", ["current", "empty", "unavailable"])
 async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next_commission_goes_on_from_that(
-    hosts, tmp_path, monkeypatch
+    hosts, tmp_path, monkeypatch, brief_result
 ):
+    from nekoclaw.runtime.snapshot import read_snapshot
+
     _idle_on(monkeypatch, after=30.0)
     counted: list[str] = []
 
@@ -1048,6 +1051,11 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
 
     async def workspace_brief(project):
         reads.append(project)
+        if len(reads) == 2:
+            if brief_result == "empty":
+                return ""
+            if brief_result == "unavailable":
+                raise OSError("workspace read failed")
         return await read_brief(project)
 
     monkeypatch.setattr(host.space, "brief", workspace_brief)
@@ -1095,7 +1103,8 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     await wait_status(host, second.id, "done")
     request = scripts["add a chart"].requests[0]
     assert len(reads) == 2
-    assert "Current rule: file photos by date." in _system_of(request)
+    assert ("Current rule: file photos by date." in _system_of(request)) == (brief_result == "current")
+    assert "Original rule: file photos by year." not in _system_of(request)
     assert "While idle: file photos by month." not in _system_of(request)
     said = json.dumps(request, ensure_ascii=False)
     assert "the CSV export is added and reported" in said
@@ -1105,6 +1114,14 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     await _let_go(host)
     await _idle_work_over(host)
     assert len(export.requests) == requests_before + 1 and len(host.task_agents._idle_compacted_at) == 1
+    assert read_snapshot(Path(session.session_dir)).refresh_on_resume == (brief_result == "unavailable")
+    if brief_result == "unavailable":
+        scripts["add a table"] = ScriptedLLM([_report("ready", "table added")])
+        third = (await _dispatch(host, "add a table to the budget app")).commissions[0]
+        await wait_status(host, third.id, "done")
+        assert "Current rule: file photos by date." in _system_of(scripts["add a table"].requests[0])
+        assert len(reads) == 3
+        assert not read_snapshot(Path(session.session_dir)).refresh_on_resume
 
 
 async def test_nothing_is_summed_up_unless_it_is_switched_on_and_worth_it(hosts, tmp_path, monkeypatch):

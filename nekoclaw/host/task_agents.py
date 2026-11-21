@@ -1891,8 +1891,8 @@ class TaskAgentManager:
         lines = [json.dumps(definition, ensure_ascii=False) for definition in definitions]
         return "\n".join([texts.TASK_AGENT_COMMISSION_CANDIDATES_HEADER, *lines])
 
-    async def _space_brief(self, commission: Commission, receiving: Callable[[], bool] = lambda: True) -> str:
-        """Return what the task agent space holds for a commission; empty when that is nothing.
+    async def _space_brief(self, commission: Commission, receiving: Callable[[], bool] = lambda: True) -> str | None:
+        """Return workspace context, an empty string for an empty space, or None if unavailable.
 
         A space that cannot be read does not keep a task agent from starting.
         """
@@ -1915,7 +1915,7 @@ class TaskAgentManager:
                     continue  # A peer note rotated the old loan. Read afresh once.
                 logger.warning("reading the task agent space failed (%s)", type(exc).__name__)
                 break
-        return ""
+        return None
 
     async def _repository_documents(self, workdir: str, session_dir: str | None = None) -> str:
         """Return the list of the files the repository a task agent works in keeps for agents; empty when it has none.
@@ -2097,10 +2097,12 @@ class TaskAgentManager:
                 self._discard(commission_id)
                 return False
             if unwanted():
-                await self._ledger.transition(commission_id, "cancelled", reason=DENIED_BY_SETTINGS)
+                await self._ledger.transition(commission_id, "cancelled", reason=_STOPPED_MEANWHILE_REASON)
                 self._discard(commission_id)
                 return False
-            if brief:
+            if brief is None:
+                spec = spec.model_copy(update={"workspace_brief_unavailable": True})
+            elif brief:
                 spec = spec.model_copy(update={"instructions": f"{spec.instructions}\n\n{brief}"})
             await runtime.start(spec)
             session.opened_in_runtime = True
@@ -2392,40 +2394,48 @@ class TaskAgentManager:
             riding = [wake for piece in session.carried for wake in getattr(piece, "wakes", ())]
             if opens and commission.source == "session":
                 riding = [*riding, *await self._ledger.opening_wakes(commission.id)]
-            async with self._answer_delivery(session, session.carried) as render:
-                while True:
-                    if await stopped_meanwhile():
-                        # The stop has closed the session already.
-                        await self._close_session(session)
-                        return False
-                    if not excerpt or self._times_dropped(commission) == excerpt_as_of:
-                        # (Nothing is awaited between this and the message
-                        # being sent: it is not stopped, and the session is
-                        # still its own, when it is.)
-                        break
-                    # What is kept of the main dialogue was dropped while the
-                    # session was being set up, which takes a while (NekoClaw
-                    # went off; it may be on again by now). What was said
-                    # before that is not handed over after it: the opening
-                    # message is made again, without it. Making it waits for
-                    # something, so whether the commission was stopped, and
-                    # whether more was dropped, is looked at once more.
-                    excerpt_as_of = self._times_dropped(commission)
-                    excerpt = self._excerpt(commission)
-                    anew = await worded(cleared=True, excerpt=excerpt) if commission.continues or excerpt else onward
-                    text, opens = first_message(runtime_name)
-                # Whether a person's words are in it: what she dispatched or the
-                # user said, told to the session for the first time (the message
-                # that tells a commission what it is, unless it was filed for
-                # notes), or something kept to be said. Not where it is only
-                # what wake requests brought; nor is it for the message that
-                # says once more what the commission is, to a session that was
-                # at another one since or holds nothing of it: nobody spoke now.
-                # (A question another session asked, which a copy answers, is
-                # what a model wrote.)
-                said_first = opens and not opened and commission.source not in ("session", "ask")
-                nobody = not said_first and all(isinstance(piece, (_Handed, _Unsaid)) for piece in session.carried)
-                await self._send_text(runtime, session, "prompt", render(text), opening=opens, wakes=riding, human=not nobody)
+            has_answers = any(isinstance(piece, _Unsaid) for piece in session.carried)
+            for attempt in range(2):
+                run = self._permissions.current_run(commission.id) if has_answers else None
+                async with self._answer_delivery(session, session.carried) as render:
+                    while True:
+                        if await stopped_meanwhile():
+                            # The stop has closed the session already.
+                            await self._close_session(session)
+                            return False
+                        if not excerpt or self._times_dropped(commission) == excerpt_as_of:
+                            # (Nothing is awaited between this and the message
+                            # being sent: it is not stopped, and the session is
+                            # still its own, when it is.)
+                            break
+                        # What is kept of the main dialogue was dropped while the
+                        # session was being set up, which takes a while (NekoClaw
+                        # went off; it may be on again by now). What was said
+                        # before that is not handed over after it: the opening
+                        # message is made again, without it. Making it waits for
+                        # something, so whether the commission was stopped, and
+                        # whether more was dropped, is looked at once more.
+                        excerpt_as_of = self._times_dropped(commission)
+                        excerpt = self._excerpt(commission)
+                        anew = await worded(cleared=True, excerpt=excerpt) if commission.continues or excerpt else onward
+                        text, opens = first_message(runtime_name)
+                    # Whether a person's words are in it: what she dispatched or the
+                    # user said, told to the session for the first time (the message
+                    # that tells a commission what it is, unless it was filed for
+                    # notes), or something kept to be said. Not where it is only
+                    # what wake requests brought; nor is it for the message that
+                    # says once more what the commission is, to a session that was
+                    # at another one since or holds nothing of it: nobody spoke now.
+                    # (A question another session asked, which a copy answers, is
+                    # what a model wrote.)
+                    if run is not None and not run() and attempt == 0:
+                        # A peer message ended the receiving run while we checked.
+                        # Close its pending row and borrow as the current run once.
+                        continue
+                    said_first = opens and not opened and commission.source not in ("session", "ask")
+                    nobody = not said_first and all(isinstance(piece, (_Handed, _Unsaid)) for piece in session.carried)
+                    await self._send_text(runtime, session, "prompt", render(text), opening=opens, wakes=riding, human=not nobody)
+                break
             session.ready = True
             # What was passed on while the session was being set up. Like the
             # prompt, it is the user's until the run is seen at work.
@@ -2743,8 +2753,10 @@ class TaskAgentManager:
             stack.callback(self._permissions.release_grant, grant)
             record.grant_id = self._permissions.authorization_ref(grant)
             def render(texts: list[str], *, steer: bool = False) -> str:
+                if not live():
+                    return withheld(texts, unavailable)  # The unsubmitted receipt stays cancelled.
                 if (
-                    decision.allow and live() and self._permissions.grant_active(grant)
+                    decision.allow and self._permissions.grant_active(grant)
                     and all(part.recipient == owner for part in texts if isinstance(part, _Unsaid))
                 ):
                     record.status = "running"  # The runtime's taken or refusal event settles the row.

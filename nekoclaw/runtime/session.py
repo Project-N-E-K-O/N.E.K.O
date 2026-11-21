@@ -651,16 +651,14 @@ class TaskAgentSession(SessionInbox):
         if snapshot is None or snapshot.workdir not in ("", str(workdir)):
             # A moved session's system prompt must name its new working directory.
             await self._renew_snapshot(REASON_OPENED if snapshot is None else REASON_MOVED)
-        elif snapshot.refresh_on_resume and not spec.idle_compaction:
-            # The host now supplies this commission's own authorized workspace brief.
-            await self._renew_snapshot(REASON_COMPACTED)
         else:
-            self._adopt(snapshot)
-            if snapshot.compactions is not None and snapshot.compactions != self._compactions:
-                # Summed up since, and stopped before what follows a summary
-                # was done (the session was closed meanwhile): done before
-                # the first request, as it would have been before the next.
-                self._compaction_due = True
+            # An interrupted summary still owes the host a completion event.
+            # Its recovery renews the snapshot before the first model request.
+            self._compaction_due = snapshot.compactions is not None and snapshot.compactions != self._compactions
+            if snapshot.refresh_on_resume and not spec.idle_compaction and not self._compaction_due:
+                await self._renew_snapshot(REASON_COMPACTED)
+            else:
+                self._adopt(snapshot)
         # Fixed for as long as the session is open: a run looks its tools up
         # here by name. Every tool there is now, and a stand-in for each the
         # model is still told of that is not there. What the model is told
@@ -777,7 +775,7 @@ class TaskAgentSession(SessionInbox):
             time.time(),
             workdir=str(self._workdir),
             compactions=self._compactions,
-            refresh_on_resume=spec.idle_compaction,
+            refresh_on_resume=spec.idle_compaction or spec.workspace_brief_unavailable,
         )
         try:
             await asyncio.to_thread(write_snapshot, self._session_dir, snapshot)

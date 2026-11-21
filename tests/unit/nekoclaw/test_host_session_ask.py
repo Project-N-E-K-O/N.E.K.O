@@ -719,6 +719,60 @@ async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word
     await wait_until(recorded, what="the answer delivery to be on record")
 
 
+@pytest.mark.parametrize("changes", [1, 2])
+async def test_opening_answer_rechecks_the_run_after_peer_input(hosts, tmp_path, monkeypatch, changes):
+    from nekoclaw.host.task_agents import _Unsaid
+
+    scripts = {PHOTOS: _photos()}
+    host = _host(hosts, tmp_path, scripts)
+    photos = await _at_rest(host, scripts)
+    await wait_until(lambda: photos.id not in host.task_agents._sessions, what="the first session closing")
+    runtime = host.task_agents._runtimes.builtin()
+    prompt, check, get = runtime.prompt, host.permissions.check, host.ledger.get
+    delivered = []
+    change_at_next_read = False
+    changed = 0
+
+    async def capture_prompt(session_id, text, **options):
+        delivered.append(text)
+        return await prompt(session_id, text, **options)
+
+    async def mark_answer_loan(owner, category, **kwargs):
+        nonlocal change_at_next_read
+        decision = await check(owner, category, **kwargs)
+        if getattr(kwargs.get("scope"), "resource", None) == "receive_answer":
+            assert decision.allow
+            change_at_next_read = changed < changes
+        return decision
+
+    async def get_after_peer_input(owner):
+        nonlocal changed, change_at_next_read
+        if owner == photos.id and change_at_next_read:
+            change_at_next_read = False
+            changed += 1
+            host.permissions.received_external_input(owner)
+        return await get(owner)
+
+    monkeypatch.setattr(host.permissions, "check", mark_answer_loan)
+    monkeypatch.setattr(host.ledger, "get", get_after_peer_input)
+    monkeypatch.setattr(runtime, "prompt", capture_prompt)
+    answer = _Unsaid("the private answer", photos.id)
+    assert await host.task_agents._wake_working(photos.id, answer, reason="answer delivered")
+    await wait_until(lambda: delivered, what="the opening prompt")
+    assert changed == changes
+    [text] = delivered
+    assert (answer in text) == (changes == 1)
+    assert ("could not be authorized for delivery" in text) == (changes == 2)
+    assert "permission denied" not in text
+
+    async def settled():
+        rows = await host.ledger.run(lambda db: call_audit.read_trace(db, photos.id, now=0))
+        states = [row["status"] for row in rows if row["target"] == "receive_answer"]
+        return sorted(states) == ["cancelled", "completed" if changes == 1 else "cancelled"]
+
+    await wait_until(settled, what="both answer attempts settling")
+
+
 @pytest.mark.parametrize("change", ["next_run", "closing", "ended"])
 async def test_delayed_answer_follows_its_still_working_commission(hosts, tmp_path, monkeypatch, change):
     wait_model, model = _held()
