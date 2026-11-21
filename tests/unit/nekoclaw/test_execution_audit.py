@@ -173,3 +173,23 @@ def test_long_combined_question_includes_all_choices():
     short = render_question("work", {**question, "detail": {"path": "file", "content_to": "model"}}, "en")
     assert count_tokens(rendered) <= QUESTION_TEXT_MAX_TOKENS
     assert rendered.endswith(short.split("model")[-1])
+
+
+def test_utf8_code_point_split_across_grep_chunks_keeps_later_matches(tmp_path, monkeypatch):
+    import threading
+    import time
+    import regex
+    from nekoclaw.runtime.tools import search
+
+    limit = search.GREP_LINE_MAX_BYTES
+    document = tmp_path / "minutes.txt"
+    document.write_bytes(b"a" * limit + "猫咪\n批准议定\n".encode())
+    attempts = []
+    def detect(sample):
+        attempts.append(True)
+        return "gbk"
+    monkeypatch.setattr(search, "detect_legacy_encoding", detect)
+    matches = search.grep_files(document, regex.compile("议定"), None, tmp_path,
+                                search._Budget(threading.Event(), time.monotonic() + 15),
+                                case_insensitive_globs=False)
+    assert not attempts and [m.line for m in matches] == ["批准议定"]

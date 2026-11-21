@@ -435,21 +435,26 @@ def preview_line(line: str, max_bytes: int = GREP_MAX_LINE_BYTES, *, match_start
 def _legacy_readline(source):
     # ASCII headers can extend beyond the leading sample. Detect on the first
     # non-UTF-8 line and keep that encoding for the rest of this file.
-    encoding = None
-    attempted = False
+    utf8 = codecs.getincrementaldecoder("utf-8")()
+    legacy = None
 
     def readline(size):
-        nonlocal encoding, attempted
+        nonlocal utf8, legacy
         raw = source.readline(size)
-        if not attempted and raw and not raw.isascii():
+        eof = not raw
+        if utf8 is not None:
             try:
-                codecs.getincrementaldecoder("utf-8")().decode(raw, final=len(raw) < size)
-            except UnicodeDecodeError:
-                attempted = True
+                utf8.decode(raw, final=eof)
+            except UnicodeDecodeError as exc:
+                utf8 = None
+                # The decoder includes pending bytes from the previous chunk.
+                raw = exc.object
                 sample = raw + source.peek(BINARY_SAMPLE_BYTES)[:BINARY_SAMPLE_BYTES]
                 complete, separator, _ = sample.rpartition(b"\n")
                 encoding = detect_legacy_encoding(complete if separator and complete else raw)
-        return raw.decode(encoding, errors="replace").encode("utf-8") if encoding else raw
+                if encoding:
+                    legacy = codecs.getincrementaldecoder(encoding)(errors="replace")
+        return legacy.decode(raw, final=eof).encode("utf-8") if legacy else raw
 
     return readline
 
