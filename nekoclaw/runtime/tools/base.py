@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from nekoclaw.runtime.tools.protected_outputs import OUTPUT_SCOPE, ProtectedOutput
 from nekoclaw.runtime.loop.tools import (
     AgentTool,
     AgentToolResult,
@@ -91,6 +92,8 @@ class SpillStore:
 
     def __init__(self, directory: Path) -> None:
         self.directory = directory
+        self.protected: dict[Path, ProtectedOutput] = {}
+        self._closed = False
         self._lock = threading.Lock()
         # None until the directory has been looked at.
         self._counter: int | None = None
@@ -108,7 +111,7 @@ class SpillStore:
                 highest = max(highest, int(digits))
         return highest
 
-    def reserve(self, hint: str, suffix: str = ".txt") -> Path | None:
+    def reserve(self, hint: str, suffix: str = ".txt", *, scope=None) -> Path | None:
         """Return a fresh path below the spill directory without writing it."""
         safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in hint)[:40] or "output"
         try:
@@ -116,11 +119,35 @@ class SpillStore:
         except OSError:
             return None
         with self._lock:
+            if self._closed:
+                return None
             if self._counter is None:
                 self._counter = self._highest_number()
             self._counter += 1
             number = self._counter
-        return self.directory / f"{number:04d}-{safe}{suffix}"
+        if scope is None:
+            scope = OUTPUT_SCOPE.get()
+        if scope is None:
+            return self.directory / f"{number:04d}-{safe}{suffix}"
+        path = self.directory / f"{number:04d}-{scope.receipt}-{safe}{suffix}"
+        try:
+            with self._lock:
+                if self._closed:
+                    return None
+                self.protected[path] = ProtectedOutput(self.directory, scope.receipt)
+        except OSError:
+            return None
+        scope.retained = True
+        return path
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            outputs = tuple(self.protected.values())
+        # Retain the closed handles until the store is discarded. A late writer
+        # must never turn a now-inaccessible private reference into a plain file.
+        for output in outputs:
+            output.close()
 
     def save(self, hint: str, text: str) -> Path | None:
         """Write ``text`` as UTF-8 and return its path, or ``None`` on failure."""
@@ -128,7 +155,11 @@ class SpillStore:
         if path is None:
             return None
         try:
-            path.write_bytes(text.encode("utf-8", errors="replace"))
+            data = text.encode("utf-8", errors="replace")
+            if path in self.protected:
+                self.protected[path].write(data)
+            else:
+                path.write_bytes(data)
         except OSError:
             return None
         return path

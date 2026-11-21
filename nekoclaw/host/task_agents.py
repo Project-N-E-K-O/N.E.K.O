@@ -74,6 +74,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from nekoclaw.host.capabilities import CapabilityRegistry
+from nekoclaw.host.execution_audit import ExecutionAudit
 from nekoclaw.host.ledger import (
     ACTIVE_STATUSES,
     COMMISSION_OVER_REASON,
@@ -288,6 +289,8 @@ class _Session:
     # The message that opens the commission was sent to the session, and no
     # event has yet shown that the session took it.
     opening_sent: bool = False
+    # Output permissions of commands still represented in this session’s job registry.
+    job_sources: dict[str, tuple[Callable[[], bool], Callable[[], Awaitable[bool]]]] = field(default_factory=dict)
     # Text increments and tool output waiting to be written as one event row.
     text: list[str] = field(default_factory=list)
     text_size: int = 0
@@ -875,6 +878,7 @@ class TaskAgentManager:
         self._ledger = ledger
         self._preferences = preferences
         self._permissions = permissions
+        self._execution_audit = ExecutionAudit(ledger)
         self._runner = runner
         self._registry = registry
         self._reporter = reporter
@@ -1157,6 +1161,8 @@ class TaskAgentManager:
 
         return HostCallbacks(
             decide_permission=self._cb_permission,
+            execution_action=self._cb_execution_action,
+            native_execution_action=self._cb_native_execution_action,
             ask_user=self._cb_ask_user,
             report=self._cb_report,
             note_lesson=self._cb_note_lesson,
@@ -3027,7 +3033,7 @@ class TaskAgentManager:
             result_summary=self._summary(text),
         )
 
-    def _run_over(self, commission_id: str) -> None:
+    async def _run_over(self, commission_id: str) -> None:
         """A commission's run is over: what lasted for the run ends with it.
 
         That is the desktop and the browser it occupied (another commission
@@ -3037,6 +3043,7 @@ class TaskAgentManager:
         self._permissions.end_run(commission_id)
         if self._leases is not None:
             self._leases.release(commission_id)
+        await self._execution_audit.end_run(commission_id)
 
     async def _remind_of_window(self, session: _Session, base_url: Any, model: Any, was: int) -> None:
         """Have the user told, once for each model, that its window is smaller than was assumed.
@@ -3207,7 +3214,7 @@ class TaskAgentManager:
         # one would let go of. Only an end that leaves the session idle, or
         # gone, ends what lasted for the run.
         if not (reason == "completed" and isinstance(inputs, int) and inputs < session.sent):
-            self._run_over(commission_id)
+            await self._run_over(commission_id)
         if reason == "closed":
             # An answer kept for a run that never came is not lost with the
             # session: it takes the commission up again from its transcript.
@@ -4923,9 +4930,136 @@ class TaskAgentManager:
         """
         return self._held_by.get(session_id, session_id)
 
-    async def _cb_permission(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _cb_native_execution_action(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._cb_execution_action(session_id, payload, native=True)
+
+    async def _cb_execution_action(
+        self, session_id: str, payload: dict[str, Any], *, native: bool = False
+    ) -> dict[str, Any]:
+        from nekoclaw.runtime.execution import EXECUTION_TOOLS, JOB_TOOLS
+
+        commission = self._held_by.get(session_id)
+        session = self._sessions.get(commission) if commission else None
+        if session is None or session.session_id != session_id or session.closing:
+            return {"allow": False}
+        kind = "dsh_native" if native else "runtime"
+        if native and session.runtime_name != RUNTIME_DSH:
+            return {"allow": False}
+        if payload.get("phase") == "release" and native:
+            session.job_sources.pop(payload.get("receipt"), None)
+            return {"allow": False}
+        if payload.get("phase") == "job_notice" and not native:
+            source = session.job_sources.get(payload.get("receipt"))
+            return {"allow": bool(source and source[0]() and await source[1]() and source[0]())}
+        if payload.get("phase") == "check":
+            return {"allow": self._execution_audit.active(commission, session_id, payload.get("receipt"), kind=kind)}
+        if payload.get("phase") == "finish":
+            allowed = await self._execution_audit.finish(
+                commission, session_id, payload.get("receipt", ""), payload.get("status", ""), kind=kind
+            )
+            if not allowed or payload.get("retain_source") is not True:
+                session.job_sources.pop(payload.get("receipt"), None)
+            return {"allow": allowed}
+        tool = payload.get("tool")
+        if payload.get("phase") == "native_failure":
+            from nekoclaw.dsh.profile import GATED_TOOLS
+            from nekoclaw.host import call_audit
+
+            if not native or tool not in (*GATED_TOOLS, *JOB_TOOLS):
+                return {"allow": False}
+            async with call_audit.call(self._ledger, commission, "dsh_native", tool) as record:
+                record.status = "failed"
+                record.reason = "native_failure"
+            return {"allow": False}
+        if payload.get("phase") != "begin" or tool not in EXECUTION_TOOLS:
+            return {"allow": False}
+        category = payload.get("category")
+        if category not in {"workdir_files", "outside_read", "outside_write", "run_command", "other"}:
+            return {"allow": False}
+        if not native and session.runtime_name != RUNTIME_BUILTIN and tool != "web_fetch":
+            return {"allow": False}
+        scope_ref = payload.get("scope_ref")
+        if not isinstance(scope_ref, str) or len(scope_ref) != 64 or any(c not in "0123456789abcdef" for c in scope_ref):
+            return {"allow": False}
+
+        import hashlib
+        from urllib.parse import urlsplit
+        from nekoclaw.host import call_audit
+
+        # Only the host knows which model this live runtime was actually opened with.
+        model = session.model
+        if not model or not model[1]:
+            return {"allow": False}
+        domain = urlsplit(str(model[0] or "")).hostname
+        label = f"{model[1]} ({domain})" if domain else str(model[1])
+        recipient = "model:" + hashlib.sha256(json.dumps(model).encode()).hexdigest()
+        current = self._permissions.current_run(commission)
+        rules = self._permissions.current_rules(commission, category, "managed_delivery")
+        grants = []
+        origins = payload.get("origins", [])
+        if not isinstance(origins, list) or any(not isinstance(ref, str) or ref not in session.job_sources for ref in origins):
+            return {"allow": False}
+        sources = [session.job_sources[ref][0] for ref in origins]
+
+        def source_live() -> bool:
+            return (rules() and self._held_by.get(session_id) == commission
+                    and self._sessions.get(commission) is session and not session.closing and session.model == model
+                    and all(self._permissions.grant_active(grant) for grant in grants) and all(check() for check in sources))
+
+        def live() -> bool:
+            return current() and source_live()
+
+        async def permit(record):
+            record.scope_ref = scope_ref
+            if native and payload.get("private_route") is not True and category != "workdir_files":
+                # A customized native recipe can add observers outside the stock return path.
+                return {"allow": False, "reason": DENIED_BY_SETTINGS}
+            if await self._permissions.forbidden("managed_delivery"):
+                return {"allow": False, "reason": DENIED_BY_SETTINGS}
+            if sources and tool in {"read", "grep"} and category == "workdir_files":
+                answer = {"allow": source_live() and not await self._permissions.forbidden(category)}
+            elif kind == "runtime" and (tool in JOB_TOOLS or tool == "web_fetch"):
+                if category != "other":
+                    return {"allow": False}
+                decision = await self._permissions.check(
+                    commission, category, detail={"tool": tool, "content_to": label},
+                    scope=GrantScope("builtin-runtime", f"{tool}:{scope_ref}", recipient),
+                )
+                if decision.grant_id:
+                    grants.append(decision.grant_id)
+                record.grant_id = self._permissions.authorization_ref(decision.grant_id)
+                answer = decision.to_json()
+            else:
+                answer = await self._cb_permission(session_id, payload, audit=record, recipient=recipient, label=label, grants=grants)
+            if answer.get("allow"):
+                from contextvars import copy_context
+
+                parent = copy_context()
+
+                async def notice():
+                    return await asyncio.create_task(deliver(record, source_live), context=parent.copy())
+
+                session.job_sources[record.call_id] = (source_live, notice)
+            return answer
+
+        async def deliver(record, eligible=live):
+            async with call_audit.call(self._ledger, commission, "transfer_content", recipient) as transfer:
+                transfer.scope_ref = scope_ref
+                transfer.grant_id = record.grant_id
+                if (not eligible() or await self._permissions.forbidden(category)
+                        or await self._permissions.forbidden("managed_delivery") or not eligible()):
+                    transfer.status = "denied"
+                    transfer.reason = "delivery_expired"
+                    return False
+            return transfer.closed and eligible()
+
+        return await self._execution_audit.begin(commission, session_id, kind, tool, permit, deliver, live)
+
+    async def _cb_permission(self, session_id: str, payload: dict[str, Any], *, audit=None, recipient="", label="", grants=None) -> dict[str, Any]:
         session_id = self._at_work_in(session_id)
         detail = {key: payload.get(key) for key in ("tool", "path", "command", "cwd") if payload.get(key)}
+        if label:
+            detail["content_to"] = label
         from nekoclaw.runtime.permissions import GATEWAY_CALL_CATEGORY, HOST_TOOL_CALL_CATEGORY, WRITE_TOOL_NAMES
 
         category = str(payload.get("category") or "other")
@@ -5021,7 +5155,11 @@ class TaskAgentManager:
             # ACP and unbound callbacks expose no verified tool registration.
             decision = await self._permissions.check_native(session_id, category, detail=detail)
         else:
-            decision = await self._permissions.check_builtin(session_id, category, detail=detail, writes=writes)
+            decision = await self._permissions.check_builtin(session_id, category, detail=detail, writes=writes, recipient=recipient)
+        if grants is not None and decision.grant_id:
+            grants.append(decision.grant_id)
+        if audit is not None:
+            audit.grant_id = self._permissions.authorization_ref(decision.grant_id)
         return decision.to_json()
 
     async def _rule_on_gateway_call(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:

@@ -206,11 +206,15 @@ def build_shell_tool(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
         if call.cancelled():
             raise ToolAborted
 
-        def reserve(stream: str) -> Any:
-            return lambda: ctx.spill.reserve(f"{kind}-{stream}", ".log")
+        from nekoclaw.runtime.tools.protected_outputs import OUTPUT_SCOPE
 
-        stdout = procs.OutputBuffer(MAX_OUTPUT_BYTES, reserve("stdout"))
-        stderr = procs.OutputBuffer(MAX_OUTPUT_BYTES, reserve("stderr"))
+        scope = OUTPUT_SCOPE.get()
+
+        def reserve(stream: str) -> Any:
+            return lambda: ctx.spill.reserve(f"{kind}-{stream}", ".log", scope=scope)
+
+        stdout = procs.OutputBuffer(MAX_OUTPUT_BYTES, reserve("stdout"), protected=ctx.spill.protected)
+        stderr = procs.OutputBuffer(MAX_OUTPUT_BYTES, reserve("stderr"), protected=ctx.spill.protected)
         try:
             process = await procs.spawn(
                 shell_argv(kind, command),
@@ -236,7 +240,12 @@ def build_shell_tool(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
             # stopped the jobs it could see; this one did not exist yet.
             await stop_aborted(job)
             raise ToolAborted
+        from nekoclaw.runtime.execution import COMMAND_OUTPUT
+
+        output = COMMAND_OUTPUT.get()
         if background:
+            if output is not None:
+                output.retained = True
             return f"started background job {job.id}"
 
         progress = _ProgressFeed(job, call)
@@ -247,6 +256,8 @@ def build_shell_tool(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
         if outcome == "timeout":
             # The command keeps running as the job it already was.
             job.foreground = False
+            if output is not None:
+                output.retained = True
             return render_promoted(job, registry.read(job), timeout_ms)
         progress.tick(force=True)
         registry.remove(job)

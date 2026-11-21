@@ -119,6 +119,8 @@ class _Offer:
     """What one session is offered, and its calls under way."""
 
     tools: dict[str, AgentTool] = field(default_factory=dict)
+    output_context: ToolContext | None = None
+    readers: dict[str, AgentTool] = field(default_factory=dict)
     running: dict[asyncio.Task[Any], _Cancelled] = field(default_factory=dict)
     # The tasks that wait for the host on behalf of its calls; see ``_SessionHost``.
     asking: set[asyncio.Task[Any]] = field(default_factory=set)
@@ -215,7 +217,17 @@ class HostTools:
             emit_report=emit_report,
             top_level=top_level,
         )
-        built = [*build_host_tools(context, schemas), *build_web_tools(context, schemas)]
+        from nekoclaw.runtime.execution import managed_tool
+        from nekoclaw.runtime.tools.fs import build_fs_tools
+        from nekoclaw.runtime.tools.search import build_search_tools
+
+        offer.output_context = context
+        offer.readers = {tool.name: tool for tool in (*build_fs_tools(context, schemas), *build_search_tools(context, schemas))
+                         if tool.name in {"read", "grep"}}
+
+        web = [managed_tool(tool, context.host, session_id, context.workdir, spill=context.spill)
+               for tool in build_web_tools(context, schemas)]
+        built = [*build_host_tools(context, schemas), *web]
         tools = {tool.name: tool for tool in built}
 
         if offers_subagents(self._host.capabilities):
@@ -245,6 +257,8 @@ class HostTools:
         if offer is None:
             return
         offer.closed = True
+        if offer.output_context is not None:
+            offer.output_context.spill.close()
         for work, token in list(offer.running.items()):
             token.cancelled = True
             work.cancel()

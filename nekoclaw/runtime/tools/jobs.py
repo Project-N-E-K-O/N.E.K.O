@@ -23,8 +23,9 @@ completion notice follow dsh ``packages/jobs/tool-jobs``.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -70,6 +71,7 @@ class Job:
     # Whoever stopped the job already knows: no completion notice follows.
     notice_suppressed: bool = False
     stop_reason: str | None = None
+    origin: str | None = None
     settled: asyncio.Event = field(default_factory=asyncio.Event)
 
     @property
@@ -119,7 +121,7 @@ class PendingNotice:
 class JobRegistry:
     """The jobs of one session."""
 
-    def __init__(self, on_finished: Callable[[Job], None]) -> None:
+    def __init__(self, on_finished: Callable[[Job], Awaitable[None] | None]) -> None:
         self._on_finished = on_finished
         self._jobs: dict[str, Job] = {}
         self._watchers: set[asyncio.Task[None]] = set()
@@ -138,8 +140,12 @@ class JobRegistry:
             )
 
     def start(self, kind: str, label: str, process: ShellProcess, *, foreground: bool) -> Job:
+        from nekoclaw.runtime.execution import COMMAND_OUTPUT
+
+        output = COMMAND_OUTPUT.get()
         self._counter += 1
         job = Job(
+            origin=output.receipt if output else None,
             id=f"job-{self._counter}",
             kind=kind,
             label=label,
@@ -169,7 +175,9 @@ class JobRegistry:
             self._closing or job.foreground or job.waiters > 0 or job.notice_suppressed
         )
         if not suppressed and job.id in self._jobs:
-            self._on_finished(job)
+            handed = self._on_finished(job)
+            if inspect.isawaitable(handed):
+                await handed
 
     def get(self, job_id: str) -> Job:
         job = self._jobs.get(job_id)

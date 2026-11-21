@@ -186,7 +186,7 @@ def test_an_oversized_result_keeps_head_and_tail_and_is_saved_whole(tmp_path: Pa
     omitted = int(notice.split()[1])
     assert notice == (
         f"(Omitted {omitted} bytes. Full formatted result stored at: {saved}. "
-        "Use read with offset/limit, or grep this path to search within it.)"
+        "Use grep with a keyword to search this path in sections.)"
     )
     assert 0 < omitted < len(text)
     assert cap_result_text("short result", 12_500, spill, "x") is None

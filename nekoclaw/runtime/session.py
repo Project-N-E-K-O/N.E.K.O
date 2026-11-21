@@ -607,7 +607,27 @@ class TaskAgentSession(SessionInbox):
             emit_report=self._emit_report,
             top_level=spec.top_level,
         )
-        executors = build_tools(tool_context, disabled=spec.disabled_tools)
+        # A session made from another by copying what was said in it
+        # (``fork.py``) reads the tool output that one kept where it is:
+        # what was said names those files.
+        readable = [spill.directory]
+        for custom in state.custom_entries if state is not None else ():
+            if custom.namespace != fork.FORK_NAMESPACE:
+                continue
+            # Where the session it was made from kept its output, and
+            # where the ones that one was made from kept theirs.
+            behind = custom.data.get("outputs_behind")
+            for kept_there in (custom.data.get("outputs"), *(behind if isinstance(behind, list) else ())):
+                if isinstance(kept_there, str) and kept_there:
+                    readable.append(Path(kept_there))
+        from nekoclaw.runtime.execution import managed_tool
+
+        builtins = build_tools(tool_context, disabled=spec.disabled_tools)
+        executors = [
+            managed_tool(tool, self._host, self.session_id, workdir, tuple(readable), self.jobs,
+                         spill=spill, cap=lambda *args: self.context.cap_tool_result(*args)) for tool in builtins
+        ]
+        managed = {wrapped.name for original, wrapped in zip(builtins, executors) if wrapped is not original}
         if spec.gateway is not None:
             # Capabilities the host serves (plugin entries, MCP tools) join the
             # built-in tools. The host decides permissions for them itself.
@@ -624,21 +644,8 @@ class TaskAgentSession(SessionInbox):
                 raise SessionError(f"the capability gateway cannot be reached: {exc}") from exc
             self._commission_tools = [tool for tool in gateway_tools if tool.name in self._gateway.commission_tools]
             executors = sorted([*executors, *gateway_tools], key=lambda tool: tool.name)
-        self._executors = executors
         self._workdir, self._session_dir = workdir, session_dir
-        # A session made from another by copying what was said in it
-        # (``fork.py``) reads the tool output that one kept where it is:
-        # what was said names those files.
-        readable = [spill.directory]
-        for custom in state.custom_entries if state is not None else ():
-            if custom.namespace != fork.FORK_NAMESPACE:
-                continue
-            # Where the session it was made from kept its output, and
-            # where the ones that one was made from kept theirs.
-            behind = custom.data.get("outputs_behind")
-            for kept_there in (custom.data.get("outputs"), *(behind if isinstance(behind, list) else ())):
-                if isinstance(kept_there, str) and kept_there:
-                    readable.append(Path(kept_there))
+        self._executors = executors
         # Known before the snapshot is looked at, which says how often the
         # conversation had been summed up when it was made.
         self._compactions = len(state.compaction_entries) if state is not None else 0
@@ -690,7 +697,7 @@ class TaskAgentSession(SessionInbox):
                     # Those the session was opened without, and any other
                     # the model is told of that is not there now. (Never
                     # one that is there after all.)
-                    withheld=(frozenset(spec.disabled_tools) | {tool.name for tool in self._tools}) - there,
+                    withheld=((frozenset(spec.disabled_tools) | {tool.name for tool in self._tools}) - there) | managed,
                 ),
                 after_tool_call=self._after_tool_call,
                 finish_turn=self._finish_turn,
@@ -1500,8 +1507,17 @@ class TaskAgentSession(SessionInbox):
     def withdraw_notice(self, handle: object) -> bool:
         return isinstance(handle, CustomMessage) and self.harness.remove_queued(handle)
 
-    def _job_finished(self, job: Job) -> None:
-        if self._closing:
+    async def _job_finished(self, job: Job) -> None:
+        if job.origin:
+            try:
+                decision = await self._host.call(self.session_id, "execution_action", {
+                    "phase": "job_notice", "receipt": job.origin,
+                })
+            except Exception:
+                return
+            if decision.get("allow") is not True:
+                return
+        if self._closing or job.notice_suppressed or job.waiters or job.id in self.jobs.pending_notices:
             return
         text, held = completion_notice(self.jobs, job)
         handle = self.deliver_notice("job", text)
@@ -1661,6 +1677,7 @@ class TaskAgentSession(SessionInbox):
         # Once more, for a command the run started while it was unwinding.
         self.jobs.close()
         await self.jobs.wait_closed()
+        await asyncio.to_thread(self.context.spill.close)
         await self._recorder.close()
         await self._model.aclose()
         if self._gateway is not None:

@@ -371,7 +371,7 @@ def spill_notice(omitted_bytes: int, path: str) -> str:
     """Return the notice that follows a result whose middle was moved to a file."""
     return (
         f"(Omitted {omitted_bytes} bytes. Full formatted result stored at: {path}. "
-        "Use read with offset/limit, or grep this path to search within it.)"
+        "Use grep with a keyword to search this path in sections.)"
     )
 
 

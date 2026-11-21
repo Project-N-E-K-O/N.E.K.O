@@ -694,3 +694,30 @@ async def test_a_wait_that_cannot_be_answered_takes_nothing(tmp_path: Path) -> N
     # With an id it is carried out as ever.
     answered = await tools.handle("s1", {**wait, "id": 8})
     assert asked == [30.0] and "a note that would go nowhere" in answered["result"]["content"][0]["text"]
+
+
+async def test_managed_fetch_is_checked_before_returning_mcp_content(tmp_path, monkeypatch):
+    from nekoclaw.runtime.tools import web
+
+    calls = []
+    ran = []
+
+    async def audit(session, payload):
+        calls.append((session, payload))
+        if payload["phase"] == "begin":
+            return {"allow": True, "receipt": "fetch-receipt"}
+        return {"allow": False}
+
+    async def fetch(url):
+        ran.append(url)
+        return "fixture page body"
+
+    monkeypatch.setattr(web, "web_fetch", fetch)
+    tools = HostTools(HostCallbacks(execution_action=audit))
+    _open(tools, tmp_path)
+    url = "https://example.test/private-fixture"
+    reply = await tools.call("s1", "web_fetch", {"url": url})
+    assert ran == [url] and reply["isError"] and "fixture page body" not in str(reply)
+    assert [p["phase"] for _, p in calls] == ["begin", "finish"]
+    assert calls[0][1]["tool"] == "web_fetch" and len(calls[0][1]["scope_ref"]) == 64
+    assert url not in str(calls) and "fixture page body" not in str(calls)

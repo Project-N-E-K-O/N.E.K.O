@@ -177,6 +177,8 @@ SESSION_CALLS: tuple[str, ...] = (
 )
 
 HOST_CALLS: tuple[str, ...] = (
+    "execution_action",
+    "native_execution_action",
     "decide_permission",
     "ask_user",
     "report",
@@ -222,6 +224,8 @@ class HostCallbacks:
     wake_schedule: HostCallback | None = None
     session_ask: HostCallback | None = None
     budget: HostCallback | None = None
+    execution_action: HostCallback | None = None
+    native_execution_action: HostCallback | None = None
 
     @property
     def capabilities(self) -> frozenset[str]:

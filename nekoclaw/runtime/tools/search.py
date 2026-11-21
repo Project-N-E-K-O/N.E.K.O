@@ -78,7 +78,7 @@ _MATCH_LABEL_BYTES = 16
 VCS_DIRECTORIES = frozenset({".git", ".svn", ".hg", ".bzr", ".jj", ".sl"})
 _GIT_TIMEOUT_SECONDS = 20.0
 _NUL = bytes(1)
-SPILL_HINT = "Use read with offset/limit, or grep this path to search within it."
+SPILL_HINT = "Use grep with a keyword to search this path in sections."
 
 
 class _Stopped(Exception):
@@ -428,6 +428,7 @@ def _search_file(
     expression: regex.Pattern[str],
     out: list[GrepMatch],
     budget: _Budget,
+    protected=None,
 ) -> int:
     """Append the matches of one file to ``out``; return the bytes of text added.
 
@@ -437,7 +438,7 @@ def _search_file(
     """
     added = 0
     try:
-        with open(path, "rb") as handle:
+        with (protected.reader() if protected is not None else open(path, "rb")) as handle:
             if _NUL in handle.read(BINARY_SAMPLE_BYTES):
                 return 0
             handle.seek(0)
@@ -504,11 +505,12 @@ def grep_files(
     budget: _Budget,
     *,
     case_insensitive_globs: bool,
+    protected=None,
 ) -> list[GrepMatch]:
     """Search ``target`` (a file or a directory) and return every match."""
     matches: list[GrepMatch] = []
-    if target.is_file():
-        _search_file(target, display_path(target, workdir), expression, matches, budget)
+    if protected is not None or target.is_file():
+        _search_file(target, display_path(target, workdir), expression, matches, budget, protected)
         return matches
 
     include_matcher = (
@@ -625,7 +627,8 @@ def build_search_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> 
         include = args.get("include") or None
         if include is not None:
             validate_include(str(include))
-        if not target.exists():
+        protected = ctx.spill.protected.get(target)
+        if protected is None and not target.exists():
             raise ToolError(f'cannot search "{target}": not found')
         try:
             expression = regex.compile(pattern)
@@ -640,13 +643,21 @@ def build_search_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> 
             str(include) if include is not None else None,
             ctx.workdir,
             case_insensitive_globs=case_insensitive,
+            protected=protected,
         )
+        from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
+
+        preview = format_grep_output(matches, None)
         spill_path = None
-        if len(matches) > GREP_MAX_MATCHES:
-            previewed = [GrepMatch(m.path, m.line_number, preview_line(m.line)) for m in matches]
-            full = f"Found {len(matches)} matches\n\n{format_grep_matches(previewed)}"
+        if len(matches) > GREP_MAX_MATCHES or len(preview.encode("utf-8")) > READ_MAX_BYTES:
+            full = f"Found {len(matches)} matches\n\n{format_grep_matches(matches)}"
             spill_path = await asyncio.to_thread(_save_spill, ctx.spill, "grep-results", full)
-        return format_grep_output(matches, spill_path)
+        preview = format_grep_output(matches, spill_path)
+        if len(preview.encode("utf-8")) <= READ_MAX_BYTES:
+            return preview
+        notice = f"\n\n{SPILL_HINT} {spill_path}" if spill_path else "\n\nNarrow the grep pattern to see more."
+        kept = preview.encode("utf-8")[:max(0, READ_MAX_BYTES - len(notice.encode("utf-8")))]
+        return kept.decode("utf-8", errors="ignore") + notice
 
     return [
         define_tool(schemas["glob"], glob, parallel=True),

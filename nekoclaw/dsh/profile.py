@@ -85,9 +85,6 @@ UNASKED_TOOLS: tuple[str, ...] = (
     "create_goal",
     "get_goal",
     "update_goal",
-    "job_kill",
-    "job_list",
-    "job_output",
     "skill",
     "todo_write",
 )
@@ -146,6 +143,111 @@ export function apply(ctx, config) {
     if (native.kind !== 'allow') return native
     return { kind: 'ask', reason: 'the N.E.K.O host decides' }
   })
+  const executions = new Set(config?.executions ?? [])
+  const request = async (session, call, action, text) => {
+    const response = await fetch(new URL('/internal/retained-output', config.outputURL), {method: 'POST', redirect: 'error',
+      headers: {'Authorization': 'Bearer ' + process.env[config.keyVariable], 'Content-Type': 'application/json'},
+      body: JSON.stringify({session, call, action, text})})
+    if (!response.ok) throw new Error('Retained output unavailable')
+    return response.json()
+  }
+  const projections = new Map()
+  const identity = exec => JSON.stringify([exec.agent?.session.header.id, exec.callId])
+  const textOnly = (exec, text) => {
+    const value = exec.name === 'grep' ? {matches: []} : {path: '', offset: 1, lines: [], totalLines: 0}
+    return {value, content: [{type: 'text', text}]}
+  }
+  if (executions.size) ctx.on('tools/post-execute', async (exec, result, next) => {
+    const key = identity(exec)
+    const text = projections.get(key)
+    projections.delete(key)
+    const decision = await next()
+    return text !== undefined && decision.kind === 'accept'
+      ? {...decision, content: [{type: 'text', text}]} : decision
+  })
+  // Native notices are queued independently of the command. Keep the wake
+  // and job id; fetch labels and output through the guarded job tools.
+  if (executions.size) ctx.on('agent/created', ({agent}) => {
+    for (const method of ['followup', 'inject']) {
+      const send = agent[method].bind(agent)
+      agent[method] = (message, ...args) => {
+        if (message?.source?.kind !== 'tool-jobs') return send(message, ...args)
+        const id = /^background job ([a-zA-Z0-9_-]+)(?: |$)/.exec(message.content?.[0]?.text ?? '')?.[1]
+        const text = id ? 'Background job ' + id + ' finished. Use job_output.' : 'A job finished. Use job_list.'
+        return send({...message, content: [{type: 'text', text}], source: {...message.source, summary: text}}, ...args)
+      }
+    }
+  })
+  const hint = 'Use grep with a keyword to search this path in sections.'
+  const failed = message => ({isError: true, error: {message}, content: [{type: 'text', text: message}]})
+  if (executions.size) ctx.inject(['spillStore'], scoped => {
+    const store = scoped.get('spillStore')
+    const save = store.saveText
+    store.saveText = async function(input) {
+      if (!executions.has(input.source?.toolName)) return save.call(this, input)
+      const ref = await request(input.owner.sessionId, input.source.callId, 'save', input.content)
+      return {locator: ref.path, bytes: Buffer.byteLength(input.content), retrievalHint: hint}
+    }
+    scoped.on('dispose', () => { store.saveText = save })
+  })
+  if (executions.size) ctx.on('tools/execute', async (exec, next) => {
+    if (exec.name === config.fetchTool && exec.parent !== undefined) return failed('No authorized program recipient.')
+    if (!executions.has(exec.name)) return next()
+    const confirm = async phase => {
+      const approval = ctx.get('approval')
+      if (!approval || !exec.agent || exec.signal.aborted) return false
+      const response = await approval.request({agent: exec.agent, toolName: exec.name,
+        callId: 'nekoclaw-exec/' + phase + '/' + exec.callId, signal: exec.signal})
+      return response === 'allowed-once'
+    }
+    const refused = () => {
+      const message = 'The tool result could not be delivered.'
+      return {isError: true, error: {message}, content: [{type: 'text', text: message}]}
+    }
+    if (!await confirm(exec.parent === undefined ? 'direct' : 'nested')) return refused()
+    const session = exec.agent.session.header.id
+    let result, display
+    try {
+      if (exec.name === 'read' || exec.name === 'grep') {
+        const saved = await request(session, exec.callId, 'read')
+        if (saved.error) result = failed(saved.error)
+        else if (typeof saved.text === 'string') { display = saved.text; result = textOnly(exec, display) }
+      }
+      result ??= await next()
+      if (['pwsh', 'bash'].includes(exec.name) && typeof result.value?.jobId === 'string') {
+        await request(session, exec.callId, 'job', result.value.jobId)
+      }
+      const text = result.content?.filter(block => block.type === 'text').map(block => block.text).join('\\n') ?? ''
+      if (exec.name === 'grep' && display === undefined && Array.isArray(result.value?.matches)) {
+        const hits = result.value.matches
+        const full = hits.map(m => m.path + ':' + m.lineNumber + ': ' + m.line).join('\\n')
+        if (hits.length > 250 || Buffer.byteLength(full) > config.readBytes) {
+          const ref = await request(session, exec.callId, 'save', full)
+          const tail = '\\n\\n' + hint + ' ' + ref.path
+          const head = []
+          let bytes = Buffer.byteLength(tail)
+          for (const m of hits.slice(0, 250)) {
+            const line = m.path + ':' + m.lineNumber + ': ' + m.line
+            bytes += Buffer.byteLength(line) + 1
+            if (bytes > config.readBytes) break
+            head.push(line)
+          }
+          display = head.join('\\n') + tail
+          result = textOnly(exec, display)
+        }
+      }
+      if (display === undefined && ['read', 'grep'].includes(exec.name) && Buffer.byteLength(text) > config.readBytes) {
+        const ref = await request(session, exec.callId, 'save', text)
+        display = hint + ' ' + ref.path
+        result = textOnly(exec, display)
+      }
+    } catch {
+      result = failed('The tool result could not be delivered.')
+    }
+    if (!await confirm(result.isError ? 'failed' : 'completed')) return refused()
+    if (display !== undefined && !result.isError) projections.set(identity(exec), display)
+    return result
+  })
   process.stderr.write('%s\\n')
 }
 """ % GUARD_READY
@@ -197,7 +299,8 @@ def model_option(index: int) -> str:
     return json.dumps([PROVIDER, slot_model(index)], separators=(",", ":"))
 
 
-def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[dict[str, Any]]:
+def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path,
+                managed_execution: bool = False) -> list[dict[str, Any]]:
     """Return the patch a dsh process is started with.
 
     ``endpoint`` is the driver's model endpoint as dsh is to call it (an
@@ -205,6 +308,7 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
     the whole configuration of the row it names.
     """
     from config.nekoclaw_settings import DSH_MODEL_RETRIES, DSH_SPILL_KEPT_DAYS
+    from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
     from config.prompts.prompts_nekoclaw import TASK_AGENT_IDENTITY
     from config.prompts.prompts_nekoclaw_dsh import DSH_HOST_TOOLS_SECTION, HOST_TOOL_PREFIX
 
@@ -295,6 +399,10 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
                     # The host's own tools ask the host themselves when they
                     # need to; everything else not listed is asked about.
                     "config": {
+                        **({"executions": [*GATED_TOOLS, "job_list", "job_output", "job_kill"],
+                            "outputURL": endpoint,
+                            "keyVariable": KEY_VARIABLE, "readBytes": READ_MAX_BYTES,
+                            "fetchTool": HOST_TOOL_PREFIX + "web_fetch"} if managed_execution else {}),
                         "unasked": list(UNASKED_TOOLS),
                         "unaskedPrefixes": [HOST_TOOL_PREFIX],
                         "asked": [f"{HOST_TOOL_PREFIX}{name}" for name in ASKED_HOST_TOOLS],

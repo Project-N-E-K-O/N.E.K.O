@@ -51,6 +51,7 @@ logger = logging.getLogger(__name__)
 MODEL_PREFIX = "/model/v1"
 MODEL_PATH = f"{MODEL_PREFIX}/chat/completions"
 TOOLS_PATH = "/tools/mcp"
+OUTPUT_PATH = "/internal/retained-output"
 _START_TIMEOUT_SECONDS = 10.0
 
 Send = Callable[[dict[str, Any]], Awaitable[None]]
@@ -84,7 +85,8 @@ async def _wait_disconnect(receive: Receive) -> None:
 class LocalEndpoint:
     """Serves the model endpoint and the host's tools to the driver's dsh processes."""
 
-    def __init__(self, *, forwarder: ModelForwarder, tools: HostTools) -> None:
+    def __init__(self, *, forwarder: ModelForwarder, tools: HostTools, retained_output=None) -> None:
+        self._retained_output = retained_output
         self._forwarder = forwarder
         self._tools = tools
         # The "keys" the dsh processes send with their model requests.
@@ -222,7 +224,7 @@ class LocalEndpoint:
             return
         headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope.get("headers", [])}
         path = scope.get("path")
-        if path not in (MODEL_PATH, TOOLS_PATH):
+        if path not in (MODEL_PATH, TOOLS_PATH, OUTPUT_PATH):
             await respond_json(send, 404, {"error": "not found"})
             return
         if scope.get("method") != "POST":
@@ -240,6 +242,24 @@ class LocalEndpoint:
             await respond_json(send, 403, {"error": "requests with an Origin are not served"})
             return
         token = _bearer(headers)
+        if path == OUTPUT_PATH and self._retained_output is not None:
+            process = self._process_of(token)
+            if process is None:
+                await respond_json(send, 401, {"error": "unknown process"})
+                return
+            body = await _read_body(receive)
+            if body is None:
+                return
+            try:
+                request = json.loads(body)
+                if not isinstance(request, dict) or self._process_of(token) != process:
+                    raise ValueError()
+                result = await self._retained_output(process, request)
+            except (ValueError, OSError, KeyError):
+                await respond_json(send, 403, {"error": "output unavailable"})
+                return
+            await respond_json(send, 200, result)
+            return
         if path == MODEL_PATH:
             process = self._process_of(token)
             if process is None:

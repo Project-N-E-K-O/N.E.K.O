@@ -425,6 +425,13 @@ class PermissionGate:
                 return lineage[: i + 1]
         return lineage
 
+    def current_rules(self, commission_id: str, *categories: str) -> Callable[[], bool]:
+        """Check the same rules again at handoff, including a tightening later undone."""
+        revisions = [(category, self._store.revision(category)) for category in categories]
+        lifetime = self._lives.setdefault(commission_id, object())
+        return lambda: (self._lives.get(commission_id) is lifetime and all(
+            self._store.revision(category) == revision for category, revision in revisions))
+
     def current_run(self, commission_id: str) -> Callable[[], bool]:
         """Bind in-flight host work to this run, including while awaiting a ledger write."""
         work = self._work.setdefault(commission_id, object())
@@ -556,7 +563,7 @@ class PermissionGate:
         return PermissionDecision(True, asked=True)
 
     async def check_builtin(
-        self, commission_id: str, category: str, *, detail: dict[str, Any], writes: bool
+        self, commission_id: str, category: str, *, detail: dict[str, Any], writes: bool, recipient: str = ""
     ) -> PermissionDecision:
         """Scope files by access and resolved path, commands by tool, cwd and exact command."""
         work = self._work.setdefault(commission_id, object())
@@ -575,7 +582,7 @@ class PermissionGate:
             resource = json.dumps(["write" if writes else "read", actual_path])
         if self._work.get(commission_id) is not work:
             return PermissionDecision(False, DENIED_NO_ANSWER)
-        return await self.check(commission_id, category, detail=detail, scope=GrantScope("builtin-runtime", resource))
+        return await self.check(commission_id, category, detail=detail, scope=GrantScope("builtin-runtime", resource, recipient))
 
     async def check_native(
         self, commission_id: str, category: str, *, detail: dict[str, Any]

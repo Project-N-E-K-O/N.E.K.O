@@ -101,7 +101,7 @@ def test_glob_output_is_capped_and_points_at_the_full_list(tmp_path: Path) -> No
     assert text.splitlines()[:100] == paths[:100]
     assert text.endswith(
         f"(Showing 100 of 130 paths. Full sorted result stored at: {saved}. "
-        "Use read with offset/limit, or grep this path to search within it.)"
+        "Use grep with a keyword to search this path in sections.)"
     )
     assert saved is not None and saved.read_text(encoding="utf-8").count("\n") == 129
     assert "could not be saved" in search.format_glob_output(paths, None)
@@ -167,7 +167,7 @@ def test_grep_caps_inline_matches_and_long_lines(tmp_path: Path) -> None:
     assert "Line 250: hit 250" in text and "Line 251" not in text
     assert text.endswith(
         f"(Full grep result stored at: {tmp_path / 'full.txt'}. "
-        "Use read with offset/limit, or grep this path to search within it.)"
+        "Use grep with a keyword to search this path in sections.)"
     )
     assert search.preview_line("z" * 3000) == "z" * 2000 + " (line truncated)"
 

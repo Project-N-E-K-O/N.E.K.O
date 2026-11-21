@@ -113,15 +113,30 @@ def format_read_output(display: str, window: ReadWindow) -> str:
     return f"<path>{display}</path>\n<type>file</type>\n<content>\n{body}\n</content>"
 
 
-def read_file(path: Path, *, offset: int, limit: int) -> str:
+def read_file(path: Path, *, offset: int, limit: int, protected=None) -> str:
     """Blocking implementation of ``read``."""
     display = str(path)
-    raw = textio.read_bytes(path, verb="read", display=display, max_bytes=FILE_MAX_BYTES)
+    hint = f'Use grep with a keyword to read "{display}" in sections (limit {READ_MAX_BYTES} bytes).'
+    if protected is not None:
+        with protected.reader() as handle:
+            raw = handle.read(READ_MAX_BYTES + 1)
+    else:
+        try:
+            if path.stat().st_size > READ_MAX_BYTES:
+                raise ToolError(hint)
+        except OSError:
+            pass
+        raw = textio.read_bytes(path, verb="read", display=display, max_bytes=READ_MAX_BYTES)
+    if len(raw) > READ_MAX_BYTES:
+        raise ToolError(hint)
     text, _fmt = textio.decode_text(raw, verb="read", display=display)
     window = build_read_window(
         textio.split_lines(text), offset=offset, limit=limit, display=display
     )
-    return format_read_output(display, window)
+    rendered = format_read_output(display, window)
+    if len(rendered.encode("utf-8")) > READ_MAX_BYTES:
+        raise ToolError(hint)
+    return rendered
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +306,7 @@ def build_fs_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> list
             raise ToolError("limit must be greater than or equal to 1")
         if limit > READ_LIMIT:
             raise ToolError(f"limit must be less than or equal to {READ_LIMIT}")
-        return await asyncio.to_thread(read_file, path, offset=offset, limit=limit)
+        return await asyncio.to_thread(read_file, path, offset=offset, limit=limit, protected=ctx.spill.protected.get(path))
 
     async def write(args: dict[str, Any], call: ToolCallInfo) -> str:
         del call
