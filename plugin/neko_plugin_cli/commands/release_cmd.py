@@ -223,6 +223,20 @@ def _diagnose_repository(plugin_dir: Path, *, defaults: CliDefaults, release: bo
     if shutil.which("git") is None:
         return [("warning", "git executable not found")]
 
+    if _is_builtin_source_plugin_dir(plugin_dir, defaults):
+        # _repository_root treats this root as a CI mount even when the
+        # plugin carries its own .git (as init leaves it), so say what is
+        # skipped instead of claiming there is no repository.
+        return [
+            (
+                "warning",
+                _tri(
+                    "plugins under plugin/plugins are treated as CI mounts; git checks are skipped here",
+                    "plugin/plugins 下的插件按 CI 挂载处理，这里跳过 Git 检查",
+                    "plugin/plugins 配下のプラグインは CI マウントとして扱われるため、ここでは Git チェックを省略します",
+                ),
+            )
+        ]
     repository_root = _repository_root(plugin_dir, defaults)
     if repository_root is None:
         return [("warning", "plugin source directory does not have its own git repository")]
@@ -663,6 +677,18 @@ def _shell_quote(value: str) -> str | None:
     return None if any(char in value for char in _WINDOWS_EXPANDING_CHARS) else f'"{value}"'
 
 
+def _setup_repo_target(plugin_dir: Path | None, label: str) -> str:
+    """The plugin argument of a suggested setup-repo command.
+
+    setup-repo resolves a bare id only under the plugins root; a path works
+    for every plugin.
+    """
+    if plugin_dir is None:
+        return label
+    target = _shell_quote(str(plugin_dir))
+    return _PLUGIN_DIR_PLACEHOLDER if target is None else target
+
+
 def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> str:
     label = plugin_id or "<plugin>"
     if message.endswith("is missing"):
@@ -678,7 +704,7 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
             ".github/workflows/release.yml",
             ".gitignore",
         }:
-            return f"neko-plugin setup-repo {label} --github-actions"
+            return f"neko-plugin setup-repo {_setup_repo_target(plugin_dir, label)} --github-actions"
     if message.startswith("recommended market repository name is "):
         return "the Market accepts any public GitHub repository name; n.e.k.o_plugin_<plugin_id> is the convention"
     if message.startswith("release tag ") and "does not match plugin.toml version" in message:
@@ -709,13 +735,9 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
             "これらのファイルをコミットするか .gitignore に追加してください。CI は作業ツリーではなくプッシュ済みのコミットを検査します",
         )
     if message.startswith(_AGENT_KIT_OUTDATED):
-        # setup-repo resolves a bare id only under the plugins root; a path
-        # works for every plugin. --no-* keeps the other support files.
-        target = _shell_quote(str(plugin_dir)) if plugin_dir is not None else label
-        if target is None:
-            target = _PLUGIN_DIR_PLACEHOLDER
+        # --no-* keeps the other support files.
         refresh = (
-            f"neko-plugin setup-repo {target} --overwrite "
+            f"neko-plugin setup-repo {_setup_repo_target(plugin_dir, label)} --overwrite "
             "--no-readme --no-tests --no-gitignore --no-vscode"
         )
         return _tri(

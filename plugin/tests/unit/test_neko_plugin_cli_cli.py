@@ -462,6 +462,33 @@ def test_symlink_validation_prunes_the_excluded_root_directories(tmp_path, monke
     assert issues == []
 
 
+def test_symlink_validation_reports_a_windows_junction(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import validate_cmd
+
+    # A junction is a real directory to is_symlink() on Python 3.11; only
+    # readlink reveals it, so fake readlink for this one directory.
+    junction = tmp_path / "shared"
+    (junction / "inner").mkdir(parents=True)
+    real_readlink = os.readlink
+    real_scandir = os.scandir
+
+    def readlink(path, *args, **kwargs):
+        if Path(path) == junction:
+            return str(tmp_path.parent / "elsewhere")
+        return real_readlink(path, *args, **kwargs)
+
+    def scandir(path):
+        # The scan must not walk through the junction into its target.
+        assert Path(path) != junction
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "readlink", readlink)
+    monkeypatch.setattr(os, "scandir", scandir)
+    issues = []
+    validate_cmd._check_symlink_tree(tmp_path, issues)
+    assert issues == [("error", "plugin source must not contain symbolic links: shared")]
+
+
 def test_validate_plugin_dir_knows_the_shared_table(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     manifest = plugin_dir / "plugin.toml"
@@ -2051,8 +2078,12 @@ def test_agent_kit_guards_treat_a_windows_junction_as_a_link(
 
     monkeypatch.setattr(os, "readlink", readlink)
 
-    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
-    assert "agent kit snapshot" not in capsys.readouterr().out
+    # check rejects the junction itself, as it does a symlink; a refresh hint
+    # on top could never clear.
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 1
+    captured = capsys.readouterr()
+    assert "must not contain symbolic links: .agents" in captured.err
+    assert "agent kit snapshot" not in captured.out
 
     setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
     assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
@@ -2133,6 +2164,43 @@ def test_suggested_refresh_only_rewrites_the_agent_kit(
     capsys.readouterr()
     assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
     assert "agent kit snapshot" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("parent", ["my plugins", "my $HOME (copy)"])
+def test_suggested_setup_repo_fix_works_outside_the_plugins_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    parent: str,
+) -> None:
+    # setup-repo resolves a bare id only under the plugins root, so the hint
+    # must name the plugin directory for a plugin kept anywhere else.
+    plugin_dir = _make_plugin_dir(tmp_path / parent, "outside_root")
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "README.md is missing" in out
+    fix = next(line for line in out.splitlines() if "setup-repo" in line and "--github-actions" in line)
+    command = fix.split("fix: neko-plugin ", 1)[1]
+    if os.name == "nt":
+        arguments = [arg.strip('"') for arg in shlex.split(command, posix=False)]
+        if any(char in str(plugin_dir) for char in release_cmd._WINDOWS_EXPANDING_CHARS):
+            assert arguments[1] == "<plugin directory>"
+            arguments[1] = str(plugin_dir)
+    else:
+        arguments = shlex.split(command)
+    assert arguments == ["setup-repo", str(plugin_dir), "--github-actions"]
+    assert neko_plugin_cli.main(arguments) == 0
+
+    capsys.readouterr()
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "--github-actions" not in capsys.readouterr().out
+
+
+def test_suggested_setup_repo_fix_falls_back_to_the_id_without_a_directory() -> None:
+    assert (
+        release_cmd._suggest_fix("README.md is missing", plugin_id="demo", plugin_dir=None)
+        == "neko-plugin setup-repo demo --github-actions"
+    )
 
 
 def test_check_does_not_flag_a_freshly_generated_agent_kit(
@@ -2793,6 +2861,29 @@ def test_release_check_ignores_the_git_state_of_a_plugin_mounted_in_a_neko_tree(
 
     assert _release_check(mounted, tmp_path / "target") == 0
     assert "uncommitted or untracked" not in capsys.readouterr().err
+
+
+def test_check_skips_git_for_an_init_plugin_in_the_builtin_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch,
+) -> None:
+    # init leaves a git repository in plugin/plugins/<id>; that root is still
+    # treated as a CI mount, so check must not claim the repository is missing.
+    root = tmp_path / "neko"
+    monkeypatch.setattr(neko_plugin_cli, "resolve_default_paths", lambda: CliDefaults(
+        root / "plugin", root / "target", root / "plugin/plugins", root / "profiles",
+    ))
+    plugin_dir = root / "plugin" / "plugins" / "builtin_demo"
+    assert neko_plugin_cli.main(["init", "builtin_demo", "--output", str(plugin_dir)]) == 0
+    assert (plugin_dir / ".git").is_dir()
+    capsys.readouterr()
+
+    assert neko_plugin_cli.main(["check", "builtin_demo"]) == 0
+    out = capsys.readouterr().out
+    assert "does not have its own git repository" not in out
+    assert "git init" not in out
+    assert "[WARNING] plugins under plugin/plugins are treated as CI mounts; git checks are skipped here" in out
 
 
 def test_release_check_enforces_market_plugin_id_without_market_release(
