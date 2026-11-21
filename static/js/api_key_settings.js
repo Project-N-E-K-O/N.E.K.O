@@ -5514,8 +5514,11 @@ const ConnectivityManager = {
             results: {}
         };
 
-        // 并发测试所有唯一配置
-        const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
+        // 并发测试所有唯一配置。百炼决策检测要用辅助 API 实际解析到的地域端点
+        // （国际版可能落在美国），所以等第一批检测跑完、解析结果记下来之后再测。
+        const isBailianDecision = (config) => config.provider_scope === 'decision'
+            && !!BAILIAN_WORKSPACE_ID_FIELDS[config.provider_key];
+        const runOne = async ([cacheId, config]) => {
             const result = await this.testKey({ ...config, cache_id: cacheId });
             if (result.cancelled) {
                 return {
@@ -5550,7 +5553,16 @@ const ConnectivityManager = {
                 provider_scope: config.provider_scope || '',
                 resolved_url: result.resolved_url || ''
             };
+        };
+        const entries = Object.entries(keyConfigs);
+        const firstWave = entries.filter(([, config]) => !isBailianDecision(config)).map(runOne);
+        const deferredWave = entries.filter(([, config]) => isBailianDecision(config)).map(async ([cacheId, config]) => {
+            await Promise.allSettled(firstWave);
+            const pInfo = getProviderInfo(config.provider_key);
+            const resolvedUrl = getProviderOpenrouterUrl(config.provider_key, pInfo);
+            return runOne([cacheId, resolvedUrl ? { ...config, url: resolvedUrl } : config]);
         });
+        const testPromises = [...firstWave, ...deferredWave];
 
         const settledResults = await Promise.allSettled(testPromises);
         settledResults.forEach(item => {
@@ -5582,16 +5594,23 @@ const ConnectivityManager = {
         const status = this.keyStatusMap[key] || LightStatus.NOT_CONFIGURED;
         const lights = this.keyLightsMap[key] || [];
         console.log(`[ConnectivityManager] syncLightsForKey: status=${status}, lights=${lights.length}`);
-        const note = status === LightStatus.CONNECTED ? getDecisionFallbackNote(this.keyNoteMap[key]) : '';
         lights.forEach(light => {
-            updateLightStatus(light, status);
-            if (note) {
-                light.title = `${light.title} · ${note}`;
-                if (light.classList.contains('connectivity-summary-light')) {
-                    light.setAttribute('aria-label', light.title);
-                }
-            }
+            this.applyStatusToLight(light, key, status);
         });
+    },
+
+    /**
+     * 设置指示灯状态；决策槽位按聊天模型检测通过时在提示里追加说明。
+     * 同步、从缓存恢复、汇总灯都走这里，说明不会在切换后丢失。
+     */
+    applyStatusToLight(light, key, status) {
+        updateLightStatus(light, status);
+        const note = status === LightStatus.CONNECTED ? getDecisionFallbackNote(this.keyNoteMap[key]) : '';
+        if (!note) return;
+        light.title = `${light.title} · ${note}`;
+        if (light.classList.contains('connectivity-summary-light')) {
+            light.setAttribute('aria-label', light.title);
+        }
     },
 
     /**
@@ -5760,7 +5779,7 @@ function initConnectivityLights() {
             // 有 key 或有 URL → 检查缓存，有缓存用缓存，无缓存显示黄色
             const cachedStatus = ConnectivityManager.keyStatusMap[cacheId];
             if (cachedStatus) {
-                updateLightStatus(light, cachedStatus);
+                ConnectivityManager.applyStatusToLight(light, cacheId, cachedStatus);
                 const errorInfo = ConnectivityManager.keyErrorMap[cacheId];
                 if (errorInfo) {
                     updateErrorMessage(errorDisplay, errorInfo.error_code, errorInfo.error);
@@ -5803,7 +5822,7 @@ function initConnectivityLights() {
         // Re-register summary light to the new key
         if (summaryLight && newKey) {
             ConnectivityManager.registerLight(newKey, summaryLight);
-            summaryLight.dataset.status = light.dataset.status;
+            ConnectivityManager.applyStatusToLight(summaryLight, newKey, light.dataset.status || LightStatus.NOT_CONFIGURED);
         } else if (summaryLight) {
             summaryLight.dataset.status = LightStatus.NOT_CONFIGURED;
         }
@@ -6052,7 +6071,7 @@ function initConnectivityLights() {
             // Set initial status to match the main light
             summaryLight.dataset.status = light.dataset.status;
             summaryLight.dataset.tooltipLabel = getCustomModelDisplayLabel(mt);
-            updateLightStatus(summaryLight, light.dataset.status || LightStatus.NOT_CONFIGURED);
+            ConnectivityManager.applyStatusToLight(summaryLight, key, light.dataset.status || LightStatus.NOT_CONFIGURED);
         }
         if (summaryLight) {
             lightRefs.custom[mt].summaryLight = summaryLight;
