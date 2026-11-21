@@ -67,6 +67,18 @@ ALLOWED_ANIMATION_EXTENSIONS = {'.vmd'}
 RESERVED_DIRS = {'animation', 'emotion_config'}
 
 
+def _file_check(path: Path) -> bool | None:
+    """``path.is_file()``, or None when the type cannot be checked.
+
+    On Python 3.11 ``is_file()`` raises for e.g. a link into an unreadable
+    folder (EACCES) instead of returning False.
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return None
+
+
 def _iter_model_files(root: Path):
     """Yield model files under ``root``, matching the extension in any letter case.
 
@@ -82,12 +94,8 @@ def _iter_model_files(root: Path):
     for path in root.rglob('*'):
         if path.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
             continue
-        try:
-            is_file = path.is_file()
-        except OSError:
-            # Type unknown (e.g. EACCES): keep the path so the folder is not deleted.
-            is_file = True
-        if is_file:
+        # Type unknown (None): keep the path so the folder is not deleted.
+        if _file_check(path) is not False:
             yield path
 
 
@@ -608,7 +616,9 @@ async def get_mmd_models():
         static_mmd_dir = project_root / "static" / "mmd"
         if static_mmd_dir.exists():
             for model_file in _iter_model_files(static_mmd_dir):
-                if not model_file.is_file():  # dangling or looping link
+                # Dangling or looping link, or a path whose type cannot be checked:
+                # leave it out so the other models still list.
+                if not _file_check(model_file):
                     continue
                 rel_path = model_file.relative_to(static_mmd_dir)
                 if not is_utf8_text(rel_path.as_posix()):
@@ -633,7 +643,8 @@ async def get_mmd_models():
         if mmd_dir and mmd_dir.exists():
             found_top_dirs = set()  # Top-level subdirectories holding a model file, listed or skipped.
             for model_file in _iter_model_files(mmd_dir):
-                if not model_file.is_file():  # dangling or looping link
+                is_file = _file_check(model_file)
+                if is_file is False:  # dangling or looping link
                     continue
                 try:
                     rel_path = model_file.relative_to(mmd_dir)
@@ -645,6 +656,11 @@ async def get_mmd_models():
                 # has a non-UTF-8 name is not import residue (and is counted once).
                 if rel_path.parts:
                     found_top_dirs.add(rel_path.parts[0])
+                if is_file is None:
+                    # Type cannot be checked: leave it out so the other models still
+                    # list. Its folder was recorded above, so it is not offered as
+                    # deletable residue (delete-by-folder would refuse it anyway).
+                    continue
                 if not is_utf8_text(rel_path.as_posix()):
                     skipped += 1
                     continue
@@ -692,7 +708,8 @@ async def get_mmd_models():
                         # Recursively search installation directory for PMX/PMD.
                         installed_path = Path(installed_folder)
                         for model_file in _iter_model_files(installed_path):
-                            if not model_file.is_file():  # dangling or looping link
+                            # Dangling or looping link, or type cannot be checked.
+                            if not _file_check(model_file):
                                 continue
                             try:
                                 rel_path = model_file.relative_to(installed_path)

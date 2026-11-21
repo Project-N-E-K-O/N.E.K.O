@@ -313,3 +313,37 @@ def test_existing_folder_with_an_uncheckable_model_path_is_kept(mmd_app, monkeyp
 
     assert (folder / "Miku.PMX").read_bytes() == b"old model"
     assert (folder / "tex.png").read_bytes() == b"old texture"
+
+
+def test_models_list_skips_uncheckable_paths_and_keeps_the_rest(mmd_app, monkeypatch):
+    # An uncheckable model path (is_file() raising PermissionError) is left out
+    # of the list without failing it, in all three sources; its user folder is
+    # not offered as deletable residue.
+    from pathlib import Path
+
+    (mmd_app.static_mmd / "Builtin.pmx").write_bytes(b"pmx")
+    (mmd_app.static_mmd / "Locked.PMX").write_bytes(b"pmx")
+    (mmd_app.mmd_dir / "Good").mkdir()
+    (mmd_app.mmd_dir / "Good" / "Good.pmx").write_bytes(b"pmx")
+    (mmd_app.mmd_dir / "Locked").mkdir()
+    (mmd_app.mmd_dir / "Locked" / "Locked.PMX").write_bytes(b"pmx")
+    (mmd_app.workshop_item / "Shop.pmx").write_bytes(b"pmx")
+    (mmd_app.workshop_item / "Locked.PMX").write_bytes(b"pmx")
+    real_is_file = Path.is_file
+
+    def is_file(self):
+        if self.name == "Locked.PMX":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    with TestClient(mmd_app.app) as client:
+        response = client.get("/api/model/mmd/models")
+
+    assert response.status_code == 200, response.text
+    assert sorted(model["url"] for model in response.json()["models"]) == [
+        "/static/mmd/Builtin.pmx",
+        "/user_mmd/Good/Good.pmx",
+        "/workshop/123/Shop.pmx",
+    ]
+    assert (mmd_app.mmd_dir / "Locked" / "Locked.PMX").exists()
