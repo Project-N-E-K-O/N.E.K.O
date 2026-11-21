@@ -144,10 +144,12 @@ class EmoteTemplateArchiveStore:
             return staging
 
     def _discard_staging(self, staging: Path) -> None:
-        with _replacement_lock:
-            try:
-                shutil.rmtree(staging, ignore_errors=True)
-            finally:
+        # Keep it registered while deleting, so recovery skips it without
+        # making unrelated stores wait for a potentially large directory tree.
+        try:
+            shutil.rmtree(staging, ignore_errors=True)
+        finally:
+            with _replacement_lock:
                 _active_staging.discard(staging.resolve())
 
     def _require_writable(self, key: str) -> None:
@@ -306,10 +308,13 @@ class EmoteTemplateArchiveStore:
         archive: bytes,
         textures: list[tuple[str, bytes]] | None = None,
         filename: str = "",
+        *,
+        preserve_textures: bool = False,
     ) -> dict:
         """Persist an archive, replacing the entire saved copy when its key already exists.
 
         Preserve the supplied original filename as metadata for archive restoration.
+        Reimports can retain supplemental textures under the publication lock.
         """
         self._require_writable(key)
         if not str(key or "").strip():
@@ -328,23 +333,30 @@ class EmoteTemplateArchiveStore:
         try:
             staging.mkdir(parents=True)
             (staging / ARCHIVE_NAME).write_bytes(archive)
-            if cleaned:
+            with _replacement_lock:
+                self._require_writable(key)
+                if preserve_textures:
+                    replacements = {path for path, _ in cleaned}
+                    cleaned = self._clean_textures(cleaned + [
+                        (path, self.texture_path(key, path).read_bytes())
+                        for path in self.texture_paths(key) if path not in replacements
+                    ])
                 for relative, blob in cleaned:
                     target = self._safe_child(staging / TEXTURES_DIR, relative)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(blob)
-            meta = {
-                "key": str(key),
-                "savedAt": int(time.time() * 1000),
-                "archiveBytes": len(archive),
-                "textureCount": len(cleaned),
-                "archiveName": (str(key) + ".zip") if re.fullmatch(r"spine-[0-9a-f]{64}", str(key)) else str(filename or "").strip()[:200],
-                "sourceName": str(filename or "").strip()[:200],
-            }
-            (staging / META_NAME).write_text(
-                json.dumps(meta, ensure_ascii=False), encoding="utf-8"
-            )
-            self._publish_copy(key, staging)
+                meta = {
+                    "key": str(key),
+                    "savedAt": int(time.time() * 1000),
+                    "archiveBytes": len(archive),
+                    "textureCount": len(cleaned),
+                    "archiveName": (str(key) + ".zip") if re.fullmatch(r"spine-[0-9a-f]{64}", str(key)) else str(filename or "").strip()[:200],
+                    "sourceName": str(filename or "").strip()[:200],
+                }
+                (staging / META_NAME).write_text(
+                    json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+                )
+                self._publish_copy(key, staging)
         except OSError as exc:
             raise EmoteTemplateStoreError(f"副本写入失败：{exc}") from exc
         finally:

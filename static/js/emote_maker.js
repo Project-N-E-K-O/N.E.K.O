@@ -5665,11 +5665,16 @@
     const stageQueue = [];
     let stageQueueRunning = false;
     let stagePersistTimer = 0;
+    let exportEditingLock = null;
 
     // A capture owns the live renderer while yielding between readbacks. Keep
     // editing gestures and shortcuts from changing its animation or appearance.
     // Window controls, batch stop and generated file downloads remain available.
     function lockExportEditing() {
+        if (exportEditingLock) {
+            exportEditingLock.count += 1;
+            return releaseExportEditing(exportEditingLock);
+        }
         const main = document.querySelector('.emote-maker-page');
         const controls = new Map();
         const allowed = (target) => target instanceof Element && Boolean(target.closest(
@@ -5691,11 +5696,26 @@
         const events = ['pointerdown', 'pointermove', 'pointerup', 'click', 'dblclick',
             'contextmenu', 'wheel', 'keydown', 'input', 'change', 'drop'];
         events.forEach((type) => window.addEventListener(type, block, { capture: true, passive: false }));
+        exportEditingLock = {
+            count: 1,
+            restore() {
+                events.forEach((type) => window.removeEventListener(type, block, true));
+                controls.forEach((disabled, control) => { control.disabled = disabled; });
+                if (wasBusy == null) main?.removeAttribute('aria-busy');
+                else main?.setAttribute('aria-busy', wasBusy);
+            },
+        };
+        return releaseExportEditing(exportEditingLock);
+    }
+
+    function releaseExportEditing(lock) {
+        let released = false;
         return () => {
-            events.forEach((type) => window.removeEventListener(type, block, true));
-            controls.forEach((disabled, control) => { control.disabled = disabled; });
-            if (wasBusy == null) main?.removeAttribute('aria-busy');
-            else main?.setAttribute('aria-busy', wasBusy);
+            if (released) return;
+            released = true;
+            if (--lock.count) return;
+            lock.restore();
+            exportEditingLock = null;
         };
     }
 
@@ -5960,7 +5980,9 @@
         stageModule.setUserImages([...stageUserImages.entries()].map(([id, image]) => ({
             id, label: image.name, thumb: image.dataUrl,
         })));
-        void stateStageSession?.refreshUserImages()?.catch(() => {});
+        void stateStageSession?.refreshUserImages()?.catch(() => {
+            console.warn('[emote-maker] Failed to refresh user image previews');
+        });
     }
 
     /** 用户图片 → 单帧（按导出边长画到画布中央，透明背景）。 */
@@ -8142,7 +8164,7 @@
         // 「批量导出」那颗不在此列 —— 跑起来时它就是停止按钮，按住就停不下来了。
         ['#pack-export-btn', '#pack-import-btn', '#export-png-btn'].forEach((selector) => {
             const button = $(selector);
-            if (button) button.disabled = packBusy;
+            if (button) button.disabled = packBusy || Boolean(exportEditingLock);
         });
     }
 

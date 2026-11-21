@@ -577,8 +577,7 @@ def _save_template_copy(store, key, archive, filename, model_path, atlas_path, h
         raise EmoteTemplateStoreError("资源包标识无效；模型贴图必须包含在 ZIP 内")
     archive = spine_resource_archive(archive, package)
     # Reimporting an immutable content ID preserves user-authored session images.
-    blobs = [(path, store.texture_path(key, path).read_bytes()) for path in store.texture_paths(key)] if store.has(key) else []
-    return store.save(key, archive, blobs, filename=filename)
+    return store.save(key, archive, filename=filename, preserve_textures=True)
 
 
 @router.post("/library/archive")

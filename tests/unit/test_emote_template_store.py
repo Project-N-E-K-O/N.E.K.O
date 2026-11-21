@@ -72,6 +72,42 @@ def test_reopening_store_recovers_a_copy_retired_before_publication(store):
     assert recovered.texture_path(key, 'StageImages/one.png').read_bytes() == b'original-image'
 
 
+def test_reimport_preserves_images_recovered_before_the_write_check(store, monkeypatch):
+    import main_routers.emote_template_router as routes
+    from main_logic.emote_template_adapter import inspect_spine_zip
+    from tests.emote_fixtures import spine_zip
+
+    archive = spine_zip()
+    key = inspect_spine_zip(archive)['id']
+    store.save(key, archive, [('StageImages/saved.png', b'original-image')])
+    stale = EmoteTemplateArchiveStore(store.root)
+    store._entry_dir(key).rename(store.root / '.retired-interrupted')
+    original = stale._require_writable
+
+    def recover_then_check(key):
+        # Another request can recover the old copy after an earlier has() read
+        # returned false, but before save checks whether publication is safe.
+        EmoteTemplateArchiveStore(store.root)
+        original(key)
+
+    monkeypatch.setattr(stale, '_require_writable', recover_then_check)
+    result = routes._save_template_copy(stale, key, archive, 'reimport.zip', '', '', False)
+    assert result['textures'] == ['StageImages/saved.png']
+    assert stale.texture_path(key, 'StageImages/saved.png').read_bytes() == b'original-image'
+
+
+def test_preserving_textures_merges_replacements_and_checks_the_combined_limit(store, monkeypatch):
+    store.save('merge', _zip(), [('StageImages/keep.png', b'keep'), ('StageImages/edit.png', b'old')])
+    store.save('merge', _zip('new'), [('StageImages/edit.png', b'new')], preserve_textures=True)
+    assert store.texture_path('merge', 'StageImages/keep.png').read_bytes() == b'keep'
+    assert store.texture_path('merge', 'StageImages/edit.png').read_bytes() == b'new'
+    monkeypatch.setattr(store_module, 'MAX_TEXTURE_TOTAL_BYTES', 7)
+    with pytest.raises(EmoteTemplateStoreError, match='总大小超过上限'):
+        store.save('merge', _zip('oversized'), [('StageImages/new.png', b'x')], preserve_textures=True)
+    assert store.archive_path('merge').read_bytes() == _zip('new')
+    assert store.texture_paths('merge') == ['StageImages/edit.png', 'StageImages/keep.png']
+
+
 @pytest.mark.parametrize('reopen_first', [False, True])
 def test_published_retired_copy_cannot_resurrect_after_delete(store, reopen_first):
     key = 'published'
@@ -299,6 +335,37 @@ def test_recovery_cleans_expired_staging_but_keeps_recent_and_active_copies(stor
     finally:
         store._discard_staging(active)
     assert active.resolve() not in store_module._active_staging
+
+
+def test_discarding_staging_does_not_block_recovery_of_other_templates(store, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    store.save('healthy', _zip())
+    staging = store._new_staging()
+    staging.mkdir()
+    entered, release = Event(), Event()
+    original = store_module.shutil.rmtree
+
+    def slow_delete(path, *args, **kwargs):
+        if Path(path) == staging:
+            entered.set()
+            assert release.wait(5), 'test did not release staging cleanup'
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(store_module.shutil, 'rmtree', slow_delete)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        cleanup = executor.submit(store._discard_staging, staging)
+        try:
+            assert entered.wait(2)
+            reopened = executor.submit(EmoteTemplateArchiveStore, store.root).result(timeout=2)
+            assert reopened.has('healthy')
+            assert staging.resolve() in store_module._active_staging
+        finally:
+            release.set()
+        cleanup.result(timeout=2)
+    assert not staging.exists()
+    assert staging.resolve() not in store_module._active_staging
 
 
 def test_reopening_during_an_unlocked_archive_write_keeps_its_staging(store, monkeypatch):

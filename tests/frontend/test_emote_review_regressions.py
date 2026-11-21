@@ -21,7 +21,7 @@ def editor(page, running_server):
         state, importTemplateFile, persistTemplateToLibrary, getImportedScenes,
         queueStageCapture, captureGifFrames, bakePackJobs, produceGroupFile, currentLookDefaults,
         importStageImages, persistExportSettings, previewGroupMember, renderLook,
-        applyTemplateFromRegistry, currentTemplateKey,
+        applyTemplateFromRegistry, currentTemplateKey, setPackBusy,
         renderer: () => spineRenderer,
     };
 """
@@ -132,6 +132,38 @@ def test_export_unlock_keeps_controls_enabled_by_an_async_load(editor):
         }
     }''')
     assert result == {'loaded':True, 'enabled':True}
+
+
+@pytest.mark.parametrize('release_first', ['capture', 'pack'])
+def test_nested_exports_keep_controls_locked_until_both_finish(editor, release_first):
+    _import(editor, spine_zip())
+    result = editor.evaluate('''async releaseFirst => {
+        const q = reviewEditor, main = document.querySelector('.emote-maker-page');
+        const scale = document.querySelector('#adjust-scale');
+        const button = document.querySelector('#pack-export-btn');
+        const before = q.state.adjustments.scale;
+        let finish;
+        const capture = q.queueStageCapture('nested-review', 100, 'export',
+            () => new Promise(resolve => { finish = resolve; }));
+        q.setPackBusy(true);
+        try {
+            if (releaseFirst === 'capture') { finish(); await capture; }
+            else q.setPackBusy(false);
+            const locked = scale.disabled && button.disabled && main.getAttribute('aria-busy') === 'true';
+            scale.value = '180';
+            scale.dispatchEvent(new Event('input', {bubbles:true}));
+            const unchanged = q.state.adjustments.scale === before;
+            if (releaseFirst === 'capture') q.setPackBusy(false);
+            else { finish(); await capture; }
+            return {locked, unchanged,
+                unlocked: !scale.disabled && !button.disabled && !main.hasAttribute('aria-busy')};
+        } finally {
+            q.setPackBusy(false);
+            finish();
+            await capture;
+        }
+    }''', release_first)
+    assert result == {'locked':True, 'unchanged':True, 'unlocked':True}
 
 
 @pytest.mark.parametrize('path', ['registry', 'import', 'reimport'])
