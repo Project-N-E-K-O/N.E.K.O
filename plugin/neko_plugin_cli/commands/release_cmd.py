@@ -220,9 +220,23 @@ def _repository_root(plugin_dir: Path, defaults: CliDefaults) -> Path | None:
 
 def _diagnose_repository(plugin_dir: Path, *, defaults: CliDefaults, release: bool = False) -> list[Issue]:
     """Local git readiness; with ``release`` an uncommitted tree is an error."""
+    # Checked before git itself: nothing here needs git, so do not ask for it.
+    if _is_builtin_source_plugin_dir(plugin_dir, defaults):
+        # _repository_root skips this root (CI mounts, first-party plugins)
+        # even when the plugin carries its own .git (as init leaves it), so
+        # say what is skipped instead of claiming there is no repository.
+        return [
+            (
+                "warning",
+                _tri(
+                    "git checks are skipped for plugins in the built-in plugins root (plugin/plugins)",
+                    "内置插件目录（plugin/plugins）下的插件不做 Git 检查",
+                    "組み込みプラグインディレクトリ（plugin/plugins）配下のプラグインでは Git チェックを省略します",
+                ),
+            )
+        ]
     if shutil.which("git") is None:
         return [("warning", "git executable not found")]
-
     repository_root = _repository_root(plugin_dir, defaults)
     if repository_root is None:
         return [("warning", "plugin source directory does not have its own git repository")]
@@ -640,6 +654,9 @@ def _print_issues(
             fix = _suggest_fix(message, plugin_id=plugin_id, plugin_dir=plugin_dir)
             if fix:
                 print(f"    fix: {fix}", file=stream)
+                # On its own line, so the fix line stays one command to copy.
+                if plugin_dir is not None and _PLUGIN_DIR_PLACEHOLDER in fix:
+                    print(f"    plugin directory: {plugin_dir}", file=stream)
 
 
 _WINDOWS_SHELL = os.name == "nt"
@@ -663,6 +680,29 @@ def _shell_quote(value: str) -> str | None:
     return None if any(char in value for char in _WINDOWS_EXPANDING_CHARS) else f'"{value}"'
 
 
+def _plugin_dir_argument(plugin_dir: Path | None, label: str) -> str:
+    """The plugin directory as one argument of a suggested command.
+
+    Falls back to ``label`` when the directory is unknown. For setup-repo a
+    path also beats the bare id, which resolves only under the plugins root.
+    """
+    if plugin_dir is None:
+        return label
+    target = _shell_quote(str(plugin_dir))
+    return _PLUGIN_DIR_PLACEHOLDER if target is None else target
+
+
+def _placeholder_path(plugin_dir: Path) -> str | None:
+    """The path to fill in when _plugin_dir_argument printed the placeholder."""
+    return str(plugin_dir) if _shell_quote(str(plugin_dir)) is None else None
+
+
+def _placeholder_note(plugin_dir: Path | None) -> str:
+    """Names the directory after a command that shows the placeholder, else ''."""
+    fill_in = _placeholder_path(plugin_dir) if plugin_dir is not None else None
+    return f" (plugin directory: {fill_in})" if fill_in else ""
+
+
 def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> str:
     label = plugin_id or "<plugin>"
     if message.endswith("is missing"):
@@ -678,7 +718,7 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
             ".github/workflows/release.yml",
             ".gitignore",
         }:
-            return f"neko-plugin setup-repo {label} --github-actions"
+            return f"neko-plugin setup-repo {_plugin_dir_argument(plugin_dir, label)} --github-actions"
     if message.startswith("recommended market repository name is "):
         return "the Market accepts any public GitHub repository name; n.e.k.o_plugin_<plugin_id> is the convention"
     if message.startswith("release tag ") and "does not match plugin.toml version" in message:
@@ -699,7 +739,9 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
     if message == "plugin source directory does not have its own git repository":
         if plugin_dir is None:
             return "run git init inside the plugin directory"
-        return f"cd {plugin_dir} && git init"
+        # git -C avoids cd (cmd needs /d across drives) and && (missing in
+        # Windows PowerShell 5).
+        return f"git -C {_plugin_dir_argument(plugin_dir, '')} init"
     if message == "git remote 'origin' is not configured":
         return "git remote add origin <repo-url>"
     if message.startswith(_WORKTREE_NOT_COMMITTED):
@@ -709,13 +751,9 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
             "これらのファイルをコミットするか .gitignore に追加してください。CI は作業ツリーではなくプッシュ済みのコミットを検査します",
         )
     if message.startswith(_AGENT_KIT_OUTDATED):
-        # setup-repo resolves a bare id only under the plugins root; a path
-        # works for every plugin. --no-* keeps the other support files.
-        target = _shell_quote(str(plugin_dir)) if plugin_dir is not None else label
-        if target is None:
-            target = _PLUGIN_DIR_PLACEHOLDER
+        # --no-* keeps the other support files.
         refresh = (
-            f"neko-plugin setup-repo {target} --overwrite "
+            f"neko-plugin setup-repo {_plugin_dir_argument(plugin_dir, label)} --overwrite "
             "--no-readme --no-tests --no-gitignore --no-vscode"
         )
         return _tri(
