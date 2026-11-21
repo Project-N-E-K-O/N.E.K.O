@@ -1332,10 +1332,15 @@ def find_workshop_item_by_id(item_id: str) -> tuple:
         # Search directly using the item ID as folder name.
         for search_dir in search_dirs:
             item_path = os.path.join(search_dir, item_id)
-            if not _is_within(os.path.realpath(search_dir), os.path.realpath(item_path)):
+            # An unreadable folder in one library must not stop the search in the next.
+            try:
+                if not _is_within(os.path.realpath(search_dir), os.path.realpath(item_path)):
+                    continue
+                if _workshop_item_has_model(item_path):
+                    return (item_path, '/workshop')
+            except OSError as e:
+                logging.warning(f"检查创意工坊物品 {item_id} 时出错，继续查找其他库: {e}")
                 continue
-            if _workshop_item_has_model(item_path):
-                return (item_path, '/workshop')
         
         # Return the default path if no matching folder is found, unless that folder
         # is a link leading out of its root.
@@ -1396,13 +1401,24 @@ def find_model_config_file(model_name: str) -> str:
         # If no model directory is found, return None or an empty string rather than a default path.
         return None
     
+    # Workshop models are served relative to the library root they were found in
+    # (/workshop/<item_id>/...), not under the model name.
+    url_dir = model_name
+    if url_prefix == '/workshop':
+        model_dir_real = os.path.realpath(model_dir)
+        for root in _resolve_workshop_search_dirs():
+            root_real = os.path.realpath(root)
+            if _is_within(root_real, model_dir_real) and model_dir_real != root_real:
+                url_dir = os.path.relpath(model_dir_real, root_real).replace(os.sep, '/')
+                break
+    
     # Find the .model3.json file
     for file in os.listdir(model_dir):
         if file.endswith('.model3.json'):
-            return f"{url_prefix}/{model_name}/{file}"
+            return f"{url_prefix}/{url_dir}/{file}"
     
     # Return the default path if nothing is found.
-    return f"{url_prefix}/{model_name}/{model_name}.model3.json"
+    return f"{url_prefix}/{url_dir}/{model_name}.model3.json"
 
 def get_timestamp():
     """Generate formatted timestamp like: Sunday, December 14, 2025 at 12:27 PM"""

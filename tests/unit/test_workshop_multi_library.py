@@ -644,3 +644,60 @@ def test_denied_file_in_one_library_does_not_hide_the_next(libraries):
             assert response.content == b"from B"
     finally:
         locked.chmod(0o755)
+
+
+def test_model_files_by_id_uses_the_same_model_as_the_config_routes(libraries):
+    item = libraries.b / "200"
+    _write_model(item, "live2d", "Other")
+    (item / "Other.motion3.json").write_text("{}", encoding="utf-8")
+    nested = item / "nested"
+    _write_model(nested, "live2d", "200")
+    (nested / "motions").mkdir()
+    (nested / "motions" / "idle.motion3.json").write_text("{}", encoding="utf-8")
+    register_workshop_roots_from_items([{"installedFolder": str(item)}])
+    with _client(libraries, []) as client:
+        files = client.get("/api/live2d/model_files_by_id/200").json()
+        config = client.get("/api/live2d/model_config_by_id/200").json()["config"]
+        assert files["success"] is True
+        assert files["model_config_url"] == "/workshop/200/nested/200.model3.json"
+        assert files["motion_files"] == ["motions/idle.motion3.json"]
+        assert config["FileReferences"]["Moc"] == "200.moc3"
+        assert client.get(files["model_config_url"]).status_code == 200
+
+
+def test_model_files_by_id_flat_item_is_unchanged(libraries):
+    _write_model(libraries.b / "200", "live2d", "Bravo")
+    (libraries.b / "200" / "idle.motion3.json").write_text("{}", encoding="utf-8")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    with _client(libraries, []) as client:
+        files = client.get("/api/live2d/model_files_by_id/200").json()
+    assert files["model_config_url"] == "/workshop/200/Bravo.model3.json"
+    assert files["motion_files"] == ["idle.motion3.json"]
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="needs a non-root POSIX user")
+def test_unreadable_item_in_first_library_does_not_stop_the_search(libraries):
+    locked = libraries.a / "200"
+    _write_model(locked, "live2d", "Locked")
+    _write_model(libraries.b / "200", "live2d", "Bravo")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    locked.chmod(0)
+    try:
+        assert frontend_utils.find_workshop_item_by_id("200") == (str(libraries.b / "200"), "/workshop")
+    finally:
+        locked.chmod(0o755)
+    # Readable again: the configured library wins.
+    assert frontend_utils.find_workshop_item_by_id("200") == (str(libraries.a / "200"), "/workshop")
+
+
+def test_find_model_config_file_builds_workshop_urls_from_the_item_folder(libraries):
+    _write_model(libraries.a / "100", "live2d", "Alpha")
+    _write_model(libraries.a / "Gamma", "live2d", "Gamma")
+    _write_model(libraries.b / "200", "live2d", "Bravo")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    assert frontend_utils.find_model_config_file("Alpha") == "/workshop/100/Alpha.model3.json"
+    assert frontend_utils.find_model_config_file("Bravo") == "/workshop/200/Bravo.model3.json"
+    # A model folder directly in the root keeps its old URL.
+    assert frontend_utils.find_model_config_file("Gamma") == "/workshop/Gamma/Gamma.model3.json"
+    with _client(libraries, []) as client:
+        assert client.get("/workshop/200/Bravo.model3.json").status_code == 200

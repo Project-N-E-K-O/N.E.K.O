@@ -1078,6 +1078,7 @@ def get_model_files_by_id(model_id: str):
             logger.debug(f"通过model_id {model_id} 查找模型目录: {model_dir}")
         except Exception as e:
             logger.warning(f"通过model_id查找失败: {e}")
+        found_by_item_id = bool(model_dir and url_prefix == '/workshop' and os.path.exists(model_dir))
         
         # If model_id yields no valid directory, fall back treating it as model_name.
         if not model_dir or not os.path.exists(model_dir):
@@ -1097,7 +1098,18 @@ def get_model_files_by_id(model_id: str):
             logger.warning(f"模型目录不存在: {model_dir}")
             return {"success": False, "error": "模型不存在"}
 
-        actual_model_dir, model_config_file, model_name_subdir = _locate_model_config(model_dir)
+        if found_by_item_id:
+            # Same file the by-id config routes and the model URL use, so motion and
+            # expression paths saved through those routes belong to this model.
+            chosen = find_workshop_item_model_file(model_dir)
+            if chosen:
+                actual_model_dir, model_config_file = os.path.split(chosen)
+                subdir = os.path.relpath(actual_model_dir, model_dir)
+                model_name_subdir = None if subdir == os.curdir else subdir.replace(os.sep, '/')
+            else:
+                actual_model_dir, model_config_file, model_name_subdir = None, None, None
+        else:
+            actual_model_dir, model_config_file, model_name_subdir = _locate_model_config(model_dir)
 
         if not model_config_file:
             logger.warning(f"未找到模型 {model_id} 的 .model3.json 文件: {model_dir}")
