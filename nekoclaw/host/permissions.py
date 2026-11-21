@@ -15,8 +15,9 @@
 """What task agents are permitted to do (design section 10.1).
 
 The settings live in ``<data root>/nekoclaw/permissions.json``. Each category
-has one of four modes:
+has one of five modes:
 
+* ``auto``       - apply the host policy for the verified operation and delivery scope.
 * ``first_ask``  - ask the user; "always" turns the category into ``allow``,
   "session" allows it until the asking commission is done, has failed or
   is stopped (being stuck and taken up again does not end it).
@@ -26,7 +27,7 @@ has one of four modes:
 
 ``DEFAULT_MODES`` gives the mode of a category the file does not mention. Each
 MCP server is a category of its own (``mcp_server`` plus the server's name).
-The defaults apply only while there is no file. A file that exists but cannot
+An omitted setting in an existing file also uses auto. A file that exists but cannot
 be read or parsed makes every category ``deny`` until it is repaired: the
 user's own settings are unknown then, and ``deny`` is the one mode every
 caller honours.
@@ -67,7 +68,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-MODES: tuple[str, ...] = ("first_ask", "always_ask", "allow", "deny")
+MODES: tuple[str, ...] = ("auto", "first_ask", "always_ask", "allow", "deny")
 CHOICES: tuple[str, ...] = ("always", "session", "once", "deny")
 # A lower rank withdraws approval previously issued under a wider setting.
 _MODE_RANK = {"deny": 0, "always_ask": 1, "first_ask": 2, "allow": 3}
@@ -76,7 +77,7 @@ CHOICES_ALWAYS_ASK: tuple[str, ...] = ("once", "deny")
 
 MCP_SERVER_CATEGORY = "mcp_server"
 
-DEFAULT_MODES: dict[str, str] = {
+AUTO_POLICY: dict[str, str] = {
     # Built-in tools of the runtime (nekoclaw.runtime.permissions.CATEGORIES).
     "workdir_files": "allow",
     "outside_read": "first_ask",
@@ -90,6 +91,17 @@ DEFAULT_MODES: dict[str, str] = {
     "managed_delivery": "first_ask",
     MCP_SERVER_CATEGORY: "first_ask",
 }
+DEFAULT_MODES = dict.fromkeys(AUTO_POLICY, "auto")
+
+
+def _effective_mode(category: str, mode: str, *, category_mode: str = "auto") -> str:
+    if mode != "auto":
+        return mode
+    # An auto MCP server still observes stricter user settings on its category.
+    if category == MCP_SERVER_CATEGORY and category_mode in ("always_ask", "deny"):
+        return category_mode
+    return AUTO_POLICY.get(category, "always_ask")
+
 
 # Categories whose tools are single small steps. "once" covers the rest of
 # the run that asked instead of one call, in both asking modes.
@@ -271,12 +283,19 @@ class PermissionStore:
         if self._unreadable:
             return _UNREADABLE_MODE
         name, slot = _slot(category, key)
-        if name == MCP_SERVER_CATEGORY:
-            specific = self._mcp_servers.get(slot or "*")
-            if specific is not None:
-                return specific
-            return self._categories.get(name, DEFAULT_MODES[name])
-        return self._categories.get(name, DEFAULT_MODES.get(name, "always_ask"))
+        category_mode = self._categories.get(name, "auto")
+        configured = self._mcp_servers.get(slot, category_mode) if name == MCP_SERVER_CATEGORY else category_mode
+        return _effective_mode(name, configured, category_mode=category_mode)
+
+    async def native_mode(self, category: str) -> str:
+        """Keep the local-file default. Other native auto decisions require a fresh answer."""
+        await self._ensure_loaded()
+        if self._unreadable:
+            return _UNREADABLE_MODE
+        configured = self._categories.get(category, "auto")
+        if configured == "auto" and category == "workdir_files":
+            return AUTO_POLICY[category]
+        return configured
 
     def revision(self, category: str, key: str | None = None) -> int:
         """Generation of the last tightening of the effective rule for this scope."""
@@ -314,7 +333,7 @@ class PermissionStore:
                 return False
             if expected_revision is not None and self.revision(category, key) != expected_revision:
                 return False
-            fallback = self._categories.get(name, DEFAULT_MODES.get(name, "always_ask"))
+            fallback = self._categories.get(name, "auto")
             setting = (name, None)
             previous = fallback
             generation = self._revisions.get(setting, 0)
@@ -330,8 +349,17 @@ class PermissionStore:
                 self._session_read_denied_at = self._version
             # Managed transfers still ask per recipient under an "allow" setting.
             ceiling = _MODE_RANK["first_ask"] if name == "managed_delivery" else _MODE_RANK["allow"]
-            tighter = min(_MODE_RANK[mode], ceiling) < min(_MODE_RANK[previous], ceiling)
+            old_rule = _effective_mode(name, previous, category_mode=fallback)
+            new_rule = _effective_mode(name, mode, category_mode=self._categories.get(name, "auto"))
+            tighter = min(_MODE_RANK[new_rule], ceiling) < min(_MODE_RANK[old_rule], ceiling)
             self._revisions[setting] = self._version if tighter else generation
+            if name == MCP_SERVER_CATEGORY and key is None:
+                old_auto = _effective_mode(name, "auto", category_mode=fallback)
+                new_auto = _effective_mode(name, "auto", category_mode=mode)
+                if _MODE_RANK[new_auto] < _MODE_RANK[old_auto]:
+                    for server, configured in self._mcp_servers.items():
+                        if configured == "auto":
+                            self._revisions[(name, server)] = self._version
             # A cancelled caller still waits for the write, so the lock is not
             # released while an older setting can land on disk after a newer one.
             await to_thread_through_cancellation(self._write, dict(self._categories), dict(self._mcp_servers))
@@ -596,7 +624,7 @@ class PermissionGate:
         if category not in {"workdir_files", "outside_read", "outside_write", "run_command", "other"}:
             return PermissionDecision(False, DENIED_BY_SETTINGS)
         live = self.current_run(commission_id)
-        mode = await self._store.mode(category)
+        mode = await self._store.native_mode(category)
         if not live():
             return PermissionDecision(False, DENIED_NO_ANSWER)
         if mode in ("allow", "deny"):

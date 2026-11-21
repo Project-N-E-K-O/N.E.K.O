@@ -15,7 +15,8 @@ from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-Responder = Callable[[dict[str, Any]], list[dict[str, Any]]]
+# A scripted response can also be a provider's HTTP error (status, JSON).
+Responder = Callable[[dict[str, Any]], list[dict[str, Any]] | tuple[int, dict[str, Any]]]
 
 
 def _chunk(delta: dict[str, Any], finish_reason: str | None = None) -> dict[str, Any]:
@@ -103,6 +104,15 @@ class FakeOpenAIServer:
                     owner.requests.append(body)
                     owner.headers.append({key.lower(): value for key, value in self.headers.items()})
                     chunks = owner._respond(body)
+                if isinstance(chunks, tuple):
+                    status, error = chunks
+                    payload = json.dumps(error).encode("utf-8")
+                    self.send_response(status)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 self.send_response(200)
                 self.send_header("content-type", "text/event-stream")
                 self.send_header("cache-control", "no-cache")

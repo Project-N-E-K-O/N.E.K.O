@@ -68,6 +68,7 @@ PATCH_FILE = "nekoclaw.patch.yml"
 GUARD_FILE = "nekoclaw-guard.mjs"
 # What the guard writes to standard error once dsh has loaded it.
 GUARD_READY = "nekoclaw-guard ready"
+DEVICE_VIEW_READY = f"{GUARD_READY} with device view"
 # The variable dsh reads the "key" of its one provider from: the token of the
 # driver's endpoint, of no use anywhere else.
 KEY_VARIABLE = "NEKOCLAW_DSH_ENDPOINT_TOKEN"
@@ -139,6 +140,7 @@ GUARD_SOURCE = """\
 export const name = 'nekoclaw-guard'
 
 export function apply(ctx, config) {
+  if (config?.deviceViewUrl) installDeviceView(ctx, config.deviceViewUrl)
   const unasked = new Set(Array.isArray(config?.unasked) ? config.unasked : [])
   const prefixes = Array.isArray(config?.unaskedPrefixes) ? config.unaskedPrefixes : []
   const asked = new Set(Array.isArray(config?.asked) ? config.asked : [])
@@ -162,9 +164,112 @@ export function apply(ctx, config) {
     if (native.kind !== 'allow') return native
     return { kind: 'ask', reason: 'the N.E.K.O host decides' }
   })
-  process.stderr.write('%s\\n')
+  process.stderr.write((config?.deviceViewUrl ? '%s' : '%s') + '\\n')
 }
-""" % (json.dumps(sorted(TASK_CONTROL_TOOLS)), CONTROL_CHECK_PREFIX, GUARD_READY)
+""" % (json.dumps(sorted(TASK_CONTROL_TOOLS)), CONTROL_CHECK_PREFIX, DEVICE_VIEW_READY, GUARD_READY)
+
+
+# dsh assembles schemas *before* its pre-step compaction and prepares the model
+# request *afterwards*. Keep the actual assembled array for that request so a
+# successful summary takes effect immediately, including overflow retries.
+GUARD_SOURCE += """
+function installDeviceView(ctx, url) {
+  const views = new WeakMap()
+  const prefix = 'mcp__gateway__'
+  const device = name => name === prefix + 'computer' || name.startsWith(prefix + 'browser_')
+  function groupsOf(tools) {
+    const groups = new Set()
+    for (const tool of tools) {
+      if (tool.name === prefix + 'computer') groups.add('keyboard_mouse')
+      if (tool.name.startsWith(prefix + 'browser_')) groups.add('browser')
+    }
+    return [...groups]
+  }
+  ctx.on('system-prompt/assemble', async (_assembly, { agent }, next) => {
+    const assembly = await next()
+    if (agent && assembly.tools.some(tool => device(tool.name))) {
+      const session = agent.session
+      const view = views.get(session) || { epoch: 0, dirty: false, allowed: null }
+      view.unfiltered = assembly.tools
+      view.assembly = { ...assembly }
+      views.set(session, view)
+      return view.assembly
+    }
+    return assembly
+  })
+  ctx.on('session/event', (session, event) => {
+    const view = views.get(session)
+    if (view && event.type === 'assistant/message' && !event.data.interrupted) {
+      // Only the ordinary agent loop commits this event. An overflow, network
+      // failure or interrupted stream is an attempt; a summary is separate.
+      view.shown = { groups: groupsOf(view.assembly.tools), turn: event.data.turn }
+    }
+    if (view && event.type === 'compaction/end' && event.data.error === undefined) {
+      view.idleCycle = view.endSinceRequest === true
+      view.endSinceRequest = true
+      view.epoch++
+      view.dirty = true
+    }
+  })
+  ctx.on('tools/result', (exec, result) => {
+    const view = views.get(exec.agent?.session)
+    if (view?.hidden && !result.isError && exec.name === prefix + 'capability_search' && exec.arguments?.group) {
+      view.dirty = true
+    }
+    if (view && exec.name === 'mcp__host__wait_agent') {
+      // New user input may have just been delivered, after the preceding reply.
+      view.shown = null
+      view.checkIntent = true
+    }
+  })
+  ctx.on('agent/request', async ({ agent, turn, signal }, next) => {
+    const view = views.get(agent.session)
+    if (!view?.epoch || !view.assembly || view.disabled) return next()
+    // The agent cannot dispatch a device between two summaries without a model
+    // step. A later attempt with intervening work must not claim that proof.
+    const idleCycle = view.idleCycle === true && view.endSinceRequest === true
+    view.endSinceRequest = false
+    if (view.dirty || (view.hidden && (view.turn !== turn || view.checkIntent))) {
+      try {
+        const status = { session: agent.session.id, epoch: view.epoch, refresh: view.dirty }
+        if (view.turn === undefined) status.registered = groupsOf(view.unfiltered)
+        if (idleCycle) status.idleCycle = true
+        if (view.shown?.groups.length) {
+          status.shown = view.shown.groups
+          if (view.shown.turn === turn) status.sameTurn = true
+        }
+        const response = await fetch(url, {
+          method: 'POST', redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+          headers: {
+            Authorization: 'Bearer ' + process.env.NEKOCLAW_DSH_ENDPOINT_TOKEN,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(status),
+        })
+        if (response.ok) {
+          const names = await response.json()
+          if (names === null) view.disabled = true
+          if (Array.isArray(names)) view.allowed = new Set(names.map(name => prefix + name))
+          view.dirty = false
+          view.checkIntent = false
+          view.turn = turn
+        }
+      } catch {
+        // A failed refresh keeps the last confirmed view and retries next request.
+      }
+    }
+    if (view.allowed !== null) {
+      // The previous request may have frozen its schema array, while an
+      // overflow retry still reuses the assembly. Preserve that history.
+      const source = view.unfiltered
+      const visible = source.filter(tool => !device(tool.name) || view.allowed.has(tool.name))
+      view.hidden = visible.length !== source.length
+      view.assembly.tools = view.hidden ? visible : source
+    }
+    return next()
+  })
+}
+"""
 
 
 class DshUnavailable(RuntimeError):
@@ -220,7 +325,7 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
     address on the loopback interface ending in ``/v1``). A patch replaces
     the whole configuration of the row it names.
     """
-    from config.nekoclaw_settings import DSH_MODEL_RETRIES, DSH_SPILL_KEPT_DAYS
+    from config.nekoclaw_settings import DSH_MODEL_RETRIES, DSH_SPILL_KEPT_DAYS, FIRST_TURN_DEVICE_TOOLS
     from config.prompts.prompts_nekoclaw import TASK_AGENT_IDENTITY
     from config.prompts.prompts_nekoclaw_dsh import DSH_HOST_TOOLS_SECTION, HOST_TOOL_PREFIX
 
@@ -229,6 +334,11 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
     from nekoclaw.runtime.context import headroom_of
 
     headroom = headroom_of(shape.context_window)
+    # A fresh home is initialized with the pinned stock ACP recipe on launch.
+    # With a pre-existing custom recipe, leave every plugin hook untouched.
+    device_view = FIRST_TURN_DEVICE_TOOLS and (
+        not (home / "profiles" / PROFILE).exists() or uses_stock_tool_presentation(home)
+    )
     models = [
         {
             "id": slot_model(index),
@@ -314,6 +424,7 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
                         "unasked": list(UNASKED_TOOLS),
                         "unaskedPrefixes": [HOST_TOOL_PREFIX],
                         "asked": [f"{HOST_TOOL_PREFIX}{name}" for name in ASKED_HOST_TOOLS],
+                        **({"deviceViewUrl": f"{endpoint}/device-tools"} if device_view else {}),
                     },
                 }
             ]

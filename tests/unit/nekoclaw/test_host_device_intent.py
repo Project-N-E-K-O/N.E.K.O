@@ -128,3 +128,188 @@ def test_device_tools_default_and_override(monkeypatch, value, enabled):
 )
 def test_first_turn_device_groups(text, expected):
     assert select_device_groups(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("点击登录按钮", (BROWSER,)), ("Click the login button", (BROWSER,)),
+    ("继续", ()), ("解释如何点击登录按钮", ()), ('Translate "click login"', ()),
+    ("截桌面", (DESKTOP,)), ("Click the taskbar icon", (DESKTOP,)),
+    ("Double-click the Downloads folder", (DESKTOP,)),
+    ("切换到桌面，再点击登录按钮", (DESKTOP,)),
+    ("Switch to Notepad, then click OK", (DESKTOP,)),
+    ("切换到记事本，再点击确定", (DESKTOP,)),
+    ("先截个图，再点击登录按钮", (DESKTOP,)),
+    ("Use the mouse to click login", (DESKTOP,)),
+])
+def test_an_earlier_browser_only_disambiguates_an_unqualified_click(text, expected):
+    assert select_device_groups(text, browser_context=True) == expected
+
+
+@pytest.mark.parametrize(("text", "focus"), [
+    ("Switch to Notepad", False), ("切换到记事本", False),
+    ("Switch to Excel", False), ("切换到 Excel", False), ("Switch to Microsoft Excel", False),
+    ("switch to excel", False), ("切换到EXCEL", False),
+    ("Switch to Chinese", True), ("Switch to Dark Mode", True),
+    ("Switch to Theme", True),
+    ("Switch to Dark Mode in the current window", True),
+    ("Switch to Chinese in the current app", True),
+    ("Switch to Dark Mode on the desktop", True),
+    ("在当前桌面应用里切换到深色模式", True),
+    ("切换到深色模式（在当前窗口）", True),
+    ("切换到当前窗口的深色模式", True),
+    ("Switch to the Example app on the desktop", False),
+    ("Switch to the Example app from the browser", False),
+    ("切换到 VS Code", False),
+    ("Switch to Example", True), ("Switch to the Example app", False),
+    ("Summarize the file.", True), ("Don't switch to Notepad", True),
+    ('Translate "Switch to Notepad"', True),
+])
+def test_click_target_can_change_without_mounting_tools(text, focus):
+    from nekoclaw.device_intent import classify_device_intent
+
+    groups, next_focus = classify_device_intent(text, browser_context=True)
+    assert groups == () and next_focus is focus
+    assert select_device_groups("Click OK", browser_context=next_focus) == ((BROWSER,) if focus else (DESKTOP,))
+
+
+def test_unrelated_input_preserves_an_unknown_click_target_until_the_registry_answers():
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent("Continue.", browser_context=None) == ((), None)
+    assert classify_device_intent("Switch to Notepad", browser_context=None) == ((), False)
+
+
+@pytest.mark.parametrize(("text", "groups", "focus"), [
+    ("在浏览器中切换到深色模式并点击确认", (BROWSER,), True),
+    ("Switch to Dark Mode in the browser", (BROWSER,), True),
+    ("切换到深色模式（在浏览器中）", (BROWSER,), True),
+    ("在浏览器中切换到 Word，然后点击保存", (DESKTOP,), False),
+    ("Switch to Word from the browser, then click Save", (DESKTOP,), False),
+])
+def test_a_source_browser_locates_a_setting_but_an_explicit_destination_takes_over(text, groups, focus):
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent(text, browser_context=None) == (groups, focus)
+    assert classify_device_intent(text, browser_context=False) == (groups, focus)
+    assert select_device_groups("Click OK", browser_context=focus) == groups
+
+
+def test_receipts_can_distinguish_unrelated_input_from_an_explicit_target():
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent("Continue.", browser_context=False, inherit_target=False) == ((), None)
+    assert classify_device_intent("Switch to Notepad", browser_context=False, inherit_target=False) == ((), False)
+    assert classify_device_intent("Click OK", browser_context=True, inherit_target=False) == ((BROWSER,), True)
+
+
+@pytest.mark.parametrize(("instruction", "groups", "focus"), [
+    ("转到下一页，点击确定", (BROWSER,), True),
+    ("Switch to Dark Mode in the current window, then click OK", (BROWSER,), True),
+    ("Switch to Theme on the desktop and click OK", (BROWSER,), True),
+    ("Switch to Chinese in the mouse settings app, then click OK", (BROWSER,), True),
+    ("Switch to Theme in the app where I use the mouse, then click OK", (BROWSER,), True),
+    ("切换到深色模式（在当前桌面应用内），然后点击确定", (BROWSER,), True),
+    ("Switch to Theme and click the desktop icon", (DESKTOP,), False),
+    ("upload the file, then click submit", (BROWSER,), True),
+    ("Upload the Documents folder, then click submit", (BROWSER,), True),
+    ("打开上传文件夹的对话框，然后点击提交", (BROWSER,), True),
+    ("Open the Downloads folder on the website, then click submit", (BROWSER,), True),
+    ("切换到微信，然后点击发送", (DESKTOP,), False),
+    ("切换到 Word，然后点击保存", (DESKTOP,), False),
+    ("Switch to VS Code, then click Save", (DESKTOP,), False),
+    ("Switch to VS Code and click Save", (DESKTOP,), False),
+    ("switch  to Notepad and type hello", (DESKTOP,), False),
+    ("切换到记事本并输入你好", (DESKTOP,), False),
+    ("打开 Downloads 文件夹，再双击 setup", (DESKTOP,), False),
+    ("打开文件夹 Downloads，然后双击 setup", (DESKTOP,), False),
+    ("进入本地文件夹 Documents，然后双击草稿", (DESKTOP,), False),
+    ("打开 Downloads 文件夹", (DESKTOP,), False),
+    ("Open the Downloads folder, then double-click setup", (DESKTOP,), False),
+    ("Open the folder Documents in File Explorer, then double-click draft", (DESKTOP,), False),
+    ("在文件管理器中打开照片文件夹，然后点击草稿", (DESKTOP,), False),
+    ("Enter my local client reports folder, then double-click draft", (DESKTOP,), False),
+    (r"打开 C:\Users\me\Documents 文件夹，再双击草稿", (DESKTOP,), False),
+    ("Open the ~/Documents folder, then double-click draft", (DESKTOP,), False),
+    ("打开 https://pan.baidu.com，然后打开 照片 文件夹，再点击下载", (BROWSER,), True),
+    ("Open the Shared folder, then click the report", (BROWSER,), True),
+    ("Open the Shared folder", (BROWSER,), True),
+    ("进入文件夹 Documents，然后点击草稿", (BROWSER,), True),
+    ("Open the email and save the attachment to my folder, then click send", (BROWSER,), True),
+    ("打开邮件并把附件保存到我的文件夹，然后点击发送", (BROWSER,), True),
+    ("Open the email and save the attachment to my Downloads folder, then click send", (BROWSER,), True),
+    ('请解释“打开文件夹 Documents”的意思', (), True),
+    ("The instructions say to open the Documents folder.", (), True),
+    ("Open the Documents folder in this code example.", (), True),
+    ("回到桌面", (), False),
+    ("go back to the desktop", (), False),
+])
+def test_browser_focus_follows_explicit_surface_changes(instruction, groups, focus):
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent(instruction, browser_context=True) == (groups, focus)
+    assert select_device_groups("Click OK", browser_context=focus) == ((BROWSER,) if focus else (DESKTOP,))
+
+
+@pytest.mark.parametrize("instruction", ["Switch to the Excel tab", "返回 Excel 网页标签", "Return to the browser tab"])
+def test_named_tab_selects_the_browser_even_after_switching_to_an_app(instruction):
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent(instruction, browser_context=False) == ((BROWSER,), True)
+
+
+@pytest.mark.parametrize(("text", "groups", "focus"), [
+    ("Open the browser, switch to Notepad, then click OK", (DESKTOP, BROWSER), False),
+    ("Take a desktop screenshot. Open the browser.", (DESKTOP, BROWSER), True),
+    ("打开浏览器，切换到记事本，再点击确定，然后点击保存", (DESKTOP, BROWSER), False),
+    ("Open the browser. Switch to Notepad.", (BROWSER,), False),
+])
+def test_clauses_select_all_needed_tools_but_last_target_locates_the_next_click(text, groups, focus):
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent(text) == (groups, focus)
+    assert select_device_groups("Click OK, then click Save.", browser_context=focus) == ((BROWSER,) if focus else (DESKTOP,))
+
+
+@pytest.mark.parametrize(("instruction", "target"), [
+    ("切换到关于窗口，然后点击确定", DESKTOP),
+    ("切换到合并窗口，然后点击确定", DESKTOP),
+    ("Switch to the Find and Replace window, then click OK", DESKTOP),
+    ("Switch to Notepad and paste the text", DESKTOP),
+    ("切换到记事本并粘贴文字", DESKTOP),
+    ("Switch to the Example app and paste the text", DESKTOP),
+    ("Switch to the Notepad window now, then click OK", DESKTOP),
+    ("Switch to the window showing the report, then click OK", DESKTOP),
+    ("Switch to the window showing the code, then click OK", DESKTOP),
+    ("Switch to VS Code window, then click Save", DESKTOP),
+    ("点击桌面图标并切换到深色模式", DESKTOP),
+    ("Click the desktop icon and switch to dark mode", DESKTOP),
+    ("Switch to Word in the browser, then click Save", BROWSER),
+    ("Switch to Word from the browser, then click Save", DESKTOP),
+    ("Switch to Microsoft Word and click the Layout tab", DESKTOP),
+    ("Switch to Word and open the website", BROWSER),
+    ("切换到 Word 并打开网页", BROWSER),
+    ("Switch to Microsoft Word in the browser and click the Layout tab", BROWSER),
+])
+def test_a_switch_keeps_its_destination_name_and_ordered_actions(instruction, target):
+    from nekoclaw.device_intent import classify_device_intent
+
+    groups, focus = classify_device_intent(instruction, browser_context=True)
+    assert groups == (target,)
+    assert select_device_groups("Click OK", browser_context=focus) == (target,)
+
+
+def test_a_prohibited_click_and_switch_leave_the_original_surface_in_place():
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent("不要点击桌面图标并切换到记事本", browser_context=True) == ((), True)
+
+
+@pytest.mark.parametrize("instruction", [
+    "Click the login button and return to the desktop",
+    "Click the login button and go back to the desktop",
+    "点击登录并返回桌面",
+])
+def test_the_click_precedes_a_joined_return_to_the_desktop(instruction):
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent(instruction, browser_context=True) == ((BROWSER,), False)

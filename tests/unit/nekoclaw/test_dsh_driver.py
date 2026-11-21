@@ -1130,8 +1130,8 @@ async def test_a_tool_a_plugin_brought_is_asked_about_under_the_category_for_eve
     await driver.run("s1", '!tool plugin_weather {"city": "Oslo"}\n!tool plugin_delete_everything {}')
 
     assert asked == [
-        {"tool": "plugin_weather", "category": "other", "arguments": {"city": "Oslo"}, "workdir": spec.workdir, "default": "allow"},
-        {"tool": "plugin_delete_everything", "category": "other", "arguments": {}, "workdir": spec.workdir, "default": "allow"},
+        {"tool": "plugin_weather", "category": "other", "arguments": {"city": "Oslo"}, "workdir": spec.workdir, "default": "ask"},
+        {"tool": "plugin_delete_everything", "category": "other", "arguments": {}, "workdir": spec.workdir, "default": "ask"},
     ]
     assert [(row["name"], row["outcome"]) for row in driver.record("tool")] == [
         ("plugin_weather", "allowed"),
