@@ -1819,3 +1819,76 @@ async def test_connectivity_decision_probe_follows_resolved_region():
         ))
     assert res["success"] is False
     assert mock_oai.await_count == 0 and mock_dec.await_count == 0
+
+
+@pytest.mark.unit
+def test_systemone_score_probabilities_with_digit_labels_are_not_misread_as_indexes():
+    adapter = SystemOneAdapter("systemone")
+    q = {"s": ScoreQuestion(instructions="rate", levels=("1", "2"))}
+    # Label-keyed map whose labels look like digits: "2" is no valid index, so labels win.
+    by_label = adapter.parse_response(
+        {"answers": {"s": {"type": "score", "probabilities": {"1": 0.2, "2": 0.8}}}}, q, "m",
+    )
+    assert by_label.answers["s"].probabilities == {"1": pytest.approx(0.2), "2": pytest.approx(0.8)}
+    assert by_label.answers["s"].value == pytest.approx(0.8)
+    # The documented index-keyed map still maps index -> label.
+    by_index = adapter.parse_response(
+        {"answers": {"s": {"type": "score", "probabilities": {"0": 0.2, "1": 0.8}}}}, q, "m",
+    )
+    assert by_index.answers["s"].probabilities == {"1": pytest.approx(0.2), "2": pytest.approx(0.8)}
+    assert by_index.answers["s"].value == pytest.approx(0.8)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_memory_recall_cancels_in_flight_batches_after_a_failure():
+    import asyncio
+
+    from memory.recall import MemoryRecallReranker
+
+    decision_cfg = {
+        "model": "decision-model-preview",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "sk-test",
+        "decision_protocol": "systemone",
+        "decision_url": "https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+    }
+    summary_cfg = {
+        "model": "qwen3.8-flash",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "sk-test",
+        "provider_type": "openai_compatible",
+    }
+    cm = MagicMock()
+    cm.aget_model_api_config = AsyncMock(side_effect=lambda tier: decision_cfg if tier == "decision" else summary_cfg)
+    candidates = [{"id": f"m{i}", "text": f"fact {i}", "score": float(20 - i)} for i in range(20)]
+    slow_cancelled = asyncio.Event()
+
+    async def _decide(self, *, state, questions, **kwargs):
+        if "m0" in questions:
+            raise DecisionProtocolError("HTTP 500", status_code=500, protocol="systemone")
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            slow_cancelled.set()
+            raise
+        raise AssertionError("slow batch should have been cancelled")
+
+    fake_llm = SimpleNamespace(
+        ainvoke=AsyncMock(return_value=SimpleNamespace(content='[{"id": "m1"}, {"id": "m0"}]')),
+        aclose=AsyncMock(),
+    )
+    with (
+        patch.object(DecisionClient, "decide", _decide),
+        patch("utils.llm_client.create_chat_llm_async", AsyncMock(return_value=fake_llm)),
+    ):
+        ranked = await MemoryRecallReranker()._fine_rank(
+            candidates,
+            query_texts=["q"],
+            budget=2,
+            config_manager=cm,
+            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
+            lang="en",
+        )
+    assert slow_cancelled.is_set()
+    assert [r["id"] for r in ranked] == ["m1", "m0"]

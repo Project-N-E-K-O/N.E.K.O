@@ -158,13 +158,17 @@ class DecisionAdapter(abc.ABC):
 def _score_probs_by_label(levels: tuple[str, ...], probs: Mapping[str, float]) -> dict[str, float]:
     """Map score probabilities keyed by 0-based level index strings ("0", "1", ...) to level labels.
 
-    Label-keyed entries are kept as-is so either wire shape normalizes to labels.
+    The key encoding is decided from the whole map, not per entry, so labels that
+    look like digits (levels ``("1", "2")``) are not misread as indexes. The wire
+    format documents index keys, which win when the map fits both encodings.
     """
+    keys = set(probs)
+    index_keys = {str(idx) for idx in range(len(levels))}
+    if keys and not keys <= index_keys and keys <= set(levels):
+        return {lbl: probs[lbl] for lbl in levels if lbl in probs}
     out: dict[str, float] = {}
     for idx, lbl in enumerate(levels):
         p = probs.get(str(idx))
-        if p is None:
-            p = probs.get(lbl)
         if p is not None:
             out[lbl] = p
     return out

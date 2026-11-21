@@ -5755,6 +5755,10 @@
             "invalid_response": "Formato de respuesta no válido",
             "invalid_workspace_id": "ID de espacio de trabajo de Bailian no válido"
         },
+        "decisionFallback": {
+            "workspace_missing": "Sin ID de espacio de trabajo de Bailian: se usa un modelo de chat en lugar del modelo de decisión",
+            "region_unsupported": "Esta región no tiene API nativa de decisión: se usa un modelo de chat"
+        },
         "status": {
             "connected": "Conectado",
             "failed": "Conexión fallida",

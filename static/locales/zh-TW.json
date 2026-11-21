@@ -5755,6 +5755,10 @@
             "invalid_response": "回應格式錯誤",
             "invalid_workspace_id": "百煉業務空間 ID 格式無效"
         },
+        "decisionFallback": {
+            "workspace_missing": "未填百煉業務空間 ID，決策模型暫用聊天模型",
+            "region_unsupported": "目前地域沒有原生決策介面，決策模型改用聊天模型"
+        },
         "status": {
             "connected": "已連通",
             "failed": "連接失敗",

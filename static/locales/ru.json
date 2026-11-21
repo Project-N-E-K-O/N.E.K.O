@@ -5755,6 +5755,10 @@
             "invalid_response": "Неверный формат ответа",
             "invalid_workspace_id": "Неверный формат ID рабочего пространства Bailian"
         },
+        "decisionFallback": {
+            "workspace_missing": "ID рабочего пространства Bailian не указан: вместо модели решений используется чат-модель",
+            "region_unsupported": "В этом регионе нет нативного API модели решений: используется чат-модель"
+        },
         "status": {
             "connected": "Подключено",
             "failed": "Ошибка подключения",

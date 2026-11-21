@@ -4818,6 +4818,21 @@ function updateLightStatus(lightElement, status) {
     }
 }
 
+/** 决策槽位检测走了聊天回退时，指示灯提示里追加的说明；其他情况返回空串。 */
+function getDecisionFallbackNote(reason) {
+    if (reason === 'workspace_missing') {
+        return window.t
+            ? window.t('connectivity.decisionFallback.workspace_missing')
+            : '未填百炼业务空间 ID，决策模型暂用聊天模型';
+    }
+    if (reason === 'region_unsupported') {
+        return window.t
+            ? window.t('connectivity.decisionFallback.region_unsupported')
+            : '当前地域没有原生决策接口，决策模型用聊天模型';
+    }
+    return '';
+}
+
 // ==================== 连通性测试：错误信息展示 UI 组件 ====================
 
 /**
@@ -4922,6 +4937,8 @@ const ConnectivityManager = {
 
     /** Key → 错误信息映射 { error_code, error } */
     keyErrorMap: {},
+    /** Key → 决策槽位聊天回退说明（workspace_missing / region_unsupported），没有则为 null */
+    keyNoteMap: {},
 
     /** Key → 指示灯 DOM 元素列表映射 */
     keyLightsMap: {},
@@ -5344,6 +5361,10 @@ const ConnectivityManager = {
                 }
 
                 const data = await response.json();
+                if (cacheId) {
+                    // 决策槽位按聊天模型检测通过时，灯的提示里注明「聊天模型代替」。
+                    this.keyNoteMap[cacheId] = data.success ? (data.decision_fallback || null) : null;
+                }
                 return {
                     success: !!data.success,
                     error: data.error || null,
@@ -5561,8 +5582,15 @@ const ConnectivityManager = {
         const status = this.keyStatusMap[key] || LightStatus.NOT_CONFIGURED;
         const lights = this.keyLightsMap[key] || [];
         console.log(`[ConnectivityManager] syncLightsForKey: status=${status}, lights=${lights.length}`);
+        const note = status === LightStatus.CONNECTED ? getDecisionFallbackNote(this.keyNoteMap[key]) : '';
         lights.forEach(light => {
             updateLightStatus(light, status);
+            if (note) {
+                light.title = `${light.title} · ${note}`;
+                if (light.classList.contains('connectivity-summary-light')) {
+                    light.setAttribute('aria-label', light.title);
+                }
+            }
         });
     },
 

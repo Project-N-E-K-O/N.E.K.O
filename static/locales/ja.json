@@ -5755,6 +5755,10 @@
             "invalid_response": "レスポンス形式が不正です",
             "invalid_workspace_id": "Bailian ワークスペース ID の形式が無効です"
         },
+        "decisionFallback": {
+            "workspace_missing": "Bailian ワークスペース ID が未入力のため、意思決定モデルの代わりにチャットモデルを使用中",
+            "region_unsupported": "この地域には意思決定モデルのネイティブ API がないため、チャットモデルを使用中"
+        },
         "status": {
             "connected": "接続済み",
             "failed": "接続失敗",

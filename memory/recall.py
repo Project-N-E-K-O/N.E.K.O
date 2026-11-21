@@ -774,11 +774,17 @@ class MemoryRecallReranker:
                 # wait_for (2.2s) gives DecisionClient's inner 2.0s timeout priority
                 # so transient timeouts reliably trigger the 60s cooldown cache.
                 # Batches run concurrently, so the cap is unchanged; any failed batch
-                # fails the whole native pass (no half-native, half-coarse order).
-                batch_responses = await asyncio.wait_for(
-                    asyncio.gather(*(_batch_call(batch_ids) for batch_ids in batches)),
-                    timeout=2.2,
-                )
+                # fails the whole native pass (no half-native, half-coarse order) and
+                # the batches still in flight are cancelled instead of left running.
+                batch_tasks = [asyncio.ensure_future(_batch_call(batch_ids)) for batch_ids in batches]
+                try:
+                    batch_responses = await asyncio.wait_for(asyncio.gather(*batch_tasks), timeout=2.2)
+                finally:
+                    pending_batches = [task for task in batch_tasks if not task.done()]
+                    for task in pending_batches:
+                        task.cancel()
+                    if pending_batches:
+                        await asyncio.gather(*pending_batches, return_exceptions=True)
                 native_answers: dict = {}
                 for batch_resp in batch_responses:
                     native_answers.update(batch_resp.answers or {})

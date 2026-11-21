@@ -5755,6 +5755,10 @@
             "invalid_response": "响应格式错误",
             "invalid_workspace_id": "百炼业务空间 ID 格式无效"
         },
+        "decisionFallback": {
+            "workspace_missing": "未填百炼业务空间 ID，决策模型暂用聊天模型",
+            "region_unsupported": "当前地域没有原生决策接口，决策模型用聊天模型"
+        },
         "status": {
             "connected": "已连通",
             "failed": "连接失败",

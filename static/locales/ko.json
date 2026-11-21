@@ -5755,6 +5755,10 @@
             "invalid_response": "응답 형식이 잘못되었습니다",
             "invalid_workspace_id": "Bailian 워크스페이스 ID 형식이 잘못되었습니다"
         },
+        "decisionFallback": {
+            "workspace_missing": "Bailian 워크스페이스 ID가 없어 의사결정 모델 대신 채팅 모델을 사용 중",
+            "region_unsupported": "이 지역에는 의사결정 모델 네이티브 API가 없어 채팅 모델을 사용 중"
+        },
         "status": {
             "connected": "연결됨",
             "failed": "연결 실패",
