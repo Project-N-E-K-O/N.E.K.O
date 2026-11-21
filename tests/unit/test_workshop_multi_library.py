@@ -803,3 +803,46 @@ def test_cloudsave_binding_survives_an_unreadable_model_in_any_library(libraries
     assert summary["asset_source"] == "steam_workshop"
     assert summary["asset_source_id"] == "200"
     assert summary["last_verified_at"] == ""
+
+
+@pytest.mark.parametrize("kind", ["vrm", "live2d"])
+def test_cloudsave_binding_skips_a_library_it_cannot_stat(libraries, monkeypatch, kind):
+    """A library that raises on stat (no traverse permission) must not hide the next one."""
+    from utils.cloudsave_runtime import bindings
+
+    _write_model(libraries.a / "200", kind, "Bravo")
+    _write_model(libraries.b / "200", kind, "Bravo")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    if kind == "vrm":
+        payload = _vrm_character("200", "Bravo")
+    else:
+        payload = {"_reserved": {"avatar": {
+            "model_type": "live2d",
+            "asset_source": "steam_workshop",
+            "asset_source_id": "200",
+            "live2d": {"model_path": "Bravo.model3.json"},
+        }}}
+
+    locked = str(libraries.a)
+    real_is_file, real_is_dir = Path.is_file, Path.is_dir
+
+    def _guard(real):
+        def check(self):
+            if str(self).startswith(locked):
+                raise PermissionError(13, "Permission denied", str(self))
+            return real(self)
+        return check
+
+    monkeypatch.setattr(Path, "is_file", _guard(real_is_file))
+    monkeypatch.setattr(Path, "is_dir", _guard(real_is_dir))
+    summary = bindings._derive_character_binding_summary(libraries.config, "Neko", payload)
+    assert summary["asset_state"] == "ready"
+    assert summary["asset_source"] == "steam_workshop"
+    assert summary["asset_source_id"] == "200"
+    assert summary["asset_fingerprint"]
+
+    # Nothing readable anywhere: unresolved, not an error.
+    (libraries.b / "200" / ("Bravo.vrm" if kind == "vrm" else "Bravo.model3.json")).unlink()
+    summary = bindings._derive_character_binding_summary(libraries.config, "Neko", payload)
+    assert summary["asset_state"] == "downloadable"
+    assert summary["asset_fingerprint"] == ""

@@ -308,6 +308,22 @@ def _derive_binding_asset_display_name(model_ref: str) -> str:
     return parts[-1] if parts else normalized_ref
 
 
+def _is_file_quietly(path: Path) -> bool:
+    """``Path.is_file`` that treats an unreadable path (e.g. permission denied) as absent."""
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _is_dir_quietly(path: Path) -> bool:
+    """``Path.is_dir`` that treats an unreadable path (e.g. permission denied) as absent."""
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def _collect_binding_live2d_roots(config_manager) -> list[Path]:
     get_live2d_lookup_roots = getattr(config_manager, "get_live2d_lookup_roots", None)
     if callable(get_live2d_lookup_roots):
@@ -417,7 +433,7 @@ def _collect_workshop_character_origin_candidates(config_manager) -> dict[str, l
     seen_entries: set[tuple[str, str, str, str, str]] = set()
 
     for workshop_root in _collect_binding_workshop_roots(config_manager):
-        if not workshop_root.is_dir():
+        if not _is_dir_quietly(workshop_root):
             continue
         try:
             item_roots = sorted(child for child in workshop_root.iterdir() if child.is_dir())
@@ -644,7 +660,7 @@ def _infer_binding_source_from_resolved_path(
     asset_source: str,
     asset_source_id: str,
 ) -> tuple[str, str]:
-    if resolved_path is None or not resolved_path.is_file():
+    if resolved_path is None or not _is_file_quietly(resolved_path):
         return asset_source, asset_source_id
 
     for workshop_root in _collect_binding_workshop_roots(config_manager):
@@ -697,7 +713,7 @@ def _resolve_binding_file_path(
         ranked_candidates: list[tuple[int, int, str, Path]] = []
         for workshop_root in workshop_roots:
             item_root = workshop_root / asset_source_id
-            if not item_root.is_dir():
+            if not _is_dir_quietly(item_root):
                 continue
             try:
                 discovered_files = sorted(path for path in item_root.rglob("*.model3.json") if path.is_file())
@@ -735,7 +751,7 @@ def _resolve_binding_file_path(
         ranked_candidates: list[tuple[int, int, str, Path]] = []
 
         def _append_candidates(search_root: Path, candidate_base: Path) -> None:
-            if not candidate_base.is_dir():
+            if not _is_dir_quietly(candidate_base):
                 return
             try:
                 discovered_files = sorted(path for path in candidate_base.rglob("*.model3.json") if path.is_file())
@@ -838,20 +854,20 @@ def _resolve_binding_file_path(
                 candidates.append(workshop_root / relative_workshop_path)
 
     for candidate in candidates:
-        if candidate.is_file():
+        if _is_file_quietly(candidate):
             return candidate
 
     fallback_candidate = _resolve_workshop_live2d_fallback()
-    if fallback_candidate is not None and fallback_candidate.is_file():
+    if fallback_candidate is not None and _is_file_quietly(fallback_candidate):
         return fallback_candidate
     fallback_candidate = _resolve_local_live2d_fallback()
-    if fallback_candidate is not None and fallback_candidate.is_file():
+    if fallback_candidate is not None and _is_file_quietly(fallback_candidate):
         return fallback_candidate
     return None
 
 
 def _derive_binding_asset_state(*, resolved_path: Path | None, asset_source: str, model_ref: str) -> str:
-    if resolved_path is not None and resolved_path.is_file():
+    if resolved_path is not None and _is_file_quietly(resolved_path):
         return "ready"
     if not str(model_ref or "").strip():
         return "missing"
