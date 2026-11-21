@@ -1276,16 +1276,17 @@ Object.assign(window.Jukebox, {
     const rawPath = String(filePath || '').trim();
     if (!rawPath) return '';
     if (/^(?:https?:|data:|blob:)/i.test(rawPath)) return rawPath;
+    const jukeboxFilePrefix = '/api/jukebox/file' + '/';
     if (/^\/?static\/jukebox\//.test(rawPath)) {
-      return '/api/jukebox/file/'
+      return jukeboxFilePrefix
         + encodeJukeboxLocalPath(rawPath.replace(/^\/?static\/jukebox\//, ''));
     }
-    if (rawPath.startsWith('/api/jukebox/file/') || rawPath.startsWith('/static/') || rawPath.startsWith('/user_')) {
+    if (rawPath.startsWith(jukeboxFilePrefix) || rawPath.startsWith('/static/') || rawPath.startsWith('/user_')) {
       return encodeJukeboxLocalPath(rawPath);
     }
     // Other API endpoints are already URLs; leave them alone.
     if (rawPath.startsWith('/api/')) return rawPath;
-    return '/api/jukebox/file/' + encodeJukeboxLocalPath(rawPath.replace(/^\/+/, ''));
+    return jukeboxFilePrefix + encodeJukeboxLocalPath(rawPath.replace(/^\/+/, ''));
   },
 
   renderList: function() {
