@@ -916,7 +916,9 @@ class DshRuntime:
         from nekoclaw.runtime.tools.protected_outputs import OUTPUT_SCOPE, OutputScope
 
         process = next((p for p in self._processes.values() if p.token == token), None)
-        session = process.by_dsh_id.get(request.get("session")) if process else None
+        if not isinstance(request.get("session"), str) or not isinstance(request.get("call"), str):
+            raise ValueError()
+        session = process.by_dsh_id.get(request["session"]) if process else None
         if not session or session.closing or session.aborting:
             raise ValueError()
         offer = self._tools.offer(session.id)
@@ -1002,10 +1004,11 @@ class DshRuntime:
                 return _ALLOW if reply.get("allow") is True else _REJECT
             if phase not in ("completed", "failed"):
                 return _REJECT
+            status = "cancelled" if session.aborting or session.closing is not None else phase
             session.execution_receipts[original] = None
             try:
                 reply = await self._host.call(session.id, "native_execution_action", {
-                    "phase": "finish", "receipt": receipt, "status": phase, "retain_source": True,
+                    "phase": "finish", "receipt": receipt, "status": status, "retain_source": True,
                     **({"started_job": True} if session.tool_calls[original][0] in {"bash", "pwsh"}
                        and receipt in session.job_origins.values() else {}),
                 })
@@ -1015,10 +1018,12 @@ class DshRuntime:
                     session.execution_receipts[original] = receipt
                 logger.warning("finishing a dsh action failed (%s)", type(exc).__name__)
                 return _REJECT
+            if status == "cancelled":
+                return _REJECT
             if session.aborting or session.closing is not None:
-                # A stopped turn abandons its unpublished result, including any
-                # background job. The terminal update releases its source.
-                session.finished_sources[original] = receipt
+                # A stop during the host write abandons even an already
+                # closed source. ACP need not send another terminal update.
+                await self._host.call(session.id, "native_execution_action", {"phase": "release", "receipt": receipt})
                 session.kept_calls.discard(original)
                 return _REJECT
             if reply.get("allow") is True:

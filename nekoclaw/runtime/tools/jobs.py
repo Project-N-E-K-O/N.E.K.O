@@ -139,6 +139,7 @@ class PendingNotice:
     handle: object
     # Output the notice carried inline; returned by job_output if it withdraws the notice.
     held: str | None
+    admitted: bool = False
 
 
 class JobRegistry:

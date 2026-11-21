@@ -28,6 +28,7 @@ EXECUTION_TOOLS = JOB_TOOLS | {
 @dataclass
 class CommandOutput:
     receipt: str
+    status: str = ""
     finished: asyncio.Event = field(default_factory=asyncio.Event)
     retained: bool = False
 
@@ -64,11 +65,16 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
                 tool.name == "job_list" or job.id == str(arguments.get("job_id", "")).strip())]
         if spill and request.path and (saved := spill.protected.get(Path(request.path))):
             origins.append(saved.origin)
-        ruling = await run_cancellable(host.call(session, "execution_action", {
-            **({"origins": origins} if origins else {}),
-            "phase": "begin", **request.to_json(),
-            "scope_ref": await asyncio.to_thread(resource_ref, request, arguments),
-        }), call)
+        try:
+            ruling = await run_cancellable(host.call(session, "execution_action", {
+                **({"origins": origins} if origins else {}),
+                "phase": "begin", **request.to_json(),
+                "scope_ref": await asyncio.to_thread(resource_ref, request, arguments),
+            }), call)
+        except ToolAborted:
+            raise
+        except Exception:
+            raise ToolError("The host could not check this permission.") from None
         receipt = ruling.get("receipt")
         if ruling.get("allow") is not True or not isinstance(receipt, str) or not receipt:
             reason = ruling.get("reason") or "not allowed by the user"
@@ -131,6 +137,8 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
                         if path is None:
                             raise ToolError("The action ran. Its full text could not be saved.")
                         notice = f"Use grep with a keyword to search the full result at {path}."
+                        if output and output.status:
+                            notice += "\n" + output.status
                         blocks = [block for block in result.content if not isinstance(block, TextContent)]
                         result = result.model_copy(update={"content": [TextContent(text=notice), *blocks]})
                 if protected and cap:

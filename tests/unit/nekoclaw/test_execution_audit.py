@@ -74,7 +74,7 @@ async def test_capacity_precedes_permission_and_run_end_prevents_delivery(tmp_pa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("host_error", [False, True])
+@pytest.mark.parametrize("host_error", [False, True, "begin"])
 async def test_blocked_result_keeps_error_text_and_progress_in_the_executor(tmp_path, host_error):
     from nekoclaw.runtime.execution import managed_tool
     from nekoclaw.runtime.host import HostCallbacks
@@ -86,6 +86,8 @@ async def test_blocked_result_keeps_error_text_and_progress_in_the_executor(tmp_
     async def action(session, payload):
         messages.append(payload)
         if payload["phase"] == "begin":
+            if host_error == "begin":
+                raise OSError("private host diagnostic")
             return {"allow": True, "receipt": "fixture"}
         if host_error and payload["phase"] == "finish":
             raise RuntimeError("private host diagnostic")
@@ -97,12 +99,16 @@ async def test_blocked_result_keeps_error_text_and_progress_in_the_executor(tmp_
 
     schema = {"name": "bash", "description": "fixture", "parameters": {"type": "object", "properties": {}}}
     tool = managed_tool(define_tool(schema, execute), HostCallbacks(execution_action=action), "s", tmp_path)
-    with pytest.raises(ToolError, match="could not be delivered") as error:
+    expected = "The host could not check this permission." if host_error == "begin" else "The tool result could not be delivered."
+    with pytest.raises(ToolError) as error:
         await tool.execute("id", {}, None, progress.append)
-    assert str(error.value) == "The tool result could not be delivered."
+    assert str(error.value) == expected
     assert "secret" not in str(error.value) and "secret" not in str(messages)
     assert not progress
-    assert messages[-1] == {"phase": "finish", "receipt": "fixture", "status": "failed"}
+    if host_error == "begin":
+        assert [message["phase"] for message in messages] == ["begin"]
+    else:
+        assert messages[-1] == {"phase": "finish", "receipt": "fixture", "status": "failed"}
 
 
 def test_late_spill_writer_cannot_create_a_plain_file_after_close(tmp_path):

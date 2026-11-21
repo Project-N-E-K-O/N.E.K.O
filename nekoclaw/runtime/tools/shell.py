@@ -137,6 +137,11 @@ def render_result(job: Job, *, timed_out_ms: int | None = None) -> str:
         markers.append(f"[killed by signal: {signal_name}]")
     elif process.returncode != 0:
         markers.append(f"[exit code: {process.returncode}]")
+    from nekoclaw.runtime.execution import COMMAND_OUTPUT
+
+    command_output = COMMAND_OUTPUT.get()
+    if command_output is not None:
+        command_output.status = "\n".join(markers)
     if not markers:
         return body
     if not body.endswith("\n"):
@@ -146,7 +151,13 @@ def render_result(job: Job, *, timed_out_ms: int | None = None) -> str:
 
 def render_promoted(job: Job, output: str, timeout_ms: int) -> str:
     body = (output if output.endswith("\n") else f"{output}\n") if output else ""
-    return f"{body}[still running after {timeout_ms}ms; moved to background job {job.id}]"
+    from nekoclaw.runtime.execution import COMMAND_OUTPUT
+
+    marker = f"[still running after {timeout_ms}ms; moved to background job {job.id}]"
+    command_output = COMMAND_OUTPUT.get()
+    if command_output is not None:
+        command_output.status = marker
+    return body + marker
 
 
 class _ProgressFeed:

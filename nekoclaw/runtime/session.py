@@ -985,6 +985,15 @@ class TaskAgentSession(SessionInbox):
             self._on_message(event.message)
 
     def _on_message(self, message: AgentMessage) -> None:
+        if isinstance(message, CustomMessage) and message.custom_type == "notice:pending_job":
+            # Resolve the wake after budget and context checks. Only the
+            # approved view belongs in the transcript or in a fork.
+            for notice in self.jobs.pending_notices.values():
+                if notice.handle is message:
+                    notice.admitted = True
+                    break
+            self.harness.message_list[:] = [item for item in self.harness.message_list if item is not message]
+            return
         taken: Callable[[], None] | None = None
         opening = message is self._opening_message
         for index, (number, given) in enumerate(self._given):
@@ -1597,10 +1606,10 @@ class TaskAgentSession(SessionInbox):
         return isinstance(handle, CustomMessage) and self.harness.remove_queued(handle)
 
     async def _deliver_job_notices(self) -> None:
-        # The queue and transcript contain only the wake. Materialize the
-        # inline result after context fitting, at the actual model request.
+        # The queue carries only the wake. Record the final approved view
+        # once, at the same boundary as its delivery to the model.
         for job_id, notice in list(self.jobs.pending_notices.items()):
-            if not any(message is notice.handle for message in self.harness.message_list):
+            if not notice.admitted or not isinstance(notice.handle, CustomMessage):
                 continue
             job = self.jobs.get(job_id)
             if not job.origin:
@@ -1617,6 +1626,9 @@ class TaskAgentSession(SessionInbox):
                 self.jobs.pending_notices.pop(job_id, None)
                 if ruling.get("allow") is True:
                     notice.handle.content, _ = completion_notice(self.jobs, job)
+                notice.handle.custom_type = "notice:job"
+                self.harness.message_list.append(notice.handle)
+                self._record(notice.handle)
 
     async def _job_finished(self, job: Job) -> None:
         if job.command_finished is not None:
@@ -1637,7 +1649,7 @@ class TaskAgentSession(SessionInbox):
                 text, held = f"Background job {job.id} finished.", None
             else:
                 text, held = completion_notice(self.jobs, job)
-            handle = self.deliver_notice("job", text)
+            handle = self.deliver_notice("pending_job" if job.origin else "job", text)
             self.jobs.pending_notices[job.id] = PendingNotice(handle, held)
 
     # ------------------------------------------------------------------

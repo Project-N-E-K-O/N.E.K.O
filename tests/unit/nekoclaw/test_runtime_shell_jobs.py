@@ -8,6 +8,7 @@ output kept to its tail with the full text on disk.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import sys
@@ -840,7 +841,15 @@ async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monk
         await events.wait_ended("s1")
         assert len(notices) == 1 and "second-part" not in notices[0].text
         session.harness.message_list.append(notices[0])
+        session._on_message(notices[0])
+        assert not any(m is notices[0] for m in session.harness.message_list)
         await session._deliver_job_notices()
+        assert session.transcript.is_registered(notices[0])
+        await session.flush()
+        from nekoclaw.runtime.session import TRANSCRIPT_FILE
+        rows = [json.loads(line) for line in (session._session_dir / TRANSCRIPT_FILE).read_text(encoding="utf-8").splitlines()]
+        assert [row["content"] for row in rows if row.get("custom_type") == "notice:job"] == [notices[0].text]
+        assert all(row.get("custom_type") != "notice:pending_job" for row in rows)
         assert ("second-part" in notices[0].text) == notice_allowed
         assert ("first-part" in notices[0].text) == (notice_allowed and not receive)
         assert ("second-part" in session.jobs.read(job)) != notice_allowed
@@ -884,4 +893,21 @@ async def test_promoted_command_advances_output_only_after_handoff(tmp_path, mon
         assert ("first-chunk" in replies["reread"]) != receive
     finally:
         done.set()
+        await session.close()
+
+
+async def test_oversized_failed_command_keeps_its_exit_status(tmp_path):
+    script = _write(tmp_path, "exit_fixture.py", "print('x' * 54000)\nraise SystemExit(2)\n")
+    async def allow(_, payload):
+        return {"allow": True, "receipt": "command"}
+    command = _python(script) + "; exit 2"
+    llm = ScriptedLLM([[call(SHELL, {"command": command, "description": "fixture"}, "failed-build"),
+                        finish("tool_calls")], [say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=allow))
+    try:
+        session.prompt("Run the fixture.")
+        await events.wait_ended(timeout=60)
+        result = next(m["content"] for m in llm.requests[1] if m.get("tool_call_id") == "failed-build")
+        assert "Use grep" in result and "[exit code: 2]" in result and "x" * 256 not in result
+    finally:
         await session.close()
