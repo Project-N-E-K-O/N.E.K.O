@@ -24,7 +24,7 @@ import type { AuthoringMessageKey } from '@/i18n/authoring'
 export type PublishStepId = 'repository' | 'verify' | 'submission' | 'release' | 'market'
 /** Step 0 prepares the machine; it is a page of the publish tab, not a publish step. */
 export type PublishPageId = 'toolchain' | PublishStepId
-export type PublishStepState = 'done' | 'todo' | 'waiting' | 'unknown'
+export type PublishStepState = 'done' | 'failed' | 'todo' | 'waiting' | 'unknown'
 
 /** An i18n key under `authoring.` with its parameters. */
 export interface FlowMessage {
@@ -247,16 +247,15 @@ function decodeTag(value: string): string | null {
 /**
  * Whether `url` is the GitHub Release page of `tag` in `repository`.
  *
- * Only `https://github.com/<owner>/<repo>/releases/tag/<tag>` counts; query,
- * fragment and a trailing slash are ignored. GitHub owner and repository names
- * ignore case; tags do not, so the URL's tag is percent-decoded (the Market
+ * Query, fragment and a trailing slash are ignored. Owner and repository names
+ * ignore case. Tags are case-sensitive, so the URL's tag is percent-decoded (the Market
  * re-encodes tags, and not always the same way: `v1%2Fpreview`, `v2%2E0%2E0`)
  * and compared exactly with `tag`. `tag` is the literal Git tag, never URL
  * text, so it is not decoded: a tag may itself contain `%`. Old receipts may
- * name a Release by its numeric ID (`/releases/<id>`), which says nothing
- * about the tag, so they never match.
+ * name a Release by its numeric ID (`/releases/<id>`); these need the tag
+ * resolved by the Market to identify the Release.
  */
-export function isReleaseUrlOf(url: string, repository: string, tag: string): boolean {
+export function isReleaseUrlOf(url: string, repository: string, tag: string, resolvedTag?: string | null): boolean {
   let parsed: URL
   try {
     parsed = new URL(url)
@@ -264,9 +263,9 @@ export function isReleaseUrlOf(url: string, repository: string, tag: string): bo
     return false
   }
   if (parsed.protocol !== 'https:' || parsed.host.toLowerCase() !== 'github.com') return false
-  const match = /^\/([^/]+\/[^/]+)\/releases\/tag\/(.+?)\/?$/.exec(parsed.pathname)
+  const match = /^\/([^/]+\/[^/]+)\/releases\/(?:tag\/(.+?)|\d+)\/?$/.exec(parsed.pathname)
   if (!match || match[1]!.toLowerCase() !== repository.toLowerCase()) return false
-  return decodeTag(match[2]!) === tag
+  return match[2] === undefined ? resolvedTag === tag : decodeTag(match[2]) === tag
 }
 
 /** The Market's answer to the latest task's release notification, when it carries one. */
@@ -292,9 +291,9 @@ function marketPublicationAnswer(status: MarketPublicationStatus, candidate?: nu
     case 'retry_wait':
       return { state: 'waiting', detail: message('marketVersionVerifying') }
     case 'platform_attention':
-      return { state: 'waiting', detail: message('marketVersionPlatformAttention') }
+      return { state: 'failed', detail: message('marketVersionPlatformAttention') }
     case 'superseded':
-      return { state: 'waiting', detail: message('marketVersionSuperseded') }
+      return { state: 'failed', detail: message('marketVersionSuperseded') }
     case 'rejected':
       return { state: 'todo', detail: candidate
         ? message('marketVersionRejected', { candidate })
@@ -513,7 +512,7 @@ export function publishFlow(facts: PublishFlowFacts): PublishFlow {
   const current: { id: PublishPageId } | undefined =
     tools.state === 'todo'
       ? { id: 'toolchain' }
-      : (steps.find((step) => step.state === 'todo') ?? steps.find((step) => step.state === 'unknown'))
+      : (steps.find((step) => step.state === 'todo' || step.state === 'failed') ?? steps.find((step) => step.state === 'unknown'))
   const blockerFacts: BlockerFacts = {
     status,
     submission,
