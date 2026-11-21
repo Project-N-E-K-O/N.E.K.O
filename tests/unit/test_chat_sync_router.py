@@ -1,5 +1,6 @@
 """Local HTTP controls use synthetic roots, never a desktop login or user chat."""
 
+import json
 import sqlite3
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -317,6 +318,9 @@ def test_model_status_preserves_result_without_waking(local_client):
     (WriterQuarantined(), 409, 'chat_sync_writer_recovery_required'),
     (ValueError('chat_sync_login_required'), 401, 'chat_sync_login_required'),
     (ValueError('chat_sync_unavailable'), 503, 'chat_sync_unavailable'),
+    (ValueError('chat_sync_character_not_found'), 404, 'chat_sync_character_not_found'),
+    (ValueError('private malformed state'), 503, 'chat_sync_unavailable'),
+    (json.JSONDecodeError('Expecting value', 'private malformed state', 0), 503, 'chat_sync_unavailable'),
     (OSError('private local path'), 503, 'chat_sync_unavailable'),
     (sqlite3.OperationalError('private database path'), 503, 'chat_sync_unavailable'),
 ])

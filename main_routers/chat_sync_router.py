@@ -178,6 +178,11 @@ async def model_sync_status(character_uid: str, runtime: Runtime):
     try:
         return await runtime.models.status(character_uid)
     except ValueError as exc:
+        code = str(exc)
+        if code == "chat_sync_character_not_found":
+            raise HTTPException(404, code, headers={"Cache-Control": "no-store"}) from None
+        if not code.startswith("chat_sync_"):
+            exc = ValueError("chat_sync_unavailable")
         raise _error(exc) from None
     except (OSError, sqlite3.Error):
         raise _error(ValueError("chat_sync_unavailable")) from None
