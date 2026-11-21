@@ -1888,7 +1888,7 @@ async def test_what_the_user_answered_in_the_copy_goes_with_one_stuck_there_to_t
     assert said.index("look under data/") < said.index(head) < said.index("only the tax columns")
 
 
-@pytest.mark.parametrize("when", ["judged", "copied", "recorded"])
+@pytest.mark.parametrize("when", ["judged", "copied", "recorded", "recorded_unnoted"])
 async def test_more_said_to_it_while_it_is_told_to_be_a_side_question_keeps_it_waiting_for_its_session(
     hosts, tmp_path, monkeypatch, when
 ):
@@ -1919,9 +1919,12 @@ async def test_more_said_to_it_while_it_is_told_to_be_a_side_question_keeps_it_w
     append = host.ledger.append_event
 
     async def slow_record(commission_id: str, kind: str, payload: Any = None) -> Any:
-        if kind == "carried_on_in_copy" and when == "recorded":
+        if kind == "carried_on_in_copy" and when.startswith("recorded"):
             asking.set()
             await answer.wait()
+        if kind == "not_carried_on" and when == "recorded_unnoted":
+            # Taken back on record, and the note of it cannot be written.
+            raise RuntimeError("the ledger is busy")
         return await append(commission_id, kind, payload)
 
     monkeypatch.setattr(host.ledger, "append_event", slow_record)
@@ -1935,7 +1938,11 @@ async def test_more_said_to_it_while_it_is_told_to_be_a_side_question_keeps_it_w
     if when == "recorded":
         # On record with its copy a moment, and taken back.
         await wait_until(lambda: _has_type(host, second.id, "not_carried_on"), what="taken back")
+    if when.startswith("recorded"):
         assert (await host.ledger.get(second.id)).session_id == first.session_id
+        # Waits for the session itself, as the ledger has it.
+        await wait_until(lambda: second.id in manager._queue, what="queued again")
+        assert manager._session_of.get(second.id) == first.session_id
     else:
         assert "carried_on_in_copy" not in await _types(host, second.id)
     if when == "judged":

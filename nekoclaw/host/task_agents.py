@@ -8427,10 +8427,15 @@ class TaskAgentManager:
             # it, it is in the copy, which hands it back for a change.)
             try:
                 await self._ledger.update(commission_id, session_id=main)
-                await self._ledger.append_event(commission_id, "not_carried_on", {"copy": copy.id, "of": main})
-            except Exception:  # noqa: BLE001 - it goes on in the copy, which hands it back for a change
+            except Exception:  # noqa: BLE001 - it goes on in the copy (on record as its), which hands it back for a change
                 logger.warning("taking commission %s back from its copy failed", commission_id, exc_info=True)
                 return True
+            # On record as the session itself's from here on: back there,
+            # whether or not the note of it can be written.
+            try:
+                await self._ledger.append_event(commission_id, "not_carried_on", {"copy": copy.id, "of": main})
+            except Exception:  # noqa: BLE001 - the note is for the record
+                logger.warning("noting that commission %s was taken back from its copy failed", commission_id, exc_info=True)
             await self._back_in_line(commission_id, copy, main)
             return False
         return True
