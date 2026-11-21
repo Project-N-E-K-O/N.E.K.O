@@ -393,3 +393,117 @@ def test_work_break_never_invites_an_unidentified_theater_story():
     assert _render_work_break_game_invite_prompt(
         pending=SimpleNamespace(app='VS Code', minutes=45), game_type='theater',
         master_name='主人', lang='zh') is None
+
+
+@pytest.mark.parametrize("delivered_channel", ("work_break", "work_break_game_invite"))
+@pytest.mark.asyncio
+async def test_work_break_combo_bookkeeping_follows_delivered_channel(
+    monkeypatch,
+    delivered_channel,
+    tmp_path: Path,
+) -> None:
+    """#3013: a combo invite that hit a ban and fell back to the plain reminder
+    must be booked as a plain work-break reminder: no invite recorded, no
+    invite options pushed, the counter bumped once."""
+    from main_logic.proactive_chat import break_reminders
+
+    state = SimpleNamespace(
+        try_start_proactive=AsyncMock(return_value=True),
+        fire=AsyncMock(),
+    )
+    snapshot = SimpleNamespace(
+        state="focused_work",
+        propensity="open",
+        propensity_reasons=[],
+        skip_probability=0.0,
+        tone="casual",
+        seconds_since_user_msg=None,
+        unfinished_thread=None,
+        anti_slack_pending=None,
+        work_break_pending=SimpleNamespace(app="VS Code", minutes=90),
+    )
+    tracker = SimpleNamespace(
+        get_snapshot=AsyncMock(return_value=snapshot),
+        mark_work_break_used=MagicMock(),
+        _sm=SimpleNamespace(
+            _prefs=SimpleNamespace(work_break_game_invite_probability=1.0),
+        ),
+    )
+    mgr = SimpleNamespace(
+        state=state,
+        is_active=False,
+        session=None,
+        websocket=SimpleNamespace(send_json=AsyncMock(), client_state=None),
+        _activity_tracker=tracker,
+        is_goodbye_silent=lambda: False,
+    )
+    config_manager = SimpleNamespace(
+        memory_dir=tmp_path,
+        aget_character_data=AsyncMock(
+            return_value=("博士", "Yui", None, None, None, {}, None, None, None),
+        ),
+    )
+    request = SimpleNamespace(
+        json=AsyncMock(
+            return_value={
+                "lanlan_name": "Yui",
+                "language": "zh",
+                "enabled_modes": ["home"],
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        proactive_chat_flow, "_validate_local_mutation_request", lambda request: None,
+    )
+    monkeypatch.setattr(proactive_chat_flow, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr(
+        proactive_chat_flow,
+        "get_session_manager",
+        lambda: SimpleNamespace(get=lambda lanlan_name: mgr),
+    )
+    monkeypatch.setattr(game_router, "is_game_route_active", lambda name: False)
+    monkeypatch.setattr(
+        preferences, "ais_privacy_mode_enabled", AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        proactive_chat_flow, "_run_mini_game_invite_short_circuit", AsyncMock(return_value=None),
+    )
+    push_options = AsyncMock()
+    monkeypatch.setattr(proactive_chat_flow, "_push_mini_game_invite_options", push_options)
+    monkeypatch.setattr(proactive_service, "MINI_GAME_INVITE_ENABLED", True)
+    monkeypatch.setattr(
+        proactive_service, "_pick_mini_game_type", lambda *_args, **_kwargs: "soccer",
+    )
+    record_invite = MagicMock()
+    monkeypatch.setattr(proactive_service, "_mini_game_invite_record_delivered", record_invite)
+    monkeypatch.setattr(proactive_service, "_record_invite_delivery_persistent", AsyncMock())
+    bump_total = AsyncMock()
+    monkeypatch.setattr(proactive_service, "_increment_proactive_chat_total", bump_total)
+    deliver = AsyncMock(
+        return_value=break_reminders.BreakReminderDeliveryResult(
+            delivered_text="记得起来喝口水。",
+            proactive_sid="break-sid",
+            delivered_channel=delivered_channel,
+        )
+    )
+    monkeypatch.setattr(proactive_service, "_deliver_break_reminder_via_llm", deliver)
+
+    response = await proactive_chat_flow.proactive_chat(request)
+
+    body = json.loads(response.body)
+    deliver.assert_awaited_once()
+    kwargs = deliver.await_args.kwargs
+    assert kwargs["channel"] == "work_break_game_invite"
+    assert kwargs["directive_fallback"][1] == "work_break"
+    assert body["action"] == "chat"
+    tracker.mark_work_break_used.assert_called_once_with()
+    if delivered_channel == "work_break":
+        assert body["channel"] == "work_break"
+        assert "seed" in body
+        record_invite.assert_not_called()
+        push_options.assert_not_awaited()
+        bump_total.assert_awaited_once()
+    else:
+        assert body["channel"] == "work_break_game_invite"
+        record_invite.assert_called_once()
+        push_options.assert_awaited_once()

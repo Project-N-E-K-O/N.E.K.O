@@ -9866,7 +9866,9 @@ async def test_sdk_pregame_metadata_is_scoped_bounded_and_keeps_context_shape(mo
 
 
 class _DirectivePostgameState(_FakePostgameState):
-    proactive_sid = "postgame-sid"
+    # Mirrors production: the postgame path never claims a proactive round
+    # (no try_start_proactive), so the state machine holds no proactive_sid.
+    proactive_sid = None
 
     @staticmethod
     def is_proactive_preempted(*_args):
@@ -9913,7 +9915,10 @@ async def test_postgame_text_blocks_banned_topic_before_tts(monkeypatch):
     assert "line" not in result
     assert mgr.feed_tts_calls == []
     assert mgr.finish_calls == []
-    mgr.handle_new_message.assert_awaited_once_with()
+    # Nothing was fed and no round is owned, so the gate releases nothing;
+    # PROACTIVE_DONE in the finally block closes the turn, as for an empty line.
+    mgr.handle_new_message.assert_not_awaited()
+    assert mgr.state.events[-1][0].name == "PROACTIVE_DONE"
 
 
 @pytest.mark.unit

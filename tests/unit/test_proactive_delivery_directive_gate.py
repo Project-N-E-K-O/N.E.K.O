@@ -435,14 +435,6 @@ async def test_combo_reminder_fallback_that_also_hits_is_consumed(monkeypatch):
     corpus.score_unanswered_proactive_draft.assert_not_called()
 
 
-def test_service_wires_combo_fallback_to_plain_reminder():
-    source = inspect.getsource(service.handle_proactive_chat)
-    assert 'directive_fallback=(wb_system_prompt, "work_break")' in source
-    assert 'reminder_delivery.delivered_channel == "work_break"' in source
-    # Both the fallback and the plain branch finish through one helper.
-    assert source.count("return await _end_work_break_delivered()") == 2
-
-
 @pytest.mark.parametrize("label", ["anti-slack reminder", "work-break reminder"])
 def test_break_reminder_ban_reports_directive_not_duplicate(label):
     blocked = service._suppressed_break_reminder_body(

@@ -979,8 +979,9 @@ async def _deliver_postgame_text_bubble(
                     "llm_source": llm_result.get("llm_source") or {},
                 }
             # Same ban-topic gate as every proactive text channel, on the
-            # line about to be spoken. Imported here: the proactive package
-            # is heavy and this module is loaded at router startup.
+            # line about to be spoken. Imported at call time like the other
+            # late imports in this function, keeping the proactive package
+            # out of router import time.
             from main_logic.proactive_chat.directive_gate import (
                 _proactive_delivery_directive_block,
             )

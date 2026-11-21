@@ -316,6 +316,8 @@ async def _deliver_break_reminder_via_llm(
     ``delivered_channel`` tells the caller which one was delivered. The
     work-break + game-invite combo passes the plain work-break reminder here,
     so a ban on games does not cost the user the break reminder itself.
+    Model calls per round: one per draft, at most two drafts, plus the
+    existing anti-repeat rewrite of the delivered draft — three at worst.
 
     Caller is responsible for ``mark_*_used`` on success and for any follow-up
     UI push (e.g. the mini-game options popup in the
