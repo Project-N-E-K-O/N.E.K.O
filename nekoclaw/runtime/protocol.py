@@ -89,7 +89,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, TypeAdapter, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 SESSION_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
 
@@ -163,9 +163,9 @@ class GatewaySpec(_Strict):
     url: str = Field(min_length=1)
     # Issued by the host for this one session; sent as a bearer token.
     token: str = Field(min_length=1, repr=False)
-    # Local dispatch hint until dsh learns this token's actual MCP catalog.
-    # It never travels with the gateway credentials or authorizes a tool.
-    _browser_context: bool | None = PrivateAttr(default=None)
+    # The host and its same-version Python child share this optional start
+    # hint. Neither runtime sends it to its model or grants access with it.
+    opening_browser_context: bool | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class TaskAgentSpec(_Strict):

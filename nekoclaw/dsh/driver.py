@@ -1257,10 +1257,9 @@ class DshRuntime:
             else:
                 browser = session.device_browser_context
                 if browser is None:
-                    # Until registration, a neutral input leaves the default open:
-                    # the gateway may expose only the browser from a mixed dispatch.
-                    browser = (registered == {BUILTIN_GROUP_BROWSER} if registered is not None
-                               else session.spec.gateway._browser_context or None)
+                    browser = session.spec.gateway.opening_browser_context
+                if browser is None and registered is not None:
+                    browser = registered == {BUILTIN_GROUP_BROWSER}
                 groups, session.device_browser_context = classify_device_intent(text, browser_context=browser)
             for group in groups:
                 if registered is None or group in registered:

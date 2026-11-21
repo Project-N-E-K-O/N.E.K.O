@@ -635,7 +635,10 @@ class TaskAgentSession(SessionInbox):
             self._commission_tools = [tool for tool in gateway_tools if tool.name in self._gateway.commission_tools]
             self._wanted_device_groups = tuple(sorted(set(self._gateway.device_groups.values())))
             self._unanswered_device_groups = self._wanted_device_groups
-            self._browser_click_context = self._wanted_device_groups == (BUILTIN_GROUP_BROWSER,)
+            focus = spec.gateway.opening_browser_context
+            self._browser_click_context = (
+                focus if focus is not None else self._wanted_device_groups == (BUILTIN_GROUP_BROWSER,)
+            )
             executors = sorted([*executors, *gateway_tools], key=lambda tool: tool.name)
         self._executors = executors
         self._workdir, self._session_dir = workdir, session_dir

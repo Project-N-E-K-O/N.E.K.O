@@ -45,14 +45,15 @@ async def test_device_refresh_does_not_consume_a_new_identical_instruction_or_re
     monkeypatch.setattr(GatewayClient, "list_tools", list_tools)
     runtime._queue(session, "Open the browser", human=True)
     await runtime._take_input(session, 0)
-    first = asyncio.create_task(runtime._device_view("process", "dsh", 2, True))
-    await entered.wait()
-    runtime._queue(session, "Open the browser", human=True)
-    runtime._queue(session, "Take a desktop screenshot", human=True)
-    await runtime._take_input(session, 0)
-    stale = asyncio.create_task(runtime._device_view("process", "dsh", 1, True))
-    release.set()
-    assert await first == await stale == ["browser_navigate_page"]
+    async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
+        first = tasks.create_task(runtime._device_view("process", "dsh", 2, True))
+        await entered.wait()
+        runtime._queue(session, "Open the browser", human=True)
+        runtime._queue(session, "Take a desktop screenshot", human=True)
+        await runtime._take_input(session, 0)
+        stale = tasks.create_task(runtime._device_view("process", "dsh", 1, True))
+        release.set()
+    assert first.result() == stale.result() == ["browser_navigate_page"]
     assert session.device_intents == {"browser": 2, "keyboard_mouse": 3}
     # A receipt from the earlier turn cannot settle the newer instructions.
     session.device_completed_input = 1
@@ -121,27 +122,29 @@ async def test_compaction_is_reported_once_only_after_the_live_commission_refres
     with pytest.raises(GatewayError):
         await runtime._device_view("process", "dsh", 2, True)
     assert session.device_epoch == 0 and recorder.events == []
-    refresh = asyncio.create_task(runtime._device_view("process", "dsh", 2, True))
-    await entered.wait()
-    retry = asyncio.create_task(runtime._device_view("process", "dsh", 2, True))
-    release.set()
-    assert await refresh == await retry == []
+    async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
+        refresh = tasks.create_task(runtime._device_view("process", "dsh", 2, True))
+        await entered.wait()
+        retry = tasks.create_task(runtime._device_view("process", "dsh", 2, True))
+        release.set()
+    assert refresh.result() == retry.result() == []
     event, = recorder.of("compacted", session.id)
     assert event["count"] is None and event["tokens_before"] is None
     entered.clear()
     release.clear()
-    late = asyncio.create_task(runtime._device_view("process", "dsh", 3, True))
-    await entered.wait()
-    # A new commission reopened the same public session id during the lookup.
-    runtime._sessions[session.id] = _Session(session.spec, asyncio.get_running_loop().create_future())
-    release.set()
-    assert await late is None
+    async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
+        late = tasks.create_task(runtime._device_view("process", "dsh", 3, True))
+        await entered.wait()
+        # A new commission reopened the same public session id during the lookup.
+        runtime._sessions[session.id] = _Session(session.spec, asyncio.get_running_loop().create_future())
+        release.set()
+    assert late.result() is None
     assert recorder.of("compacted") == [event] and session.device_epoch == 2
 
 
 @pytest.mark.parametrize(
     "scenario", ["search", "new_instruction", "queued", "queued_synthetic", "queued_abort", "browser_click", "switch_app",
-                 "synthetic", "failure", "consecutive", "incomplete_profile"]
+                 "opening_browser", "opening_desktop", "synthetic", "failure", "consecutive", "incomplete_profile"]
 )
 async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path, monkeypatch, record_property, scenario):
     binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
@@ -192,6 +195,7 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
     called = False
 
     def reply(body):
+        assert "opening_browser_context" not in json.dumps(body)
         nonlocal called
         schemas = body["tools"]
         names = [tool["function"]["name"] for tool in schemas]
@@ -249,15 +253,18 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
             assert runtime.supports_device_schemas(config)
             queued = scenario in ("queued", "queued_synthetic", "queued_abort")
             browser_focus = scenario in ("browser_click", "switch_app")
-            groups = ("browser", "keyboard_mouse") if queued or browser_focus else ("browser",)
+            mixed_opening = scenario in ("opening_browser", "opening_desktop")
+            groups = ("browser", "keyboard_mouse") if queued or browser_focus or mixed_opening else ("browser",)
             token = host.gateway.issue("commission", supports_images=True, first_turn_groups=groups)
             gateway = GatewaySpec(url=url, token=token)
             if scenario != "new_instruction":  # Older callers supply no local dispatch hint.
-                gateway._browser_context = groups == ("browser",)
-            assert set(gateway.model_dump()) == {"url", "token"}
+                gateway.opening_browser_context = scenario == "opening_browser" or groups == ("browser",)
+            else:
+                assert set(gateway.model_dump()) == {"url", "token"}
             spec = make_spec(tmp_path, model=config, gateway=gateway)
             await runtime.start(spec)
-            await recorder.wait_for(lambda event: event["type"] == "started")
+            startup = await recorder.wait_for(lambda event: event["type"] in ("started", "error"))
+            assert startup["type"] == "started", startup
             if scenario == "consecutive":
                 await turn("Open the browser. " + "Sample. " * 3000, opening=True)
                 phase = "second"
@@ -278,13 +285,14 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
                 assert ordinary and all("mcp__gateway__browser_navigate_page" not in names for names in ordinary)
                 assert len(recorder.of("compacted", spec.session_id)) == 3
                 return
-            await turn("Reply with Done.", opening=True)
+            opening = {"opening_browser": "先截个桌面图，再打开浏览器", "opening_desktop": "先打开浏览器，再截个桌面图"}
+            await turn(opening.get(scenario, "Reply with Done."), opening=True)
             if browser_focus:
                 await turn("Take a desktop screenshot. Open the browser.")
             phase = "pressure"
-            await turn("Read this synthetic history. " + "Sample. " * 6000)
+            await turn("Read this synthetic history. " + "Sample. " * 6000, human=not mixed_opening)
             phase = "after"
-            await turn("Now reply with Done.")
+            await turn("Now reply with Done.", human=not mixed_opening)
             assert any(summary for _, summary, _, _ in seen), seen
             browser = "mcp__gateway__browser_navigate_page"
             if scenario == "failure":
@@ -293,6 +301,14 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
                 assert recorder.of("compacted") == []
                 return
             phase = scenario
+            if mixed_opening:
+                computer = "mcp__gateway__computer"
+                assert {browser, computer} <= set(seen[0][2])
+                assert browser not in seen[-1][2] and computer not in seen[-1][2]
+                await turn("Click OK")
+                assert (browser in seen[-1][2]) == (scenario == "opening_browser")
+                assert (computer in seen[-1][2]) == (scenario == "opening_desktop")
+                return
             if browser_focus:
                 computer = "mcp__gateway__computer"
                 assert browser not in seen[-1][2] and computer not in seen[-1][2]

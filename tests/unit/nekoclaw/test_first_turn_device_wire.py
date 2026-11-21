@@ -149,8 +149,11 @@ async def test_builtin_queued_device_instructions_survive_summary_then_overflow_
     ("Open the browser, switch to Notepad, then click OK.", "Summarize the file.", True, False),
 ])
 async def test_builtin_click_after_a_separate_target_change(tmp_path, initial_task, follow_up, human, browser):
+    from nekoclaw.device_intent import classify_device_intent
+    from nekoclaw.runtime.process import SubprocessRuntime
+
     events = Recorder()
-    runtime = InProcessRuntime(events)
+    runtime = SubprocessRuntime(events)
     provider = BuiltinToolProvider(state=lambda group: (True, ""))
     host = make_host(tmp_path, builtins=provider, plugins_enabled=lambda: False)
     long_reply = " ".join(f"step{i}" for i in range(1_600))
@@ -161,16 +164,20 @@ async def test_builtin_click_after_a_separate_target_change(tmp_path, initial_ta
         with FakeOpenAIServer(lambda _: [sse_text(next(replies)), sse_finish()]) as server:
             model = ModelConfig(model="local-fixture", base_url=server.base_url, api_key="test-only",
                                 auto_extra_body=False, supports_images=True, context_window=32_000, max_output_tokens=2_000)
-            spec = make_spec(tmp_path, model=model, gateway=GatewaySpec(url=url, token=token))
+            gateway = GatewaySpec(url=url, token=token)
+            _, gateway.opening_browser_context = classify_device_intent(initial_task, browser_context=None)
+            spec = make_spec(tmp_path, model=model, gateway=gateway)
             await runtime.start(spec)
+            await events.wait_for(lambda event: event["type"] == "started", timeout=90)
+            assert runtime.pid != os.getpid() and runtime.pid is not None
 
             async def prompt(text, **kwargs):
                 start = len(events.events)
                 await runtime.prompt(spec.session_id, text, **kwargs)
                 await events.wait_ended(spec.session_id, start=start)
 
-            await prompt("Start.", opening=True)
-            await prompt(initial_task)
+            await prompt(initial_task, opening=True)
+            await prompt("Summarize step one.")
             await prompt("Summarize step two.")
             start = len(events.events)
             await runtime.compact(spec.session_id)
@@ -179,6 +186,7 @@ async def test_builtin_click_after_a_separate_target_change(tmp_path, initial_ta
             await prompt(follow_up, human=human)
             await prompt("Click OK")
             assert len(server.requests) == 6
+            assert "opening_browser_context" not in json.dumps(server.requests)
 
             def devices(request):
                 return {t["function"]["name"] for t in request["tools"]}.intersection({"computer", "browser_click"})

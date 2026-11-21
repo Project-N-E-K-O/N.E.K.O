@@ -1994,14 +1994,21 @@ class TaskAgentManager:
             runtime_name, runtime, fallback = await self._choose_runtime(commission, model, begun_in)
             # Uninstall/replace must see this commission before gateway setup yields.
             session.runtime, session.runtime_name = runtime, runtime_name
+            url = await self._gateway.start() if self._gateway is not None else None
+            # Freeze the opening in delivery order immediately before its grant.
+            # Later messages stay in _notes and are delivered as steering.
+            notes = self._notes.pop(commission.id, [])
+            carried = self._carried.pop(commission.id, [])
+            session.carried = [*carried, *session.carried, *notes]
             gateway_spec = None
             if self._gateway is not None:
-                from config.nekoclaw_settings import BUILTIN_GROUP_BROWSER, FIRST_TURN_DEVICE_TOOLS
+                from config.nekoclaw_settings import FIRST_TURN_DEVICE_TOOLS
 
                 groups: tuple[str, ...] = ()
+                browser_context = None
                 custom_tools = {"tools", "tool_choice"}.intersection(model.extra_body or {})
                 if FIRST_TURN_DEVICE_TOOLS and kept.kind != "fork" and not custom_tools:
-                    from nekoclaw.device_intent import select_device_groups
+                    from nekoclaw.device_intent import classify_device_intent
 
                     # On relaunch, a short follow-up like "click login" belongs to the
                     # same commission's browser task. A new commission starts afresh.
@@ -2009,19 +2016,20 @@ class TaskAgentManager:
                     # original dispatch is history. A restart or idle wake
                     # must not put a folded device back in the request.
                     summed_up = opened_at is not None and kept.compacted_at is not None and kept.compacted_at >= opened_at
-                    follow_up = prompt if prompt and not isinstance(prompt, (_Handed, _Unsaid)) else ""
+                    follow_up = "\n".join(piece for piece in session.carried if not isinstance(piece, (_Handed, _Unsaid)))
                     if not opened:
-                        groups = select_device_groups(commission.dispatch_text + "\n" + follow_up)
+                        groups, browser_context = classify_device_intent(
+                            commission.dispatch_text + "\n" + follow_up, browser_context=None,
+                        )
                     elif follow_up or not summed_up:
-                        previous = select_device_groups(commission.dispatch_text)
-                        groups = select_device_groups(follow_up, browser_context=previous == (BUILTIN_GROUP_BROWSER,))
+                        previous, browser_context = classify_device_intent(commission.dispatch_text, browser_context=None)
+                        groups, browser_context = classify_device_intent(follow_up, browser_context=browser_context)
                         if not groups and not summed_up:
                             groups = previous
                     if groups and runtime_name == RUNTIME_DSH:
                         supports = getattr(runtime, "supports_device_schemas", None)
                         if supports is None or not supports(model):
                             groups = ()
-                url = await self._gateway.start()
                 token = self._gateway.issue(
                     commission.id,
                     candidate_plugin_ids=self._candidates.get(commission.id, ()),
@@ -2030,8 +2038,9 @@ class TaskAgentManager:
                     reads_only=kept.kind == "fork",
                     first_turn_groups=groups,
                 )
-                gateway_spec = GatewaySpec(url=url, token=token)
-                gateway_spec._browser_context = groups == (BUILTIN_GROUP_BROWSER,)
+                gateway_spec = GatewaySpec(
+                    url=url, token=token, opening_browser_context=browser_context if groups else None,
+                )
 
             spec = await self._spec(
                 commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec
@@ -2071,10 +2080,6 @@ class TaskAgentManager:
                 await self._ledger.append_event(
                     commission.id, "runtime_fallback", {"wanted": RUNTIME_DSH, "runtime": runtime_name, "reason": fallback}
                 )
-            notes = self._notes.pop(commission.id, [])
-            carried = self._carried.pop(commission.id, [])
-            session.carried = [*carried, *([prompt] if prompt is not None else []), *notes]
-
             # What the commission is: said once, in the session it is worked
             # on in, and again only where that is not there to be read, or
             # where the session has been at another commission since.

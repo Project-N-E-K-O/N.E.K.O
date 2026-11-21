@@ -22,6 +22,7 @@ only dsh makes, the removal of dsh, and the cleaning of old sessions.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -34,7 +35,7 @@ import pytest
 from nekoclaw.dsh import DshUnavailable
 from nekoclaw.host.paths import DSH_SESSION_NAME, TRANSCRIPT_NAME
 from nekoclaw.host.runtimes import RUNTIME_BUILTIN, RUNTIME_DSH
-from nekoclaw.host.task_agents import _Handed, _begun_in, _has_transcript
+from nekoclaw.host.task_agents import _Handed, _Unsaid, _begun_in, _has_transcript
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish
 from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
@@ -226,6 +227,62 @@ async def test_dispatch_only_mounts_devices_on_a_supported_related_route(
     assert "computer" not in names and {"capability_call", "capability_search"} <= names
 
 
+@pytest.mark.parametrize(("dispatch", "note", "expected", "focus", "retry"), [
+    ("Summarize the report.", "Open the browser.", {"browser_click"}, True, False),
+    ("Summarize the report.", "Open the browser.", {"browser_click"}, True, True),
+    ("Take a desktop screenshot.", "Open the browser.", {"computer", "browser_click"}, True, False),
+    ("Open the browser.", "Take a desktop screenshot.", {"computer", "browser_click"}, False, False),
+    ("Summarize the report.", _Handed("Open the browser.", ()), set(), None, False),
+    ("Summarize the report.", _Unsaid("Take a desktop screenshot."), set(), None, False),
+])
+async def test_queued_instructions_choose_the_opening_tools_and_click_target(
+    hosts, tmp_path, monkeypatch, dispatch, note, expected, focus, retry,
+):
+    from config import nekoclaw_settings
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    monkeypatch.setattr(nekoclaw_settings, "FIRST_TURN_DEVICE_TOOLS", True)
+    release = asyncio.Event()
+    busy = ScriptedLLM([[release.wait, *_report("ready", "done")]])
+    next_model = ScriptedLLM([_report("ready", "done")])
+    specs = []
+
+    def pick(spec):
+        specs.append(spec)
+        return busy if len(specs) == 1 else next_model
+
+    host = _host(hosts, tmp_path, pick, Installation(preference="builtin"), max_task_agents=1,
+                 builtins=BuiltinToolProvider(state=lambda group: (True, "")))
+    monkeypatch.setattr(host.task_agents, "_sees_images", AsyncMock(return_value=True))
+    await _dispatch(host, "Wait for data.")
+    await wait_until(lambda: bool(busy.requests))
+    queued = await _dispatch(host, dispatch)
+    await host.brain.settle()
+    assert host.task_agents.queued == [queued]
+    assert await host.task_agents.tell(queued, note)
+    if retry:
+        # A fresh opening takes the same user sentence from the carried inbox.
+        make_spec = host.task_agents._spec
+
+        async def fail_once(*args, **kwargs):
+            monkeypatch.setattr(host.task_agents, "_spec", make_spec)
+            raise RuntimeError("opening interrupted")
+
+        monkeypatch.setattr(host.task_agents, "_spec", fail_once)
+    release.set()
+    if retry:
+        await wait_status(host, queued, "failed")
+        assert await host.task_agents.tell(queued, "Please continue.")
+    await wait_status(host, queued, "done")
+    names = {tool["function"]["name"] for tool in next_model.overrides[0]["tools"]}
+    assert names.intersection({"browser_click", "computer"}) == expected
+    gateway = specs[-1].gateway
+    assert gateway.opening_browser_context is focus
+    assert ("opening_browser_context" in gateway.model_dump()) == (focus is not None)
+    ending = note + "\n\nPlease continue." if retry else note
+    assert next_model.requests[0][-1]["content"].endswith(ending)
+
+
 @pytest.mark.parametrize("backend", ["builtin", "auto"], ids=["builtin", "dsh"])
 @pytest.mark.parametrize(("follow_up", "compacted", "expected"), [
     ("点击登录按钮", False, "browser_click"), ("继续", False, "browser_click"),
@@ -316,6 +373,7 @@ async def test_a_user_without_dsh_is_served_by_the_built_in_runtime_as_before(ho
 async def test_pinned_dsh_summary_is_recorded_and_a_sleeping_commission_wakes_without_old_devices(
     tmp_path, monkeypatch, complete,
 ):
+    from config import nekoclaw_settings
     from nekoclaw.builtin.provider import BuiltinToolProvider
     from nekoclaw.dsh import profile
     from nekoclaw.dsh.driver import DshRuntime
@@ -325,6 +383,7 @@ async def test_pinned_dsh_summary_is_recorded_and_a_sleeping_commission_wakes_wi
     executable = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
     if not executable:
         pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to run the pinned dsh sleep/wake test")
+    monkeypatch.setattr(nekoclaw_settings, "FIRST_TURN_DEVICE_TOOLS", True)
     original_patch = profile.build_patch
 
     def short_history(**kwargs):
