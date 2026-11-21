@@ -285,13 +285,14 @@ async def test_queued_instructions_choose_the_opening_tools_and_click_target(
 
 @pytest.mark.parametrize("backend", ["builtin", "auto"], ids=["builtin", "dsh"])
 @pytest.mark.parametrize(("follow_up", "compacted", "expected"), [
-    ("点击登录按钮", False, "browser_click"), ("继续", False, "browser_click"),
-    ("继续", "while_queued", "browser_click"),
-    ("继续", True, None), ("列出浏览器标签页", True, "browser_click"),
-    ("点击登录按钮", True, "browser_click"), ("click login", True, "browser_click"),
-    ("截桌面", True, "computer"), ("Click the Start menu", True, "computer"),
-    ("Switch to Notepad, then click OK", True, "computer"),
-    (_Handed("点击登录按钮", ()), True, None),
+    ("点击登录按钮", False, {"browser_click"}), ("继续", False, {"browser_click"}),
+    ("继续", "while_queued", {"browser_click"}),
+    ("按下回车", False, {"browser_click", "computer"}), ("按下回车", True, {"computer"}),
+    ("继续", True, set()), ("列出浏览器标签页", True, {"browser_click"}),
+    ("点击登录按钮", True, {"browser_click"}), ("click login", True, {"browser_click"}),
+    ("截桌面", True, {"computer"}), ("Click the Start menu", True, {"computer"}),
+    ("Switch to Notepad, then click OK", True, {"computer"}),
+    (_Handed("点击登录按钮", ()), True, set()),
 ])
 async def test_relaunch_uses_current_device_intent_after_a_summary(
     hosts, tmp_path, monkeypatch, backend, follow_up, compacted, expected
@@ -317,9 +318,9 @@ async def test_relaunch_uses_current_device_intent_after_a_summary(
     await wait_status(host, commission_id, "done")
     assert len(llm.overrides) == 2
     assert bool(host.fake.dsh) == (backend == "auto")
-    for request, device in zip(llm.overrides, ["browser_click", expected], strict=True):
+    for request, devices in zip(llm.overrides, [{"browser_click"}, expected], strict=True):
         names = {tool["function"]["name"] for tool in request["tools"]}
-        assert names.intersection({"browser_click", "computer"}) == ({device} if device else set())
+        assert names.intersection({"browser_click", "computer"}) == devices
 
 
 # ---------------------------------------------------------------------------

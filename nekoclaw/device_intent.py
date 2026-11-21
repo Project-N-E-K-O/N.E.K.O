@@ -103,7 +103,8 @@ _DESKTOP_TARGET = re.compile(
     r"桌面|屏幕|螢幕|任务栏|工作列|文件资源管理器|檔案總管|访达|訪達|"
     r"\b(?:desktop|taskbar|start menu|system tray|file explorer|finder)\b"
 )
-_SWITCH_TARGET = re.compile(r"切[换換][到至]|[转轉]到|\bswitch\s+(?:over\s+)?to\b")
+_SWITCH_TARGET = re.compile(r"切[换換][到至]|[转轉]到|回到|返回|\b(?:switch(?: over)?|go back|return) to\b")
+_APP_TARGET = re.compile(r"记事本|記事本|应用|應用|程序|程式|窗口|視窗|\b(?:notepad|app|application|window)\b")
 
 
 def select_device_groups(text: str, *, browser_context: bool = False) -> tuple[str, ...]:
@@ -135,7 +136,8 @@ def classify_device_intent(
         code = without_files != clause or bool(_CODE_CONTEXT.search(clause))
         explicit_web = bool(_EXPLICIT_WEB.search(without_files))
         web_object = bool(_WEB_OBJECT.search(without_files))
-        web_target = explicit_web or (web_object and not code and not _FILE_OBJECT.search(clause))
+        file_object = bool(_FILE_OBJECT.search(clause))
+        web_target = explicit_web or (web_object and not code and not file_object)
         screenshot = bool(_SCREENSHOT_ACTION.search(clause))
         click = bool(_CLICK.search(without_files))
         web_action = _WEB_ACTION.search(without_files) or (not code and _WEB_USE.search(without_files))
@@ -144,18 +146,17 @@ def classify_device_intent(
         )
         desktop_target = bool(_DESKTOP_TARGET.search(clause))
         desktop_action = bool(_DESKTOP_ACTION.search(clause))
-        switches_away = not web_target and bool(_SWITCH_TARGET.search(clause))
+        switches_away = (
+            not web_target and bool(_SWITCH_TARGET.search(clause)) and (desktop_target or bool(_APP_TARGET.search(clause)))
+        )
         if switches_away and not code:
             next_browser_context = False
-        # An explicit device, a file or a screenshot can change the target
-        # before a later click in the same instruction.
-        if (
-            desktop_target or desktop_action or _FILE_OBJECT.search(clause)
-            or (not web_target and screenshot) or switches_away
-        ):
+        # File mentions (such as a page upload) do not change where a later
+        # click lands. Clicking a file itself is handled in its own clause.
+        if desktop_target or desktop_action or (not web_target and screenshot) or switches_away:
             web_context = False
         web_context = web_context or explicit_web or browser
-        if click and web_context and not desktop_target and not code:
+        if click and web_context and not desktop_target and not file_object and not code:
             browser = True
         if browser:
             groups.add(BUILTIN_GROUP_BROWSER)

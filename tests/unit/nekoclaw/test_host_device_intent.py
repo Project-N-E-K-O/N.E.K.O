@@ -165,6 +165,19 @@ def test_unrelated_input_preserves_an_unknown_click_target_until_the_registry_an
     assert classify_device_intent("Switch to Notepad", browser_context=None) == ((), False)
 
 
+@pytest.mark.parametrize(("instruction", "groups", "focus"), [
+    ("转到下一页，点击确定", (BROWSER,), True),
+    ("upload the file, then click submit", (BROWSER,), True),
+    ("回到桌面", (), False),
+    ("go back to the desktop", (), False),
+])
+def test_browser_focus_follows_explicit_surface_changes(instruction, groups, focus):
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent(instruction, browser_context=True) == (groups, focus)
+    assert select_device_groups("Click OK", browser_context=focus) == ((BROWSER,) if focus else (DESKTOP,))
+
+
 @pytest.mark.parametrize(("text", "groups", "focus"), [
     ("Open the browser, switch to Notepad, then click OK", (DESKTOP, BROWSER), False),
     ("Take a desktop screenshot. Open the browser.", (DESKTOP, BROWSER), True),

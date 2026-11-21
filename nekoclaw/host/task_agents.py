@@ -2017,15 +2017,13 @@ class TaskAgentManager:
                     # must not put a folded device back in the request.
                     summed_up = opened_at is not None and kept.compacted_at is not None and kept.compacted_at >= opened_at
                     follow_up = "\n".join(piece for piece in session.carried if not isinstance(piece, (_Handed, _Unsaid)))
-                    if not opened:
+                    if not summed_up:
                         groups, browser_context = classify_device_intent(
                             commission.dispatch_text + "\n" + follow_up, browser_context=None,
                         )
-                    elif follow_up or not summed_up:
-                        previous, browser_context = classify_device_intent(commission.dispatch_text, browser_context=None)
+                    elif follow_up:
+                        _, browser_context = classify_device_intent(commission.dispatch_text, browser_context=None)
                         groups, browser_context = classify_device_intent(follow_up, browser_context=browser_context)
-                        if not groups and not summed_up:
-                            groups = previous
                     if groups and runtime_name == RUNTIME_DSH:
                         supports = getattr(runtime, "supports_device_schemas", None)
                         if supports is None or not supports(model):

@@ -95,6 +95,41 @@ async def test_device_input_from_wait_activates_only_when_its_answer_is_delivere
         ON_ANSWERED.reset(context)
 
 
+@pytest.mark.parametrize("late", [False, True], ids=["in_order", "previous_turn_late"])
+@pytest.mark.parametrize("older", ["Open the browser", "Click OK"])
+async def test_wait_receipts_keep_each_inputs_tools_and_the_latest_click_target(tmp_path, late, older):
+    runtime = DshRuntime(Recorder(), launch=lambda: pytest.fail("No dsh process is required"))
+    gateway = GatewaySpec(url="http://127.0.0.1", token="fixture", opening_browser_context=True)
+    session = _Session(make_spec(tmp_path, gateway=gateway), asyncio.get_running_loop().create_future())
+    session.process = SimpleNamespace(native_device_schemas=True)
+    session.run = asyncio.current_task()
+    session.in_turn = True
+    runtime._sessions[session.id] = session
+    callbacks = []
+    context = ON_ANSWERED.set(callbacks)
+    try:
+        runtime._queue(session, older, human=True)
+        assert await runtime._take_input(session, 0) == [older]
+        earlier = callbacks.pop()
+        if not late:
+            earlier(True)
+        runtime._answers_known(session)
+        session.turns += 1
+        session.runs += 1
+        runtime._queue(session, "Take a desktop screenshot", human=True)
+        assert await runtime._take_input(session, 0) == ["Take a desktop screenshot"]
+        callbacks.pop()(True)
+        if late:
+            earlier(True)
+        assert session.device_intents == {"browser": 1, "keyboard_mouse": 2}
+        runtime._queue(session, "Click OK", human=True)
+        assert await runtime._take_input(session, 0) == ["Click OK"]
+        callbacks.pop()(True)
+        assert session.device_intents == {"browser": 1, "keyboard_mouse": 3}
+    finally:
+        ON_ANSWERED.reset(context)
+
+
 async def test_compaction_is_reported_once_only_after_the_live_commission_refreshes(tmp_path, monkeypatch):
     recorder = Recorder()
     runtime = DshRuntime(recorder, launch=lambda: pytest.fail("No dsh process is required"))
@@ -324,7 +359,7 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
                 await turn("Switch to Notepad", human=False)
                 await turn("点击登录按钮", human=False)
                 assert browser not in seen[-1][2] and computer not in seen[-1][2]
-                await turn("点击登录按钮")
+                await turn("转到下一页，点击确定")
                 assert browser in seen[-1][2] and computer not in seen[-1][2]
                 await turn("Open the browser. Switch to Notepad.")
                 phase = "pressure"

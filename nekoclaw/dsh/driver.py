@@ -250,6 +250,7 @@ class _Session:
     registered_device_groups: frozenset[str] | None = None
     # The focus established by accepted user instructions, if any.
     device_browser_context: bool | None = None
+    device_focus_input: int = 0
     # Inputs of the last completed ACP prompt that received a real model reply.
     device_completed_input: int = 0
     device_local_reply_turn: int = -1
@@ -1242,7 +1243,7 @@ class DshRuntime:
             session.run = asyncio.ensure_future(self._run(session))
 
     @staticmethod
-    def _accept_device_inputs(session: _Session, texts: list[str]) -> None:
+    def _accept_device_inputs(session: _Session, texts: list[str], browser: bool | None) -> None:
         # An abort can discard queued texts. Activate only what is handed to
         # the ACP turn or delivered with the result of its wait_agent call.
         for text in texts:
@@ -1255,12 +1256,14 @@ class DshRuntime:
                 # The catalog, not the host's opening message, selects the initial groups.
                 groups = BUILTIN_GROUPS
             else:
-                browser = session.device_browser_context
                 if browser is None:
                     browser = session.spec.gateway.opening_browser_context
                 if browser is None and registered is not None:
                     browser = registered == {BUILTIN_GROUP_BROWSER}
-                groups, session.device_browser_context = classify_device_intent(text, browser_context=browser)
+                groups, browser = classify_device_intent(text, browser_context=browser)
+                if text.number > session.device_focus_input:
+                    session.device_browser_context = browser
+                    session.device_focus_input = text.number
             for group in groups:
                 if registered is None or group in registered:
                     session.device_intents[group] = max(text.number, session.device_intents.get(group, 0))
@@ -1311,6 +1314,9 @@ class DshRuntime:
         # meanwhile): they are told of as taken when the turn the call
         # belongs to ends as a turn does that was not cut short.
         session.awaited.extend(numbers)
+        # A delayed receipt still belongs to the target this batch was handed
+        # with; a newer instruction may change the click target meanwhile.
+        browser = session.device_browser_context
         on_answered = ON_ANSWERED.get()
         if on_answered is not None:
             # Whoever serves the call says whether its answer reached dsh.
@@ -1323,13 +1329,14 @@ class DshRuntime:
             # it to queue again.
             outcome: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             session.answering.append((outcome, numbers))
-            on_answered.append(lambda delivered: self._answered(session, texts, of_run, outcome, delivered))
+            on_answered.append(lambda delivered: self._answered(session, texts, of_run, outcome, delivered, browser))
         else:
-            self._accept_device_inputs(session, texts)
+            self._accept_device_inputs(session, texts, browser)
         return texts
 
     def _answered(
-        self, session: _Session, texts: list[str], of_run: int, outcome: asyncio.Future[bool], delivered: bool
+        self, session: _Session, texts: list[str], of_run: int, outcome: asyncio.Future[bool], delivered: bool,
+        browser: bool | None,
     ) -> None:
         """Take note of whether the answer that carried some texts reached dsh; queue them again where it did not.
 
@@ -1344,7 +1351,7 @@ class DshRuntime:
         if not outcome.done():
             outcome.set_result(delivered)
         if delivered:
-            self._accept_device_inputs(session, texts)
+            self._accept_device_inputs(session, texts, browser)
         left = session.unsettled.pop(outcome, None)
         late = left is not None
         if not delivered:
@@ -1484,7 +1491,7 @@ class DshRuntime:
                 texts, session.queue = session.queue, []
                 sent = _numbers_of(texts)
                 session.taken = max([session.taken, *sent])
-                self._accept_device_inputs(session, texts)
+                self._accept_device_inputs(session, texts, session.device_browser_context)
                 work = "\n\n".join(texts)
                 first = not session.briefed
                 if first:

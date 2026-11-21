@@ -142,13 +142,14 @@ async def test_builtin_queued_device_instructions_survive_summary_then_overflow_
         await host.shutdown()
 
 
-@pytest.mark.parametrize(("initial_task", "follow_up", "human", "browser"), [
-    ("Open the browser.", "Switch to Notepad", True, False),
-    ("Open the browser.", "Switch to Notepad", False, True),
-    ("Take a desktop screenshot. Open the browser.", "Summarize the file.", True, True),
-    ("Open the browser, switch to Notepad, then click OK.", "Summarize the file.", True, False),
+@pytest.mark.parametrize(("initial_task", "follow_up", "human", "click", "browser"), [
+    ("Open the browser.", "Switch to Notepad", True, "Click OK", False),
+    ("Open the browser.", "Switch to Notepad", False, "Click OK", True),
+    ("Open the browser.", "回到桌面", True, "Click OK", False),
+    ("Take a desktop screenshot. Open the browser.", "Summarize the file.", True, "upload the file, then click submit", True),
+    ("Open the browser, switch to Notepad, then click OK.", "Summarize the file.", True, "Click OK", False),
 ])
-async def test_builtin_click_after_a_separate_target_change(tmp_path, initial_task, follow_up, human, browser):
+async def test_builtin_click_after_a_separate_target_change(tmp_path, initial_task, follow_up, human, click, browser):
     from nekoclaw.device_intent import classify_device_intent
     from nekoclaw.runtime.process import SubprocessRuntime
 
@@ -184,7 +185,7 @@ async def test_builtin_click_after_a_separate_target_change(tmp_path, initial_ta
             await events.wait_ended(spec.session_id, start=start)
             assert len(events.of("compacted")) == 1
             await prompt(follow_up, human=human)
-            await prompt("Click OK")
+            await prompt(click)
             assert len(server.requests) == 6
             assert "opening_browser_context" not in json.dumps(server.requests)
 
