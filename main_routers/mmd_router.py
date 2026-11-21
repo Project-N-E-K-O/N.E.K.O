@@ -73,10 +73,21 @@ def _iter_model_files(root: Path):
     The upload checks accept ``Foo.PMX``; ``rglob('*.pmx')`` is case-sensitive on
     Linux, so scanning by pattern would lose such files. Folders named like a
     model (``old.PMX/``) and dangling links are not model files.
+
+    A path whose type cannot be checked (e.g. a link into an unreadable folder
+    raises PermissionError) is still yielded, as the name-only scan did: the
+    "folder already has a model" checks must then keep the folder, not treat it
+    as residue or fail into the import cleanup that deletes it.
     """
     for path in root.rglob('*'):
-        if path.suffix.lower() in ALLOWED_MODEL_EXTENSIONS and path.is_file():
-            yield path
+        if path.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
+            continue
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            pass
+        yield path
 
 
 def safe_mmd_path(mmd_dir: Path, filename: str, subdir: str | None = None) -> tuple[Path | None, str]:

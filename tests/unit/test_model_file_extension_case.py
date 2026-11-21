@@ -280,3 +280,36 @@ def test_live2d_user_models_list_vrm_files_with_any_extension_case(tmp_path, mon
     assert sorted(model["path"] for model in models if model.get("type") == "vrm") == [
         "/user_vrm/Mixed.Vrm", "/user_vrm/UPPER.VRM", "/user_vrm/lower.vrm",
     ]
+
+
+def test_existing_folder_with_an_uncheckable_model_path_is_kept(mmd_app, monkeypatch):
+    # A model-named link into an unreadable folder makes Path.is_file() raise
+    # PermissionError on Python 3.11. The folder must count as holding a model:
+    # import and delete-by-folder refuse it instead of deleting it.
+    from pathlib import Path
+
+    folder = mmd_app.mmd_dir / "Miku"
+    folder.mkdir()
+    (folder / "Miku.PMX").write_bytes(b"old model")
+    (folder / "tex.png").write_bytes(b"old texture")
+    real_is_file = Path.is_file
+
+    def is_file(self):
+        if self.name == "Miku.PMX":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("Miku/Miku.pmx", b"new model")
+
+    with TestClient(mmd_app.app) as client:
+        response = client.post("/api/model/mmd/upload_zip",
+                               files={"file": ("Miku.zip", buffer.getvalue(), "application/zip")})
+        assert response.status_code == 400, response.text
+        by_folder = client.request("DELETE", "/api/model/mmd/model", json={"url": "/user_mmd/Miku"})
+        assert by_folder.status_code == 400, by_folder.text
+
+    assert (folder / "Miku.PMX").read_bytes() == b"old model"
+    assert (folder / "tex.png").read_bytes() == b"old texture"
