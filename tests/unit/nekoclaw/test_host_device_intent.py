@@ -286,6 +286,8 @@ def test_clauses_select_all_needed_tools_but_last_target_locates_the_next_click(
     ("Switch to Word in the browser, then click Save", BROWSER),
     ("Switch to Word from the browser, then click Save", DESKTOP),
     ("Switch to Microsoft Word and click the Layout tab", DESKTOP),
+    ("Switch to Word and open the website", BROWSER),
+    ("切换到 Word 并打开网页", BROWSER),
     ("Switch to Microsoft Word in the browser and click the Layout tab", BROWSER),
 ])
 def test_a_switch_keeps_its_destination_name_and_ordered_actions(instruction, target):

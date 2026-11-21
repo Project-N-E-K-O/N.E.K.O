@@ -57,10 +57,8 @@ _EXPLICIT_WEB = re.compile(
     r"(?:浏览器|瀏覽器|\b(?:browser|chrome|edge(?!\s+cases?\b)|firefox)\b)(?!\s*(?a:apis?\b))|https?://|"
     + _DOMAIN
 )
-_WEB_OBJECT = re.compile(
-    r"网页|網頁|页面|頁面|网站|網站|网址|網址|链接|連結|鏈接|标签页|分頁|"
-    r"\b(?:web\s?page|page|website|site|urls?|link|tabs?)\b"
-)
+_WEB_DESTINATION = re.compile(r"网页|網頁|网站|網站|网址|網址|\b(?:web\s?page|website|site|urls?)\b")
+_WEB_OBJECT = re.compile(_WEB_DESTINATION.pattern + r"|页面|頁面|链接|連結|鏈接|标签页|分頁|\b(?:page|link|tabs?)\b")
 _CODE_FILE = re.compile(r"(?<![\w./\\-])[\w./\\-]+\.(?:tsx?|jsx?|py|vue|md|json|ya?ml|html?|css)\b", re.ASCII)
 _CODE_CONTEXT = re.compile(
     r"代码|代碼|组件|組件|配置|函数|函數|源文件|包名|"
@@ -210,7 +208,7 @@ def classify_device_intent(
             code_text = clause[:switch.end()] + clause[switch.end() + len(target):]
         code = without_files != clause or bool(_CODE_CONTEXT.search(code_text))
         explicit_web = bool(_EXPLICIT_WEB.search(surface))
-        web_object = bool(_WEB_OBJECT.search(control_surface))
+        web_object = bool(_WEB_OBJECT.search(control_surface) or _WEB_DESTINATION.search(surface))
         file_object = bool(_FILE_OBJECT.search(clause))
         web_target = explicit_web or (web_object and not code and not file_object)
         screenshot = bool(_SCREENSHOT_ACTION.search(clause))
