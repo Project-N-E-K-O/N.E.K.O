@@ -151,6 +151,14 @@ def test_an_earlier_browser_only_disambiguates_an_unqualified_click(text, expect
     ("switch to excel", False), ("切换到EXCEL", False),
     ("Switch to Chinese", True), ("Switch to Dark Mode", True),
     ("Switch to Theme", True),
+    ("Switch to Dark Mode in the current window", True),
+    ("Switch to Chinese in the current app", True),
+    ("Switch to Dark Mode on the desktop", True),
+    ("在当前桌面应用里切换到深色模式", True),
+    ("切换到深色模式（在当前窗口）", True),
+    ("切换到当前窗口的深色模式", True),
+    ("Switch to the Example app on the desktop", False),
+    ("Switch to the Example app from the browser", False),
     ("切换到 VS Code", False),
     ("Switch to Example", True), ("Switch to the Example app", False),
     ("Summarize the file.", True), ("Don't switch to Notepad", True),
@@ -171,6 +179,16 @@ def test_unrelated_input_preserves_an_unknown_click_target_until_the_registry_an
     assert classify_device_intent("Switch to Notepad", browser_context=None) == ((), False)
 
 
+@pytest.mark.parametrize(("text", "groups", "focus"), [
+    ("在浏览器中切换到深色模式并点击确认", (BROWSER,), True),
+    ("在浏览器中切换到 Word，然后点击保存", (DESKTOP,), False),
+])
+def test_a_source_browser_locates_a_setting_but_an_explicit_destination_takes_over(text, groups, focus):
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent(text, browser_context=None) == (groups, focus)
+
+
 def test_receipts_can_distinguish_unrelated_input_from_an_explicit_target():
     from nekoclaw.device_intent import classify_device_intent
 
@@ -181,6 +199,12 @@ def test_receipts_can_distinguish_unrelated_input_from_an_explicit_target():
 
 @pytest.mark.parametrize(("instruction", "groups", "focus"), [
     ("转到下一页，点击确定", (BROWSER,), True),
+    ("Switch to Dark Mode in the current window, then click OK", (BROWSER,), True),
+    ("Switch to Theme on the desktop and click OK", (BROWSER,), True),
+    ("Switch to Chinese in the mouse settings app, then click OK", (BROWSER,), True),
+    ("Switch to Theme in the app where I use the mouse, then click OK", (BROWSER,), True),
+    ("切换到深色模式（在当前桌面应用内），然后点击确定", (BROWSER,), True),
+    ("Switch to Theme and click the desktop icon", (DESKTOP,), False),
     ("upload the file, then click submit", (BROWSER,), True),
     ("Upload the Documents folder, then click submit", (BROWSER,), True),
     ("打开上传文件夹的对话框，然后点击提交", (BROWSER,), True),

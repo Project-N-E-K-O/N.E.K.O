@@ -109,12 +109,14 @@ _DESKTOP_TARGET = re.compile(
     r"\b(?:desktop|taskbar|start menu|system tray|file explorer|finder)\b"
 )
 _SWITCH_TARGET = re.compile(r"切[换換][到至]|[转轉]到|回到|返回|\b(?:switch(?:\s+over)?|go\s+back|return)\s+to\b")
+_SWITCH_ACTION = re.compile(r"\band\b|[并並](?:且)?")
+_SWITCH_CONTEXT = re.compile(r"\b(?:in|inside|within|on|with|from|using)\b|[在于於]|[（(]")
 # Match the destination of the switch. Settings and language names can be
 # capitalized just like an application, so a title-cased word is not evidence.
 _APP_TARGET = re.compile(
-    r"应用|應用|程序|程式|窗口|視窗|\b(?:app|application|window)\b|"
+    r"(?:应用|應用|程序|程式|窗口|視窗|\b(?:app|application|window))\s*$|"
     r"^\s*(?:the\s+)?(?P<name>记事本|記事本|微信|notepad|wechat|(?:microsoft\s+)?(?:excel|word)|vs\s+code)"
-    r"(?=\s*(?:$|\band\b|[并並]))"
+    r"\s*$"
 )
 _JOINED_TYPING = re.compile(r"[并並](?:且)?[输輸]入|\band\s+type\b")
 
@@ -148,14 +150,32 @@ def classify_device_intent(
         # In development tasks require an actual browser or address for web tools.
         without_files = _CODE_FILE.sub(" ", clause)
         switch = _SWITCH_TARGET.search(clause)
-        destination = _APP_TARGET.search(clause[switch.end():]) if switch else None
+        destination = None
+        surface = without_files
+        device_actions = clause
+        desktop_target = bool(_DESKTOP_TARGET.search(clause))
+        if switch:
+            # A location describes where the change happens. A coordinated
+            # action has its own object, e.g. "and click the desktop icon".
+            parts = _SWITCH_ACTION.split(clause[switch.end():], maxsplit=1)
+            target = _SWITCH_CONTEXT.split(parts[0], maxsplit=1)[0].rstrip()
+            destination = _APP_TARGET.search(target)
+            desktop = _DESKTOP_TARGET.search(target)
+            desktop_target = bool(desktop and desktop.end() == len(target)) or (
+                len(parts) > 1 and bool(_DESKTOP_TARGET.search(parts[1]))
+            )
+            remaining = " ".join([target, *parts[1:]])
+            device_actions = clause[:switch.start()] + " " + remaining
+            # A setting can still be changed "in the browser"; a named
+            # destination instead establishes where the user is going.
+            surface = _CODE_FILE.sub(" ", remaining if destination or desktop_target else device_actions)
         # "Code" in the app name is not a request to work on source code.
         code_text = clause
         if destination and destination["name"]:
             code_text = clause[:switch.end()] + clause[switch.end() + destination.end():]
         code = without_files != clause or bool(_CODE_CONTEXT.search(code_text))
-        explicit_web = bool(_EXPLICIT_WEB.search(without_files))
-        web_object = bool(_WEB_OBJECT.search(without_files))
+        explicit_web = bool(_EXPLICIT_WEB.search(surface))
+        web_object = bool(_WEB_OBJECT.search(surface))
         file_object = bool(_FILE_OBJECT.search(clause))
         web_target = explicit_web or (web_object and not code and not file_object)
         screenshot = bool(_SCREENSHOT_ACTION.search(clause))
@@ -164,8 +184,7 @@ def classify_device_intent(
         browser = bool(web_target and (screenshot or click or web_action)) or bool(
             _OTHER_WEB.search(clause)
         )
-        desktop_target = bool(_DESKTOP_TARGET.search(clause))
-        desktop_action = bool(_DESKTOP_ACTION.search(clause))
+        desktop_action = bool(_DESKTOP_ACTION.search(device_actions))
         switches_away = switch and not web_target and not code and (desktop_target or destination)
         if switches_away:
             next_browser_context = False
