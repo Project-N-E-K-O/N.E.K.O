@@ -2340,6 +2340,10 @@ class KnowledgeService:
                 raise KnowledgePackError("subscription_identity_mismatch")
             now = utc_now()
             keys = {entry.key for entry in pack.entries}
+            # Ordinary local file replacement introduces new disclosure scope:
+            # both retrieval and automatic context start off again. Confirmed
+            # source-version updates retain their switches.
+            new_disclosure = job.kind == "pack_import" and job.initial_enabled is False
             record = PackRecord(
                 pack_id=pack.pack_id,
                 pack_sha256=sha,
@@ -2348,7 +2352,7 @@ class KnowledgeService:
                 entries=len(pack.entries),
                 chunks=chunks,
                 material_type_override=previous.material_type_override if previous else None,
-                auto_context=previous.auto_context if previous else False,
+                auto_context=False if new_disclosure else previous.auto_context if previous else False,
                 local_embedding=previous.local_embedding if previous else True,
                 disabled_titles=tuple(
                     sorted(set(previous.disabled_titles) & keys) if previous else ()
@@ -2356,9 +2360,7 @@ class KnowledgeService:
                 installed_at=previous.installed_at if previous else now,
                 updated_at=now,
                 subscription=job.subscription,
-                # Ordinary local file replacement introduces new disclosure
-                # scope. Confirmed source-version updates retain their switch.
-                enabled=(False if job.kind == "pack_import" and job.initial_enabled is False
+                enabled=(False if new_disclosure
                          else previous.enabled if previous else (job.initial_enabled if job.initial_enabled is not None else True)),
                 origin=previous.origin if previous else (job.origin or ("market" if job.subscription else "builtin")),
                 archive_sha256=job.archive_sha256,

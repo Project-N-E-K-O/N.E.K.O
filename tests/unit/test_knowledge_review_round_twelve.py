@@ -9,6 +9,7 @@ from knowledge import service as module
 from knowledge.registry import load_registry
 from knowledge.service import KnowledgeService
 from tests.unit.test_knowledge_subsystem import _import, _pack
+from tests.unit.test_knowledge_unified_core import _finished
 
 
 pytestmark = pytest.mark.unit
@@ -75,4 +76,23 @@ async def test_an_import_refused_while_stopping_leaves_no_frozen_retry_input(tmp
     finally:
         service._stopping = False
         monkeypatch.setattr(module, "atomic_write_bytes", write)
+        await service.stop()
+
+
+async def test_local_file_replacement_turns_automatic_context_off_with_retrieval(tmp_path):
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        assert (await _import(service, _pack("imp.local", entries=[
+            {"title": "Old", "content": "Previously disclosed content."}])))["state"] == "active"
+        await service.set_pack_auto_context("imp.local", True)
+        assert service._registry.packs["imp.local"].enabled and service._registry.packs["imp.local"].auto_context
+        # The manager's local file import: a replacement is new disclosure scope.
+        replaced = await service.import_pack(json.dumps(_pack("imp.local", entries=[
+            {"title": "New", "content": "Replacement content."}])).encode(),
+            _options={"origin": "imported", "enabled": False})
+        assert (await _finished(service, replaced))["state"] == "active"
+        record = load_registry(tmp_path).packs["imp.local"]
+        assert record.enabled is False and record.auto_context is False
+    finally:
         await service.stop()

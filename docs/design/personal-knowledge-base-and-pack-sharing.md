@@ -7,7 +7,7 @@
 - 只有一个知识库：内置、市场和用户导入的资料都是现有 `knowledge` 的 pack，统一检索、索引、任务与容量。
 - 只有一个入口：插件管理器既有知识库页面；桌面端通过统一管理器入口打开该页。
 - 知识库归 Memory Server；Main 仅保留 `/api/public-knowledge` 薄代理，Plugin 继续承担现有账号、配对和市场桥。
-- 新导入个人文档创建的 pack、通过本地上传导入的 JSON/ZIP，默认 `enabled=False`、`auto_context=False`、`local_embedding=True`。启用意味着命中片段可能发给云端模型，导入及启用界面明确说明。市场订阅继续使用既有安装语义；默认关闭约定不扩大到市场订阅。本地 JSON/ZIP 替换已有包的新正文也先关闭检索，由用户重新开启；已经过确认的来源版本更新保留原开关。
+- 新导入个人文档创建的 pack、通过本地上传导入的 JSON/ZIP，默认 `enabled=False`、`auto_context=False`、`local_embedding=True`。启用意味着命中片段可能发给云端模型，导入及启用界面明确说明。市场订阅继续使用既有安装语义；默认关闭约定不扩大到市场订阅。本地 JSON/ZIP 替换已有包的新正文属于新的披露范围，参与检索和自动参考都先关闭，由用户重新开启；已经过确认的来源版本更新保留原开关。
 - 原件、全文和历史版本全部保留，成品包默认保留。仅当用户明确删除一次本地导出时，移除该导出记录及未被引用的 ZIP；知识库仍使用的成品文件保留。不在开发过程中对真实用户目录执行迁移、清理或删除。
 - 冻结重试输入遵守保留决定，不自动按时限回收。显式丢弃任务时一并删除其冻结重试输入；其余冻结输入仍全部保留。用户取消或替换尚未提交的预览时，只删除该预览自己的原件与解析文本两份文件；已提交的预览及其冻结版本保留。不做按时限的预览回收；未点取消直接关闭页面的预览保留，磁盘长期预算仍待另行产品决定，不能以索引清理代替资料删除授权。
 - 前台请求全部接纳，但实际模型计算串行。后台常规空闲执行，持续前台压力下允许最小批次保底。
@@ -160,7 +160,7 @@ vectors.f32
 | POST `sources/preview` | raw Blob；文件名/新 pack 名使用 URI 编码的 `X-Knowledge-Filename/Name` 头，避免进 URL 日志 |
 | POST `sources/preview/discard` | preview_id；取消或替换时删除该未提交预览的两份文件，已提交的预览返回 `deleted: false` 并保留 |
 | POST `sources/commit` | preview_id、sha256、enabled、enabled_confirmed；新 pack 默认关闭，返回既有 import_commit job；提交时再次核对实际启用状态，追加到已启用包须独立确认 |
-| POST `sources/remove/restore` | pack_id/doc_id/版本，复用原任务状态和取消 |
+| POST `sources/remove/restore` | pack_id/doc_id/版本，复用原任务状态和取消；恢复是用户对自己已导入的历史版本的明确操作，本身即视为授权，不另要求披露确认，保留包当前的开关 |
 | POST `packs/enabled` | pack 级参与检索开关 |
 | POST `packs/export` | pack_id、format_version 固定为 2（默认 2），返回 pack_export job；后端自动生成发布版本，显式请求格式 1 或传入 `version` 会被拒绝 |
 | POST `packs/exports/delete` | 仅 job_id；删除已完成导出记录及未被引用的本地 ZIP，返回 artifact_retained 说明文件是否因引用而保留 |
