@@ -5675,6 +5675,7 @@
     function lockExportEditing() {
         if (exportEditingLock) {
             exportEditingLock.count += 1;
+            exportEditingLock.disableControls();
             return releaseExportEditing(exportEditingLock);
         }
         const main = document.querySelector('.emote-maker-page');
@@ -5683,11 +5684,14 @@
             '[data-neko-window-control], #emote-maker-close, a[download][href^="blob:"]'
             + (groupExportBusy ? ', #export-group-open-btn' : ''),
         ));
-        document.querySelectorAll('button, input, select, textarea').forEach((control) => {
-            if (allowed(control) || control.disabled) return;
-            controls.set(control, control.disabled);
-            control.disabled = true;
-        });
+        const disableControls = () => {
+            document.querySelectorAll('button, input, select, textarea').forEach((control) => {
+                if (allowed(control) || control.disabled) return;
+                if (!controls.has(control)) controls.set(control, control.disabled);
+                control.disabled = true;
+            });
+        };
+        disableControls();
         const wasBusy = main?.getAttribute('aria-busy');
         main?.setAttribute('aria-busy', 'true');
         const block = (event) => {
@@ -5700,6 +5704,7 @@
         events.forEach((type) => window.addEventListener(type, block, { capture: true, passive: false }));
         exportEditingLock = {
             count: 1,
+            disableControls,
             restore() {
                 events.forEach((type) => window.removeEventListener(type, block, true));
                 controls.forEach((disabled, control) => { control.disabled = disabled; });
@@ -6057,16 +6062,22 @@
         return trimmed;
     }
 
-    function sampleStageImageTimeline(frames, fps, maxFrames) {
+    function sampleStageImageTimeline(frames, fps, maxFrames, minFrames = 1) {
         if (!frames.length) return [];
         const duration = stageImageTimelineDuration(frames);
-        const count = Math.max(1, Math.min(maxFrames, Math.floor(duration * fps / 1000 + 1e-9)));
+        const count = Math.max(1, Math.min(maxFrames,
+            Math.max(minFrames, Math.floor(duration * fps / 1000 + 1e-9))));
         const delayMs = duration / count;
+        const preserveAll = minFrames >= frames.length && count >= frames.length;
         let source = 0;
         let end = stageImageFrameDelay(frames[source]);
         return Array.from({ length: count }, (_, index) => {
             const at = index * delayMs;
-            while (source + 1 < frames.length && at >= end) {
+            // PNG slides each need a sample, including short trimmed edge
+            // slides. Timed GIFs can still be thinned to the requested FPS.
+            const last = preserveAll ? Math.min(source + 1, frames.length - 1) : frames.length - 1;
+            const required = preserveAll ? frames.length - (count - index) : 0;
+            while (source < last && (at >= end || source < required)) {
                 source += 1;
                 end += stageImageFrameDelay(frames[source]);
             }
@@ -7280,7 +7291,8 @@
                     let frames = still ? timeline.slice(0, 1) : timeline;
                     let imageFps = fps;
                     if (!still && (!timed || packFormat === 'layered' || frames.length > PACK_MAX_FRAMES)) {
-                        frames = sampleStageImageTimeline(timeline, fps, PACK_MAX_FRAMES);
+                        frames = sampleStageImageTimeline(timeline, fps, PACK_MAX_FRAMES,
+                            timed ? 1 : timeline.length);
                         imageFps = 1000 / frames[0].delayMs;
                     }
                     frames = resizeStageImageFrames(frames, edge, resizedImageFrames);

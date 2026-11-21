@@ -96,6 +96,29 @@ def test_reimport_preserves_images_recovered_before_the_write_check(store, monke
     assert stale.texture_path(key, 'StageImages/saved.png').read_bytes() == b'original-image'
 
 
+def test_first_builtin_texture_save_preserves_images_recovered_after_has(store, monkeypatch):
+    import main_routers.emote_template_router as routes
+
+    key = routes._BUILTIN_KEY
+    archive = _zip('builtin')
+    store.save(key, archive, [('StageImages/saved.png', b'original-image')])
+    stale = EmoteTemplateArchiveStore(store.root)
+    store._entry_dir(key).rename(store.root / '.retired-interrupted')
+    original = stale._require_writable
+
+    def recover_then_check(key):
+        EmoteTemplateArchiveStore(store.root)
+        original(key)
+
+    monkeypatch.setattr(routes, '_archive_store', lambda: stale)
+    monkeypatch.setattr(routes, '_builtin_template', lambda _: ({}, archive, {}))
+    monkeypatch.setattr(stale, '_require_writable', recover_then_check)
+    result = routes._merge_library_textures(key, [('StageImages/new.png', b'new-image')])
+    assert result['textures'] == ['StageImages/new.png', 'StageImages/saved.png']
+    assert stale.texture_path(key, 'StageImages/saved.png').read_bytes() == b'original-image'
+    assert stale.texture_path(key, 'StageImages/new.png').read_bytes() == b'new-image'
+
+
 def test_preserving_textures_merges_replacements_and_checks_the_combined_limit(store, monkeypatch):
     store.save('merge', _zip(), [('StageImages/keep.png', b'keep'), ('StageImages/edit.png', b'old')])
     store.save('merge', _zip('new'), [('StageImages/edit.png', b'new')], preserve_textures=True)

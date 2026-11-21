@@ -111,12 +111,19 @@ def test_single_png_download_starts_while_capture_controls_are_locked(editor):
 
 
 @pytest.mark.parametrize(('pack_format', 'fps', 'start', 'seconds', 'expected_frames'), [
+    ('flat', 8, 0, .2, 2), ('layered', 8, 0, .2, 2),
+    ('flat', 8, 0, .3, 3), ('layered', 8, 0, .3, 3),
+    ('flat', 8, .09, .12, 3), ('layered', 8, .09, .12, 3),
+    ('flat', 30, .09, .12, 3), ('layered', 30, .09, .12, 3),
     ('flat', 10, .2, .2, 2), ('flat', 30, .2, .2, 6),
     ('layered', 10, .2, .2, 2), ('layered', 30, .2, .2, 6),
     ('flat', 30, .3, .1, 3),
     ('flat', 60, 0, 1, 50), ('layered', 60, 0, 1, 60),
     ('flat', 60, 0, .95, 47), ('layered', 60, 0, .95, 57),
 ], ids=[
+    'flat-8-0-0.2', 'layered-8-0-0.2', 'flat-8-0-0.3', 'layered-8-0-0.3',
+    'flat-8-0.09-0.12', 'layered-8-0.09-0.12',
+    'flat-30-0.09-0.12', 'layered-30-0.09-0.12',
     'flat-10-0.2-0.2', 'flat-30-0.2-0.2',
     'layered-10-0.2-0.2', 'layered-30-0.2-0.2', 'flat-30-0.3-0.1',
     'flat-60-0-1', 'layered-60-0-1', 'flat-60-0-0.95', 'layered-60-0-0.95',
@@ -155,7 +162,8 @@ def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, 
     files = {item['path'].split('/', 1)[1]: base64.b64decode(item['data']) for item in exported}
     palette = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
     yellow = palette[-1]
-    wanted = [palette[index % len(palette)] for index in range(round(start * 10), round((start + seconds) * 10))]
+    wanted = [palette[index % len(palette)] for index in range(source_count)
+              if index / 10 < start + seconds - 1e-9 and (index + 1) / 10 > start + 1e-9]
     if pack_format == 'flat':
         for name, duration, colors, count in (
             ('idle.gif', seconds * 1000, wanted, expected_frames),
@@ -187,6 +195,26 @@ def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, 
                 )) for index in range(state['frames'])]
             assert set(observed) == set(colors)
             assert observed[0] == colors[0] and observed[-1] == colors[-1]
+
+
+@pytest.mark.parametrize('pack_format', ['flat', 'layered'])
+def test_low_fps_gif_keeps_native_flat_timing_and_can_thin_layered_frames(editor, pack_format):
+    from PIL import Image
+
+    source = io.BytesIO()
+    images = [Image.new('RGB', (16, 16), color) for color in ('red', 'green', 'blue')]
+    images[0].save(source, 'GIF', save_all=True, append_images=images[1:], duration=100, loop=0)
+    _import(editor, spine_zip())
+    result = editor.evaluate('''async ([format, encoded]) => {
+        const q = reviewEditor;
+        await q.importStageImages([new File([Uint8Array.from(atob(encoded), c=>c.charCodeAt(0))],
+            'timed.gif', {type:'image/gif'})]);
+        const imageIds = Object.keys(JSON.parse(localStorage.getItem('neko-emote-maker-stage-image-names')));
+        const [baked] = await q.bakePackJobs([{stateKey:'idle_image',imageIds,imageSeconds:.3}],
+            {format,fps:8,edge:32});
+        return {count:baked.frames.length,duration:baked.frames.reduce((sum,f)=>sum+f.delayMs,0)};
+    }''', [pack_format, base64.b64encode(source.getvalue()).decode('ascii')])
+    assert result == {'count': 3 if pack_format == 'flat' else 2, 'duration': 300}
 
 
 def test_flat_pack_encoder_uses_baked_fps_for_frames_without_delays(editor):
@@ -274,22 +302,29 @@ def test_nested_exports_keep_controls_locked_until_both_finish(editor, release_f
         let finish;
         const capture = q.queueStageCapture('nested-review', 100, 'export',
             () => new Promise(resolve => { finish = resolve; }));
+        const added = document.createElement('button');
+        const disabled = document.createElement('button');
+        disabled.disabled = true;
+        main.append(added, disabled);
         q.setPackBusy(true);
         try {
             if (releaseFirst === 'capture') { finish(); await capture; }
             else q.setPackBusy(false);
-            const locked = scale.disabled && button.disabled && main.getAttribute('aria-busy') === 'true';
+            const locked = scale.disabled && button.disabled && added.disabled && disabled.disabled
+                && main.getAttribute('aria-busy') === 'true';
             scale.value = '180';
             scale.dispatchEvent(new Event('input', {bubbles:true}));
             const unchanged = q.state.adjustments.scale === before;
             if (releaseFirst === 'capture') q.setPackBusy(false);
             else { finish(); await capture; }
             return {locked, unchanged,
-                unlocked: !scale.disabled && !button.disabled && !main.hasAttribute('aria-busy')};
+                unlocked: !scale.disabled && !button.disabled && !added.disabled && disabled.disabled
+                    && !main.hasAttribute('aria-busy')};
         } finally {
             q.setPackBusy(false);
             finish();
             await capture;
+            added.remove(); disabled.remove();
         }
     }''', release_first)
     assert result == {'locked':True, 'unchanged':True, 'unlocked':True}

@@ -658,7 +658,7 @@ def _merge_library_textures(key, blobs):
         return store.save_textures(key, blobs)
     _, archive, _ = _builtin_template(_builtin_template_directory())
     if blobs:
-        store.save(key, archive, blobs, filename=_BUILTIN_FILENAME)
+        store.save(key, archive, blobs, filename=_BUILTIN_FILENAME, preserve_textures=True)
     return {"key": key, "textures": store.texture_paths(key)}
 
 
