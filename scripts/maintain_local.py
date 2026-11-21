@@ -62,7 +62,12 @@ def clean_required(repo):
 def official_required(repo):
     # Validate the configured identity before Git applies transport rewrites.
     # fetch uses the first configured URL; refuse ambiguity instead of guessing.
-    urls = git(repo, "config", "--get-all", "remote.origin.url").splitlines()
+    # --null keeps each value intact, so a value ending in a newline is not
+    # confused with Git's line separator.
+    raw = subprocess.check_output(
+        ["git", "config", "--null", "--get-all", "remote.origin.url"], cwd=repo
+    )
+    urls = [os.fsdecode(value) for value in raw.split(b"\0")[:-1]]
     if len(urls) != 1:
         raise ValueError("origin must have exactly one configured URL.")
     url = urls[0]

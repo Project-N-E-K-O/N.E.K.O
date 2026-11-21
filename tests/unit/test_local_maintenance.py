@@ -659,6 +659,18 @@ class MaintenanceTests(unittest.TestCase):
                     str(ctx.exception),
                 )
 
+    def test_official_identity_rejects_configured_value_with_trailing_newline(self):
+        for suffix in ("\n", "\r\n", "\n\n"):
+            with self.subTest(suffix=suffix):
+                self.git(
+                    "config",
+                    "--replace-all",
+                    "remote.origin.url",
+                    maintain.OFFICIAL_URL + suffix,
+                )
+                with self.assertRaisesRegex(ValueError, "not the configured"):
+                    maintain.official_required(self.repo)
+
     def test_official_identity_rejects_multiple_origin_urls(self):
         self.git(
             "config",
