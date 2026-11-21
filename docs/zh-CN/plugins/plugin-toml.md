@@ -209,10 +209,6 @@ name = "plugin.db"   # 插件数据目录里的文件名（默认 plugin.db）
 
 启用后，`self.db` 使用插件数据目录里的 SQLite 数据库文件：写 SQL 用 `async with unwrap(await self.db.session()) as session:`（`session()` 返回 `Result`），存键值数据用 `self.db.kv`。默认关闭。
 
-::: warning `check` 会对这一段报 warning
-当前的 `neko-plugin check` 没有把 `database` 列为已知的 `[plugin]` 键，所以会报 warning：`[plugin].database is not a recognized plugin.toml field`。运行时照常读取这一段，这条 warning 可以忽略。
-:::
-
 ---
 
 ### `[plugin_state]` — 保存和恢复实例属性
@@ -223,11 +219,7 @@ backend = "file"        # 状态存在哪里
 persist_mode = "auto"   # 什么时候保存
 ```
 
-运行时会保存插件类 `__freezable__` 列表里列出的实例属性，插件下次启动时恢复；恢复成功后清除已保存的状态。`backend` 是总开关：`"file"` 存在插件数据目录的文件里，只有它能在插件进程重启后保留；`"memory"` 只在插件进程存活期间保留。不写 `backend`（或不写这一段）就什么都不保存。这里看的是生效配置，即清单与运行时副本（插件用户数据目录下的 `config/plugin.toml`）和当前 profile 合并后的结果，所以对已安装的插件，只从清单里删掉 `backend` 并不能关闭保存。`persist_mode` 决定哪些入口调用后保存：`"auto"` 在每次入口调用正常返回后保存（返回 `Err` 也算正常返回；抛异常或严格输出校验失败时不保存；只算经运行时分发的调用，插件内部直接调用入口方法（例如在定时器里调用）不会保存），`"manual"` 只在用 `@plugin_entry(persist=True)` 声明的入口调用后保存，`"off"` 时入口调用后不保存；入口上的 `persist=True` / `persist=False` 优先于 `"auto"` / `"manual"`。取值按这个顺序确定：先取类属性 `__persist_mode__`（默认 `"off"`），`[plugin_state].persist_mode` 是 `auto` / `manual` / `off` 之一时覆盖它（其他取值，例如 `always` / `disabled`，会被忽略）。结果为 `"off"` 时（包括显式写 `persist_mode = "off"`），旧配置 `[plugin_checkpoint] freeze_mode` 为 `"auto"` 或 `"manual"` 时仍会覆盖它。另外，不论 `persist_mode` 是什么，冻结插件时都会保存一次状态。
-
-::: warning `check` 和运行时认可的取值不一样
-运行时认可 `backend` = `file` / `memory` / `off`、`persist_mode` = `auto` / `manual` / `off`；当前的 `neko-plugin check` 按 `file` / `sqlite` / `memory` 和 `auto` / `always` / `manual` / `disabled` 校验，其他取值报 error。只用两边都认可的值（`file` 或 `memory`，`auto` 或 `manual`）；想关闭保存就不写 `backend`，不要写 `"off"`。
-:::
+运行时会保存插件类 `__freezable__` 列表里列出的实例属性，插件下次启动时恢复；恢复成功后清除已保存的状态。`backend` 是总开关：`"file"` 存在插件数据目录的文件里，只有它能在插件进程重启后保留；`"memory"` 只在插件进程存活期间保留。不写 `backend`（或不写这一段）就什么都不保存。这里看的是生效配置，即清单与运行时副本（插件用户数据目录下的 `config/plugin.toml`）和当前 profile 合并后的结果，所以对已安装的插件，只从清单里删掉 `backend` 并不能关闭保存。要关闭保存，就把 `backend = "off"` 写在生效的那一层：运行时副本和当前 profile 会覆盖清单。`persist_mode` 决定哪些入口调用后保存：`"auto"` 在每次入口调用正常返回后保存（返回 `Err` 也算正常返回；抛异常或严格输出校验失败时不保存；只算经运行时分发的调用，插件内部直接调用入口方法（例如在定时器里调用）不会保存），`"manual"` 只在用 `@plugin_entry(persist=True)` 声明的入口调用后保存，`"off"` 时入口调用后不保存；入口上的 `persist=True` / `persist=False` 优先于 `"auto"` / `"manual"`。取值按这个顺序确定：先取类属性 `__persist_mode__`（默认 `"off"`），`[plugin_state].persist_mode` 是 `auto` / `manual` / `off` 之一时覆盖它（其他取值，例如 `always` / `disabled`，会被忽略）。结果为 `"off"` 时（包括显式写 `persist_mode = "off"`），旧配置 `[plugin_checkpoint] freeze_mode` 为 `"auto"` 或 `"manual"` 时仍会覆盖它。另外，不论 `persist_mode` 是什么，冻结插件时都会保存一次状态。
 
 ---
 
