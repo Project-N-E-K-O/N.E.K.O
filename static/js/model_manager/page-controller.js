@@ -8326,8 +8326,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (newOption) {
                             mmdAnimationSelect.value = newOption.value;
                             // Selecting without a change event keeps the upload from auto-playing,
-                            // so enable the play button here; it plays the selected value.
-                            if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
+                            // so enable the play button here; it plays the selected value. Without
+                            // a loaded model, playback cannot work; loading the model enables it.
+                            if (playMmdAnimationBtn && window.mmdManager && window.mmdManager.currentModel) {
+                                playMmdAnimationBtn.disabled = false;
+                            }
                         } else if (savedAnimUrl) {
                             const optionExists = Array.from(mmdAnimationSelect.options).some(opt => opt.value === savedAnimUrl);
                             if (optionExists) {

@@ -147,11 +147,13 @@ test('no match leaves the caller to restore the previous selection', async () =>
 
 // Drives the real VMD upload change handler: the list reload, the selection
 // assignment and the button-text refresh all run from page-controller.js.
-function loadVmdUploadHandler({ listBefore, listAfter, uploadResponse }) {
+function loadVmdUploadHandler({ listBefore, listAfter, uploadResponse, modelLoaded = true }) {
     const helpersStart = source.indexOf('function findUploadedMMDAnimationOption(');
     const helpersEnd = source.indexOf('function updateMMDAnimationDropdown(', helpersStart);
-    const handlerStart = source.indexOf('    // MMD 动画文件上传\n    if (mmdAnimationFileUpload) {');
-    const handlerEnd = source.indexOf('    // VMD动画上传按钮点击事件', handlerStart);
+    // Located by code, not by the surrounding comments.
+    const handlerStart = source.indexOf(
+        "if (mmdAnimationFileUpload) {\n        mmdAnimationFileUpload.addEventListener('change'");
+    const handlerEnd = source.indexOf('if (uploadMmdAnimationBtn) {', handlerStart);
     assert.ok(helpersStart >= 0 && helpersEnd > helpersStart, 'MMD animation helper block not found');
     assert.ok(handlerStart >= 0 && handlerEnd > handlerStart, 'VMD upload handler block not found');
 
@@ -164,6 +166,7 @@ function loadVmdUploadHandler({ listBefore, listAfter, uploadResponse }) {
         document: { createElement: () => new FakeOption() },
         t: (_key, fallback) => fallback,
         console,
+        window: { mmdManager: modelLoaded ? { currentModel: {} } : null },
         FormData: class { append() {} },
         fetch: async () => {
             listPayload = listAfter;
@@ -300,3 +303,20 @@ for (const uploadForm of ['NFC', 'NFD']) {
         assert.equal(page.select.value, `/user_mmd/animation/${uploaded}`);
     });
 }
+
+test('upload handler keeps the play button disabled while no MMD model is loaded', async () => {
+    const uploaded = listEntry('/user_mmd/animation', 'dance.vmd');
+    const page = loadVmdUploadHandler({
+        listBefore: { success: true, animations: [] },
+        listAfter: { success: true, animations: [uploaded] },
+        uploadResponse: uploadResult('dance.vmd'),
+        modelLoaded: false,
+    });
+    await page.loadInitialList();
+
+    await page.upload('dance.vmd');
+
+    // Still selected; the model load path enables the button once it finishes.
+    assert.equal(page.select.value, uploaded.url);
+    assert.equal(page.playButton.disabled, true);
+});
