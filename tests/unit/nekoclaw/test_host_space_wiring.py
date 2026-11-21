@@ -765,13 +765,13 @@ async def test_commands_allowed_for_the_session_do_not_cover_one_that_points_at_
     asker = _Asker("session")
     host.permissions.set_asker(asker)
 
-    async def decide(command: str) -> dict[str, Any]:
-        return await host.task_agents._cb_permission(active.session_id, _command(command, tmp_path))
+    async def decide(command: str, cwd: Path = tmp_path) -> dict[str, Any]:
+        return await host.task_agents._cb_permission(active.session_id, _command(command, cwd))
 
-    # The same command and working directory reuse approval; a different command asks.
-    assert (await decide("ls"))["allow"] is True
-    assert (await decide("ls"))["allow"] is True
-    assert (await decide("ls -la"))["allow"] is True
+    for command in ("npm test", "npm run lint", "npm run build"):
+        assert (await decide(command))["allow"] is True
+    assert [ask.category for ask in asker.asked] == ["run_command"]
+    assert (await decide("npm test", tmp_path / "second"))["allow"] is True
     assert [ask.category for ask in asker.asked] == ["run_command", "run_command"]
 
     assert (await decide(f"cat '{root.as_posix()}/MEMORY.md'"))["allow"] is True

@@ -260,7 +260,7 @@ async def test_pinned_dsh_fetch_uses_prepared_host_receipt(tmp_path, monkeypatch
         await runtime.shutdown()
 
 
-@pytest.mark.parametrize(("configured", "expected_asks"), [(None, 0), ("always_ask", 2), ("allow", 0)])
+@pytest.mark.parametrize(("configured", "expected_asks"), [(None, 0), ("always_ask", 2), ("first_ask", 1), ("allow", 0)])
 async def test_pinned_dsh_workdir_reads_use_auto_or_the_explicit_rule(tmp_path, monkeypatch, configured, expected_asks):
     binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
     if not binary:
@@ -273,13 +273,15 @@ async def test_pinned_dsh_workdir_reads_use_auto_or_the_explicit_rule(tmp_path, 
 
     async def once(session_id, question):
         questions.append((question.category, question.options))
-        return "once"
+        return "session" if "session" in question.options else "once"
 
     gate = PermissionGate(store, once)
 
     async def decide(session_id, payload):
         assert payload["category"] == "workdir_files"
-        return (await gate.check_native(session_id, payload["category"], detail=payload)).to_json()
+        return (await gate.check_native(
+            session_id, payload["category"], detail=payload, stock_tool=payload.get("private_route") is True,
+        )).to_json()
 
     events = Recorder()
     runtime = DshRuntime(
@@ -326,6 +328,7 @@ async def test_pinned_dsh_workdir_reads_use_auto_or_the_explicit_rule(tmp_path, 
             assert request == {"toolCallId": update["toolCallId"]}
             assert set(update) == {"sessionUpdate", "toolCallId", "title", "kind", "status", "rawInput"}
             assert update["title"] == "read" and update["kind"] == "other"
-        assert questions == [("workdir_files", ("once", "deny"))] * expected_asks
+        options = ("session", "once", "deny") if configured == "first_ask" else ("once", "deny")
+        assert questions == [("workdir_files", options)] * expected_asks
     finally:
         await runtime.shutdown()

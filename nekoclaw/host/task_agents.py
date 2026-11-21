@@ -5218,11 +5218,11 @@ class TaskAgentManager:
         if before_check is not None:
             before_check(category)
         session = self._sessions.get(session_id)
-        if session is None or session.runtime_name != RUNTIME_BUILTIN:
-            # ACP and unbound callbacks expose no verified tool registration.
-            decision = await self._permissions.check_native(session_id, category, detail=detail)
-        else:
+        if session is not None and session.runtime_name == RUNTIME_BUILTIN:
             decision = await self._permissions.check_builtin(session_id, category, detail=detail, writes=writes, recipient=recipient)
+        else:
+            stock_tool = session is not None and session.runtime_name == RUNTIME_DSH and payload.get("private_route") is True
+            decision = await self._permissions.check_native(session_id, category, detail=detail, stock_tool=stock_tool, recipient=recipient)
         if grants is not None and decision.grant_id:
             grants.append(decision.grant_id)
         if audit is not None:

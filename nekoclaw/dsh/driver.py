@@ -698,7 +698,7 @@ class DshRuntime:
                 raise DshUnavailable("dsh did not load the permission guard") from exc
             from config.nekoclaw_settings import FIRST_TURN_DEVICE_TOOLS
 
-            if FIRST_TURN_DEVICE_TOOLS or "native_execution_action" in self._host.capabilities:
+            if FIRST_TURN_DEVICE_TOOLS or {"native_execution_action", "decide_permission"}.intersection(self._host.capabilities):
                 process.stock_execution = await asyncio.to_thread(profile.uses_stock_tool_presentation, launch.home)
                 process.native_device_schemas = process.native_device_schemas and FIRST_TURN_DEVICE_TOOLS and process.stock_execution
             else:
@@ -1069,6 +1069,8 @@ class DshRuntime:
             readable = (profile.session_spill_dir(process.home, session.dsh_id),) if process is not None else ()
             request = classify(name, given, Path(session.spec.workdir), readable=readable)
             payload = {**request.to_json(), "default": default_permission_decision(request)}
+            if process is not None and process.stock_execution:
+                payload["private_route"] = True
         elif name.startswith(HOST_TOOL_PREFIX):
             # One of the host's own tools the guard asks about
             # (``profile.ASKED_HOST_TOOLS``): the host asks the user now what

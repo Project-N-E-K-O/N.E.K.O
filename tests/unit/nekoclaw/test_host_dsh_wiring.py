@@ -14,7 +14,7 @@
 
 """The host with dsh: which runtime a commission runs in, and what the host does for a session in dsh.
 
-Except for the optional pinned-runtime sleep/wake test, the in-process runtime stands in for dsh's driver, which
+Except for tests exercising the pinned runtime, the in-process runtime stands in for dsh's driver, which
 has tests of its own (``test_dsh_driver.py``); what is tested here is the
 host's side: the choice, the ledger, the fallback, the permission requests
 only dsh makes, the removal of dsh, and the cleaning of old sessions.
@@ -50,6 +50,65 @@ from tests.unit.nekoclaw.host_fakes import (
 async def model_with_an_address() -> dict[str, Any]:
     """As the host's configured model always has one; nothing listens there."""
     return {"model": "fake-model", "api_key": "test-key", "base_url": "http://127.0.0.1:9/v1"}
+
+
+@pytest.mark.parametrize("runtime_name", [RUNTIME_BUILTIN, RUNTIME_DSH])
+@pytest.mark.parametrize(("choice", "expected"), [("session", 1), ("once", 3)])
+async def test_three_different_commands_in_one_directory(runtime_name, choice, expected, tmp_path):
+    from nekoclaw.dsh import profile
+    from nekoclaw.dsh.driver import DshRuntime
+    from nekoclaw.host import call_audit
+    from tests.unit.nekoclaw.fake_openai_server import FakeOpenAIServer, sse_finish, sse_text, sse_tool_call
+
+    binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
+    if runtime_name == RUNTIME_DSH and not binary:
+        pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to run the stock dsh test")
+
+    def factory(on_event, callbacks, installation):
+        return DshRuntime(
+            on_event, callbacks, launch=lambda: profile.DshLaunch(home=tmp_path / "dsh", executable=Path(binary)),
+        )
+
+    shell = "pwsh" if os.name == "nt" else "bash"
+    commands = [f"echo consent-{i}" for i in range(3)]
+    replies = iter(
+        [sse_tool_call(shell, {"command": command, "description": "Print the fixture"}, f"call_{i}"),
+         sse_finish("tool_calls")]
+        for i, command in enumerate(commands)
+    )
+    questions = []
+
+    async def answer(commission, ask):
+        questions.append(ask)
+        return choice
+
+    with FakeOpenAIServer(lambda _: next(replies, [sse_text("Done"), sse_finish()])) as model:
+        async def model_config():
+            return dict(model="fixture", base_url=model.base_url, api_key="local", auto_extra_body=False)
+
+        host = make_host(
+            tmp_path, task_agent_model=model_config, decision_llm=FakeDecisionLLM(), plugins_enabled=lambda: False,
+            dsh=Installation(installed=runtime_name == RUNTIME_DSH), dsh_runtime_factory=factory,
+        )
+        try:
+            host.permissions.set_asker(answer)
+            commission = await _dispatch(host, "Run three fixture commands")
+            await wait_until(lambda: len(model.requests) >= 4, timeout=90, what="delivery of the three command results")
+            for i, req in enumerate(model.requests[1:4]):
+                assert f"consent-{i}" in str(req["messages"][-1])
+            assert len(questions) == expected and all(q.category == "run_command" for q in questions)
+            assert all(q.detail["content_to"] and "session" in q.options for q in questions)
+            if runtime_name == RUNTIME_DSH:
+                assert all(q.options == ("session", "once", "deny") for q in questions)
+            audit = await host.ledger.run(lambda db: call_audit.read_trace(db, commission, now=host.ledger._clock()))
+            operations = [row for row in audit if row["target"] == shell]
+            assert len(operations) == 3 and len({row["scope_ref"] for row in operations}) == 3
+            if choice == "session":
+                assert operations[0]["grant_id"] and len({row["grant_id"] for row in operations}) == 1
+            delivered = {row["parent_call_id"] for row in audit if row["kind"] == "transfer_content"}
+            assert {row["call_id"] for row in operations} <= delivered
+        finally:
+            await host.shutdown()
 
 
 class Installation:

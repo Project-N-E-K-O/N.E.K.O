@@ -56,7 +56,6 @@ permission.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -591,9 +590,10 @@ class PermissionGate:
         return PermissionDecision(True, asked=True)
 
     async def check_builtin(
-        self, commission_id: str, category: str, *, detail: dict[str, Any], writes: bool, recipient: str = ""
+        self, commission_id: str, category: str, *, detail: dict[str, Any],
+        writes: bool, recipient: str = "", dsh: bool = False,
     ) -> PermissionDecision:
-        """Scope files by access and resolved path, commands by tool, cwd and exact command."""
+        """Scope built-in commands by shell and directory, files by access and resolved path."""
         work = self._work.setdefault(commission_id, object())
         mode = await self._store.mode(category)
         if self._work.get(commission_id) is not work:
@@ -603,21 +603,36 @@ class PermissionGate:
         tool = str(detail.get("tool") or "")
         resource = tool
         if category == "run_command":
-            command = [tool, detail.get("cwd"), detail.get("command")]
-            resource = hashlib.sha256(json.dumps(command).encode()).hexdigest()
-        elif isinstance(path := detail.get("path"), str) and path:
+            cwd = detail.get("cwd")
+            if not tool or not isinstance(cwd, str) or not os.path.isabs(cwd):
+                return await self.check_native(commission_id, category, detail=detail)
+            directory = os.path.normcase(await asyncio.to_thread(os.path.realpath, cwd))
+            resource = json.dumps([tool, directory])
+        elif category in {"workdir_files", "outside_read", "outside_write"}:
+            path = detail.get("path")
+            if not isinstance(path, str) or not os.path.isabs(path):
+                return await self.check_native(commission_id, category, detail=detail)
             actual_path = os.path.normcase(await asyncio.to_thread(os.path.realpath, path))
             resource = json.dumps(["write" if writes else "read", actual_path])
         if self._work.get(commission_id) is not work:
             return PermissionDecision(False, DENIED_NO_ANSWER)
-        return await self.check(commission_id, category, detail=detail, scope=GrantScope("builtin-runtime", resource, recipient))
+        scope = GrantScope("dsh-stock" if dsh else "builtin-runtime", resource, recipient)
+        return await self._check_scoped(commission_id, category, None, scope, detail, False, allow_always=not dsh)
 
     async def check_native(
-        self, commission_id: str, category: str, *, detail: dict[str, Any]
+        self, commission_id: str, category: str, *, detail: dict[str, Any],
+        stock_tool: bool = False, recipient: str = "",
     ) -> PermissionDecision:
-        """ACP knows the operation, not the native tool owner's registration identity."""
+        """The stock dsh recipe identifies its standard tools; other ACP names have no verified owner."""
         if category not in {"workdir_files", "outside_read", "outside_write", "run_command", "other"}:
             return PermissionDecision(False, DENIED_BY_SETTINGS)
+        if stock_tool and category != "other":
+            from nekoclaw.runtime.permissions import WRITE_TOOL_NAMES
+
+            return await self.check_builtin(
+                commission_id, category, detail=detail, writes=detail.get("tool") in WRITE_TOOL_NAMES,
+                dsh=True, recipient=recipient,
+            )
         live = self.current_run(commission_id)
         mode = await self._store.native_mode(category)
         if not live():
@@ -691,7 +706,7 @@ class PermissionGate:
 
     async def _check_scoped(
         self, commission_id: str, category: str, key: str | None, scope: GrantScope,
-        detail: dict[str, Any] | None, hold_once: bool,
+        detail: dict[str, Any] | None, hold_once: bool, *, allow_always: bool = True,
     ) -> PermissionDecision:
         if not scope.registered() or not scope.provider or (category == "managed_delivery" and not scope.recipient):
             return PermissionDecision(False, DENIED_NO_ANSWER)
@@ -771,7 +786,7 @@ class PermissionGate:
             try:
                 revision = self._store.revision(*slot)
                 options = CHOICES_ALWAYS_ASK if mode == "always_ask" else CHOICES
-                if delivery and mode != "always_ask":
+                if (delivery or not allow_always) and mode != "always_ask":
                     options = ("session", "once", "deny")
                 ask = PermissionAsk(category, key, dict(detail or {}), options)
                 choice = await self._asker(commission_id, ask)

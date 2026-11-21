@@ -669,6 +669,26 @@ async def test_auto_native_requires_a_fresh_decision_and_explicit_rules_survive_
     assert await reloaded.mode("outside_write") == "deny" and await reloaded.mode("mcp_server", "private") == "deny"
 
 
+async def test_command_session_consent_stays_with_shell_directory_recipient_and_runtime(store, tmp_path):
+    gate = PermissionGate(store, Asker("session"))
+    detail = {"tool": "bash", "cwd": str(tmp_path), "command": "echo first"}
+
+    async def builtin(commission="c", recipient="model-a", **overrides):
+        return await gate.check_builtin(
+            commission, "run_command", detail={**detail, **overrides}, writes=False, recipient=recipient
+        )
+
+    assert (await builtin()).asked
+    assert not (await builtin(command="echo second")).asked
+    assert (await builtin(tool="pwsh")).asked
+    assert (await builtin(cwd=str(tmp_path / "subdir"))).asked
+    assert (await builtin(recipient="model-b")).asked
+    assert (await builtin(commission="other")).asked
+    assert (await gate.check_native("c", "run_command", detail=detail, stock_tool=True, recipient="model-a")).asked
+    gate.end_session("c")
+    assert (await builtin()).asked
+
+
 async def test_auto_uses_effective_rules_when_revoking_scope(store):
     gate = PermissionGate(store, Asker("session"))
     scope = GrantScope("builtin", "browser")
