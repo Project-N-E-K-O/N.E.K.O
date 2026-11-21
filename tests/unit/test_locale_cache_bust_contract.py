@@ -67,6 +67,18 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
         "2026-11-19-eight-locale-gap-fill",
+        "2026-11-21-emote-maker-upstream-sync",
+        "2026-11-21-decision-model-slot",
+        "2026-11-18-emote-maker-restore-confirmations",
+        "2026-11-18-emote-maker-upstream-sync",
+        "2026-10-11-emote-group-export",
+        "2026-10-19-emote-dead-cleanup",
+        "2026-10-19-emote-stage-rename",
+        "2026-10-19-emote-copy-cleanup",
+        "2026-10-18-emote-stage-image-missing",
+        "2026-11-18-emote-maker-main-merge",
+        "2026-11-14-emote-wardrobe-dismissible-padding",
+        "2026-10-20-emote-copy-trim",
         "2026-11-17-remote-pairing-key-help",
         "2026-11-15-nekoclaw-browser-custom-tts-merge",
         "2026-11-15-nekoclaw-browser-deepseek-tts-merge",
@@ -240,6 +252,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-12-pr3140-gravity-main-merge",
         "2026-10-12-visit-frame-badges-main-merge-4",
         "2026-10-12-visit-frame-badges-main-merge-3",
+        "2026-10-12-visit-ambiguous-names-pr13-pr15-merge",
         "2026-10-12-gravity-cat-settings",
         "2026-10-12-pr14a-debrief-pr3398-merge",
         "2026-10-12-visit-frame-badges-main-merge-2",
@@ -247,7 +260,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-12-visit-frame-badges-merge",
         "2026-10-12-pr14a-debrief-ambiguous-names-merge",
         "2026-10-12-pr14a-debrief-main-merge",
-        "2026-10-12-visit-ambiguous-names-pr13-pr15-merge",
         "2026-10-11-vrm-emotion-recovery",
         "2026-10-11-vrm-emotion-load-state-main-rebase",
         "2026-10-11-pr3385-cloudsave-visit-data-busy",
@@ -583,7 +595,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "9a36919957d97424930f5fa37f801ccea8dfe72abe920c251c5238d49f02fb36"
+LOCALE_KEY_SIGNATURE = "0266a472deab48752a7b94f508def2a7a9ed34365d715e59dfbba71a4a833804"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

@@ -74,6 +74,12 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/libs", "livekit-client.umd.js"),
     ("static/libs/licenses", "TRTC.LICENSE"),
     ("static/libs/licenses", "LIVEKIT.LICENSE"),
+    ("static/libs", "fflate.umd.js"),
+    ("static/libs/licenses", "FFLATE-LICENSE.txt"),
+    ("static/libs/spine", "spine-webgl-4.3.13.min.js"),
+    ("static/libs/spine", "SPINE-RUNTIMES-LICENSE-4.3.13.txt"),
+    ("static/js", "emote_template_zip_worker.js"),
+    ("static/js", "emote_template_client_store.js"),
     # Built-in Live2D models: source archives are assets/<name>.tar.gz, and build_frontend extracts them to static/<name>/.
     # The default character uses yui-lolita, which is also the fallback and tutorial model if loading fails; yui-origin and yui-sister are bundled too.
     # Checking only model3.json does not catch a partial extraction — moc3 and textures are required for loading, so assert all of them.

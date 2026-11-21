@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 新增决策模型槽位（api.decisionModelConfig / api.decisionModelApiKeyPlaceholder）八语言文案，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-21-decision-model-slot';
+    // 合并表情包制作与决策模型槽位的八语言资源后，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-11-21-emote-maker-review-main-sync';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

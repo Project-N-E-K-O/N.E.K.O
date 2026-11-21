@@ -5,8 +5,9 @@ from dataclasses import dataclass, field
 class ImageGenerationError(Exception):
     """Stable, sanitized error code; never contains prompts, keys or provider bodies."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, retry_after: int | None = None):
         self.code = code
+        self.retry_after = retry_after
         super().__init__(code)
 
 
@@ -14,6 +15,7 @@ class ImageGenerationError(Exception):
 class ImageRequest:
     prompt: str = field(repr=False)
     size: str = "1024x1024"
+    reference_images: tuple[bytes, ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True)

@@ -178,6 +178,8 @@ class StorageRootsMixin:
         self.mmd_dir = self.app_docs_dir / "mmd"
         self.mmd_animation_dir = self.mmd_dir / "animation"  # VMD animation directory.
         self.pngtuber_dir = self.app_docs_dir / "pngtuber"
+        # 表情包制作「导入即拷副本」的落点：模板 zip + 附带贴图，重开靠它免重新定位
+        self.emote_templates_dir = self.app_docs_dir / "emote_templates"
         self.avatar_tools_dir = self.app_docs_dir / "avatar_tools"
         self.workshop_dir = self.app_docs_dir / "workshop"
         self._steam_workshop_path = None
@@ -786,6 +788,17 @@ class StorageRootsMixin:
             return True
         except Exception as e:
             print(f"Warning: Failed to create pngtuber directory: {e}", file=sys.stderr)
+            return False
+
+    def ensure_emote_templates_directory(self):
+        """Ensure the emote-maker template archive directory exists."""
+        try:
+            if not self._ensure_app_docs_directory():
+                return False
+            self.emote_templates_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create emote_templates directory: {e}", file=sys.stderr)
             return False
 
     def ensure_avatar_tools_directory(self):

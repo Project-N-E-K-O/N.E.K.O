@@ -44,7 +44,7 @@ if __name__ == "__main__":
         "--page",
         type=str,
         default="",
-        choices=["index", "character_card_manager", "api_key", ""],
+        choices=["index", "character_card_manager", "emote_maker", "api_key", ""],
         help="要打开的页面路由（不含域名和端口）",
     )
     args = parser.parse_args()
