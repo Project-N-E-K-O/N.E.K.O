@@ -39,8 +39,8 @@ BUILD_ROOT = PurePosixPath("/src")
 #  - react-neko-chat runs `tsc -b && vite build`; tsconfig.app.json includes the
 #    *.test.ts(x) files, so tests and type-only imports must resolve as well.
 FRONTENDS = {
-    "plugin-manager": {"include_tests": False, "include_type_imports": False},
-    "react-neko-chat": {"include_tests": True, "include_type_imports": True},
+    "plugin-manager": {"include_tests": False, "include_type_imports": False, "runs_tsc": False},
+    "react-neko-chat": {"include_tests": True, "include_type_imports": True, "runs_tsc": True},
 }
 SCRIPT_SUFFIXES = {".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"}
 STYLE_SUFFIXES = {".css", ".scss", ".sass", ".less"}
@@ -67,9 +67,9 @@ TEST_DIRS = {"e2e", "__tests__", "tests"}
 # (e.g. scripts/*.mjs), paths built at runtime (path.resolve(...)), scss
 # `@use` / `@forward` and the second path of `@import 'a', 'b'`, and types
 # reached through an imported .ts file from a .vue defineProps<T>() are not
-# followed. The comment lexer treats `/` after `)` as division, so a regex
-# literal right after `if (...)` containing `//` could blank the rest of its
-# line.
+# followed. The comment lexer treats `/` after any other `)` as division (only
+# `if` / `while` / `for` / `with` heads are tracked). A tsconfig `include`
+# inherited through `extends` is not applied.
 # On the Dockerfile side (_builder_copies / _covered): only two-argument
 # `COPY <src> <dst>` is understood -- JSON-form `COPY ["a", "b"]`, multi-source
 # COPY and ADD are ignored, and .dockerignore / `COPY --exclude` are not taken
@@ -108,7 +108,13 @@ TRIPLE_SLASH_PATH = re.compile(r"""^[ \t]*///[ \t]*<reference\s+path\s*=\s*(['"]
 CSS_IMPORT = re.compile(r"""@import\s+(?:url\(\s*)?(['"]?)(?P<spec>\.\.?/[^'")\s;]+)\1""")
 CSS_URL = re.compile(r"""\burl\(\s*(['"]?)(?P<spec>\.\.?/[^'")\s]+)\1\s*\)""")
 HTML_REF = re.compile(r"""\b(?:src|href)\s*=\s*(['"])(?P<spec>\.\.?/[^'"]+)\1""")
-VUE_BLOCK = re.compile(r"<(?P<tag>script|style)\b(?P<attrs>[^>]*)>(?P<body>.*?)</(?P=tag)\s*>", re.S | re.I)
+VUE_BLOCK = re.compile(
+    r"<(?P<tag>script|style)\b(?P<attrs>[^>]*?)(?<!/)>(?P<body>.*?)</(?P=tag)\s*>", re.S | re.I
+)
+VUE_SELF_CLOSING = re.compile(r"<(?:script|style)\b(?P<attrs>[^>]*?)/>", re.I)
+VUE_LANG = re.compile(r"""\blang\s*=\s*(['"])(?P<lang>\w+)\1""")
+# Style languages with `//` line comments (plain CSS only has /* */).
+LINE_COMMENT_STYLES = {"scss", "sass", "less"}
 VUE_SRC = re.compile(r"""\bsrc\s*=\s*(['"])(?P<spec>\.\.?/[^'"]+)\1""")
 
 # A `/` starts a regex literal (not division) after these characters or keywords.
@@ -117,6 +123,9 @@ _REGEX_AFTER_WORDS = {
     "return", "typeof", "case", "do", "else", "in", "of", "new", "delete",
     "void", "throw", "yield", "await", "instanceof",
 }
+# `(...)` after these keywords closes a statement head, so a `/` right after
+# its `)` starts a regex literal (`if (x) /re/.test(y)`), not a division.
+_CONTROL_WORDS = {"if", "while", "for", "with"}
 
 
 def _blank(text: str) -> str:
@@ -137,6 +146,7 @@ def _strip_js_comments(text: str) -> str:
     n = len(text)
     i = 0
     prev = ""  # last significant (non-space) code character emitted
+    parens: list[bool] = []  # for each open `(`: does it follow a control keyword?
     word = ""  # identifier ending at `prev`, if any
     word_open = False
     while i < n:
@@ -190,8 +200,12 @@ def _strip_js_comments(text: str) -> str:
             prev, word, word_open = ")", "", False  # a regex is an operand
             continue
         out.append(c)
+        if c == "(":
+            parens.append(word in _CONTROL_WORDS and prev == word[-1:])
         if c.isspace():
             word_open = False
+        elif c == ")" and parens and parens.pop():
+            prev, word, word_open = ";", "", False  # end of `if (...)`: a regex may follow
         else:
             if c.isalnum() or c in "_$":
                 word = word + c if word_open else c
@@ -212,8 +226,10 @@ def _script_specifiers(text: str, include_type_imports: bool) -> list[str]:
     return refs + _specifiers(_strip_js_comments(text), include_type_imports)
 
 
-def _style_specifiers(text: str) -> list[str]:
-    text = _strip_css_comments(text)
+def _style_specifiers(text: str, lang: str = "css") -> list[str]:
+    # scss / sass / less also have `//` line comments; the JS lexer handles
+    # both comment forms and leaves quoted strings alone.
+    text = _strip_js_comments(text) if lang in LINE_COMMENT_STYLES else _strip_css_comments(text)
     found = [(m.start(), m.group("spec")) for m in CSS_IMPORT.finditer(text)]
     found += [(m.start(), m.group("spec")) for m in CSS_URL.finditer(text)]
     # `@import url(...)` matches both patterns; keep each path once, in order.
@@ -225,18 +241,46 @@ def _html_specifiers(text: str) -> list[str]:
     return [_strip_query(m.group("spec")) for m in HTML_REF.finditer(text)]
 
 
+def _blank_sfc_comments(text: str) -> str:
+    """Blank `<!-- -->` at the top level of an SFC, not inside <script>/<style>."""
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        if text.startswith("<!--", i):
+            j = text.find("-->", i + 4)
+            j = len(text) if j < 0 else j + 3
+            out.append(_blank(text[i:j]))
+            i = j
+            continue
+        block = VUE_BLOCK.match(text, i)
+        if block:
+            out.append(block.group(0))  # block bodies are handled by their own lexer
+            i = block.end()
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
 def _file_specifiers(path: Path, include_type_imports: bool) -> list[str]:
     """Relative references a build reads from one file, by file type."""
-    text = path.read_text(encoding="utf-8")
-    suffix = path.suffix.lower()
+    return _text_specifiers(path.read_text(encoding="utf-8"), path.suffix, include_type_imports)
+
+
+def _text_specifiers(text: str, suffix: str, include_type_imports: bool) -> list[str]:
+    suffix = suffix.lower()
     if suffix in SCRIPT_SUFFIXES:
         return _script_specifiers(text, include_type_imports)
     if suffix in STYLE_SUFFIXES:
-        return _style_specifiers(text)
+        return _style_specifiers(text, suffix[1:])
     if suffix == ".html":
         return _html_specifiers(text)
     if suffix == ".vue":
         specs: list[str] = []
+        # compiler-sfc ignores commented-out blocks
+        text = _blank_sfc_comments(text)
+        for block in VUE_SELF_CLOSING.finditer(text):
+            specs += [_strip_query(m.group("spec")) for m in VUE_SRC.finditer(block.group("attrs"))]
         for block in VUE_BLOCK.finditer(text):
             # <style src="..."> / <script src="..."> pull in an external file
             specs += [_strip_query(m.group("spec")) for m in VUE_SRC.finditer(block.group("attrs"))]
@@ -245,7 +289,8 @@ def _file_specifiers(path: Path, include_type_imports: bool) -> list[str]:
                 # compiler-sfc reads the types used by defineProps<T>() etc.
                 specs += _script_specifiers(body, True)
             else:
-                specs += _style_specifiers(body)
+                lang = VUE_LANG.search(block.group("attrs"))
+                specs += _style_specifiers(body, lang.group("lang").lower() if lang else "css")
         return specs
     return []
 
@@ -257,8 +302,8 @@ def _load_jsonc(path: Path) -> dict:
     return json.loads(text)
 
 
-def _tsconfig_specifiers(path: Path) -> list[str]:
-    """Relative paths a tsconfig points at: extends, references, files, include."""
+def _tsconfig_specifiers(path: Path) -> tuple[list[str], list[str] | None]:
+    """(other tsconfigs via extends / references, input paths via files / include)."""
     data = _load_jsonc(path)
     specs: list[str] = []
     extends = data.get("extends", [])
@@ -269,9 +314,10 @@ def _tsconfig_specifiers(path: Path) -> list[str]:
     for ref in data.get("references", []):
         ref_path = Path(os.path.normpath(path.parent / ref["path"]))
         specs.append(ref["path"] + ("/tsconfig.json" if ref_path.suffix != ".json" else ""))
-    for key in ("files", "include"):
-        specs += [p for p in data.get(key, []) if p.startswith(".")]
-    return specs
+    inputs = [p for key in ("files", "include") for p in data.get(key, [])]
+    if "files" not in data and "include" not in data:
+        return specs, None  # tsc then compiles everything under the config's dir
+    return specs, inputs
 
 
 def _strip_query(spec: str) -> str:
@@ -309,42 +355,95 @@ def _cross_project_targets(name: str) -> dict[str, list[str]]:
     project = ROOT / "frontend" / name
     targets: dict[str, list[str]] = {}
 
+    pending: list[Path] = []
+    seen: set[Path] = set()
+
+    def enqueue(path: Path) -> None:
+        if path in seen or not path.is_file() or "node_modules" in path.parts:
+            return
+        if path.suffix not in SOURCE_SUFFIXES and path.suffix != ".html":
+            return
+        if not cfg["include_tests"] and _is_test_file(path, project):
+            return
+        seen.add(path)
+        pending.append(path)
+
+    def resolve_in_project(target: Path) -> Path | None:
+        """The file an in-project specifier loads (extension / index lookup)."""
+        if target.is_file():
+            return target
+        # TS sources import siblings by their emitted name: './x.js' -> x.ts
+        ts_twin = {".js": ".ts", ".jsx": ".tsx", ".mjs": ".mts", ".cjs": ".cts"}.get(target.suffix)
+        if ts_twin and target.with_suffix(ts_twin).is_file():
+            return target.with_suffix(ts_twin)
+        for suffix in (*sorted(SCRIPT_SUFFIXES), ".vue"):
+            if target.with_name(target.name + suffix).is_file():
+                return target.with_name(target.name + suffix)
+            if (target / f"index{suffix}").is_file():
+                return target / f"index{suffix}"
+        return None
+
     def add(path: Path, specs: list[str]) -> None:
         for spec in specs:
             target = Path(os.path.normpath(path.parent / spec))
             if target.is_relative_to(project):
-                continue  # stays inside the project, always copied
+                # Always copied, but follow it: e.g. vite.config.ts importing
+                # ./build/preset.ts, which may import a shared repo file.
+                if not any(ch in spec for ch in "*?[{"):
+                    local = resolve_in_project(target)
+                    if local is not None:
+                        enqueue(local)
+                continue
             # Outside the repo can never be copied from the build context; keep
             # it as a visible (uncoverable) entry instead of crashing.
             rel = target.relative_to(ROOT).as_posix() if target.is_relative_to(ROOT) else str(target)
             targets.setdefault(rel, []).append(path.relative_to(ROOT).as_posix())
 
-    files = sorted((project / "src").rglob("*"))
+    for path in sorted((project / "src").rglob("*")):
+        enqueue(path)
     for pattern in ROOT_ENTRY_GLOBS:
-        files += sorted(project.glob(pattern))
-    for path in files:
-        if not path.is_file() or "node_modules" in path.parts:
-            continue
-        if path.suffix not in SOURCE_SUFFIXES and path.suffix != ".html":
-            continue
-        if not cfg["include_tests"] and _is_test_file(path, project):
-            continue
-        add(path, _file_specifiers(path, cfg["include_type_imports"]))
+        for path in sorted(project.glob(pattern)):
+            enqueue(path)
 
-    # Follow the tsconfig chain from the project's tsconfig.json.
-    pending = [project / "tsconfig.json"]
-    seen: set[Path] = set()
-    while pending:
-        tsconfig = pending.pop()
-        if tsconfig in seen or not tsconfig.is_file():
+    # Follow the tsconfig chain from the project's tsconfig.json. Only
+    # extends / references are tsconfigs; files / include are inputs, which
+    # `tsc -b` compiles (so they are scanned too where the build runs tsc).
+    configs = [project / "tsconfig.json"]
+    seen_configs: set[Path] = set()
+    while configs:
+        tsconfig = configs.pop()
+        if tsconfig in seen_configs or not tsconfig.is_file():
             continue
-        seen.add(tsconfig)
-        specs = _tsconfig_specifiers(tsconfig)
-        add(tsconfig, specs)
-        for spec in specs:
-            nxt = Path(os.path.normpath(tsconfig.parent / spec))
-            if nxt.suffix == ".json":
-                pending.append(nxt)
+        seen_configs.add(tsconfig)
+        refs, inputs = _tsconfig_specifiers(tsconfig)
+        if inputs is None:
+            # Default include ("**/*") -- only meaningful for a project's own
+            # tsconfig; an extended base config outside the project is not compiled.
+            inputs = ["**/*"] if tsconfig.is_relative_to(project) else []
+        add(tsconfig, refs)
+        configs += [Path(os.path.normpath(tsconfig.parent / spec)) for spec in refs]
+        outside = [p for p in inputs if not Path(os.path.normpath(tsconfig.parent / p)).is_relative_to(project)]
+        add(tsconfig, outside)
+        if cfg["runs_tsc"]:
+            for pattern in inputs:
+                base = Path(os.path.normpath(tsconfig.parent / pattern))
+                if not base.is_relative_to(project):
+                    continue
+                if base.is_dir():
+                    matches = base.rglob("*")
+                elif any(ch in pattern for ch in "*?"):
+                    try:
+                        matches = list(tsconfig.parent.glob(pattern))
+                    except ValueError:  # e.g. 'src/**.ts', which tsc rejects too
+                        matches = []
+                else:
+                    matches = [base]
+                for path in sorted(matches):
+                    enqueue(path)
+
+    while pending:
+        path = pending.pop()
+        add(path, _file_specifiers(path, cfg["include_type_imports"]))
     return targets
 
 
@@ -539,6 +638,10 @@ def test_frontend_builder_copies_every_cross_project_import(dockerfile, frontend
         ("const r = /\\/\\*/; import j from '../j'", ["../j"]),
         ("const r = /a[//]'/; import j2 from '../j2'", ["../j2"]),
         ("const r = /[/*]/; import k from '../k'", ["../k"]),
+        # 控制语句的 ) 后面是正则，不是除法；表达式的 ) 后面仍是除法
+        ("if (ready) /[/*]/.test(value);\nimport m from '../m'", ["../m"]),
+        ("while (x) /\\/\\//.exec(y)\nimport m2 from '../m2'", ["../m2"]),
+        ("const a = (b) / 2; // '\nimport n from '../n'", ["../n"]),
         # 反过来：注释里的引号 / 反引号不能开出字符串
         ("/* ` */ import l from '../l'", ["../l"]),
     ],
@@ -608,3 +711,69 @@ def test_root_configs_and_tsconfig_chain_are_scanned(tmp_path, monkeypatch):
         "shared/types/**/*",
         "shared/vite-preset",
     ]
+
+
+def test_vue_blocks_respect_comments_self_closing_and_style_lang():
+    vue = (
+        '<!-- <style src="../../../shared/old.css"></style> -->\n'
+        '<style src="../../../shared/theme.css" />\n'
+        '<style lang="scss">\n'
+        "// @import '../../../shared/old.scss';\n"
+        ".a { background: url(../../../shared/bg.png) }\n"
+        "</style>\n"
+        '<style src="../../../shared/live.css"></style>\n'
+    )
+    assert sorted(_text_specifiers(vue, ".vue", False)) == [
+        "../../../shared/bg.png",
+        "../../../shared/live.css",
+        "../../../shared/theme.css",
+    ]
+
+
+def test_scss_line_comments_are_not_dependencies():
+    scss = "// @import '../../../shared/old.scss';\n// url(../../../shared/old.png)\n@import '../../../shared/new.scss';\n"
+    assert _style_specifiers(scss, "scss") == ["../../../shared/new.scss"]
+    # 纯 CSS 没有 // 注释，照旧处理
+    assert _style_specifiers("@import '../../../shared/a.css';", "css") == ["../../../shared/a.css"]
+
+
+def test_in_project_helpers_and_tsconfig_inputs_are_followed(tmp_path, monkeypatch):
+    project = tmp_path / "frontend" / "react-neko-chat"
+    for d in ("src", "build", "types", "assets"):
+        (project / d).mkdir(parents=True)
+    # vite.config.ts -> ./build/preset（项目内，不带扩展名）-> 仓库里的共享文件
+    (project / "vite.config.ts").write_text("import preset from './build/preset'\n", encoding="utf-8")
+    (project / "build" / "preset.ts").write_text("import x from '../../../shared/preset-dep.js'\n", encoding="utf-8")
+    # tsconfig 选中的项目内文件再用三斜线引用共享声明；include 里的普通 JSON 不能被当成 tsconfig
+    (project / "tsconfig.json").write_text(
+        '{ "files": ["./types/entry.d.ts"], "include": ["./assets/data.json", "src"] }', encoding="utf-8"
+    )
+    (project / "types" / "entry.d.ts").write_text(
+        '/// <reference path="../../../shared/types.d.ts" />\n', encoding="utf-8"
+    )
+    (project / "assets" / "data.json").write_text("[1, 2]", encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    assert sorted(_cross_project_targets("react-neko-chat")) == [
+        "shared/preset-dep.js",
+        "shared/types.d.ts",
+    ]
+
+
+def test_review_round_edge_cases(tmp_path, monkeypatch):
+    # script 字符串里的 <!-- / --> 不能吞掉中间的 import
+    vue = "<script setup>\nconst a = '<!--'\nimport x from '../../../shared/x.js'\nconst b = '-->'\n</script>\n"
+    assert _text_specifiers(vue, ".vue", False) == ["../../../shared/x.js"]
+
+    project = tmp_path / "frontend" / "react-neko-chat"
+    (project / "build").mkdir(parents=True)
+    (project / "scripts").mkdir()
+    # './build/p.js' 指向 p.ts；tsconfig 没写 files / include 时按 tsc 默认扫整个项目
+    (project / "vite.config.ts").write_text("import p from './build/p.js'\n", encoding="utf-8")
+    (project / "build" / "p.ts").write_text("import x from '../../../shared/p-dep.js'\n", encoding="utf-8")
+    (project / "scripts" / "a.ts").write_text("import y from '../../../shared/a-dep.js'\n", encoding="utf-8")
+    (project / "tsconfig.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    assert sorted(_cross_project_targets("react-neko-chat")) == ["shared/a-dep.js", "shared/p-dep.js"]
+    # 非法的 ** 写法不崩溃
+    (project / "tsconfig.json").write_text('{ "include": ["src/**.ts"] }', encoding="utf-8")
+    assert sorted(_cross_project_targets("react-neko-chat")) == ["shared/p-dep.js"]
