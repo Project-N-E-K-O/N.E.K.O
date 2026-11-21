@@ -151,7 +151,7 @@ async def draft_session(
     lines: list[str] = []
     room = settings.SESSION_DRAFT_PRESETS_MAX_TOKENS
     for item in listed:
-        if item.template is None or item.name == DEFAULT_PRESET:
+        if item.template is None or not item.offered or item.name == DEFAULT_PRESET:
             continue
         line = texts.PRESET_ROSTER_LINE.format(name=model_name(item.name), description=item.template.description)
         room -= count_tokens(line) + 1

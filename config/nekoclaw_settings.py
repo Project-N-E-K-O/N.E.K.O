@@ -328,6 +328,11 @@ in use."""
 BOARD_LOOSE_MAX = 30
 """Most such sessions on the board, the ones last in use."""
 
+BOARD_LOOSE_CARDS_MAX = 60
+"""Most cards those sessions have on the board taken together, the task
+agents they started and their copies counted in: each session first, then
+what is shown under it, until the board has this many."""
+
 BOARD_CHILD_RECENT_SECONDS = 600.0
 """The session of a task agent another one started is on the board while
 the commission that started it is under way, and for this long after that

@@ -64,6 +64,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import PurePath
@@ -117,8 +118,45 @@ def _arguments(call: dict[str, Any]) -> dict[str, Any]:
         try:
             args = json.loads(args)
         except ValueError:
-            return {}
+            return _read_cut(args)
     return args if isinstance(args, dict) else {}
+
+
+def _read_cut(text: str) -> dict[str, Any]:
+    """Return what can still be read of tool arguments that were cut off where they were stored.
+
+    Arguments longer than an event row holds are kept as the beginning of
+    their JSON text (``TaskAgentManager._compact``): a file written whole,
+    a long passage replaced, a long todo list. That is no JSON any more,
+    and it is just then that the user wants to see which file it is. The
+    short fields that say what a tool was called on usually stand at the
+    beginning, whole: each is read by its name. Of a todo list, the items
+    that are whole.
+    """
+    decoder = json.JSONDecoder()
+    found: dict[str, Any] = {}
+    for key in _OBJECT_KEYS:
+        at = re.search(rf'"{key}"\s*:\s*(?=")', text)
+        if at is None:
+            continue
+        try:
+            value, _end = decoder.raw_decode(text, at.end())
+        except ValueError:
+            continue  # the value itself is where it was cut
+        found[key] = value
+    listed = re.search(r'"todos"\s*:\s*\[', text)
+    if listed is not None:
+        items: list[Any] = []
+        at = listed.end()
+        while True:
+            at = re.compile(r"[\s,]*").match(text, at).end()
+            try:
+                item, at = decoder.raw_decode(text, at)
+            except ValueError:
+                break
+            items.append(item)
+        found["todos"] = items
+    return found
 
 
 def _step(call: dict[str, Any]) -> str:
@@ -404,12 +442,18 @@ class Board:
             if session.kind in ("child", "fork"):
                 under.setdefault(lead_of(session).id, []).append(session)
 
-        def cards(leads: list[Session], most: int | None = None) -> list[dict[str, Any]]:
+        def cards(leads: list[Session], most: int) -> list[dict[str, Any]]:
+            # Every lead has its place before what is shown under any of
+            # them: a second lead is not crowded out by the first one's task
+            # agents. Each still stands in front of its own.
+            room = max(most - len(leads), 0)
             members: list[dict[str, Any]] = []
             for lead in leads:
                 members.append(card(lead))
-                members.extend(card(item) for item in under.get(lead.id, []))
-            return members if most is None else members[:most]
+                shown = under.get(lead.id, [])[:room]
+                room -= len(shown)
+                members.extend(card(item) for item in shown)
+            return members[:most]
 
         leads_of: dict[str, list[Session]] = {}
         loose: list[Session] = []
@@ -447,4 +491,4 @@ class Board:
                     "members": cards(leads, settings.BOARD_MEMBERS_MAX),
                 }
             )
-        return {"projects": listed, "loose": cards(loose)}, whole
+        return {"projects": listed, "loose": cards(loose, settings.BOARD_LOOSE_CARDS_MAX)}, whole

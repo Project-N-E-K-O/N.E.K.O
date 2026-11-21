@@ -552,6 +552,10 @@ class SpaceKeeper:
         # project's record; this is for when the record cannot be written
         # either, so that the model is still asked once and not once a round.
         self._summaries: dict[str, tuple[float, int, str, str]] = {}
+        # Commissions under review whose project could not be read when
+        # the model was shown its description: what the model writes of it
+        # is not kept. One review is under way at a time.
+        self._about_unread: set[str] = set()
 
     # -- listening --------------------------------------------------------
 
@@ -720,7 +724,10 @@ class SpaceKeeper:
                     logger.warning("keeping the review of %s failed (%s)", commission_id, type(exc).__name__)
                     return {"status": "failed", "reason": type(exc).__name__}
 
-            return await self._conclude(commission, reviewed)
+            try:
+                return await self._conclude(commission, reviewed)
+            finally:
+                self._about_unread.discard(commission_id)
 
     async def _conclude(self, commission: Commission, outcome_of: Callable[[], Any]) -> str:
         """Write down what became of a commission's review, if the commission is still as it was read.
@@ -853,7 +860,15 @@ class SpaceKeeper:
         """Return the card of a commission's session as the review is shown it, with what its project is for."""
         from config.prompts import prompts_nekoclaw_space as texts
 
-        session = await self._carded(commission)
+        try:
+            session = await self._carded(commission)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the review is written all the same, without a card
+            # What goes wrong before the model is asked would be put down
+            # as a review that failed, and a commission is reviewed once.
+            logger.warning("the card of a session could not be read for its review (%s)", type(exc).__name__)
+            session = None
         if session is None:
             return texts.TASK_AGENT_REVIEW_NO_CARD
         nothing = texts.TASK_AGENT_REVIEW_NOTHING
@@ -863,6 +878,10 @@ class SpaceKeeper:
             try:
                 found = await self._space.get_project(project)
             except (SpaceError, OSError, ValueError):
+                # The model is shown no description, and what it writes of
+                # one is then not written (``_keep_card``): it would replace
+                # words it never read.
+                self._about_unread.add(commission.id)
                 found = None
             if found is not None:
                 about, about_by = found.description, found.description_by
@@ -912,9 +931,19 @@ class SpaceKeeper:
         # review itself files it under (``_target_project``) it saw nothing
         # of: what it wrote would replace words it never read. (A project
         # the review makes gets its description there.)
-        if isinstance(about, str) and about.strip() and commission.project == project:
-            if await self._space.describe_project(project, about, by="review") is not None:
-                written.append("description")
+        if (
+            isinstance(about, str)
+            and about.strip()
+            and commission.project == project
+            and commission.id not in self._about_unread
+        ):
+            try:
+                if await self._space.describe_project(project, about, by="review") is not None:
+                    written.append("description")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the lines of the card that were written stay on record
+                logger.warning("what a project is for could not be written from a review (%s)", type(exc).__name__)
         return written
 
     async def _target_project(self, commission: Commission, data: dict[str, Any]) -> str:

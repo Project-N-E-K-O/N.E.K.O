@@ -453,7 +453,10 @@ async def test_a_session_is_not_opened_while_the_folder_of_templates_cannot_be_r
 
     assert "the preset 'general' cannot be used: the folder of templates templates cannot be read" in failed.status_reason
     assert llm.requests == []
-    assert all(not item["valid"] for item in await host.templates())
+    # The built-in presets are listed all the same, each with why it cannot be used.
+    listed = await host.templates()
+    assert [item["name"] for item in listed] == ["boss", "worker", "scout", "inspector", "planner", "general"]
+    assert all(not item["valid"] and "cannot be read" in item["error"] for item in listed)
 
 
 async def test_a_template_of_the_users_narrows_a_built_in_preset(hosts, tmp_path):
@@ -557,6 +560,14 @@ async def test_a_card_is_written_line_by_line_and_what_the_user_wrote_stays(tmp_
         # An empty line empties it, and nobody wrote it then.
         kept, written = await ledger.write_card(session.id, by="review", summary="  ")
         assert written == ("summary",) and (kept.summary, kept.summary_by) == ("", "")
+        # Unless it is the user who emptied it: that it says nothing was their decision, and it stays so.
+        kept, written = await ledger.write_card(session.id, by="user", title="", duty="")
+        assert written == ("title", "duty")
+        assert (kept.title, kept.title_by, kept.duty, kept.duty_by) == ("", "user", "", "user")
+        kept, written = await ledger.write_card(session.id, by="review", title="Reports", duty="reports", summary="Again.")
+        assert written == ("summary",) and (kept.title, kept.duty, kept.summary) == ("", "", "Again.")
+        kept, written = await ledger.write_card(session.id, by="self", duty="reports")
+        assert written == () and (kept.duty, kept.duty_by) == ("", "user")
 
         with pytest.raises(ValueError, match="unknown author"):
             await ledger.write_card(session.id, by="model", title="x")
@@ -622,8 +633,8 @@ async def test_a_session_says_what_it_takes_with_its_report(hosts, tmp_path):
     assert (session.kind, session.duty, session.duty_by) == ("single", "sorting and renaming photo folders", "self")
     # The report itself is as it always was: what it says the session takes is no part of the outcome.
     assert done.result_summary == "sorted"
-    reported = [event.payload for event in await host.ledger.events(done.id) if event.type == "report"]
-    assert all("duty" not in payload for payload in reported)
+    (reported,) = [event.payload for event in await host.ledger.events(done.id) if event.type == "report"]
+    assert (reported["status"], reported["summary"]) == ("ready", "sorted") and "duty" not in reported
     assert "duty" in {tool["function"]["name"]: tool["function"] for tool in llm.overrides[0]["tools"]}["report"]["parameters"]["properties"]
 
 
@@ -667,7 +678,16 @@ async def test_a_task_agent_of_another_and_a_copy_do_not_say_what_a_session_take
     )
     report = host.task_agents._cb_report
 
-    for commission_id in (child.id, asked.id, "no-such-commission"):
+    stray, _created = await host.ledger.create(
+        dispatch_text="nowhere yet", lanlan_name="Lan", title="nowhere yet", source="dispatch", route="task_agent"
+    )
+    # A task agent of another, and a copy: told that there is no card of their own to write on.
+    for commission_id in (child.id, asked.id):
+        assert await report(commission_id, {"status": "ready", "summary": "x", "duty": "everything"}) == {
+            "message": presets.CARD_NOT_ITS_OWN
+        }
+    # A commission that is not there, or has no session yet: nothing to say.
+    for commission_id in ("no-such-commission", stray.id):
         assert await report(commission_id, {"status": "ready", "summary": "x", "duty": "everything"}) is None
     # Left alone, not tried and failed.
     assert "writing what a session says it takes failed" not in caplog.text
@@ -724,9 +744,13 @@ async def test_a_session_can_be_made_with_its_card_and_with_who_wrote_each_line(
         assert (made.preset, made.title, made.title_by, made.duty, made.duty_by) == (
             "scout", "报表管家", "user", "reports and exports", "user",
         )
-        # A line that is empty has no author, whatever was given for it.
-        blank = await ledger.create_session(lanlan_name="Lan", name="blank", kind="single", title="", title_by="user")
-        assert (blank.title, blank.title_by, blank.summary_by) == ("", "", "")
+        # A line that is empty has no author, unless the user left it empty: then it is theirs.
+        blank = await ledger.create_session(
+            lanlan_name="Lan", name="blank", kind="single", title="", title_by="user", duty="", duty_by="review"
+        )
+        assert (blank.title, blank.title_by, blank.duty_by, blank.summary_by) == ("", "user", "", "")
+        _kept, written = await ledger.write_card(blank.id, by="review", title="Odd jobs", duty="odd jobs")
+        assert written == ("duty",)
         # A line given without one was written by whoever made the session.
         plain = await ledger.create_session(lanlan_name="Lan", name="plain", kind="single", duty="odd jobs")
         assert (plain.duty, plain.duty_by) == ("odd jobs", "creator")
@@ -794,6 +818,8 @@ async def test_the_sessions_of_a_ledger_made_before_presets_are_given_theirs_by_
 
     second = Ledger(path)
     try:
+        # One made since, with a preset that was named: it is to stay what it is when the ledger is opened again.
+        named = await second.create_session(lanlan_name="Lan", name="named", kind="child", preset="scout")
         kept = {kind: await second.get_session(session.id) for kind, session in made.items()}
 
         assert {kind: session.preset for kind, session in kept.items()} == {
@@ -813,8 +839,8 @@ async def test_the_sessions_of_a_ledger_made_before_presets_are_given_theirs_by_
     # Opened again nothing is left to do, and a preset that was named since stays.
     third = Ledger(path)
     try:
-        named = await third.create_session(lanlan_name="Lan", name="named", kind="child", preset="scout")
         assert (await third.get_session(named.id)).preset == "scout"
+        assert (await third.get_session(made["child"].id)).preset == "worker"
     finally:
         await third.close()
 

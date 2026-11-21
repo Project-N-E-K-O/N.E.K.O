@@ -157,6 +157,23 @@ async def test_what_the_session_said_it_takes_is_not_written_over_and_the_review
     ) in user
 
 
+async def test_a_line_the_user_emptied_is_not_filled_in_again(world):
+    commission = await world.file()
+    await world.ledger.write_card(commission.session_id, by="review", title="Photo helper")
+    await world.ledger.write_card(commission.session_id, by="user", title="")
+    await world.work(commission.id)
+
+    await world.end(commission.id)
+
+    # The title stays empty, as the user left it; the review is told it is not its to write.
+    assert await _card(world, commission.session_id) == (
+        "", "user", "sorting and renaming photo folders", "review",
+        "Sorted the Downloads photos by month. Renaming is still open.", "review",
+    )
+    assert (await world.reviews(commission.id))[0]["card"] == ["duty", "summary"]
+    assert "title: (none) (not yours to change: leave it empty)\n" in world.llm.last(TIER_REVIEW)[1]["content"]
+
+
 async def test_a_line_the_review_leaves_empty_is_left_as_it_is(world):
     world.llm.answers[TIER_REVIEW] = [{"review": "It was done.", "card": {"title": "", "duty": "  ", "summary": "Sorted them."}}]
     commission = await world.file()
@@ -299,20 +316,70 @@ async def test_what_a_project_is_for_is_kept_though_its_line_in_the_index_cannot
 
 
 async def test_the_review_is_written_though_what_the_project_is_for_cannot_be_read(world, monkeypatch):
+    world.llm.answers[TIER_REVIEW] = [{"review": "It was done.", "card": {**CARD, "description": "Something else."}}]
     commission = await _in_project(world, "Budget app", description="a budget")
     await world.work(commission.id)
     get_project = world.space.get_project
+    reads: list[str] = []
 
-    async def failing(name: str) -> Any:
-        raise OSError("the disk does not answer")
+    async def failing_once(name: str) -> Any:
+        # Unreadable when the model is shown the card; readable again by the time its answer is kept.
+        reads.append(name)
+        if len(reads) == 1:
+            raise OSError("the disk does not answer")
+        return await get_project(name)
 
-    monkeypatch.setattr(world.space, "get_project", failing)
+    monkeypatch.setattr(world.space, "get_project", failing_once)
     await world.end(commission.id)
-    monkeypatch.setattr(world.space, "get_project", get_project)
 
     user = world.llm.last(TIER_REVIEW)[1]["content"]
     assert "\nsummary: (none)\ndescription: (none)\n\nWhat the task agent did:" in user
-    assert (await world.reviews(commission.id))[0]["status"] == "written"
+    # The review and the lines of the card are kept; what the model wrote of a description it was
+    # not shown is not: it would replace words it never read.
+    assert (await world.reviews(commission.id))[0] == {
+        "status": "written", "project": "Budget app", "entries": [], "card": ["title", "duty", "summary"],
+    }
+    assert (await world.ledger.get_session(commission.session_id)).title == "Photo sorter"
+    assert (await get_project("Budget app")).description == "a budget"
+    # Only for that review: the next one of the project writes it as any does.
+    assert world.keeper._about_unread == set()
+    again = await _in_project(world, "Budget app", text="add a table to the budget app")
+    await world.work(again.id)
+    await world.end(again.id)
+    assert (await get_project("Budget app")).description == "Something else."
+
+
+async def test_the_review_is_written_though_the_card_of_its_session_cannot_be_read(world, monkeypatch, caplog):
+    commission = await world.file()
+    await world.work(commission.id)
+    get_session = world.ledger.get_session
+
+    async def failing(session_id: Any) -> Any:
+        raise OSError("the ledger does not answer")
+
+    monkeypatch.setattr(world.ledger, "get_session", failing)
+    await world.end(commission.id)
+    monkeypatch.setattr(world.ledger, "get_session", get_session)
+
+    # Not put down as a review that failed (a commission is reviewed once): written, without a card.
+    assert await world.reviews(commission.id) == [{"status": "written", "project": DEFAULT_PROJECT, "entries": []}]
+    assert "(it has none: leave the lines of card empty)" in world.llm.last(TIER_REVIEW)[1]["content"]
+    assert "could not be read for its review (OSError)" in caplog.text
+    assert await _card(world, commission.session_id) == ("", "", "", "", "", "")
+
+
+async def test_the_lines_of_a_card_that_were_written_stay_on_record_though_the_description_could_not_be(world, monkeypatch):
+    world.llm.answers[TIER_REVIEW] = [{"review": "It was done.", "card": {**CARD, "description": "Something else."}}]
+    commission = await _in_project(world, "Budget app", description="a budget")
+    await world.work(commission.id)
+
+    async def failing(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(world.space, "describe_project", failing)
+    await world.end(commission.id)
+
+    assert (await world.reviews(commission.id))[0]["card"] == ["title", "duty", "summary"]
     assert (await world.ledger.get_session(commission.session_id)).title == "Photo sorter"
 
 
@@ -331,6 +398,9 @@ async def test_the_review_is_written_though_what_the_project_is_for_cannot_be_re
         {"review": "It was done.", "card": {}},
         {"review": "It was done.", "card": {"title": 5, "duty": None, "summary": ["Sorted."], "description": {"a": 1}}},
         {"review": "It was done.", "card": {"title": "", "duty": "", "summary": "", "description": ""}},
+        # A card whose JSON is broken (a quotation mark missing): the review before it is whole, and is kept.
+        '{"review": "It was done.", "entries": [], "project": "", "project_description": "", '
+        '"card": {"title": Photo sorter", "duty": "sorting photos", "summary": "Sorted.", "description": ""}}',
         # Cut off inside the card, where the cap on what the model writes fell.
         '{"review": "It was done.", "entries": [], "project": "", "project_description": "", "card": {"title": "Photo so',
     ],

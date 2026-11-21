@@ -164,6 +164,10 @@ PRESET_COPIED_TOO_OFTEN = (
 # What a task agent is told when it says what its session takes (``duty`` of
 # ``report``) and the user has written that line of the card.
 CARD_DUTY_IS_THE_USERS = "The user wrote what this session takes; that line of its card is left as it is."
+# What it is told when the session has no card of its own to say it on: a
+# copy of a session (which is offered the parameter with the tools of the
+# session it was copied from), or a task agent another one started.
+CARD_NOT_ITS_OWN = "This session has no card of its own; what it takes was not written."
 
 # ---------------------------------------------------------------------------
 # The lines of a session's card, as both calls that write one are told of

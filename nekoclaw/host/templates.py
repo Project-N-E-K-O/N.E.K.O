@@ -215,7 +215,13 @@ class Listed:
     name: str
     source: str
     template: Template | None = None
+    # What is wrong with it; or, of one that is in effect and not offered,
+    # why a task agent is not told of it.
     error: str = ""
+    # Whether a task agent that starts another is told of it. One that is
+    # in effect and not offered can still be named, and a session of it is
+    # opened as before: only the list has no room for its sentence.
+    offered: bool = True
 
     @property
     def valid(self) -> bool:
@@ -453,6 +459,11 @@ def _signature(directory: Path) -> _Signature:
         try:
             stat = entry.stat()
         except OSError:
+            # There, and not to be looked at (a link that leads nowhere,
+            # say): it counts all the same. Left out, a file that takes the
+            # place of a preset would go unseen, and what was listed
+            # before it was there would be handed out again.
+            found.append((entry.name, -1, -1))
             continue
         found.append((entry.name, stat.st_mtime_ns, stat.st_size))
     return tuple(sorted(found))
@@ -534,8 +545,9 @@ class TemplateStore:
         of its name; then the user's others by name. Of two files of a
         name the project's is listed. The sentences that say when each is
         used may come to ``TEMPLATE_DESCRIPTIONS_TOTAL_MAX_TOKENS`` taken
-        together: the template that goes past that is wrong for it, the
-        built-in ones counted first, then the user's, then the project's.
+        together: the template that goes past that is not offered
+        (``Listed.offered``) and stays in effect, the built-in ones
+        counted first, then the user's, then the project's.
         """
         from config.nekoclaw_settings import TEMPLATE_DESCRIPTIONS_TOTAL_MAX_TOKENS
         from utils.tokenize import count_tokens
@@ -567,13 +579,19 @@ class TemplateStore:
                 continue
             size = count_tokens(item.template.description)
             if used + size > TEMPLATE_DESCRIPTIONS_TOTAL_MAX_TOKENS:
+                # The cap is on what the list says, not on what may be used:
+                # a template past it is in effect all the same (a session of
+                # that preset is opened by it, and it can be named), and is
+                # left out of the list a task agent chooses from.
                 effective[item.name] = Listed(
                     item.name,
                     item.source,
+                    item.template,
                     error=(
-                        "the descriptions of all templates together are longer than "
+                        "not offered: the descriptions of all templates together are longer than "
                         f"{TEMPLATE_DESCRIPTIONS_TOTAL_MAX_TOKENS} tokens"
                     ),
+                    offered=False,
                 )
                 continue
             used += size
@@ -600,5 +618,5 @@ class TemplateStore:
         return [
             item.template
             for item in self.listing(project)
-            if item.template is not None and item.name not in NOT_FOR_CHILDREN
+            if item.template is not None and item.offered and item.name not in NOT_FOR_CHILDREN
         ]

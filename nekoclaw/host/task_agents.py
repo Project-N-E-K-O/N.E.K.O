@@ -6529,16 +6529,18 @@ class TaskAgentManager:
         tools of the session it was copied from. A line the user wrote
         stays, and the task agent is told so.
         """
-        from config.prompts.prompts_nekoclaw_presets import CARD_DUTY_IS_THE_USERS
+        from config.prompts.prompts_nekoclaw_presets import CARD_DUTY_IS_THE_USERS, CARD_NOT_ITS_OWN
 
         commission = await self._ledger.get(self._at_work_in(session_id))
         if commission is None:
             return None
         session = await self._ledger.get_session(commission.session_id)
+        if session is None:
+            return None
         # (Of the kinds another session can address: neither a task agent
         # another one started nor a copy is one.)
-        if session is None or session.kind not in _ADDRESSED_KINDS:
-            return None
+        if session.kind not in _ADDRESSED_KINDS:
+            return {"message": CARD_NOT_ITS_OWN}
         _kept, written = await self._ledger.write_card(session.id, by="self", duty=duty)
         return None if written else {"message": CARD_DUTY_IS_THE_USERS}
 

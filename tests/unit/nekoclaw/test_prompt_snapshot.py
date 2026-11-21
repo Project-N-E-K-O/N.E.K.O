@@ -155,15 +155,17 @@ def test_tool_definitions_are_exactly_those_in_config() -> None:
 
     tools, _system, schemas = _build("win32", "C:\\w", frozenset(HOST_CALLS), images=True)
     catalog = {**DSH_TOOL_SCHEMAS, **NEKOCLAW_TOOL_SCHEMAS}
+    # A session that is not another task agent's says what it takes with its report: one more
+    # parameter, after the others, and nothing else of the definition changed.
+    plain = catalog["report"]
+    with_duty = {
+        **plain,
+        "parameters": {**plain["parameters"], "properties": {**plain["parameters"]["properties"], "duty": REPORT_DUTY_PARAMETER}},
+    }
     for schema in schemas:
-        expected = catalog[schema["name"]]
-        if schema["name"] == "report":
-            # A session that is not another task agent's says what it takes with its report: one
-            # more parameter, after the others, and nothing else of the definition changed.
-            assert list(schema["parameters"]["properties"]) == [*expected["parameters"]["properties"], "duty"]
-            added = schema["parameters"]["properties"].pop("duty")
-            assert added == REPORT_DUTY_PARAMETER
-        assert schema == expected
+        assert schema == (with_duty if schema["name"] == "report" else catalog[schema["name"]])
+    reported = next(schema for schema in schemas if schema["name"] == "report")
+    assert list(reported["parameters"]["properties"]) == [*plain["parameters"]["properties"], "duty"]
     # The catalog itself is as it was: a task agent another one started is offered report without it.
     assert "duty" not in catalog["report"]["parameters"]["properties"]
     # Nothing in config is left without an implementation (bash is the POSIX twin of pwsh).

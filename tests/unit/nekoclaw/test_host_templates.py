@@ -467,15 +467,28 @@ def test_the_sentences_of_all_templates_together_have_a_cap_and_the_one_past_it_
     store = TemplateStore(lambda: space)
     for name in ("a-one", "b-two"):
         _put(space, _text(name=name, description=one), name=name)
-    _put(space, _text(name="c-three", description=one), name="c-three", project="ledger-app")
+    # The project's own, one of them in the place of a built-in preset (whose sentence then no longer counts).
+    longer = " ".join([one] * 3)
+    _put(space, _text(name="c-three", description=longer), name="c-three", project="ledger-app")
+    _put(space, _text(name="worker", description=longer, more="withhold: [web_fetch]\n"), name="worker", project="ledger-app")
 
     listed = {item.name: item for item in store.listing("ledger-app")}
 
     # The built-in ones are counted first, then the user's, then the project's.
-    assert all(listed[name].valid for name in (*PRESETS, "a-one", "b-two"))
-    assert "together are longer than" in listed["c-three"].error
+    assert all(listed[name].valid and listed[name].offered for name in ("boss", "scout", "a-one", "b-two"))
+    # The cap is on the list a task agent chooses from, not on what may be used: the ones past it are
+    # in effect all the same, and say why they are not offered.
+    for name in ("c-three", "worker"):
+        assert listed[name].valid and not listed[name].offered
+        assert listed[name].error.startswith("not offered: the descriptions of all templates together are longer than")
+        assert listed[name].to_json()["valid"] is True and listed[name].to_json()["description"] == longer
+    assert "c-three" not in [item.name for item in store.roster("ledger-app")]
+    assert [item.name for item in store.roster("ledger-app")][:2] == ["scout", "inspector"]
+    # A session of the project's own worker is opened by it, with what it withholds.
+    assert store.resolve("worker", "ledger-app").withheld() == frozenset({"web_fetch"})
+    assert store.resolve("c-three", "ledger-app").description == longer
     # Without the project's the others fit.
-    assert all(item.valid for item in store.listing())
+    assert all(item.valid and item.offered for item in store.listing())
 
 
 def test_what_was_read_is_kept_until_a_file_changes(space, monkeypatch):
@@ -523,20 +536,26 @@ def test_the_project_of_commissions_without_one_has_no_templates_of_its_own(spac
     assert store.signature(None)[1] == () and store.signature("ledger-app")[1] == ()
 
 
-def test_a_file_that_goes_away_while_the_folder_is_looked_at_is_passed_over(space, monkeypatch):
+def test_a_template_that_cannot_be_looked_at_is_seen_all_the_same(space, monkeypatch):
+    # A link that leads nowhere, say, under the name of a preset: listed before it was there, the
+    # preset was the built-in one, and that is not what is handed out once the file is there.
     store = TemplateStore(lambda: space)
-    _put(space, _text())
-    gone = _put(space, _text(name="gone"), name="gone")
+    assert store.resolve("general").withheld() == frozenset()
+    before = store.signature()
+    broken = _put(space, _text(name="general", more="read_only: true\n"), name="general")
     real = Path.stat
 
     def stat(self: Path, **kwargs: object) -> object:
-        if self.name == gone.name:
+        if self.name == broken.name:
             raise FileNotFoundError(self)
         return real(self, **kwargs)
 
     monkeypatch.setattr(Path, "stat", stat)
 
-    assert [name for name, _date, _size in store.signature()[0]] == ["doc-writer.md"]
+    assert store.signature() != before and store.signature()[0] == (("general.md", -1, -1),)
+    with pytest.raises(TemplateError, match="cannot be read"):
+        store.resolve("general")
+    assert store.resolve("worker").withheld() == frozenset()
 
 
 def test_a_project_whose_name_is_no_folder_name_goes_by_the_users_templates(space):

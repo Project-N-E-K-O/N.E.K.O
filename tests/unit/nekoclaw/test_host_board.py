@@ -538,6 +538,81 @@ def test_what_a_session_is_doing_without_a_todo_list_and_with_other_tools():
     assert long.startswith("title title") and " · item item" in long
 
 
+def test_what_a_tool_was_called_on_is_read_though_its_arguments_were_cut_where_they_were_stored():
+    from config.nekoclaw_settings import TASK_AGENT_EVENT_TEXT_MAX_CHARS
+    from nekoclaw.host.ledger import Commission
+    from nekoclaw.host.task_agents import TaskAgentManager
+
+    commission = Commission(
+        id="c", lanlan_name="Lan", title="write the report", dispatch_text="x", user_text="", source="dispatch",
+        route="task_agent", project=None, workdir=None, status="working", status_reason="", runtime=None, created_at=0.0,
+        updated_at=0.0, started_at=None, ended_at=None, result_summary=None, pending_question=None, delivery=None,
+        parent_id=None, conversation_id=None, lang=None, plugin_id=None, entry_id=None, name=None, deferred_until=None,
+        host_instance=None,
+    )
+
+    def stored(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        # As the host puts a tool call on record: arguments longer than a row holds are the beginning of their text.
+        kept = TaskAgentManager._compact({"type": "tool_start", "session_id": "s", "tool_name": name, "args": args})
+        assert isinstance(kept["args"], str) and kept["args"].endswith("…") and len(kept["args"]) == TASK_AGENT_EVENT_TEXT_MAX_CHARS + 1
+        return kept
+
+    long = "a line of the file, with \"quotes\" and a \\ backslash\n" * 400
+    # A file written whole, a long passage replaced: just when the user wants to see which file it is.
+    assert doing_of(commission, (stored("write", {"file_path": "D:\\work\\reports\\src\\big.py", "content": long}),)) == (
+        "write the report · write: src/big.py"
+    )
+    assert doing_of(commission, (stored("edit", {"file_path": "src/export.py", "old_string": long, "new_string": long}),)) == (
+        "write the report · edit: src/export.py"
+    )
+    # What the text holds of a field is not taken for the field: the file's own text names a path too.
+    quoted = '{"file_path": "decoy.py", "command": "rm"} ' * 200
+    assert doing_of(commission, (stored("write", {"content": quoted, "file_path": "real.py"}),)) == "write the report · write"
+    # Cut inside the very value that says which file: the tool alone.
+    assert doing_of(commission, (stored("bash", {"command": "echo " + "x" * 5000}),)) == "write the report · bash"
+    # A long todo list: the item in progress, as far as the list is whole.
+    todos = [{"content": f"step {number} of the plan, spelled out at some length", "status": "completed"} for number in range(3)]
+    todos.append({"content": "change the date format", "status": "in_progress"})
+    todos.extend({"content": f"later step {number} " + "and more " * 30, "status": "pending"} for number in range(40))
+    assert doing_of(commission, (stored("todo_write", {"todos": todos}),)) == "write the report · change the date format"
+    # One that stands past where it was cut is not there to be read.
+    late = [*todos[4:], todos[3]]
+    assert doing_of(commission, (stored("todo_write", {"todos": late}),)) == "write the report"
+
+
+async def test_the_sessions_of_one_commission_and_what_is_shown_under_them_have_a_cap_together(host, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.BOARD_LOOSE_CARDS_MAX", 4)
+    made = []
+    for number in range(3):
+        commission, session = await _single(host, f"errand {number}")
+        await _working(host, commission.id)
+        children = [(await _child(host, commission, f"agent-{number}-{index}"))[1] for index in range(2)]
+        made.append((session, children))
+
+    board = await host.board()
+
+    # Every session has its place first; what is shown under them takes what is left, each behind its
+    # own, and what the first has taken is not there for the next.
+    assert [card["id"] for card in board["loose"]] == [made[2][0].id, made[2][1][1].id, made[1][0].id, made[0][0].id]
+    assert [card["kind"] for card in board["loose"]] == ["single", "child", "single", "single"]
+    # With more sessions than cards there may be, the ones last in use.
+    monkeypatch.setattr("config.nekoclaw_settings.BOARD_LOOSE_CARDS_MAX", 2)
+    assert [card["id"] for card in (await host.board())["loose"]] == [made[2][0].id, made[1][0].id]
+
+
+async def test_a_second_lead_of_a_project_is_not_crowded_out_by_the_task_agents_of_the_first(host, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.BOARD_MEMBERS_MAX", 3)
+    _mine, hers = await _lead(host, "Budget app", "add a chart", lanlan_name="Mia")
+    commission, lead = await _lead(host, "Budget app", "add a table")
+    await _working(host, commission.id)
+    children = [(await _child(host, commission, f"agent-{index}"))[1] for index in range(3)]
+
+    (project,) = (await host.board())["projects"]
+
+    assert [card["id"] for card in project["members"]] == [lead.id, children[2].id, hers.id]
+    assert [card["leader"] for card in project["members"]] == [True, False, True]
+
+
 async def test_only_the_latest_events_of_the_commission_in_hand_are_read(host, monkeypatch):
     monkeypatch.setattr("config.nekoclaw_settings.BOARD_DOING_EVENTS", 4)
     commission, session = await _single(host, "sort the photos")
@@ -935,6 +1010,27 @@ async def test_no_form_is_filled_in_while_the_preset_it_would_name_cannot_be_use
     assert raised.value.reason == "no_preset" and "no_preset" in DRAFT_REASONS
     assert ("unknown fields: tools" if wrong == "a file" else "cannot be read") in str(raised.value)
     assert host._decision_llm.calls == []
+
+
+async def test_a_template_task_agents_are_not_told_of_is_not_offered_for_a_new_session_either(host, monkeypatch):
+    from nekoclaw.host.templates import builtin_templates
+    from utils.tokenize import count_tokens
+
+    builtin = sum(count_tokens(item.description) for item in builtin_templates().values())
+    monkeypatch.setattr("config.nekoclaw_settings.TEMPLATE_DESCRIPTIONS_TOTAL_MAX_TOKENS", builtin + 5)
+    templates = host.paths.space().templates_dir()
+    templates.mkdir(parents=True)
+    (templates / "doc-writer.md").write_text(
+        "---\nname: doc-writer\ndescription: When the documents of a project are to be written or brought up to date.\n---\n",
+        encoding="utf-8",
+    )
+    host._decision_llm.answer = {**FORM, "preset": "doc-writer"}
+
+    form = await host.draft_session("a task agent for the reports")
+
+    listed = {item["name"]: item for item in await host.templates()}
+    assert listed["doc-writer"]["valid"] is True and listed["doc-writer"]["error"].startswith("not offered")
+    assert "doc-writer" not in host._decision_llm.calls[0][1][0]["content"] and form["preset"] == "boss"
 
 
 async def test_what_comes_back_is_cut_to_its_caps_and_named_as_a_folder_can_be(host):

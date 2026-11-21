@@ -592,6 +592,16 @@ def _card_author(name: str, by: Any) -> str:
     return str(by)
 
 
+def _author_of_nothing(by: str) -> str:
+    """Return who is put down as the author of a line that is empty.
+
+    Nobody, as a rule: an empty line was not written. But a line the user
+    emptied is the user's all the same: it was their decision that it
+    says nothing, and a review does not fill it in again.
+    """
+    return "user" if by == "user" else ""
+
+
 def _card_line(name: str, value: Any) -> str:
     """Return a line of a card as it is kept: on one line, within the cap of that line."""
     from config import nekoclaw_settings as settings
@@ -1685,7 +1695,7 @@ class Ledger:
             row[name] = _card_line(name, row[name])
             by = _card_author(name, row[f"{name}_by"]) if row[f"{name}_by"] else ""
             # Written by whoever makes the session, unless it says who did.
-            row[f"{name}_by"] = (by or "creator") if row[name] else ""
+            row[f"{name}_by"] = (by or "creator") if row[name] else _author_of_nothing(by)
         row["name"] = self._free_name(conn, row["lanlan_name"], row["name"])
         columns = ", ".join(_SESSION_COLUMNS)
         marks = ", ".join("?" for _ in _SESSION_COLUMNS)
@@ -1703,7 +1713,7 @@ class Ledger:
         and ``summary_by`` (``CARD_AUTHORS``), which say who wrote the line
         and are ``"creator"`` for a line given without one. A line the
         user wrote (``"user"``) is not written over by a review or by the
-        session later (``write_card``).
+        session later (``write_card``), also one the user left empty.
         """
         unknown = set(values) - set(_SESSION_COLUMNS)
         if unknown:
@@ -1860,8 +1870,9 @@ class Ledger:
         user, and what a review or whoever made the session wrote by
         anyone. What is given for a line that is not to be written over
         is dropped, with the other lines still written. A line given as
-        None is left alone; an empty one empties the line (and it has no
-        author then). Read and written in one go.
+        None is left alone; an empty one empties the line, and it has no
+        author then, unless it is the user who emptied it: that line stays
+        the user's, empty. Read and written in one go.
         """
         unknown = set(lines) - set(CARD_FIELDS)
         if unknown:
@@ -1881,7 +1892,7 @@ class Ledger:
                 if _CARD_STANDING[by] < _CARD_STANDING.get(getattr(current, f"{name}_by"), 0):
                     continue
                 changes[name] = value
-                changes[f"{name}_by"] = by if value else ""
+                changes[f"{name}_by"] = by if value else _author_of_nothing(by)
                 written.append(name)
             if changes:
                 assignments = ", ".join(f"{name} = ?" for name in changes)
