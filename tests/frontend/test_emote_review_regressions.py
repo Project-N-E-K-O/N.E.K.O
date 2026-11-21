@@ -97,6 +97,19 @@ def test_unicode_zip_and_atlas_regions_render_without_network_texture_fallback(e
     assert external == []
 
 
+def test_single_png_download_starts_while_capture_controls_are_locked(editor):
+    from PIL import Image
+
+    _import(editor, spine_zip())
+    editor.evaluate("Object.assign(reviewEditor.state, {exportFormat:'png', exportResolution:64})")
+    with editor.expect_download(timeout=15000) as download:
+        editor.locator('#export-png-btn').click()
+    with Image.open(download.value.path()) as image:
+        assert image.format == 'PNG'
+        assert image.size == (64, 64)
+    assert editor.locator('#export-png-btn').is_enabled()
+
+
 @pytest.mark.parametrize('path', ['registry', 'import', 'reimport'])
 def test_template_activation_clears_the_previous_group_preview(editor, path):
     original = _two_skins()

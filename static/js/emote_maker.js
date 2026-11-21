@@ -5668,12 +5668,12 @@
 
     // A capture owns the live renderer while yielding between readbacks. Keep
     // editing gestures and shortcuts from changing its animation or appearance.
-    // Window controls and the batch stop button remain available.
+    // Window controls, batch stop and generated file downloads remain available.
     function lockExportEditing() {
         const main = document.querySelector('.emote-maker-page');
         const controls = new Map();
         const allowed = (target) => target instanceof Element && Boolean(target.closest(
-            '[data-neko-window-control], #emote-maker-close'
+            '[data-neko-window-control], #emote-maker-close, a[download][href^="blob:"]'
             + (groupExportBusy ? ', #export-group-open-btn' : ''),
         ));
         document.querySelectorAll('button, input, select, textarea').forEach((control) => {

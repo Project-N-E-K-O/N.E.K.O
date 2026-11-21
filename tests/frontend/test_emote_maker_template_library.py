@@ -1068,20 +1068,22 @@ def test_restored_accessory_waits_for_the_full_png_before_caching_texture(
     source.save(encoded, "PNG", compress_level=0)
     content = encoded.getvalue()
     release = Event()
-    file_response = emote_template_router.FileResponse
+    response_class = emote_template_router.Response
 
-    def delay_accessory(path, *args, **kwargs):
-        if path.name != filename:
-            return file_response(path, *args, **kwargs)
+    def delay_accessory(data=b"", *args, **kwargs):
+        if data != content or kwargs.get('media_type') != 'image/png':
+            return response_class(data, *args, **kwargs)
 
         async def body():
             yield content[:8192]
             await asyncio.to_thread(release.wait, 20)
             yield content[8192:]
 
-        return StreamingResponse(body(), media_type="image/png", headers={"Content-Length": str(len(content))})
+        return StreamingResponse(body(), media_type="image/png", headers={
+            **kwargs.get('headers', {}), "Content-Length": str(len(content)),
+        })
 
-    monkeypatch.setattr(emote_template_router, "FileResponse", delay_accessory)
+    monkeypatch.setattr(emote_template_router, "Response", delay_accessory)
     _open(page, running_server)
     response = page.request.post(running_server + "/api/emote-maker/library/textures", headers={'x-neko-emote-library': '1'}, params={"key": key}, multipart={
         "textures": {"name": filename, "mimeType": "image/png", "buffer": content},
