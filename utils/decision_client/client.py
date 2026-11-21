@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import itertools
 import time
 import urllib.parse
 from typing import Any, Mapping
@@ -49,11 +50,23 @@ logger = get_module_logger(__name__)
 _NATIVE_COOLDOWN_SECONDS = 300.0
 _NATIVE_TRANSIENT_COOLDOWN_SECONDS = 60.0
 _native_cooldown_until: dict[tuple[str, str, str, str], float] = {}
+# Sequence number of the failure that set each cooldown. A success only clears a
+# cooldown recorded before that request started, so a concurrent request (e.g.
+# another recall batch) that succeeds later cannot wipe the cooldown a failed
+# sibling just recorded. A counter, not a clock: Windows monotonic time ticks
+# coarsely enough for two events to share a timestamp.
+_native_cooldown_marked_at: dict[tuple[str, str, str, str], int] = {}
+_native_event_seq = itertools.count(1)
+
+
+def _next_native_seq() -> int:
+    return next(_native_event_seq)
 
 
 def clear_native_cooldown() -> None:
     """Clear the process-local native Decisions endpoint negative cache."""
     _native_cooldown_until.clear()
+    _native_cooldown_marked_at.clear()
 
 
 def _api_key_fingerprint(api_key: str) -> str:
@@ -69,6 +82,7 @@ def _is_native_in_cooldown(key: tuple[str, str, str, str]) -> bool:
         return False
     if time.monotonic() >= deadline:
         _native_cooldown_until.pop(key, None)
+        _native_cooldown_marked_at.pop(key, None)
         return False
     return True
 
@@ -78,6 +92,19 @@ def _mark_native_cooldown(
     duration: float = _NATIVE_COOLDOWN_SECONDS,
 ) -> None:
     _native_cooldown_until[key] = time.monotonic() + duration
+    _native_cooldown_marked_at[key] = _next_native_seq()
+
+
+def _clear_native_cooldown_after_success(key: tuple[str, str, str, str], started_at: int) -> None:
+    """Clear *key*'s cooldown unless a failure recorded it after this request started.
+
+    *started_at* is the sequence number taken when the request started.
+    """
+    marked_at = _native_cooldown_marked_at.get(key)
+    if marked_at is not None and marked_at > started_at:
+        return
+    _native_cooldown_until.pop(key, None)
+    _native_cooldown_marked_at.pop(key, None)
 
 
 def _is_complete_native_decision_url(url: str) -> bool:
@@ -310,6 +337,7 @@ class DecisionClient:
                 )
             else:
                 adapter = get_decision_adapter(protocol)
+                started_at = _next_native_seq()
                 try:
                     resp = await asyncio.wait_for(
                         adapter.execute(
@@ -325,7 +353,7 @@ class DecisionClient:
                         timeout=timeout,
                     )
                     if resp.answers:
-                        _native_cooldown_until.pop(cooldown_key, None)
+                        _clear_native_cooldown_after_success(cooldown_key, started_at)
                     _record_native_usage(resp, call_type=call_type)
                     return resp
                 except Exception as exc:

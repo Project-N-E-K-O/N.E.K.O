@@ -1171,6 +1171,32 @@ async def test_memory_server_startup_stays_limited_when_storage_barrier_is_block
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_memory_server_startup_logs_identity_even_in_limited_mode(tmp_path):
+    from app import memory_server
+    from config import APP_VERSION
+
+    cm = SimpleNamespace(app_docs_dir=tmp_path, memory_dir=tmp_path / "memory")
+    with patch.object(memory_server.runtime, "_config_manager", cm), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
+         patch.object(memory_server.runtime, "ensure_memory_server_runtime_initialized", AsyncMock()), \
+         patch.object(memory_server.runtime, "logger") as mock_logger:
+        await memory_server.startup_event_handler()
+
+    identity_calls = [
+        c for c in mock_logger.info.call_args_list
+        if c.args and str(c.args[0]).startswith("[Memory] N.E.K.O ")
+    ]
+    assert len(identity_calls) == 1
+    args = identity_calls[0].args
+    assert args[1] == APP_VERSION
+    assert isinstance(args[2], bool)
+    assert args[4] == tmp_path
+    assert args[5] == tmp_path / "memory"
+    mock_logger.warning.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_memory_server_continue_startup_refuses_active_storage_barrier():
     from app import memory_server
 

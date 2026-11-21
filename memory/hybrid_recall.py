@@ -608,11 +608,11 @@ async def _cosine_rank(
         return []
 
     from memory.embeddings import (
-        aget_embedding_service,
+        get_embedding_service,
         parse_dim_from_model_id,
     )
 
-    service = await aget_embedding_service()
+    service = get_embedding_service()
     if not service.is_available():
         return []
     model_id = service.model_id()
@@ -1214,6 +1214,29 @@ def _overlaps_window(entry: dict, win_start, win_end) -> bool:
     return s < win_end and e >= win_start
 
 
+def _embedding_service_state() -> str:
+    """Short label for the embedding service state, for the recall log line.
+
+    ``ready`` / ``disabled:<reason>`` / ``not_ready:init`` /
+    ``not_ready:loading``. INIT ("load never requested yet") and LOADING
+    ("load in progress") are split on purpose: ``not_ready:init`` that
+    persists long after startup means nobody will ever load this instance.
+    Reading state does not load or throw (pure properties); failures degrade
+    to ``unknown(<exc>)`` without affecting recall.
+    """
+    try:
+        from memory.embeddings import get_embedding_service
+        svc = get_embedding_service()
+        if svc.is_available():
+            return "ready"
+        if svc.is_disabled():
+            return "disabled:%s" % svc.disable_reason()
+        state_name = getattr(svc, "state_name", None)
+        return "not_ready:%s" % state_name() if callable(state_name) else "not_ready"
+    except Exception as exc:  # noqa: BLE001
+        return "unknown(%s)" % type(exc).__name__
+
+
 # ── public entry ──────────────────────────────────────────────────────
 
 
@@ -1418,14 +1441,7 @@ async def hybrid_recall(
     # vectors, requiring embeddings.py logs to distinguish,
     # historically absent from Memory log file. Reading service state does not load or
     # throw (pure properties); failures degrade to unknown without affecting recall.
-    try:
-        from memory.embeddings import aget_embedding_service
-        _svc = await aget_embedding_service()
-        emb_state = "ready" if _svc.is_available() else (
-            "disabled:%s" % _svc.disable_reason() if _svc.is_disabled() else "not_ready"
-        )
-    except Exception as exc:  # noqa: BLE001
-        emb_state = "unknown(%s)" % type(exc).__name__
+    emb_state = _embedding_service_state()
     # union pool size for observability — bm25 pool is the superset.
     # `passed` = items surviving the per-side threshold; `thresh` is the
     # Cutoff constant. Previously log put `passed` count into `(>thresh %d)`,

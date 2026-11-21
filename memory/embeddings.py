@@ -73,9 +73,6 @@ from typing import Any
 from ._embeddings import lifecycle as _service_lifecycle
 from ._embeddings import hardware as _hardware
 from ._embeddings import profiles as _profiles
-from ._embeddings.scheduling import InferenceBusy, InferenceQueue, InferenceUnavailable
-from utils.embedding_contract import EmbedDeferred, EmbedResult
-from ._embeddings.resources import resource_file_identity
 from ._embeddings.schema import (
     build_model_id,
     clear_embedding_fields,
@@ -954,9 +951,9 @@ class EmbeddingService:
          the safe "no embedding" answer for the rest of the process
 
     Thread/coroutine safety: ``request_load()`` is idempotent under
-    concurrent callers thanks to the asyncio.Lock. Native inference is bounded
-    to one call, with foreground memory requests ahead of queued library builds;
-    lifecycle leases drain native workers before releasing their owners.
+    concurrent callers thanks to the asyncio.Lock. Embedding calls may run
+    concurrently; lifecycle leases let shutdown drain them before releasing
+    the ONNX session and tokenizer.
     """
 
     def __init__(
@@ -1040,10 +1037,7 @@ class EmbeddingService:
         self._disable_reason = _DisableReason.NONE
         self._session = None
         self._tokenizer = None
-        self._loaded_file_identity = None
-        self._loaded_weights_sha256 = None
         self._load_lock = asyncio.Lock()
-        self._inference_queue = InferenceQueue(background_duty=_hardware.resolve_background_duty(self._ram_gb))
         self._lifecycle_condition = asyncio.Condition()
         self._active_operations = 0
         self._closing = False
@@ -1088,6 +1082,11 @@ class EmbeddingService:
 
     def disable_reason(self) -> str:
         return self._disable_reason.value
+
+    def state_name(self) -> str:
+        """Lifecycle state as a short string (``init`` / ``loading`` /
+        ``ready`` / ``disabled`` / ``closed``), for diagnostics only."""
+        return self._state.value
 
     def model_id(self) -> str | None:
         """Canonical id stamped into ``embedding_model_id`` cache fields.
@@ -1175,164 +1174,74 @@ class EmbeddingService:
             if self._state is EmbeddingState.CLOSED:
                 return
             self._closing = True
-            # Waiters do not own native work. Wake them even during background
-            # cooldown, while executing workers retain their existing leases.
-            await self._inference_queue.shutdown()
             while self._active_operations:
                 await self._lifecycle_condition.wait()
             self._session = None
             self._tokenizer = None
-            self._loaded_file_identity = None
-            self._loaded_weights_sha256 = None
             self._state = EmbeddingState.CLOSED
 
-    def spec(self) -> dict | None:
-        """Read exact resources off-loop without creating or loading a session."""
-        from ._embeddings.spec import specification
+    async def embed(self, text: str, *, sticky_failure: bool = True) -> list[float] | None:
+        """Single-text embedding. Returns None when not READY — caller
+        must treat this as a cache miss and skip the vector path for
+        this query.
 
-        return specification(self, max_length=DEFAULT_VECTORS_MAX_LENGTH)
-
-    def count_tokens(self, texts: list[str]) -> list[int] | None:
-        """Count full inputs with an independent tokenizer; callers offload CPU."""
-        from ._embeddings.spec import count_tokens
-
-        return count_tokens(self, texts, max_length=DEFAULT_VECTORS_MAX_LENGTH)
-
-    def status_counts(self) -> dict[str, int]:
-        """Expose content-free outcome counters instead of silent cache misses."""
-        return dict(getattr(self, "_embed_status_counts", {}))
-
-    def _embed_result(self, vectors, status, retry_after_ms=0) -> EmbedResult:
-        """Count each public computation outcome exactly once."""
-        counts = getattr(self, "_embed_status_counts", None)
-        if counts is None:
-            counts = self._embed_status_counts = {}
-        counts[status] = counts.get(status, 0) + 1
-        return EmbedResult(vectors, status, retry_after_ms)
-
-    async def embed_ex(self, texts: list[str], *, sticky_failure: bool = True,
-                       lane: str = "foreground", deadline: float | None = None) -> EmbedResult:
-        """Return observable admission/lifecycle outcomes without loading a model.
-
-        A deadline uses the event loop's monotonic clock. Native cancellation
-        still drains its real worker before ownership and lifecycle leases end.
-        """
-        if lane not in {"foreground", "background"}:
-            raise ValueError("invalid_inference_priority")
-        result: list[list[float] | None] = [None] * len(texts)
-        if not texts:
-            return self._embed_result(result, "ok")
+        ``sticky_failure=False`` is for borrowers of the model (the public
+        knowledge indexer): an inference error then only fails this call
+        instead of disabling vectors for the whole process."""
+        if not text:
+            return None
         if not await self._begin_operation():
-            return self._embed_result(result, "unavailable")
+            return None
         try:
             if not self.is_available():
-                status = ("disabled" if self.is_disabled() else
-                          "loading" if self._state is EmbeddingState.LOADING else "unavailable")
-                return self._embed_result(result, status)
-            active_idx = [index for index, text in enumerate(texts) if text]
-            if not active_idx:
-                return self._embed_result(result, "ok")
-            active_texts = [texts[index] for index in active_idx]
-            # timeout_at schedules cancellation on the next loop turn; reject
-            # an already expired request before it can start native inference.
-            if deadline is not None and deadline <= asyncio.get_running_loop().time():
-                return self._embed_result(result, "timeout")
+                return None
             try:
-                async with asyncio.timeout_at(deadline):
-                    vectors = await self._run_inference(active_texts, lane)
-            except EmbedDeferred as error:
-                return self._embed_result(result, "busy", error.retry_after_ms)
-            except InferenceUnavailable:
-                return self._embed_result(result, "unavailable")
-            except TimeoutError:
-                return self._embed_result(result, "timeout")
-            except Exception as error:
+                vectors = await self._run_blocking(self._infer_blocking, [text])
+            except Exception as e:  # noqa: BLE001 — sticky inference failure
                 if not self._closing:
-                    self._on_inference_error(error, sticky=sticky_failure)
-                return self._embed_result(result, "error")
-            if len(vectors) != len(active_texts) or any(vector is None for vector in vectors):
-                return self._embed_result(result, "unavailable" if self._closing else "error")
-            for index, vector in zip(active_idx, vectors):
-                result[index] = vector
-            return self._embed_result(result, "ok")
+                    self._on_inference_error(e, sticky=sticky_failure)
+                return None
+            return vectors[0] if vectors else None
         finally:
             await self._end_operation()
 
-    async def embed(self, text: str, *, sticky_failure: bool = True,
-                    priority: str = "foreground", lane: str | None = None) -> list[float] | None:
-        """Keep the legacy single-query cache-miss contract for existing callers."""
-        result = await self.embed_ex([text], sticky_failure=sticky_failure, lane=lane or priority)
-        if result.status == "busy" and (lane or priority) == "background":
-            raise InferenceBusy(result.retry_after_ms)
-        return result.vectors[0] if result.status == "ok" else None
+    async def embed_batch(
+        self, texts: list[str], *, sticky_failure: bool = True
+    ) -> list[list[float] | None]:
+        """Batch embedding. Empty / None inputs and not-ready service
+        both produce a None at the corresponding output index — keeps
+        callers' index alignment with the input list intact.
 
-    async def embed_batch(self, texts: list[str], *, sticky_failure: bool = True,
-                          priority: str = "foreground", lane: str | None = None) -> list[list[float] | None]:
-        """Keep legacy positional None results while exposing explicit background deferral."""
-        result = await self.embed_ex(texts, sticky_failure=sticky_failure, lane=lane or priority)
-        if result.status == "busy" and (lane or priority) == "background":
-            raise InferenceBusy(result.retry_after_ms)
-        return result.vectors if result.status == "ok" else [None] * len(texts)
-
-    async def embed_query(self, text: str, *, sticky_failure: bool = False) -> list[float] | None:
-        """Use the foreground lane for interactive lookup."""
-        return await self.embed(text, sticky_failure=sticky_failure)
-
-    async def embed_documents(self, texts: list[str], *, sticky_failure: bool = False) -> list[list[float] | None]:
-        """Let background callers defer pressure without consuming index attempts."""
-        result = await self.embed_ex(texts, sticky_failure=sticky_failure, lane="background")
-        if result.status == "busy":
-            raise EmbedDeferred(result.retry_after_ms)
-        return result.vectors if result.status == "ok" else [None] * len(texts)
-
-    def _background_batches(self, texts: list[str]) -> list[list[str]]:
-        """Group exact tokenizer lengths by padded token cost in input order."""
-        if self._tokenizer is None:
-            raise RuntimeError("session not loaded")
-        budget = _hardware.resolve_background_token_budget(self._ram_gb)
-        encoded = self._tokenizer.encode_batch(texts)
-        batches, batch = [], []
-        longest = 0
-        for text, value in zip(texts, encoded):
-            length = len(value.ids)
-            if length > budget:
-                # Normal loaded tokenizers cap inputs at 1024 tokens. Reject
-                # incompatible custom lengths rather than exceed the budget.
-                raise ValueError("background_token_limit")
-            candidate_longest = max(longest, length)
-            if batch and candidate_longest * (len(batch) + 1) > budget:
-                batches.append(batch)
-                batch, longest = [], 0
-            batch.append(text)
-            longest = max(longest, length)
-        if batch:
-            batches.append(batch)
-        return batches
-
-    async def _run_inference(self, texts: list[str], priority: str):
-        """Release ownership between bounded background token batches only."""
-        # Use the already loaded tokenizer, never a second encoder or a cold
-        # load. Count pad-to-longest cost rather than characters or row count.
-        background = priority == "background"
-        batches = await self._run_blocking(self._background_batches, texts) if background else (texts,)
-        vectors = []
-        for batch in batches:
-            while batch:
-                async with self._inference_queue.slot(priority) as fairness_turn:
-                    if self._closing or not self.is_available():
-                        return []
-                    # A guaranteed turn during foreground pressure runs only
-                    # one row. Keep the remainder ordered for a later slot;
-                    # normal idle turns still use the full token microbatch.
-                    current = batch[:1] if background and fairness_turn else batch
-                    rows = await self._run_blocking(self._infer_blocking, current)
-                if background and (len(rows) != len(current) or any(row is None for row in rows)):
-                    return []  # The caller receives all-missing, never a partial batch.
-                vectors.extend(rows)
-                batch = batch[len(current):]
-                if background:
-                    await asyncio.sleep(0)  # Give newly arrived foreground work a queue turn.
-        return vectors
+        ``sticky_failure`` works as in ``embed``."""
+        if not texts:
+            return []
+        result: list[list[float] | None] = [None] * len(texts)
+        if not await self._begin_operation():
+            return result
+        try:
+            if not self.is_available():
+                return result
+            # Filter out empty entries before inference but preserve
+            # positional alignment in the output via index mapping.
+            active_idx: list[int] = []
+            active_texts: list[str] = []
+            for i, t in enumerate(texts):
+                if t:
+                    active_idx.append(i)
+                    active_texts.append(t)
+            if not active_texts:
+                return result
+            try:
+                vectors = await self._run_blocking(self._infer_blocking, active_texts)
+            except Exception as e:  # noqa: BLE001
+                if not self._closing:
+                    self._on_inference_error(e, sticky=sticky_failure)
+                return result
+            for slot, vec in zip(active_idx, vectors):
+                result[slot] = vec
+            return result
+        finally:
+            await self._end_operation()
 
     def _on_inference_error(self, error: Exception, *, sticky: bool) -> None:
         if not sticky:
@@ -1342,15 +1251,13 @@ class EmbeddingService:
             if now - self._soft_failure_logged_at >= _SOFT_FAILURE_LOG_INTERVAL_SECONDS:
                 self._soft_failure_logged_at = now
                 logger.warning(
-                    "EmbeddingService: inference failed for a non-sticky caller (%s)",
-                    type(error).__name__,
+                    "EmbeddingService: inference failed for a non-sticky caller (%s: %s)",
+                    type(error).__name__, error,
                 )
             return
         logger.warning(
-            # Native exceptions can echo input text. Keep diagnostics useful
-            # without persisting private document/query contents in logs.
-            "EmbeddingService: inference failed (%s); vectors disabled",
-            type(error).__name__,
+            "EmbeddingService: inference failed (%s: %s); vectors disabled",
+            type(error).__name__, error,
         )
         self._mark_disabled(_DisableReason.INFERENCE_ERROR)
 
@@ -1435,16 +1342,6 @@ class EmbeddingService:
             or not _is_nonempty_file(external_data_path)
         ):
             raise _DisabledError(_DisableReason.NO_MODEL_FILE)
-        # A ready native session must never be labelled with subsequently
-        # replaced disk resources. Capture cheap file identities around load;
-        # library RPCs separately hash these exact resource identities.
-        paths = (model_path, external_data_path, tokenizer_path)
-        identity = resource_file_identity(paths)
-        from ._embeddings.spec import specification
-
-        load_spec = specification(self, max_length=DEFAULT_VECTORS_MAX_LENGTH)
-        if load_spec is None:
-            raise _DisabledError(_DisableReason.LOAD_ERROR)
         try:
             import onnxruntime as ort  # type: ignore
         except ImportError as e:
@@ -1517,11 +1414,6 @@ class EmbeddingService:
                 DEFAULT_VECTORS_MAX_LENGTH, e,
             )
             raise _DisabledError(_DisableReason.TRUNCATION_SETUP_FAILED) from e
-        loaded_identity = resource_file_identity(paths)
-        if loaded_identity != identity:
-            raise _DisabledError(_DisableReason.LOAD_ERROR)
-        self._loaded_file_identity = identity
-        self._loaded_weights_sha256 = load_spec["weights_sha256"]
 
     def _infer_blocking(self, texts: list[str]) -> list[list[float]]:
         """Tokenize + run ONNX session + L2-normalize + Matryoshka-trunc.
@@ -1643,31 +1535,32 @@ class _DisabledError(Exception):
 # ── module-level singleton accessor ──────────────────────────────────
 
 _SERVICE: EmbeddingService | None = None
+# Guards construction / teardown of ``_SERVICE``. At memory-server startup
+# the embedding warmup worker and the knowledge runtime each call
+# ``get_embedding_service()`` from their own ``asyncio.to_thread`` worker.
+# Without the lock both can see ``None`` and build separate instances; only
+# the worker's copy ever gets ``request_load()``, so if the other copy wins
+# the global slot, every reader sees a service stuck in INIT for the whole
+# process lifetime.
 _SERVICE_LOCK = threading.Lock()
 
 
 def get_embedding_service() -> EmbeddingService:
     """Return the process-wide singleton, lazily constructed.
 
-    Construction reads from ``config`` and the user's app-data dir and runs
-    off the event loop in library RPC callers. A thread lock
-    protects the cold check and assignment together, so warmup and RPC cannot
-    create two services with independent native-session loading locks.
+    Construction reads from ``config`` and the user's app-data dir (CPU
+    feature probes, RAM sampling, model-dir file checks). It is cheap but
+    not instant, and it may run on several threads at once, so creation is
+    serialized: a lock-free fast path for the common already-built case,
+    then a re-check under ``_SERVICE_LOCK`` before building.
     """
     global _SERVICE
+    service = _SERVICE
+    if service is not None:
+        return service
     with _SERVICE_LOCK:
         _SERVICE = _service_lifecycle.get_or_create(_SERVICE, _build_default_service)
         return _SERVICE
-
-
-async def aget_embedding_service() -> EmbeddingService:
-    """Resolve the cold singleton without waiting on its thread lock on the loop.
-
-    Foreground async callers must use this counterpart. Construction may
-    already be running in warmup or a library request; cancellation drains
-    the real constructor worker rather than abandoning its ownership.
-    """
-    return await EmbeddingService._run_blocking(get_embedding_service)
 
 
 def reset_embedding_service_for_tests() -> None:
@@ -1685,25 +1578,19 @@ def reset_embedding_service_for_tests() -> None:
 
 async def release_embedding_service() -> None:
     """Release the process singleton and its native session references."""
-    def snapshot():
-        # A cold constructor may hold this lock. Shutdown must await that
-        # owner in a worker instead of pausing the shared event loop.
-        with _SERVICE_LOCK:
-            return _SERVICE
-
-    service = await EmbeddingService._run_blocking(snapshot)
+    global _SERVICE
+    with _SERVICE_LOCK:
+        service = _SERVICE
     if service is not None:
+        # Awaited outside the (thread) lock. Callers racing with shutdown keep
+        # getting the closing instance, whose operations already return None,
+        # instead of building a fresh one mid-shutdown.
         await service.close()
-
-    def clear_released():
-        global _SERVICE
-        # Do not construct a new service to obtain this reference, and do not
-        # clear a replacement that a different lifecycle may have installed.
-        with _SERVICE_LOCK:
-            if _SERVICE is service:
-                _SERVICE = None
-
-    await EmbeddingService._run_blocking(clear_released)
+    # Compare-and-clear under the same lock as construction, so we never
+    # drop an instance that another thread installed meanwhile.
+    with _SERVICE_LOCK:
+        if _SERVICE is service:
+            _SERVICE = None
 
 
 def _build_default_service() -> EmbeddingService:

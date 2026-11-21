@@ -1382,12 +1382,46 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         return True
 
 
+def _log_startup_identity() -> None:
+    """One info line identifying this build and where it reads memory from.
+
+    The install dir (``sys.executable``'s folder) tells apart launches that
+    share the same version and data root, e.g. a Steam install versus a
+    standalone launcher. Paths only, no conversation content, so logger is ok.
+    Never raises: a diagnostics line must not block startup.
+    """
+    try:
+        import os
+        import sys
+
+        from config import APP_VERSION
+
+        # Same detection as launcher_core.bootstrap.IS_FROZEN (PyInstaller
+        # sets sys.frozen, Nuitka injects __compiled__).
+        frozen = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
+        install_dir = (
+            os.path.dirname(os.path.abspath(sys.executable)) if sys.executable else "unknown"
+        )
+        logger.info(
+            "[Memory] N.E.K.O %s frozen=%s install_dir=%s data_root=%s memory_dir=%s",
+            APP_VERSION,
+            frozen,
+            install_dir,
+            getattr(_config_manager, "app_docs_dir", None),
+            getattr(_config_manager, "memory_dir", None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Memory] startup identity log failed: %s", exc)
+
+
 @app.on_event("startup")
 async def startup_event_handler():
     """Initialization at application startup"""
     # Same floor as the main server: Python's default (cpu + 4) leaves low-end machines
     # with a handful of workers shared by every to_thread read and lock wait.
     configure_default_executor(asyncio.get_running_loop(), logger=logger)
+    # Logged before the storage gate so limited-mode boots carry it too.
+    _log_startup_identity()
     blocking_reason = get_storage_startup_blocking_reason(_config_manager)
     if blocking_reason:
         logger.info(
