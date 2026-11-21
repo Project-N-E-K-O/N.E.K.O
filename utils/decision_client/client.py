@@ -17,7 +17,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
+import urllib.parse
 from typing import Any, Mapping
 
 from utils.logger_config import get_module_logger
@@ -64,24 +66,40 @@ def _mark_native_cooldown(key: tuple[str, str, str]) -> None:
 
 def _is_complete_native_decision_url(url: str) -> bool:
     """Return True when *url* already points at a complete native decision route."""
-    cleaned = str(url or "").strip().rstrip("/").lower()
-    return cleaned.endswith(("/systemone", "/decisions"))
+    raw = str(url or "").strip()
+    if not raw:
+        return False
+    parsed = urllib.parse.urlsplit(raw)
+    path = (parsed.path or "").rstrip("/").lower()
+    return path.endswith(("/systemone", "/decisions"))
 
 
 def _derive_chat_base_url_from_native(url: str) -> str:
     """Best-effort derivation of an OpenAI-compatible chat base URL from a native decision endpoint."""
-    cleaned = str(url or "").strip().rstrip("/")
-    lower = cleaned.lower()
-    if lower.endswith("/systemone"):
-        candidate = cleaned[: -len("/systemone")]
-        return candidate if candidate.lower().endswith(("/v1", "/openai")) else ""
-    if lower.endswith("/api/alpha/decisions"):
-        return cleaned[: -len("/api/alpha/decisions")] + "/api/v1"
-    if lower.endswith("/v1beta/decisions") and "generativelanguage.googleapis.com" in lower:
-        return cleaned[: -len("/v1beta/decisions")] + "/v1beta/openai/"
-    if lower.endswith("/v1/decisions"):
-        return cleaned[: -len("/decisions")]
-    return ""
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    parsed = urllib.parse.urlsplit(raw)
+    path = (parsed.path or "").rstrip("/")
+    lower_path = path.lower()
+    host = (parsed.hostname or "").lower()
+
+    new_path = ""
+    if lower_path.endswith("/systemone"):
+        candidate = path[: -len("/systemone")]
+        if candidate.lower().endswith(("/v1", "/openai")):
+            new_path = candidate
+    elif lower_path.endswith("/api/alpha/decisions"):
+        new_path = path[: -len("/api/alpha/decisions")] + "/api/v1"
+    elif lower_path.endswith("/v1beta/decisions") and host == "generativelanguage.googleapis.com":
+        new_path = path[: -len("/v1beta/decisions")] + "/v1beta/openai/"
+    elif lower_path.endswith("/v1/decisions"):
+        new_path = path[: -len("/decisions")]
+
+    if not new_path:
+        return ""
+    # Drop query string and fragment so derived chat base URL stays clean.
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, new_path, "", ""))
 
 
 def _record_native_usage(response: DecisionResponse, *, call_type: str | None) -> None:
@@ -214,14 +232,51 @@ class DecisionClient:
         if not protocol:
             protocol = infer_decision_protocol(model, decision_url or base_url)
 
+        call_type_ctx: contextlib.AbstractContextManager[Any] = contextlib.nullcontext()
         if call_type:
             try:
-                from utils.token_tracker import set_call_type
+                from utils.token_tracker import llm_call_context
 
-                set_call_type(call_type)
+                call_type_ctx = llm_call_context(call_type)
             except Exception as exc:
-                logger.debug("[DecisionClient] failed to set call_type=%s: %s", call_type, exc)
+                logger.debug("[DecisionClient] failed to scope call_type=%s: %s", call_type, exc)
 
+        with call_type_ctx:
+            return await self._decide_in_context(
+                cfg=cfg,
+                state=state,
+                questions=questions,
+                config_manager=config_manager,
+                timeout=timeout,
+                allow_fallback=allow_fallback,
+                respect_cooldown=respect_cooldown,
+                call_type=call_type,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                decision_url=decision_url,
+                provider_type=provider_type,
+                protocol=protocol,
+            )
+
+    async def _decide_in_context(
+        self,
+        *,
+        cfg: dict[str, Any],
+        state: Any,
+        questions: Mapping[str, DecisionQuestion],
+        config_manager: Any | None,
+        timeout: float,
+        allow_fallback: bool,
+        respect_cooldown: bool,
+        call_type: str | None,
+        model: str,
+        base_url: str,
+        api_key: str,
+        decision_url: str,
+        provider_type: Any,
+        protocol: str,
+    ) -> DecisionResponse:
         if is_native_decision_protocol(protocol):
             endpoint = resolve_decision_endpoint(protocol, base_url, decision_url)
             cooldown_key = (protocol, endpoint, model)
@@ -256,7 +311,8 @@ class DecisionClient:
                         provider_type=provider_type,
                         timeout=timeout,
                     )
-                    _native_cooldown_until.pop(cooldown_key, None)
+                    if resp.answers:
+                        _native_cooldown_until.pop(cooldown_key, None)
                     _record_native_usage(resp, call_type=call_type)
                     return resp
                 except Exception as exc:

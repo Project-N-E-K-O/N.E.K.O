@@ -5010,7 +5010,10 @@ const ConnectivityManager = {
             omitMaskedSecretFromConnectivity(result);
             if (result.key || result.url || result.secretMasked) {
                 if (result.providerKey && result.providerScope) {
-                    result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url, result.model || '');
+                    const cacheProviderKey = (provider === 'follow_assist')
+                        ? getEffectiveAssistProviderKey(result.providerKey)
+                        : result.providerKey;
+                    result.cacheId = buildConnectivityCacheId(result.providerScope, cacheProviderKey, result.key, result.url, result.model || '');
                 } else {
                     result.cacheId = buildCustomConnectivityCacheId(
                         result.providerType,
@@ -5136,7 +5139,7 @@ const ConnectivityManager = {
                     if (provider_scope === 'decision' && model) {
                         body.model = model;
                     }
-                    if (provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
+                    if ((provider_scope === 'assist' || provider_scope === 'decision') && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
                         body.url = overrideUrl;
                     }
                 } else {
@@ -5181,7 +5184,7 @@ const ConnectivityManager = {
                     resolved_url: data.resolved_url || (data.success ? overrideUrl : null) || null
                 };
             };
-            const shouldProbeMimoTokenPlan = provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(url);
+            const shouldProbeMimoTokenPlan = (provider_scope === 'assist' || provider_scope === 'decision') && provider_key === 'mimo' && isMimoTokenPlanUrl(url);
             if (shouldProbeMimoTokenPlan) {
                 const seenUrls = new Set();
                 const candidates = [url, ...getMimoTokenPlanUrlCandidates()]
@@ -5196,7 +5199,9 @@ const ConnectivityManager = {
                     const result = await sendRequest(candidateUrl);
                     lastResult = result;
                     if (result.success) {
-                        rememberResolvedProviderUrl(provider_scope, MIMO_TOKEN_PLAN_PROVIDER_KEY, result.resolved_url || candidateUrl);
+                        if (provider_scope === 'assist') {
+                            rememberResolvedProviderUrl(provider_scope, MIMO_TOKEN_PLAN_PROVIDER_KEY, result.resolved_url || candidateUrl);
+                        }
                         cleanupRequest();
                         return result;
                     }

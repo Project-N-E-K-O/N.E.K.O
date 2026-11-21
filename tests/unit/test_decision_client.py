@@ -94,6 +94,14 @@ def test_resolve_decision_endpoint():
         resolve_decision_endpoint("chat_fallback", "https://api.deepseek.com/v1")
         == "https://api.deepseek.com/v1"
     )
+    # Hostname match for Google Gemini must be exact, never substring-based
+    assert (
+        resolve_decision_endpoint(
+            "gemini_decisions",
+            "https://generativelanguage.googleapis.com.gw.example/v1",
+        )
+        == "https://generativelanguage.googleapis.com.gw.example/v1/decisions"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +358,34 @@ def test_score_question_missing_score_is_omitted_while_explicit_zero_is_preserve
     assert gem_resp.answers["zero"].score_norm == pytest.approx(0.0)
 
 
+@pytest.mark.unit
+def test_score_question_overflow_and_partial_probability_weights():
+    qs = {
+        "overflow": ScoreQuestion(instructions="Rate", levels=("low", "med", "high")),
+        "partial": ScoreQuestion(instructions="Rate", levels=("low", "med", "high")),
+        "zero_weight": ScoreQuestion(instructions="Rate", levels=("low", "med", "high")),
+        "valid_zero": ScoreQuestion(instructions="Rate", levels=("low", "med", "high")),
+    }
+    huge_int = 10**400
+    resp = SystemOneAdapter("systemone").parse_response(
+        {
+            "results": {
+                "overflow": {"score": huge_int},
+                "partial": {"probabilities": {"high": 0.4}},
+                "zero_weight": {"probabilities": {"low": 0.0, "med": 0.0, "high": 0.0}},
+                "valid_zero": {"score": 0},
+            }
+        },
+        qs,
+        "decision-model-preview",
+    )
+    assert "overflow" not in resp.answers
+    assert "zero_weight" not in resp.answers
+    assert resp.answers["partial"].value == pytest.approx(2.0)
+    assert resp.answers["partial"].score_norm == pytest.approx(1.0)
+    assert resp.answers["valid_zero"].value == pytest.approx(0.0)
+
+
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_decision_client_native_failure_falls_back_and_caches_cooldown():
@@ -496,6 +532,79 @@ async def test_decision_client_fallback_avoids_complete_native_endpoint_url():
     assert resp.used_fallback is True
     assert mock_create_llm.await_args.kwargs["base_url"] == "https://chat-gw.example/v1"
     assert mock_create_llm.await_args.kwargs["model"] == "emotion-chat-model"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_decision_client_call_type_context_restored_and_empty_probe_keeps_cooldown():
+    from utils.decision_client.client import _derive_chat_base_url_from_native, _is_complete_native_decision_url
+    from utils.decision_client.schema import DecisionResponse
+    from utils.token_tracker import _current_call_type
+
+    assert _is_complete_native_decision_url("https://my-gw.example/v1/systemone?api-version=1") is True
+    assert (
+        _derive_chat_base_url_from_native("https://my-gw.example/v1/systemone?api-version=1")
+        == "https://my-gw.example/v1"
+    )
+
+    qs = {"ok": BoolQuestion(instructions="Is it ok?")}
+    native_cfg = {
+        "model": "decision-model-preview",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "sk-test",
+        "decision_protocol": "systemone",
+        "decision_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/systemone",
+    }
+
+    token = _current_call_type.set("previous_task")
+    try:
+        client = DecisionClient()
+        # First call fails permanently -> enters cooldown
+        with patch.object(
+            SystemOneAdapter,
+            "execute",
+            AsyncMock(
+                side_effect=DecisionProtocolError(
+                    "HTTP 404", status_code=404, protocol="systemone", permanent_route_error=True
+                )
+            ),
+        ):
+            with pytest.raises(DecisionProtocolError):
+                await client.decide(
+                    state="ping",
+                    questions=qs,
+                    config=native_cfg,
+                    allow_fallback=False,
+                    call_type="connectivity_test",
+                )
+        # Context must be restored after decide() exits (even on exception)
+        assert _current_call_type.get() == "previous_task"
+
+        # Forced probe returning empty answers must NOT clear cooldown
+        with patch.object(
+            SystemOneAdapter,
+            "execute",
+            AsyncMock(return_value=DecisionResponse(answers={}, model="decision-model-preview", protocol="systemone")),
+        ):
+            empty_resp = await client.decide(
+                state="ping",
+                questions=qs,
+                config=native_cfg,
+                allow_fallback=False,
+                respect_cooldown=False,
+                call_type="connectivity_test",
+            )
+            assert empty_resp.answers == {}
+        assert _current_call_type.get() == "previous_task"
+
+        # Next normal call must still observe cooldown and skip hitting the adapter
+        spy_exec = AsyncMock()
+        with patch.object(SystemOneAdapter, "execute", spy_exec):
+            with pytest.raises(DecisionProtocolError):
+                await client.decide(state="ping", questions=qs, config=native_cfg, allow_fallback=False)
+        assert spy_exec.await_count == 0
+    finally:
+        _current_call_type.reset(token)
 
 
 # ---------------------------------------------------------------------------
@@ -711,6 +820,29 @@ async def test_connectivity_decision_probe_success_and_auth_error():
         assert mock_dec_probe.await_args.kwargs["model"] == "decision-model-preview"
         assert mock_dec_probe.await_args.kwargs["protocol"] == "systemone"
 
+    # Mode 1 provider_scope='decision' overridden with a regular chat model must use chat probe
+    with (
+        patch(
+            "main_routers.config_router.connectivity._test_openai_compatible",
+            AsyncMock(return_value={"success": True}),
+        ) as mock_oai,
+        patch(
+            "main_routers.config_router.connectivity._test_decision_endpoint",
+            AsyncMock(return_value={"success": True}),
+        ) as mock_dec_probe,
+    ):
+        chat_override_res = await test_connectivity(
+            ConnectivityTestRequest(
+                provider_key="gemini",
+                provider_scope="decision",
+                api_key="sk-gem",
+                model="gemini-2.5-flash",
+            )
+        )
+        assert chat_override_res["success"] is True
+        assert mock_oai.await_count == 1
+        assert mock_dec_probe.await_count == 0
+
 
 # ---------------------------------------------------------------------------
 # Pilot 1: MemoryRecallReranker._fine_rank native fast path + summary fallback
@@ -773,12 +905,14 @@ async def test_memory_recall_reranker_keeps_summary_tier_for_non_native_provider
                 "api_key": "free-access",
                 "decision_protocol": "chat_fallback",
             }
-        return {
-            "model": "user-custom-summary-model",
-            "base_url": "https://local-summary.example/v1",
-            "api_key": "sk-local",
-            "provider_type": "openai_compatible",
-        }
+        if tier == "summary":
+            return {
+                "model": "user-custom-summary-model",
+                "base_url": "https://local-summary.example/v1",
+                "api_key": "sk-local",
+                "provider_type": "openai_compatible",
+            }
+        raise AssertionError(f"unexpected model tier requested: {tier}")
 
     cm = MagicMock()
     cm.aget_model_api_config = AsyncMock(side_effect=_get_cfg)

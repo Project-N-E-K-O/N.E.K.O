@@ -695,10 +695,16 @@ class MemoryRecallReranker:
             and decision_config.get('model')
         ):
             try:
-                state_header = f"Query:\n{query_text}\n\nCandidates:\n"
+                # Cap the native query portion so state_header never consumes the
+                # entire DECISION_STATE_MAX_TOKENS budget; summary chat fallback
+                # continues to use the original query_text.
+                native_query_budget = max(256, DECISION_STATE_MAX_TOKENS // 4)
+                native_query_text = truncate_to_tokens(query_text, native_query_budget)
+                state_header = f"Query:\n{native_query_text}\n\nCandidates:\n"
+                header_tokens = count_tokens(state_header)
                 avail_tokens = max(
-                    256,
-                    DECISION_STATE_MAX_TOKENS - count_tokens(state_header) - 64,
+                    1,
+                    DECISION_STATE_MAX_TOKENS - header_tokens - 64,
                 )
                 native_lines: list[str] = []
                 native_candidate_ids: list[str] = []

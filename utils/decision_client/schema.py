@@ -68,21 +68,28 @@ def infer_decision_protocol(
     """
     m = str(model or "").strip().lower()
     url = str(base_url or "").strip().rstrip("/").lower()
+    parsed_url = urllib.parse.urlsplit(url) if url else None
+    url_path = (parsed_url.path or "").rstrip("/").lower() if parsed_url else ""
+    url_host = (parsed_url.hostname or "").lower() if parsed_url else ""
     prof_proto = str(profile_protocol or "").strip().lower()
     prof_model = str(profile_model or "").strip().lower()
 
-    if url.endswith("/systemone"):
+    if url_path.endswith("/systemone"):
         return "systemone"
-    if url.endswith("/alpha/decisions") or ("openrouter.ai" in url and url.endswith("/decisions")):
+    if url_path.endswith("/alpha/decisions") or (
+        url_host == "openrouter.ai" and url_path.endswith("/decisions")
+    ):
         return "openrouter_decisions"
-    if url.endswith("/v1beta/decisions") or ("generativelanguage.googleapis.com" in url and url.endswith("/decisions")):
+    if url_path.endswith("/v1beta/decisions") or (
+        url_host == "generativelanguage.googleapis.com" and url_path.endswith("/decisions")
+    ):
         return "gemini_decisions"
-    if url.endswith("/v1/decisions") or url.endswith("/decisions"):
+    if url_path.endswith("/v1/decisions") or url_path.endswith("/decisions"):
         return "openai_decisions"
 
     for prefix, proto in _KNOWN_NATIVE_MODEL_PREFIXES:
         if m.startswith(prefix):
-            if "openrouter.ai" in url and proto != "openrouter_decisions":
+            if url_host == "openrouter.ai" and proto != "openrouter_decisions":
                 return "openrouter_decisions"
             return proto
 
@@ -135,7 +142,7 @@ def resolve_decision_endpoint(
         if lower.endswith("/v1beta/openai"):
             return base[: -len("/openai")] + "/decisions"
         parsed = urllib.parse.urlsplit(base)
-        if parsed.hostname and "generativelanguage.googleapis.com" in parsed.hostname.lower():
+        if (parsed.hostname or "").lower() == "generativelanguage.googleapis.com":
             return "https://generativelanguage.googleapis.com/v1beta/decisions"
         return f"{base}/decisions"
 

@@ -46,7 +46,7 @@ def _clamp_prob(val: Any, default: float | None = None) -> float | None:
         return default
     try:
         f = float(val)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     if math.isnan(f) or math.isinf(f):
         return default
@@ -58,11 +58,30 @@ def _extract_numeric_score(val: Any, lo: float, hi: float) -> float | None:
         return None
     try:
         f = float(val)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if math.isnan(f) or math.isinf(f):
         return None
     return max(lo, min(hi, f))
+
+
+def _expected_score_from_probs(
+    levels: tuple[str, ...],
+    probs: Mapping[str, float],
+    max_idx: float,
+) -> float | None:
+    """Compute normalized expected 0-based score from positive level weights, or None."""
+    weight_sum = 0.0
+    weighted_total = 0.0
+    for idx, lbl in enumerate(levels):
+        w = probs.get(lbl)
+        if w is None or w <= 0.0:
+            continue
+        weight_sum += w
+        weighted_total += idx * w
+    if weight_sum <= 0.0:
+        return None
+    return _extract_numeric_score(weighted_total / weight_sum, 0.0, max_idx)
 
 
 def _normalize_probs_map(raw: Any) -> dict[str, float]:
@@ -229,16 +248,7 @@ class SystemOneAdapter(DecisionAdapter):
                 max_idx = float(len(q.levels) - 1)
                 score_val = _extract_numeric_score(item.get("score"), 0.0, max_idx)
                 if score_val is None:
-                    matched_probs = {lbl: probs[lbl] for lbl in q.levels if lbl in probs}
-                    if matched_probs:
-                        score_val = _extract_numeric_score(
-                            sum(
-                                idx * matched_probs.get(lbl, 0.0)
-                                for idx, lbl in enumerate(q.levels)
-                            ),
-                            0.0,
-                            max_idx,
-                        )
+                    score_val = _expected_score_from_probs(q.levels, probs, max_idx)
                 if score_val is None:
                     continue
                 answers[qid] = DecisionAnswer(
@@ -433,16 +443,7 @@ class OpenAIDecisionsAdapter(DecisionAdapter):
                     raw_score = item.get("score_index")
                 score_val = _extract_numeric_score(raw_score, 0.0, max_idx)
                 if score_val is None:
-                    matched_probs = {lbl: probs[lbl] for lbl in q.levels if lbl in probs}
-                    if matched_probs:
-                        score_val = _extract_numeric_score(
-                            sum(
-                                idx * matched_probs.get(lbl, 0.0)
-                                for idx, lbl in enumerate(q.levels)
-                            ),
-                            0.0,
-                            max_idx,
-                        )
+                    score_val = _expected_score_from_probs(q.levels, probs, max_idx)
                 if score_val is None:
                     continue
                 answers[qid] = DecisionAnswer(
@@ -624,17 +625,8 @@ class GeminiDecisionsAdapter(DecisionAdapter):
                 )
                 if raw_one_based is not None:
                     score_val: float | None = max(0.0, min(max_idx, raw_one_based - 1.0))
-                elif label_probs:
-                    score_val = _extract_numeric_score(
-                        sum(
-                            idx * label_probs.get(lbl, 0.0)
-                            for idx, lbl in enumerate(q.levels)
-                        ),
-                        0.0,
-                        max_idx,
-                    )
                 else:
-                    score_val = None
+                    score_val = _expected_score_from_probs(q.levels, label_probs, max_idx)
                 if score_val is None:
                     continue
                 answers[qid] = DecisionAnswer(

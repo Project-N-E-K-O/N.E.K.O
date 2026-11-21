@@ -1011,9 +1011,14 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             is_free = profile.get("is_free_version", False)
             _source_label = f"{profile.get('name', provider_key)}（决策模型）"
 
+            # Match runtime core_config.py: infer protocol from the provider's chat
+            # base URL (profile_openrouter_url) + selected model first, and only pick
+            # profile_decision_url when the resolved protocol is native. Otherwise a
+            # regular chat model override on Gemini/OpenRouter/Qwen would be forced onto
+            # the native endpoint by profile_decision_url's /decisions or /systemone suffix.
             resolved_protocol = infer_decision_protocol(
                 model,
-                profile_decision_url or profile_openrouter_url,
+                profile_openrouter_url,
                 profile_protocol=profile_protocol,
                 profile_model=profile_model,
             )
@@ -1052,7 +1057,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
         elif req.url and req.url.strip():
             override_url = req.url.strip()
-            if scope != "assist" or provider_key != "mimo" or not _is_mimo_token_plan_url(override_url):
+            if scope not in ("assist", "decision") or provider_key != "mimo" or not _is_mimo_token_plan_url(override_url):
                 return {"success": False, "error": "无效的 provider URL override", "error_code": "missing_params"}
             url_stripped = override_url
             url_candidates = [url_stripped]
