@@ -1662,6 +1662,11 @@
         "mimoTokenPlanKeyLabel": "MiMo Token Plan Key",
         "mimoTokenPlanKeyPlaceholder": "输入 Token Plan Key（tp-xxxxx）",
         "mimoTokenPlanKeyHint": "启用后，MiMo 只使用此 Token Plan Key 和端点；普通 MiMo API Key 会被锁定。",
+        "bailianWorkspaceIdLabel": "百炼业务空间 ID（决策模型）",
+        "bailianWorkspaceIdPlaceholder": "例如 llm-xxxxxxxx",
+        "bailianWorkspaceIdHint": "没填时，决策模型用普通聊天模型代替。业务空间 ID 就是 API Host 最前面那一段（如 llm-xxx），可在百炼控制台「业务空间管理」页或创建 API Key 的弹窗里找到，也可以直接粘贴整个 API Host。",
+        "bailianWorkspaceIdDocLink": "查看官方说明",
+        "bailianWorkspaceIdInvalid": "百炼业务空间 ID 格式不对：只能包含字母、数字和 -，最长 63 个字符",
         "mimoApiKeyLockedByTokenPlan": "已启用 MiMo Token Plan；此 Key 不会被使用"
     },
     "live2d": {
@@ -5747,7 +5752,12 @@
             "output_limit": "测试请求的输出额度不足",
             "unknown": "未知错误",
             "backend_unavailable": "后端服务不可用",
-            "invalid_response": "响应格式错误"
+            "invalid_response": "响应格式错误",
+            "invalid_workspace_id": "百炼业务空间 ID 格式无效"
+        },
+        "decisionFallback": {
+            "workspace_missing": "未填百炼业务空间 ID，决策模型暂用聊天模型",
+            "region_unsupported": "当前地域没有原生决策接口，决策模型用聊天模型"
         },
         "status": {
             "connected": "已连通",
