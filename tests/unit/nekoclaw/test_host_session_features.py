@@ -1230,6 +1230,68 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
         assert not read_snapshot(Path(session.session_dir)).refresh_on_resume
 
 
+@pytest.mark.parametrize("stands_at", ["last_at_work", "just_idle_for_long_enough"])
+async def test_a_timer_that_comes_due_before_the_wall_clock_has_the_session_idle_is_set_again_and_it_is_summed_up(
+    hosts, tmp_path, monkeypatch, stands_at
+):
+    # The timer runs by the loop's clock, the ledger by the wall clock. On
+    # Windows the wall clock moves in steps of about 15.6 ms, so the timer
+    # often comes due while the ledger has the session idle a little less
+    # than long enough. That look is to set the timer again for what is
+    # left, not give the summing up away. With an idle time that is not a
+    # whole number of float steps at wall-clock size (such as 0.05 s here),
+    # ``(last + after) - last`` falls a hair short of ``after``.
+    _idle_on(monkeypatch, after=30.0)
+    summary = [say("## Current Work\n- the CSV export is added"), _used(7_000, 60), finish()]
+    export = ScriptedLLM([*_long_work("export added"), summary])
+    host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=_small_window)
+    # The wall clock stands still from the start, at a fixed time (2025-11),
+    # so what the session's timestamp rounds to does not depend on today.
+    last = 1_763_000_000.0
+    wall = {"now": last}
+    monkeypatch.setattr(host.ledger, "_clock", lambda: wall["now"])
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    assert len(export.requests) == 5
+
+    # The wall clock stands where the session was last at work, or at
+    # ``last + after`` itself: in floats that is still a hair short of
+    # idle for long enough, so it is early there as well.
+    assert (await host.ledger.get_session(first.id)).last_active_at == last
+    up = last + 0.05
+    assert up - last < 0.05
+    wall["now"] = last if stands_at == "last_at_work" else up
+    # Each look, and whether the timer was set again by the time it was
+    # over (read then: a timer set again may come due right after).
+    looks: list[tuple[bool, bool]] = []
+    look = manager._idle_compact
+
+    async def looked(*args: Any, **kwargs: Any) -> bool:
+        result = await look(*args, **kwargs)
+        looks.append((result, first.id in manager._idle_timers))
+        return result
+
+    monkeypatch.setattr(manager, "_idle_compact", looked)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.05)
+    manager._schedule_idle_compact(first.id)
+
+    await wait_until(lambda: looks, what="the first look")
+    # Too early by the ledger: nothing was asked, and it is to be looked at again.
+    summed_up, set_again = looks[0]
+    assert summed_up is False and len(export.requests) == 5
+    assert set_again, "the summing up was given away instead of looked at again"
+
+    # The wall clock catches up: the next look sums it up.
+    wall["now"] = last + 1.0
+    await wait_until(lambda: len(export.requests) == 6, what="the request that sums it up")
+    await _idle_work_over(host)
+    assert (await host.ledger.get_session(first.id)).compacted_at is not None
+
+
 async def test_nothing_is_summed_up_unless_it_is_switched_on_and_worth_it(hosts, tmp_path, monkeypatch):
     export = ScriptedLLM(_long_work("export added"))
     scripts = {
