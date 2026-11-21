@@ -7282,8 +7282,10 @@ class TaskAgentManager:
                     # comes out a hair short of the idle time in floats
                     # (timestamps of the wall clock are large), and the
                     # session would never be found idle for long enough.
+                    # For the same reason a clock that reads ``up`` exactly
+                    # is still early here.
                     up = kept.last_active_at + float(TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS)
-                    if up > now and self._idle_compact_allowed(kept, up + _IDLE_TIMER_MARGIN_SECONDS):
+                    if up >= now and self._idle_compact_allowed(kept, up + _IDLE_TIMER_MARGIN_SECONDS):
                         too_early = up - now
                 return False
             # Counted from here on, before anything else is awaited.

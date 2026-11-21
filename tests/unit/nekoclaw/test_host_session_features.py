@@ -1091,8 +1091,9 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     assert len(export.requests) == requests_before + 1 and len(host.task_agents._idle_compacted_at) == 1
 
 
+@pytest.mark.parametrize("stands_at", ["last_at_work", "just_idle_for_long_enough"])
 async def test_a_timer_that_comes_due_before_the_wall_clock_has_the_session_idle_is_set_again_and_it_is_summed_up(
-    hosts, tmp_path, monkeypatch
+    hosts, tmp_path, monkeypatch, stands_at
 ):
     # The timer runs by the loop's clock, the ledger by the wall clock. On
     # Windows the wall clock moves in steps of about 15.6 ms, so the timer
@@ -1113,9 +1114,14 @@ async def test_a_timer_that_comes_due_before_the_wall_clock_has_the_session_idle
     await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
     assert len(export.requests) == 5
 
-    # The wall clock stands still where the session was last at work.
+    # The wall clock stands still where the session was last at work, or
+    # at ``last + after`` itself: in floats that is still a hair short of
+    # idle for long enough, so it is early there as well.
     last = (await host.ledger.get_session(first.id)).last_active_at
-    wall = {"now": last}
+    up = last + 0.05
+    if stands_at == "just_idle_for_long_enough":
+        assert up - last < 0.05, "the timestamp no longer rounds short; this case tests nothing"
+    wall = {"now": last if stands_at == "last_at_work" else up}
     monkeypatch.setattr(host.ledger, "_clock", lambda: wall["now"])
     looks: list[bool] = []
     look = manager._idle_compact
