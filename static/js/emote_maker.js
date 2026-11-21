@@ -108,6 +108,7 @@
     let toastTimer = null;
     let spineRenderer = null;
     let spineRendererGeneration = 0;
+    let captureEditorView = null;
     let spineAnimationFrameHandle = null;
     let spineAnimationLastTimestamp = 0;
 
@@ -1158,7 +1159,7 @@
         ];
         const query = String(state.assetQuery || '').trim().toLocaleLowerCase();
         const shown = query
-            ? entries.filter((entry) => `${entry.displayName || ''} ${entry.packageName || ''}`
+            ? entries.filter((entry) => `${templateLibraryModule.entryLabel(entry)} ${entry.displayName || ''} ${entry.packageName || ''}`
                 .toLocaleLowerCase().includes(query))
             : entries;
         if (!shown.length) {
@@ -4270,18 +4271,36 @@
 
     /** 导出气泡/按钮真正要导的那一组 —— 由气泡里的行决定，不是"当前下拉选中的那组"。 */
     async function exportGroup(group, exportTrigger, directoryPick) {
-        if (groupExportBusy) return;
+        if (groupExportBusy || packBusy) return;
         if (!group) return;
-        const generation = spineRendererGeneration;
         if (!hasSpineRenderer()) {
             // 没有运行时 captureGifFrames 只能给到当前画面 —— 宁可不导，也不下一个是
             // "每张都长一样"的包，那种东西看起来像成功了。
             showToast(t('emoteMaker.groupExportNoRuntime'));
             return;
         }
+        groupExportBusy = true;
+        groupExportAbort = false;
+        setPackBusy(true);
+        const trigger = exportTrigger && exportTrigger.nodeType === 1 ? exportTrigger : null;
+        const triggerLabel = trigger ? trigger.textContent : '';
+        if (trigger) trigger.textContent = t('emoteMaker.groupExportCancel');
+        try {
+            return await exportGroupNow(group, directoryPick);
+        } finally {
+            groupExportBusy = false;
+            setPackBusy(false);
+            setGroupExportStatus('');
+            if (trigger && trigger.isConnected) trigger.textContent = triggerLabel;
+            renderAll();
+        }
+    }
+
+    async function exportGroupNow(group, directoryPick) {
+        const generation = spineRendererGeneration;
         // 点击处已经把选择框打开了。这里再调一次只作为没经过那次点击的退路。
         const picked = await (directoryPick || requestExportDirectory());
-        if (picked === 'cancelled' || generation !== spineRendererGeneration) return;
+        if (picked === 'cancelled' || groupExportAbort || generation !== spineRendererGeneration) return;
         const savingToFolder = Boolean(picked);
         const planned = planGroupExportFor(
             group,
@@ -4326,13 +4345,7 @@
                 plan = planGroupExportFor(group, groupLibrary.MAX_BATCH, format).plan;
             }
         }
-        if (generation !== spineRendererGeneration || groupExportBusy) return;
-        groupExportBusy = true;
-        groupExportAbort = false;
-        setPackBusy(true);
-        const trigger = exportTrigger && exportTrigger.nodeType === 1 ? exportTrigger : null;
-        const triggerLabel = trigger ? trigger.textContent : '';
-        if (trigger) trigger.textContent = t('emoteMaker.groupExportCancel');
+        if (generation !== spineRendererGeneration || groupExportAbort) return;
         const previousSceneId = state.selectedSceneId;
         const previousAnimationId = state.animationId;
         const previousProgress = state.animationProgress;
@@ -4374,10 +4387,6 @@
             console.warn('[emote-maker] 整组导出失败', error);
             showToast(t(folder ? 'emoteMaker.groupExportZipFailed' : 'emoteMaker.exportGifFailed'));
         } finally {
-            groupExportBusy = false;
-            setPackBusy(false);
-            setGroupExportStatus('');
-            if (trigger && trigger.isConnected) trigger.textContent = triggerLabel;
             if (generation === spineRendererGeneration) {
                 state.adjustOverwrite = previousOverwrite;
                 state.selectedSceneId = previousSceneId;
@@ -4386,7 +4395,6 @@
                 state.animationPlaying = previousPlaying;
                 syncLiveCanvas({ autoplay: previousPlaying });
             }
-            renderAll();
         }
         if (!result) return;
         if (result.blob) {
@@ -5735,6 +5743,7 @@
             if (--lock.count) return;
             lock.restore();
             exportEditingLock = null;
+            renderAll();
         };
     }
 
@@ -6351,15 +6360,29 @@
         return pkg?.id || '';
     }
 
+    function retainCaptureEditorView() {
+        const previous = captureEditorView;
+        if (!previous || previous.generation !== spineRendererGeneration) {
+            captureEditorView = { generation: spineRendererGeneration, ...structuredClone({
+                selectedSceneId: state.selectedSceneId, animationId: state.animationId,
+                templateSkins: state.templateSkins, templateSlots: state.templateSlots,
+                adjustments: state.adjustments,
+            }) };
+        }
+        const held = captureEditorView;
+        return () => { if (captureEditorView === held) captureEditorView = previous; };
+    }
+
     function snapshotTemplateSession() {
         if (!templatePackage) return null;
+        const editor = captureEditorView?.generation === spineRendererGeneration ? captureEditorView : state;
         const pick = (list) => (Array.isArray(list) ? list.map((item) => ({ ...item })) : []);
         return {
             schemaVersion: 1,
             fingerprint: templateFingerprint(templatePackage),
             packageName: templatePackage.source?.packageName || '',
             displayName: templatePackage.model?.displayName || '',
-            sceneId: state.selectedSceneId || '',
+            sceneId: editor.selectedSceneId || '',
             groupId: state.groupId || '',
             groups: (Array.isArray(state.groups) ? state.groups : []).map((group) => ({ ...group })),
             shots: (Array.isArray(state.shots) ? state.shots : []).map((shot) => ({ ...shot })),
@@ -6369,10 +6392,10 @@
             packFormat: state.packFormat === 'layered' ? 'layered' : 'flat',
             packPriority: state.packPriority === 'emotion' ? 'emotion' : 'talking',
             character: {
-                skins: pick(state.templateSkins),
-                slots: pick(state.templateSlots),
+                skins: pick(editor.templateSkins),
+                slots: pick(editor.templateSlots),
             },
-            adjustments: { ...state.adjustments },
+            adjustments: { ...editor.adjustments },
             adjustOverwrite: state.adjustOverwrite,
             colorMode: state.colorMode,
             secondaryColor: state.secondaryColor,
@@ -6588,7 +6611,9 @@
 
     async function readTemplateTexture(key, path) {
         const response = await fetch(templateTextureUrl(key, path), { credentials: 'same-origin' });
-        return response.ok ? response.blob() : null;
+        if (response.status === 404) return null;
+        if (!response.ok) throw new Error('template-texture-read-failed');
+        return response.blob();
     }
 
     async function writeTemplateLibrary(key, resource, form) {
@@ -7318,6 +7343,7 @@
             adjustments: state.adjustments,
         };
         const previousPlaying = state.animationPlaying;
+        const releaseEditorView = retainCaptureEditorView();
         try {
             for (let index = 0; index < jobs.length; index += 1) {
                 if (generation !== spineRendererGeneration) return [];
@@ -7394,6 +7420,7 @@
                 });
             }
         } finally {
+            releaseEditorView();
             if (generation === spineRendererGeneration) {
                 if (!previewFps) setPackStatus('');
                 state.selectedSceneId = previousSceneId;
@@ -7594,7 +7621,7 @@
             const to = still
                 ? Math.min(duration, from + 1 / fps)
                 : (wanted > 0 ? Math.min(duration, from + wanted) : duration);
-            const timeWindow = { from, to: Math.max(to, from + 1 / fps) };
+            const timeWindow = { from, to };
             return {
                 stateKey: output.stateKey,
                 sceneId: output.look.sceneId,
@@ -7686,6 +7713,8 @@
             templateCanvasStatus.hidden = nativePreview;
         }
         updateHistoryButtons();
+        exportEditingLock?.disableControls();
+        syncBatchExportTrigger();
         void renderCanvas();
     }
 
@@ -7825,6 +7854,7 @@
             spineRenderer.pause();
         }
 
+        const releaseEditorView = retainCaptureEditorView();
         try {
             capturingFrames = true;
             if (colorDraft) applyNativeCharacterState({ render: false });
@@ -7874,6 +7904,7 @@
             }
             return frames;
         } finally {
+            releaseEditorView();
             captureLook = null;
             capturingFrames = false;
             if (generation === spineRendererGeneration) {
@@ -8262,10 +8293,13 @@
             const button = $(selector);
             if (button) button.disabled = packBusy || Boolean(exportEditingLock);
         });
-        const stop = $('#export-group-open-btn');
-        if (stop && (groupExportBusy || exportEditingLock)) stop.disabled = !groupExportBusy;
+        syncBatchExportTrigger();
     }
 
+    function syncBatchExportTrigger() {
+        const trigger = $('#export-group-open-btn');
+        if (trigger) trigger.disabled = Boolean(exportEditingLock) && !groupExportBusy;
+    }
 
 
 
@@ -8426,9 +8460,12 @@
 
     async function importTemplateFileNow(file, {
         displayName = '', fromArchive = false, restoreKey = '', sourceName = '', selection = {},
-        builtinPackage = null,
+        builtinPackage = null, statusBeforeImport = null,
     } = {}) {
         if (!file) return false;
+        const previousStatus = statusBeforeImport || {
+            message: templateImportStatus?.textContent || '', tone: templateImportStatus?.dataset.tone || 'muted',
+        };
         sourceName = sourceName || (fromArchive ? displayName : String(file.name || '').replace(/\.zip$/i, ''));
         if (templateArchiveButton) templateArchiveButton.disabled = true;
         setTemplateImportStatus(t('emoteMaker.importingTemplate'));
@@ -8452,9 +8489,12 @@
                 payload = await response.json().catch(() => ({}));
                 if (payload.code === 'selection_required') {
                     const path = await chooseSpineResource(payload);
-                    if (!path) return false;
+                    if (!path) {
+                        setTemplateImportStatus(previousStatus.message, previousStatus.tone);
+                        return false;
+                    }
                     return await importTemplateFileNow(file, { displayName, fromArchive, restoreKey, sourceName,
-                        selection: { ...selection, [payload.role]: path } });
+                        selection: { ...selection, [payload.role]: path }, statusBeforeImport: previousStatus });
                 }
                 if (!response.ok || !payload.success || !payload.package) {
                     const error = new Error(payload.error || t('emoteMaker.importFailed'));

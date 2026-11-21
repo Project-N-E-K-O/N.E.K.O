@@ -23,6 +23,8 @@ def editor(page, running_server, emote_template_library_dir):
         importStageImages, persistExportSettings, previewGroupMember, renderLook,
         applyTemplateFromRegistry, currentTemplateKey, setPackBusy, buildPngtuberPackage, flatStates, exportGroup,
         captureStageSource, openStateStage,
+        restoreStageImages,
+        stageImages: () => [...stageUserImages].map(([id,image])=>({id,name:image.name})),
         renderer: () => spineRenderer,
         generation: () => spineRendererGeneration,
     };
@@ -415,17 +417,17 @@ def test_batch_stop_becomes_available_when_folder_preparation_overlaps_a_capture
             () => new Promise(resolve => {window.reviewFinishBlockingCapture = resolve;}));
     }''')
     editor.wait_for_function("typeof window.reviewFinishBlockingCapture === 'function'")
-    assert editor.locator('#export-group-open-btn').is_disabled()
+    assert editor.locator('#export-group-open-btn').is_enabled()
     assert len(pending) == 1
-    pending[0].fulfill(json={'success':True,'directory':'Z:/test-only-intercepted','folder':'review-stop'})
-    editor.wait_for_function("!document.querySelector('#export-group-open-btn').disabled")
-    assert editor.locator('#adjust-scale').is_disabled()
     editor.locator('#export-group-open-btn').click(force=True)
+    pending[0].fulfill(json={'success':True,'directory':'Z:/test-only-intercepted','folder':'review-stop'})
+    editor.evaluate('async () => {await reviewBatch;}')
+    assert editor.locator('#adjust-scale').is_disabled()
     editor.evaluate('''async () => {
         reviewFinishBlockingCapture();
         await Promise.all([reviewBlockingCapture, reviewBatch]);
     }''')
-    assert len(writes) == 1
+    assert writes == []
     assert not editor.locator('.emote-maker-page').get_attribute('aria-busy')
     assert editor.locator('#export-group-open-btn').is_enabled()
 
@@ -471,6 +473,114 @@ def test_batch_preparation_cancels_when_the_selected_template_changes(editor, wa
     assert downloads == []
     assert not editor.locator('.emote-maker-page').get_attribute('aria-busy')
     assert editor.locator('#export-png-btn').is_enabled()
+
+
+def test_batch_directory_preparation_blocks_a_second_package_export(editor):
+    _import(editor, spine_zip())
+    result = editor.evaluate('''async () => {
+        const q=reviewEditor;
+        let release;
+        const group={id:'waiting',name:'waiting',items:[{kind:'scene',ref:q.getImportedScenes()[0].id}]};
+        const batch=q.exportGroup(group,null,new Promise(r=>{release=r;}));
+        try {
+            const pack=await q.buildPngtuberPackage();
+            return {pack:pack===null,locked:document.querySelector('#adjust-scale').disabled};
+        } finally {release('cancelled');await batch;}
+    }''')
+    assert result == {'pack': True, 'locked': True}
+    assert editor.locator('#adjust-scale').is_enabled()
+    assert not editor.locator('.emote-maker-page').get_attribute('aria-busy')
+
+
+def test_template_library_search_matches_alias_and_original_name(editor):
+    _import(editor, spine_zip(), 'original-character.zip')
+    editor.locator('.template-lib-card:not([data-template-built-in])').dblclick()
+    rename = editor.locator('.template-lib-rename')
+    rename.fill('周末版')
+    rename.press('Enter')
+    search = editor.locator('#asset-search-input')
+    for query in ['周末版', 'ORIGINAL-CHARACTER', 'no-such-template']:
+        search.fill(query)
+        assert editor.locator('.template-lib-card').count() == (0 if query == 'no-such-template' else 1)
+
+
+@pytest.mark.parametrize('pack_format', ['flat', 'layered'])
+def test_full_package_keeps_a_fifty_millisecond_spine_clip_at_eight_fps(editor, pack_format):
+    from PIL import Image
+
+    _import(editor, spine_zip())
+    exported = editor.evaluate('''async format => {
+        const q=reviewEditor, scene=q.getImportedScenes()[0];
+        Object.assign(q.state,{packFormat:format,packMode:'graph',exportResolution:32,exportFps:8,
+            nodeGraph:NekoEmoteNodeGraph.normalizeGraph({schemaVersion:1,nodes:[
+                {id:'source',type:'source.scene',params:{sceneId:scene.id}},
+                {id:'idle',type:'output.state',params:{stateKey:'idle_image',startAt:.2,seconds:.05}},
+            ],links:[{from:'source',to:'idle',fromSocket:'look',toSocket:'look'}]})});
+        const pack=await q.buildPngtuberPackage();
+        if(!pack) throw new Error('short-clip-package-failed');
+        return pack.files.map(f=>({path:f.path,data:btoa(String.fromCharCode(...f.data))}));
+    }''', pack_format)
+    files = {entry['path'].split('/', 1)[1]: base64.b64decode(entry['data']) for entry in exported}
+    if pack_format == 'flat':
+        with Image.open(io.BytesIO(files['idle.gif'])) as gif:
+            assert gif.n_frames == 1
+            assert gif.info['duration'] == 50
+    else:
+        metadata = json.loads(files['metadata.json'])
+        layer = next(layer for layer in metadata['layers'] if layer['name'] == 'idle_image')
+        state = next(state for state in layer['states'] if state['visible'])
+        assert state['frames'] == 1
+        assert state['frames'] / (state['animation_speed'] * 4) == pytest.approx(.05)
+
+
+@pytest.mark.parametrize('capturing', [False, True])
+def test_pagehide_saves_the_editor_view_instead_of_temporary_capture_appearance(editor, capturing):
+    _import(editor, _two_skins())
+    editor.wait_for_function('''async () => {
+        const key=reviewEditor.currentTemplateKey();
+        return (await (await fetch('/api/emote-maker/library')).json()).entries.some(e=>e.key===key);
+    }''')
+    result = editor.evaluate('''async capturing => {
+        const q=reviewEditor;
+        q.state.adjustments={x:23,y:-8,rotation:31,scale:123};
+        q.persistTemplateToLibrary();
+        let temporary=false;
+        if(capturing){
+            q.state.nodeGraph=NekoEmoteNodeGraph.normalizeGraph({schemaVersion:1,nodes:[
+                {id:'root',type:'source.default',params:{}},
+                {id:'skin',type:'mod.skin',params:{groups:[{group:'skin',value:'alternate'}]}},
+                {id:'move',type:'mod.transform',params:{x:147}},
+                {id:'idle',type:'output.state',params:{stateKey:'idle_image'}},
+            ],links:[['root','skin'],['skin','move'],['move','idle']].map(([from,to])=>({
+                from,to,fromSocket:'look',toSocket:'look'}))});
+            let sent=false;
+            window.reviewCaptureHook=()=>{
+                if(sent) return;sent=true;
+                temporary=q.state.adjustments.x===170 && q.state.templateSkins[0].value==='alternate';
+                window.dispatchEvent(new PageTransitionEvent('pagehide'));
+            };
+            try {await q.captureStageSource('root:idle_image','full',100);}catch(_){}
+            delete window.reviewCaptureHook;
+        }else{
+            q.state.adjustments.x=55;
+            q.state.templateSkins=[{group:'skin',value:'alternate'}];
+            window.dispatchEvent(new PageTransitionEvent('pagehide'));
+        }
+        const last=JSON.parse(localStorage.getItem('neko-emote-maker-last-template'));
+        const library=JSON.parse(localStorage.getItem('neko-emote-maker-template-library'));
+        const entry=library.entries.find(e=>e.key===last.fingerprint);
+        return {temporary,lastX:last.adjustments.x,libraryX:entry.session.adjustments.x,
+            lastSkin:last.character.skins[0].value,librarySkin:entry.session.character.skins[0].value,key:entry.key};
+    }''', capturing)
+    expected_x, expected_skin = (23, 'default') if capturing else (55, 'alternate')
+    assert result['temporary'] is capturing
+    assert result['lastX'] == result['libraryX'] == expected_x
+    assert result['lastSkin'] == result['librarySkin'] == expected_skin
+    editor.reload(wait_until='networkidle')
+    editor.locator(f'.template-lib-card[data-template-key="{result["key"]}"] .template-lib-open').click()
+    editor.wait_for_function('Boolean(reviewEditor.renderer()?.loaded)')
+    assert editor.evaluate('reviewEditor.state.adjustments.x') == expected_x
+    assert editor.evaluate('reviewEditor.state.templateSkins[0].value') == expected_skin
 
 
 def test_thirteenth_template_keeps_saved_edits_and_owned_archives_remain_accessible(editor):
@@ -681,6 +791,8 @@ def test_standalone_gif_after_group_preview_uses_selected_animation_and_restores
 def test_template_import_blocks_exports_and_keeps_resource_selection_usable(editor, outcome):
     _import(editor, spine_zip(), 'A.zip')
     original_key = editor.evaluate('reviewEditor.currentTemplateKey()')
+    status_before = editor.locator('#template-import-status').text_content()
+    tone_before = editor.locator('#template-import-status').get_attribute('data-tone')
     candidate = spine_zip('other', invalid_image=outcome == 'failure')
     if outcome.startswith('selection_'):
         result = io.BytesIO()
@@ -730,6 +842,9 @@ def test_template_import_blocks_exports_and_keeps_resource_selection_usable(edit
             dialog.locator('.emote-confirm-cancel').click()
     succeeded = outcome in ('success', 'selection_choose')
     assert editor.evaluate('reviewPendingImport') is succeeded
+    if outcome == 'selection_cancel':
+        assert editor.locator('#template-import-status').text_content() == status_before
+        assert editor.locator('#template-import-status').get_attribute('data-tone') == tone_before
     assert (editor.evaluate('reviewEditor.currentTemplateKey()') != original_key) is succeeded
     assert editor.evaluate('reviewImportReadbacks') == 0
     assert downloads == []
@@ -737,6 +852,85 @@ def test_template_import_blocks_exports_and_keeps_resource_selection_usable(edit
     editor.evaluate("reviewEditor.state.exportFormat='png'")
     with editor.expect_download(timeout=15000):
         editor.keyboard.press('Control+s')
+
+
+def test_cancelling_the_second_resource_choice_restores_the_original_status(editor):
+    _import(editor, spine_zip())
+    before = (editor.locator('#template-import-status').text_content(),
+              editor.locator('#template-import-status').get_attribute('data-tone'))
+    result = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(spine_zip('other'))) as source, zipfile.ZipFile(result, 'w') as target:
+        target.writestr('assets/other.json', source.read('assets/other.json'))
+        target.writestr('assets/second.json', source.read('assets/other.json'))
+        target.writestr('assets/a.atlas', source.read('assets/other.atlas'))
+        target.writestr('assets/b.atlas', source.read('assets/other.atlas'))
+        target.writestr('assets/page.png', source.read('assets/page.png'))
+    editor.evaluate('''encoded => {
+        window.reviewNestedImport=reviewEditor.importTemplateFile(new File([
+            Uint8Array.from(atob(encoded),c=>c.charCodeAt(0))],'multi.zip'));
+    }''', base64.b64encode(result.getvalue()).decode('ascii'))
+    dialog = editor.locator('.emote-template-resource-choice')
+    dialog.wait_for(state='visible')
+    dialog.locator('select').click()
+    editor.keyboard.press('ArrowDown')
+    editor.keyboard.press('Enter')
+    with editor.expect_response(lambda response: '/api/emote-maker/import' in response.url
+                                and response.request.method == 'POST'):
+        dialog.locator('.emote-confirm-ok').click()
+    editor.wait_for_function("document.querySelector('.emote-template-resource-choice select')?.options[1]?.value.endsWith('.atlas')")
+    dialog.locator('.emote-confirm-cancel').click()
+    assert editor.evaluate('reviewNestedImport') is False
+    assert (editor.locator('#template-import-status').text_content(),
+            editor.locator('#template-import-status').get_attribute('data-tone')) == before
+    assert editor.locator('#export-png-btn').is_enabled()
+
+
+@pytest.mark.parametrize('failure_status', [503, 404])
+def test_stage_texture_restore_retries_temporary_errors_but_keeps_missing_file_handling(editor, failure_status):
+    from urllib.parse import unquote
+
+    _import(editor, spine_zip())
+    seed = editor.evaluate('''async () => {
+        const q=reviewEditor;
+        const files=['one.png','two.png'].map((name,index)=>{
+            const canvas=document.createElement('canvas');canvas.width=canvas.height=8;
+            const ctx=canvas.getContext('2d');ctx.fillStyle=index?'#0000ff':'#00ff00';ctx.fillRect(0,0,8,8);
+            return new File([Uint8Array.from(atob(canvas.toDataURL().split(',')[1]),c=>c.charCodeAt(0))],name,{type:'image/png'});
+        });
+        await q.importStageImages(files);
+        const id=q.stageImages().find(image=>image.name==='two.png').id;
+        Object.assign(q.state,{packMode:'graph',exportResolution:32,exportFps:10,
+            nodeGraph:NekoEmoteNodeGraph.normalizeGraph({schemaVersion:1,nodes:[
+                {id:'image',type:'source.image',params:{imageId:id}},
+                {id:'idle',type:'output.state',params:{stateKey:'idle_image',seconds:.1}},
+            ],links:[{from:'image',to:'idle',fromSocket:'look',toSocket:'look'}]})});
+        q.persistTemplateToLibrary();
+        return {key:q.currentTemplateKey(),id};
+    }''')
+    editor.reload(wait_until='networkidle')
+    editor.locator(f'.template-lib-card[data-template-key="{seed["key"]}"] .template-lib-open').click()
+    editor.wait_for_function('Boolean(reviewEditor.renderer()?.loaded)')
+    attempts = []
+
+    def texture(route):
+        if f'StageImages/{seed["id"]}.png' in unquote(route.request.url):
+            attempts.append(route.request.url)
+            if len(attempts) == 1:
+                route.fulfill(status=failure_status, json={'error': 'expected-test-failure'})
+                return
+        route.continue_()
+
+    editor.route('**/api/emote-maker/library/texture?*', texture)
+    editor.evaluate('async () => {await reviewEditor.restoreStageImages();}')
+    assert len(attempts) == 1
+    assert seed['id'] not in [image['id'] for image in editor.evaluate('reviewEditor.stageImages()')]
+    result = editor.evaluate('''async () => {
+        reviewEditor.state.packMode='graph';
+        return Boolean(await reviewEditor.buildPngtuberPackage());
+    }''')
+    assert result is (failure_status == 503)
+    assert len(attempts) == (2 if failure_status == 503 else 1)
+    assert (seed['id'] in [image['id'] for image in editor.evaluate('reviewEditor.stageImages()')]) is (failure_status == 503)
 
 
 def test_template_activation_does_not_overtake_an_already_queued_export(editor):
@@ -940,6 +1134,15 @@ def test_invalid_png_does_not_enter_or_persist_in_the_image_library(editor):
         await reviewEditor.importStageImages([new File(['not a PNG'], 'bad.png', {type: 'image/png'})]);
     }""")
     assert uploads == []
+    assert editor.evaluate('reviewEditor.stageImages()') == []
+    editor.evaluate('''async () => {
+        const canvas=document.createElement('canvas');canvas.width=canvas.height=8;
+        canvas.getContext('2d').fillRect(0,0,8,8);
+        const bytes=Uint8Array.from(atob(canvas.toDataURL().split(',')[1]),c=>c.charCodeAt(0));
+        await reviewEditor.importStageImages([new File([bytes],'valid.png',{type:'image/png'})]);
+    }''')
+    assert [image['name'] for image in editor.evaluate('reviewEditor.stageImages()')] == ['valid.png']
+    assert uploads
 
 
 def test_reimport_restores_its_own_groups_skin_and_transform(editor):
