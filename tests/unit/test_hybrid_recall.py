@@ -1836,3 +1836,41 @@ class TestVectorDecodeCache(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── emb_svc log label ────────────────────────────────────────────────
+
+
+def _service_in_state(state):
+    from memory.embeddings import EmbeddingService
+    svc = EmbeddingService(model_dir="", enabled=False, ram_gb=0.0, has_vnni=False)
+    svc._state = state
+    return svc
+
+
+def test_embedding_service_state_splits_init_and_loading():
+    from memory import hybrid_recall as hr
+    from memory.embeddings import EmbeddingState
+
+    for state, label in (
+        (EmbeddingState.INIT, "not_ready:init"),
+        (EmbeddingState.LOADING, "not_ready:loading"),
+        (EmbeddingState.READY, "ready"),
+    ):
+        svc = _service_in_state(state)
+        with patch("memory.embeddings.get_embedding_service", return_value=svc):
+            assert hr._embedding_service_state() == label
+
+
+def test_embedding_service_state_disabled_and_errors():
+    from memory import hybrid_recall as hr
+
+    disabled = MagicMock()
+    disabled.is_available.return_value = False
+    disabled.is_disabled.return_value = True
+    disabled.disable_reason.return_value = "user_disabled_via_config"
+    with patch("memory.embeddings.get_embedding_service", return_value=disabled):
+        assert hr._embedding_service_state() == "disabled:user_disabled_via_config"
+
+    with patch("memory.embeddings.get_embedding_service", side_effect=RuntimeError("x")):
+        assert hr._embedding_service_state() == "unknown(RuntimeError)"
