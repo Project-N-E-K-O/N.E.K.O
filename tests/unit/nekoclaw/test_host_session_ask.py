@@ -698,6 +698,52 @@ async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word
     await wait_until(recorded, what="the answer delivery to be on record")
 
 
+@pytest.mark.parametrize("change", ["next_run", "closing", "ended"])
+async def test_delayed_answer_follows_its_still_working_commission(hosts, tmp_path, monkeypatch, change):
+    wait_model, model = _held()
+    scripts = {BUILD: model}
+    host = _host(hosts, tmp_path, scripts)
+    asker = await _asker_at_work(host, scripts)
+    child, _ = await host.ledger.create(
+        lanlan_name="Lan", title="question", dispatch_text="question", source="ask", route="task_agent",
+        parent_id=asker.id, name="ask-1",
+    )
+    session = host.task_agents._sessions[asker.id]
+    told = _steered_into(host, asker.id)
+    entered, proceed = asyncio.Event(), asyncio.Event()
+    start = call_audit.start_call
+
+    async def held_start(ledger, owner, kind, target):
+        if target == "receive_answer" and not entered.is_set():
+            entered.set()
+            await proceed.wait()
+        return await start(ledger, owner, kind, target)
+
+    monkeypatch.setattr(call_audit, "start_call", held_start)
+    sending = asyncio.create_task(host.task_agents._tell_parent(child, "completed", "answer fixture"))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        if change == "next_run":
+            host.task_agents._run_over(asker.id)
+        if change == "closing":
+            session.closing = True
+        elif change == "ended":
+            await host.ledger.transition(asker.id, "cancelled", reason="user stop")
+        proceed.set()
+        await asyncio.wait_for(sending, 5)
+        if change == "closing":
+            assert asker.id in host.task_agents._queue
+            assert "answer fixture" in host.task_agents._resume[asker.id]
+        elif change == "ended":
+            assert not told and asker.id not in host.task_agents._queue
+        else:
+            assert len(told) == 1 and "answer fixture" in told[0]
+    finally:
+        proceed.set()
+        wait_model.set()
+        await sending
+
+
 async def test_with_the_clock_set_back_the_wait_is_until_enough_of_the_hour_is_old(ledger):
     # Written, the clock moved on, written again, and set back: more than the hour allows are
     # in it. Asked again once the first of them is an hour old, as many as allowed would still

@@ -120,6 +120,30 @@ async def test_no_release_to_reused_session_after_audit_write(env, monkeypatch):
     assert (last["status"], last["reason"]) == ("denied", "delivery_revoked")
 
 
+@pytest.mark.parametrize("fails_at", ["reservation", "permission", "capacity"])
+async def test_unavailable_answer_admission_preserves_ordinary_text(env, monkeypatch, fails_at):
+    from nekoclaw.host.task_agents import _Unsaid
+
+    host, (source, sender), _ = env
+    session = _Session(source.id, session_id=sender.id)
+    parts = ["other work", _Unsaid("answer fixture", source.id)]
+
+    async def unavailable(*args, **kwargs):
+        raise OSError("fixture")
+
+    if fails_at == "capacity":
+        monkeypatch.setattr(call_audit, "BUDGET_BYTES", 0)
+    elif fails_at == "permission":
+        monkeypatch.setattr(host.permissions, "check", unavailable)
+    else:
+        monkeypatch.setattr(call_audit, "start_call", unavailable)
+    async with host.task_agents._answer_delivery(session, parts) as render:
+        assert render(parts) == "other work\n\nthe session answer could not be authorized for delivery"
+    if fails_at == "permission":
+        row = (await trace(host, source))[-1]
+        assert (row["status"], row["reason"]) == ("failed", "delivery_unavailable")
+
+
 async def test_the_runtime_receiving_an_answer_starts_its_own_calls(env):
     from nekoclaw.host.task_agents import _Unsaid
 

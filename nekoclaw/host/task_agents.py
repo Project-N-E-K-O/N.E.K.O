@@ -2386,7 +2386,8 @@ class TaskAgentManager:
             # prompt, it is the user's until the run is seen at work.
             for note in self._notes.pop(commission.id, []):
                 session.carried.append(note)
-                await self._send_text(runtime, session, "steer", note)
+                if not await self._send_text(runtime, session, "steer", note):
+                    await self._wake_closed_parent(commission.id, note)
             return True
         except asyncio.CancelledError:
             if not self._closed and self._close_unstarted(session):
@@ -2661,23 +2662,28 @@ class TaskAgentManager:
             yield "\n\n".join
             return
 
-        def withheld(texts: list[str]) -> str:
-            return "\n\n".join(DENIED_BY_SETTINGS if isinstance(part, _Unsaid) else part for part in texts)
+        def withheld(texts: list[str], notice: str = DENIED_BY_SETTINGS) -> str:
+            return "\n\n".join(notice if isinstance(part, _Unsaid) else part for part in texts)
 
         owner = session.commission_id
         live = self._permissions.current_run(owner)
         async with AsyncExitStack() as stack:
             # The answer was produced elsewhere. Its delivery belongs to the recipient.
             stack.enter_context(call_audit.commission_entry())
+            record = None
             try:
                 record = await stack.enter_async_context(call_audit.call(self._ledger, owner, "session_action", "receive_answer"))
-            except (call_audit.AuditFull, call_audit.CommissionEnded):
-                yield withheld
+                record.scope_ref = session.session_id
+                decision = await self._permissions.check(
+                    owner, "outside_read", scope=SessionActionScope("host:session", "receive_answer", owner), hold_once=True,
+                )
+            except Exception as exc:  # Fail closed without stopping the recipient's other work.
+                if record is not None:
+                    record.status, record.reason = "failed", "delivery_unavailable"
+                logger.warning("could not register answer delivery (%s)", type(exc).__name__)
+                with call_audit.commission_entry():
+                    yield lambda texts: withheld(texts, "the session answer could not be authorized for delivery")
                 return
-            record.scope_ref = session.session_id
-            decision = await self._permissions.check(
-                owner, "outside_read", scope=SessionActionScope("host:session", "receive_answer", owner), hold_once=True,
-            )
             grant = decision.grant_id
             stack.callback(self._permissions.release_grant, grant)
             record.grant_id = self._permissions.authorization_ref(grant)
@@ -2708,8 +2714,8 @@ class TaskAgentManager:
         opening: bool = False,
         wakes: Iterable[int] | None = None,
         human: bool | None = None,
-    ) -> None:
-        """Send ``prompt`` or ``steer`` text to a session, counting it.
+    ) -> bool:
+        """Send and count the text; return False when an answer needs routing to the current run.
 
         Counted before it is sent: the end of a run that has not taken it may
         be handled while the command is on its way. ``opening`` says that
@@ -2735,9 +2741,12 @@ class TaskAgentManager:
         if isinstance(text, _Unsaid):
             live = self._permissions.current_run(session.commission_id)
             async with self._answer_delivery(session, [text]) as render:
-                if live() and self._sessions.get(session.commission_id) is session and not session.closing:
-                    await self._send_text(runtime, session, command, render([text]), opening=opening, wakes=wakes, human=False)
-            return
+                if (
+                    live() and self._sessions.get(session.commission_id) is session and not session.closing
+                    and (session.stands is None or session.stands.status not in ENDED_STATUSES)
+                ):
+                    return await self._send_text(runtime, session, command, render([text]), opening=opening, wakes=wakes, human=False)
+            return False
         said = {} if human else {"human": False}
         riding = list(wakes if wakes is not None else getattr(text, "wakes", ()))
         session.sent += 1
@@ -2768,6 +2777,7 @@ class TaskAgentManager:
             if woke:
                 session.run_ended = True
             raise
+        return True
 
     def _keep_unsent(self, session: _Session) -> None:
         """Keep what the user said that a failed start did not get into the session, for the next start.
@@ -4550,7 +4560,8 @@ class TaskAgentManager:
         # Before the parent's next model request, so a parent that waits for
         # its task agents sees the result as soon as it looks; an idle parent is
         # started by it.
-        await self._send_text(runtime, parent, "steer", message)
+        if not await self._send_text(runtime, parent, "steer", message):
+            await self._wake_closed_parent(parent_id, message)
 
     async def _wake_closed_parent(self, parent_id: str, message: str) -> None:
         """Take up again a working parent whose idle session was closed, a child's result its next work.
@@ -4573,34 +4584,41 @@ class TaskAgentManager:
         Returns whether the message is on its way to it: handed over, or
         going along with the work it is about to be given.
         """
-        if self._closed:
-            return False
-        if parent_id in self._queue or parent_id in self._requeueing or parent_id in self._taking_up:
-            # Already on its way back: this result goes along with it.
-            self._notes.setdefault(parent_id, []).append(message)
-            return True
-        parent = await self._ledger.get(parent_id)
-        if parent is None or parent.route != "task_agent" or parent.status != "working":
-            return False
-        if not await self._know_session(parent_id):
-            return False
-        session = self._sessions.get(parent_id)
-        woken = isinstance(message, _Handed)
-        if woken and not self._is_switched_on():
-            # What a wake brings starts no work with NekoClaw switched off
-            # (switched off while this was awaited): it waits (``hand_over``).
-            return False
-        if session is not None and session.ready and self._runtime_of(session) is not None:
-            if woken and (session.awaiting_prompt or (session.question is not None and not session.question.done())):
-                # It came back while the ledger was read, and came to wait
-                # for its user: what a wake brings waits until that is
-                # settled, as it does in ``hand_over``, and does not set it
-                # to work with its question open.
+        while not self._closed:
+            current = self._sessions.get(parent_id)
+            starting = parent_id in self._taking_up and (current is None or not current.ready and not current.closing)
+            if parent_id in self._queue or parent_id in self._requeueing or starting:
+                # Already on its way back: this result goes along with it.
+                self._notes.setdefault(parent_id, []).append(message)
+                return True
+            parent = await self._ledger.get(parent_id)
+            if parent is None or parent.route != "task_agent" or parent.status != "working":
                 return False
-            # It came back, and was given its work, while the ledger was read.
-            await self._send_text(self._runtime_of(session), session, "steer", message)
-            return True
-        if session is not None or parent_id in self._queue or parent_id in self._requeueing:
+            if not await self._know_session(parent_id):
+                return False
+            session = self._sessions.get(parent_id)
+            woken = isinstance(message, _Handed)
+            if woken and not self._is_switched_on():
+                # What a wake brings starts no work with NekoClaw switched off
+                # (switched off while this was awaited): it waits (``hand_over``).
+                return False
+            closing_answer = isinstance(message, _Unsaid) and session is not None and session.closing
+            if session is not None and session.ready and not closing_answer and self._runtime_of(session) is not None:
+                if woken and (session.awaiting_prompt or (session.question is not None and not session.question.done())):
+                    # It came back while the ledger was read, and came to wait
+                    # for its user: what a wake brings waits until that is
+                    # settled, as it does in ``hand_over``, and does not set it
+                    # to work with its question open.
+                    return False
+                # It came back, and was given its work, while the ledger was read.
+                if await self._send_text(self._runtime_of(session), session, "steer", message):
+                    return True
+                # Its run or runtime changed during admission. Look up the owner again.
+                continue
+            break
+        else:
+            return False
+        if (session is not None and not closing_answer) or parent_id in self._queue or parent_id in self._requeueing:
             # It is on its way back: this goes along with its work.
             self._notes.setdefault(parent_id, []).append(message)
             return True

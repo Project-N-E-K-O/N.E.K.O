@@ -133,3 +133,53 @@ async def test_pinned_task_control_is_reserved_before_execution(tmp_path, tool, 
         assert [seed_id] == seeded and not is_error
         assert "1 pending" in text
         assert persisted_todos() == (arguments["todos"] if allow else original)
+
+
+async def test_pinned_dsh_completes_its_automatic_goal_round(tmp_path):
+    binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
+    if not binary:
+        pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to the pinned dsh executable")
+    events = Recorder()
+    admissions = []
+    goal = {}
+
+    async def begin(sid, payload):
+        session = runtime._sessions[sid]
+        admissions.append((payload["tool"], session.in_turn, session.tool_calls[payload["call_id"]][1]))
+        return {"allow": True}
+
+    runtime = DshRuntime(
+        events, HostCallbacks(task_control_begin=begin),
+        launch=lambda: profile.DshLaunch(home=tmp_path / "dsh", executable=Path(binary)),
+        environment={**os.environ, "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"},
+    )
+
+    def respond(request):
+        number = len(server.requests)
+        if number == 1:
+            return [sse_tool_call("create_goal", {"objective": "local fixture", "max_goal_rounds": 2}), sse_finish("tool_calls")]
+        if number == 2:
+            goal.update(json.loads(request["messages"][-1]["content"])["goal"])
+        if number == 3:
+            args = {"action": "complete", "goal_id": goal["id"], "revision": goal["revision"]}
+            return [sse_tool_call("update_goal", args, "finish_goal"), sse_finish("tool_calls")]
+        return [sse_text("Done"), sse_finish()]
+
+    try:
+        with FakeOpenAIServer(respond) as server:
+            spec = make_spec(tmp_path, model=ModelConfig(
+                model="local-fixture", base_url=server.base_url, api_key="local", auto_extra_body=False,
+            ))
+            await runtime.start(spec)
+            await events.wait_for(lambda e: e["type"] == "started", timeout=60)
+            await runtime.prompt(spec.session_id, "Set a goal and complete it in the automatic round.")
+            ended = await events.wait_for(
+                lambda e: e["type"] == "tool_end" and e["tool_name"] == "update_goal", timeout=30,
+            )
+            assert not ended["is_error"], ended
+            assert admissions[-1] == ("update_goal", False, {
+                "action": "complete", "goal_id": goal["id"], "revision": goal["revision"],
+            })
+            assert json.loads(ended["text"])["goal"]["phase"] == "complete"
+    finally:
+        await runtime.shutdown()
