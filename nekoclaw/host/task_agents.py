@@ -4994,10 +4994,18 @@ class TaskAgentManager:
         label = f"{model[1]} ({domain})" if domain else str(model[1])
         recipient = "model:" + hashlib.sha256(json.dumps(model).encode()).hexdigest()
         current = self._permissions.current_run(commission)
-        rules = self._permissions.current_rules(commission, category, "managed_delivery")
+        effective_category = category
+        if (category == "outside_read" and self._space is not None and isinstance(payload.get("path"), str)
+                and await self._space.contains(payload["path"])):
+            effective_category = "workdir_files"
+        rules = self._permissions.current_rules(commission, effective_category, "managed_delivery")
         grants = []
         origins = payload.get("origins", [])
-        if not isinstance(origins, list) or any(not isinstance(ref, str) or ref not in session.job_sources for ref in origins):
+        if not isinstance(origins, list) or not all(isinstance(ref, str) for ref in origins):
+            return {"allow": False}
+        if tool == "job_list":
+            origins = [ref for ref in origins if ref in session.job_sources and session.job_sources[ref][0]()]
+        if any(ref not in session.job_sources for ref in origins):
             return {"allow": False}
         sources = [session.job_sources[ref][0] for ref in origins]
 
@@ -5046,14 +5054,17 @@ class TaskAgentManager:
             async with call_audit.call(self._ledger, commission, "transfer_content", recipient) as transfer:
                 transfer.scope_ref = scope_ref
                 transfer.grant_id = record.grant_id
-                if (not eligible() or await self._permissions.forbidden(category)
+                if (not eligible() or await self._permissions.forbidden(effective_category)
                         or await self._permissions.forbidden("managed_delivery") or not eligible()):
                     transfer.status = "denied"
                     transfer.reason = "delivery_expired"
                     return False
             return transfer.closed and eligible()
 
-        return await self._execution_audit.begin(commission, session_id, kind, tool, permit, deliver, live)
+        answer = await self._execution_audit.begin(commission, session_id, kind, tool, permit, deliver, live)
+        if tool == "job_list" and answer.get("allow"):
+            answer["origins"] = origins
+        return answer
 
     async def _cb_permission(self, session_id: str, payload: dict[str, Any], *, audit=None, recipient="", label="", grants=None) -> dict[str, Any]:
         session_id = self._at_work_in(session_id)

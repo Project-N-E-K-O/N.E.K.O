@@ -737,3 +737,35 @@ async def test_completion_notice_inlines_small_output_and_defers_large_output(tm
     assert registry.read(large) == "y" * 5000 + "\n"  # still unread, for job_output
     assert status_line(large) == "[status: completed, exit code: 0]"
     assert finished == [small, large]
+
+
+async def test_refused_job_output_is_unread_until_delivered(tmp_path):
+    tools = {}
+    count = 0
+    async def audit(_, payload):
+        nonlocal count
+        if payload["phase"] == "begin":
+            key = str(len(tools))
+            tools[key] = payload["tool"]
+            return {"allow": True, "receipt": key}
+        if payload["phase"] == "job_notice":
+            return {"allow": False}
+        if payload["phase"] == "finish" and tools[payload["receipt"]] == "job_output":
+            count += 1
+            return {"allow": count != 1}
+        return {"allow": True}
+
+    cmd = "Write-Output preserved-data" if WINDOWS else "echo preserved-data"
+    llm = ScriptedLLM([[call(SHELL, {"command": cmd, "description": "fixture", "run_in_background": True}),
+                        finish("tool_calls")],
+                       *[[call("job_output", {"job_id": "job-1", "wait": True}, f"read-{i}"),
+                          finish("tool_calls")] for i in range(3)], [say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=audit))
+    try:
+        session.prompt("collect")
+        await events.wait_ended("s1", timeout=60)
+        replies = {m["tool_call_id"]: m["content"] for batch in llm.requests for m in batch if m.get("tool_call_id")}
+        assert "could not be delivered" in replies["read-0"] and "preserved-data" not in replies["read-0"]
+        assert "preserved-data" in replies["read-1"] and "no new output" in replies["read-2"]
+    finally:
+        await session.close()

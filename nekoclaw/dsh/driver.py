@@ -236,6 +236,7 @@ class _Session:
     finished_sources: dict[str, str] = field(default_factory=dict)
     kept_calls: set[str] = field(default_factory=set)
     job_origins: dict[str, str] = field(default_factory=dict)
+    listed_jobs: dict[str, list[str]] = field(default_factory=dict)
     audit_writes: set[asyncio.Task] = field(default_factory=set)
     # Permission requests being decided right now.
     asks: set[asyncio.Task[Any]] = field(default_factory=set)
@@ -785,6 +786,7 @@ class DshRuntime:
 
             requested = call_id in session.execution_receipts
             receipt = session.execution_receipts.pop(call_id, None)
+            session.listed_jobs.pop(call_id, None)
             finished = session.finished_sources.pop(call_id, None)
             kept = call_id in session.kept_calls
             session.kept_calls.discard(call_id)
@@ -798,10 +800,16 @@ class DshRuntime:
                   and "native_execution_action" in self._host.capabilities):
                 # Rejected by dsh before it even asked ACP. ACP reports only failure.
                 outcome = {"phase": "native_failure", "tool": name}
+            callback = "native_execution_action"
+            offer = self._tools.offer(session.id)
+            prepared = offer.prepared_fetches.pop(call_id, None) if offer else None
+            if prepared is not None:
+                callback = "execution_action"
+                outcome = {"phase": "finish", "receipt": prepared[1], "status": "cancelled"}
             if outcome is not None:
                 async def close_record():
                     try:
-                        await self._host.call(session.id, "native_execution_action", outcome)
+                        await self._host.call(session.id, callback, outcome)
                     except Exception as exc:  # The native effect has already happened.
                         logger.warning("closing a dsh action record failed (%s)", type(exc).__name__)
 
@@ -847,6 +855,8 @@ class DshRuntime:
         output_scope = OutputScope(receipt)
         binding = OUTPUT_SCOPE.set(output_scope)
         try:
+            if action == "list" and tool == "job_list":
+                return {"ids": session.listed_jobs.get(call_id, [])}
             if action == "job" and tool in {"bash", "pwsh"}:
                 job_id = request.get("text")
                 if not isinstance(job_id, str) or not job_id or len(job_id) > 192:
@@ -944,6 +954,9 @@ class DshRuntime:
         process = session.process
         given = arguments if isinstance(arguments, dict) else {}
         gateway_prefix = f"mcp__{profile.GATEWAY_SERVICE}__"
+        if (name == HOST_TOOL_PREFIX + "web_fetch" and "execution_action" in self._host.capabilities
+                and "native_execution_action" in self._host.capabilities):
+            return await self._tools.prepare_fetch(session.id, call_id, given)
         if name in profile.GATED_TOOLS:
             if not _well_formed(name, arguments):
                 return False
@@ -1009,6 +1022,9 @@ class DshRuntime:
             receipt = reply.get("receipt")
             if reply.get("allow") is not True or not isinstance(receipt, str) or not receipt:
                 return False
+            if name == "job_list":
+                permitted = set(reply.get("origins", []))
+                session.listed_jobs[call_id] = [job for job, origin in session.job_origins.items() if origin in permitted]
             session.execution_receipts[call_id] = receipt
             return True
         if "decide_permission" not in self._host.capabilities:
@@ -1597,18 +1613,22 @@ class DshRuntime:
                     reason = "aborted"
                     break
         finally:
-            session.run = None
-            # Over: a call of it that is still waiting is not taken for
-            # one of the run that starts next.
-            session.runs += 1
+            try:
+                if session.audit_writes:
+                    await asyncio.gather(*session.audit_writes)
+            finally:
+                offer = self._tools.offer(session.id)
+                if offer:
+                    offer.prepared_fetches.clear()
+                session.execution_receipts.clear()
+                session.finished_sources.clear()
+                session.kept_calls.clear()
+                session.listed_jobs.clear()
+                session.tool_calls.clear()
+                session.runs += 1
+                session.run = None
         if session.closing is not None or self._sessions.get(session.id) is not session:
             return
-        if session.audit_writes:
-            await asyncio.gather(*session.audit_writes)
-        session.execution_receipts.clear()
-        session.finished_sources.clear()
-        session.kept_calls.clear()
-        session.tool_calls.clear()
         if session.aborting and reason == "completed":
             # Stopped between two turns, or before the first one was sent.
             reason = "aborted"

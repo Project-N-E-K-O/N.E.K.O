@@ -26,6 +26,7 @@ import asyncio
 import inspect
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -37,6 +38,14 @@ from nekoclaw.runtime.tools.base import (
     define_tool,
 )
 from nekoclaw.runtime.tools.procs import ShellProcess
+
+@dataclass
+class JobHandoff:
+    visible_origins: frozenset[str]
+    acknowledge: Callable[[], None] | None = None
+
+
+JOB_HANDOFF: ContextVar[JobHandoff | None] = ContextVar("job_handoff", default=None)
 
 JobStatus = Literal["running", "stopping", "completed", "killed", "failed"]
 
@@ -207,8 +216,8 @@ class JobRegistry:
         """Stop every running job without a completion notice; returns how many."""
         stopped = 0
         for job in list(self._jobs.values()):
+            job.notice_suppressed = True
             if job.active:
-                job.notice_suppressed = True
                 self.kill(job, reason)
                 stopped += 1
         return stopped
@@ -240,7 +249,8 @@ class JobRegistry:
         return render_delta(out, err, out_lossy or err_lossy, spill), (out_next, err_next)
 
     def commit(self, job: Job, cursors: tuple[int, int]) -> None:
-        job.stdout_offset, job.stderr_offset = cursors
+        job.stdout_offset = max(job.stdout_offset, cursors[0])
+        job.stderr_offset = max(job.stderr_offset, cursors[1])
 
     def read(self, job: Job) -> str:
         """Return the output since the previous read and mark it as read."""
@@ -335,10 +345,23 @@ def build_job_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> lis
                 raise ToolError("wait aborted")
             if outcome == "interrupted":
                 released = "user steered"
-        body = registry.read(job)
-        notice = registry.pending_notices.pop(job.id, None)
-        if notice is not None and ctx.inbox.withdraw_notice(notice.handle):
-            # This result covers everything the withdrawn notice would have said.
+        body, cursors = registry.peek(job)
+        notice = registry.pending_notices.get(job.id)
+
+        def acknowledge():
+            registry.commit(job, cursors)
+            if notice is not None and registry.pending_notices.get(job.id) is notice:
+                registry.pending_notices.pop(job.id, None)
+                return ctx.inbox.withdraw_notice(notice.handle)
+            return False
+
+        handoff = JOB_HANDOFF.get()
+        if handoff is None:
+            collect_notice = acknowledge()
+        else:
+            handoff.acknowledge = acknowledge
+            collect_notice = notice is not None and ctx.inbox.notice_queued(notice.handle)
+        if collect_notice and notice is not None:
             body = f"{notice.held or ''}{body}"
         if not body:
             body = "(no new output)"
@@ -348,6 +371,9 @@ def build_job_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> lis
     async def job_list(args: dict[str, Any], call: ToolCallInfo) -> str:
         del args, call
         jobs = registry.visible()
+        handoff = JOB_HANDOFF.get()
+        if handoff is not None:
+            jobs = [job for job in jobs if job.origin in handoff.visible_origins]
         if not jobs:
             return "(no background jobs)"
         return "\n".join(

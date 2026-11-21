@@ -3985,3 +3985,30 @@ async def test_fetch_uses_other_tool_policy_once_per_action(hosts, tmp_path, mon
     await wait_status(host, receipt.commission_id, "done")
     assert fetched == [url, url, url]
     assert questions == ["other"] * expected
+
+
+@pytest.mark.parametrize("tighten_at_delivery", [False, True])
+async def test_space_read_uses_workdir_rule_at_delivery(hosts, tmp_path, monkeypatch, tighten_at_delivery):
+    path = tmp_path / "shared-knowledge.txt"
+    path.write_text("knowledge fixture", encoding="utf-8")
+    llm = ScriptedLLM([[call("read", {"file_path": str(path)}, "space-file"), finish("tool_calls")],
+                       _report("ready", "done")])
+    host = _host(hosts, tmp_path, llm)
+    await host.permission_store.set_mode("outside_read", "deny")
+
+    async def contains(candidate):
+        return Path(candidate) == path
+
+    manager = host.task_agents
+    monkeypatch.setattr(manager._space, "contains", contains)
+    original = manager._cb_execution_action
+    async def check(session, payload):
+        if tighten_at_delivery and payload.get("phase") == "finish":
+            await host.permission_store.set_mode("workdir_files", "deny")
+        return await original(session, payload)
+
+    monkeypatch.setattr(manager, "_cb_execution_action", check)
+    receipt = await _dispatch(host, "Read the shared knowledge")
+    await wait_status(host, receipt.commission_id, "done")
+    result = next(m["content"] for m in llm.requests[1] if m.get("tool_call_id") == "space-file")
+    assert ("knowledge fixture" in result) == (not tighten_at_delivery)

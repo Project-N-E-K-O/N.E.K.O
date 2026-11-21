@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from nekoclaw.runtime.tools.protected_outputs import OUTPUT_SCOPE, ProtectedOutput
+from nekoclaw.runtime.tools.protected_outputs import OUTPUT_SCOPE, OutputSpool, ProtectedOutput
 from nekoclaw.runtime.loop.tools import (
     AgentTool,
     AgentToolResult,
@@ -91,9 +91,10 @@ class SpillStore:
     """
 
     def __init__(self, directory: Path) -> None:
-        self.directory = directory
+        self.directory = Path(os.path.abspath(directory))
         self.protected: dict[Path, ProtectedOutput] = {}
         self._closed = False
+        self._spool: OutputSpool | None = None
         self._lock = threading.Lock()
         # None until the directory has been looked at.
         self._counter: int | None = None
@@ -134,7 +135,9 @@ class SpillStore:
             with self._lock:
                 if self._closed:
                     return None
-                self.protected[path] = ProtectedOutput(self.directory, scope.receipt)
+                if self._spool is None:
+                    self._spool = OutputSpool(self.directory)
+                self.protected[path] = ProtectedOutput(self._spool, scope.receipt)
         except OSError:
             return None
         scope.retained = True
@@ -143,11 +146,11 @@ class SpillStore:
     def close(self) -> None:
         with self._lock:
             self._closed = True
-            outputs = tuple(self.protected.values())
+            spool = self._spool
         # Retain the closed handles until the store is discarded. A late writer
         # must never turn a now-inaccessible private reference into a plain file.
-        for output in outputs:
-            output.close()
+        if spool is not None:
+            spool.close()
 
     def save(self, hint: str, text: str) -> Path | None:
         """Write ``text`` as UTF-8 and return its path, or ``None`` on failure."""
@@ -198,6 +201,10 @@ class SessionInbox:
         session is woken with it.
         """
         raise NotImplementedError
+
+    def notice_queued(self, handle: object) -> bool:
+        """Whether a notice can still be withdrawn with the result that covers it."""
+        return False
 
     def withdraw_notice(self, handle: object) -> bool:
         """Remove a queued notice; returns False when the model already has it."""

@@ -248,6 +248,9 @@ async def test_the_listener_is_local_and_asks_for_a_token(endpoint) -> None:
     assert [sock.getsockname()[0] for sock in sockets] == ["127.0.0.1"] and listener.port not in (None, 0)
     async with httpx.AsyncClient(trust_env=False) as client:
         good = await client.post(listener.tools_url, headers={"Authorization": f"Bearer {token}"}, json=listing)
+        unavailable = await client.post(f"http://127.0.0.1:{listener.port}/internal/retained-output",
+                                        headers={"Authorization": f"Bearer {token}"}, json=listing)
+        assert unavailable.status_code == 404
         none = await client.post(listener.tools_url, json=listing)
         wrong = await client.post(listener.tools_url, headers={"Authorization": "Bearer nonsense"}, json=listing)
         # A process's token opens the model endpoint, not a session's tools, and the other way round.
@@ -721,3 +724,35 @@ async def test_managed_fetch_is_checked_before_returning_mcp_content(tmp_path, m
     assert [p["phase"] for _, p in calls] == ["begin", "finish"]
     assert calls[0][1]["tool"] == "web_fetch" and len(calls[0][1]["scope_ref"]) == 64
     assert url not in str(calls) and "fixture page body" not in str(calls)
+
+
+async def test_fetch_preflight_is_outside_the_timed_call_and_consumed_once(tmp_path, monkeypatch):
+    from config import nekoclaw_settings
+    from nekoclaw.runtime.tools import web
+
+    arrived = asyncio.Event()
+    release = asyncio.Event()
+    phases = []
+    async def audit(_, payload):
+        phases.append(payload["phase"])
+        if payload["phase"] == "begin":
+            arrived.set()
+            await release.wait()
+        return {"allow": True, "receipt": "original"}
+    async def fetch(url):
+        return "fixture page"
+    monkeypatch.setattr(web, "web_fetch", fetch)
+    monkeypatch.setattr(nekoclaw_settings, "DSH_HOST_TOOL_SECONDS", 0.1)
+    tools = HostTools(HostCallbacks(execution_action=audit, native_execution_action=audit))
+    _open(tools, tmp_path)
+    arguments = {"url": "https://example.invalid/test"}
+    first = asyncio.create_task(tools.prepare_fetch("s1", "native-call", arguments))
+    await arrived.wait()
+    await asyncio.sleep(0.15)
+    assert not first.done()
+    release.set()
+    assert await first
+    result = await tools.call("s1", "web_fetch", arguments)
+    assert result["content"][0]["text"] == "fixture page"
+    repeated = await tools.call("s1", "web_fetch", arguments)
+    assert repeated["isError"] and phases == ["begin", "check", "finish"]

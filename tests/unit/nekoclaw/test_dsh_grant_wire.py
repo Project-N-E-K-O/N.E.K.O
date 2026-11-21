@@ -165,10 +165,15 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path):
         pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to the pinned dsh executable")
     shell, command = ("pwsh", "Write-Output kept-job-text") if os.name == "nt" else ("bash", "echo kept-job-text")
     begins = []
+    lists = []
 
     async def action(_, payload):
         if payload["phase"] == "begin":
             begins.append(payload)
+            if payload["tool"] == "job_list":
+                allowed = payload["origins"] if not lists else []
+                lists.append(allowed)
+                return {"allow": True, "receipt": f"list-{len(lists)}", "origins": allowed}
             return {"allow": payload.get("tool") != "job_output", "receipt": "original-command"}
         return {"allow": True}
 
@@ -188,7 +193,10 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path):
             match = re.search(r"started background job ([\w-]+)", response)
             if match:
                 job_ids.append(match.group(1))
-                return [sse_tool_call("job_output", {"job_id": job_ids[0]}, "output"), sse_finish("tool_calls")]
+        if job_ids and len(lists) < 2:
+            return [sse_tool_call("job_list", {}, f"list{len(lists)}"), sse_finish("tool_calls")]
+        if not any(p["tool"] == "job_output" for p in begins):
+            return [sse_tool_call("job_output", {"job_id": job_ids[0]}, "output"), sse_finish("tool_calls")]
         return [sse_text("Done"), sse_finish()]
 
     try:
@@ -201,6 +209,43 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path):
             await events.wait_ended(spec.session_id, timeout=60)
         assert job_ids and [p.get("origins") for p in begins if p["tool"] == "job_output"] == [["original-command"]]
         replies = [m["content"] for req in server.requests for m in req["messages"] if m["role"] == "tool"]
-        assert all("kept-job-text" not in reply for reply in replies)
+        assert lists == [["original-command"], []]
+        listed = [req["messages"][-1]["content"] for req in server.requests
+                  if req["messages"][-1].get("tool_call_id") in {"list0", "list1"}]
+        assert len(listed) == 2 and job_ids[0] in listed[0] and job_ids[0] not in listed[1], listed
+        assert "kept-job-text" not in replies[-1]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_pinned_dsh_fetch_uses_prepared_host_receipt(tmp_path, monkeypatch):
+    from nekoclaw.runtime.tools import web
+
+    binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
+    if not binary:
+        pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to the pinned dsh executable")
+    phases = []
+    async def audit(_, payload):
+        phases.append(payload["phase"])
+        return {"allow": True, "receipt": "prepared-web"}
+    async def fetch(url):
+        return "local web fixture"
+    monkeypatch.setattr(web, "web_fetch", fetch)
+    events = Recorder()
+    runtime = DshRuntime(events, HostCallbacks(execution_action=audit, native_execution_action=audit),
+                         launch=lambda: profile.DshLaunch(home=tmp_path / "dsh", executable=Path(binary)),
+                         environment={**os.environ, "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"})
+    replies = iter([[sse_tool_call("mcp__host__web_fetch", {"url": "https://example.invalid/test"}),
+                     sse_finish("tool_calls")], [sse_text("Done"), sse_finish()]])
+    try:
+        with FakeOpenAIServer(lambda _: next(replies)) as server:
+            spec = make_spec(tmp_path, model=ModelConfig(model="fixture", base_url=server.base_url,
+                                                         api_key="local", auto_extra_body=False))
+            await runtime.start(spec)
+            assert (await events.wait_for(lambda e: e["type"] in ("started", "error"), timeout=60))["type"] == "started"
+            await runtime.prompt(spec.session_id, "Fetch the fixture.")
+            await events.wait_ended(spec.session_id, timeout=60)
+        assert "local web fixture" in str(server.requests[-1]["messages"][-1])
+        assert phases == ["begin", "check", "finish"]
     finally:
         await runtime.shutdown()

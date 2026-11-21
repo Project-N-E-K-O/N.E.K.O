@@ -1504,6 +1504,10 @@ class TaskAgentSession(SessionInbox):
             self._begin_run(message)
         return message
 
+    def notice_queued(self, handle: object) -> bool:
+        queue = self.harness.queued_messages
+        return any(message is handle for message in (*queue.steering, *queue.follow_up))
+
     def withdraw_notice(self, handle: object) -> bool:
         return isinstance(handle, CustomMessage) and self.harness.remove_queued(handle)
 

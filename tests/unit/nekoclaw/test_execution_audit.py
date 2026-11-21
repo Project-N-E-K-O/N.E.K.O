@@ -115,3 +115,60 @@ def test_late_spill_writer_cannot_create_a_plain_file_after_close(tmp_path):
     buffer.close()
     assert not reference.exists()
     assert not list(tmp_path.iterdir())
+
+
+def test_private_outputs_share_one_file_and_keep_interleaved_bytes_separate(tmp_path, monkeypatch):
+    from nekoclaw.runtime.tools.base import SpillStore
+    from nekoclaw.runtime.tools.protected_outputs import OutputScope
+
+    monkeypatch.chdir(tmp_path)
+    store = SpillStore(type(tmp_path)("out"))
+    try:
+        outputs = []
+        for n in range(100):
+            key = store.reserve("data", scope=OutputScope(str(n)))
+            assert key.is_absolute()
+            output = store.protected[key]
+            output.write(f"start-{n}".encode())
+            outputs.append(output)
+        for n, output in enumerate(outputs):
+            output.write(f"-end-{n}".encode())
+        assert len({id(output.spool.file) for output in outputs}) == 1
+        for n, output in enumerate(outputs):
+            with output.reader() as reader:
+                expected = f"start-{n}-end-{n}".encode()
+                assert reader.peek(len(expected)) == expected
+                assert reader.read() == expected
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-32"])
+def test_oversize_bom_text_is_searchable_by_keyword(tmp_path, encoding):
+    import threading
+    import time
+    import regex
+    from nekoclaw.runtime.tools import fs, search
+    from nekoclaw.runtime.tools.base import ToolError
+
+    document = tmp_path / "source.txt"
+    document.write_text("会议纪要\n" * 8000 + "needle 议定\n", encoding=encoding)
+    with pytest.raises(ToolError, match="Use grep"):
+        fs.read_file(document, offset=1, limit=1)
+    matches = search.grep_files(document, regex.compile("needle"), None, tmp_path,
+                                search._Budget(threading.Event(), time.monotonic() + 15),
+                                case_insensitive_globs=False)
+    assert len(matches) == 1 and matches[0].line == "needle 议定"
+
+
+def test_long_combined_question_includes_all_choices():
+    from nekoclaw.host.reports import render_question
+    from config.nekoclaw_settings import QUESTION_TEXT_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    question = {"kind": "permission", "category": "outside_read", "options": ["once", "session", "deny"],
+                "detail": {"tool": "read", "path": "path/" * 900, "content_to": "model/" * 1000}}
+    rendered = render_question("work " * 600, question, "en")
+    short = render_question("work", {**question, "detail": {"path": "file", "content_to": "model"}}, "en")
+    assert count_tokens(rendered) <= QUESTION_TEXT_MAX_TOKENS
+    assert rendered.endswith(short.split("model")[-1])

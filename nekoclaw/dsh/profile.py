@@ -82,6 +82,7 @@ GATED_TOOLS: tuple[str, ...] = ("read", "read_image", "glob", "grep", "write", "
 # counterparts. (dsh's ``web_fetch`` is not among them: it is switched off,
 # see ``build_patch``.)
 UNASKED_TOOLS: tuple[str, ...] = (
+    "job_list", "job_output", "job_kill",
     "create_goal",
     "get_goal",
     "update_goal",
@@ -136,6 +137,9 @@ export function apply(ctx, config) {
   const prefixes = Array.isArray(config?.unaskedPrefixes) ? config.unaskedPrefixes : []
   const asked = new Set(Array.isArray(config?.asked) ? config.asked : [])
   ctx.on('tools/pre-execute', async (exec, next) => {
+    if (exec.name === config?.fetchTool && exec.parent !== undefined) {
+      return {kind: 'deny', reason: 'No authorized program recipient.'}
+    }
     if (!asked.has(exec.name) && (unasked.has(exec.name) || prefixes.some(prefix => exec.name.startsWith(prefix)))) {
       return next()
     }
@@ -214,6 +218,10 @@ export function apply(ctx, config) {
         else if (typeof saved.text === 'string') { display = saved.text; result = textOnly(exec, display) }
       }
       result ??= await next()
+      if (exec.name === 'job_list' && Array.isArray(result.value)) {
+        const allowed = new Set((await request(session, exec.callId, 'list')).ids)
+        result = {value: result.value.filter(job => allowed.has(job.id))}
+      }
       if (['pwsh', 'bash'].includes(exec.name) && typeof result.value?.jobId === 'string') {
         await request(session, exec.callId, 'job', result.value.jobId)
       }
@@ -308,6 +316,7 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path,
     the whole configuration of the row it names.
     """
     from config.nekoclaw_settings import DSH_MODEL_RETRIES, DSH_SPILL_KEPT_DAYS
+    from nekoclaw.runtime.execution import JOB_TOOLS
     from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
     from config.prompts.prompts_nekoclaw import TASK_AGENT_IDENTITY
     from config.prompts.prompts_nekoclaw_dsh import DSH_HOST_TOOLS_SECTION, HOST_TOOL_PREFIX
@@ -403,9 +412,10 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path,
                             "outputURL": endpoint,
                             "keyVariable": KEY_VARIABLE, "readBytes": READ_MAX_BYTES,
                             "fetchTool": HOST_TOOL_PREFIX + "web_fetch"} if managed_execution else {}),
-                        "unasked": list(UNASKED_TOOLS),
+                        "unasked": [name for name in UNASKED_TOOLS if not managed_execution or name not in JOB_TOOLS],
                         "unaskedPrefixes": [HOST_TOOL_PREFIX],
-                        "asked": [f"{HOST_TOOL_PREFIX}{name}" for name in ASKED_HOST_TOOLS],
+                        "asked": [f"{HOST_TOOL_PREFIX}{name}" for name in ASKED_HOST_TOOLS]
+                                 + ([f"{HOST_TOOL_PREFIX}web_fetch"] if managed_execution else []),
                     },
                 }
             ]

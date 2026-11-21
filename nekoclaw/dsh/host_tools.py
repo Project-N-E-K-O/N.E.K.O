@@ -121,6 +121,7 @@ class _Offer:
     tools: dict[str, AgentTool] = field(default_factory=dict)
     output_context: ToolContext | None = None
     readers: dict[str, AgentTool] = field(default_factory=dict)
+    prepared_fetches: dict[str, tuple[str, str]] = field(default_factory=dict)
     running: dict[asyncio.Task[Any], _Cancelled] = field(default_factory=dict)
     # The tasks that wait for the host on behalf of its calls; see ``_SessionHost``.
     asking: set[asyncio.Task[Any]] = field(default_factory=set)
@@ -151,6 +152,18 @@ class _SessionHost:
         if task is not None:
             self._offer.asking.add(task)
         try:
+            if (name == "execution_action" and payload.get("phase") == "begin" and payload.get("tool") == "web_fetch"
+                    and "native_execution_action" in self.capabilities):
+                # Only this offer's registered MCP implementation can consume its preflight.
+                for call_id, (scope, receipt) in self._offer.prepared_fetches.items():
+                    if scope == payload.get("scope_ref"):
+                        del self._offer.prepared_fetches[call_id]
+                        check = await self._host.call(session_id, name, {"phase": "check", "receipt": receipt})
+                        if check.get("allow") is True:
+                            return {"allow": True, "receipt": receipt}
+                        await self._host.call(session_id, name, {"phase": "finish", "receipt": receipt, "status": "cancelled"})
+                        break
+                return {"allow": False}
             return await self._host.call(session_id, name, payload)
         finally:
             if task is not None:
@@ -264,6 +277,28 @@ class HostTools:
             work.cancel()
         for asking in list(offer.asking):
             asking.cancel()
+
+    async def prepare_fetch(self, session_id: str, call_id: str, arguments: dict[str, Any]) -> bool:
+        from nekoclaw.runtime.execution import resource_ref
+        from nekoclaw.runtime.permissions import classify
+
+        offer = self._offers.get(session_id)
+        if (not offer or not offer.output_context or "web_fetch" not in offer.tools or not call_id
+                or call_id in offer.prepared_fetches or not isinstance(arguments.get("url"), str)):
+            return False
+        request = classify("web_fetch", arguments, offer.output_context.workdir)
+        scope = resource_ref(request, arguments)
+        decision = await self._host.call(session_id, "execution_action", {
+            **request.to_json(), "phase": "begin", "scope_ref": scope,
+        })
+        receipt = decision.get("receipt")
+        if decision.get("allow") is not True or not isinstance(receipt, str) or not receipt:
+            return False
+        if self._offers.get(session_id) is not offer:
+            await self._host.call(session_id, "execution_action", {"phase": "finish", "receipt": receipt, "status": "cancelled"})
+            return False
+        offer.prepared_fetches[call_id] = scope, receipt
+        return True
 
     def names(self, session_id: str) -> list[str]:
         offer = self._offers.get(session_id)

@@ -36,12 +36,15 @@ it releases the lock while matching text and stops a match at a time limit.
 from __future__ import annotations
 
 import asyncio
+import codecs
+import io
 import os
 import shutil
 import stat
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -428,6 +431,24 @@ def preview_line(line: str, max_bytes: int = GREP_MAX_LINE_BYTES, *, match_start
     return f"{kept} (line truncated)"
 
 
+@contextmanager
+def _grep_lines(path, protected):
+    with (protected.reader() if protected is not None else open(path, "rb")) as source:
+        sample = source.peek(BINARY_SAMPLE_BYTES)[:BINARY_SAMPLE_BYTES]
+        if sample.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+            encoding = "utf-32"
+        elif sample.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+            encoding = "utf-16"
+        else:
+            yield None if _NUL in sample else source.readline
+            return
+        text = io.TextIOWrapper(source, encoding=encoding, errors="replace")
+        try:
+            yield lambda size: text.readline(size).encode("utf-8")
+        finally:
+            text.detach()
+
+
 def _search_file(
     path: Path,
     shown: str,
@@ -444,13 +465,12 @@ def _search_file(
     """
     added = 0
     try:
-        with (protected.reader() if protected is not None else open(path, "rb")) as handle:
-            if _NUL in handle.read(BINARY_SAMPLE_BYTES):
+        with _grep_lines(path, protected) as readline:
+            if readline is None:
                 return 0
-            handle.seek(0)
             number = 0
             while True:
-                raw = handle.readline(GREP_LINE_MAX_BYTES + 1)
+                raw = readline(GREP_LINE_MAX_BYTES + 1)
                 if not raw:
                     break
                 number += 1
@@ -462,7 +482,7 @@ def _search_file(
                     # Skip the rest of the line without holding it in memory.
                     while True:
                         budget.check()
-                        rest = handle.readline(GREP_LINE_MAX_BYTES)
+                        rest = readline(GREP_LINE_MAX_BYTES)
                         if not rest or rest.endswith(b"\n"):
                             break
                 if raw.endswith(b"\n"):

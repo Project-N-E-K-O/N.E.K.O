@@ -142,7 +142,11 @@ def _permission_subject(question: dict[str, Any], lang: str, max_tokens: int) ->
     amounts = {name: str(detail.get(name) or "") for name in ("used", "more")}
     action = categories.get(category, categories["other"]).format(detail=specific, **amounts).strip()
     if detail.get("content_to"):
-        destination = categories["managed_delivery_content"].format(detail=detail["content_to"])
+        recipient = str(detail["content_to"])
+        if count_tokens(recipient) > max_tokens // 2:
+            room = max_tokens // 4
+            recipient = truncate_head_tail_tokens(recipient, room, room, separator=_loc(PERMISSION_DETAIL_CUT_MARK, lang))
+        destination = categories["managed_delivery_content"].format(detail=recipient)
         return f"{action} · {destination}"
     return action
 
@@ -182,6 +186,9 @@ def render_question(title: str, question: dict[str, Any], lang: str) -> str:
 
             if count_tokens(text) > QUESTION_TEXT_MAX_TOKENS:
                 text = words["permission"].format(title="", what=what, options=" / ".join(offered))
+                if count_tokens(text) > QUESTION_TEXT_MAX_TOKENS:
+                    what = _permission_subject(question, lang, PERMISSION_SUBJECT_MAX_TOKENS // 2)
+                    text = words["permission"].format(title="", what=what, options=" / ".join(offered))
     elif kind == "confirmation":
         text = words["confirm"].format(title=title, question=str(question.get("question") or "").strip())
     else:

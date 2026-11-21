@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -72,6 +73,9 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
             reason = ruling.get("reason") or "not allowed by the user"
             raise ToolError(f"permission denied: {reason}")
 
+        from nekoclaw.runtime.tools.jobs import JOB_HANDOFF, JobHandoff
+
+        handoff = JobHandoff(frozenset(ruling.get("origins", []))) if tool.name in JOB_TOOLS else None
         output = CommandOutput(receipt) if tool.name in {"bash", "pwsh"} else None
 
         protected = OutputScope(receipt) if spill is not None else None
@@ -109,6 +113,7 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
                 raise ToolAborted()
             binding = COMMAND_OUTPUT.set(output)
             spill_binding = OUTPUT_SCOPE.set(protected)
+            job_binding = JOB_HANDOFF.set(handoff)
             try:
                 result = await tool.execute(call_id, arguments, signal, update if on_update else None)
                 if protected and result.text:
@@ -127,6 +132,7 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
                 if progress is not None:
                     await progress
             finally:
+                JOB_HANDOFF.reset(job_binding)
                 OUTPUT_SCOPE.reset(spill_binding)
                 COMMAND_OUTPUT.reset(binding)
                 if progress is not None and not progress.done():
@@ -135,13 +141,18 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
             if call.cancelled():
                 raise ToolAborted()
         except (asyncio.CancelledError, ToolAborted):
-            await finish("cancelled")
+            try:
+                await finish("cancelled")
+            except Exception as exc:
+                logging.getLogger(__name__).warning("closing a cancelled tool call failed (%s)", type(exc).__name__)
             raise
         except Exception:
             if await finish("failed"):
                 raise
         else:
             if await finish("completed"):
+                if handoff and handoff.acknowledge:
+                    handoff.acknowledge()
                 # These registered tools have only a model-content recipient.
                 return result if result.details is None else result.model_copy(update={"details": None})
         raise ToolError("The action ran. Its result could not be delivered.") from None

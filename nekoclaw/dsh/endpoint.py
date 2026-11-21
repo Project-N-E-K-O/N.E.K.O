@@ -242,7 +242,10 @@ class LocalEndpoint:
             await respond_json(send, 403, {"error": "requests with an Origin are not served"})
             return
         token = _bearer(headers)
-        if path == OUTPUT_PATH and self._retained_output is not None:
+        if path == OUTPUT_PATH:
+            if self._retained_output is None:
+                await respond_json(send, 404, {"error": "not found"})
+                return
             process = self._process_of(token)
             if process is None:
                 await respond_json(send, 401, {"error": "unknown process"})
