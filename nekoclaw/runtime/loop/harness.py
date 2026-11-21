@@ -160,10 +160,10 @@ class AgentHarness:
     def prompt(self, content: str) -> AsyncIterator[AgentEvent]:
         return self.prompt_message(UserMessage(content=content))
 
-    def continue_(self, *, turns_taken: int = 0) -> AsyncIterator[AgentEvent]:
+    def continue_(self) -> AsyncIterator[AgentEvent]:
         self._ensure_not_running()
         self._running = True
-        return self._run(turns_taken=turns_taken)
+        return self._run()
 
     async def _run(
         self,

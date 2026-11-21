@@ -183,6 +183,53 @@ async def test_the_limit_on_requests_is_on_the_run_and_not_on_each_round_of_its_
         await session.close()
 
 
+def _notice_as_the_run_ends(session, monkeypatch) -> None:  # noqa: ANN001
+    """Have a notice come in once, between the end of a stretch of work and the look for what is queued."""
+    flush = session._recorder.flush
+    came: list[object] = []
+
+    async def flushing() -> None:
+        await flush()
+        if not came:
+            came.append(session.deliver_notice("job", "background job job-9 (bash: x) finished [status: completed]."))
+
+    monkeypatch.setattr(session._recorder, "flush", flushing)
+
+
+async def test_a_notice_that_comes_in_as_the_last_request_allowed_is_answered_does_not_make_an_error_of_the_answer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    llm = ScriptedLLM([[say("The answer."), finish()], [say("Noted, the job is done."), finish()]])
+    session, events = await open_session(make_spec(tmp_path, limits=RuntimeLimits(max_turns=1)), llm)
+    _notice_as_the_run_ends(session, monkeypatch)
+    try:
+        session.prompt("What is it?")
+        ended = await events.wait_ended()
+
+        # The notice is taken up with the limit to itself, as it would have been a moment later.
+        assert len(llm.requests) == 2 and "job-9" in llm.requests[1][-1]["content"]
+        assert (ended["reason"], ended["error"], ended["text"]) == ("completed", None, "Noted, the job is done.")
+    finally:
+        await session.close()
+
+
+async def test_the_rounds_of_a_goal_after_a_notice_count_from_the_notice(tmp_path: Path, monkeypatch) -> None:
+    llm = ScriptedLLM([[say(f"answer {n}"), finish()] for n in range(8)])
+    session, events = await open_session(_goal_spec(tmp_path, max_rounds=5, limits=RuntimeLimits(max_turns=2)), llm)
+    _notice_as_the_run_ends(session, monkeypatch)
+    try:
+        session.prompt("Work on it.")
+        ended = await events.wait_ended()
+
+        # The prompt; the notice, counted from nothing; one round of the goal, the second request
+        # since the notice; and no third.
+        assert len(llm.requests) == 3
+        assert "job-9" in llm.requests[1][-1]["content"] and llm.requests[2][-1]["content"].startswith("<goal_round>")
+        assert (ended["reason"], ended["error"]) == ("error", "Agent stopped after max_turns=2")
+    finally:
+        await session.close()
+
+
 async def test_blocked_is_refused_before_the_third_consecutive_round(tmp_path: Path) -> None:
     holder: dict = {}
 

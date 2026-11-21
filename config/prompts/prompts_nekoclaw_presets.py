@@ -155,6 +155,10 @@ PRESET_ROSTER_LINE = "- {name}: {description}"
 PRESET_UNKNOWN = "unknown preset {name!r}; the presets a task agent can be started with are: {names}"
 # Rendered with str.format: name, reason.
 PRESET_UNUSABLE = "the preset {name!r} cannot be used: {reason}"
+# Why a task agent is not opened when the session that started it cannot be:
+# what that one's preset keeps from its task agents cannot be told. Rendered
+# with str.format: reason (``PRESET_UNUSABLE`` as it was rendered for that session).
+PRESET_OF_STARTER_UNUSABLE = "the session that started this task agent has a preset that cannot be used ({reason})"
 # Why a copy of a copy of a copy ... is not opened. Rendered with str.format: most.
 PRESET_COPIED_TOO_OFTEN = (
     "this session is a copy of a copy more than {most} times over; the preset of the session it began "

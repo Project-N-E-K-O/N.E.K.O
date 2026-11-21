@@ -2045,11 +2045,11 @@ class TaskAgentSession(SessionInbox):
         reason: protocol.EndReason = "completed"
         error: str | None = None
         self._last_assistant = None
-        # Model requests made in this run. The limit on them
-        # (``RuntimeLimits.max_turns``) is on the run, and a run is as many
-        # stretches of work as its goal and the notices that come in call
-        # for: counted for each alone, a goal would multiply the limit by
-        # its rounds.
+        # Model requests made since something from outside set this off: the
+        # text or notice the run began with, or a notice that came in as it
+        # was ending. The limit on them (``RuntimeLimits.max_turns``) holds
+        # for all the rounds of a goal that follow: counted for each round
+        # alone, a goal would multiply the limit by its rounds.
         requests = 0
         try:
             stream: AsyncIterator[AgentEvent] | None
@@ -2087,7 +2087,14 @@ class TaskAgentSession(SessionInbox):
                     break
                 if self.harness.has_queued_messages():
                     # A notice arrived while the run was ending: keep going.
-                    stream = self.harness.continue_(turns_taken=requests)
+                    # It came from outside, as what begins a run does, and
+                    # has the limit to itself as a run has: it would have
+                    # begun one had it come a moment later. Held to what is
+                    # left, a notice that comes in as the last request
+                    # allowed is answered would get no request at all, and
+                    # the answer that was written would end as an error.
+                    requests = 0
+                    stream = self.harness.continue_()
                     continue
                 following = next_goal_round(self.goals)
                 if following is None:

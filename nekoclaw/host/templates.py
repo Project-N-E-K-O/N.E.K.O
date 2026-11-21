@@ -51,12 +51,15 @@ The user adds templates as Markdown files, YAML front matter and the role
 below it, in the task agent space: ``templates/*.md`` for every project and
 ``projects/<project>/templates/*.md`` for one. A file is named after its
 template. Of two of a name the project's is used, then the user's, then the
-built-in one. Task agents cannot write into the space, so none can change
-what it may do.
+built-in one. A task agent's tools that write files are refused there and
+the user is asked about every command that names the space, so a session
+does not change what it may do without the user seeing it; that is no
+sandbox either (a command that reaches the space by a relative path or a
+variable is not seen), and only a preset without the shell cannot at all.
 
 A template only takes away: it withholds tools, makes a session read only,
-gives it no memory. What it withholds from a session it withholds from the
-task agents that session starts as well (``Template.under``). It names no model, address or key (``model`` says only
+gives it no memory. What it takes from a session it takes from the task
+agents that session starts as well (``Template.under``). It names no model, address or key (``model`` says only
 whose model a session of it follows by default, and is kept for the pull
 request that makes use of it). What a file gets wrong is an error with a
 reason, never ignored: a field this does not know, a value that is not one
@@ -182,15 +185,18 @@ class Template:
     def under(self, starter: Template) -> Template:
         """Return this preset as a task agent has it that a session of ``starter`` started.
 
-        Without the tools ``starter`` is without as well, so that a
-        session cannot get back through a task agent what its template
-        took from it. Nothing else is taken over: the role, the memory and
-        the cap on requests are the task agent's own preset's.
+        Without the tools ``starter`` is without as well, and without
+        memory where that one has none, so that a session cannot get back
+        through a task agent what its template took from it: neither a
+        tool, nor what was noted before (a task agent that read the notes
+        would bring them into what it reports). The role and the cap on
+        requests are the task agent's own preset's.
         """
         more = starter.withheld() - self.withheld()
-        if not more:
+        memory = "none" if starter.memory == "none" else self.memory
+        if not more and memory == self.memory:
             return self
-        return replace(self, withhold=tuple(sorted({*self.withhold, *more})))
+        return replace(self, withhold=tuple(sorted({*self.withhold, *more})), memory=memory)
 
     @property
     def calls_nothing(self) -> bool:

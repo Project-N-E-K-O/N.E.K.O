@@ -193,6 +193,45 @@ async def test_the_list_of_presets_has_a_cap_of_its_own_and_never_cuts_off_the_s
     ) == "planner"
 
 
+async def test_nothing_is_said_of_the_presets_when_the_list_has_no_room_for_one(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.TASK_AGENT_PRESET_ROSTER_MAX_TOKENS", 30)
+    llm = ScriptedLLM([_report()])
+    host = _host(hosts, tmp_path, lambda spec: llm)
+    await host.space.touch_project("Budget app")
+
+    await wait_status(host, (await _dispatch(host, "add a chart to the budget app")).commission_id, "done")
+
+    # Not the words that open the list with nothing after them.
+    assert presets.PRESET_ROSTER_INTRO not in _system(llm)
+    assert builtin_templates()["boss"].body in _system(llm)
+
+
+async def test_a_task_agent_is_not_opened_when_the_preset_of_the_session_that_started_it_cannot_be_used(hosts, tmp_path):
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM())
+    parent, _created = await host.ledger.create(
+        dispatch_text="check the tests", lanlan_name="Lan", title="check the tests", source="dispatch", route="task_agent",
+        workdir=str(tmp_path),
+    )
+    parent, starter = await host.ledger.give_session(parent.id, kind="single", name="check the tests")
+    child, _created = await host.ledger.create(
+        dispatch_text="Look.", lanlan_name="Lan", title="look", source="task_agent", route="task_agent",
+        parent_id=parent.id, name="agent-1", workdir=str(tmp_path),
+    )
+    child = await host.task_agents._give_session(child)
+    kept = await host.ledger.get_session(child.session_id)
+    assert (kept.kind, kept.parent_id, kept.preset) == ("child", starter.id, "worker")
+    assert await host.task_agents._template_of(kept) == builtin_templates()["worker"]
+
+    # What the starter's preset keeps from its task agents cannot be told: the task agent is not
+    # opened as if it kept nothing, and which preset is wrong is said (not the task agent's own).
+    _template(_space(tmp_path) / "templates", "general", more="nope: 1\n")
+    with pytest.raises(RuntimeError) as failed:
+        await host.task_agents._template_of(kept)
+    assert str(failed.value).startswith(
+        "the session that started this task agent has a preset that cannot be used (the preset 'general' cannot be used: "
+    )
+
+
 def test_the_host_part_of_the_instructions_holds_the_list_and_a_role_at_their_caps():
     from config import nekoclaw_settings as settings
     from utils.tokenize import count_tokens
@@ -529,14 +568,22 @@ def test_a_preset_under_another_is_without_what_that_one_is_without_and_is_itsel
 
     # Nothing withheld by the one that starts it: the very preset, as every built-in one is started.
     assert worker.under(presets_["boss"]) is worker and scout.under(presets_["general"]) is scout
-    assert scout.under(inspector) is scout
+    assert scout.under(replace(presets_["general"], withhold=("bash", "write"))) is scout
     under = worker.under(inspector)
     assert under.withheld() == inspector.withheld() and under.calls_nothing and under.needs_builtin
-    # The role, the memory and the cap on requests are its own.
-    assert (under.name, under.body, under.memory, under.max_requests, under.read_only, under.writes) == (
-        "worker", worker.body, "project", None, False, "inherit",
+    # Nor has it memory where the one that starts it has none: what it read of the notes it would report.
+    assert not inspector.remembers and not under.remembers
+    without_memory = replace(presets_["general"], memory="none")
+    assert worker.under(without_memory).memory == "none" and worker.under(without_memory).withheld() == {"note_lesson"}
+    assert replace(worker, memory="none").under(presets_["boss"]).memory == "none"
+    # (Though it is without every tool that one is without already.)
+    assert scout.remembers and not scout.under(without_memory).remembers
+    with_bash_withheld = worker.under(replace(presets_["general"], withhold=("bash",)))
+    assert with_bash_withheld.remembers and with_bash_withheld.withheld() == {"bash"}
+    # The role and the cap on requests are its own.
+    assert (under.name, under.body, under.max_requests, under.read_only, under.writes) == (
+        "worker", worker.body, None, False, "inherit",
     )
-    assert under.remembers and not inspector.remembers
     # What its own preset withholds stays withheld.
     own = replace(worker, withhold=("grep",))
     assert own.under(inspector).withheld() == inspector.withheld() | {"grep"}

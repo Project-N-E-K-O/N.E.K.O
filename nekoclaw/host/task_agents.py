@@ -1863,7 +1863,11 @@ class TaskAgentManager:
         another in its place: what it would then be allowed is not what
         its user set down.
         """
-        from config.prompts.prompts_nekoclaw_presets import PRESET_COPIED_TOO_OFTEN, PRESET_UNUSABLE
+        from config.prompts.prompts_nekoclaw_presets import (
+            PRESET_COPIED_TOO_OFTEN,
+            PRESET_OF_STARTER_UNUSABLE,
+            PRESET_UNUSABLE,
+        )
         from nekoclaw.host.templates import SHADOW, TemplateError, builtin_templates
 
         source = kept
@@ -1898,7 +1902,13 @@ class TaskAgentManager:
             # nothing that can be told.
             starter = await self._ledger.get_session(source.parent_id)
             if starter is not None:
-                template = template.under(await self._template_of(starter))
+                try:
+                    over = await self._template_of(starter)
+                except RuntimeError as exc:
+                    # Said as what it is: the preset named is the starter's,
+                    # not the one this task agent was started with.
+                    raise RuntimeError(PRESET_OF_STARTER_UNUSABLE.format(reason=exc)) from exc
+                template = template.under(over)
         return template
 
     def _base_instructions(
@@ -1954,7 +1964,9 @@ class TaskAgentManager:
                 if room < 0:
                     break
                 lines.append(line)
-            parts.append("\n".join(lines))
+            if len(lines) > 1:
+                # (With no room for even one preset, nothing is said of them.)
+                parts.append("\n".join(lines))
         if template is not None and template.body:
             parts.append(template.body)
         return truncate_to_tokens("\n\n".join(parts), TASK_AGENT_SESSION_INSTRUCTIONS_MAX_TOKENS)
