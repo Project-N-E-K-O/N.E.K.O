@@ -175,7 +175,12 @@ async def history(character_uid: str, runtime: Runtime):
 @router.get("/characters/{character_uid}/model-sync")
 async def model_sync_status(character_uid: str, runtime: Runtime):
     await _character(character_uid)
-    return await runtime.models.status(character_uid)
+    try:
+        return await runtime.models.status(character_uid)
+    except ValueError as exc:
+        raise _error(exc) from None
+    except (OSError, sqlite3.Error):
+        raise _error(ValueError("chat_sync_unavailable")) from None
 
 
 @router.post("/characters/{character_uid}/model-sync/{token}")
