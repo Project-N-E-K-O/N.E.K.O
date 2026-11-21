@@ -10,6 +10,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr
 
 from services.chat_sync.runtime import get_desktop_chat_sync_runtime
+from services.chat_sync.writer import WriterQuarantined
 from utils.config_manager import get_config_manager
 from utils.config_manager.reserved_schema import get_character_uid
 
@@ -60,7 +61,10 @@ class ProfileImportRequest(BaseModel):
 
 async def _runtime():
     """Resolve the configured runtime root only after local authorization."""
-    return await get_desktop_chat_sync_runtime(get_config_manager())
+    try:
+        return await get_desktop_chat_sync_runtime(get_config_manager())
+    except WriterQuarantined as exc:
+        raise _error(exc) from None
 
 
 Runtime = Annotated[object, Depends(_runtime)]

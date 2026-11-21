@@ -304,6 +304,23 @@ def test_status_and_routes_expose_no_account_character_policy(local_client):
     assert runtime.calls == []
 
 
+@pytest.mark.parametrize('path', [
+    f'/api/chat-sync/characters/{UID}/model-sync',
+    '/api/chat-sync/status',
+])
+def test_runtime_initialization_reports_writer_quarantine(local_client, monkeypatch, path):
+    client, runtime = local_client
+    initialize = AsyncMock(side_effect=WriterQuarantined())
+    monkeypatch.setattr(routes, 'get_desktop_chat_sync_runtime', initialize)
+    client.app.dependency_overrides.pop(routes._runtime)
+    response = client.get(path)
+    assert response.status_code == 409
+    assert response.json() == {'detail': 'chat_sync_writer_recovery_required'}
+    assert response.headers['Cache-Control'] == 'no-store'
+    initialize.assert_awaited_once()
+    assert runtime.calls == []
+
+
 def test_model_status_preserves_result_without_waking(local_client):
     client, runtime = local_client
     expected = {'conflict': True, 'failed': False}
