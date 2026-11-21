@@ -82,7 +82,7 @@ for (const manual of [false, true]) {
             assert.equal(f.value('ParamAngleY'), 0, 'the old idle pose is reset before the expression');
             assert.equal(f.native.state.currentPriority, 0);
             if (manual) {
-                f.runtime.context.clock += 220;
+                f.runtime.context.clock += 300;
                 f.model.internalModel.events.emit('beforeModelUpdate');
             } else {
                 const expressions = f.native.expressionManager;

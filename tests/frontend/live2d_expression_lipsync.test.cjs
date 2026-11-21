@@ -518,7 +518,7 @@ test(`real SDK timeout retires native until model reload and late ${lateResult} 
     await entered.promise;
     triggerTimeout();
     assert.equal(await task, true, 'existing manual fallback succeeds after native timeout');
-    advance(250);
+    advance(300);
     manager.currentModel.internalModel.emit('beforeModelUpdate');
     assert.ok(Math.abs(manager.currentModel.values[0] + 0.4) < 1e-12);
     assert.equal(native.reserveExpressionIndex, -1);
@@ -542,3 +542,50 @@ test(`real SDK timeout retires native until model reload and late ${lateResult} 
     native.destroy();
 });
 }
+
+test('listening keeps its slow easing when native expressions fall back to parameters', async () => {
+    const { manager, advance } = fixture();
+    const applied = await manager.playExpression('listening', 'listening.exp3.json', { fadeInDuration: 900 });
+    assert.equal(applied, true);
+    advance(450);
+    manager.currentModel.internalModel.emit('beforeModelUpdate');
+    assert.ok(Math.abs(manager.currentModel.values[0] - (-0.1)) < 0.001,
+        'halfway through the requested fade, the smile is halfway to its target');
+    advance(900);
+    manager.currentModel.internalModel.emit('beforeModelUpdate');
+    assert.ok(Math.abs(manager.currentModel.values[0] - (-0.4)) < 0.001);
+});
+
+test('post-physics profile bypasses native and controls final shape without pinning mouth amplitude', async () => {
+    let nativeCalls = 0;
+    const {manager, advance} = fixture({expression: async () => {nativeCalls++;return true;},
+        fetch: async () => ({ok:true,json:async()=>({NekoApplyAfterPhysics:true,Parameters:parameters})})});
+    await manager.playExpression('happy','happy.exp3.json'); advance(1000);
+    manager.currentModel.values[0] = -.9; // physics/focus wrote earlier this frame
+    manager.currentModel.values[1] = .45; // live speech amplitude
+    manager.currentModel.internalModel.emit('beforeModelUpdate');
+    assert.equal(nativeCalls,0);
+    assert.ok(Math.abs(manager.currentModel.values[0]+.4)<1e-8);
+    assert.equal(manager.currentModel.values[1],.45);
+    await manager.clearExpression();
+    assert.equal(manager.currentModel.internalModel.listenerCount('beforeModelUpdate'),0);
+});
+
+test('resting mouth profile yields to speech including silent phonemes and retires on clear', async () => {
+    const {manager, advance} = fixture();
+    manager._installManualExpressionOverride(parameters, 900, {mouthRest:.12});
+    advance(1000);
+    const core = manager.currentModel.internalModel.coreModel, resource = manager._manualExpressionResource;
+    manager.currentModel.values[1] = 0;
+    resource.applyRuntime(core);
+    assert.equal(manager.currentModel.values[1],.12);
+    manager.speaking = true;
+    for (const amplitude of [0,.55]) {
+        manager.currentModel.values[1] = amplitude;
+        resource.applyRuntime(core);
+        assert.equal(manager.currentModel.values[1],amplitude);
+    }
+    await manager.clearExpression(); manager.speaking = false;
+    manager.currentModel.values[1] = 0; resource.applyRuntime(core);
+    assert.equal(manager.currentModel.values[1],0);
+});

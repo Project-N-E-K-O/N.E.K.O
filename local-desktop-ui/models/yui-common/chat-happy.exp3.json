@@ -1,0 +1,166 @@
+{
+  "Type": "Live2D Expression",
+  "FadeInTime": 0.9,
+  "FadeOutTime": 0.65,
+  "NekoApplyAfterPhysics": true,
+  "NekoBlinkScale": 1.3,
+  "Parameters": [
+    {
+      "Id": "Param86",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamEyeLSmile",
+      "Value": 0.65,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamEyeRSmile",
+      "Value": 0.65,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamMouthForm",
+      "Value": 1,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamCheek",
+      "Value": 0.65,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamBrowLY",
+      "Value": 0.3,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamBrowRY",
+      "Value": 0.3,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamBrowLForm",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamBrowRForm",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamBrowLAngle",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamBrowRAngle",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamAngleZ",
+      "Value": 14,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamBodyAngleZ",
+      "Value": 3.5,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param78",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param72",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param68",
+      "Value": 1,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param76",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamAngleX",
+      "Value": -8,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "ParamAngleY",
+      "Value": 8,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param74",
+      "Value": 1,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param75",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param77",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param90",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param91",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param92",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param93",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param94",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param95",
+      "Value": 0,
+      "Blend": "Overwrite"
+    },
+    {
+      "Id": "Param96",
+      "Value": 0,
+      "Blend": "Overwrite"
+    }
+  ],
+  "NekoMouthRest": 0.16,
+  "NekoPerformance": {
+    "motion": [
+      {
+        "Id": "ParamBodyAngleZ",
+        "Value": 3.5,
+        "Amplitude": 0.7,
+        "Period": 3.5,
+        "Phase": 0
+      }
+    ]
+  }
+}

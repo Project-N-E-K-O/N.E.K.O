@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "profiles": "yui-common",
+  "outfits": {
+    "yui-origin": {
+      "moc_sha256": "3c384bb881607f7bcd23a7d64b63f2b285a3e3833cb2546f4be56387a0df7811",
+      "audited_motion_count": 40
+    },
+    "yui-lolita": {
+      "moc_sha256": "6e6a469eb63a14d2bb58573c26236fb3a2504af5abbf453ba5df751c481dc172",
+      "audited_motion_count": 44
+    },
+    "yui-sister": {
+      "moc_sha256": "5d762e5f9c1cd00d6ee18bc6c6a24c7072048eeb8d01b11311ee511ad470c8d4",
+      "audited_motion_count": 32
+    }
+  }
+}
