@@ -6597,8 +6597,8 @@ class TaskAgentManager:
         framed (``_tell_parent``). The copy has none of the tools that
         write, run commands or call capabilities, nor those that reach
         other sessions, and makes no more than ``SESSION_ASK_MAX_REQUESTS``
-        requests. What a session may ask is counted with the notes it
-        writes, and on its own (``Ledger.ask_add``).
+        requests. What a session may ask is counted on its own, apart
+        from the notes it writes (``Ledger.ask_add``).
         """
         import math
 
@@ -6669,12 +6669,10 @@ class TaskAgentManager:
                 from_commission=caller.id,
                 to_session=target.id,
                 body=question,
-                per_hour=settings.SESSION_MESSAGES_PER_HOUR,
                 asks_per_hour=settings.SESSION_ASKS_PER_HOUR,
             )
             if asked is None:
-                limit = settings.SESSION_ASKS_PER_HOUR if refusal == "too_many_asks" else settings.SESSION_MESSAGES_PER_HOUR
-                return refusals[refusal].format(name=target.name, wait=math.ceil(wait), limit=limit)
+                return refusals[refusal].format(name=target.name, wait=math.ceil(wait), limit=settings.SESSION_ASKS_PER_HOUR)
 
             async def not_asked() -> None:
                 # Counted against nothing: it was not asked.

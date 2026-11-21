@@ -486,13 +486,14 @@ SESSION_MESSAGE_TARGET_INTERVAL_SECONDS = 60.0
 """Shortest time between two notes of one session to the same other session."""
 
 SESSION_MESSAGES_PER_HOUR = 20
-"""Notes one session may write within an hour, to whomever. A question it asks
-another session (``ask_session``) counts as one too."""
+"""Notes one session may write within an hour, to whomever. The questions it
+asks (``SESSION_ASKS_PER_HOUR``) are counted apart and take none of these."""
 
-SESSION_ASKS_PER_HOUR = 6
-"""Questions one session may ask other sessions within an hour (``ask_session``).
-Each one has a copy of the other session's conversation answer it, and every
-request of that copy carries the whole of that conversation."""
+SESSION_ASKS_PER_HOUR = 10
+"""Questions one session may ask other sessions within an hour (``ask_session``),
+counted apart from its notes. Each one has a copy of the other session's
+conversation answer it, and every request of that copy carries the whole of
+that conversation."""
 
 SESSION_ASK_MAX_REQUESTS = 8
 """Model requests the copy that answers such a question may make; with them

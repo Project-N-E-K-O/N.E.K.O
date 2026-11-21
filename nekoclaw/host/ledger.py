@@ -716,20 +716,21 @@ def body_hash(text: str) -> str:
     return hashlib.sha256(" ".join(str(text).split()).encode("utf-8")).hexdigest()
 
 
-def _hour_used(conn: sqlite3.Connection, from_session: str, kinds: tuple[str, ...], now: float, limit: int) -> float | None:
-    """Return in how many seconds a session may write again, when it wrote ``limit`` of these kinds within the hour; else None.
+def _hour_used(conn: sqlite3.Connection, from_session: str, kind: str, now: float, limit: int) -> float | None:
+    """Return in how many seconds a session may write again, when it wrote ``limit`` of this kind within the hour; else None.
 
-    What was written in the hour before ``now``, and, as a clock that was
-    set back by a little leaves it, in the hour after (see ``message_add``).
+    Notes and questions are counted apart: each kind against a limit of
+    its own. What was written in the hour before ``now``, and, as a clock
+    that was set back by a little leaves it, in the hour after (see
+    ``message_add``).
     """
-    marks = ", ".join("?" for _ in kinds)
     # (A question that was not asked after all, which is void, counts for
     # nothing; a note that was dropped was written all the same.)
     within = (
-        f"FROM messages WHERE from_session = ? AND kind IN ({marks}) AND created_at >= ? AND created_at <= ? "
+        "FROM messages WHERE from_session = ? AND kind = ? AND created_at >= ? AND created_at <= ? "
         "AND NOT (kind = 'ask' AND status = 'void')"
     )
-    window = (from_session, *kinds, now - 3600.0, now + 3600.0)
+    window = (from_session, kind, now - 3600.0, now + 3600.0)
     sent = conn.execute(f"SELECT COUNT(*) AS n {within}", window).fetchone()
     if sent is None or sent["n"] < limit:
         return None
@@ -1994,8 +1995,8 @@ class Ledger:
                 # (Never longer than the whole of it: a note of a time to
                 # come is no further back than now.)
                 return None, "too_soon", min(limits.target_interval, limits.target_interval - (now - last["at"]))
-            # (The questions it asked count as well: ``ask_add``.)
-            wait = _hour_used(conn, from_session, ("note", "ask"), now, limits.per_hour)
+            # (The questions it asked are counted apart: ``ask_add``.)
+            wait = _hour_used(conn, from_session, "note", now, limits.per_hour)
             if wait is not None:
                 return None, "too_many", wait
             # The notes that wait, and not what else waits for the session
@@ -2083,15 +2084,13 @@ class Ledger:
         from_commission: str,
         to_session: str,
         body: str,
-        per_hour: int,
         asks_per_hour: int,
     ) -> tuple[Message | None, str, float]:
         """Put on record that a session asks another a question; ``(message, refusal, wait)``.
 
-        Counted from what is on record, as a note is (``message_add``):
-        ``refusal`` is ``"over"`` (the commission that asks is not under
-        way any more), ``"too_many"`` (the session wrote ``per_hour``
-        notes and questions within the hour), ``"too_many_asks"`` (it
+        Counted from what is on record, as a note is (``message_add``), and
+        apart from the notes: ``refusal`` is ``"over"`` (the commission
+        that asks is not under way any more), ``"too_many_asks"`` (it
         asked ``asks_per_hour`` questions within the hour), or empty with
         the message; ``wait`` says how many seconds are left. Written as
         delivered: nothing hands it over, a copy of the other session
@@ -2103,10 +2102,7 @@ class Ledger:
             writer = conn.execute("SELECT status FROM commissions WHERE id = ?", (from_commission,)).fetchone()
             if writer is None or writer["status"] not in ("working", "waiting_user"):
                 return None, "over", 0.0
-            wait = _hour_used(conn, from_session, ("note", "ask"), now, per_hour)
-            if wait is not None:
-                return None, "too_many", wait
-            wait = _hour_used(conn, from_session, ("ask",), now, asks_per_hour)
+            wait = _hour_used(conn, from_session, "ask", now, asks_per_hour)
             if wait is not None:
                 return None, "too_many_asks", wait
             message = self._message_insert(
