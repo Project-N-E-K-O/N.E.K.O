@@ -67,6 +67,11 @@ _CODE_CONTEXT = re.compile(
     r"indentation|tabs? to spaces?)\b"
 )
 _FILE_OBJECT = re.compile(r"\b(?:files?|folders?)\b|文件夹|資料夾")
+_OPEN_FOLDER = re.compile(
+    r"^\s*(?:(?:请|請|帮我|幫我|先|再)\s*)*(?:打开|打開|进入|進入).*?(?:文件[夹夾]|資料夾)|"
+    r"^\s*(?:please\s+)?(?:open|enter|go\s+into)\s+.*?\bfolder\b"
+)
+_UPLOAD = re.compile(r"上[传傳]|\bupload(?:ing)?\b")
 _WEB_ACTION = re.compile(
     r"打开|打開|访问|訪問|浏览(?!器)|瀏覽(?!器)|刷新|切换|切換|关闭|關閉|查看|检查|檢查|阅读|閱讀|"
     r"填写|填寫|搜索|搜尋|"
@@ -103,13 +108,15 @@ _DESKTOP_TARGET = re.compile(
     r"桌面|屏幕|螢幕|任务栏|工作列|文件资源管理器|檔案總管|访达|訪達|"
     r"\b(?:desktop|taskbar|start menu|system tray|file explorer|finder)\b"
 )
-_SWITCH_TARGET = re.compile(r"切[换換][到至]|[转轉]到|回到|返回|\b(?:switch(?: over)?|go back|return) to\b")
+_SWITCH_TARGET = re.compile(r"切[换換][到至]|[转轉]到|回到|返回|\b(?:switch(?:\s+over)?|go\s+back|return)\s+to\b")
 # Match the destination of the switch. Settings and language names can be
 # capitalized just like an application, so a title-cased word is not evidence.
 _APP_TARGET = re.compile(
     r"应用|應用|程序|程式|窗口|視窗|\b(?:app|application|window)\b|"
-    r"^\s*(?:the\s+)?(?:记事本|記事本|notepad|(?:microsoft\s+)?excel)\s*$"
+    r"^\s*(?:the\s+)?(?P<name>记事本|記事本|微信|notepad|wechat|(?:microsoft\s+)?(?:excel|word)|vs\s+code)"
+    r"(?=\s*(?:$|\band\b|[并並]))"
 )
+_JOINED_TYPING = re.compile(r"[并並](?:且)?[输輸]入|\band\s+type\b")
 
 
 def select_device_groups(text: str, *, browser_context: bool = False) -> tuple[str, ...]:
@@ -140,25 +147,32 @@ def classify_device_intent(
         # Words like page and tabs also name source files, modules and indentation.
         # In development tasks require an actual browser or address for web tools.
         without_files = _CODE_FILE.sub(" ", clause)
-        code = without_files != clause or bool(_CODE_CONTEXT.search(clause))
+        switch = _SWITCH_TARGET.search(clause)
+        destination = _APP_TARGET.search(clause[switch.end():]) if switch else None
+        # "Code" in the app name is not a request to work on source code.
+        code_text = clause
+        if destination and destination["name"]:
+            code_text = clause[:switch.end()] + clause[switch.end() + destination.end():]
+        code = without_files != clause or bool(_CODE_CONTEXT.search(code_text))
         explicit_web = bool(_EXPLICIT_WEB.search(without_files))
         web_object = bool(_WEB_OBJECT.search(without_files))
         file_object = bool(_FILE_OBJECT.search(clause))
         web_target = explicit_web or (web_object and not code and not file_object)
         screenshot = bool(_SCREENSHOT_ACTION.search(clause))
         click = bool(_CLICK.search(without_files))
-        switch = _SWITCH_TARGET.search(clause)
         web_action = switch or _WEB_ACTION.search(without_files) or (not code and _WEB_USE.search(without_files))
         browser = bool(web_target and (screenshot or click or web_action)) or bool(
             _OTHER_WEB.search(clause)
         )
         desktop_target = bool(_DESKTOP_TARGET.search(clause))
         desktop_action = bool(_DESKTOP_ACTION.search(clause))
-        switches_away = (
-            not web_target and switch and (desktop_target or _APP_TARGET.search(clause[switch.end():]))
-        )
-        if switches_away and not code:
+        switches_away = switch and not web_target and not code and (desktop_target or destination)
+        if switches_away:
             next_browser_context = False
+            if _JOINED_TYPING.search(clause[switch.end():]):
+                desktop_action = True
+        if not (explicit_web or web_object or code) and _OPEN_FOLDER.match(clause) and not _UPLOAD.search(clause):
+            desktop_action = True
         # File mentions (such as a page upload) do not change where a later
         # click lands. Clicking a file itself is handled in its own clause.
         if desktop_target or desktop_action or (not web_target and screenshot) or switches_away:

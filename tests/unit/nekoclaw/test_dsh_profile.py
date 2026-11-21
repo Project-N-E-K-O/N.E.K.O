@@ -15,6 +15,7 @@ import pytest
 from config import nekoclaw_settings
 from nekoclaw.dsh import profile
 from nekoclaw.dsh.profile import Shape
+from tests.node_harness import run_node_stdin
 
 SHAPE = Shape(context_window=128_000, max_output_tokens=8_192, supports_images=False)
 
@@ -64,28 +65,31 @@ def test_device_projection_can_restore_a_retry_of_the_same_assembly(tmp_path):
     if node is None:
         pytest.skip("Node is needed to exercise the pinned profile hook directly")
     (tmp_path / "guard.mjs").write_text(profile.GUARD_SOURCE, encoding="utf-8")
-    subprocess.run([node, "--input-type=module", "-"], input="""
-import assert from 'node:assert/strict'
-import { apply } from './guard.mjs'
-const hooks = {}
-apply({ on: (name, fn) => { hooks[name] = fn } }, { deviceViewUrl: 'http://localhost/unused' })
-const agent = { session: { id: 'test' } }
-const request = { agent, turn: 1, signal: new AbortController().signal }
-const all = [{name: 'mcp__gateway__computer'}, {name: 'mcp__gateway__capability_search'}]
-const original = { tools: Object.freeze([...all]) }
-let allowed = []
-globalThis.fetch = async () => ({ ok: true, json: async () => allowed })
-const assembly = await hooks['system-prompt/assemble'](original, {agent}, async () => original)
-hooks['session/event'](agent.session, {type: 'compaction/end', data: {}})
-await hooks['agent/request'](request, async () => {})
-await hooks['agent/request'](request, async () => {})
-assert.deepEqual(assembly.tools, [all[1]])
-Object.freeze(assembly.tools)
-allowed = ['computer']
-hooks['tools/result']({agent, name: 'mcp__gateway__capability_search', arguments: {group: 'keyboard_mouse'}}, {})
-await hooks['agent/request'](request, async () => {})
-assert.deepEqual(assembly.tools, all)
-""", text=True, capture_output=True, check=True, cwd=tmp_path)
+    run_node_stdin(node, """
+const assert = require('node:assert/strict')
+async function checkProjection() {
+    const { apply } = await import('./guard.mjs')
+    const hooks = {}
+    apply({ on: (name, fn) => { hooks[name] = fn } }, { deviceViewUrl: 'http://localhost/unused' })
+    const agent = { session: { id: 'test' } }
+    const request = { agent, turn: 1, signal: new AbortController().signal }
+    const all = [{name: 'mcp__gateway__computer'}, {name: 'mcp__gateway__capability_search'}]
+    const original = { tools: Object.freeze([...all]) }
+    let allowed = []
+    globalThis.fetch = async () => ({ ok: true, json: async () => allowed })
+    const assembly = await hooks['system-prompt/assemble'](original, {agent}, async () => original)
+    hooks['session/event'](agent.session, {type: 'compaction/end', data: {}})
+    await hooks['agent/request'](request, async () => {})
+    await hooks['agent/request'](request, async () => {})
+    assert.deepEqual(assembly.tools, [all[1]])
+    Object.freeze(assembly.tools)
+    allowed = ['computer']
+    hooks['tools/result']({agent, name: 'mcp__gateway__capability_search', arguments: {group: 'keyboard_mouse'}}, {})
+    await hooks['agent/request'](request, async () => {})
+    assert.deepEqual(assembly.tools, all)
+}
+checkProjection().catch(error => { console.error(error); process.exitCode = 1 })
+""", capture_output=True, check=True, cwd=tmp_path)
 
 
 def test_nothing_is_uploaded() -> None:
