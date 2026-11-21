@@ -67,6 +67,8 @@ task agent 可以找到别的会话、读它留下的东西、给它发消息、
 
 别的会话工作目录里的文件、它落盘的工具输出，读的时候不用问用户（设置里禁止读工作目录以外的除外，这时 `read_session` 也不能用）；它的对话记录只能经 `read_session` 读，换个名字的链接指过去也一样，对装着记录的那一层目录做内容搜索也不行（列文件名可以，里面的子目录照常能搜）；别的会话自己的目录不能写，自己的工作目录正好包着它时也不能。
 
+给「按项目分群画出会话」的界面，宿主从台账里读两样东西，不调模型，也不另存一份（`NekoClawHost.timeline`、`NekoClawHost.waits`；还没有路由接到它们）。**时间线**是按先后发生的事，一页一页给：委托立了、排队、开工、问用户和用户答了、用户插话、汇报、结束；派了子使魔和子使魔交回；问别的会话一句和它的回答；在副本里接着办和交回；歇着、定时和被唤醒；会话之间的消息和「那一轮办完了」的通知。使魔的每一步（工具调用、边做边写的字）不在里面，工具调用的参数、文件内容、设置也不在；文字按 token 截到 120。游标是 `events` 和 `messages` 两张表各读到第几行，所以下一页正好接着上一页；也可以从「现在台账里的最后」开始，只取以后新来的。**等待关系**是现在谁在等谁：排在同一个会话的另一件委托后面、排队等空位、等用户回话、等消息的办完通知、使魔等它派出的子使魔、会话等它问的那一句的回答。条目和等待的种类会增加，读的一方遇到不认识的种类要跳过。详见设计稿 17.9。
+
 ### task agent 空间
 
 task agent 留给以后委托用的东西（界面上叫使魔空间）放在 `<数据根>/nekoclaw/task_agent_space/`（`nekoclaw/host/space.py`）：全是明文，只有宿主写，按用户一份，所有 task agent 共用。里面有用户自己写的守则（`AGENTS.md`）、一行一条的索引（`MEMORY.md`）和一条一个文件的条目（`memory/*.md`）：可复用的经验、对出错之处的反思、东西在哪的参考、项目进度。全局一套，每个项目一套（`projects/<项目>/`）；不属于任何项目的委托归在 `_daily` 下。
@@ -201,6 +203,7 @@ Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `g
 | 插件筛选和决策模型 | `nekoclaw/host/selection.py`、`decision.py` |
 | 台账、outbox、汇报 | `nekoclaw/host/ledger.py`、`outbox.py`、`reports.py` |
 | 会话之间的消息、唤醒、读别的会话的记录 | `nekoclaw/host/wakes.py`、`records.py`、`task_agents.py`、`config/prompts/prompts_nekoclaw_sessions.py` |
+| 会话之间发生了什么、谁在等谁（只读） | `nekoclaw/host/timeline.py` |
 | task agent 和 agent runtime | `nekoclaw/host/task_agents.py`、`nekoclaw/runtime/` |
 | dsh：可选的 agent runtime 和它的选用 | `nekoclaw/dsh/`、`nekoclaw/host/runtimes.py`、`config/prompts/prompts_nekoclaw_dsh.py` |
 | task agent 空间：条目、索引、复盘、归档 | `nekoclaw/host/space.py`、`space_keeper.py`、`config/prompts/prompts_nekoclaw_space.py` |

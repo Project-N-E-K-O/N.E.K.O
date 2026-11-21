@@ -66,6 +66,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from nekoclaw.host import call_audit
+from nekoclaw.host.timeline import read_timeline, read_waits
 
 logger = logging.getLogger(__name__)
 
@@ -3229,6 +3230,37 @@ class Ledger:
             ]
 
         return await self.run(work)
+
+    # -- what happened between sessions, for a screen ------------------------
+
+    async def timeline(
+        self,
+        *,
+        project: str | None = None,
+        lanlan_name: str | None = None,
+        after: str | None = None,
+        limit: int,
+        cut: Callable[[str], str] = lambda text: text,
+    ) -> dict[str, Any]:
+        """Return a page of what happened, in order; ``timeline.read_timeline``. Reads only."""
+        return await self.run(
+            lambda conn: read_timeline(
+                conn, project=project, lanlan_name=lanlan_name, after=after, limit=limit, cut=cut
+            )
+        )
+
+    async def waits(
+        self,
+        *,
+        project: str | None = None,
+        lanlan_name: str | None = None,
+        limit: int,
+        cut: Callable[[str], str] = lambda text: text,
+    ) -> dict[str, Any]:
+        """Return who waits for whom now; ``timeline.read_waits``. Reads only."""
+        return await self.run(
+            lambda conn: read_waits(conn, project=project, lanlan_name=lanlan_name, limit=limit, cut=cut)
+        )
 
     # -- outbox -----------------------------------------------------------
 

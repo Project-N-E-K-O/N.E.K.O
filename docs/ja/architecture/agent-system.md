@@ -67,6 +67,8 @@ task agent はほかのセッションを探し、そのセッションが残し
 
 ほかのセッションの作業ディレクトリのファイルと、そのセッションが保存したツール出力は、ユーザーに確認せずに読めます（作業ディレクトリ外の読み取りを設定で禁止している場合を除きます。その場合は `read_session` も使えません）。会話記録は、別名のリンクをたどっても `read_session` 経由でしか読めず、記録が置かれているディレクトリを内容検索することもできません（ファイル名の一覧は取れ、その中のサブディレクトリはこれまでどおり検索できます）。ほかのセッション自身のディレクトリには書き込めません。自分の作業ディレクトリがたまたまそれを含んでいる場合も同じです。
 
+プロジェクトごとにセッションをまとめて描く画面のために、ホストは台帳から二つのものを読みます。モデルは呼ばず、別に保存もしません（`NekoClawHost.timeline`、`NekoClawHost.waits`。まだどのルートからも呼ばれていません）。**タイムライン**は起きたことを順に、1 ページずつ返します。依頼の登録、待ち行列、着手、ユーザーへの質問と回答、ユーザーの追加の指示、報告、終了。task agent の起動と完了。ほかのセッションへの質問とその回答。コピーでの続行と返却。休止、自分で決めた時刻、再開。セッション間のメッセージと「そのターンが終わった」という知らせ。task agent の一歩一歩（ツール呼び出し、作業中に書いた文字）は含まれず、ツールの引数、ファイルの内容、設定も含まれません。文字は 120 トークンまでに切ります。カーソルは `events` と `messages` の二つの表をそれぞれ何行目まで読んだかの組なので、次のページは前のページのちょうど続きから始まります。いま台帳にある最後から始めて、その後に来たものだけを取ることもできます。**待ち関係**は、いま誰が誰を待っているかです。同じセッションのほかの依頼の後ろに並んでいる、空きを待って並んでいる、ユーザーの回答を待っている、メッセージの完了の知らせを待っている、task agent が起動したtask agent を待っている、セッションが質問の答えを待っている。項目と待ちの種類は今後増えるので、読む側は知らない種類を読み飛ばします。設計の 17.9 を参照してください。
+
 ### task agent 空間
 
 task agent が後の依頼のために残すものは `<データルート>/nekoclaw/task_agent_space/`（`nekoclaw/host/space.py`）にあります。すべてプレーンテキストで、書き込むのはホストだけです。ユーザーごとに 1 つで、すべての task agent が共有します。中身は、ユーザーが書くルール（`AGENTS.md`）、1 行 1 項目の索引（`MEMORY.md`）、そして 1 項目 1 ファイルのエントリ（`memory/*.md`）です。エントリには、再利用できる知見、うまくいかなかった点の振り返り、何がどこにあるかの参照、プロジェクトの進捗があります。全体用に 1 組、プロジェクトごとに 1 組（`projects/<プロジェクト>/`）あり、どのプロジェクトにも属さない依頼は `_daily` に入ります。
@@ -201,6 +203,7 @@ Manager と Agent Server は構築時にすべてオフです。ただし最初�
 | プラグインの選択と判断モデル | `nekoclaw/host/selection.py`、`decision.py` |
 | 台帳、outbox、報告 | `nekoclaw/host/ledger.py`、`outbox.py`、`reports.py` |
 | セッション間のメッセージ、再開、ほかのセッションの記録の読み取り | `nekoclaw/host/wakes.py`、`records.py`、`task_agents.py`、`config/prompts/prompts_nekoclaw_sessions.py` |
+| セッション間で起きたこと、誰が誰を待っているか（読み取りのみ） | `nekoclaw/host/timeline.py` |
 | task agent と agent runtime | `nekoclaw/host/task_agents.py`、`nekoclaw/runtime/` |
 | dsh：オプションの agent runtime とその選択 | `nekoclaw/dsh/`、`nekoclaw/host/runtimes.py`、`config/prompts/prompts_nekoclaw_dsh.py` |
 | task agent 空間：エントリ、索引、振り返り、アーカイブ | `nekoclaw/host/space.py`、`space_keeper.py`、`config/prompts/prompts_nekoclaw_space.py` |

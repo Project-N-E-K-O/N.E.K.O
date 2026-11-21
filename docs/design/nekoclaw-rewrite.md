@@ -2401,3 +2401,88 @@ owner 2026-11-21 定的方向：同一个项目里后来的委托，在主线会
 - 交回的那一下用户正好又说了话（副本正在关），这句话按「委托没在办」处理，不并进交回的那一轮。
 - 同一条回复里先 `report` 办完/卡住、后调写类工具的（调用按顺序执行，报告先到）：委托按报告结束，写没做。要处理得等整条回复的调用都登记完再结算报告，运行时没有这个结算点；模型通常最后才报告，没有做。
 - 每个主线最多 3 个副本只管新做的副本：在已有副本里接着办（等回话后接着、对办完的接着说）不看这个数，照样受全局 10 个位置的限制。
+
+### 17.9 落地说明（时间线和等待关系：给按项目分群的面板读的两个只读方法）
+
+owner 要的面板参考了 Antigravity 的 Swarm：成员之间的线（做完了、刚发了消息、在等谁）和按时间回放。这些台账里本来就有，不另存一份。这一步只加两个只读方法给以后的界面（7b）用：`NekoClawHost.timeline(project=None, lanlan_name=None, after=None, limit=None)` 和 `NekoClawHost.waits(project=None, lanlan_name=None)`。不调模型、不写台账、不改表结构、不加路由。读法在 `nekoclaw/host/timeline.py`，台账上是 `Ledger.timeline`、`Ledger.waits`，都在台账那一个线程上、一个事务里读。
+
+**时间线的条目**
+
+每条：`cursor`（从这条之后接着读）、`at`（时间）、`kind`（种类）、`lanlan_name`、`project`、`session_id`、`commission_id`（这件事是谁的）、`peer`（对方：`{"type": "session" | "user", "session_id", "commission_id"}`，没有对方是 `null`）、`text`（一句话，按 token 截到 `TIMELINE_TEXT_MAX_TOKENS`）、`detail`（按种类固定的几个小字段）。`session_id` 是委托现在所在的会话（进了副本又交回的，读的时候在哪就是哪）。
+
+| 种类 | 从哪来 | `text` | `peer` | `detail` |
+|---|---|---|---|---|
+| `filed` 立了一件事 | 事件 `created` | 标题 | 子使魔、问一句的副本：父委托 | `source` |
+| `queued` 排队 | 事件 `queued`；状态改成 `queued` | — | 排在谁后面（有的话） | `from`、`ahead`、`behind` |
+| `started` 开工、接着干 | 状态改成 `working` | — | — | `from` |
+| `asked_user` 等用户回话 | 状态改成 `waiting_user` | 问了什么（只有正在等的那一问） | 用户 | `question_kind` |
+| `answered` 用户答了 | 事件 `answered` | 回答 | 用户 | — |
+| `told` 用户插了话 | 事件 `told` | 那句话 | 用户 | — |
+| `reported` 使魔汇报 | 事件 `report` | 摘要 | — | `status`（progress/waiting/done/…） |
+| `ended` 结束 | 状态改成 `done`/`failed`/`cancelled`/`blocked` | 原因 | — | `outcome` |
+| `child_started` 派了子使魔 | 事件 `subagent_started`（不带 `asks`） | 子使魔的名字 | 子使魔 | — |
+| `child_returned` 子使魔交回 | 子使魔的委托结束 | 原因 | 父委托 | `outcome` |
+| `ask_answered` 问一句有了回答 | 问一句的副本委托结束 | 原因 | 问的那件委托 | `outcome` |
+| `into_copy` 进了副本 | 事件 `carried_on_in_copy` | — | 主线会话 | `copy_session_id` |
+| `handed_back` 从副本交回 | 事件 `handed_back` | — | 主线会话 | — |
+| `resting` 歇着 | 事件 `resting` | — | — | `until` |
+| `rest_over` 歇着被收回 | 事件 `rest_over` | — | — | — |
+| `wake_set` 定了时间叫自己 | 事件 `wake_set` | 留的话 | — | `due_at` |
+| `woken` 被叫醒 | 事件 `woken` | — | — | `count`、`reasons`（`message`/`timer`/`notice_expiry`） |
+| `message` 会话之间发消息 | `messages` 表 `note` | 消息 | 收的会话（交到的委托） | `status`、`delivered_at`、`notify_when_done` |
+| `done_notice` 「那一轮办完了」的通知 | `messages` 表 `done` | 通知 | 发消息的会话 | 同上 |
+| `asked_session` 问另一个会话一句 | `messages` 表 `ask` | 问题 | 被问的会话 | 同上 |
+
+- 不进时间线的：使魔的每一步（`tool_start`、`tool_end`、`tool_update`、`text`、`usage`）、`opened`、能力被拒、用量、经验和偏好这些。条目里的每个字段都是按名字挑出来的，台账里记的参数、文件内容、问题里的 `detail`（权限请求要做什么）一概不带；有测试钉住。
+- 一行台账出一条，所以子使魔结束只出一条 `child_returned`，不再另出 `ended`。`message_sent`、`session_asked` 事件和 `messages` 表重复，只用表里的（表里有送达没有，也有没有委托的会话发的）。
+- 消息的 `status`、`delivered_at` 是读的时候的样子，不是发的那一刻。
+- 种类会增加（支线合回、组队由后面的 PR 加）：界面遇到不认识的种类要跳过；`messages` 表里以后加的种类原样给出种类名。
+
+**游标：为什么不重不漏**
+
+两张表各有一个只增不减的编号：`messages.id` 是自增的；`events` 没有整数主键，用 SQLite 的 `rowid`。台账只有一个线程写，代码里从不删事件，也从不 `VACUUM`，所以 `rowid` 只会往上加、不会回头补小的。游标写成 `e<事件 rowid>.m<消息 id>`，界面当成不透明的字符串用。
+
+一页的取法：两张表各从自己的编号往后按编号顺序取（只取要显示的种类、按项目和角色筛过的），再按时间把两个队头归并（同一时刻先事件后消息，同一张表里按编号），取够 `limit` 条为止。每条的 `cursor` 是归并到它为止两张表各读到的编号；整页的 `next` 是最后一条的游标。下一页从这两个编号往后接着取，所以不会重复也不会漏，跟时间准不准无关（时钟往回拨了，后写的照样排在后面）。一张表在这一页里读到了头，`next` 里它那一半直接跳到读的那一刻的最大编号，下一页不再扫那些被筛掉的行。另给 `latest`（现在台账里的最后），界面只要「这之后新的」就从它开始；`more` 说现在后面还有没有。
+
+翻页的上限：默认一页 200 条（`TIMELINE_PAGE_ROWS`），最多 1000 条（`TIMELINE_PAGE_MAX_ROWS`），要更多也只给这么多。不是游标的字符串报 `ValueError`。
+
+**按项目、按角色**
+
+事件按委托的 `project`、`lanlan_name`；消息按发和收两边会话的，哪一边对上都算（别的项目发来这个项目的消息也在这个项目里看得见）。都不给就是全部。
+
+**等待关系（`waits`）**
+
+返回 `{"waits": [...], "more": bool}`，等得最久的在前（同一时刻按种类的先后），最多 `WAITS_MAX_ROWS`（500）条。每条：`kind`、`waiter`（谁在等，会话和委托）、`target`（等的是谁：`{"type": "session" | "user" | "place", ...}`）、`since`（从什么时候开始等）、`text`、`lanlan_name`、`projects`（两边的项目，按项目筛时哪边对上都算），有的种类再多一两个字段。
+
+| 种类 | 什么时候算 | `target` | `since` | 多的字段 |
+|---|---|---|---|---|
+| `queue` 排在同一个会话的另一件后面 | 委托在排队，最后一条 `queued` 事件带 `behind`、之后状态没再变过，`behind` 那件还在办 | 那件委托和它的会话 | 排进去的时候 | — |
+| `place` 等空位 | 委托在排队，不是上面那种 | `place` | 最后一次排进去（或立的时候） | — |
+| `user` 等用户回话 | 委托 `waiting_user` | 用户 | 最后一次改状态的时候 | `question_kind` |
+| `notice` 等消息的办完通知 | 消息订了办完通知、还没通知、没作废、「等不到」的唤醒还没到点，发的委托还在办 | 收的会话（交到的委托） | 发的时候 | `message_id`、`expires_at` |
+| `child` 父使魔等子使魔 | 子使魔的委托还在办（排队、在跑、等回话），父委托也还在办 | 子使魔 | 子使魔立的时候 | — |
+| `ask` 问了一句还没回 | 问一句的副本委托还在办，问的那件也还在办 | 被问的会话（副本是从它分出来的） | 立的时候 | `copy_session_id` |
+
+后面要加「等主线安静好合回」这类，往 `WAIT_KINDS` 加一种、在 `read_waits` 里加一段读法就行。
+
+**量过的耗时**（本机，Windows，`Ledger` 直接读，含切到台账线程；500 个会话、3000 件委托、5 万条事件、5000 条消息）
+
+| 读什么 | 中位数 | 最慢 |
+|---|---|---|
+| 全部，第一页 200 条 | 2.1 ms | 2.5 ms |
+| 全部，从中间接着读 200 条 | 2.1 ms | 2.8 ms |
+| 全部，一页 1000 条 | 9.6 ms | 24.2 ms |
+| 一个项目，第一页 200 条（要跳过别的项目） | 14.5 ms | 16.0 ms |
+| 一个项目，从 `latest` 起只要新的（轮询） | 0.2 ms | 0.2 ms |
+| 没有这个项目（整表扫一遍） | 16.4 ms | 17.0 ms |
+| 一个项目从头放到尾（3 页，470 条） | 29.6 ms（合计） | |
+| `waits()`，全部（这份台账约 800 件在办，取满 500 条） | 47.2 ms | 49.3 ms |
+| `waits()`，一个项目 | 43.7 ms | 57.7 ms |
+
+用不着加索引，表结构不动。`waits()` 的时间主要花在逐件找「最后一次改状态、最后一次排队」上，和在办的件数成正比；真实情况下同时在办的远少于 800。
+
+**没做的**
+
+- 过去的问题文本：台账只在委托正等着的时候存着那一问（`pending_question`），答完就清掉，状态事件里没记问了什么。所以回放时只有「正在等的那一问」有文字，以前的 `asked_user` 只有「问过」。要补得在改状态时把问题写进事件，那是写入侧的改动，这一步只读，没做。经 `report` 问的那一种，问题已经在 `reported`（`status` 是 `waiting`）里。
+- 「这件事到现在用了几步工具」这类计数没给：要数得扫每件委托的全部事件，看板（第 1 个 PR 的 `board()`）有用量。
+- 路由和界面不在这一步。
