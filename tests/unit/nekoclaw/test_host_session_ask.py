@@ -163,6 +163,11 @@ async def test_a_session_is_asked_a_question_that_a_copy_of_it_answers_and_it_is
     [child] = await host.ledger.select(parent_id=asker)
     assert (child.source, child.status, child.name) == ("ask", "done", "ask-1")
     assert child.title == 'Question to "photos"' and child.dispatch_text == QUESTION
+    async def delivered():
+        rows = await host.ledger.run(lambda db: call_audit.read_trace(db, asker, now=0))
+        return any(row["target"] == "receive_answer" and row["status"] == "completed" for row in rows)
+
+    await wait_until(delivered, what="the receiving runtime's confirmation to reach the ledger")
     rows = await host.ledger.run(lambda db: call_audit.read_trace(db, asker, now=0))
     child_brief, = [r for r in rows if r["commission_id"] == child.id and r["target"] == "space_brief"]
     assert child_brief["parent_call_id"] == child.id
@@ -589,8 +594,11 @@ async def test_a_question_whose_asker_is_cancelled_while_it_is_filed_is_answered
     ))
     await asyncio.wait_for(entered.wait(), 5)
     asking.cancel()
-    await asyncio.gather(asking, return_exceptions=True)
-    go_on.set()
+    try:
+        done, _ = await asyncio.wait([asking], timeout=5)
+        assert done and asking.cancelled(), "the ACP waiter did not cancel independently"
+    finally:
+        go_on.set()
     await wait_until(lambda: _children_of(host, asker.id), what="the question being filed")
     [child] = await host.ledger.select(parent_id=asker.id)
     child = await wait_status(host, child.id, "done", "failed", "cancelled", "blocked")
@@ -702,6 +710,7 @@ async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word
     await wait_until(lambda: handed, what="it being taken up again")
     [(text, human)] = handed
     assert (answer in text) is not deny
+    assert ("It is under dist/." in text) is not deny
     assert ("permission denied" in text) is deny
     assert human is False
     async def recorded():
@@ -737,7 +746,10 @@ async def test_delayed_answer_follows_its_still_working_commission(hosts, tmp_pa
         await asyncio.wait_for(entered.wait(), 5)
         if change == "next_run":
             host.task_agents._run_over(asker.id)
+            assert host.permissions.current_run(asker.id)()
         if change == "closing":
+            wait_model.set()
+            await wait_until(lambda: session.idle, what="the parent waiting for its child")
             session.closing = True
         elif change == "ended":
             await host.ledger.transition(asker.id, "cancelled", reason="user stop")
@@ -746,6 +758,15 @@ async def test_delayed_answer_follows_its_still_working_commission(hosts, tmp_pa
         if change == "closing":
             assert asker.id in host.task_agents._queue
             assert "answer fixture" in host.task_agents._resume[asker.id]
+            await session.runtime.close(session.session_id)
+
+            async def received():
+                rows = await host.ledger.run(lambda db: call_audit.read_trace(db, asker.id, now=0))
+                return sum(r["target"] == "receive_answer" and r["status"] == "completed" for r in rows) == 1
+
+            await wait_until(received, what="the reopened session confirming the delayed answer")
+            await wait_until(lambda: any("answer fixture" in _said(req)[-1] for req in model.requests),
+                             what="the reopened session receiving the answer")
         elif change == "ended":
             assert not told and asker.id not in host.task_agents._queue
         else:
@@ -789,6 +810,10 @@ async def test_explicit_runtime_refusal_settles_the_answer_and_retries_once(host
         await wait_until(lambda: len(sent) == 2, what="one redelivery of the refused answer")
         assert sent[0][1] == sent[1][1] and "example answer" in sent[1][1]
         if second_refusal:
+            def unexpected_retry(*args):
+                pytest.fail("a second refusal scheduled a third delivery")
+
+            monkeypatch.setattr(manager, "_wake_closed_parent", unexpected_retry)
             await manager._handle({**error, "serial": sent[1][0]})
         else:
             await manager._handle({"type": "taken", "session_id": asker.session_id, "inputs": session.sent})

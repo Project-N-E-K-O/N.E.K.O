@@ -105,6 +105,27 @@ async def test_deny_reads_but_do_not_ask_for_an_intrinsic_session_action(env):
     assert not asked
 
 
+async def test_cancelled_reader_never_reports_a_delivered_result(env, monkeypatch):
+    host, (source, sender), _ = env
+    requested = asyncio.Event()
+    finish = call_audit.finish_call
+
+    async def delay_return(record, status):
+        await finish(record, status)
+        requested.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(call_audit, "finish_call", delay_return)
+    read = asyncio.create_task(host.task_agents._callbacks().call(sender.id, "session_list", {}))
+    try:
+        await asyncio.wait_for(requested.wait(), 5)
+    finally:
+        read.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(read, 5)
+    assert (await trace(host, source))[-1]["status"] == "cancelled"
+
+
 async def test_no_release_to_reused_session_after_audit_write(env, monkeypatch):
     host, (source, sender), (_, recipient) = env
     finish = call_audit.finish_call

@@ -227,6 +227,15 @@ class Call:
     # True only after the closing update actually matched this row and committed.
     closed: bool = False
 
+    async def withhold_read(self, status: str, reason: str | None = None) -> None:
+        """Correct a completed read whose result never left the host."""
+        async def update() -> None:
+            await self.ledger.run(lambda db: db.execute(
+                "UPDATE host_calls SET status=?, reason=? WHERE call_id=? AND status='completed'",
+                (status, reason, self.call_id),
+            ))
+        await _settle(update())
+
     async def bind_run(self, run_id: str, target: str) -> None:
         opaque_id = (
             run_id

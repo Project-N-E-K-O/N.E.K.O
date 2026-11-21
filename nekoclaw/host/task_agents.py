@@ -1287,6 +1287,7 @@ class TaskAgentManager:
         kind = "working_memory" if tool in ("space_brief", "note_lesson") else "session_action"
         scope = SessionActionScope("host:session", tool, commission_id)
         reads = tool in ("list_sessions", "read_session", "space_brief")
+        record = None
         grant = None
         try:
             async with call_audit.call(self._ledger, commission_id, kind, tool) as record:
@@ -1314,12 +1315,13 @@ class TaskAgentManager:
                     raise RuntimeError("session records could not be audited")
                 # Closing the row also awaited SQLite. Check again before releasing the result.
                 if not live() or not self._permissions.grant_active(grant):
-                    await self._ledger.run(lambda db: db.execute(
-                        "UPDATE host_calls SET status='denied', reason='delivery_revoked' WHERE call_id=?",
-                        (record.call_id,),
-                    ))
+                    await record.withhold_read("denied", "delivery_revoked")
                     raise RuntimeError("session records could not be delivered")
             return result
+        except asyncio.CancelledError:
+            if reads and record is not None and record.closed and record.status == "completed":
+                await record.withhold_read("cancelled")
+            raise
         finally:
             self._permissions.release_grant(grant)
 
