@@ -291,7 +291,13 @@ def test_by_id_lookup_does_not_follow_links_out_of_an_item(libraries):
         pytest.skip(f"symlinks unavailable: {exc}")
     register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "300")}])
     path, _ = frontend_utils.find_workshop_item_by_id("300")
-    assert path == os.path.join(str(libraries.a), "300")
+    # The item folder itself is real and inside library B, but its only model is
+    # reached through a link out of the item, so no model is taken from it.
+    assert path == str(libraries.b / "300")
+    assert frontend_utils.find_workshop_item_model_file(path) is None
+    with _client(libraries, []) as client:
+        assert client.get("/api/live2d/model_config_by_id/300").json()["success"] is False
+        assert client.get("/api/live2d/model_files_by_id/300").json()["success"] is False
 
 
 @pytest.mark.parametrize("workshop_path", [None, "missing"])
@@ -719,5 +725,47 @@ def test_model_files_by_id_static_fallback_uses_the_shared_choice(libraries, mon
         files = client.get("/api/live2d/model_files_by_id/200").json()
         config = client.get("/api/live2d/model_config_by_id/200").json()["config"]
     assert files["success"] is True
-    assert files["model_config_url"].endswith("/200.model3.json")
+    # The URL keeps the item folder that /static serves it from.
+    assert files["model_config_url"] == "/static/200/200.model3.json"
     assert config["FileReferences"]["Moc"] == "200.moc3"
+
+
+@pytest.mark.parametrize("kind", ["vrm", "mmd"])
+def test_by_id_lookup_returns_the_library_holding_a_non_live2d_item(libraries, kind):
+    """Unsubscribe falls back to this path when Steam cannot report the install folder."""
+    _write_model(libraries.b / "300", kind, "Charlie")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "300")}])
+    assert frontend_utils.find_workshop_item_by_id("300") == (str(libraries.b / "300"), "/workshop")
+    # Present in both: the configured library still wins.
+    _write_model(libraries.a / "300", kind, "Charlie")
+    assert frontend_utils.find_workshop_item_by_id("300") == (str(libraries.a / "300"), "/workshop")
+    # Absent everywhere: the old default path in the configured library.
+    assert frontend_utils.find_workshop_item_by_id("400") == (str(libraries.a / "400"), "/workshop")
+
+
+def test_by_id_lookup_skips_a_non_live2d_item_folder_linked_out_of_its_library(libraries):
+    outside = libraries.tmp_path / "outside" / "300"
+    _write_model(outside, "vrm", "Charlie")
+    _link(libraries.b / "300", outside, is_dir=True)
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    (libraries.b / "200").mkdir()
+    assert frontend_utils.find_workshop_item_by_id("300") == (str(libraries.a / "300"), "/workshop")
+
+
+def test_cloudsave_binding_roots_cover_every_library(libraries):
+    from utils.cloudsave_runtime.bindings import (
+        _collect_binding_workshop_roots,
+        _infer_binding_source_from_resolved_path,
+    )
+
+    _write_model(libraries.b / "200", "vrm", "Bravo")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    roots = _collect_binding_workshop_roots(libraries.config)
+    assert roots[0] == libraries.a
+    assert libraries.b in roots
+    assert _infer_binding_source_from_resolved_path(
+        libraries.config,
+        resolved_path=libraries.b / "200" / "Bravo.vrm",
+        asset_source="",
+        asset_source_id="",
+    ) == ("steam_workshop", "200")

@@ -1163,7 +1163,13 @@ def get_model_files_by_id(model_id: str):
                     # Model directly in item directory: workshop/{item_id}/{model_name}.model3.json.
                     model_config_url = encode_url_path(f"{url_prefix}/{model_id}/{model_config_file}")
             else:
-                model_config_url = encode_url_path(f"{url_prefix}/{model_config_file}")
+                # Other prefixes serve the folder that holds model_dir, so the URL keeps
+                # the model folder name and any subfolder the config file sits in.
+                model_folder = os.path.basename(os.path.normpath(model_dir))
+                if model_name_subdir:
+                    model_config_url = encode_url_path(f"{url_prefix}/{model_folder}/{model_name_subdir}/{model_config_file}")
+                else:
+                    model_config_url = encode_url_path(f"{url_prefix}/{model_folder}/{model_config_file}")
             logger.debug(f"为模型 {model_id} 构建的配置URL: {model_config_url} (模型子目录: {model_name_subdir})")
         
         logger.debug(f"文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")

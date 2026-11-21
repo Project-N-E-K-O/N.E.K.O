@@ -1342,6 +1342,20 @@ def find_workshop_item_by_id(item_id: str) -> tuple:
                 logging.warning(f"检查创意工坊物品 {item_id} 时出错，继续查找其他库: {e}")
                 continue
         
+        # No model file anywhere: return the first library that holds the item folder
+        # (VRM/MMD items, or callers that only need the install path), so an item
+        # installed in another library is not reported at a path that does not exist.
+        for search_dir in search_dirs:
+            item_path = os.path.join(search_dir, item_id)
+            try:
+                if not os.path.isdir(item_path):
+                    continue
+                if _is_within(os.path.realpath(search_dir), os.path.realpath(item_path)):
+                    return (item_path, '/workshop')
+            except OSError as e:
+                logging.warning(f"检查创意工坊物品 {item_id} 时出错，继续查找其他库: {e}")
+                continue
+
         # Return the default path if no matching folder is found, unless that folder
         # is a link leading out of its root.
         default_path = os.path.join(search_dirs[0], item_id)

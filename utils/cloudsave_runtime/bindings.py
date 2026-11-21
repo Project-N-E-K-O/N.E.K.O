@@ -355,6 +355,21 @@ def _collect_binding_workshop_roots(config_manager) -> list[Path]:
             seen_roots.add(normalized_root)
             roots.append(Path(fallback_workshop_root))
 
+    # Workshop content folders of the other Steam libraries that /workshop also serves.
+    get_library_roots = getattr(config_manager, "get_steam_workshop_library_roots", None)
+    if callable(get_library_roots):
+        try:
+            library_roots = list(get_library_roots() or [])
+        except Exception:
+            library_roots = []
+        for library_root in library_roots:
+            if not library_root:
+                continue
+            normalized_root = os.path.normcase(os.path.normpath(str(library_root)))
+            if normalized_root not in seen_roots:
+                seen_roots.add(normalized_root)
+                roots.append(Path(library_root))
+
     return roots
 
 
