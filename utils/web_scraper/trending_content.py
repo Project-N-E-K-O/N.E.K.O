@@ -2281,6 +2281,7 @@ async def fetch_neko_community_feed(
         rejected_auth_status: int | None = None
         payload: Any = None
         posts = []
+        preference_exhausted = False
         timeout = NEKO_COMMUNITY_PROACTIVE_TIMEOUT_SECONDS if recommendations is not None else None
         if authenticated:
             # Omit locale so the server honors the account's saved language.
@@ -2315,10 +2316,12 @@ async def fetch_neko_community_feed(
                         raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
                     if recommendations is not None:
                         profile = recommendations.preferences.profile
-                        posts = [
+                        allowed = [
                             post for post in posts
                             if profile.score("community", profile.match("community", post)) is not None
                         ]
+                        preference_exhausted = bool(posts) and not allowed
+                        posts = allowed
             except (httpx.HTTPError, TimeoutError, ValueError):
                 if recommendations is None or requires_account:
                     raise
@@ -2360,7 +2363,9 @@ async def fetch_neko_community_feed(
             if not posts and _community_feed_collection(payload) != []:
                 raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
         if not authenticated and recommendations is not None:
-            posts = recommendations.preferences.rank_community([dict(post) for post in posts])
+            ranked = recommendations.preferences.rank_community([dict(post) for post in posts])
+            preference_exhausted = bool(posts) and not ranked
+            posts = ranked
         posts = posts[:max(1, int(limit))]
         # Preserve server ranking; an exhausted language pool may legitimately be empty.
         return {
@@ -2368,6 +2373,9 @@ async def fetch_neko_community_feed(
             "posts": posts,
             "formatted_content": format_neko_community_feed(posts),
             "authenticated": authenticated,
+            # Local exclusions removed every fetched card; callers may still
+            # analyze chat evidence so the user can lift those exclusions.
+            "preference_exhausted": preference_exhausted,
         }
     except Exception as exc:
         logger.warning(f"获取喵宇宙社区内容失败: {type(exc).__name__}: {exc}")

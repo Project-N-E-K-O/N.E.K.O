@@ -441,6 +441,7 @@ async def _fetch_source(
             "formatted_content": format_neko_community_feed(content.get("posts", [])),
             "raw_data": content,
             "links": _extract_links_from_raw(mode, content),
+            "preference_exhausted": bool(content.get("preference_exhausted")),
         }
 
     if mode == "video":
@@ -608,6 +609,7 @@ async def collect_proactive_sources(
                 ]
                 if baseline_links and not sources[mode]["links"]:
                     sources[mode]["formatted_content"] = ""
+                    sources[mode]["preference_exhausted"] = True
             candidates = [
                 item for item in candidates
                 if _resource_key(item) not in blocked_keys

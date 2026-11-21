@@ -605,6 +605,7 @@ async def test_guest_community_feed_succeeds_when_all_cards_are_excluded(monkeyp
     assert result["success"] is True
     assert result["authenticated"] is False
     assert result["posts"] == []
+    assert result["preference_exhausted"] is True
 
 
 @pytest.mark.asyncio

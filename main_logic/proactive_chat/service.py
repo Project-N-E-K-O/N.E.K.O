@@ -281,22 +281,34 @@ def _build_ranked_web_prompt(
     language: str,
     prefer_trending: bool = False,
 ) -> tuple[str, list[dict], list[str], list[str]]:
-    """Render eligible links in rank order and reserve space for live context."""
+    """Render eligible links in rank order and reserve space for live context.
+
+    Formatted-only records are checked against the profile like linked
+    candidates. A source whose every record is excluded is marked with
+    ``preference_exhausted`` so the caller can still run an evidence pass.
+    """
     from utils.tokenize import truncate_to_tokens
 
     header = "--- Ranked recommendations ---"
     labels = PROACTIVE_SOURCE_LABELS.get(language, PROACTIVE_SOURCE_LABELS["en"])
-    context_parts = [
-        (
-            labels.get(mode, mode),
-            [
-                truncate_to_tokens(record, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
-                for record in _phase1_fallback_records(sources[mode]["formatted_content"])
-            ],
-        )
-        for mode in _phase1_linkless_modes(modes, sources)
-        if mode != "community"
-    ]
+    context_parts = []
+    for mode in _phase1_linkless_modes(modes, sources):
+        if mode == "community":
+            continue
+        records = _phase1_fallback_records(sources[mode]["formatted_content"])
+        if profile is not None:
+            allowed = [
+                record for record in records
+                if profile.score(mode, profile.match(mode, {"content": record})) is not None
+            ]
+            if records and not allowed:
+                sources[mode]["preference_exhausted"] = True
+            records = allowed
+        if records:
+            context_parts.append((
+                labels.get(mode, mode),
+                [truncate_to_tokens(record, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS) for record in records],
+            ))
     fallback = _merge_phase1_parts_within_token_budget(
         [(f"--- {label} ---", records[:1]) for label, records in context_parts],
         max_tokens=PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS,
@@ -1713,6 +1725,10 @@ async def handle_proactive_chat(
                     if profile.score(mode, profile.match(mode, candidate)) is None:
                         sources.pop(mode)
                         preference_withheld_source = True
+        # Snapshot before source-weight suppression can drop an emptied feed.
+        preference_exhausted = preference_withheld_source or any(
+            source.get("preference_exhausted") for source in sources.values()
+        )
         avatar_position = command.avatar_position
 
         if not sources:
@@ -2136,8 +2152,14 @@ async def handle_proactive_chat(
         if followup_topics_prompt:
             enriched_memory_context += "\n" + followup_topics_prompt
 
+        # A feed emptied by local exclusions still needs the evidence pass:
+        # it is the only path where a chat request can lift those exclusions.
+        preference_exhausted = preference_exhausted or any(
+            source.get("preference_exhausted") for source in sources.values()
+        )
         request_evidence = bool(preference_refs) and (
             has_web_task or has_music_task or has_meme_task or verse_ranked
+            or preference_exhausted
         )
         if has_web_task or has_music_task or has_meme_task or request_evidence:
             # Phase1 preemption: final check before dialing. Expensive LLM call starts next;

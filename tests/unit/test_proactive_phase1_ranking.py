@@ -89,6 +89,39 @@ def test_ranked_prompt_keeps_a_strong_match_from_a_cooled_channel(monkeypatch):
     assert _lookup_link_by_phase1_selection(pick, links)["url"] == video["url"]
 
 
+@pytest.mark.parametrize("scope", ["personal", "all"])
+def test_formatted_only_records_respect_persisted_exclusions(scope):
+    timeline = (
+        "[Twitter]\n"
+        "1. @alice: Election politics thread\n"
+        "2. @bob: Sourdough bread finally worked"
+    )
+    sources = {"personal": {"links": [], "formatted_content": timeline}}
+    prompt, links, labels, _ = service._build_ranked_web_prompt(
+        ["personal"], sources,
+        profile=Profile(exclusions={(scope, "politics")}),
+        source_weights={"personal": 1.0},
+        language="en",
+    )
+    assert "Sourdough" in prompt
+    assert "politics" not in prompt.casefold()
+    assert not links and labels
+    assert not sources["personal"].get("preference_exhausted")
+
+
+def test_formatted_only_source_marks_exhaustion_when_every_record_is_excluded():
+    sources = {"personal": {"links": [], "formatted_content": "1. @alice: Election politics thread"}}
+    prompt, links, labels, records = service._build_ranked_web_prompt(
+        ["personal"], sources,
+        profile=Profile(exclusions={("personal", "politics")}),
+        source_weights={"personal": 1.0},
+        language="en",
+    )
+    assert prompt == ""
+    assert not links and not labels and not records
+    assert sources["personal"]["preference_exhausted"] is True
+
+
 def test_cooldown_cannot_reenter_the_prompt_as_formatted_hot_feed(monkeypatch):
     monkeypatch.setattr(candidate_selection, "_should_skip_source", lambda _key: True)
     content = link("已推过的内容", "https://example.test/item")
