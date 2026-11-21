@@ -2443,6 +2443,25 @@
         };
     }
 
+    /**
+     * Route history voice clips through the same speaker volume, mute and
+     * selected AudioContext output as live speech. The source joins after
+     * the analyser, so replay cannot drive character lip sync or voice taps.
+     */
+    async function connectHistoryAudioElement(element) {
+        var context = await ensureAudioPlayerContext();
+        initializeGlobalAnalyser();
+        if (!context || !S.speakerGainNode || !element
+            || typeof context.createMediaElementSource !== 'function') return null;
+        var source = context.createMediaElementSource(element);
+        source.connect(S.speakerGainNode);
+        return {
+            stop: function () {
+                try { source.disconnect(); } catch (_) { /* Already detached. */ }
+            }
+        };
+    }
+
     // ======================== Module exports ========================
 
     mod.clearAudioQueue = clearAudioQueue;
@@ -2453,6 +2472,7 @@
     mod.initializeGlobalAnalyser = initializeGlobalAnalyser;
     mod.openAssistantVoiceTap = openAssistantVoiceTap;
     mod.playExternalVoiceTrack = playExternalVoiceTrack;
+    mod.connectHistoryAudioElement = connectHistoryAudioElement;
     mod.startLipSync = startLipSync;
     mod.stopLipSync = stopLipSync;
     mod.scheduleAudioChunks = scheduleAudioChunks;

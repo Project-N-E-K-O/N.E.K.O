@@ -1102,10 +1102,10 @@ class TtsRuntimeMixin:
                                 )
                                 if (
                                     isinstance(message, tuple)
-                                    and len(message) == 3
+                                    and len(message) in (3, 4)
                                     and message[0] == "__audio__"
                                 ):
-                                    _, response_speech_id, audio = message
+                                    response_speech_id, audio = message[1:3]
                                     if str(response_speech_id or "") == speech_id:
                                         if isinstance(audio, (bytes, bytearray, memoryview)):
                                             received_bytes += audio.nbytes if isinstance(audio, memoryview) else len(audio)
@@ -2343,7 +2343,8 @@ class TtsRuntimeMixin:
             self._audio_frame_send_lock = lock
         return lock
 
-    async def _write_audio_frame(self, websocket, header: dict, tts_audio) -> None:
+    async def _write_audio_frame(self, websocket, header: dict, tts_audio,
+                                 audio_format: str | None = None) -> None:
         """Write one header/payload pair. The caller holds the frame lock."""
         async def write_frame():
             try:
@@ -2359,6 +2360,10 @@ class TtsRuntimeMixin:
                 except Exception:
                     logger.warning("Failed to close stalled TTS audio transport", exc_info=True)
                 raise WebSocketDisconnect(code=1011) from None
+            from main_logic.voice_archive import archive_event
+            await archive_event(self, 'audio', header.get('speech_id'), data=tts_audio,
+                                format=audio_format or ('ogg' if bytes(tts_audio[:4]) == b'OggS' else 'pcm_s16le_48000'),
+                                gain=header.get('playback_gain', 1.0))
             self.sync_message_queue.put({"type": "binary", "data": tts_audio})
 
         writing = asyncio.create_task(write_frame())
@@ -2409,6 +2414,7 @@ class TtsRuntimeMixin:
         Returns ``(audio_sent, done_sent)``.
         """
         chunks = list(audio_chunks or ())
+        batch_format = ('ogg' if chunks and bytes(chunks[0][:4]) == b'OggS' else 'pcm_s16le_48000')
         try:
             websocket = self.websocket
             if not (
@@ -2430,7 +2436,7 @@ class TtsRuntimeMixin:
                         )
                         return False, False
                     header = self._audio_chunk_header(speech_id)
-                    await self._write_audio_frame(websocket, header, tts_audio)
+                    await self._write_audio_frame(websocket, header, tts_audio, batch_format)
                     self._speech_output_total += 1
                     self._last_speech_output_time = time.time()
                     self._last_speech_output_bytes = len(tts_audio)
@@ -2447,6 +2453,8 @@ class TtsRuntimeMixin:
                     )
                     return audio_sent, False
                 await websocket.send_json(done_message)
+                from main_logic.voice_archive import archive_event
+                await archive_event(self, 'done', speech_id)
             return audio_sent, True
         except WebSocketDisconnect:
             logger.warning("⚠️ send_cached_speech_batch: WebSocket disconnected")
@@ -2460,7 +2468,8 @@ class TtsRuntimeMixin:
             self.release_speech_playback_gain(speech_id)
             self._clear_game_speech_correlation(speech_id)
 
-    async def send_speech(self, tts_audio, speech_id: Optional[str] = None):
+    async def send_speech(self, tts_audio, speech_id: Optional[str] = None,
+                          audio_format: str | None = None):
         """Send speech data to the frontend, sending the speech_id header first for precise interruption control"""
         try:
             # Pinned once. The lock keeps other SENDERS out, but ``self.websocket``
@@ -2486,7 +2495,7 @@ class TtsRuntimeMixin:
                             f"⚠️ send_speech skipped: websocket replaced while waiting for the frame lock, speech_id={effective_speech_id}"
                         )
                         return False
-                    await self._write_audio_frame(websocket, header, tts_audio)
+                    await self._write_audio_frame(websocket, header, tts_audio, audio_format)
                 if not self._tts_output_is_current():
                     return False
                 logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={effective_speech_id}")
@@ -2545,6 +2554,8 @@ class TtsRuntimeMixin:
                         )
                         return False
                     await websocket.send_json(message)
+                    from main_logic.voice_archive import archive_event
+                    await archive_event(self, 'done', speech_id)
                 logger.debug(f"🔚 send_audio_done OK: speech_id={speech_id}")
                 return True
             else:
@@ -2955,9 +2966,12 @@ class TtsRuntimeMixin:
                             notified_error_keys.add(notification_key)
                         await self.send_status(user_msg)
                         continue
-                elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
-                    _, speech_id, audio_payload = data
-                    sent = await self.send_speech(audio_payload, speech_id=speech_id)
+                elif isinstance(data, tuple) and len(data) in (3, 4) and data[0] == "__audio__":
+                    speech_id, audio_payload = data[1:3]
+                    if len(data) == 4:
+                        sent = await self.send_speech(audio_payload, speech_id=speech_id, audio_format=data[3])
+                    else:
+                        sent = await self.send_speech(audio_payload, speech_id=speech_id)
                     logger.debug(
                         "[voice-chain] stage=tts_audio_delivery speech_id=%s bytes=%d sent=%s",
                         speech_id,

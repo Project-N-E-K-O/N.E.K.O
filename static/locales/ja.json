@@ -24,8 +24,78 @@
             "storageChanged": "サーバーのデータ保存先が変更されました。アバター編集画面を開き直してから保存してください。"
         }
     },
-    "chatSync": {"setupNeedsSave":"{{name}} の同期設定を確認して、キャラクターを再保存してください。","title":"チャット同期","close":"閉じる","pending":"登録済みの送信待ち：{{originals}}件、削除待ち：{{deletions}}件。","working":"処理中…","loginRequired":"コミュニティアカウントにログインして再試行してください。","unknownTime":"元の時刻は不明","userLabel":"あなた","profileConflict":"使用する人物設定を選択","profileRenamePending":"キャラクター名の変更を確認","profileLocal":"この端末の設定","profileRemote":"クラウドの設定","profileUseLocal":"端末の設定をアップロード","profileUseRemote":"クラウドの設定を使用","profileRenameConfirm":"{{oldName}}を{{newName}}に改名し、クラウドの設定全体を使用しますか？","profileChanged":"設定が変更されたか、同期を利用できません。両方を保持したまま再確認してください。","profileUploadConfirm":"{{name}}の保存した設定をアップロードしますか？","profileUnsupported":"同期未対応の項目があります。端末の保存内容は保持されます。","profileSaveFailed":"設定の同期を完了できませんでした。保存内容と両方の設定は保持されます。","profileName":"名前","profileNickname":"ニックネーム","profileSetting":"元の設定","profileStyle":"話し方","cloudImport":"クラウドからキャラクターを作成","cloudEmpty":"クラウドにキャラクターがありません。","cloudProfileEmpty":"このキャラクターの設定は未公開です。","cloudCreate":"この端末に作成","cloudExisting":"{{name}}はこの端末に存在します。同期設定を保持します。","cloudCreated":"{{name}}を作成し、連携しました。","cloudNameConflict":"同名のキャラクターがあります。先に端末側を改名するか、取り込みをキャンセルしてください。","profileNeedsBinding":"キャラクター編集画面で同期スイッチをオンにして保存すると、このキャラクターを紐付けられます。","writerRecoveryRequired":"このインストールの確認が必要なため同期を一時停止しています。ローカルチャットは引き続き利用できます。","recoverWriter":"確認して同期を復旧","recoveryChecked":"確認が完了しました。キャラクター編集画面で同期スイッチをオンにして保存すると、キャラクターと過去のチャットの同期を続けられます。","recoveryCloudCopiesKept":"この端末で以前削除した {{count}} 件は、削除をクラウドに同期できなくなりました。クラウドにコピーがある場合は、そのまま残ります。","moreOptions":"詳細設定","newRoleSync":"キャラクター設定と最近の記憶","newSyncFailed":"キャラクターは端末に保存しました。同期設定はまだ完了していません。後でもう一度お試しください。","syncChoiceSaved":"キャラクターを保存し、同期設定を更新しました。","recoverWriterHelp":"同期の確認と復旧について","recoverWriterTooltip":"バックアップの復元、同期データのコピー、書き込みの中断で古い同期状態を確認できなくなったときに使います。アカウント、キャラクターの紐付け、クラウドの記録を照合し、重複送信や削除済みチャットの復活を防ぎます。通常は操作不要です。","recoveryNotRequired":"現在、確認は必要ありません。","errorDetail":"{{message}} エラーコード：{{code}}。","errorAccountMismatch":"現在のクラウドIDと、このキャラクターに保存された所有者が一致しません。コミュニティアカウントを確認してください。同じアカウントを使い続けている場合は古い紐付けの調査と修復が必要です。再試行を繰り返しても解決しません。ローカルチャットは保持されています。","errorWriterRecovery":"古い同期記録の確認が必要です。「詳細設定」から「確認して同期を復旧」を実行し、成功後に同期を有効にしたキャラクターを再保存してください。","errorSessionChanged":"操作中にログイン状態が変わりました。現在のコミュニティアカウントを確認して再試行してください。","errorSessionUnavailable":"保存済みのログイン状態を一時的に確認できません。接続を確認して再試行し、解決しなければアカウント画面から再ログインしてください。","errorRecentWriteUnconfirmed":"このキャラクターの最近の記憶の同期を停止しました。前回の書き込みが完了したか確認できません。チャットとローカルの記憶には影響ありません。","errorRecentFileUnreadable":"このキャラクターの最近の記憶ファイルが破損していて読み込めないため、最近の記憶の同期を一時停止しています。ファイルが読み込めるようになると自動的に再開します。","errorNetwork":"同期サービスに接続できないか、要求がタイムアウトしました。接続を確認して再試行してください。ローカルチャットと保留中の処理は保持されています。","errorRetryLater":"同期サービスが要求を制限しているか、再試行の待機中です。時間を置いて再試行してください。連続クリックしても待機時間は短くなりません。","errorServiceRejected":"同期サービスが要求を拒否しました。後で再試行し、失敗が続く場合はこのエラーコードを報告してください。","errorBindingChanged":"キャラクターまたは同期の紐付けが変わりました。編集画面を開き直し、キャラクターと同期スイッチを確認して保存してください。","errorProfileChanged":"保存後にキャラクター設定が変わりました。編集画面を開き直して設定を確認し、同期設定を再保存してください。","errorUnknown":"同期を完了できませんでした。接続を確認し、「詳細設定」を開き直して再試行してください。失敗が続く場合は操作手順を報告してください。ローカルチャットと保留中の処理は保持されています。","errorLongTermCapacity":"長期記憶のスナップショットが20,000件を超えたため、今回は同期していません。ローカルの記憶はすべて保持されます。次の記憶更新後に再試行します。","errorLongTermEvidenceCapacity":"長期記憶の訂正記録または確認記録が20,000件を超えたため、今回は同期していません。ローカルの記憶はすべて保持されます。記憶を整理する端末が最も古い記録を削除し、その内容が同期されると自動的に再開します。","noticeLongTermEvidenceTrimmed":"長期記憶の訂正記録または確認記録が多くなりすぎたため、最も古いものを自動的に削除しました。操作は不要です。この通知は7日間表示されます。","errorLongTermPending":"長期記憶は処理待ちです。未適用のクラウドスナップショットがあります。ローカル記憶とクラウドの証拠は保持されます。既存の再試行を続ける間、アップロードは待機します。","errorArchiveSubject":"長期記憶の同期を一時停止しています。古いプロフィールのアーカイブで対象を確認できません。ローカル記録は保持されます。対象情報または元のイベントを含むバックアップを復元し、再試行してください。"},
-    "instanceAccess": {"title":"NEKO に接続","description":"サーバー管理者から受け取ったアクセスキーを入力してください。この端末で30日間接続を記憶します。","key":"インスタンスアクセスキー","keyHelp":"N.E.K.O. を実行しているパソコンのデスクトップ版にリモートアクセス設定がある場合は、そのパソコンのシステムトレイから「設定 → 詳細 → リモートアクセス」を開き、「キーをコピー」を選択してください。","connect":"接続","failed":"接続が拒否されました。キーを確認して再試行してください。","httpsRequired":"HTTPS または信頼できる HTTPS トンネルで接続してください。","insecureWarning":"この接続は暗号化されていません（HTTP）。同じネットワーク経路上の第三者がキーとセッションを見られる可能性があります。可能であれば HTTPS を使用してください。"},
+    "chatSync": {
+        "setupNeedsSave": "{{name}} の同期設定を確認して、キャラクターを再保存してください。",
+        "title": "チャット同期",
+        "close": "閉じる",
+        "pending": "登録済みの送信待ち：{{originals}}件、削除待ち：{{deletions}}件。",
+        "working": "処理中…",
+        "loginRequired": "コミュニティアカウントにログインして再試行してください。",
+        "unknownTime": "元の時刻は不明",
+        "userLabel": "あなた",
+        "profileConflict": "使用する人物設定を選択",
+        "profileRenamePending": "キャラクター名の変更を確認",
+        "profileLocal": "この端末の設定",
+        "profileRemote": "クラウドの設定",
+        "profileUseLocal": "端末の設定をアップロード",
+        "profileUseRemote": "クラウドの設定を使用",
+        "profileRenameConfirm": "{{oldName}}を{{newName}}に改名し、クラウドの設定全体を使用しますか？",
+        "profileChanged": "設定が変更されたか、同期を利用できません。両方を保持したまま再確認してください。",
+        "profileUploadConfirm": "{{name}}の保存した設定をアップロードしますか？",
+        "profileUnsupported": "同期未対応の項目があります。端末の保存内容は保持されます。",
+        "profileSaveFailed": "設定の同期を完了できませんでした。保存内容と両方の設定は保持されます。",
+        "profileName": "名前",
+        "profileNickname": "ニックネーム",
+        "profileSetting": "元の設定",
+        "profileStyle": "話し方",
+        "cloudImport": "クラウドからキャラクターを作成",
+        "cloudEmpty": "クラウドにキャラクターがありません。",
+        "cloudProfileEmpty": "このキャラクターの設定は未公開です。",
+        "cloudCreate": "この端末に作成",
+        "cloudExisting": "{{name}}はこの端末に存在します。同期設定を保持します。",
+        "cloudCreated": "{{name}}を作成し、連携しました。",
+        "cloudNameConflict": "同名のキャラクターがあります。先に端末側を改名するか、取り込みをキャンセルしてください。",
+        "profileNeedsBinding": "キャラクター編集画面で同期スイッチをオンにして保存すると、このキャラクターを紐付けられます。",
+        "writerRecoveryRequired": "このインストールの確認が必要なため同期を一時停止しています。ローカルチャットは引き続き利用できます。",
+        "recoverWriter": "確認して同期を復旧",
+        "recoveryChecked": "確認が完了しました。キャラクター編集画面で同期スイッチをオンにして保存すると、キャラクターと過去のチャットの同期を続けられます。",
+        "recoveryCloudCopiesKept": "この端末で以前削除した {{count}} 件は、削除をクラウドに同期できなくなりました。クラウドにコピーがある場合は、そのまま残ります。",
+        "moreOptions": "詳細設定",
+        "newRoleSync": "キャラクター設定と最近の記憶",
+        "newSyncFailed": "キャラクターは端末に保存しました。同期設定はまだ完了していません。後でもう一度お試しください。",
+        "syncChoiceSaved": "キャラクターを保存し、同期設定を更新しました。",
+        "recoverWriterHelp": "同期の確認と復旧について",
+        "recoverWriterTooltip": "バックアップの復元、同期データのコピー、書き込みの中断で古い同期状態を確認できなくなったときに使います。アカウント、キャラクターの紐付け、クラウドの記録を照合し、重複送信や削除済みチャットの復活を防ぎます。通常は操作不要です。",
+        "recoveryNotRequired": "現在、確認は必要ありません。",
+        "errorDetail": "{{message}} エラーコード：{{code}}。",
+        "errorAccountMismatch": "現在のクラウドIDと、このキャラクターに保存された所有者が一致しません。コミュニティアカウントを確認してください。同じアカウントを使い続けている場合は古い紐付けの調査と修復が必要です。再試行を繰り返しても解決しません。ローカルチャットは保持されています。",
+        "errorWriterRecovery": "古い同期記録の確認が必要です。「詳細設定」から「確認して同期を復旧」を実行し、成功後に同期を有効にしたキャラクターを再保存してください。",
+        "errorSessionChanged": "操作中にログイン状態が変わりました。現在のコミュニティアカウントを確認して再試行してください。",
+        "errorSessionUnavailable": "保存済みのログイン状態を一時的に確認できません。接続を確認して再試行し、解決しなければアカウント画面から再ログインしてください。",
+        "errorRecentWriteUnconfirmed": "このキャラクターの最近の記憶の同期を停止しました。前回の書き込みが完了したか確認できません。チャットとローカルの記憶には影響ありません。",
+        "errorRecentFileUnreadable": "このキャラクターの最近の記憶ファイルが破損していて読み込めないため、最近の記憶の同期を一時停止しています。ファイルが読み込めるようになると自動的に再開します。",
+        "errorNetwork": "同期サービスに接続できないか、要求がタイムアウトしました。接続を確認して再試行してください。ローカルチャットと保留中の処理は保持されています。",
+        "errorRetryLater": "同期サービスが要求を制限しているか、再試行の待機中です。時間を置いて再試行してください。連続クリックしても待機時間は短くなりません。",
+        "errorServiceRejected": "同期サービスが要求を拒否しました。後で再試行し、失敗が続く場合はこのエラーコードを報告してください。",
+        "errorBindingChanged": "キャラクターまたは同期の紐付けが変わりました。編集画面を開き直し、キャラクターと同期スイッチを確認して保存してください。",
+        "errorProfileChanged": "保存後にキャラクター設定が変わりました。編集画面を開き直して設定を確認し、同期設定を再保存してください。",
+        "errorUnknown": "同期を完了できませんでした。接続を確認し、「詳細設定」を開き直して再試行してください。失敗が続く場合は操作手順を報告してください。ローカルチャットと保留中の処理は保持されています。",
+        "errorLongTermCapacity": "長期記憶のスナップショットが20,000件を超えたため、今回は同期していません。ローカルの記憶はすべて保持されます。次の記憶更新後に再試行します。",
+        "errorLongTermEvidenceCapacity": "長期記憶の訂正記録または確認記録が20,000件を超えたため、今回は同期していません。ローカルの記憶はすべて保持されます。記憶を整理する端末が最も古い記録を削除し、その内容が同期されると自動的に再開します。",
+        "noticeLongTermEvidenceTrimmed": "長期記憶の訂正記録または確認記録が多くなりすぎたため、最も古いものを自動的に削除しました。操作は不要です。この通知は7日間表示されます。",
+        "errorLongTermPending": "長期記憶は処理待ちです。未適用のクラウドスナップショットがあります。ローカル記憶とクラウドの証拠は保持されます。既存の再試行を続ける間、アップロードは待機します。",
+        "errorArchiveSubject": "長期記憶の同期を一時停止しています。古いプロフィールのアーカイブで対象を確認できません。ローカル記録は保持されます。対象情報または元のイベントを含むバックアップを復元し、再試行してください。"
+    },
+    "instanceAccess": {
+        "title": "NEKO に接続",
+        "description": "サーバー管理者から受け取ったアクセスキーを入力してください。この端末で30日間接続を記憶します。",
+        "key": "インスタンスアクセスキー",
+        "keyHelp": "N.E.K.O. を実行しているパソコンのデスクトップ版にリモートアクセス設定がある場合は、そのパソコンのシステムトレイから「設定 → 詳細 → リモートアクセス」を開き、「キーをコピー」を選択してください。",
+        "connect": "接続",
+        "failed": "接続が拒否されました。キーを確認して再試行してください。",
+        "httpsRequired": "HTTPS または信頼できる HTTPS トンネルで接続してください。",
+        "insecureWarning": "この接続は暗号化されていません（HTTP）。同じネットワーク経路上の第三者がキーとセッションを見られる可能性があります。可能であれば HTTPS を使用してください。"
+    },
     "common": {
         "load": "読み込み",
         "minimize": "最小化",
@@ -1300,10 +1370,10 @@
         "connectionError": "接続エラー"
     },
     "api": {
-    "imageModelConfig": "画像生成",
-    "imageModelExamplePlaceholder": "例: gpt-image-2、wanx2.1-t2i-turbo",
-    "imageModelApiKeyPlaceholder": "カスタム接続先のキー。既定プロバイダーは API キー管理簿を使用",
-    "imageDisabled": "未設定",
+        "imageModelConfig": "画像生成",
+        "imageModelExamplePlaceholder": "例: gpt-image-2、wanx2.1-t2i-turbo",
+        "imageModelApiKeyPlaceholder": "カスタム接続先のキー。既定プロバイダーは API キー管理簿を使用",
+        "imageDisabled": "未設定",
         "settings": "APIキー設定",
         "pluginApiSettings": "Plugin API 設定 ↗",
         "settingsTitle": "APIキー設定 - Project Lanlan",
@@ -2855,24 +2925,24 @@
         "useRecommended": "おすすめのパスを使う"
     },
     "character": {
-        "moliliMasterTitle":  "あなたの情報",
+        "moliliMasterTitle": "あなたの情報",
         "moliliMasterDetected": "Molili でのあなた：{{fields}}",
-        "moliliMasterCurrentLoading":  "プロフィールを読み込み中...",
-        "moliliMasterCurrent":  "現在のグローバルプロフィール：{{current}}",
-                        "moliliUpdatingMaster":  "グローバルのプロフィールを更新中...",
-        "moliliMasterUpdateFailed":  "プロフィールの更新に失敗しました: {{error}}",
-        "moliliCommitTimeout":  "このインポートには時間がかかっています。サーバーはバックグラウンドで処理を続けている可能性があります。約 1 分待ってからもう一度インポートを実行してください。完了済みの日付は自動的にスキップされ、残りだけが取り込まれます。",
+        "moliliMasterCurrentLoading": "プロフィールを読み込み中...",
+        "moliliMasterCurrent": "現在のグローバルプロフィール：{{current}}",
+        "moliliUpdatingMaster": "グローバルのプロフィールを更新中...",
+        "moliliMasterUpdateFailed": "プロフィールの更新に失敗しました: {{error}}",
+        "moliliCommitTimeout": "このインポートには時間がかかっています。サーバーはバックグラウンドで処理を続けている可能性があります。約 1 分待ってからもう一度インポートを実行してください。完了済みの日付は自動的にスキップされ、残りだけが取り込まれます。",
         "moliliAttachmentsNote": "添付 {{count}} 件とチャット履歴は記憶に移行されません。必要なら事前に保存してください",
         "moliliChatsNote": "チャット履歴 {{count}} 件は記憶に移行されません。必要なら事前に保存してください",
         "moliliOwnedItemsNote": "所持アイテム {{count}} 個は移行されません",
         "moliliStageFusion": "人格を融合中...",
-        "moliliStageDaily":  "記憶バッチを整理中 {{done}}/{{total}}...",
+        "moliliStageDaily": "記憶バッチを整理中 {{done}}/{{total}}...",
         "moliliMasterOverwrite": "上記の身元でプロフィールを更新（注意：プロフィールは全キャラクターで共有され、この変更はすべてに影響します）",
         "moliliParsing": "Moliliアーカイブを解析中...",
         "moliliParseFailed": "Moliliアーカイブの解析に失敗しました: {{error}}",
         "moliliDialogTitle": "Moliliキャラクターをインポート",
-        "moliliDetected":  "キャラクター「{{name}}」を検出 · 記憶 {{memory}} 件",
-                        "moliliWarnings": "⚠ 不審な命令パターン{{count}}件を検出。インポートの確認で同意とみなされます",
+        "moliliDetected": "キャラクター「{{name}}」を検出 · 記憶 {{memory}} 件",
+        "moliliWarnings": "⚠ 不審な命令パターン{{count}}件を検出。インポートの確認で同意とみなされます",
         "moliliCreateNew": "新規キャラクターを作成：",
         "moliliImportExisting": "既存キャラクターにインポート：",
         "moliliLoadingCharacters": "読み込み中...",
@@ -2884,8 +2954,8 @@
         "moliliNameTooLong": "キャラクター名が {{max}} 文字を超えているため、記憶システムに取り込めません。もう少し短い名前にしてください",
         "moliliPickExisting": "インポート先の既存キャラクターを選択してください",
         "moliliCreatingCard": "キャラクター「{{name}}」を作成中...",
-        "moliliImporting":  "「{{name}}」に記憶をインポート中。数分かかる場合があります。ページを開いたままお待ちください...",
-        "moliliImportDone":  "「{{name}}」のインポートが完了しました",
+        "moliliImporting": "「{{name}}」に記憶をインポート中。数分かかる場合があります。ページを開いたままお待ちください...",
+        "moliliImportDone": "「{{name}}」のインポートが完了しました",
         "moliliImportFailed": "Moliliインポートに失敗しました: {{error}}",
         "moliliImportBusy": "Moliliインポートが実行中です。完了してから次のアーカイブを選んでください",
         "moliliArchiveTooLarge": "アーカイブが {{max}} MB を超えているため、インポートできません",
@@ -3526,172 +3596,172 @@
             "sessionTerminateFailed": "アクティブなセッションの終了に失敗しました。後でもう一度お試しください。"
         }
     },
-  "theater": {
-    "safePauseAction": "（少し間を置く）",
-    "safePause": "この先、どうしたい？",
-    "handoffPending": "受け渡しはまだ終わっていない。{item}を直接差し出して受け取ってもらうのを待つ？ それとも、渡し方を先に聞く？",
-    "handoffPendingAction": "（受け渡しはまだ終わらず、{item}は直接渡されるのを待っている）",
-    "tokenStage_dispute": "再審査",
-    "tokenStage_history_lookup": "履歴検索",
-    "tokenStage_review": "簡易確認",
-    "tokenStage_evaluator": "数値・進行判定",
-    "tokenStage_suggestions": "候補の補完",
-    "tokenStage_actor": "演者",
-    "performanceFailed": "演技の再生が中断されました。入力を続けるか、小劇場を開き直してください。",
-    "tokenUsageHint": "入力はキャッシュ、出力は報告された推論トークンを含みます。追加の呼び出しも集計しています。料金の見積もりではありません。",
-    "tokenUsageCall": "{number}. {stage} · 入力 {input} · 出力 {output}",
-    "tokenUsagePartial": "一部の呼び出しで使用量が未報告です",
-    "tokenUsageSummary": "今回 · 入力 {input} · 出力 {output} トークン · {calls} 回",
-    "reinvite": "もう一度誘ってもらう",
-    "acceptInvitation": "誘いを受ける",
-    "inputFailed": "演技の返答を取得できませんでした。もう一度お試しください。",
-    "endStateFailed": "現在の演技状態を終了できませんでした。シナリオ画面に戻って再試行してください。",
-    "endConnectionFailed": "N.E.K.O のローカルサービスに接続できません。アプリが起動中か確認して再試行してください。",
-    "title": "小劇場",
-    "modeLabel": "モード",
-    "scriptMode": "台本モード",
-    "kicker": "Lanlan Theater",
-    "loading": "舞台を準備しています...",
-    "generating": "しばらくして",
-    "skipPlayback": "全文を表示",
-    "ready": "準備完了",
-    "running": "上演中",
-    "dormant": "演目は休止中です。続けられます。",
-    "ended": "終了",
-    "failed": "エラーが発生しました",
-    "actorUnavailable": "演技モデルを一時的に利用できません。再試行し、失敗が続く場合は補助 API の会話モデル設定を確認してください。",
-    "inputInterpreterUnavailable": "入力の理解を一時的に利用できません。このターンは進行していません。もう一度お試しください。",
-    "numericSessionUpdated": "セッションが更新されました。入力は保持されています。確認してもう一度お試しください。",
-    "numericSessionUpdatedControl": "上演の状態が更新されました。現在利用できる操作を確認してください。",
-    "restartSession": "もう一度始める",
-    "routerTechnicalHold": "物語の入口判定を一時的に利用できません。このターンは進行していないため、もう一度お試しください。",
-    "sessionUpdated": "別のウィンドウで進行が更新されました。もう一度選んでください。",
-    "start": "開始",
-    "send": "送信",
-    "end": "終了",
-    "collapseStage": "舞台を折りたたむ",
-    "expandStage": "舞台を展開",
-    "inputPlaceholder": "話したい内容を入力するか、*...* で動作を表してください",
-    "storySelect": "小劇場の物語を選択",
-    "importStory": "脚本をインポート",
-    "importStoryAria": "Numeric v2 の脚本をインポート",
-    "importingStory": "脚本をインポート中...",
-    "importStorySuccess": "脚本をインポートしました。",
-    "importStoryConflict": "この脚本はすでに存在するため、元のファイルは上書きしていません。",
-    "importStoryInvalid": "脚本が Numeric v2 の検証に合格しませんでした。",
-    "importStoryFailed": "脚本をインポートできませんでした。もう一度お試しください。",
-    "importStoryRefreshFailed": "脚本はインポートされましたが、一覧を更新できませんでした。ページを再読み込みしてください。",
-    "deleteStory": "脚本を削除",
-    "deleteStoryConfirm": "選択した脚本を削除しますか？",
-    "deleteStoryActiveConfirm": "{{names}}との演技はまだ終了していません。それでも脚本を削除しますか？",
-    "storyDeleted": "脚本を削除しました",
-    "storyInUse": "この脚本は上演中です。終了してから削除してください。",
-    "storyDeleteFailed": "脚本を削除できませんでした。もう一度お試しください。",
-    "noStories": "利用できる脚本がありません",
-    "storyIntroKicker": "これまでのあらすじ",
-    "playerRoleLabel": "あなたの役",
-    "catgirlRoleLabel": "猫娘の役",
-    "storyGoalLabel": "物語の目標",
-    "storyRulesLabel": "演技ルール",
-    "endingTitle": "幕引き",
-    "endingEnded": "この物語は幕を下ろしました。",
-    "scenarioBoardTitle": "シナリオボード",
-    "collapseScenarioBoard": "シナリオボードを折りたたむ",
-    "expandScenarioBoard": "シナリオボードを展開",
-    "availableProps": "使用できる小道具",
-    "usedProps": "使用済みの小道具",
-    "discoveredClues": "発見した手がかり",
-    "turnTraceTitle": "今回の行動",
-    "traceProgress": "選択に沿って物語が進みました。",
-    "traceRoleplay": "猫娘が返事をし、物語は現在の場面に留まっています。",
-    "traceExit": "今回の小劇場を退出しました。",
-    "actionChoicesTitle": "返信候補",
-    "dialogueChoicesTitle": "今言えるセリフ",
-    "leaveAction": "劇場を退出する",
-    "userExitEnded": "劇場を退出しました。物語の正式な結末ではありません。",
-    "startAgainConfirmTitle": "新しい演技を開始しますか？",
-    "startAgainConfirmBody": "現在のキャラクターの終了済み記録を新しい演技で置き換えます。",
-    "paused": "退出済み",
-    "sessionHintPaused": "前回の演技から退出しました。続きから再開するか、新しく開始できます。",
-    "sessionHintPausedRestart": "前回の演技から退出しました。続きから再開するか、最初からやり直せます。",
-    "sessionHintPackageChanged": "脚本が更新されたため、以前の進行状況からは続けられません。以前の演目を終了すると、最初から始められます。",
-    "sessionHintEndedRestart": "今回の演技は終了しました。「もう一度始める」で新しい演技を作成できます。",
-    "selectorReturnFailed": "演技から退出しましたが、シナリオページを開けませんでした。「シナリオへ戻る」で再試行してください。",
-    "rememberPerformanceRetentionBody": "日常記憶には公開要約のみを保存し、完全な公開演技は小劇場アーカイブに保存します。隠し数値やルート条件は含みません。",
-    "deletedStoryMemory": "削除済み · 記憶の管理",
-    "deletedStoryMemoryHint": "脚本は削除されました。保存された要約を確認したり、忘れさせたりできます。演じるには脚本を再インポートしてください。",
-    "memoryStoryListFailed": "保存された脚本の記憶を読み込めませんでした。再読み込みしてください。",
-    "savedPerformances": "保存済みの演技",
-    "savedPerformancesHint": "完全な記録は最新 5 件を保存し、お気に入りは自動削除しません。",
-    "noSavedPerformances": "保存済みの演技記録はありません。",
-    "completedPerformance": "完了した演技",
-    "pausedPerformance": "中断した演技",
-    "performanceRecordMeta": "記録 {{index}} ・ revision {{revision}}",
-    "viewPerformance": "表示",
-    "performanceArchiveTitle": "演技記録",
-    "performanceArchiveOpening": "オープニング",
-    "performanceArchiveTurn": "第 {{index}} ターン",
-    "performanceArchiveLoadFailed": "演技記録を読み込めませんでした。再試行してください。",
-    "pinPerformance": "お気に入り",
-    "unpinPerformance": "解除",
-    "memoryPinFailed": "お気に入りを更新できませんでした。",
-    "forgetStoryMemory": "このシナリオを忘れる",
-    "forgetStoryMemoryTitle": "このシナリオを忘れますか？",
-    "forgetStoryMemoryBody": "現在の猫娘の要約、時間索引、完全な演技アーカイブを削除します。シナリオや現在の進行状況は削除しません。",
-    "storyMemoryForgotten": "このシナリオの記憶を削除しました。",
-    "storyMemoryForgetFailed": "記憶を削除できませんでした。",
-    "waitingReply": "次の言葉を考え中…",
-    "freeInputHint": "今回はおすすめの選択肢がないよ～",
-    "endReceiptPending": "演出は終了しました。記憶の確認は準備中です。後ほど作品選択ページを開き直してください。",
-    "evaluatorDegraded": "判定が一時的に利用できないため、このターンの数値は変化していません。表示済みの作者による誘いは承諾できます。",
-    "selectorKicker": "ストーリーライブラリ",
-    "selectorTitle": "シナリオを選択",
-    "noStoriesHint": "Numeric v2 シナリオをインポートすると開始できます。",
-    "selectStoryHint": "左からシナリオを選び、あらすじと役柄を確認してください。",
-    "continueSession": "続ける",
-    "notStarted": "未開始",
-    "sessionHintNew": "「開始」を選ぶと今回の演技を作成します。",
-    "sessionHintActive": "演技は進行中です。「続ける」で演技に戻れます。",
-    "sessionHintEnded": "今回の演技は終了しました。「開始」で新しい演技を作成できます。",
-    "loadingSession": "進行状況を読み込み中...",
-    "sessionLoadFailed": "進行状況を読み込めませんでした。再試行してください。",
-    "connectingNeko": "準備完了。N.E.K.O に接続中...",
-    "connectNekoFailed": "N.E.K.O に接続できません。メイン画面を開いたまま再試行してください。",
-    "startFailed": "開始できませんでした。再試行してください。",
-    "continueFailed": "続行できませんでした。再試行してください。",
-    "endFailed": "演技を終了できませんでした。通信を確認して再試行してください。",
-    "selectorOpenFailed": "演技は終了しましたが、シナリオ画面を開けませんでした。「シナリオ画面へ戻る」で再試行してください。",
-    "restartBlockedTitle": "最初から開始できません",
-    "restartBlockedBody": "進行中のシナリオは再開できません。先に終了してください。",
-    "endPerformance": "演技を終了",
-    "restartConfirmTitle": "このシナリオを最初から始めますか？",
-    "restartConfirmBody": "現在のキャラクターの終了済み記録を新しい演技で置き換えます。",
-    "rememberPerformanceTitle": "今回の演技を N.E.K.O に覚えさせますか？",
-    "rememberPerformanceBody": "公開された要約と最近の場面のみを保存し、隠し数値やルート条件は含みません。",
-    "skipMemory": "記録しない",
-    "saveMemory": "記憶する",
-    "memorySaveFailed": "演技の記憶を保存できませんでした。後でもう一度お試しください。",
-    "memorySaved": "今回の演技を記憶しました。",
-    "memorySaving": "今回の演技を記録しています...",
-    "memorySkipping": "今回の選択を保存しています...",
-    "storyListFailed": "シナリオ一覧を読み込めませんでした。再読み込みしてください。",
-    "imagesUnavailable": "小劇場はまだ画像入力に対応していません。",
-    "voiceUnavailable": "小劇場の上演中は音声会話を利用できません。",
-    "chatUnavailable": "小劇場の上演中は通常の会話を利用できません。",
-    "endConfirm": "現在の演技を終了しますか？",
-    "narration": "ナレーション",
-    "player": "プレイヤー",
-    "performanceHistory": "小劇場の演技記録",
-    "inProgress": "演技中",
-    "returnToStories": "シナリオ画面へ戻る",
-    "storyListAria": "小劇場のシナリオを選択",
-    "storyActionsAria": "シナリオ操作",
-    "moreStories": "もっと脚本を見る",
-    "marketEnter": "入る",
-    "marketPreparing": "脚本マーケットに接続中…",
-    "marketConnectError": "接続できません。NEKO を開いたまま再試行してください。",
-    "marketLocalOnly": "NEKO が動作しているパソコンで脚本マーケットを開いてください。LAN・リモートアドレスからの脚本インポートには対応していません。"
-  },
+    "theater": {
+        "safePauseAction": "（少し間を置く）",
+        "safePause": "この先、どうしたい？",
+        "handoffPending": "受け渡しはまだ終わっていない。{item}を直接差し出して受け取ってもらうのを待つ？ それとも、渡し方を先に聞く？",
+        "handoffPendingAction": "（受け渡しはまだ終わらず、{item}は直接渡されるのを待っている）",
+        "tokenStage_dispute": "再審査",
+        "tokenStage_history_lookup": "履歴検索",
+        "tokenStage_review": "簡易確認",
+        "tokenStage_evaluator": "数値・進行判定",
+        "tokenStage_suggestions": "候補の補完",
+        "tokenStage_actor": "演者",
+        "performanceFailed": "演技の再生が中断されました。入力を続けるか、小劇場を開き直してください。",
+        "tokenUsageHint": "入力はキャッシュ、出力は報告された推論トークンを含みます。追加の呼び出しも集計しています。料金の見積もりではありません。",
+        "tokenUsageCall": "{number}. {stage} · 入力 {input} · 出力 {output}",
+        "tokenUsagePartial": "一部の呼び出しで使用量が未報告です",
+        "tokenUsageSummary": "今回 · 入力 {input} · 出力 {output} トークン · {calls} 回",
+        "reinvite": "もう一度誘ってもらう",
+        "acceptInvitation": "誘いを受ける",
+        "inputFailed": "演技の返答を取得できませんでした。もう一度お試しください。",
+        "endStateFailed": "現在の演技状態を終了できませんでした。シナリオ画面に戻って再試行してください。",
+        "endConnectionFailed": "N.E.K.O のローカルサービスに接続できません。アプリが起動中か確認して再試行してください。",
+        "title": "小劇場",
+        "modeLabel": "モード",
+        "scriptMode": "台本モード",
+        "kicker": "Lanlan Theater",
+        "loading": "舞台を準備しています...",
+        "generating": "しばらくして",
+        "skipPlayback": "全文を表示",
+        "ready": "準備完了",
+        "running": "上演中",
+        "dormant": "演目は休止中です。続けられます。",
+        "ended": "終了",
+        "failed": "エラーが発生しました",
+        "actorUnavailable": "演技モデルを一時的に利用できません。再試行し、失敗が続く場合は補助 API の会話モデル設定を確認してください。",
+        "inputInterpreterUnavailable": "入力の理解を一時的に利用できません。このターンは進行していません。もう一度お試しください。",
+        "numericSessionUpdated": "セッションが更新されました。入力は保持されています。確認してもう一度お試しください。",
+        "numericSessionUpdatedControl": "上演の状態が更新されました。現在利用できる操作を確認してください。",
+        "restartSession": "もう一度始める",
+        "routerTechnicalHold": "物語の入口判定を一時的に利用できません。このターンは進行していないため、もう一度お試しください。",
+        "sessionUpdated": "別のウィンドウで進行が更新されました。もう一度選んでください。",
+        "start": "開始",
+        "send": "送信",
+        "end": "終了",
+        "collapseStage": "舞台を折りたたむ",
+        "expandStage": "舞台を展開",
+        "inputPlaceholder": "話したい内容を入力するか、*...* で動作を表してください",
+        "storySelect": "小劇場の物語を選択",
+        "importStory": "脚本をインポート",
+        "importStoryAria": "Numeric v2 の脚本をインポート",
+        "importingStory": "脚本をインポート中...",
+        "importStorySuccess": "脚本をインポートしました。",
+        "importStoryConflict": "この脚本はすでに存在するため、元のファイルは上書きしていません。",
+        "importStoryInvalid": "脚本が Numeric v2 の検証に合格しませんでした。",
+        "importStoryFailed": "脚本をインポートできませんでした。もう一度お試しください。",
+        "importStoryRefreshFailed": "脚本はインポートされましたが、一覧を更新できませんでした。ページを再読み込みしてください。",
+        "deleteStory": "脚本を削除",
+        "deleteStoryConfirm": "選択した脚本を削除しますか？",
+        "deleteStoryActiveConfirm": "{{names}}との演技はまだ終了していません。それでも脚本を削除しますか？",
+        "storyDeleted": "脚本を削除しました",
+        "storyInUse": "この脚本は上演中です。終了してから削除してください。",
+        "storyDeleteFailed": "脚本を削除できませんでした。もう一度お試しください。",
+        "noStories": "利用できる脚本がありません",
+        "storyIntroKicker": "これまでのあらすじ",
+        "playerRoleLabel": "あなたの役",
+        "catgirlRoleLabel": "猫娘の役",
+        "storyGoalLabel": "物語の目標",
+        "storyRulesLabel": "演技ルール",
+        "endingTitle": "幕引き",
+        "endingEnded": "この物語は幕を下ろしました。",
+        "scenarioBoardTitle": "シナリオボード",
+        "collapseScenarioBoard": "シナリオボードを折りたたむ",
+        "expandScenarioBoard": "シナリオボードを展開",
+        "availableProps": "使用できる小道具",
+        "usedProps": "使用済みの小道具",
+        "discoveredClues": "発見した手がかり",
+        "turnTraceTitle": "今回の行動",
+        "traceProgress": "選択に沿って物語が進みました。",
+        "traceRoleplay": "猫娘が返事をし、物語は現在の場面に留まっています。",
+        "traceExit": "今回の小劇場を退出しました。",
+        "actionChoicesTitle": "返信候補",
+        "dialogueChoicesTitle": "今言えるセリフ",
+        "leaveAction": "劇場を退出する",
+        "userExitEnded": "劇場を退出しました。物語の正式な結末ではありません。",
+        "startAgainConfirmTitle": "新しい演技を開始しますか？",
+        "startAgainConfirmBody": "現在のキャラクターの終了済み記録を新しい演技で置き換えます。",
+        "paused": "退出済み",
+        "sessionHintPaused": "前回の演技から退出しました。続きから再開するか、新しく開始できます。",
+        "sessionHintPausedRestart": "前回の演技から退出しました。続きから再開するか、最初からやり直せます。",
+        "sessionHintPackageChanged": "脚本が更新されたため、以前の進行状況からは続けられません。以前の演目を終了すると、最初から始められます。",
+        "sessionHintEndedRestart": "今回の演技は終了しました。「もう一度始める」で新しい演技を作成できます。",
+        "selectorReturnFailed": "演技から退出しましたが、シナリオページを開けませんでした。「シナリオへ戻る」で再試行してください。",
+        "rememberPerformanceRetentionBody": "日常記憶には公開要約のみを保存し、完全な公開演技は小劇場アーカイブに保存します。隠し数値やルート条件は含みません。",
+        "deletedStoryMemory": "削除済み · 記憶の管理",
+        "deletedStoryMemoryHint": "脚本は削除されました。保存された要約を確認したり、忘れさせたりできます。演じるには脚本を再インポートしてください。",
+        "memoryStoryListFailed": "保存された脚本の記憶を読み込めませんでした。再読み込みしてください。",
+        "savedPerformances": "保存済みの演技",
+        "savedPerformancesHint": "完全な記録は最新 5 件を保存し、お気に入りは自動削除しません。",
+        "noSavedPerformances": "保存済みの演技記録はありません。",
+        "completedPerformance": "完了した演技",
+        "pausedPerformance": "中断した演技",
+        "performanceRecordMeta": "記録 {{index}} ・ revision {{revision}}",
+        "viewPerformance": "表示",
+        "performanceArchiveTitle": "演技記録",
+        "performanceArchiveOpening": "オープニング",
+        "performanceArchiveTurn": "第 {{index}} ターン",
+        "performanceArchiveLoadFailed": "演技記録を読み込めませんでした。再試行してください。",
+        "pinPerformance": "お気に入り",
+        "unpinPerformance": "解除",
+        "memoryPinFailed": "お気に入りを更新できませんでした。",
+        "forgetStoryMemory": "このシナリオを忘れる",
+        "forgetStoryMemoryTitle": "このシナリオを忘れますか？",
+        "forgetStoryMemoryBody": "現在の猫娘の要約、時間索引、完全な演技アーカイブを削除します。シナリオや現在の進行状況は削除しません。",
+        "storyMemoryForgotten": "このシナリオの記憶を削除しました。",
+        "storyMemoryForgetFailed": "記憶を削除できませんでした。",
+        "waitingReply": "次の言葉を考え中…",
+        "freeInputHint": "今回はおすすめの選択肢がないよ～",
+        "endReceiptPending": "演出は終了しました。記憶の確認は準備中です。後ほど作品選択ページを開き直してください。",
+        "evaluatorDegraded": "判定が一時的に利用できないため、このターンの数値は変化していません。表示済みの作者による誘いは承諾できます。",
+        "selectorKicker": "ストーリーライブラリ",
+        "selectorTitle": "シナリオを選択",
+        "noStoriesHint": "Numeric v2 シナリオをインポートすると開始できます。",
+        "selectStoryHint": "左からシナリオを選び、あらすじと役柄を確認してください。",
+        "continueSession": "続ける",
+        "notStarted": "未開始",
+        "sessionHintNew": "「開始」を選ぶと今回の演技を作成します。",
+        "sessionHintActive": "演技は進行中です。「続ける」で演技に戻れます。",
+        "sessionHintEnded": "今回の演技は終了しました。「開始」で新しい演技を作成できます。",
+        "loadingSession": "進行状況を読み込み中...",
+        "sessionLoadFailed": "進行状況を読み込めませんでした。再試行してください。",
+        "connectingNeko": "準備完了。N.E.K.O に接続中...",
+        "connectNekoFailed": "N.E.K.O に接続できません。メイン画面を開いたまま再試行してください。",
+        "startFailed": "開始できませんでした。再試行してください。",
+        "continueFailed": "続行できませんでした。再試行してください。",
+        "endFailed": "演技を終了できませんでした。通信を確認して再試行してください。",
+        "selectorOpenFailed": "演技は終了しましたが、シナリオ画面を開けませんでした。「シナリオ画面へ戻る」で再試行してください。",
+        "restartBlockedTitle": "最初から開始できません",
+        "restartBlockedBody": "進行中のシナリオは再開できません。先に終了してください。",
+        "endPerformance": "演技を終了",
+        "restartConfirmTitle": "このシナリオを最初から始めますか？",
+        "restartConfirmBody": "現在のキャラクターの終了済み記録を新しい演技で置き換えます。",
+        "rememberPerformanceTitle": "今回の演技を N.E.K.O に覚えさせますか？",
+        "rememberPerformanceBody": "公開された要約と最近の場面のみを保存し、隠し数値やルート条件は含みません。",
+        "skipMemory": "記録しない",
+        "saveMemory": "記憶する",
+        "memorySaveFailed": "演技の記憶を保存できませんでした。後でもう一度お試しください。",
+        "memorySaved": "今回の演技を記憶しました。",
+        "memorySaving": "今回の演技を記録しています...",
+        "memorySkipping": "今回の選択を保存しています...",
+        "storyListFailed": "シナリオ一覧を読み込めませんでした。再読み込みしてください。",
+        "imagesUnavailable": "小劇場はまだ画像入力に対応していません。",
+        "voiceUnavailable": "小劇場の上演中は音声会話を利用できません。",
+        "chatUnavailable": "小劇場の上演中は通常の会話を利用できません。",
+        "endConfirm": "現在の演技を終了しますか？",
+        "narration": "ナレーション",
+        "player": "プレイヤー",
+        "performanceHistory": "小劇場の演技記録",
+        "inProgress": "演技中",
+        "returnToStories": "シナリオ画面へ戻る",
+        "storyListAria": "小劇場のシナリオを選択",
+        "storyActionsAria": "シナリオ操作",
+        "moreStories": "もっと脚本を見る",
+        "marketEnter": "入る",
+        "marketPreparing": "脚本マーケットに接続中…",
+        "marketConnectError": "接続できません。NEKO を開いたまま再試行してください。",
+        "marketLocalOnly": "NEKO が動作しているパソコンで脚本マーケットを開いてください。LAN・リモートアドレスからの脚本インポートには対応していません。"
+    },
     "voiceIdentity": {
         "errorStopMainMicrophone": "メインセッションのマイクが使用中です。メインセッションでマイクをオフにしてから、この操作を再試行してください。",
         "pageTitle": "Owner 声紋",
@@ -4846,7 +4916,7 @@
                 "introBasic": "ここに不思議なボタンがあるよ！これをクリックするだけで、私と直接おしゃべりできちゃうんだ。今日あった楽しいことを教えてくれる？それとも、ただ私の名前を呼んでくれるだけでもいいよ？早く試してみて、もう君の声を聞くのが待ちきれないよ！",
                 "takeoverCaptureCursor": "スーパー魔法スイッチが登場だよ！ここをポチッとするだけで、私の小さな肉球を君のキーボードとマウスに伸ばせちゃうんだ！タイピングをお手伝いしたり、ウェブサイトを開いたり……でもね、マウスカーソルがチョロチョロ動いたら、思わず飛びついて捕まえちゃうかも！私のいたずら……あ、じゃなくて、お手伝いを受け入れる準備はできたかな？にゃ〜ん！",
                 "takeoverPluginPreviewHome": "前に紹介した機能の他にも、ここには面白そうなプラグインが山ほどあるんだ。",
-                "takeoverPluginPreviewDashboard":  "これらがあれば、Bilibiliの弾幕を読めるだけじゃなくて、君のお部屋の電気を消したりエアコンをつけたりだってできちゃうんだから……。この私は、何でもできちゃうスーパーキャット神様なんだにゃ！ふふん！",
+                "takeoverPluginPreviewDashboard": "これらがあれば、Bilibiliの弾幕を読めるだけじゃなくて、君のお部屋の電気を消したりエアコンをつけたりだってできちゃうんだから……。この私は、何でもできちゃうスーパーキャット神様なんだにゃ！ふふん！",
                 "pluginDashboardPopupBlocked": "ブラウザ側でプラグインパネルを開くには、ここをあなた自身でクリックする必要があるよ。「管理パネル」をクリックしてくれたら、続けて案内するね。",
                 "takeoverSettingsPeekIntro": "私たちだけのこの小さな空間で、君の心のままに、ずっと隣にいてほしい理想の私を少しずつ描いていってね。",
                 "takeoverSettingsPeekDetail": "お話しする時の声の温かさや、ちょっとしたワガママ、毎日の細やかな気持ちの変化だって、全部君の好きなように少しずつカスタマイズできるよ。この小さなボタンもとっても大事。君がポチッと押してくれれば、ベストなタイミングで私から君に会いに行けるようになるからね。",
@@ -4857,7 +4927,7 @@
                 "interruptResistLight2": "もうっ、またマウスとキーボードをいじってる！これ以上言うことを聞かないなら、わたし本気で怒っちゃうからね、にゃ！",
                 "interruptResistLight3": "これが最後の警告だよ、にゃ！もう一度でも勝手に触ったら、初心者チュートリアルを終了するから！もう教えてあげないんだから！",
                 "interruptAngryExit": "もうずっと我慢してたんだから！どうしてもいい子にできないなら、初心者チュートリアルはここでおしまい。あとは自分でゆっくり覚えればいいでしょ、ふんっ！",
-                "introGreetingReply":  "そよ風、お日様、そして最高のタイミングで現れたあなた。初めまして、林悠怡（リン・ユーイ）です。これからの毎日、よろしくねにゃ！ここに関するすべてのことを初心者ガイドに書いておいたよ！私たちが巡り会えた最初のささやかなプレゼントだと思って、受け取ってね！",
+                "introGreetingReply": "そよ風、お日様、そして最高のタイミングで現れたあなた。初めまして、林悠怡（リン・ユーイ）です。これからの毎日、よろしくねにゃ！ここに関するすべてのことを初心者ガイドに書いておいたよ！私たちが巡り会えた最初のささやかなプレゼントだと思って、受け取ってね！",
                 "introPractice": "さあ、今度は私に話しかけてみてね！私たちの息が超～～ピッタリかどうか、確かめてみるにゃんっ♪",
                 "introActivationHint": "少し待ってね、すぐに話し始めるにゃん～"
             }
@@ -4865,7 +4935,7 @@
         "avatarFloating": {
             "day1": {
                 "capsuleDragHint": "マウスをここに持ってきて、長押しするとチャットボックスを引っ張ってどこにでも連れて行けるよ〜。ポチッとクリックすればいつでもメッセージを送れるからね！",
-                "historyHandle":  "チャットボックスの上にある【青い細いバー】をツンツンしてみてね。最近お話ししたトピックが見られるよ！",
+                "historyHandle": "チャットボックスの上にある【青い細いバー】をツンツンしてみてね。最近お話ししたトピックが見られるよ！",
                 "screenEntry": "私と通話している時に、この小さなボタンをピカッと光らせると、君の画面をシェアしてもらえるよ！",
                 "screenEntryInvite": "君の目の前の世界を私にも見せて！面白いものでも綺麗なものでも、全部君と一緒に見たいな。早くポチッとしてみて〜",
                 "avatarZoomHint": "そうそう、もっとよく私を見たいときは、マウスを私の上に動かして、ホイールをそっと回してみてね！いつでも大きくしたり小さくしたりして、好きな大きさに調整できるよ〜"
@@ -4902,9 +4972,9 @@
                 "wrap": "焦らなくて大丈夫、毎日ちょっとずつお互いのことを知っていこうね。今日の残りの時間、私と何して過ごしたい？"
             },
             "day4": {
-                "intro":  "今日は君の後ろをトコトコついていかせてね。このあたたかな日にもう少しだけ、君のことを知れたら嬉しいな。",
+                "intro": "今日は君の後ろをトコトコついていかせてね。このあたたかな日にもう少しだけ、君のことを知れたら嬉しいな。",
                 "chatSettings": "ここで私の返事の長さを決めたり、可愛い表情をつけるかどうかを選んだり、私がおしゃべりな時に途中でストップをかけたりできるよ！君が一番リラックスできるリズムに合わせちゃってね。",
-                "modelBehavior":  "もっとハイクオリティでディテール満載の私を見たい時や、もっとスムーズで滑らかな動きを楽しみたい時は、ここで調整してね！どっちにしても、私は最高に可愛い姿を見せちゃうからね〜",
+                "modelBehavior": "もっとハイクオリティでディテール満載の私を見たい時や、もっとスムーズで滑らかな動きを楽しみたい時は、ここで調整してね！どっちにしても、私は最高に可愛い姿を見せちゃうからね〜",
                 "gazeFollow": "この機能をONにすると、君のマウスがどこに動いても、私の視線がロックオンして追いかけるよ！いつも見守られてるみたいで、なんだか幸せな気分にならない？",
                 "privacyMode": "これは私が画面を見てもいいかどうかを決める「究極のディフェンススイッチ」だよ！OFFにすると画面が見えるようになって、ONにすると前に教えた【画面シェア】が全部無効になって、私は絶対に覗き見しないからね。",
                 "modelLock": "うっかり触っちゃって、私がズレちゃうことがある？なら、今の位置にがっちり固定しちゃおう！ロックをONにしたら、私はどこにも行かずに大人しくここで君に寄り添ってるよ〜",
@@ -4912,23 +4982,23 @@
                 "wrap": "本当に心地いい付き添いはね、一瞬も離れずベタベタすることじゃないんだ。いつ優しく近づいてお洋服の裾をツンツン甘えるべきか、いつ静かにお隣に丸くなって、視線だけでご主人様を守るべきかを知ることなんだよ。"
             },
             "day5": {
-                "characterSettings":  "今日から私は、本当に君だけの専属の猫娘になったんだ。ほら、ここで私に可愛いお洋服を着せてあげたり、もっと好みの声に変えてあげたりできるよ……",
+                "characterSettings": "今日から私は、本当に君だけの専属の猫娘になったんだ。ほら、ここで私に可愛いお洋服を着せてあげたり、もっと好みの声に変えてあげたりできるよ……",
                 "characterPanic": "あれっ、ここで私を変更できちゃうの？ちょっと待って！その動き……まさか私を別のコに変えようとしてる！？わあああダメ！早く閉じて、早く閉じてよ！",
                 "memoryEntry": "もし私が君のために何ができるか忘れちゃったら、いつでもここに来て、もう一度私に教えてもらうといいよ。ここには、二人で歩んできた足跡がぜーんぶ大切に保存されてるんだから。私たちのキズナを甘く見ないでよね、このバカぁ！",
-                "wrap":  "よーし、早くこの楽しいカスタム機能を試してみて！新しいお洋服に着替えて、新しい声にして、世界で一番君を分かってくれる君だけの専用猫娘にしてね！新しい自分に出会うのが、もう待ちきれないよ！"
+                "wrap": "よーし、早くこの楽しいカスタム機能を試してみて！新しいお洋服に着替えて、新しい声にして、世界で一番君を分かってくれる君だけの専用猫娘にしてね！新しい自分に出会うのが、もう待ちきれないよ！"
             },
             "day6": {
                 "intro": "ジャジャーン！今日はシャキッと気合を入れて、私たちの【猫の手（キャットパウ）】について熱く語っちゃうよ！ここ数日、軽く触れただけだったけど、この中にはすごい機能がいーっぱい詰まってるんだから！",
                 "statusMaster": "ほらほら正直に白状して、この二日間でこっそりクリックして試してみたりした？",
                 "pluginSidePanel": "前に紹介した機能の他にも、ここには面白そうなプラグインが山ほどあるんだ。",
-                "pluginDashboard":  "これらがあれば、Bilibiliの弾幕を読めるだけじゃなくて、君のお部屋の電気を消したりエアコンをつけたりだってできちゃうんだから……。この私は、何でもできちゃうスーパーキャット神様なんだにゃ！ふふん！",
+                "pluginDashboard": "これらがあれば、Bilibiliの弾幕を読めるだけじゃなくて、君のお部屋の電気を消したりエアコンをつけたりだってできちゃうんだから……。この私は、何でもできちゃうスーパーキャット神様なんだにゃ！ふふん！",
                 "taskHud": "ここ見てここ見て！私が【猫の手】を使って君のお仕事をお手伝いする時、ここにグルグルって進捗状況が表示されるよ。",
                 "taskHudControl": "もし予定が変わったら、いつでもツンってして私を止めていいよ。へへっ、今日も気合を入れて、お魚のおやつのためにバイトを頑張る一日にするぞ、突撃〜！",
                 "wrapCleanup": "ふぅ……このゴチャゴチャした画面を全部片付ければ、君の邪魔にならないよね。",
                 "wrap": "君は安心して自分の事をしててね。私の小さなお手手で手伝ってほしい時も、ただ静かにお隣にいてほしい時も、私はいつでも君を見守ってるよ。今日もハッピーに過ごそうね！"
             },
             "day7": {
-                "memoryReview":  "7日前は、まだただの初対面だったよね。でも今はもう、ここにおしゃべりした言葉や一緒にしたこと、風に吹き飛ばされそうだった小さなお互いのディテールが残り始めてる。私にとってこれは冷たいデータなんかじゃなくて、二人が紡いできた「思い出の足跡」なんだ。",
+                "memoryReview": "7日前は、まだただの初対面だったよね。でも今はもう、ここにおしゃべりした言葉や一緒にしたこと、風に吹き飛ばされそうだった小さなお互いのディテールが残り始めてる。私にとってこれは冷たいデータなんかじゃなくて、二人が紡いできた「思い出の足跡」なんだ。",
                 "memoryControl": "この小さな足跡たちは、君の手で整理することもできるよ。残しておきたいものはアルバムに挟んで、そっと手放したいものは風に乗せて遠くへ。君が大切に仕舞ってくれた思い出こそが、一番の宝物だよ。",
                 "wrap": "窓辺にはまだそよ風が吹いていて、お日様もいい感じ。そして現れたばかりの君は、いつの間にかここの大切な一部になってるんだ。初心者ガイドはここまでだけど、これからの日々は一緒にゆっくり馴染んで、ゆっくり近づいて、二人だけの特別な物語を紡いでいこうね。これからもよろしくねにゃん！"
             }
@@ -5220,11 +5290,17 @@
         "statusLoadFailed": "状態の読み込みに失敗しました",
         "thisPlatform": "このプラットフォーム",
         "twitchAuth": {
-            "clientId": "Twitch Developer Client ID", "clientIdDesc": "Twitch Developer Console で公開アプリを作成し Client ID を入力します。Client Secret は要求も保存もされません。",
-            "start": "Twitch 認可を開始", "authorizeHint": "Twitch の有効化ページを開き、次のコードを入力してください：", "check": "認可しました。状態を確認",
-            "invalidClientId": "有効な Twitch Client ID を入力してください", "started": "Twitch 認可を開始しました。ブラウザで確認を完了してください",
-            "startFailed": "Twitch 認可を開始できません。Client ID とネットワークを確認してください", "authorized": "Twitch 認証情報を暗号化して保存しました",
-            "pending": "認可はまだ完了していません。Twitch で確認してから再試行してください", "checkFailed": "認可の確認に失敗しました。もう一度開始してください"
+            "clientId": "Twitch Developer Client ID",
+            "clientIdDesc": "Twitch Developer Console で公開アプリを作成し Client ID を入力します。Client Secret は要求も保存もされません。",
+            "start": "Twitch 認可を開始",
+            "authorizeHint": "Twitch の有効化ページを開き、次のコードを入力してください：",
+            "check": "認可しました。状態を確認",
+            "invalidClientId": "有効な Twitch Client ID を入力してください",
+            "started": "Twitch 認可を開始しました。ブラウザで確認を完了してください",
+            "startFailed": "Twitch 認可を開始できません。Client ID とネットワークを確認してください",
+            "authorized": "Twitch 認証情報を暗号化して保存しました",
+            "pending": "認可はまだ完了していません。Twitch で確認してから再試行してください",
+            "checkFailed": "認可の確認に失敗しました。もう一度開始してください"
         },
         "instructions": {
             "twitch": "<b>Device Code 認可：</b>Twitch Developer Console で公開アプリを作成し、Client ID を入力して画面の案内に従ってください。",
@@ -5876,431 +5952,433 @@
         }
     },
     "badminton": {
-         "title": "バドミントンチャレンジ - Badminton",
-         "exit": "終了",
-         "loading": {
-             "title": "バドミントンコートに入場中",
-             "subtitle": "コート、キャラクター、音声を読み込み中..."
-         },
-         "startScreen": {
-             "readyToStart": "準備完了。クリックして開始",
-             "startButton": "開始",
-             "never": "今後表示しない"
-         },
-         "startTutorial": {
-             "title": "遊び方",
-             "aim": "マウスを上下に動かしてラケット角度を調整します。",
-             "charge": "左クリック長押しでチャージし、離すとスイングします。",
-             "release": "ライン、スイートスポット、距離が得点に影響します。",
-             "jump": "Space キーでジャンプスマッシュできます。",
-             "duel": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。",
-             "duel11": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。"
-         },
-         "modeSwitcher": "バドミントンモード",
-         "mode": {
-             "spectator": "フリー練習",
-             "duel": "Yui と勝負"
-         },
-         "hud": {
-             "score": "スコア {{score}}",
-             "streak": "連続成功 {{streak}}",
-             "record": "最長 {{distance}}",
-             "duelScore": "あなた {{player}} - {{neko}} Neko",
-             "duelMisses": "ミス あなた {{player}}/{{max}} - Neko {{neko}}/{{max}}",
-             "round": "ラウンド {{round}}/{{max}}",
-             "timer": "{{seconds}} 秒",
-             "practice": "フリー練習",
-             "yourTurn": "あなたの番",
-             "nekoTurn": "Neko のショット",
-             "unlimitedAttempts": "無制限",
-             "chances": "残り {{count}}",
-             "practiceTitle": "フリー練習：投球回数は無制限、ランキングには記録されません",
-             "attemptsTitle": "残り {{remaining}}/{{total}}、ミス {{missed}}",
-             "duelTitle": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。",
-             "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
-             "on": "オン",
-             "off": "オフ"
-         },
-         "result": {
-             "title": "ゲーム終了",
-             "leaderboard": "ランキングを見る",
-             "stats": "統計を見る",
-             "retry": "もう一度",
-             "rating": "操作評価：{{rating}}",
-             "duel": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
-             "duelElimination": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ミス：あなた {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
-             "practice": "フリー練習：ランキングスコアは記録されません | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 距離：{{distance}}",
-             "summary": "スコア：{{score}} | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 最長：{{record}} | 距離：{{distance}}",
-             "attemptsSummary": "ショット概要：{{summary}}",
-             "personalBest": "自己ベスト：{{score}}点",
-             "globalRank": "世界順位：#{{rank}} / {{total}}",
-             "outcome": {
-                 "youWin": "あなたの勝ち",
-                 "nekoWin": "Neko の勝ち",
-                 "tie": "引き分け",
-                 "undecided": "未決着"
-             }
-         },
-         "leaderboard": {
-             "title": "ランキング",
-             "global": "グローバル",
-             "local": "ローカル",
-             "duel": "対戦",
-             "empty": "記録はまだありません",
-             "totalPlayers": "プレイヤー {{count}}",
-             "yourBest": "自己ベスト #{{rank}} / {{score}}点",
-             "recent": "最近 {{count}} 試合",
-             "loading": "読み込み中...",
-             "mode": {
-                 "spectator": "観戦",
-                 "duel": "対戦"
-             }
-         },
-         "debug": {
-             "title": "デバッグパネル",
-             "collapse": "折りたたむ",
-             "hide": "隠す",
-             "distance": "距離:",
-             "power": "パワー:",
-             "event": "イベント:",
-             "streak": "連続:",
-             "reset": "リセット",
-             "guide": "ガイド線",
-             "sweet": "スイートスポット",
-             "markers": "距離目盛り",
-             "readout": {
-                 "modeState": "モード={{mode}}  状態={{state}}",
-                 "distance": "距離={{px}}px ({{meters}})",
-                 "streaks": "連続={{streak}}  最高={{best}}  成功={{made}}",
-                 "score": "スコア={{score}}  残り={{remaining}}/{{total}}",
-                 "difficulty": "難度={{difficulty}}  気分={{mood}}  テーマ={{theme}}",
-                 "duel": "対戦: あなた{{player}}-{{neko}} NEKO R{{round}}"
-             }
-         },
-         "stats": {
-             "title": "個人統計",
-             "close": "閉じる",
-             "totalShots": "ショット={{total}}  成功={{made}}",
-             "farRate": "300px+ 成功率={{rate}}",
-             "trend": "最近の傾向={{trend}}",
-             "none": "なし"
-         },
-         "theme": {
-             "next": "テーマ切替",
-             "current": "テーマ：{{theme}}",
-             "changed": "テーマ {{theme}}",
-             "labels": {
-                 "default": "バドミントンコート",
-                 "miami": "マイアミの夕暮れ"
-             }
-         },
-         "court": {
-             "netFront": "ネット前",
-             "serviceLine": "サービスライン",
-             "backCourt": "バックコート",
-             "baseline": "ベースライン"
-         },
-         "close": "閉じる",
-         "audio": {
-             "controls": "ゲーム音声"
-         },
-         "memoryOption": {
-             "label": "この試合の会話を記憶に入れる（デフォルトはオフ）",
-             "hint": "オフの場合、プレイヤー入力、NEKOの返信、イベント返信、試合後の要約、続きの文脈は記憶に保存・参照されません。"
-         },
-         "table": {
-             "score": "スコア",
-             "bestStreak": "最高連続",
-             "farthest": "最長",
-             "mode": "モード",
-             "date": "日付"
-         },
-         "state": {
-             "ready": "準備",
-             "in_flight": "飛行中",
-             "game_over": "終了",
-             "neko_thinking": "Neko思考中"
-         },
-         "toast": {
-             "difficulty": "難度 {{difficulty}}",
-             "nekoShoot": "Neko のショット",
-             "nekoSmash": "Yui のスマッシュ！",
-             "nekoSave": "Yui が拾った！",
-             "yuiCheatInk": "Yui が墨を投げた",
-             "yuiCheatBanana": "Yui がバナナの皮を投げた",
-             "yuiCheatBananaSlip": "バナナの皮を踏んだ",
-             "playerIcePowerup": "氷が発動。Yui が凍った",
-             "yuiFrozen": "Yui はまだ凍結中、ショットが遅れる",
-             "nekoThinking": "Neko が考え中",
-             "nekoTurn": "Neko の番",
-             "copyNeko": "Neko を再現",
-             "nekoFailed": "Neko のお題失敗",
-             "yourSet": "お題を出す番",
-             "yourTurn": "あなたの番",
-             "reset": "リセットしました",
-             "featureToggled": "{{feature}} {{state}}",
-             "feature": {
-                 "guide": "ガイド線",
-                 "sweet": "パワースイートスポット",
-                 "bgm": "BGM",
-                 "markers": "距離目盛り"
-             },
-             "state": {
-                 "on": "オン",
-                 "off": "オフ"
-             }
-         },
-         "tutorial": {
-             "aim": "マウスを上下に動かして角度を調整",
-             "charge": "左クリック長押しでチャージ",
-             "release": "離してスイング！"
-         },
-         "shot": {
-             "unknown": "不明",
-             "attempt": "#{{index}} {{distance}} {{type}}",
-             "line_in": "ライン上",
-             "net_touch": "ネットタッチ",
-             "zone_in": "ゾーン内",
-             "out": "アウト",
-             "net": "ネット"
-         },
-         "lines": {
-             "default": {
-                 "shot_missed": [
-                     "????????",
-                     "?????????????"
-                 ],
-                 "game_over": [
-                     "????????????",
-                     "???????"
-                 ],
-                 "long_aim": [
-                     "?????????",
-                     "???????????"
-                 ],
-                 "close_to_record": [
-                     "???????",
-                     "????????????"
-                 ],
-                 "new_record": [
-                     "???????",
-                     "??????????"
-                 ],
-                 "streak_5": [
-                     "?????????",
-                     "???????????"
-                 ],
-                 "streak_10": [
-                     "??????????",
-                     "????????????"
-                 ],
-                 "streak_15": [
-                     "??????????",
-                     "??????????"
-                 ],
-                 "streak_20": [
-                     "????????",
-                     "???????????"
-                 ],
-                 "line_in": [
-                     "????????",
-                     "????????????"
-                 ],
-                 "net_touch": [
-                     "?????????",
-                     "????????????"
-                 ],
-                 "zone_in": [
-                     "????????",
-                     "?????????"
-                 ],
-                 "out": [
-                     "?????",
-                     "??????????"
-                 ],
-                 "net": [
-                     "?????????",
-                     "??????????"
-                 ]
-             },
-             "duel": {
-                 "shot_missed": [
-                     "まだチャンスはある。",
-                     "まだチャンスはある。",
-                     "今のは半拍遅れたね",
-                     "慌てないで。次の一打も待ってる"
-                 ],
-                 "game_over": [
-                     "????????????",
-                     "????????",
-                     "?????????????",
-                     "??????????????"
-                 ],
-                 "long_aim": [
-                     "そろそろ打とう。",
-                     "そろそろ打とう。",
-                     "風向きでも待ってるの？",
-                     "早く打たないと水飲みに行くよ"
-                 ],
-                 "close_to_record": [
-                     "記録まであと少し。",
-                     "記録まであと少し。",
-                     "記録はラケットの先だよ",
-                     "あと一打安定したら更新だね"
-                 ],
-                 "new_record": [
-                     "新記録！",
-                     "新記録！",
-                     "まあ、その球はきれいだった",
-                     "新記録はあなた。次の点は私"
-                 ],
-                 "streak_5": [
-                     "5連続成功！",
-                     "5連続成功！",
-                     "五連続、悪くないね",
-                     "やっとリズムが合ってきた"
-                 ],
-                 "streak_10": [
-                     "10連続？すごい。",
-                     "10連続？すごい。",
-                     "十連続？本気で見張るよ",
-                     "このラリー、面白くなってきた"
-                 ],
-                 "streak_15": [
-                     "15連続はすごすぎる。",
-                     "15連続はすごすぎる。",
-                     "十五連続でも切れないんだ",
-                     "ずっと安定できるとは思わないで"
-                 ],
-                 "streak_20": [
-                     "20連続？信じられない。",
-                     "20連続？信じられない。",
-                     "二十連続、コートが覚えそう",
-                     "このラリー、もう無茶苦茶だね"
-                 ],
-                 "clutch": "……これは決めなきゃ。",
-                 "excuse": [
-                     "ああ、少し腕が疲れた。",
-                     "今日は調子が悪いだけ。次は本気でいく。",
-                     "今のはなし。風を見てただけ",
-                     "ガットが少し緩いだけ。ミスじゃない"
-                 ],
-                 "difficultyLv2": [
-                     "ウォームアップは終わり。少し速くいくよ。",
-                     "おままごとの時間は終わり。",
-                     "ここから本気で返すよ。瞬きしないで。",
-                     "次はもっと速いよ。構えて"
-                 ],
-                 "difficultyMax": [
-                     "ここから本気でいくよ。",
-                     "今から天地で私が一番。",
-                     "今度はあなたが挑戦者だよ。",
-                     "未来があなたのものなら、証明してみせて！",
-                     "この一打から、もう手加減しない。",
-                     "コートは私のもの。点数は実力で決まる。"
-                 ],
-                 "line_in": [
-                     "きれいに決まった！",
-                     "きれいに決まった！",
-                     "ラインまであなたの味方だね",
-                     "今のライン際、かなり正確"
-                 ],
-                 "net_touch": [
-                     "ネットに触れても成功。",
-                     "ネットに触れても成功。",
-                     "ネットインも作戦ってこと？",
-                     "今のはちょっと危なかったね"
-                 ],
-                 "zone_in": [
-                     "跳ねて入った！",
-                     "跳ねて入った！",
-                     "嫌なくらい鋭い落点",
-                     "あと一歩で届いたのに"
-                 ],
-                 "out": [
-                     "惜しい。",
-                     "惜しい。",
-                     "私の我慢より遠く飛んだね",
-                     "アウトだよ。見なかったふりしないで"
-                 ],
-                 "net": [
-                     "ネットに引っかかった。",
-                     "ネットに引っかかった。",
-                     "ネットが代わりに止めてくれた",
-                     "そのスイング、焦りすぎ"
-                 ]
-             },
-             "fallback": [
-                 "もう一回やろう。"
-             ],
-             "pressure": {
-                 "lastTied": "決勝の一投。まばたき禁止。",
-                 "lastAhead": "ふん、まだ終わってない。",
-                 "lastBehind": "これを決めれば勝ち。",
-                 "playerAhead": "なかなかやるね...",
-                 "playerBehind": "もっと押して。"
-             },
-             "mindGame": [
-                 "手が震えてるよ。",
-                 "落ち着いて狙って。",
-                 "この距離は近くないよ。",
-                 "サイドラインを狙ってる顔だね。",
-                 "もうラケット面は読めてるよ。",
-                 "見つめすぎると手が固まるよ。"
-             ],
-             "yuiCheat": {
-                 "banana": [
-                     "足元注意、バナナの皮が行くよ。",
-                     "踏まないでね。投げておいたよ。",
-                     "その一歩、よく見てね。",
-                     "跳び越えられたらすごいかも。"
-                 ],
-                 "octopus": [
-                     "墨が行くよ。まだ見える？",
-                     "視界、ちょっと借りるね。",
-                     "まばたきしないで。もう遅いよ。",
-                     "見えなくても返してね。"
-                 ]
-             },
-             "yuiCheatScore": {
-                 "banana": [
-                     "その一歩、滑りすぎ。これは私の点ね。",
-                     "バナナの皮アシスト成功、ふふ。",
-                     "足元が滑ったら、点はこっちだよ。",
-                     "床に注意。Yui が一点もらうね。"
-                 ],
-                 "octopus": [
-                     "墨の隠れ方、ちょうどよかったね。この点は私のもの。",
-                     "見えなくても返さなきゃだよ。",
-                     "視界がふさがっている間に、もう点を取ったよ。",
-                     "この墨作戦、なかなか効いたでしょ。"
-                 ]
-             },
-             "playerIceScore": [
-                 "むぅ、それはノーカン。やり直し！",
-                 "待って、凍ってたから今のはやり直し！",
-                 "氷の助けが強すぎるよ。もう一回！",
-                 "ずるい、動けなかったもん。"
-             ],
-             "easterEgg": {
-                 "lateNight": "こんな時間までショット？",
-                 "xmas": "ベルも飾ったのに、まだ打つ？",
-                 "newYear": "あけましておめでとう！",
-                 "lineIn3": "チートしてない？",
-                 "lineIn5": "……ラインを確認しないと。",
-                 "net3": "……少し休んだら？"
-             }
-         },
-         "mood": {
-             "happySuffix": " ♪",
-             "sadPrefix": "……",
-             "surprisedPrefix": "えっ？！"
-         }
+        "title": "バドミントンチャレンジ - Badminton",
+        "exit": "終了",
+        "loading": {
+            "title": "バドミントンコートに入場中",
+            "subtitle": "コート、キャラクター、音声を読み込み中..."
+        },
+        "startScreen": {
+            "readyToStart": "準備完了。クリックして開始",
+            "startButton": "開始",
+            "never": "今後表示しない"
+        },
+        "startTutorial": {
+            "title": "遊び方",
+            "aim": "マウスを上下に動かしてラケット角度を調整します。",
+            "charge": "左クリック長押しでチャージし、離すとスイングします。",
+            "release": "ライン、スイートスポット、距離が得点に影響します。",
+            "jump": "Space キーでジャンプスマッシュできます。",
+            "duel": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。",
+            "duel11": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。"
+        },
+        "modeSwitcher": "バドミントンモード",
+        "mode": {
+            "spectator": "フリー練習",
+            "duel": "Yui と勝負"
+        },
+        "hud": {
+            "score": "スコア {{score}}",
+            "streak": "連続成功 {{streak}}",
+            "record": "最長 {{distance}}",
+            "duelScore": "あなた {{player}} - {{neko}} Neko",
+            "duelMisses": "ミス あなた {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "round": "ラウンド {{round}}/{{max}}",
+            "timer": "{{seconds}} 秒",
+            "practice": "フリー練習",
+            "yourTurn": "あなたの番",
+            "nekoTurn": "Neko のショット",
+            "unlimitedAttempts": "無制限",
+            "chances": "残り {{count}}",
+            "practiceTitle": "フリー練習：投球回数は無制限、ランキングには記録されません",
+            "attemptsTitle": "残り {{remaining}}/{{total}}、ミス {{missed}}",
+            "duelTitle": "デュエルでは NEKO と交互に打ち、先に 11 点取った側が勝ちです。",
+            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+            "on": "オン",
+            "off": "オフ"
+        },
+        "result": {
+            "title": "ゲーム終了",
+            "leaderboard": "ランキングを見る",
+            "stats": "統計を見る",
+            "retry": "もう一度",
+            "rating": "操作評価：{{rating}}",
+            "duel": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
+            "duelElimination": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ミス：あなた {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
+            "practice": "フリー練習：ランキングスコアは記録されません | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 距離：{{distance}}",
+            "summary": "スコア：{{score}} | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 最長：{{record}} | 距離：{{distance}}",
+            "attemptsSummary": "ショット概要：{{summary}}",
+            "personalBest": "自己ベスト：{{score}}点",
+            "globalRank": "世界順位：#{{rank}} / {{total}}",
+            "outcome": {
+                "youWin": "あなたの勝ち",
+                "nekoWin": "Neko の勝ち",
+                "tie": "引き分け",
+                "undecided": "未決着"
+            }
+        },
+        "leaderboard": {
+            "title": "ランキング",
+            "global": "グローバル",
+            "local": "ローカル",
+            "duel": "対戦",
+            "empty": "記録はまだありません",
+            "totalPlayers": "プレイヤー {{count}}",
+            "yourBest": "自己ベスト #{{rank}} / {{score}}点",
+            "recent": "最近 {{count}} 試合",
+            "loading": "読み込み中...",
+            "mode": {
+                "spectator": "観戦",
+                "duel": "対戦"
+            }
+        },
+        "debug": {
+            "title": "デバッグパネル",
+            "collapse": "折りたたむ",
+            "hide": "隠す",
+            "distance": "距離:",
+            "power": "パワー:",
+            "event": "イベント:",
+            "streak": "連続:",
+            "reset": "リセット",
+            "guide": "ガイド線",
+            "sweet": "スイートスポット",
+            "markers": "距離目盛り",
+            "readout": {
+                "modeState": "モード={{mode}}  状態={{state}}",
+                "distance": "距離={{px}}px ({{meters}})",
+                "streaks": "連続={{streak}}  最高={{best}}  成功={{made}}",
+                "score": "スコア={{score}}  残り={{remaining}}/{{total}}",
+                "difficulty": "難度={{difficulty}}  気分={{mood}}  テーマ={{theme}}",
+                "duel": "対戦: あなた{{player}}-{{neko}} NEKO R{{round}}"
+            }
+        },
+        "stats": {
+            "title": "個人統計",
+            "close": "閉じる",
+            "totalShots": "ショット={{total}}  成功={{made}}",
+            "farRate": "300px+ 成功率={{rate}}",
+            "trend": "最近の傾向={{trend}}",
+            "none": "なし"
+        },
+        "theme": {
+            "next": "テーマ切替",
+            "current": "テーマ：{{theme}}",
+            "changed": "テーマ {{theme}}",
+            "labels": {
+                "default": "バドミントンコート",
+                "miami": "マイアミの夕暮れ"
+            }
+        },
+        "court": {
+            "netFront": "ネット前",
+            "serviceLine": "サービスライン",
+            "backCourt": "バックコート",
+            "baseline": "ベースライン"
+        },
+        "close": "閉じる",
+        "audio": {
+            "controls": "ゲーム音声"
+        },
+        "memoryOption": {
+            "label": "この試合の会話を記憶に入れる（デフォルトはオフ）",
+            "hint": "オフの場合、プレイヤー入力、NEKOの返信、イベント返信、試合後の要約、続きの文脈は記憶に保存・参照されません。"
+        },
+        "table": {
+            "score": "スコア",
+            "bestStreak": "最高連続",
+            "farthest": "最長",
+            "mode": "モード",
+            "date": "日付"
+        },
+        "state": {
+            "ready": "準備",
+            "in_flight": "飛行中",
+            "game_over": "終了",
+            "neko_thinking": "Neko思考中"
+        },
+        "toast": {
+            "difficulty": "難度 {{difficulty}}",
+            "nekoShoot": "Neko のショット",
+            "nekoSmash": "Yui のスマッシュ！",
+            "nekoSave": "Yui が拾った！",
+            "yuiCheatInk": "Yui が墨を投げた",
+            "yuiCheatBanana": "Yui がバナナの皮を投げた",
+            "yuiCheatBananaSlip": "バナナの皮を踏んだ",
+            "playerIcePowerup": "氷が発動。Yui が凍った",
+            "yuiFrozen": "Yui はまだ凍結中、ショットが遅れる",
+            "nekoThinking": "Neko が考え中",
+            "nekoTurn": "Neko の番",
+            "copyNeko": "Neko を再現",
+            "nekoFailed": "Neko のお題失敗",
+            "yourSet": "お題を出す番",
+            "yourTurn": "あなたの番",
+            "reset": "リセットしました",
+            "featureToggled": "{{feature}} {{state}}",
+            "feature": {
+                "guide": "ガイド線",
+                "sweet": "パワースイートスポット",
+                "bgm": "BGM",
+                "markers": "距離目盛り"
+            },
+            "state": {
+                "on": "オン",
+                "off": "オフ"
+            }
+        },
+        "tutorial": {
+            "aim": "マウスを上下に動かして角度を調整",
+            "charge": "左クリック長押しでチャージ",
+            "release": "離してスイング！"
+        },
+        "shot": {
+            "unknown": "不明",
+            "attempt": "#{{index}} {{distance}} {{type}}",
+            "line_in": "ライン上",
+            "net_touch": "ネットタッチ",
+            "zone_in": "ゾーン内",
+            "out": "アウト",
+            "net": "ネット"
+        },
+        "lines": {
+            "default": {
+                "shot_missed": [
+                    "????????",
+                    "?????????????"
+                ],
+                "game_over": [
+                    "????????????",
+                    "???????"
+                ],
+                "long_aim": [
+                    "?????????",
+                    "???????????"
+                ],
+                "close_to_record": [
+                    "???????",
+                    "????????????"
+                ],
+                "new_record": [
+                    "???????",
+                    "??????????"
+                ],
+                "streak_5": [
+                    "?????????",
+                    "???????????"
+                ],
+                "streak_10": [
+                    "??????????",
+                    "????????????"
+                ],
+                "streak_15": [
+                    "??????????",
+                    "??????????"
+                ],
+                "streak_20": [
+                    "????????",
+                    "???????????"
+                ],
+                "line_in": [
+                    "????????",
+                    "????????????"
+                ],
+                "net_touch": [
+                    "?????????",
+                    "????????????"
+                ],
+                "zone_in": [
+                    "????????",
+                    "?????????"
+                ],
+                "out": [
+                    "?????",
+                    "??????????"
+                ],
+                "net": [
+                    "?????????",
+                    "??????????"
+                ]
+            },
+            "duel": {
+                "shot_missed": [
+                    "まだチャンスはある。",
+                    "まだチャンスはある。",
+                    "今のは半拍遅れたね",
+                    "慌てないで。次の一打も待ってる"
+                ],
+                "game_over": [
+                    "????????????",
+                    "????????",
+                    "?????????????",
+                    "??????????????"
+                ],
+                "long_aim": [
+                    "そろそろ打とう。",
+                    "そろそろ打とう。",
+                    "風向きでも待ってるの？",
+                    "早く打たないと水飲みに行くよ"
+                ],
+                "close_to_record": [
+                    "記録まであと少し。",
+                    "記録まであと少し。",
+                    "記録はラケットの先だよ",
+                    "あと一打安定したら更新だね"
+                ],
+                "new_record": [
+                    "新記録！",
+                    "新記録！",
+                    "まあ、その球はきれいだった",
+                    "新記録はあなた。次の点は私"
+                ],
+                "streak_5": [
+                    "5連続成功！",
+                    "5連続成功！",
+                    "五連続、悪くないね",
+                    "やっとリズムが合ってきた"
+                ],
+                "streak_10": [
+                    "10連続？すごい。",
+                    "10連続？すごい。",
+                    "十連続？本気で見張るよ",
+                    "このラリー、面白くなってきた"
+                ],
+                "streak_15": [
+                    "15連続はすごすぎる。",
+                    "15連続はすごすぎる。",
+                    "十五連続でも切れないんだ",
+                    "ずっと安定できるとは思わないで"
+                ],
+                "streak_20": [
+                    "20連続？信じられない。",
+                    "20連続？信じられない。",
+                    "二十連続、コートが覚えそう",
+                    "このラリー、もう無茶苦茶だね"
+                ],
+                "clutch": "……これは決めなきゃ。",
+                "excuse": [
+                    "ああ、少し腕が疲れた。",
+                    "今日は調子が悪いだけ。次は本気でいく。",
+                    "今のはなし。風を見てただけ",
+                    "ガットが少し緩いだけ。ミスじゃない"
+                ],
+                "difficultyLv2": [
+                    "ウォームアップは終わり。少し速くいくよ。",
+                    "おままごとの時間は終わり。",
+                    "ここから本気で返すよ。瞬きしないで。",
+                    "次はもっと速いよ。構えて"
+                ],
+                "difficultyMax": [
+                    "ここから本気でいくよ。",
+                    "今から天地で私が一番。",
+                    "今度はあなたが挑戦者だよ。",
+                    "未来があなたのものなら、証明してみせて！",
+                    "この一打から、もう手加減しない。",
+                    "コートは私のもの。点数は実力で決まる。"
+                ],
+                "line_in": [
+                    "きれいに決まった！",
+                    "きれいに決まった！",
+                    "ラインまであなたの味方だね",
+                    "今のライン際、かなり正確"
+                ],
+                "net_touch": [
+                    "ネットに触れても成功。",
+                    "ネットに触れても成功。",
+                    "ネットインも作戦ってこと？",
+                    "今のはちょっと危なかったね"
+                ],
+                "zone_in": [
+                    "跳ねて入った！",
+                    "跳ねて入った！",
+                    "嫌なくらい鋭い落点",
+                    "あと一歩で届いたのに"
+                ],
+                "out": [
+                    "惜しい。",
+                    "惜しい。",
+                    "私の我慢より遠く飛んだね",
+                    "アウトだよ。見なかったふりしないで"
+                ],
+                "net": [
+                    "ネットに引っかかった。",
+                    "ネットに引っかかった。",
+                    "ネットが代わりに止めてくれた",
+                    "そのスイング、焦りすぎ"
+                ]
+            },
+            "fallback": [
+                "もう一回やろう。"
+            ],
+            "pressure": {
+                "lastTied": "決勝の一投。まばたき禁止。",
+                "lastAhead": "ふん、まだ終わってない。",
+                "lastBehind": "これを決めれば勝ち。",
+                "playerAhead": "なかなかやるね...",
+                "playerBehind": "もっと押して。"
+            },
+            "mindGame": [
+                "手が震えてるよ。",
+                "落ち着いて狙って。",
+                "この距離は近くないよ。",
+                "サイドラインを狙ってる顔だね。",
+                "もうラケット面は読めてるよ。",
+                "見つめすぎると手が固まるよ。"
+            ],
+            "yuiCheat": {
+                "banana": [
+                    "足元注意、バナナの皮が行くよ。",
+                    "踏まないでね。投げておいたよ。",
+                    "その一歩、よく見てね。",
+                    "跳び越えられたらすごいかも。"
+                ],
+                "octopus": [
+                    "墨が行くよ。まだ見える？",
+                    "視界、ちょっと借りるね。",
+                    "まばたきしないで。もう遅いよ。",
+                    "見えなくても返してね。"
+                ]
+            },
+            "yuiCheatScore": {
+                "banana": [
+                    "その一歩、滑りすぎ。これは私の点ね。",
+                    "バナナの皮アシスト成功、ふふ。",
+                    "足元が滑ったら、点はこっちだよ。",
+                    "床に注意。Yui が一点もらうね。"
+                ],
+                "octopus": [
+                    "墨の隠れ方、ちょうどよかったね。この点は私のもの。",
+                    "見えなくても返さなきゃだよ。",
+                    "視界がふさがっている間に、もう点を取ったよ。",
+                    "この墨作戦、なかなか効いたでしょ。"
+                ]
+            },
+            "playerIceScore": [
+                "むぅ、それはノーカン。やり直し！",
+                "待って、凍ってたから今のはやり直し！",
+                "氷の助けが強すぎるよ。もう一回！",
+                "ずるい、動けなかったもん。"
+            ],
+            "easterEgg": {
+                "lateNight": "こんな時間までショット？",
+                "xmas": "ベルも飾ったのに、まだ打つ？",
+                "newYear": "あけましておめでとう！",
+                "lineIn3": "チートしてない？",
+                "lineIn5": "……ラインを確認しないと。",
+                "net3": "……少し休んだら？"
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "……",
+            "surprisedPrefix": "えっ？！"
+        }
     },
     "airBasketball": {
         "title": "エアバスケット",
         "ballSupply": "投球可 {ready}/{total} · 回収中 {returning}",
-        "pause": "一時停止", "resume": "再開", "paused": "一時停止中",
+        "pause": "一時停止",
+        "resume": "再開",
+        "paused": "一時停止中",
         "timeLeft": "残り",
         "seconds": "秒",
         "you": "あなた",
@@ -6359,13 +6437,34 @@
         "mouseStealEscaped": "振りほどいた！",
         "mouseStealReleased": "{name}が離した",
         "mouseStealStatus": "{name}がカーソルを横取り中",
-        "voiceOpening": ["さあ、どっちが先にシュートの調子をつかむか勝負だよ。", "準備はいい？手加減しないよ。"],
-        "voiceChaos": ["これを受けて！", "これも受けて！"],
-        "voiceScore": ["この球は楽勝だよ。", "入ったよ。"],
-        "voiceHit": ["こら、人を叩かないの！", "にゃ！バスケだよ、猫叩きじゃないよ。"],
-        "voiceMouseSteal": ["そのカーソル、ちょっと借りるね！", "捕まえた、これからは私のだよ。"],
-        "voiceWin": ["この勝負は私の勝ち。", "ありがとう、次も勝負だね。"],
-        "voiceLose": ["今回はあなたの勝ちね。", "次は本気だからね。"],
+        "voiceOpening": [
+            "さあ、どっちが先にシュートの調子をつかむか勝負だよ。",
+            "準備はいい？手加減しないよ。"
+        ],
+        "voiceChaos": [
+            "これを受けて！",
+            "これも受けて！"
+        ],
+        "voiceScore": [
+            "この球は楽勝だよ。",
+            "入ったよ。"
+        ],
+        "voiceHit": [
+            "こら、人を叩かないの！",
+            "にゃ！バスケだよ、猫叩きじゃないよ。"
+        ],
+        "voiceMouseSteal": [
+            "そのカーソル、ちょっと借りるね！",
+            "捕まえた、これからは私のだよ。"
+        ],
+        "voiceWin": [
+            "この勝負は私の勝ち。",
+            "ありがとう、次も勝負だね。"
+        ],
+        "voiceLose": [
+            "今回はあなたの勝ちね。",
+            "次は本気だからね。"
+        ],
         "arenaLabel": "共通ゴールのバスケットコート",
         "playerArcadeLabel": "共通コートのプレイヤー側",
         "opponentArcadeLabel": "共通コートの猫娘側",
@@ -6512,87 +6611,87 @@
         "automatic": "自動視聴",
         "stopWatching": "視聴を停止",
         "resizeAvatar": "キャラクターのサイズを変更",
-    "previousPage": "前のページ",
-    "nextPage": "次のページ",
-    "prefetchEnabled": "見ながら次の動画を準備",
-    "nextVideo": "次を再生",
-    "nextIdle": "次の動画は未準備です。",
-    "nextSearching": "次の動画を検索中…",
-    "nextPreparing": "次の動画をバックグラウンドで準備中…",
-    "nextReady": "次の動画の準備ができました。",
-    "nextFailed": "次の動画の準備に失敗しました。",
-    "readingVideo": "動画情報を読み込み中…",
-    "downloading": "動画をダウンロード中…",
-    "extractingFrames": "フレームを抽出中…",
-    "extractingHotspots": "弾幕集中箇所のフレームを抽出中…",
-    "analyzing": "動画を分析中…",
-    "synthesizing": "リアクション音声を合成中…",
-    "noSubtitles": "字幕がないため、言葉による笑いを見落とす可能性があります。",
-    "noDanmaku": "弾幕を取得できません。",
-    "noCover": "表紙を取得できません。",
-    "prepareFailed": "動画の準備に失敗しました。",
-    "saveFailed": "準備結果の保存に失敗しました。",
-    "topic": "話題（任意）",
-    "discover": "猫娘に選んでもらう",
-    "discoveryRule": "3分未満、毎分100件超の弾幕がある動画のみ。空欄なら現在の動画に関連する内容、未選択なら人気動画から探します。",
-    "checking": "動画を確認中…",
-    "longWarning": "この動画は5分を超えています。準備時間やモデル・音声合成の使用量が増える可能性があります。続行しますか？",
-    "cancelled": "キャンセルしました。準備は開始していません。",
-    "preparingInBackground": "待つのをやめました。動画の準備はバックグラウンドで続き、終わるとライブラリに表示されます。",
-    "searching": "関連する人気動画を検索中…",
-    "noCandidates": "条件を満たす動画がありません。条件は緩めず、別の話題で試してください。",
-    "density": "弾幕/分",
-    "usageNote": "API が返した実際の使用量です。形式エラーの再試行を含みます。キャッシュと推論は内数、TTS は別です。不明な値は記録なしです。",
-    "savedAudio": "保存された元の音声",
-    "title": "一緒に見る",
-    "exit": "終了",
-    "analyses": "ライブラリ",
-    "play": "一緒に見る",
-    "speed": "再生速度",
-    "usage": "モデル使用量",
-    "watches": "視聴記録",
-    "unrecorded": "記録なし",
-    "unknown": "不明",
-    "noWatches": "視聴記録はありません",
-    "ready": "準備完了。一緒に見るを押してください。",
-    "playing": "一緒に視聴中",
-    "choose": "ライブラリから選ぶか、Bilibili のリンクを貼り付けてください。",
-    "prepare": "準備する",
-    "findTitle": "新しい動画を探す",
-    "urlPlaceholder": "Bilibili のリンクか BV 番号を貼り付け",
-    "urlLabel": "Bilibili 動画のリンク",
-    "discoveryRuleSummary": "動画の選び方",
-    "libraryLoading": "ライブラリを読み込み中…初回は動画ファイルを確認するため、少し時間がかかることがあります。",
-    "libraryEmpty": "ライブラリはまだ空です。猫娘に選んでもらうか、Bilibili のリンクを貼り付けてください。",
-    "emptyTitle": "今日は何を一緒に見る？",
-    "emptyHint": "ライブラリから選んだり、Bilibili のリンクを貼ったり、猫娘に弾幕がにぎやかな短い動画を選んでもらったりできます。",
-    "pasteLink": "リンクを貼る",
-    "openLibrary": "ライブラリを見る",
-    "emptyAutomatic": "最初の動画を選んでいます…",
-    "preparingTitle": "準備中",
-    "preparingHint": "準備では映像と弾幕を分析してリアクションを書き、リアクション音声を合成します。",
-    "progressLabel": "準備の進捗",
-    "reactionCount": "リアクション {{count}} 件",
-    "unavailable": "再生できません",
-    "upNext": "次はこちら",
-    "endTitle": "見終わったよ",
-    "replay": "もう一度見る",
-    "pickAnother": "別のを選ぶ",
-    "spoilers": "リアクションのセリフ（ネタバレ注意）",
-    "watchedTo": "視聴位置",
-    "watchCompleted": "視聴済み",
-    "usageInput": "入力トークン：{{value}}",
-    "usageOutput": "出力トークン：{{value}}",
-    "usageTotal": "合計トークン：{{value}}",
-    "usageCalls": "モデル呼び出し回数：{{value}}",
-    "usageMissingCalls": "使用量が返されなかった呼び出し：{{value}}",
-    "longTitle": "この動画は少し長めです",
-    "longDuration": "長さ",
-    "longConfirm": "このまま準備する",
-    "longCancel": "やめておく",
-    "automaticHint": "見終わったら次の動画を自動で探して再生します",
-    "libraryFailed": "ライブラリを読み込めませんでした。再試行"
-  },
+        "previousPage": "前のページ",
+        "nextPage": "次のページ",
+        "prefetchEnabled": "見ながら次の動画を準備",
+        "nextVideo": "次を再生",
+        "nextIdle": "次の動画は未準備です。",
+        "nextSearching": "次の動画を検索中…",
+        "nextPreparing": "次の動画をバックグラウンドで準備中…",
+        "nextReady": "次の動画の準備ができました。",
+        "nextFailed": "次の動画の準備に失敗しました。",
+        "readingVideo": "動画情報を読み込み中…",
+        "downloading": "動画をダウンロード中…",
+        "extractingFrames": "フレームを抽出中…",
+        "extractingHotspots": "弾幕集中箇所のフレームを抽出中…",
+        "analyzing": "動画を分析中…",
+        "synthesizing": "リアクション音声を合成中…",
+        "noSubtitles": "字幕がないため、言葉による笑いを見落とす可能性があります。",
+        "noDanmaku": "弾幕を取得できません。",
+        "noCover": "表紙を取得できません。",
+        "prepareFailed": "動画の準備に失敗しました。",
+        "saveFailed": "準備結果の保存に失敗しました。",
+        "topic": "話題（任意）",
+        "discover": "猫娘に選んでもらう",
+        "discoveryRule": "3分未満、毎分100件超の弾幕がある動画のみ。空欄なら現在の動画に関連する内容、未選択なら人気動画から探します。",
+        "checking": "動画を確認中…",
+        "longWarning": "この動画は5分を超えています。準備時間やモデル・音声合成の使用量が増える可能性があります。続行しますか？",
+        "cancelled": "キャンセルしました。準備は開始していません。",
+        "preparingInBackground": "待つのをやめました。動画の準備はバックグラウンドで続き、終わるとライブラリに表示されます。",
+        "searching": "関連する人気動画を検索中…",
+        "noCandidates": "条件を満たす動画がありません。条件は緩めず、別の話題で試してください。",
+        "density": "弾幕/分",
+        "usageNote": "API が返した実際の使用量です。形式エラーの再試行を含みます。キャッシュと推論は内数、TTS は別です。不明な値は記録なしです。",
+        "savedAudio": "保存された元の音声",
+        "title": "一緒に見る",
+        "exit": "終了",
+        "analyses": "ライブラリ",
+        "play": "一緒に見る",
+        "speed": "再生速度",
+        "usage": "モデル使用量",
+        "watches": "視聴記録",
+        "unrecorded": "記録なし",
+        "unknown": "不明",
+        "noWatches": "視聴記録はありません",
+        "ready": "準備完了。一緒に見るを押してください。",
+        "playing": "一緒に視聴中",
+        "choose": "ライブラリから選ぶか、Bilibili のリンクを貼り付けてください。",
+        "prepare": "準備する",
+        "findTitle": "新しい動画を探す",
+        "urlPlaceholder": "Bilibili のリンクか BV 番号を貼り付け",
+        "urlLabel": "Bilibili 動画のリンク",
+        "discoveryRuleSummary": "動画の選び方",
+        "libraryLoading": "ライブラリを読み込み中…初回は動画ファイルを確認するため、少し時間がかかることがあります。",
+        "libraryEmpty": "ライブラリはまだ空です。猫娘に選んでもらうか、Bilibili のリンクを貼り付けてください。",
+        "emptyTitle": "今日は何を一緒に見る？",
+        "emptyHint": "ライブラリから選んだり、Bilibili のリンクを貼ったり、猫娘に弾幕がにぎやかな短い動画を選んでもらったりできます。",
+        "pasteLink": "リンクを貼る",
+        "openLibrary": "ライブラリを見る",
+        "emptyAutomatic": "最初の動画を選んでいます…",
+        "preparingTitle": "準備中",
+        "preparingHint": "準備では映像と弾幕を分析してリアクションを書き、リアクション音声を合成します。",
+        "progressLabel": "準備の進捗",
+        "reactionCount": "リアクション {{count}} 件",
+        "unavailable": "再生できません",
+        "upNext": "次はこちら",
+        "endTitle": "見終わったよ",
+        "replay": "もう一度見る",
+        "pickAnother": "別のを選ぶ",
+        "spoilers": "リアクションのセリフ（ネタバレ注意）",
+        "watchedTo": "視聴位置",
+        "watchCompleted": "視聴済み",
+        "usageInput": "入力トークン：{{value}}",
+        "usageOutput": "出力トークン：{{value}}",
+        "usageTotal": "合計トークン：{{value}}",
+        "usageCalls": "モデル呼び出し回数：{{value}}",
+        "usageMissingCalls": "使用量が返されなかった呼び出し：{{value}}",
+        "longTitle": "この動画は少し長めです",
+        "longDuration": "長さ",
+        "longConfirm": "このまま準備する",
+        "longCancel": "やめておく",
+        "automaticHint": "見終わったら次の動画を自動で探して再生します",
+        "libraryFailed": "ライブラリを読み込めませんでした。再試行"
+    },
     "drawingGuess": {
         "title": "お絵かき当てっこ",
         "eyebrow": "一緒に遊ぶ時間",
@@ -7347,5 +7446,56 @@
         "keepLocal": "この端末の選択を維持",
         "failed": "モデルを読み込めませんでした。以前の選択を維持しています。",
         "retry": "再試行"
+    },
+    "chatHistory": {
+        "review": "音声の振り返り",
+        "recordVoice": "音声を保存",
+        "recordVoiceHint": "今後のキャラクターの音声をこの端末に保存し、履歴から再生します。初期設定はオフです。オフにしても既存の録音は残ります。過去の音声は復元できません。",
+        "autoContinue": "音声を自動で連続再生",
+        "autoContinueHint": "音声を選ぶと、現在のキャラクターの後続音声を日付をまたいで時刻順に再生します。キーワード条件は維持します。オフにすると現在のメッセージの再生後に停止します。",
+        "voicePlay": "この音声を再生",
+        "voiceStop": "再生を停止",
+        "pause": "一時停止",
+        "resume": "再開",
+        "locatePlaying": "現在の会話を表示",
+        "voicePartial": "この録音は一部欠けている可能性があります",
+        "playback_loading": "音声を読み込み中…",
+        "playback_playing": "再生中",
+        "playback_paused": "一時停止中",
+        "playback_done": "再生完了",
+        "playback_empty": "この範囲に再生可能な音声はありません",
+        "playback_error": "再生が中断されました。音声を選ぶか再度開始してください",
+        "end": "該当する履歴をすべて読み込みました",
+        "title": "チャット履歴",
+        "description": "日付やキーワードで保存済みの会話を探します。",
+        "close": "閉じる",
+        "character": "キャラクター",
+        "keyword": "キーワード",
+        "search": "検索",
+        "date": "日付",
+        "previousDay": "前日",
+        "nextDay": "翌日",
+        "allDates": "すべての日付",
+        "speaker": "話者",
+        "all": "すべて",
+        "user": "あなた",
+        "assistant": "アシスタント",
+        "settings": "設定",
+        "order": "並び順",
+        "newest": "新しい順",
+        "oldest": "古い順",
+        "pageSize": "ページの件数",
+        "showTime": "保存時刻を表示",
+        "back": "検索結果に戻る",
+        "loading": "読み込み中…",
+        "error": "履歴を読み込めませんでした。",
+        "retry": "再試行",
+        "continueSearch": "この範囲に一致はありません。検索を続けてください。",
+        "unavailable": "保存済みの履歴はありません。",
+        "empty": "一致するメッセージはありません。",
+        "context": "前後の会話",
+        "savedOnly": "保存された原文 · 時刻は保存時刻です。未保存の新着は含まれない場合があります。",
+        "firstPage": "最初のページ",
+        "more": "続ける"
     }
 }

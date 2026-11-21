@@ -1834,6 +1834,13 @@ class TurnMixin:
         # taker clears what this reply left there itself).
         if owns_shared_output and may_clear_shared_output():
             await self._finish_tts_clear(tts_interrupt)
+            if will_retry:
+                # A retry reuses the reply's speech_id. Remove discarded
+                # attempt audio only after the old TTS producer is retired;
+                # later retry audio/text then follows this ordered event.
+                from main_logic.voice_archive import archive_event
+                retry_sid = reply_turn.speech_id if reply_turn is not None else self.current_speech_id
+                await archive_event(self, 'retry', retry_sid)
 
         # Final RESPONSE_TOO_LONG discard: send a cute reply and speak in the character's TTS voice.
         # RESPONSE_LENGTH_TRUNCATED: after rerolls exhaust, truncate at final sentence punctuation;
@@ -3107,6 +3114,10 @@ class TurnMixin:
                     entry['source'] = source
                     entry['speech_id'] = expected_speech_id
                 cache.append(entry)
+
+        from main_logic.voice_archive import archive_event
+        await archive_event(self, 'text', effective_turn_id,
+                            text=text_clean, is_first=is_first_chunk)
 
         # WS send may fail, but sync/cache already persisted.
         # [DIAG] Blank chat after character switching: log only first chunks, avoiding streaming spam.

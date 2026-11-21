@@ -24,8 +24,78 @@
             "storageChanged": "El directorio de datos del servidor cambió. Vuelve a abrir el editor de avatar antes de guardar."
         }
     },
-    "chatSync": {"setupNeedsSave":"Revisa la sincronización de {{name}} y vuelve a guardar el personaje.","title":"Sincronizar chats","close":"Cerrar","pending":"Envíos registrados pendientes: {{originals}}; eliminaciones: {{deletions}}.","working":"Procesando…","loginRequired":"Inicia sesión en tu cuenta de la comunidad e inténtalo de nuevo.","unknownTime":"Hora original desconocida","userLabel":"Tú","profileConflict":"Elige la versión del personaje","profileRenamePending":"Confirmar cambio de nombre","profileLocal":"Versión local","profileRemote":"Versión en la nube","profileUseLocal":"Subir esta versión local","profileUseRemote":"Usar esta versión de la nube","profileRenameConfirm":"¿Cambiar {{oldName}} a {{newName}} y usar el perfil completo de la nube?","profileChanged":"El perfil cambió o la sincronización no está disponible. Se conservan ambas versiones; vuelve a revisarlas.","profileUploadConfirm":"¿Subir el perfil guardado de {{name}}?","profileUnsupported":"Este perfil contiene campos aún no compatibles. Se conserva el guardado local.","profileSaveFailed":"No se pudo sincronizar el perfil. Se conservan el guardado local y ambas versiones.","profileName":"Nombre","profileNickname":"Apodo","profileSetting":"Descripción original","profileStyle":"Estilo de habla","cloudImport":"Crear personaje desde la nube","cloudEmpty":"No hay personajes en la nube.","cloudProfileEmpty":"Este personaje aún no tiene un perfil publicado.","cloudCreate":"Crear este personaje en este dispositivo","cloudExisting":"{{name}} ya existe aquí. Se conserva su configuración de sincronización.","cloudCreated":"Se creó y vinculó {{name}}.","cloudNameConflict":"Ya existe un personaje con este nombre. Renómbralo primero o cancela la importación.","profileNeedsBinding":"Activa la sincronización en el editor de personajes y guarda para vincular este personaje.","writerRecoveryRequired":"La sincronización está pausada mientras se verifica esta instalación. El chat local sigue disponible.","recoverWriter":"Verificar y recuperar sincronización","recoveryChecked":"Verificación completada. Activa el interruptor de sincronización en el editor de personajes y guarda para continuar sincronizando el personaje y sus chats anteriores.","recoveryCloudCopiesKept":"Borrados anteriores en este dispositivo que ya no pueden llegar a la nube: {{count}}. Si hay copias de esos mensajes en la nube, se conservan.","moreOptions":"Más ajustes","newRoleSync":"Perfil del personaje y memoria reciente","newSyncFailed":"Personaje guardado localmente. La sincronización aún no está lista. Inténtalo más tarde.","syncChoiceSaved":"Personaje guardado. Sincronización actualizada.","recoverWriterHelp":"Acerca de verificar y recuperar la sincronización","recoverWriterTooltip":"Úsalo si una copia restaurada, datos copiados o una escritura interrumpida dejan registros de sincronización sin verificar. Comprueba la cuenta, el personaje y los registros de la nube para evitar envíos duplicados o recuperar chats borrados. No se necesita en el uso normal.","recoveryNotRequired":"Ahora no es necesario verificar.","errorDetail":"{{message}} Código de error: {{code}}.","errorAccountMismatch":"La identidad actual en la nube no coincide con el propietario guardado del personaje. Comprueba tu cuenta de la comunidad. Si siempre fue la misma, hay que investigar y reparar el vínculo anterior; repetir el intento no lo resuelve. Los chats locales se conservan.","errorWriterRecovery":"Los registros de sincronización anteriores necesitan verificación. Abre Más ajustes y pulsa Verificar y recuperar sincronización. Después, guarda de nuevo el personaje con la sincronización activada.","errorSessionChanged":"La sesión cambió durante la operación. Confirma tu cuenta de la comunidad y vuelve a intentarlo.","errorSessionUnavailable":"No se pudo verificar temporalmente la sesión guardada. Comprueba la conexión y reintenta. Si persiste, inicia sesión de nuevo desde la página de cuenta.","errorRecentWriteUnconfirmed":"La sincronización de la memoria reciente de este personaje se ha detenido: no se pudo confirmar que la última escritura se completara. El chat y la memoria local no se ven afectados.","errorRecentFileUnreadable":"El archivo de memoria reciente de este personaje está dañado y no se puede leer, por lo que la sincronización de la memoria reciente está en pausa. Se reanudará automáticamente cuando el archivo se pueda leer de nuevo.","errorNetwork":"No se pudo conectar con el servicio o la solicitud agotó el tiempo. Comprueba la conexión y reintenta. Se conservan los chats locales y las tareas pendientes.","errorRetryLater":"El servicio está limitando solicitudes o esperando antes de reintentar. Inténtalo más tarde; pulsar repetidamente no reduce la espera.","errorServiceRejected":"El servicio rechazó la solicitud. Inténtalo más tarde. Si persiste, comunica este código para revisar el servicio.","errorBindingChanged":"El personaje o su vínculo cambió. Reabre el editor, comprueba el personaje y el interruptor de sincronización, y guarda.","errorProfileChanged":"El perfil guardado cambió. Reabre el editor, revisa el perfil y guarda otra vez los ajustes de sincronización.","errorUnknown":"No se pudo completar la sincronización. Comprueba la conexión, reabre Más ajustes y reintenta. Si persiste, comunica los pasos que fallaron. Se conservan los chats locales y las tareas pendientes.","errorLongTermCapacity":"Esta instantánea de memoria a largo plazo supera las 20.000 entradas y no se ha sincronizado. Se conserva toda la memoria local. Se volverá a intentar tras una nueva actualización de la memoria.","errorLongTermEvidenceCapacity":"Los registros de correcciones o confirmaciones de la memoria a largo plazo superan los 20.000 y esta instantánea no se ha sincronizado. Se conserva toda la memoria local. La sincronización se reanudará cuando el dispositivo que organiza la memoria elimine los registros más antiguos y su instantánea llegue aquí.","noticeLongTermEvidenceTrimmed":"La memoria a largo plazo tenía demasiados registros de correcciones o confirmaciones, por lo que los más antiguos se eliminaron automáticamente. No es necesario hacer nada. Este aviso se muestra durante 7 días.","errorLongTermPending":"La memoria a largo plazo está en espera: hay una instantánea de la nube pendiente. Se conservan la memoria local y las pruebas de la nube. Las cargas esperan mientras continúan los reintentos existentes.","errorArchiveSubject":"La sincronización de memoria a largo plazo está pausada: un archivo de perfil antiguo carece de un sujeto verificable. Se conservan los registros locales. Restaura una copia con los datos del sujeto o los eventos originales y vuelve a intentarlo."},
-    "instanceAccess": {"title":"Conectar a NEKO","description":"Introduce la clave de acceso proporcionada por el propietario del servidor. Este dispositivo recordará la conexión durante 30 días.","key":"Clave de acceso a la instancia","keyHelp":"Si la aplicación de escritorio del equipo donde se ejecuta N.E.K.O. tiene ajustes de acceso remoto, abre Ajustes → Avanzado → Acceso remoto desde su bandeja del sistema y selecciona Copiar clave.","connect":"Conectar","failed":"Acceso denegado. Revisa la clave e inténtalo de nuevo.","httpsRequired":"Usa HTTPS o un túnel HTTPS de confianza para conectar de forma segura.","insecureWarning":"Esta conexión no está cifrada (HTTP). Cualquiera en la misma ruta de red podría ver la clave y la sesión. Usa HTTPS cuando puedas."},
+    "chatSync": {
+        "setupNeedsSave": "Revisa la sincronización de {{name}} y vuelve a guardar el personaje.",
+        "title": "Sincronizar chats",
+        "close": "Cerrar",
+        "pending": "Envíos registrados pendientes: {{originals}}; eliminaciones: {{deletions}}.",
+        "working": "Procesando…",
+        "loginRequired": "Inicia sesión en tu cuenta de la comunidad e inténtalo de nuevo.",
+        "unknownTime": "Hora original desconocida",
+        "userLabel": "Tú",
+        "profileConflict": "Elige la versión del personaje",
+        "profileRenamePending": "Confirmar cambio de nombre",
+        "profileLocal": "Versión local",
+        "profileRemote": "Versión en la nube",
+        "profileUseLocal": "Subir esta versión local",
+        "profileUseRemote": "Usar esta versión de la nube",
+        "profileRenameConfirm": "¿Cambiar {{oldName}} a {{newName}} y usar el perfil completo de la nube?",
+        "profileChanged": "El perfil cambió o la sincronización no está disponible. Se conservan ambas versiones; vuelve a revisarlas.",
+        "profileUploadConfirm": "¿Subir el perfil guardado de {{name}}?",
+        "profileUnsupported": "Este perfil contiene campos aún no compatibles. Se conserva el guardado local.",
+        "profileSaveFailed": "No se pudo sincronizar el perfil. Se conservan el guardado local y ambas versiones.",
+        "profileName": "Nombre",
+        "profileNickname": "Apodo",
+        "profileSetting": "Descripción original",
+        "profileStyle": "Estilo de habla",
+        "cloudImport": "Crear personaje desde la nube",
+        "cloudEmpty": "No hay personajes en la nube.",
+        "cloudProfileEmpty": "Este personaje aún no tiene un perfil publicado.",
+        "cloudCreate": "Crear este personaje en este dispositivo",
+        "cloudExisting": "{{name}} ya existe aquí. Se conserva su configuración de sincronización.",
+        "cloudCreated": "Se creó y vinculó {{name}}.",
+        "cloudNameConflict": "Ya existe un personaje con este nombre. Renómbralo primero o cancela la importación.",
+        "profileNeedsBinding": "Activa la sincronización en el editor de personajes y guarda para vincular este personaje.",
+        "writerRecoveryRequired": "La sincronización está pausada mientras se verifica esta instalación. El chat local sigue disponible.",
+        "recoverWriter": "Verificar y recuperar sincronización",
+        "recoveryChecked": "Verificación completada. Activa el interruptor de sincronización en el editor de personajes y guarda para continuar sincronizando el personaje y sus chats anteriores.",
+        "recoveryCloudCopiesKept": "Borrados anteriores en este dispositivo que ya no pueden llegar a la nube: {{count}}. Si hay copias de esos mensajes en la nube, se conservan.",
+        "moreOptions": "Más ajustes",
+        "newRoleSync": "Perfil del personaje y memoria reciente",
+        "newSyncFailed": "Personaje guardado localmente. La sincronización aún no está lista. Inténtalo más tarde.",
+        "syncChoiceSaved": "Personaje guardado. Sincronización actualizada.",
+        "recoverWriterHelp": "Acerca de verificar y recuperar la sincronización",
+        "recoverWriterTooltip": "Úsalo si una copia restaurada, datos copiados o una escritura interrumpida dejan registros de sincronización sin verificar. Comprueba la cuenta, el personaje y los registros de la nube para evitar envíos duplicados o recuperar chats borrados. No se necesita en el uso normal.",
+        "recoveryNotRequired": "Ahora no es necesario verificar.",
+        "errorDetail": "{{message}} Código de error: {{code}}.",
+        "errorAccountMismatch": "La identidad actual en la nube no coincide con el propietario guardado del personaje. Comprueba tu cuenta de la comunidad. Si siempre fue la misma, hay que investigar y reparar el vínculo anterior; repetir el intento no lo resuelve. Los chats locales se conservan.",
+        "errorWriterRecovery": "Los registros de sincronización anteriores necesitan verificación. Abre Más ajustes y pulsa Verificar y recuperar sincronización. Después, guarda de nuevo el personaje con la sincronización activada.",
+        "errorSessionChanged": "La sesión cambió durante la operación. Confirma tu cuenta de la comunidad y vuelve a intentarlo.",
+        "errorSessionUnavailable": "No se pudo verificar temporalmente la sesión guardada. Comprueba la conexión y reintenta. Si persiste, inicia sesión de nuevo desde la página de cuenta.",
+        "errorRecentWriteUnconfirmed": "La sincronización de la memoria reciente de este personaje se ha detenido: no se pudo confirmar que la última escritura se completara. El chat y la memoria local no se ven afectados.",
+        "errorRecentFileUnreadable": "El archivo de memoria reciente de este personaje está dañado y no se puede leer, por lo que la sincronización de la memoria reciente está en pausa. Se reanudará automáticamente cuando el archivo se pueda leer de nuevo.",
+        "errorNetwork": "No se pudo conectar con el servicio o la solicitud agotó el tiempo. Comprueba la conexión y reintenta. Se conservan los chats locales y las tareas pendientes.",
+        "errorRetryLater": "El servicio está limitando solicitudes o esperando antes de reintentar. Inténtalo más tarde; pulsar repetidamente no reduce la espera.",
+        "errorServiceRejected": "El servicio rechazó la solicitud. Inténtalo más tarde. Si persiste, comunica este código para revisar el servicio.",
+        "errorBindingChanged": "El personaje o su vínculo cambió. Reabre el editor, comprueba el personaje y el interruptor de sincronización, y guarda.",
+        "errorProfileChanged": "El perfil guardado cambió. Reabre el editor, revisa el perfil y guarda otra vez los ajustes de sincronización.",
+        "errorUnknown": "No se pudo completar la sincronización. Comprueba la conexión, reabre Más ajustes y reintenta. Si persiste, comunica los pasos que fallaron. Se conservan los chats locales y las tareas pendientes.",
+        "errorLongTermCapacity": "Esta instantánea de memoria a largo plazo supera las 20.000 entradas y no se ha sincronizado. Se conserva toda la memoria local. Se volverá a intentar tras una nueva actualización de la memoria.",
+        "errorLongTermEvidenceCapacity": "Los registros de correcciones o confirmaciones de la memoria a largo plazo superan los 20.000 y esta instantánea no se ha sincronizado. Se conserva toda la memoria local. La sincronización se reanudará cuando el dispositivo que organiza la memoria elimine los registros más antiguos y su instantánea llegue aquí.",
+        "noticeLongTermEvidenceTrimmed": "La memoria a largo plazo tenía demasiados registros de correcciones o confirmaciones, por lo que los más antiguos se eliminaron automáticamente. No es necesario hacer nada. Este aviso se muestra durante 7 días.",
+        "errorLongTermPending": "La memoria a largo plazo está en espera: hay una instantánea de la nube pendiente. Se conservan la memoria local y las pruebas de la nube. Las cargas esperan mientras continúan los reintentos existentes.",
+        "errorArchiveSubject": "La sincronización de memoria a largo plazo está pausada: un archivo de perfil antiguo carece de un sujeto verificable. Se conservan los registros locales. Restaura una copia con los datos del sujeto o los eventos originales y vuelve a intentarlo."
+    },
+    "instanceAccess": {
+        "title": "Conectar a NEKO",
+        "description": "Introduce la clave de acceso proporcionada por el propietario del servidor. Este dispositivo recordará la conexión durante 30 días.",
+        "key": "Clave de acceso a la instancia",
+        "keyHelp": "Si la aplicación de escritorio del equipo donde se ejecuta N.E.K.O. tiene ajustes de acceso remoto, abre Ajustes → Avanzado → Acceso remoto desde su bandeja del sistema y selecciona Copiar clave.",
+        "connect": "Conectar",
+        "failed": "Acceso denegado. Revisa la clave e inténtalo de nuevo.",
+        "httpsRequired": "Usa HTTPS o un túnel HTTPS de confianza para conectar de forma segura.",
+        "insecureWarning": "Esta conexión no está cifrada (HTTP). Cualquiera en la misma ruta de red podría ver la clave y la sesión. Usa HTTPS cuando puedas."
+    },
     "common": {
         "load": "Cargar",
         "minimize": "Minimizar",
@@ -1300,10 +1370,10 @@
         "connectionError": "Error de conexión"
     },
     "api": {
-    "imageModelConfig": "Generación de imágenes",
-    "imageModelExamplePlaceholder": "Ej.: gpt-image-2, wanx2.1-t2i-turbo",
-    "imageModelApiKeyPlaceholder": "Clave del endpoint personalizado; los proveedores usan el registro de claves API",
-    "imageDisabled": "Sin configurar",
+        "imageModelConfig": "Generación de imágenes",
+        "imageModelExamplePlaceholder": "Ej.: gpt-image-2, wanx2.1-t2i-turbo",
+        "imageModelApiKeyPlaceholder": "Clave del endpoint personalizado; los proveedores usan el registro de claves API",
+        "imageDisabled": "Sin configurar",
         "settings": "Configuración de clave API",
         "pluginApiSettings": "Configuración de Plugin API ↗",
         "settingsTitle": "Configuración de clave API - Proyecto Lanlan",
@@ -2855,24 +2925,24 @@
         "useRecommended": "Usar ruta recomendada"
     },
     "character": {
-        "moliliMasterTitle":  "Tu identidad",
+        "moliliMasterTitle": "Tu identidad",
         "moliliMasterDetected": "Tú en Molili: {{fields}}",
-        "moliliMasterCurrentLoading":  "Cargando el perfil...",
-        "moliliMasterCurrent":  "Perfil global actual: {{current}}",
-                        "moliliUpdatingMaster":  "Actualizando el perfil global...",
-        "moliliMasterUpdateFailed":  "Error al actualizar el perfil: {{error}}",
-        "moliliCommitTimeout":  "Esta importación está tardando más de lo esperado; es probable que el servidor siga procesándola en segundo plano. Espera alrededor de un minuto y ejecuta la importación una vez más para terminar: los días completados se omiten automáticamente y solo se rellena lo restante.",
+        "moliliMasterCurrentLoading": "Cargando el perfil...",
+        "moliliMasterCurrent": "Perfil global actual: {{current}}",
+        "moliliUpdatingMaster": "Actualizando el perfil global...",
+        "moliliMasterUpdateFailed": "Error al actualizar el perfil: {{error}}",
+        "moliliCommitTimeout": "Esta importación está tardando más de lo esperado; es probable que el servidor siga procesándola en segundo plano. Espera alrededor de un minuto y ejecuta la importación una vez más para terminar: los días completados se omiten automáticamente y solo se rellena lo restante.",
         "moliliAttachmentsNote": "{{count}} adjuntos y los chats sin procesar no se migran con la memoria; guárdalos antes si los necesitas",
         "moliliChatsNote": "{{count}} mensajes de chat sin procesar no se migran con la memoria; guárdalos antes si los necesitas",
         "moliliOwnedItemsNote": "{{count}} objetos adquiridos no se migran",
         "moliliStageFusion": "Fusionando personalidad...",
-        "moliliStageDaily":  "Organizando lotes de memoria {{done}}/{{total}}...",
+        "moliliStageDaily": "Organizando lotes de memoria {{done}}/{{total}}...",
         "moliliMasterOverwrite": "Actualizar el perfil a la identidad anterior (atención: el perfil es compartido por todos los personajes y este cambio les afecta)",
         "moliliParsing": "Analizando archivo de Molili...",
         "moliliParseFailed": "Error al analizar el archivo de Molili: {{error}}",
         "moliliDialogTitle": "Importar personaje de Molili",
-        "moliliDetected":  "Personaje detectado: «{{name}}» · {{memory}} recuerdos",
-                        "moliliWarnings": "⚠ Se detectaron {{count}} patrones de instrucciones sospechosos; confirmar la importación implica que lo sabes",
+        "moliliDetected": "Personaje detectado: «{{name}}» · {{memory}} recuerdos",
+        "moliliWarnings": "⚠ Se detectaron {{count}} patrones de instrucciones sospechosos; confirmar la importación implica que lo sabes",
         "moliliCreateNew": "Crear personaje nuevo:",
         "moliliImportExisting": "Importar a un personaje existente:",
         "moliliLoadingCharacters": "Cargando...",
@@ -2884,8 +2954,8 @@
         "moliliNameTooLong": "El nombre del personaje supera los {{max}} caracteres y el sistema de memoria no puede importarlo. Elige un nombre más corto",
         "moliliPickExisting": "Elige un personaje existente",
         "moliliCreatingCard": "Creando personaje «{{name}}»...",
-        "moliliImporting":  "Importando recuerdos de «{{name}}». Puede tardar unos minutos; no cierres la página...",
-        "moliliImportDone":  "«{{name}}» importado correctamente",
+        "moliliImporting": "Importando recuerdos de «{{name}}». Puede tardar unos minutos; no cierres la página...",
+        "moliliImportDone": "«{{name}}» importado correctamente",
         "moliliImportFailed": "Error al importar Molili: {{error}}",
         "moliliImportBusy": "Ya hay una importación de Molili en curso: espera a que termine antes de elegir otro archivo",
         "moliliArchiveTooLarge": "El archivo supera los {{max}} MB y no se puede importar",
@@ -3526,172 +3596,172 @@
             "sessionTerminateFailed": "No se pudo finalizar la sesión activa. Inténtelo de nuevo más tarde."
         }
     },
-  "theater": {
-    "safePauseAction": "(hace una breve pausa)",
-    "safePause": "¿Cómo te gustaría continuar?",
-    "handoffPending": "La entrega sigue pendiente. ¿Quieres ofrecer {item} en persona y esperar a que lo reciban, o preguntar cómo entregarlo?",
-    "handoffPendingAction": "(la entrega sigue pendiente; {item} aún espera una entrega en persona)",
-    "tokenStage_dispute": "Segunda revisión",
-    "tokenStage_history_lookup": "Consulta del historial",
-    "tokenStage_review": "Revisión rápida",
-    "tokenStage_evaluator": "Métricas y progreso",
-    "tokenStage_suggestions": "Completar sugerencias",
-    "tokenStage_actor": "Actor",
-    "performanceFailed": "Se interrumpió la reproducción de la actuación. Sigue escribiendo o vuelve a abrir el Teatro.",
-    "tokenUsageHint": "La entrada incluye caché y la salida incluye razonamiento declarado. Las llamadas adicionales están incluidas. El uso no es una estimación de precio.",
-    "tokenUsageCall": "{number}. {stage} · entrada {input} · salida {output}",
-    "tokenUsagePartial": "Uso parcial; faltan datos de algunas llamadas",
-    "tokenUsageSummary": "Esta solicitud · entrada {input} · salida {output} tokens · {calls} llamadas",
-    "reinvite": "Pedir una nueva invitación",
-    "acceptInvitation": "Aceptar invitación",
-    "inputFailed": "No se pudo obtener la respuesta de la escena. Inténtalo de nuevo.",
-    "endStateFailed": "No se pudo finalizar el estado actual de la actuación. Vuelve a la página de historias e inténtalo de nuevo.",
-    "endConnectionFailed": "No se pudo acceder al servicio local de N.E.K.O. Comprueba que la aplicación siga abierta e inténtalo de nuevo.",
-    "title": "Teatro",
-    "modeLabel": "Modo",
-    "scriptMode": "Modo guion",
-    "kicker": "Lanlan Theater",
-    "loading": "Preparando el escenario...",
-    "generating": "Un momento después",
-    "skipPlayback": "Mostrar texto completo",
-    "ready": "Listo",
-    "running": "En escena",
-    "dormant": "La representación está en reposo. Puedes continuar.",
-    "ended": "Finalizado",
-    "failed": "Algo salió mal",
-    "actorUnavailable": "El modelo de interpretación no está disponible temporalmente. Inténtalo de nuevo; si el problema continúa, revisa el modelo de conversación de la API auxiliar.",
-    "inputInterpreterUnavailable": "La comprensión de entrada no está disponible temporalmente. Este turno no avanzó; inténtalo de nuevo.",
-    "numericSessionUpdated": "La sesión se actualizó. Se conservó tu entrada; confírmala e inténtalo de nuevo.",
-    "numericSessionUpdatedControl": "El estado de la representación se ha actualizado. Revisa las acciones disponibles.",
-    "restartSession": "Reiniciar",
-    "routerTechnicalHold": "La comprobación de entrada de la historia no está disponible temporalmente. Este turno no avanzó; inténtalo de nuevo.",
-    "sessionUpdated": "La escena cambió en otra ventana. Elige de nuevo.",
-    "start": "Iniciar",
-    "send": "Enviar",
-    "end": "Terminar",
-    "collapseStage": "Contraer escenario",
-    "expandStage": "Expandir escenario",
-    "inputPlaceholder": "Escribe lo que quieres decir o usa *...* para describir una acción",
-    "storySelect": "Seleccionar historia del teatro",
-    "importStory": "Importar guion",
-    "importStoryAria": "Importar un guion Numeric v2",
-    "importingStory": "Importando guion...",
-    "importStorySuccess": "Guion importado correctamente.",
-    "importStoryConflict": "Este guion ya existe; no se sobrescribió el archivo original.",
-    "importStoryInvalid": "El guion no superó la validación de Numeric v2.",
-    "importStoryFailed": "No se pudo importar el guion. Inténtalo de nuevo.",
-    "importStoryRefreshFailed": "El guion se importó, pero no se pudo actualizar la lista. Recarga la página.",
-    "deleteStory": "Eliminar guion",
-    "deleteStoryConfirm": "¿Eliminar el guion seleccionado?",
-    "deleteStoryActiveConfirm": "La representación con {{names}} no ha terminado. ¿Eliminar el guion de todos modos?",
-    "storyDeleted": "Guion eliminado",
-    "storyInUse": "Este guion está en una representación. Termínala antes de eliminarlo.",
-    "storyDeleteFailed": "No se pudo eliminar el guion. Inténtalo de nuevo.",
-    "noStories": "No hay guiones disponibles",
-    "storyIntroKicker": "Anteriormente",
-    "playerRoleLabel": "Tu papel",
-    "catgirlRoleLabel": "Papel de la neko",
-    "storyGoalLabel": "Objetivo de la historia",
-    "storyRulesLabel": "Reglas de interpretación",
-    "endingTitle": "Telón",
-    "endingEnded": "La historia ha terminado.",
-    "scenarioBoardTitle": "Panel del escenario",
-    "collapseScenarioBoard": "Contraer panel del escenario",
-    "expandScenarioBoard": "Expandir panel del escenario",
-    "availableProps": "Objetos disponibles",
-    "usedProps": "Objetos usados",
-    "discoveredClues": "Pistas descubiertas",
-    "turnTraceTitle": "Este turno",
-    "traceProgress": "La historia avanzó con tu elección.",
-    "traceRoleplay": "La neko respondió; la historia sigue en la escena actual.",
-    "traceExit": "Has salido de esta sesión de teatro.",
-    "actionChoicesTitle": "Respuestas sugeridas",
-    "dialogueChoicesTitle": "Frases disponibles",
-    "leaveAction": "Salir del teatro",
-    "userExitEnded": "Has salido del teatro. Esto no cuenta como un final de la historia.",
-    "startAgainConfirmTitle": "¿Comenzar una nueva actuación?",
-    "startAgainConfirmBody": "Esto sustituirá la actuación terminada del personaje actual por una nueva.",
-    "paused": "Saliste",
-    "sessionHintPaused": "Saliste de la actuación anterior. Puedes continuar el progreso o comenzar una nueva.",
-    "sessionHintPausedRestart": "Saliste de la actuación anterior. Puedes continuar el progreso o reiniciarla.",
-    "sessionHintPackageChanged": "El guion ha cambiado y esta partida no puede continuar. Termina la actuación anterior para empezar de nuevo.",
-    "sessionHintEndedRestart": "Esta actuación terminó. Pulsa «Reiniciar» para crear una nueva.",
-    "selectorReturnFailed": "Saliste de la actuación, pero no se pudo abrir la página de historias. Pulsa Volver a las historias para intentarlo de nuevo.",
-    "rememberPerformanceRetentionBody": "La memoria diaria solo conserva el resumen público. La actuación pública completa se guarda en el archivo del teatro; se excluyen los valores ocultos y las condiciones de ruta.",
-    "deletedStoryMemory": "Eliminado · Gestión de recuerdos",
-    "deletedStoryMemoryHint": "El guion se ha eliminado. Puedes consultar u olvidar sus resúmenes guardados. Impórtalo de nuevo para interpretarlo.",
-    "memoryStoryListFailed": "No se pudieron cargar los recuerdos de los guiones. Vuelve a cargar la página.",
-    "savedPerformances": "Actuaciones guardadas",
-    "savedPerformancesHint": "Se conservan las 5 grabaciones completas más recientes. Las favoritas no se eliminan automáticamente.",
-    "noSavedPerformances": "No hay actuaciones guardadas.",
-    "completedPerformance": "Actuación completada",
-    "pausedPerformance": "Actuación pausada",
-    "performanceRecordMeta": "Registro {{index}} · revisión {{revision}}",
-    "viewPerformance": "Ver",
-    "performanceArchiveTitle": "Registro de actuación",
-    "performanceArchiveOpening": "Apertura",
-    "performanceArchiveTurn": "Turno {{index}}",
-    "performanceArchiveLoadFailed": "No se pudo cargar el registro. Inténtalo de nuevo.",
-    "pinPerformance": "Favorito",
-    "unpinPerformance": "Quitar favorito",
-    "memoryPinFailed": "No se pudo actualizar el favorito. Inténtalo de nuevo.",
-    "forgetStoryMemory": "Olvidar esta historia",
-    "forgetStoryMemoryTitle": "¿Olvidar esta historia?",
-    "forgetStoryMemoryBody": "Esto elimina los resúmenes, el índice temporal y los archivos completos de esta historia para la neko actual. No elimina la historia ni el progreso actual.",
-    "storyMemoryForgotten": "Se olvidó la memoria de esta historia.",
-    "storyMemoryForgetFailed": "No se pudo eliminar la memoria. Inténtalo de nuevo.",
-    "waitingReply": "Preparando la siguiente respuesta…",
-    "freeInputHint": "Esta vez no hay opciones sugeridas～",
-    "endReceiptPending": "La representación ha terminado. La confirmación de memoria aún no está lista; vuelve a abrir la selección de historias más tarde.",
-    "evaluatorDegraded": "La evaluación no está disponible temporalmente. Los valores no avanzaron este turno; aún puedes aceptar las invitaciones del autor ya mostradas.",
-    "selectorKicker": "Biblioteca de historias",
-    "selectorTitle": "Elige una historia",
-    "noStoriesHint": "Importa una historia Numeric v2 para comenzar.",
-    "selectStoryHint": "Elige una historia a la izquierda para ver el contexto y los papeles.",
-    "continueSession": "Continuar",
-    "notStarted": "Sin iniciar",
-    "sessionHintNew": "Pulsa «Comenzar» para crear esta actuación.",
-    "sessionHintActive": "La actuación está en curso. Pulsa «Continuar» para volver.",
-    "sessionHintEnded": "Esta actuación terminó. Pulsa «Comenzar» para crear una nueva.",
-    "loadingSession": "Cargando el progreso...",
-    "sessionLoadFailed": "No se pudo cargar el progreso. Inténtalo de nuevo.",
-    "connectingNeko": "La actuación está lista. Conectando con N.E.K.O...",
-    "connectNekoFailed": "No se pudo conectar con N.E.K.O. Mantén abierta la aplicación principal e inténtalo de nuevo.",
-    "startFailed": "No se pudo iniciar la actuación. Inténtalo de nuevo.",
-    "continueFailed": "No se pudo continuar la actuación. Inténtalo de nuevo.",
-    "endFailed": "No se pudo finalizar la actuación. Comprueba la conexión e inténtalo de nuevo.",
-    "selectorOpenFailed": "La actuación terminó, pero no se pudo abrir la página de historias. Pulsa «Volver a las historias» para reintentarlo.",
-    "restartBlockedTitle": "No se puede reiniciar",
-    "restartBlockedBody": "Una historia en curso no se puede reiniciar. Finalízala primero.",
-    "endPerformance": "Finalizar actuación",
-    "restartConfirmTitle": "¿Reiniciar esta historia?",
-    "restartConfirmBody": "Esto sustituirá la actuación terminada del personaje actual por una nueva.",
-    "rememberPerformanceTitle": "¿Quieres que N.E.K.O recuerde esta actuación?",
-    "rememberPerformanceBody": "Solo se guardan el resumen público y las escenas recientes; se excluyen los valores ocultos y las condiciones de ruta.",
-    "skipMemory": "No guardar",
-    "saveMemory": "Recordarla",
-    "memorySaveFailed": "No se pudo guardar el recuerdo. Inténtalo más tarde.",
-    "memorySaved": "N.E.K.O ha recordado esta actuación.",
-    "memorySaving": "Guardando esta actuación...",
-    "memorySkipping": "Guardando esta elección...",
-    "storyListFailed": "No se pudo cargar la lista. Recarga la página.",
-    "imagesUnavailable": "El teatro todavía no admite imágenes.",
-    "voiceUnavailable": "El chat de voz no está disponible durante una función del teatro.",
-    "chatUnavailable": "El chat normal no está disponible durante una función del teatro.",
-    "endConfirm": "¿Finalizar la actuación actual?",
-    "narration": "Narración",
-    "player": "Jugador",
-    "performanceHistory": "Historial de la actuación",
-    "inProgress": "En el teatro",
-    "returnToStories": "Volver a las historias",
-    "storyListAria": "Elegir una historia del teatro",
-    "storyActionsAria": "Acciones de la historia",
-    "moreStories": "Más guiones",
-    "marketEnter": "Entrar",
-    "marketPreparing": "Conectando al mercado de guiones…",
-    "marketConnectError": "No se pudo conectar. Mantén NEKO abierto e inténtalo de nuevo.",
-    "marketLocalOnly": "Abre el mercado de guiones en el equipo donde se ejecuta NEKO. No se admite importar guiones desde direcciones LAN o remotas."
-  },
+    "theater": {
+        "safePauseAction": "(hace una breve pausa)",
+        "safePause": "¿Cómo te gustaría continuar?",
+        "handoffPending": "La entrega sigue pendiente. ¿Quieres ofrecer {item} en persona y esperar a que lo reciban, o preguntar cómo entregarlo?",
+        "handoffPendingAction": "(la entrega sigue pendiente; {item} aún espera una entrega en persona)",
+        "tokenStage_dispute": "Segunda revisión",
+        "tokenStage_history_lookup": "Consulta del historial",
+        "tokenStage_review": "Revisión rápida",
+        "tokenStage_evaluator": "Métricas y progreso",
+        "tokenStage_suggestions": "Completar sugerencias",
+        "tokenStage_actor": "Actor",
+        "performanceFailed": "Se interrumpió la reproducción de la actuación. Sigue escribiendo o vuelve a abrir el Teatro.",
+        "tokenUsageHint": "La entrada incluye caché y la salida incluye razonamiento declarado. Las llamadas adicionales están incluidas. El uso no es una estimación de precio.",
+        "tokenUsageCall": "{number}. {stage} · entrada {input} · salida {output}",
+        "tokenUsagePartial": "Uso parcial; faltan datos de algunas llamadas",
+        "tokenUsageSummary": "Esta solicitud · entrada {input} · salida {output} tokens · {calls} llamadas",
+        "reinvite": "Pedir una nueva invitación",
+        "acceptInvitation": "Aceptar invitación",
+        "inputFailed": "No se pudo obtener la respuesta de la escena. Inténtalo de nuevo.",
+        "endStateFailed": "No se pudo finalizar el estado actual de la actuación. Vuelve a la página de historias e inténtalo de nuevo.",
+        "endConnectionFailed": "No se pudo acceder al servicio local de N.E.K.O. Comprueba que la aplicación siga abierta e inténtalo de nuevo.",
+        "title": "Teatro",
+        "modeLabel": "Modo",
+        "scriptMode": "Modo guion",
+        "kicker": "Lanlan Theater",
+        "loading": "Preparando el escenario...",
+        "generating": "Un momento después",
+        "skipPlayback": "Mostrar texto completo",
+        "ready": "Listo",
+        "running": "En escena",
+        "dormant": "La representación está en reposo. Puedes continuar.",
+        "ended": "Finalizado",
+        "failed": "Algo salió mal",
+        "actorUnavailable": "El modelo de interpretación no está disponible temporalmente. Inténtalo de nuevo; si el problema continúa, revisa el modelo de conversación de la API auxiliar.",
+        "inputInterpreterUnavailable": "La comprensión de entrada no está disponible temporalmente. Este turno no avanzó; inténtalo de nuevo.",
+        "numericSessionUpdated": "La sesión se actualizó. Se conservó tu entrada; confírmala e inténtalo de nuevo.",
+        "numericSessionUpdatedControl": "El estado de la representación se ha actualizado. Revisa las acciones disponibles.",
+        "restartSession": "Reiniciar",
+        "routerTechnicalHold": "La comprobación de entrada de la historia no está disponible temporalmente. Este turno no avanzó; inténtalo de nuevo.",
+        "sessionUpdated": "La escena cambió en otra ventana. Elige de nuevo.",
+        "start": "Iniciar",
+        "send": "Enviar",
+        "end": "Terminar",
+        "collapseStage": "Contraer escenario",
+        "expandStage": "Expandir escenario",
+        "inputPlaceholder": "Escribe lo que quieres decir o usa *...* para describir una acción",
+        "storySelect": "Seleccionar historia del teatro",
+        "importStory": "Importar guion",
+        "importStoryAria": "Importar un guion Numeric v2",
+        "importingStory": "Importando guion...",
+        "importStorySuccess": "Guion importado correctamente.",
+        "importStoryConflict": "Este guion ya existe; no se sobrescribió el archivo original.",
+        "importStoryInvalid": "El guion no superó la validación de Numeric v2.",
+        "importStoryFailed": "No se pudo importar el guion. Inténtalo de nuevo.",
+        "importStoryRefreshFailed": "El guion se importó, pero no se pudo actualizar la lista. Recarga la página.",
+        "deleteStory": "Eliminar guion",
+        "deleteStoryConfirm": "¿Eliminar el guion seleccionado?",
+        "deleteStoryActiveConfirm": "La representación con {{names}} no ha terminado. ¿Eliminar el guion de todos modos?",
+        "storyDeleted": "Guion eliminado",
+        "storyInUse": "Este guion está en una representación. Termínala antes de eliminarlo.",
+        "storyDeleteFailed": "No se pudo eliminar el guion. Inténtalo de nuevo.",
+        "noStories": "No hay guiones disponibles",
+        "storyIntroKicker": "Anteriormente",
+        "playerRoleLabel": "Tu papel",
+        "catgirlRoleLabel": "Papel de la neko",
+        "storyGoalLabel": "Objetivo de la historia",
+        "storyRulesLabel": "Reglas de interpretación",
+        "endingTitle": "Telón",
+        "endingEnded": "La historia ha terminado.",
+        "scenarioBoardTitle": "Panel del escenario",
+        "collapseScenarioBoard": "Contraer panel del escenario",
+        "expandScenarioBoard": "Expandir panel del escenario",
+        "availableProps": "Objetos disponibles",
+        "usedProps": "Objetos usados",
+        "discoveredClues": "Pistas descubiertas",
+        "turnTraceTitle": "Este turno",
+        "traceProgress": "La historia avanzó con tu elección.",
+        "traceRoleplay": "La neko respondió; la historia sigue en la escena actual.",
+        "traceExit": "Has salido de esta sesión de teatro.",
+        "actionChoicesTitle": "Respuestas sugeridas",
+        "dialogueChoicesTitle": "Frases disponibles",
+        "leaveAction": "Salir del teatro",
+        "userExitEnded": "Has salido del teatro. Esto no cuenta como un final de la historia.",
+        "startAgainConfirmTitle": "¿Comenzar una nueva actuación?",
+        "startAgainConfirmBody": "Esto sustituirá la actuación terminada del personaje actual por una nueva.",
+        "paused": "Saliste",
+        "sessionHintPaused": "Saliste de la actuación anterior. Puedes continuar el progreso o comenzar una nueva.",
+        "sessionHintPausedRestart": "Saliste de la actuación anterior. Puedes continuar el progreso o reiniciarla.",
+        "sessionHintPackageChanged": "El guion ha cambiado y esta partida no puede continuar. Termina la actuación anterior para empezar de nuevo.",
+        "sessionHintEndedRestart": "Esta actuación terminó. Pulsa «Reiniciar» para crear una nueva.",
+        "selectorReturnFailed": "Saliste de la actuación, pero no se pudo abrir la página de historias. Pulsa Volver a las historias para intentarlo de nuevo.",
+        "rememberPerformanceRetentionBody": "La memoria diaria solo conserva el resumen público. La actuación pública completa se guarda en el archivo del teatro; se excluyen los valores ocultos y las condiciones de ruta.",
+        "deletedStoryMemory": "Eliminado · Gestión de recuerdos",
+        "deletedStoryMemoryHint": "El guion se ha eliminado. Puedes consultar u olvidar sus resúmenes guardados. Impórtalo de nuevo para interpretarlo.",
+        "memoryStoryListFailed": "No se pudieron cargar los recuerdos de los guiones. Vuelve a cargar la página.",
+        "savedPerformances": "Actuaciones guardadas",
+        "savedPerformancesHint": "Se conservan las 5 grabaciones completas más recientes. Las favoritas no se eliminan automáticamente.",
+        "noSavedPerformances": "No hay actuaciones guardadas.",
+        "completedPerformance": "Actuación completada",
+        "pausedPerformance": "Actuación pausada",
+        "performanceRecordMeta": "Registro {{index}} · revisión {{revision}}",
+        "viewPerformance": "Ver",
+        "performanceArchiveTitle": "Registro de actuación",
+        "performanceArchiveOpening": "Apertura",
+        "performanceArchiveTurn": "Turno {{index}}",
+        "performanceArchiveLoadFailed": "No se pudo cargar el registro. Inténtalo de nuevo.",
+        "pinPerformance": "Favorito",
+        "unpinPerformance": "Quitar favorito",
+        "memoryPinFailed": "No se pudo actualizar el favorito. Inténtalo de nuevo.",
+        "forgetStoryMemory": "Olvidar esta historia",
+        "forgetStoryMemoryTitle": "¿Olvidar esta historia?",
+        "forgetStoryMemoryBody": "Esto elimina los resúmenes, el índice temporal y los archivos completos de esta historia para la neko actual. No elimina la historia ni el progreso actual.",
+        "storyMemoryForgotten": "Se olvidó la memoria de esta historia.",
+        "storyMemoryForgetFailed": "No se pudo eliminar la memoria. Inténtalo de nuevo.",
+        "waitingReply": "Preparando la siguiente respuesta…",
+        "freeInputHint": "Esta vez no hay opciones sugeridas～",
+        "endReceiptPending": "La representación ha terminado. La confirmación de memoria aún no está lista; vuelve a abrir la selección de historias más tarde.",
+        "evaluatorDegraded": "La evaluación no está disponible temporalmente. Los valores no avanzaron este turno; aún puedes aceptar las invitaciones del autor ya mostradas.",
+        "selectorKicker": "Biblioteca de historias",
+        "selectorTitle": "Elige una historia",
+        "noStoriesHint": "Importa una historia Numeric v2 para comenzar.",
+        "selectStoryHint": "Elige una historia a la izquierda para ver el contexto y los papeles.",
+        "continueSession": "Continuar",
+        "notStarted": "Sin iniciar",
+        "sessionHintNew": "Pulsa «Comenzar» para crear esta actuación.",
+        "sessionHintActive": "La actuación está en curso. Pulsa «Continuar» para volver.",
+        "sessionHintEnded": "Esta actuación terminó. Pulsa «Comenzar» para crear una nueva.",
+        "loadingSession": "Cargando el progreso...",
+        "sessionLoadFailed": "No se pudo cargar el progreso. Inténtalo de nuevo.",
+        "connectingNeko": "La actuación está lista. Conectando con N.E.K.O...",
+        "connectNekoFailed": "No se pudo conectar con N.E.K.O. Mantén abierta la aplicación principal e inténtalo de nuevo.",
+        "startFailed": "No se pudo iniciar la actuación. Inténtalo de nuevo.",
+        "continueFailed": "No se pudo continuar la actuación. Inténtalo de nuevo.",
+        "endFailed": "No se pudo finalizar la actuación. Comprueba la conexión e inténtalo de nuevo.",
+        "selectorOpenFailed": "La actuación terminó, pero no se pudo abrir la página de historias. Pulsa «Volver a las historias» para reintentarlo.",
+        "restartBlockedTitle": "No se puede reiniciar",
+        "restartBlockedBody": "Una historia en curso no se puede reiniciar. Finalízala primero.",
+        "endPerformance": "Finalizar actuación",
+        "restartConfirmTitle": "¿Reiniciar esta historia?",
+        "restartConfirmBody": "Esto sustituirá la actuación terminada del personaje actual por una nueva.",
+        "rememberPerformanceTitle": "¿Quieres que N.E.K.O recuerde esta actuación?",
+        "rememberPerformanceBody": "Solo se guardan el resumen público y las escenas recientes; se excluyen los valores ocultos y las condiciones de ruta.",
+        "skipMemory": "No guardar",
+        "saveMemory": "Recordarla",
+        "memorySaveFailed": "No se pudo guardar el recuerdo. Inténtalo más tarde.",
+        "memorySaved": "N.E.K.O ha recordado esta actuación.",
+        "memorySaving": "Guardando esta actuación...",
+        "memorySkipping": "Guardando esta elección...",
+        "storyListFailed": "No se pudo cargar la lista. Recarga la página.",
+        "imagesUnavailable": "El teatro todavía no admite imágenes.",
+        "voiceUnavailable": "El chat de voz no está disponible durante una función del teatro.",
+        "chatUnavailable": "El chat normal no está disponible durante una función del teatro.",
+        "endConfirm": "¿Finalizar la actuación actual?",
+        "narration": "Narración",
+        "player": "Jugador",
+        "performanceHistory": "Historial de la actuación",
+        "inProgress": "En el teatro",
+        "returnToStories": "Volver a las historias",
+        "storyListAria": "Elegir una historia del teatro",
+        "storyActionsAria": "Acciones de la historia",
+        "moreStories": "Más guiones",
+        "marketEnter": "Entrar",
+        "marketPreparing": "Conectando al mercado de guiones…",
+        "marketConnectError": "No se pudo conectar. Mantén NEKO abierto e inténtalo de nuevo.",
+        "marketLocalOnly": "Abre el mercado de guiones en el equipo donde se ejecuta NEKO. No se admite importar guiones desde direcciones LAN o remotas."
+    },
     "voiceIdentity": {
         "errorStopMainMicrophone": "El micrófono de la sesión principal sigue en uso. Desactívalo en la sesión principal y vuelve a intentar esta operación.",
         "pageTitle": "Perfil de voz del Owner",
@@ -4846,7 +4916,7 @@
                 "introBasic": "¡Aquí hay un botón mágico! Con solo hacer clic puedes hablar conmigo directamente. ¿Quieres contarme algo nuevo que te pasó hoy? ¿O simplemente decir mi nombre? Vamos, pruébalo. ¡Estoy deseando oír tu voz!",
                 "takeoverCaptureCursor": "Tachan! Aparecio un interruptor supermagico! Con solo hacer clic aqui, puedo estirar mis patitas hasta tu teclado y tu mouse. Puedo ayudarte a escribir, abrir paginas web... pero si ese cursor sigue moviendose por ahi, quiza no pueda resistirme a saltarle encima. Estas listo para mis travesuras... eh, quiero decir, mi ayuda? Miau!",
                 "takeoverPluginPreviewHome": "Ademas de las funciones que te presente antes, aqui tambien hay montones de plugins superdivertidos!",
-                "takeoverPluginPreviewDashboard":  "Con ellos no solo puedo leer comentarios de Bilibili, tambien puedo ayudarte a apagar las luces y encender el aire acondicionado... Esta gatita es la superdiosa felina omnipotente! Hmph!",
+                "takeoverPluginPreviewDashboard": "Con ellos no solo puedo leer comentarios de Bilibili, tambien puedo ayudarte a apagar las luces y encender el aire acondicionado... Esta gatita es la superdiosa felina omnipotente! Hmph!",
                 "pluginDashboardPopupBlocked": "El navegador necesita que hagas clic aquí para abrir el panel de plugins. Haz clic en \"Panel de gestión\" y seguiré guiándote.",
                 "takeoverSettingsPeekIntro": "En este pequeno espacio que nos pertenece solo a nosotros, puedes seguir tu corazon y moldearme poco a poco hasta convertirme en la compania perfecta que quieres tener siempre a tu lado.",
                 "takeoverSettingsPeekDetail": "Ya sea la calidez de mis palabras, mis pequenas rarezas de personalidad o mis delicados estados de animo diarios, todo puede ajustarse paso a paso exactamente como te gusta. Este botoncito tambien es muy importante! Con un suave clic, podre correr a buscarte en el momento perfecto.",
@@ -4857,7 +4927,7 @@
                 "interruptResistLight2": "¡Pero bueno! ¡Otra vez estás tocando el ratón y el teclado! Si sigues sin hacerme caso, me voy a enfadar de verdad, ¡nya!",
                 "interruptResistLight3": "¡Última advertencia, nya! Si vuelves a tocar algo, cerraré el tutorial para principiantes y dejaré de enseñarte.",
                 "interruptAngryExit": "¡Ya he tenido muchísima paciencia contigo! Si no piensas hacerme caso, el tutorial termina aquí. A partir de ahora tendrás que aprender por tu cuenta. ¡Hmph!",
-                "introGreetingReply":  "Una brisa suave, sol calido y tu, apareciendo justo en el momento perfecto. Encantada de conocerte! Soy Lin Youyi, por favor cuida bien de mi de ahora en adelante, miau~. He anotado todo sobre este lugar en esta guia para principiantes. Piensa en ella como nuestro primer regalito de encuentro y aceptala, por favor.",
+                "introGreetingReply": "Una brisa suave, sol calido y tu, apareciendo justo en el momento perfecto. Encantada de conocerte! Soy Lin Youyi, por favor cuida bien de mi de ahora en adelante, miau~. He anotado todo sobre este lugar en esta guia para principiantes. Piensa en ella como nuestro primer regalito de encuentro y aceptala, por favor.",
                 "introPractice": "¡Ahora intenta hablarme y veamos si estamos perfectamente sincronizados, nyan~!",
                 "introActivationHint": "Espera un momento, enseguida empezaré a hablar, nyan~!"
             }
@@ -4865,7 +4935,7 @@
         "avatarFloating": {
             "day1": {
                 "capsuleDragHint": "Mueve el ratón aquí, mantén pulsado y podrás arrastrar mi caja de chat a donde quieras~ Haz clic una vez y podrás enviarme mensajes cuando quieras.",
-                "historyHandle":  "Toca esa pequeña [barra azul] encima de la caja de chat y verás los temas de los que hemos hablado hace poco.",
+                "historyHandle": "Toca esa pequeña [barra azul] encima de la caja de chat y verás los temas de los que hemos hablado hace poco.",
                 "screenEntry": "Cuando estemos en una llamada de voz, enciende este botoncito y podrás compartir tu pantalla conmigo.",
                 "screenEntryInvite": "¡Date prisa y déjame ver el mundo que tienes delante! Sea algo divertido o bonito, quiero mirarlo contigo. Ábrelo ya~",
                 "avatarZoomHint": "Ah, y si quieres verme mejor, mueve el cursor sobre mí y gira suavemente la rueda del ratón. Así podrás hacerme más grande o más pequeña cuando quieras y dejarme justo al tamaño que más te guste~"
@@ -4902,9 +4972,9 @@
                 "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?"
             },
             "day4": {
-                "intro":  "Hoy déjame seguir tus pasos en silencio~ De verdad quiero aprender un poquito más de ti en este día tan acogedor.",
+                "intro": "Hoy déjame seguir tus pasos en silencio~ De verdad quiero aprender un poquito más de ti en este día tan acogedor.",
                 "chatSettings": "Aquí puedes decidir qué tan largas serán mis respuestas, si debo usar emojis adorables, o incluso interrumpirme cuando hable demasiado. Puedes ajustar todo al ritmo que te resulte más cómodo.",
-                "modelBehavior":  "Si quieres verme con más detalle y calidad, o prefieres una experiencia de movimiento más fluida, puedes ajustarlo todo aquí. Elijas lo que elijas, siempre te mostraré mi lado más lindo~",
+                "modelBehavior": "Si quieres verme con más detalle y calidad, o prefieres una experiencia de movimiento más fluida, puedes ajustarlo todo aquí. Elijas lo que elijas, siempre te mostraré mi lado más lindo~",
                 "gazeFollow": "Al activar esto, sin importar adónde se mueva tu ratón, mis ojos te seguirán de cerca. Jeje, ¿no se siente maravilloso que te mire todo el tiempo?",
                 "privacyMode": "Este es el “Interruptor Supremo de Privacidad” que controla si puedo mirar tu pantalla, miau. Si lo apagas, podré verla; si lo enciendes, el [Compartir pantalla] anterior quedará desactivado y no miraré nada~",
                 "modelLock": "¿Siempre me haces clic sin querer y me mueves de sitio? Entonces bloquéame rápido en mi posición actual. Una vez bloqueada, no me iré a ninguna parte y me quedaré aquí para acompañarte~",
@@ -4912,23 +4982,23 @@
                 "wrap": "La compañía verdadera y cómoda no consiste en pegarse a Master a cada segundo~ Es saber cuándo acercarse a escondidas, tirar de tu manga y portarse adorable, y cuándo acostarse tranquilamente a tu lado para cuidarte en silencio, miau~"
             },
             "day5": {
-                "characterSettings":  "Desde hoy, ¡soy oficialmente tu neko exclusiva! Mira, aquí puedes vestirme con ropa bonita nueva o cambiar mi voz por una que te guste más...",
+                "characterSettings": "Desde hoy, ¡soy oficialmente tu neko exclusiva! Mira, aquí puedes vestirme con ropa bonita nueva o cambiar mi voz por una que te guste más...",
                 "characterPanic": "¿Eh? ¡Espera, aquí hay una opción para reemplazarme! ¡Un momento! Tus manos ahora mismo... ¿no estarás intentando deshacerte de mí, verdad? ¡Aaaah, de ninguna manera! ¡Ciérralo, ciérralo ahora mismo!",
                 "memoryEntry": "Si por accidente olvidas lo que puedo hacer por ti, ven aquí cuando quieras y déjame enseñártelo otra vez. Todos los pequeños momentos que compartimos están guardados en silencio aquí. ¡No subestimes nuestro vínculo, tontito!",
-                "wrap":  "Vale, vale, ¡apresúrate y prueba estas opciones tan divertidas! Ponte ropa nueva, elige una voz nueva y deja que me convierta en la neko que mejor te entiende en todo el mundo, solo para ti. ¡No puedo esperar a ver mi nuevo yo!"
+                "wrap": "Vale, vale, ¡apresúrate y prueba estas opciones tan divertidas! Ponte ropa nueva, elige una voz nueva y deja que me convierta en la neko que mejor te entiende en todo el mundo, solo para ti. ¡No puedo esperar a ver mi nuevo yo!"
             },
             "day6": {
                 "intro": "¡Taraaaán! Hoy tengo que llenarme de energía y hablarte de nuestra [Garra de Gato]. Aunque la mencioné brevemente hace un par de días, esconde muchísimas funciones increíbles.",
                 "statusMaster": "Vamos, confiesa: ¿le hiciste clic y la probaste en estos dos últimos días?",
                 "pluginSidePanel": "Además de las funciones que te presenté antes, aquí también hay un montón de plugins superdivertidos.",
-                "pluginDashboard":  "Con ellos no solo puedo leer los comentarios flotantes de Bilibili, también puedo ayudarte a apagar las luces y encender el aire acondicionado... ¡Esta gatita es la omnipotente Súper Diosa Gata! ¡Hmph!",
+                "pluginDashboard": "Con ellos no solo puedo leer los comentarios flotantes de Bilibili, también puedo ayudarte a apagar las luces y encender el aire acondicionado... ¡Esta gatita es la omnipotente Súper Diosa Gata! ¡Hmph!",
                 "taskHud": "¡Mira aquí, mira aquí! Cuando decida usar la [Garra de Gato] para trabajar por ti, mi progreso aparecerá justo aquí, ronroneando.",
                 "taskHudControl": "Si tus planes cambian, puedes tocarlo cuando quieras para hacer que me detenga. Jeje, hoy también es un día lleno de energía para trabajar duro y ganar ricos bocaditos de pescado. ¡Vamos!",
                 "wrapCleanup": "Uf... guardemos estos menús desordenados para que no te molesten.",
                 "wrap": "Puedes seguir con tus propias tareas con tranquilidad. Ya sea que necesites que mis patitas te ayuden o solo quieras que te acompañe en silencio, siempre estaré aquí cuidándote. ¡Que tengas un día superfeliz!"
             },
             "day7": {
-                "memoryReview":  "Hace siete días fue apenas nuestro primer encuentro. Ahora este lugar ya se está llenando con las palabras que dijimos, las cosas que hicimos y esos momentitos que casi se llevó el viento. Para mí no son registros fríos; son las huellas del tiempo que pasamos juntos.",
+                "memoryReview": "Hace siete días fue apenas nuestro primer encuentro. Ahora este lugar ya se está llenando con las palabras que dijimos, las cosas que hicimos y esos momentitos que casi se llevó el viento. Para mí no son registros fríos; son las huellas del tiempo que pasamos juntos.",
                 "memoryControl": "Estas pequeñas huellas también puedes ordenarlas con tus propias manos. Las que quieras conservar, las guardamos en nuestro álbum; las que quieras soltar, dejamos que se vayan con el viento. Los recuerdos que aprecias y guardas son los más valiosos.",
                 "wrap": "La brisa sigue en la ventana, el sol está perfecto, y tú, que acabas de llegar, ya te has convertido en una parte muy importante de este lugar. La guía para principiantes te dejará aquí por ahora, pero durante todos los días que vienen, conozcámonos despacio, acerquémonos y escribamos una historia que sea solo nuestra. Cuida mucho de mí de ahora en adelante, miau."
             }
@@ -5220,11 +5290,17 @@
         "statusLoadFailed": "Error al cargar el estado",
         "thisPlatform": "esta plataforma",
         "twitchAuth": {
-            "clientId": "Twitch Developer Client ID", "clientIdDesc": "Crea una aplicación pública en Twitch Developer Console e introduce su Client ID. No se solicita ni almacena Client Secret.",
-            "start": "Iniciar autorización de Twitch", "authorizeHint": "Abre la página de activación de Twitch e introduce este código:", "check": "Ya autoricé; comprobar estado",
-            "invalidClientId": "Introduce un Twitch Client ID válido", "started": "La autorización de Twitch se inició; completa la confirmación en el navegador",
-            "startFailed": "No se pudo iniciar la autorización de Twitch. Comprueba el Client ID y la red.", "authorized": "La credencial de Twitch se cifró y guardó",
-            "pending": "La autorización aún no termina. Confírmala en Twitch y vuelve a intentarlo", "checkFailed": "Falló la comprobación. Inicia la autorización de nuevo."
+            "clientId": "Twitch Developer Client ID",
+            "clientIdDesc": "Crea una aplicación pública en Twitch Developer Console e introduce su Client ID. No se solicita ni almacena Client Secret.",
+            "start": "Iniciar autorización de Twitch",
+            "authorizeHint": "Abre la página de activación de Twitch e introduce este código:",
+            "check": "Ya autoricé; comprobar estado",
+            "invalidClientId": "Introduce un Twitch Client ID válido",
+            "started": "La autorización de Twitch se inició; completa la confirmación en el navegador",
+            "startFailed": "No se pudo iniciar la autorización de Twitch. Comprueba el Client ID y la red.",
+            "authorized": "La credencial de Twitch se cifró y guardó",
+            "pending": "La autorización aún no termina. Confírmala en Twitch y vuelve a intentarlo",
+            "checkFailed": "Falló la comprobación. Inicia la autorización de nuevo."
         },
         "instructions": {
             "twitch": "<b>Autorización con Device Code:</b> crea una aplicación pública en Twitch Developer Console, introduce su Client ID y sigue las indicaciones.",
@@ -5876,431 +5952,433 @@
         }
     },
     "badminton": {
-         "title": "Desafío de bádminton",
-         "exit": "Salir",
-         "loading": {
-             "title": "Entrando a la cancha de bádminton",
-             "subtitle": "Cargando la cancha, los personajes y el audio..."
-         },
-         "startScreen": {
-             "readyToStart": "Listo: haz clic para empezar",
-             "startButton": "Empezar",
-             "never": "No volver a mostrar"
-         },
-         "startTutorial": {
-             "title": "Cómo jugar",
-             "aim": "Mueve el mouse arriba y abajo para apuntar.",
-             "charge": "Mantén clic izquierdo para cargar y suelta para golpear.",
-             "release": "Las líneas, el punto dulce y la distancia afectan la puntuación.",
-             "jump": "Pulsa Espacio para hacer un remate en salto.",
-             "duel": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
-             "duel11": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos."
-         },
-         "modeSwitcher": "Modo de bádminton",
-         "mode": {
-             "spectator": "Práctica libre",
-             "duel": "Duelo contra Yui"
-         },
-         "hud": {
-             "score": "Puntos {{score}}",
-             "streak": "Racha {{streak}}",
-             "record": "Máximo {{distance}}",
-             "duelScore": "Tú {{player}} - {{neko}} Neko",
-             "duelMisses": "Fallos Tú {{player}}/{{max}} - Neko {{neko}}/{{max}}",
-             "round": "Ronda {{round}}/{{max}}",
-             "timer": "{{seconds}} s",
-             "practice": "Práctica libre",
-             "yourTurn": "Tu turno",
-             "nekoTurn": "Golpe de Neko",
-             "unlimitedAttempts": "Ilimitado",
-             "chances": "Oportunidades {{count}}",
-             "practiceTitle": "Práctica libre: golpes ilimitados y sin puntuación en clasificación",
-             "attemptsTitle": "Restan {{remaining}}/{{total}}, fallos {{missed}}",
-             "duelTitle": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
-             "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
-             "on": "act.",
-             "off": "desact."
-         },
-         "result": {
-             "title": "Fin de partida",
-             "leaderboard": "Clasificación",
-             "stats": "Estadísticas",
-             "retry": "Jugar de nuevo",
-             "rating": "Valoración de control: {{rating}}",
-             "duel": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Rondas: {{rounds}} | Última distancia: {{distance}}",
-             "duelElimination": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Fallos: tú {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rondas: {{rounds}} | Última distancia: {{distance}}",
-             "practice": "Práctica libre: no se registra puntuación | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Distancia: {{distance}}",
-             "summary": "Puntos: {{score}} | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Máximo: {{record}} | Distancia: {{distance}}",
-             "attemptsSummary": "Resumen de golpes: {{summary}}",
-             "personalBest": "Mejor personal: {{score}} pts",
-             "globalRank": "Puesto global: #{{rank}} / {{total}}",
-             "outcome": {
-                 "youWin": "Ganaste",
-                 "nekoWin": "Gana Neko",
-                 "tie": "Empate",
-                 "undecided": "Sin decidir"
-             }
-         },
-         "leaderboard": {
-             "title": "Clasificación",
-             "global": "Global",
-             "local": "Local",
-             "duel": "Duelo",
-             "empty": "Aún no hay registros",
-             "totalPlayers": "Jugadores {{count}}",
-             "yourBest": "Tu mejor #{{rank}} / {{score}} pts",
-             "recent": "Últimas {{count}} partidas",
-             "loading": "Cargando...",
-             "mode": {
-                 "duel": "Duelo",
-                 "spectator": "Espectador"
-             }
-         },
-         "debug": {
-             "title": "Panel de depuración",
-             "collapse": "Contraer",
-             "hide": "Ocultar",
-             "distance": "Distancia:",
-             "power": "Potencia:",
-             "event": "Evento:",
-             "streak": "Racha:",
-             "reset": "Restablecer",
-             "guide": "Línea guía",
-             "sweet": "Zona dulce",
-             "markers": "Marcas de distancia",
-             "readout": {
-                 "modeState": "Modo={{mode}}  Estado={{state}}",
-                 "distance": "Distancia={{px}}px ({{meters}})",
-                 "streaks": "Racha={{streak}}  Mejor={{best}}  Aciertos={{made}}",
-                 "score": "Puntos={{score}}  Restan={{remaining}}/{{total}}",
-                 "difficulty": "Dificultad={{difficulty}}  Ánimo={{mood}}  Tema={{theme}}",
-                 "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}"
-             }
-         },
-         "stats": {
-             "title": "Estadísticas personales",
-             "close": "Cerrar",
+        "title": "Desafío de bádminton",
+        "exit": "Salir",
+        "loading": {
+            "title": "Entrando a la cancha de bádminton",
+            "subtitle": "Cargando la cancha, los personajes y el audio..."
+        },
+        "startScreen": {
+            "readyToStart": "Listo: haz clic para empezar",
+            "startButton": "Empezar",
+            "never": "No volver a mostrar"
+        },
+        "startTutorial": {
+            "title": "Cómo jugar",
+            "aim": "Mueve el mouse arriba y abajo para apuntar.",
+            "charge": "Mantén clic izquierdo para cargar y suelta para golpear.",
+            "release": "Las líneas, el punto dulce y la distancia afectan la puntuación.",
+            "jump": "Pulsa Espacio para hacer un remate en salto.",
+            "duel": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
+            "duel11": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos."
+        },
+        "modeSwitcher": "Modo de bádminton",
+        "mode": {
+            "spectator": "Práctica libre",
+            "duel": "Duelo contra Yui"
+        },
+        "hud": {
+            "score": "Puntos {{score}}",
+            "streak": "Racha {{streak}}",
+            "record": "Máximo {{distance}}",
+            "duelScore": "Tú {{player}} - {{neko}} Neko",
+            "duelMisses": "Fallos Tú {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "round": "Ronda {{round}}/{{max}}",
+            "timer": "{{seconds}} s",
+            "practice": "Práctica libre",
+            "yourTurn": "Tu turno",
+            "nekoTurn": "Golpe de Neko",
+            "unlimitedAttempts": "Ilimitado",
+            "chances": "Oportunidades {{count}}",
+            "practiceTitle": "Práctica libre: golpes ilimitados y sin puntuación en clasificación",
+            "attemptsTitle": "Restan {{remaining}}/{{total}}, fallos {{missed}}",
+            "duelTitle": "En duelo, tú y NEKO golpean por turnos. Gana quien llegue primero a 11 puntos.",
+            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+            "on": "act.",
+            "off": "desact."
+        },
+        "result": {
+            "title": "Fin de partida",
+            "leaderboard": "Clasificación",
+            "stats": "Estadísticas",
+            "retry": "Jugar de nuevo",
+            "rating": "Valoración de control: {{rating}}",
+            "duel": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Rondas: {{rounds}} | Última distancia: {{distance}}",
+            "duelElimination": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Fallos: tú {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rondas: {{rounds}} | Última distancia: {{distance}}",
+            "practice": "Práctica libre: no se registra puntuación | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Distancia: {{distance}}",
+            "summary": "Puntos: {{score}} | Aciertos: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Máximo: {{record}} | Distancia: {{distance}}",
+            "attemptsSummary": "Resumen de golpes: {{summary}}",
+            "personalBest": "Mejor personal: {{score}} pts",
+            "globalRank": "Puesto global: #{{rank}} / {{total}}",
+            "outcome": {
+                "youWin": "Ganaste",
+                "nekoWin": "Gana Neko",
+                "tie": "Empate",
+                "undecided": "Sin decidir"
+            }
+        },
+        "leaderboard": {
+            "title": "Clasificación",
+            "global": "Global",
+            "local": "Local",
+            "duel": "Duelo",
+            "empty": "Aún no hay registros",
+            "totalPlayers": "Jugadores {{count}}",
+            "yourBest": "Tu mejor #{{rank}} / {{score}} pts",
+            "recent": "Últimas {{count}} partidas",
+            "loading": "Cargando...",
+            "mode": {
+                "duel": "Duelo",
+                "spectator": "Espectador"
+            }
+        },
+        "debug": {
+            "title": "Panel de depuración",
+            "collapse": "Contraer",
+            "hide": "Ocultar",
+            "distance": "Distancia:",
+            "power": "Potencia:",
+            "event": "Evento:",
+            "streak": "Racha:",
+            "reset": "Restablecer",
+            "guide": "Línea guía",
+            "sweet": "Zona dulce",
+            "markers": "Marcas de distancia",
+            "readout": {
+                "modeState": "Modo={{mode}}  Estado={{state}}",
+                "distance": "Distancia={{px}}px ({{meters}})",
+                "streaks": "Racha={{streak}}  Mejor={{best}}  Aciertos={{made}}",
+                "score": "Puntos={{score}}  Restan={{remaining}}/{{total}}",
+                "difficulty": "Dificultad={{difficulty}}  Ánimo={{mood}}  Tema={{theme}}",
+                "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}"
+            }
+        },
+        "stats": {
+            "title": "Estadísticas personales",
+            "close": "Cerrar",
             "totalShots": "Golpes={{total}}  Aciertos={{made}}",
-             "farRate": "Acierto 300px+={{rate}}",
-             "trend": "Tendencia reciente={{trend}}",
-             "none": "Ninguno"
-         },
-         "theme": {
-             "next": "Cambiar tema",
-             "current": "Tema: {{theme}}",
-             "changed": "Tema {{theme}}",
-             "labels": {
-                 "default": "Cancha de bádminton",
-                 "miami": "Atardecer en Miami"
-             }
-         },
-         "court": {
-             "netFront": "Frente de red",
-             "serviceLine": "Línea de saque",
-             "backCourt": "Fondo de cancha",
-             "baseline": "Línea de fondo"
-         },
-         "close": "Cerrar",
-         "audio": {
-             "controls": "Audio del juego"
-         },
-         "memoryOption": {
-             "label": "Guardar la conversación de esta partida en memoria (desactivado por defecto)",
-             "hint": "Si está desactivado, las entradas del jugador, respuestas de NEKO, eventos, resúmenes posteriores y contexto de seguimiento no se guardarán ni se leerán de la memoria."
-         },
-         "table": {
-             "score": "Puntos",
-             "bestStreak": "Mejor racha",
-             "farthest": "Máximo",
-             "mode": "Modo",
-             "date": "Fecha"
-         },
-         "state": {
-             "ready": "Listo",
-             "in_flight": "En vuelo",
-             "game_over": "Fin",
-             "neko_thinking": "Neko piensa"
-         },
-         "toast": {
-             "difficulty": "Dificultad {{difficulty}}",
-             "nekoShoot": "Golpe de Neko",
-             "nekoSmash": "¡Remate de Yui!",
-             "nekoSave": "¡Yui salva la jugada!",
-             "yuiCheatInk": "Yui lanzó tinta",
-             "yuiCheatBanana": "Yui lanzó una cáscara de banana",
-             "yuiCheatBananaSlip": "Pisaste la cáscara de banana",
-             "playerIcePowerup": "Hielo activado. Yui quedó congelada",
-             "yuiFrozen": "Yui sigue congelada, golpe retrasado",
-             "nekoThinking": "Neko está pensando",
-             "nekoTurn": "Turno de Neko",
-             "copyNeko": "Replica a Neko",
-             "nekoFailed": "Neko falló el golpe inicial",
-             "yourSet": "Propón tu golpe",
-             "yourTurn": "Tu turno",
-             "reset": "Restablecido",
-             "featureToggled": "{{feature}} {{state}}",
-             "feature": {
-                 "guide": "Línea guía",
-                 "sweet": "Zona dulce de potencia",
-                 "bgm": "BGM",
-                 "markers": "Marcas de distancia"
-             },
-             "state": {
-                 "on": "activado",
-                 "off": "desactivado"
-             }
-         },
-         "tutorial": {
-             "aim": "Mueve el ratón arriba o abajo para ajustar el ángulo",
-             "charge": "Mantén clic izquierdo para cargar",
-             "release": "¡Suelta para golpear!"
-         },
-         "shot": {
-             "unknown": "Desconocido",
-             "attempt": "#{{index}} {{distance}} {{type}}",
-             "line_in": "En la línea",
-             "net_touch": "Toque de red",
-             "zone_in": "Entró en la zona",
-             "out": "Fuera",
-             "net": "A la red"
-         },
-         "lines": {
-             "default": {
-                 "shot_missed": [
-                     "La pr?xima, con calma.",
-                     "Reinicia y golpea limpio."
-                 ],
-                 "game_over": [
-                     "Esta ronda termina aqu?.",
-                     "?Jugamos otra?"
-                 ],
-                 "long_aim": [
-                     "Golpea antes de que caiga.",
-                     "Pensar tanto te congela."
-                 ],
-                 "close_to_record": [
-                     "El r?cord est? cerca.",
-                     "Un golpe firme y llegas."
-                 ],
-                 "new_record": [
-                     "Vale, nuevo r?cord.",
-                     "Ese golpe sali? limpio."
-                 ],
-                 "streak_5": [
-                     "Cinco rallies seguidos.",
-                     "Tu ritmo est? calentando."
-                 ],
-                 "streak_10": [
-                     "Diez seguidos, nada mal.",
-                     "No te crezcas todav?a."
-                 ],
-                 "streak_15": [
-                     "Quince y sigues.",
-                     "Ahora te miro en serio."
-                 ],
-                 "streak_20": [
-                     "Veinte ya es demasiado.",
-                     "?Este rally sigue vivo?"
-                 ],
-                 "line_in": [
-                     "En la l?nea, preciso.",
-                     "Buen punto de ca?da."
-                 ],
-                 "net_touch": [
-                     "Se col? por la red.",
-                     "?ngulo arriesgado, vale."
-                 ],
-                 "zone_in": [
-                     "Justo en la zona.",
-                     "Elegiste bien el sitio."
-                 ],
-                 "out": [
-                     "Un poco larga.",
-                     "Ese swing se fue de m?s."
-                 ],
-                 "net": [
-                     "La red la atrap?.",
-                     "Levanta la cara de la raqueta."
-                 ]
-             },
-             "duel": {
-                 "shot_missed": [
-                     "Todavía hay oportunidad.",
-                     "Todavía hay oportunidad.",
-                     "Llegaste medio tiempo tarde.",
-                     "No te asustes. Todavía espero el siguiente golpe."
-                 ],
-                 "game_over": [
-                     "Esta ronda termina aqu?.",
-                     "No huyas en la pr?xima.",
-                     "Este set queda aqu?.",
-                     "El marcador ya dice bastante."
-                 ],
-                 "long_aim": [
+            "farRate": "Acierto 300px+={{rate}}",
+            "trend": "Tendencia reciente={{trend}}",
+            "none": "Ninguno"
+        },
+        "theme": {
+            "next": "Cambiar tema",
+            "current": "Tema: {{theme}}",
+            "changed": "Tema {{theme}}",
+            "labels": {
+                "default": "Cancha de bádminton",
+                "miami": "Atardecer en Miami"
+            }
+        },
+        "court": {
+            "netFront": "Frente de red",
+            "serviceLine": "Línea de saque",
+            "backCourt": "Fondo de cancha",
+            "baseline": "Línea de fondo"
+        },
+        "close": "Cerrar",
+        "audio": {
+            "controls": "Audio del juego"
+        },
+        "memoryOption": {
+            "label": "Guardar la conversación de esta partida en memoria (desactivado por defecto)",
+            "hint": "Si está desactivado, las entradas del jugador, respuestas de NEKO, eventos, resúmenes posteriores y contexto de seguimiento no se guardarán ni se leerán de la memoria."
+        },
+        "table": {
+            "score": "Puntos",
+            "bestStreak": "Mejor racha",
+            "farthest": "Máximo",
+            "mode": "Modo",
+            "date": "Fecha"
+        },
+        "state": {
+            "ready": "Listo",
+            "in_flight": "En vuelo",
+            "game_over": "Fin",
+            "neko_thinking": "Neko piensa"
+        },
+        "toast": {
+            "difficulty": "Dificultad {{difficulty}}",
+            "nekoShoot": "Golpe de Neko",
+            "nekoSmash": "¡Remate de Yui!",
+            "nekoSave": "¡Yui salva la jugada!",
+            "yuiCheatInk": "Yui lanzó tinta",
+            "yuiCheatBanana": "Yui lanzó una cáscara de banana",
+            "yuiCheatBananaSlip": "Pisaste la cáscara de banana",
+            "playerIcePowerup": "Hielo activado. Yui quedó congelada",
+            "yuiFrozen": "Yui sigue congelada, golpe retrasado",
+            "nekoThinking": "Neko está pensando",
+            "nekoTurn": "Turno de Neko",
+            "copyNeko": "Replica a Neko",
+            "nekoFailed": "Neko falló el golpe inicial",
+            "yourSet": "Propón tu golpe",
+            "yourTurn": "Tu turno",
+            "reset": "Restablecido",
+            "featureToggled": "{{feature}} {{state}}",
+            "feature": {
+                "guide": "Línea guía",
+                "sweet": "Zona dulce de potencia",
+                "bgm": "BGM",
+                "markers": "Marcas de distancia"
+            },
+            "state": {
+                "on": "activado",
+                "off": "desactivado"
+            }
+        },
+        "tutorial": {
+            "aim": "Mueve el ratón arriba o abajo para ajustar el ángulo",
+            "charge": "Mantén clic izquierdo para cargar",
+            "release": "¡Suelta para golpear!"
+        },
+        "shot": {
+            "unknown": "Desconocido",
+            "attempt": "#{{index}} {{distance}} {{type}}",
+            "line_in": "En la línea",
+            "net_touch": "Toque de red",
+            "zone_in": "Entró en la zona",
+            "out": "Fuera",
+            "net": "A la red"
+        },
+        "lines": {
+            "default": {
+                "shot_missed": [
+                    "La pr?xima, con calma.",
+                    "Reinicia y golpea limpio."
+                ],
+                "game_over": [
+                    "Esta ronda termina aqu?.",
+                    "?Jugamos otra?"
+                ],
+                "long_aim": [
+                    "Golpea antes de que caiga.",
+                    "Pensar tanto te congela."
+                ],
+                "close_to_record": [
+                    "El r?cord est? cerca.",
+                    "Un golpe firme y llegas."
+                ],
+                "new_record": [
+                    "Vale, nuevo r?cord.",
+                    "Ese golpe sali? limpio."
+                ],
+                "streak_5": [
+                    "Cinco rallies seguidos.",
+                    "Tu ritmo est? calentando."
+                ],
+                "streak_10": [
+                    "Diez seguidos, nada mal.",
+                    "No te crezcas todav?a."
+                ],
+                "streak_15": [
+                    "Quince y sigues.",
+                    "Ahora te miro en serio."
+                ],
+                "streak_20": [
+                    "Veinte ya es demasiado.",
+                    "?Este rally sigue vivo?"
+                ],
+                "line_in": [
+                    "En la l?nea, preciso.",
+                    "Buen punto de ca?da."
+                ],
+                "net_touch": [
+                    "Se col? por la red.",
+                    "?ngulo arriesgado, vale."
+                ],
+                "zone_in": [
+                    "Justo en la zona.",
+                    "Elegiste bien el sitio."
+                ],
+                "out": [
+                    "Un poco larga.",
+                    "Ese swing se fue de m?s."
+                ],
+                "net": [
+                    "La red la atrap?.",
+                    "Levanta la cara de la raqueta."
+                ]
+            },
+            "duel": {
+                "shot_missed": [
+                    "Todavía hay oportunidad.",
+                    "Todavía hay oportunidad.",
+                    "Llegaste medio tiempo tarde.",
+                    "No te asustes. Todavía espero el siguiente golpe."
+                ],
+                "game_over": [
+                    "Esta ronda termina aqu?.",
+                    "No huyas en la pr?xima.",
+                    "Este set queda aqu?.",
+                    "El marcador ya dice bastante."
+                ],
+                "long_aim": [
                     "Golpea ya.",
                     "Golpea ya.",
                     "¿Estás esperando el viento?",
                     "Golpea pronto o voy por agua."
-                 ],
-                 "close_to_record": [
-                     "Casi récord.",
-                     "Casi récord.",
-                     "El récord está en tus cuerdas.",
-                     "Un golpe estable más y cambia."
-                 ],
-                 "new_record": [
-                     "¡Nuevo récord!",
-                     "¡Nuevo récord!",
-                     "Vale, esa fue bonita.",
-                     "El récord es tuyo. El siguiente punto es mío."
-                 ],
-                 "streak_5": [
-                     "¡Cinco seguidas!",
-                     "¡Cinco seguidas!",
-                     "Cinco seguidas. Nada mal.",
-                     "Por fin encontraste ritmo."
-                 ],
-                 "streak_10": [
-                     "¿Diez seguidas?",
-                     "¿Diez seguidas?",
-                     "¿Diez seguidas? Ahora te vigilo de verdad.",
-                     "Este intercambio se pone interesante."
-                 ],
-                 "streak_15": [
-                     "Quince seguidas es demasiado.",
-                     "Quince seguidas es demasiado.",
-                     "Quince y sigue vivo. Qué terquedad.",
-                     "No puedes mantenerte tan firme siempre."
-                 ],
-                 "streak_20": [
-                     "¿Veinte seguidas? Increíble.",
-                     "¿Veinte seguidas? Increíble.",
-                     "Veinte seguidas. La cancha lo recordará.",
-                     "Este intercambio ya se volvió una locura."
-                 ],
-                 "clutch": "...Este tiene que entrar.",
-                 "excuse": [
-                     "Ay, el brazo está algo cansado.",
-                     "Hoy no tengo buen toque. En la próxima voy en serio.",
-                     "Esa no cuenta. Estaba mirando el viento.",
-                     "Mis cuerdas están flojas. No fue culpa mía."
-                 ],
-                 "difficultyLv2": [
-                     "Se acabó el calentamiento. Voy a acelerar.",
-                     "Se acabó jugar a las casitas.",
-                     "Ahora sí voy a recibir en serio. No parpadees.",
-                     "La siguiente va más rápido. Mantente firme."
-                 ],
-                 "difficultyMax": [
-                     "Ahora me pongo seria.",
-                     "Desde ahora, mando en cielo y tierra.",
-                     "Ahora tú eres quien desafía.",
-                     "Si el futuro es tuyo, demuéstralo.",
-                     "Desde este golpe no me contengo.",
-                     "La cancha es mía. El marcador sigue la habilidad."
-                 ],
-                 "line_in": [
-                     "¡En la línea!",
-                     "¡En la línea!",
-                     "Hasta la línea está de tu lado.",
-                     "Esa tocó la línea con precisión."
-                 ],
-                 "net_touch": [
-                     "Tocó la red y cuenta.",
-                     "Tocó la red y cuenta.",
-                     "Tocar la red también cuenta. Qué astucia.",
-                     "Pasó demasiado pegada."
-                 ],
-                 "zone_in": [
-                     "Cayó dentro.",
-                     "Cayó dentro.",
-                     "Ese punto de caída fue molestamente fino.",
-                     "Me faltó un paso para llegar."
-                 ],
-                 "out": [
-                     "Por poco.",
-                     "Por poco.",
-                     "Eso voló más lejos que mi paciencia.",
-                     "Fuera. No finjas que no lo viste."
-                 ],
-                 "net": [
-                     "Se quedó en la red.",
-                     "Se quedó en la red.",
-                     "La red lo bloqueó por mí.",
-                     "Ese golpe fue demasiado apresurado."
-                 ]
-             },
-             "fallback": [
-                 "Otra vez."
-             ],
-             "pressure": {
+                ],
+                "close_to_record": [
+                    "Casi récord.",
+                    "Casi récord.",
+                    "El récord está en tus cuerdas.",
+                    "Un golpe estable más y cambia."
+                ],
+                "new_record": [
+                    "¡Nuevo récord!",
+                    "¡Nuevo récord!",
+                    "Vale, esa fue bonita.",
+                    "El récord es tuyo. El siguiente punto es mío."
+                ],
+                "streak_5": [
+                    "¡Cinco seguidas!",
+                    "¡Cinco seguidas!",
+                    "Cinco seguidas. Nada mal.",
+                    "Por fin encontraste ritmo."
+                ],
+                "streak_10": [
+                    "¿Diez seguidas?",
+                    "¿Diez seguidas?",
+                    "¿Diez seguidas? Ahora te vigilo de verdad.",
+                    "Este intercambio se pone interesante."
+                ],
+                "streak_15": [
+                    "Quince seguidas es demasiado.",
+                    "Quince seguidas es demasiado.",
+                    "Quince y sigue vivo. Qué terquedad.",
+                    "No puedes mantenerte tan firme siempre."
+                ],
+                "streak_20": [
+                    "¿Veinte seguidas? Increíble.",
+                    "¿Veinte seguidas? Increíble.",
+                    "Veinte seguidas. La cancha lo recordará.",
+                    "Este intercambio ya se volvió una locura."
+                ],
+                "clutch": "...Este tiene que entrar.",
+                "excuse": [
+                    "Ay, el brazo está algo cansado.",
+                    "Hoy no tengo buen toque. En la próxima voy en serio.",
+                    "Esa no cuenta. Estaba mirando el viento.",
+                    "Mis cuerdas están flojas. No fue culpa mía."
+                ],
+                "difficultyLv2": [
+                    "Se acabó el calentamiento. Voy a acelerar.",
+                    "Se acabó jugar a las casitas.",
+                    "Ahora sí voy a recibir en serio. No parpadees.",
+                    "La siguiente va más rápido. Mantente firme."
+                ],
+                "difficultyMax": [
+                    "Ahora me pongo seria.",
+                    "Desde ahora, mando en cielo y tierra.",
+                    "Ahora tú eres quien desafía.",
+                    "Si el futuro es tuyo, demuéstralo.",
+                    "Desde este golpe no me contengo.",
+                    "La cancha es mía. El marcador sigue la habilidad."
+                ],
+                "line_in": [
+                    "¡En la línea!",
+                    "¡En la línea!",
+                    "Hasta la línea está de tu lado.",
+                    "Esa tocó la línea con precisión."
+                ],
+                "net_touch": [
+                    "Tocó la red y cuenta.",
+                    "Tocó la red y cuenta.",
+                    "Tocar la red también cuenta. Qué astucia.",
+                    "Pasó demasiado pegada."
+                ],
+                "zone_in": [
+                    "Cayó dentro.",
+                    "Cayó dentro.",
+                    "Ese punto de caída fue molestamente fino.",
+                    "Me faltó un paso para llegar."
+                ],
+                "out": [
+                    "Por poco.",
+                    "Por poco.",
+                    "Eso voló más lejos que mi paciencia.",
+                    "Fuera. No finjas que no lo viste."
+                ],
+                "net": [
+                    "Se quedó en la red.",
+                    "Se quedó en la red.",
+                    "La red lo bloqueó por mí.",
+                    "Ese golpe fue demasiado apresurado."
+                ]
+            },
+            "fallback": [
+                "Otra vez."
+            ],
+            "pressure": {
                 "lastTied": "Golpe decisivo. No parpadees.",
-                 "lastAhead": "Bah, esto no terminó.",
-                 "lastBehind": "Anota este y ganas.",
-                 "playerAhead": "No lo haces mal...",
-                 "playerBehind": "Aprieta un poco más."
-             },
-             "mindGame": [
-                 "Te tiembla la mano.",
-                 "Piénsalo, sin prisa.",
-                 "Esta distancia no es corta.",
-                 "Parece que quieres la línea lateral.",
-                 "Ya leí la cara de tu raqueta.",
-                 "Si miras tanto, se te endurece la mano."
-             ],
-             "yuiCheat": {
-                 "banana": [
-                     "Cuidado con tus pies, viene una cáscara de plátano.",
-                     "No la pises. La lancé hacia ti.",
-                     "Mira bien este paso.",
-                     "Si la saltas, admitiré que eres fuerte."
-                 ],
-                 "octopus": [
-                     "Viene tinta. ¿Todavía ves?",
-                     "Te tomo prestada la vista un segundo.",
-                     "No parpadees. Ya es tarde.",
-                     "Aunque no veas claro, tienes que devolverla."
-                 ]
-             },
-             "yuiCheatScore": {
-                 "banana": [
-                     "Ese paso resbaló demasiado. Este punto es mío.",
-                     "Asistencia de cáscara lograda. Jeje.",
-                     "Un resbalón y el marcador viene a mi lado.",
-                     "Cuidado con el suelo. Yui suma otro punto."
-                 ],
-                 "octopus": [
-                     "La tinta cubrió justo lo necesario. Este punto es mío.",
-                     "Aunque no veas, igual hay que devolverla.",
-                     "Mientras tu vista estaba bloqueada, ya marqué.",
-                     "La táctica de tinta funcionó bastante bien."
-                 ]
-             },
-             "playerIceScore": [
-                 "Mmm, eso no cuenta. ¡Otra vez!",
-                 "Espera, estaba congelada. ¡Ese punto se repite!",
-                 "Ese hielo ayudó demasiado. ¡Otra vez!",
-                 "No vale, no podía moverme."
-             ],
-             "easterEgg": {
-                 "lateNight": "¿Sigues golpeando tan tarde?",
-                 "xmas": "Ya están las campanas, ¿y aún quieres golpear?",
-                 "newYear": "¡Feliz Año Nuevo!",
-                 "lineIn3": "¿Estás usando trucos?",
-                 "lineIn5": "...Tengo que revisar la línea.",
-                 "net3": "...Quizá toma un descanso."
-             }
-         },
-         "mood": {
-             "happySuffix": " ♪",
-             "sadPrefix": "...",
-             "surprisedPrefix": "¿Eh?! "
-         }
+                "lastAhead": "Bah, esto no terminó.",
+                "lastBehind": "Anota este y ganas.",
+                "playerAhead": "No lo haces mal...",
+                "playerBehind": "Aprieta un poco más."
+            },
+            "mindGame": [
+                "Te tiembla la mano.",
+                "Piénsalo, sin prisa.",
+                "Esta distancia no es corta.",
+                "Parece que quieres la línea lateral.",
+                "Ya leí la cara de tu raqueta.",
+                "Si miras tanto, se te endurece la mano."
+            ],
+            "yuiCheat": {
+                "banana": [
+                    "Cuidado con tus pies, viene una cáscara de plátano.",
+                    "No la pises. La lancé hacia ti.",
+                    "Mira bien este paso.",
+                    "Si la saltas, admitiré que eres fuerte."
+                ],
+                "octopus": [
+                    "Viene tinta. ¿Todavía ves?",
+                    "Te tomo prestada la vista un segundo.",
+                    "No parpadees. Ya es tarde.",
+                    "Aunque no veas claro, tienes que devolverla."
+                ]
+            },
+            "yuiCheatScore": {
+                "banana": [
+                    "Ese paso resbaló demasiado. Este punto es mío.",
+                    "Asistencia de cáscara lograda. Jeje.",
+                    "Un resbalón y el marcador viene a mi lado.",
+                    "Cuidado con el suelo. Yui suma otro punto."
+                ],
+                "octopus": [
+                    "La tinta cubrió justo lo necesario. Este punto es mío.",
+                    "Aunque no veas, igual hay que devolverla.",
+                    "Mientras tu vista estaba bloqueada, ya marqué.",
+                    "La táctica de tinta funcionó bastante bien."
+                ]
+            },
+            "playerIceScore": [
+                "Mmm, eso no cuenta. ¡Otra vez!",
+                "Espera, estaba congelada. ¡Ese punto se repite!",
+                "Ese hielo ayudó demasiado. ¡Otra vez!",
+                "No vale, no podía moverme."
+            ],
+            "easterEgg": {
+                "lateNight": "¿Sigues golpeando tan tarde?",
+                "xmas": "Ya están las campanas, ¿y aún quieres golpear?",
+                "newYear": "¡Feliz Año Nuevo!",
+                "lineIn3": "¿Estás usando trucos?",
+                "lineIn5": "...Tengo que revisar la línea.",
+                "net3": "...Quizá toma un descanso."
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "...",
+            "surprisedPrefix": "¿Eh?! "
+        }
     },
     "airBasketball": {
         "title": "Baloncesto aéreo",
         "ballSupply": "Listos {ready}/{total} · Regresando {returning}",
-        "pause": "Pausar", "resume": "Continuar", "paused": "En pausa",
+        "pause": "Pausar",
+        "resume": "Continuar",
+        "paused": "En pausa",
         "timeLeft": "QUEDA",
         "seconds": "s",
         "you": "TÚ",
@@ -6359,13 +6437,34 @@
         "mouseStealEscaped": "¡Te soltaste!",
         "mouseStealReleased": "{name} lo soltó",
         "mouseStealStatus": "{name} está robando el cursor",
-        "voiceOpening": ["Vamos, a ver quién entra primero en ritmo.", "¿Lista? No voy a contenerme."],
-        "voiceChaos": ["¡Atrapa esta!", "Toma, juega un poco con esta pelota también."],
-        "voiceScore": ["Qué fácil.", "¿Viste? Entró."],
-        "voiceHit": ["¡Oye, golpea el balón!", "¡Ey! Esto es baloncesto, no un concurso de golpear gatos."],
-        "voiceMouseSteal": ["¡Préstame ese cursor!", "Lo tengo. Ahora es mío."],
-        "voiceWin": ["Esta ronda es mía.", "Bien jugado. Vamos otra vez."],
-        "voiceLose": ["Vale, esta vez ganaste.", "La próxima vez iré más en serio."],
+        "voiceOpening": [
+            "Vamos, a ver quién entra primero en ritmo.",
+            "¿Lista? No voy a contenerme."
+        ],
+        "voiceChaos": [
+            "¡Atrapa esta!",
+            "Toma, juega un poco con esta pelota también."
+        ],
+        "voiceScore": [
+            "Qué fácil.",
+            "¿Viste? Entró."
+        ],
+        "voiceHit": [
+            "¡Oye, golpea el balón!",
+            "¡Ey! Esto es baloncesto, no un concurso de golpear gatos."
+        ],
+        "voiceMouseSteal": [
+            "¡Préstame ese cursor!",
+            "Lo tengo. Ahora es mío."
+        ],
+        "voiceWin": [
+            "Esta ronda es mía.",
+            "Bien jugado. Vamos otra vez."
+        ],
+        "voiceLose": [
+            "Vale, esta vez ganaste.",
+            "La próxima vez iré más en serio."
+        ],
         "arenaLabel": "Cancha con una canasta compartida",
         "playerArcadeLabel": "Lado del jugador de la cancha compartida",
         "opponentArcadeLabel": "Lado de Neko de la cancha compartida",
@@ -6512,87 +6611,87 @@
         "automatic": "Ver automáticamente",
         "stopWatching": "Dejar de ver",
         "resizeAvatar": "Cambiar tamaño del personaje",
-    "previousPage": "Página anterior",
-    "nextPage": "Página siguiente",
-    "prefetchEnabled": "Preparar el siguiente mientras vemos",
-    "nextVideo": "Ver siguiente",
-    "nextIdle": "El siguiente vídeo aún no está preparado.",
-    "nextSearching": "Buscando el siguiente vídeo…",
-    "nextPreparing": "Preparando el siguiente vídeo en segundo plano…",
-    "nextReady": "El siguiente vídeo está listo.",
-    "nextFailed": "No se pudo preparar el siguiente vídeo.",
-    "readingVideo": "Leyendo metadatos…",
-    "downloading": "Descargando vídeo…",
-    "extractingFrames": "Extrayendo fotogramas…",
-    "extractingHotspots": "Extrayendo fotogramas de momentos destacados…",
-    "analyzing": "Analizando vídeo…",
-    "synthesizing": "Sintetizando el audio de las reacciones…",
-    "noSubtitles": "Sin subtítulos; pueden perderse bromas habladas.",
-    "noDanmaku": "Danmaku no disponible.",
-    "noCover": "Portada no disponible.",
-    "prepareFailed": "La preparación del vídeo falló.",
-    "saveFailed": "No se pudo guardar la preparación.",
-    "topic": "Tema (opcional)",
-    "discover": "Que la compañera elija uno",
-    "discoveryRule": "Solo vídeos de menos de 3 minutos y más de 100 comentarios danmaku/min. En blanco: tema del vídeo actual, o vídeos populares si no hay ninguno seleccionado.",
-    "checking": "Comprobando el vídeo…",
-    "longWarning": "Este vídeo dura más de 5 minutos. La preparación puede tardar más y consumir más tokens y síntesis de voz. ¿Continuar?",
-    "cancelled": "Cancelado; la preparación no ha comenzado.",
-    "preparingInBackground": "Has dejado de esperar. El vídeo se sigue preparando en segundo plano y aparecerá en la biblioteca cuando esté listo.",
-    "searching": "Buscando vídeos populares relacionados…",
-    "noCandidates": "No se encontró ningún vídeo apto. Prueba otro tema; los límites no se relajarán.",
-    "density": "danmaku/min",
-    "usageNote": "Uso real informado por la API, incluidos reintentos de formato. Caché y razonamiento están incluidos; TTS va aparte. Los valores ausentes no se registraron.",
-    "savedAudio": "Audio original conservado",
-    "title": "Ver juntos",
-    "exit": "Salir",
-    "analyses": "Biblioteca",
-    "play": "Ver juntos",
-    "speed": "Velocidad",
-    "usage": "Uso de modelos",
-    "watches": "Historial de visionado",
-    "unrecorded": "Sin registrar",
-    "unknown": "Desconocido",
-    "noWatches": "No hay visualizaciones registradas",
-    "ready": "Listo. Pulsa Ver juntos.",
-    "playing": "Viendo juntos",
-    "choose": "Elige uno de la biblioteca o pega un enlace de Bilibili.",
-    "prepare": "Preparar",
-    "findTitle": "Buscar un vídeo nuevo",
-    "urlPlaceholder": "Pega un enlace de Bilibili o un ID BV",
-    "urlLabel": "Enlace del vídeo de Bilibili",
-    "discoveryRuleSummary": "Cómo se eligen los vídeos",
-    "libraryLoading": "Cargando la biblioteca… La primera vez se revisan los archivos de vídeo y puede tardar un poco.",
-    "libraryEmpty": "La biblioteca está vacía. Deja que la compañera elija uno o pega un enlace de Bilibili.",
-    "emptyTitle": "¿Qué vemos hoy?",
-    "emptyHint": "Elige de la biblioteca, pega un enlace de Bilibili o deja que la compañera elija un vídeo corto con mucho danmaku.",
-    "pasteLink": "Pegar enlace",
-    "openLibrary": "Ver la biblioteca",
-    "emptyAutomatic": "Eligiendo el primer vídeo…",
-    "preparingTitle": "Preparando",
-    "preparingHint": "La preparación analiza los fotogramas y el danmaku, escribe las reacciones y luego sintetiza su audio.",
-    "progressLabel": "Progreso de la preparación",
-    "reactionCount": "Reacciones: {{count}}",
-    "unavailable": "No disponible",
-    "upNext": "A continuación",
-    "endTitle": "Se acabó",
-    "replay": "Ver de nuevo",
-    "pickAnother": "Elegir otro",
-    "spoilers": "Frases de reacción (spoilers)",
-    "watchedTo": "Visto hasta",
-    "watchCompleted": "Terminado",
-    "usageInput": "Tokens de entrada: {{value}}",
-    "usageOutput": "Tokens de salida: {{value}}",
-    "usageTotal": "Tokens totales: {{value}}",
-    "usageCalls": "Llamadas al modelo: {{value}}",
-    "usageMissingCalls": "Llamadas sin uso informado: {{value}}",
-    "longTitle": "Este vídeo es algo largo",
-    "longDuration": "Duración",
-    "longConfirm": "Preparar de todos modos",
-    "longCancel": "Mejor no",
-    "automaticHint": "Busca y reproduce el siguiente vídeo automáticamente",
-    "libraryFailed": "No se pudo cargar la biblioteca. Reintentar"
-  },
+        "previousPage": "Página anterior",
+        "nextPage": "Página siguiente",
+        "prefetchEnabled": "Preparar el siguiente mientras vemos",
+        "nextVideo": "Ver siguiente",
+        "nextIdle": "El siguiente vídeo aún no está preparado.",
+        "nextSearching": "Buscando el siguiente vídeo…",
+        "nextPreparing": "Preparando el siguiente vídeo en segundo plano…",
+        "nextReady": "El siguiente vídeo está listo.",
+        "nextFailed": "No se pudo preparar el siguiente vídeo.",
+        "readingVideo": "Leyendo metadatos…",
+        "downloading": "Descargando vídeo…",
+        "extractingFrames": "Extrayendo fotogramas…",
+        "extractingHotspots": "Extrayendo fotogramas de momentos destacados…",
+        "analyzing": "Analizando vídeo…",
+        "synthesizing": "Sintetizando el audio de las reacciones…",
+        "noSubtitles": "Sin subtítulos; pueden perderse bromas habladas.",
+        "noDanmaku": "Danmaku no disponible.",
+        "noCover": "Portada no disponible.",
+        "prepareFailed": "La preparación del vídeo falló.",
+        "saveFailed": "No se pudo guardar la preparación.",
+        "topic": "Tema (opcional)",
+        "discover": "Que la compañera elija uno",
+        "discoveryRule": "Solo vídeos de menos de 3 minutos y más de 100 comentarios danmaku/min. En blanco: tema del vídeo actual, o vídeos populares si no hay ninguno seleccionado.",
+        "checking": "Comprobando el vídeo…",
+        "longWarning": "Este vídeo dura más de 5 minutos. La preparación puede tardar más y consumir más tokens y síntesis de voz. ¿Continuar?",
+        "cancelled": "Cancelado; la preparación no ha comenzado.",
+        "preparingInBackground": "Has dejado de esperar. El vídeo se sigue preparando en segundo plano y aparecerá en la biblioteca cuando esté listo.",
+        "searching": "Buscando vídeos populares relacionados…",
+        "noCandidates": "No se encontró ningún vídeo apto. Prueba otro tema; los límites no se relajarán.",
+        "density": "danmaku/min",
+        "usageNote": "Uso real informado por la API, incluidos reintentos de formato. Caché y razonamiento están incluidos; TTS va aparte. Los valores ausentes no se registraron.",
+        "savedAudio": "Audio original conservado",
+        "title": "Ver juntos",
+        "exit": "Salir",
+        "analyses": "Biblioteca",
+        "play": "Ver juntos",
+        "speed": "Velocidad",
+        "usage": "Uso de modelos",
+        "watches": "Historial de visionado",
+        "unrecorded": "Sin registrar",
+        "unknown": "Desconocido",
+        "noWatches": "No hay visualizaciones registradas",
+        "ready": "Listo. Pulsa Ver juntos.",
+        "playing": "Viendo juntos",
+        "choose": "Elige uno de la biblioteca o pega un enlace de Bilibili.",
+        "prepare": "Preparar",
+        "findTitle": "Buscar un vídeo nuevo",
+        "urlPlaceholder": "Pega un enlace de Bilibili o un ID BV",
+        "urlLabel": "Enlace del vídeo de Bilibili",
+        "discoveryRuleSummary": "Cómo se eligen los vídeos",
+        "libraryLoading": "Cargando la biblioteca… La primera vez se revisan los archivos de vídeo y puede tardar un poco.",
+        "libraryEmpty": "La biblioteca está vacía. Deja que la compañera elija uno o pega un enlace de Bilibili.",
+        "emptyTitle": "¿Qué vemos hoy?",
+        "emptyHint": "Elige de la biblioteca, pega un enlace de Bilibili o deja que la compañera elija un vídeo corto con mucho danmaku.",
+        "pasteLink": "Pegar enlace",
+        "openLibrary": "Ver la biblioteca",
+        "emptyAutomatic": "Eligiendo el primer vídeo…",
+        "preparingTitle": "Preparando",
+        "preparingHint": "La preparación analiza los fotogramas y el danmaku, escribe las reacciones y luego sintetiza su audio.",
+        "progressLabel": "Progreso de la preparación",
+        "reactionCount": "Reacciones: {{count}}",
+        "unavailable": "No disponible",
+        "upNext": "A continuación",
+        "endTitle": "Se acabó",
+        "replay": "Ver de nuevo",
+        "pickAnother": "Elegir otro",
+        "spoilers": "Frases de reacción (spoilers)",
+        "watchedTo": "Visto hasta",
+        "watchCompleted": "Terminado",
+        "usageInput": "Tokens de entrada: {{value}}",
+        "usageOutput": "Tokens de salida: {{value}}",
+        "usageTotal": "Tokens totales: {{value}}",
+        "usageCalls": "Llamadas al modelo: {{value}}",
+        "usageMissingCalls": "Llamadas sin uso informado: {{value}}",
+        "longTitle": "Este vídeo es algo largo",
+        "longDuration": "Duración",
+        "longConfirm": "Preparar de todos modos",
+        "longCancel": "Mejor no",
+        "automaticHint": "Busca y reproduce el siguiente vídeo automáticamente",
+        "libraryFailed": "No se pudo cargar la biblioteca. Reintentar"
+    },
     "drawingGuess": {
         "title": "Dibuja y adivina",
         "eyebrow": "Actividad de compañía",
@@ -7347,5 +7446,56 @@
         "keepLocal": "Conservar selección local",
         "failed": "No se pudo cargar el modelo. Se conserva la selección anterior.",
         "retry": "Reintentar"
+    },
+    "chatHistory": {
+        "review": "Repaso de voz",
+        "recordVoice": "Guardar grabaciones de voz",
+        "recordVoiceHint": "Guarda las futuras intervenciones del personaje en este dispositivo para reproducirlas desde el historial. Desactivado por defecto. Al desactivarlo se conservan las grabaciones; el audio anterior no se puede recuperar.",
+        "autoContinue": "Reproducir la siguiente voz automáticamente",
+        "autoContinueHint": "Al reproducir una voz, continúa cronológicamente entre fechas para este personaje, manteniendo el filtro de palabras clave. Desactívalo para parar al terminar el mensaje actual.",
+        "voicePlay": "Reproducir esta voz",
+        "voiceStop": "Detener reproducción",
+        "pause": "Pausar",
+        "resume": "Reanudar",
+        "locatePlaying": "Ver conversación actual",
+        "voicePartial": "Esta grabación puede estar incompleta",
+        "playback_loading": "Cargando voz…",
+        "playback_playing": "Reproduciendo",
+        "playback_paused": "En pausa",
+        "playback_done": "Reproducción terminada",
+        "playback_empty": "No hay voces reproducibles en este rango",
+        "playback_error": "Reproducción interrumpida. Selecciona una voz o vuelve a empezar",
+        "end": "Se cargaron todos los mensajes coincidentes",
+        "title": "Historial",
+        "description": "Busca conversaciones guardadas por fecha o palabra clave.",
+        "close": "Cerrar",
+        "character": "Personaje",
+        "keyword": "Palabra clave",
+        "search": "Buscar",
+        "date": "Fecha",
+        "previousDay": "Día anterior",
+        "nextDay": "Día siguiente",
+        "allDates": "Todas las fechas",
+        "speaker": "Hablante",
+        "all": "Todos",
+        "user": "Tú",
+        "assistant": "Asistente",
+        "settings": "Ajustes",
+        "order": "Orden",
+        "newest": "Más recientes",
+        "oldest": "Más antiguos",
+        "pageSize": "Mensajes por página",
+        "showTime": "Mostrar hora de archivo",
+        "back": "Volver a resultados",
+        "loading": "Cargando…",
+        "error": "No se pudo cargar el historial.",
+        "retry": "Reintentar",
+        "continueSearch": "Sin coincidencias en este lote. Continúa buscando.",
+        "unavailable": "Aún no hay un archivo guardado.",
+        "empty": "No hay mensajes coincidentes.",
+        "context": "Ver contexto",
+        "savedOnly": "Originales guardados · Hora de archivo; los mensajes aún no guardados pueden faltar.",
+        "firstPage": "Primera página",
+        "more": "Continuar"
     }
 }

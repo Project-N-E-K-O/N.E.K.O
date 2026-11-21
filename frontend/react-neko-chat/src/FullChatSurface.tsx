@@ -1,3 +1,4 @@
+import { HistoryDialog } from './ChatHistory';
 import { ClearChatScreenButton } from './ChatScreenVisibility';
 /**
  * Full-window chat surface. Its history, composer and responsive layout remain
@@ -131,6 +132,7 @@ const COMPACT_INPUT_TOOL_WHEEL_TOOL_ORDER = [
   'jukebox',
   'export',
   'avatar',
+  'history',
 ] as const;
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = COMPACT_INPUT_TOOL_WHEEL_TOOL_ORDER.length;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 28;
@@ -500,6 +502,7 @@ export default function FullChatSurface({
   const [draft, setDraft] = useState('');
   const [catDraft, setCatDraft] = useState('');
   const visibleDraft = catLocalTextOnly ? catDraft : draft;
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
   const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
@@ -2203,7 +2206,7 @@ export default function FullChatSurface({
   useEffect(() => {
     const target = composerBottomBarNode;
     if (!target || typeof ResizeObserver === 'undefined') return;
-    const COMPACT_THRESHOLD = 300;
+    const COMPACT_THRESHOLD = 340;
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
         const wantCompact = entry.contentRect.width < COMPACT_THRESHOLD;
@@ -2237,7 +2240,7 @@ export default function FullChatSurface({
       return;
     }
     if (!composerBottomBarNode) return;
-    if (composerBottomBarNode.getBoundingClientRect().width >= 300) {
+    if (composerBottomBarNode.getBoundingClientRect().width >= 340) {
       setComposerLayout(prev => (
         prev === 'compact' || prev === 'collapsing' ? 'expanded' : prev
       ));
@@ -2601,6 +2604,13 @@ export default function FullChatSurface({
     }));
   };
 
+  const historyButtonNode = (
+    <button type="button" className="composer-tool-btn" aria-label={i18n('chatHistory.title', 'Chat history')}
+      data-neko-tooltip={i18n('chatHistory.title', 'Chat history')} onClick={() => setHistoryOpen(true)}>
+      <img src="/static/icons/chat_history.svg" alt="" aria-hidden="true" />
+    </button>
+  );
+
   const compactInputToolFanNode = !catLocalTextOnly
     && isCompactSurface
     && effectiveCompactChatState === 'input' ? (
@@ -2863,6 +2873,20 @@ export default function FullChatSurface({
         onClick={compactFanCloseOnAction(onJukeboxClick)}
       >
         <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
+      </button>
+      <button
+        className="composer-tool-btn compact-input-tool-item compact-input-tool-item-history"
+        type="button"
+        aria-label={i18n('chatHistory.title', 'Chat history')}
+        data-neko-tooltip={i18n('chatHistory.title', 'Chat history')}
+        disabled={isCompactToolWheelActionDisabled(7)}
+        tabIndex={getCompactToolWheelTabIndex(7)}
+        aria-hidden={getCompactToolWheelAriaHidden(7)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(7)}
+        onClick={compactFanCloseOnAction(() => setHistoryOpen(true))}
+      >
+        <img src="/static/icons/chat_history.svg" alt="" aria-hidden="true" />
+
       </button>
       <button
         className={`composer-tool-btn compact-input-tool-item compact-input-tool-item-export${compactExportHistoryOpen ? ' is-active' : ''}`}
@@ -3196,6 +3220,7 @@ export default function FullChatSurface({
       data-compact-export-auto-scroll={isCompactSurface && compactExportAutoScrollToBottom ? 'true' : 'false'}
       data-focus-active={focusActive ? 'true' : 'false'}
     >
+      {historyOpen && <HistoryDialog close={() => setHistoryOpen(false)} />}
       {focusActive ? (
         <div
           className="chat-surface-focus-indicator"
@@ -3529,6 +3554,8 @@ export default function FullChatSurface({
                       {jukeboxButtonNode}
                       <span className="composer-tool-divider" aria-hidden="true">|</span>
                       {emojiToolMenuNode}
+                      <span className="composer-tool-divider" aria-hidden="true">|</span>
+                      {historyButtonNode}
                     </div>
                   ) : (
                     <div
@@ -3569,6 +3596,7 @@ export default function FullChatSurface({
                           {translateButtonNode}
                           {jukeboxButtonNode}
                           {emojiToolMenuNode}
+                          {historyButtonNode}
                         </div>
                       ) : null}
                     </div>

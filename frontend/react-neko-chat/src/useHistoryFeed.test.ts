@@ -1,0 +1,54 @@
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import { useHistoryFeed } from './useHistoryFeed';
+const entry = (id: number) => ({ id, text: `message ${id}`, role: 'user', time: '' });
+const response = (ids: number[], nextCursor: number | null) => ({ ok: true, json: async () => ({ messages: ids.map(entry), nextCursor, available: true }) });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+it('appends in cursor order, deduplicates and allows only one request in flight', async () => {
+  let finish: (value: unknown) => void = () => {};
+  const fetch = vi.fn().mockResolvedValueOnce(response([1, 2], 2)).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  vi.stubGlobal('fetch', fetch);
+  const { result } = renderHook(() => useHistoryFeed('character=A&day=2026-11-11&order=asc&limit=30', true));
+  await waitFor(() => expect(result.current.busy).toBe(false));
+  act(() => { result.current.load(); result.current.load(); result.current.load(); });
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(fetch.mock.calls[1][0]).toContain('day=2026-11-11&order=asc&limit=30&cursor=2');
+  await act(async () => finish(response([2, 3], null)));
+  expect(result.current.messages.map(e => e.id)).toEqual([1, 2, 3]);
+  act(() => result.current.load());
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+it('keeps loaded rows after failure and retries the same cursor', async () => {
+  const fetch = vi.fn().mockResolvedValueOnce(response([9], 9)).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(response([8], null));
+  vi.stubGlobal('fetch', fetch);
+  const { result } = renderHook(() => useHistoryFeed('character=A&limit=30', true));
+  await waitFor(() => expect(result.current.started).toBe(true));
+  act(() => result.current.load());
+  await waitFor(() => expect(result.current.error).toBe(true));
+  expect(result.current.messages.map(e => e.id)).toEqual([9]);
+  act(() => result.current.load());
+  await waitFor(() => expect(result.current.more).toBe(false));
+  expect(fetch.mock.calls[1][0]).toBe(fetch.mock.calls[2][0]);
+  expect(result.current.messages.map(e => e.id)).toEqual([9, 8]);
+});
+it('cancels stale requests when switching from a date to all dates', async () => {
+  let finish: (value: unknown) => void = () => {};
+  const fetch = vi.fn().mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValueOnce(response([20], null));
+  vi.stubGlobal('fetch', fetch);
+  const { result, rerender } = renderHook(({ filter }) => useHistoryFeed(filter, true), { initialProps: { filter: 'character=A&day=2026-11-11' } });
+  rerender({ filter: 'character=A' });
+  await waitFor(() => expect(result.current.started).toBe(true));
+  await act(async () => finish(response([1], 1)));
+  expect(fetch.mock.calls[0][1].signal.aborted).toBe(true);
+  expect(result.current.messages.map(e => e.id)).toEqual([20]);
+});
+it('continues empty scan batches without mistaking them for end of history', async () => {
+  const fetch = vi.fn().mockResolvedValueOnce(response([], 5000)).mockResolvedValueOnce(response([5001], null));
+  vi.stubGlobal('fetch', fetch);
+  const { result } = renderHook(() => useHistoryFeed('character=A&q=needle', true));
+  await waitFor(() => expect(result.current.started).toBe(true));
+  expect(result.current.more).toBe(true);
+  act(() => result.current.load());
+  await waitFor(() => expect(result.current.more).toBe(false));
+  expect(result.current.messages[0].id).toBe(5001);
+});

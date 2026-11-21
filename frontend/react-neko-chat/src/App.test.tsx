@@ -77,7 +77,7 @@ describe('App', () => {
     const exportButton = document.body.querySelector<HTMLButtonElement>('.compact-input-tool-item-export');
     expect(fan).not.toBeNull();
     expect(exportButton).not.toBeNull();
-    for (let index = 0; index < 7 && exportButton!.getAttribute('data-compact-tool-wheel-slot') !== '0'; index += 1) {
+    for (let index = 0; index < 8 && exportButton!.getAttribute('data-compact-tool-wheel-slot') !== '0'; index += 1) {
       fireEvent.wheel(fan!, { deltaY: 80 });
     }
     expect(exportButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
@@ -89,7 +89,7 @@ describe('App', () => {
   const rotateCompactToolToCenter = (tool: HTMLElement) => {
     const fan = document.body.querySelector<HTMLDivElement>('.compact-input-tool-fan');
     expect(fan).not.toBeNull();
-    for (let index = 0; index < 7 && tool.getAttribute('data-compact-tool-wheel-slot') !== '0'; index += 1) {
+    for (let index = 0; index < 8 && tool.getAttribute('data-compact-tool-wheel-slot') !== '0'; index += 1) {
       fireEvent.wheel(fan!, { deltaY: 80 });
     }
     expect(tool).toHaveAttribute('data-compact-tool-wheel-slot', '0');
@@ -7357,7 +7357,7 @@ describe('App', () => {
       const fanRectSpy = mockCompactToolFanRect(fan);
       try {
         const galgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
-        expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
+        expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
         expect(galgameButton).not.toBeDisabled();
 
         fireEvent.pointerDown(galgameButton, { pointerId: 45, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
@@ -7407,11 +7407,12 @@ describe('App', () => {
       const exportButton = fan.querySelector('.compact-input-tool-item-export') as HTMLButtonElement;
       const galgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
 
-      expect(exportButton).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
+      rotateCompactToolToCenter(exportButton);
+      expect(exportButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
       expect(exportButton).toHaveAttribute('tabindex', '0');
       expect(exportButton).toHaveAttribute('aria-hidden', 'false');
       expect(exportButton).not.toBeDisabled();
-      expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
+      expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '1');
       expect(galgameButton).toHaveAttribute('tabindex', '0');
       expect(galgameButton).toHaveAttribute('aria-hidden', 'false');
       expect(galgameButton).not.toBeDisabled();
@@ -7620,7 +7621,7 @@ describe('App', () => {
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
     const fanRectSpy = mockCompactToolFanRect(fan);
     const importButton = fan.querySelector('.compact-input-tool-item-import') as HTMLButtonElement;
-    expect(importButton).toHaveAttribute('data-compact-tool-wheel-slot', 'hidden-backward');
+    expect(importButton).toHaveAttribute('data-compact-tool-wheel-slot', 'hidden');
 
     try {
       fireEvent.pointerDown(importButton, { pointerId: 4, ...compactToolWheelPoint(0), button: 0, buttons: 1, pointerType: 'mouse' });
@@ -7923,7 +7924,7 @@ describe('App', () => {
         fireEvent.wheel(fan, { deltaY: 80 });
 
         expect(fan.querySelector('.compact-input-tool-item-screenshot')).toHaveAttribute('data-compact-tool-wheel-slot', '1');
-        expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-galgame');
+        expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-history');
       } finally {
         fanRectSpy.mockRestore();
       }
@@ -8331,7 +8332,7 @@ describe('App', () => {
         pointerType: 'mouse',
       });
 
-      const exportButton = fan.querySelector('.compact-input-tool-item-export');
+      const exportButton = fan.querySelector('.compact-input-tool-item-galgame');
       expect(exportButton).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
       expect(exportButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
       expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('107.35deg');
@@ -8345,7 +8346,7 @@ describe('App', () => {
 
       const screenshotButton = fan.querySelector('.compact-input-tool-item-screenshot');
       const avatarButton = fan.querySelector('.compact-input-tool-item-avatar');
-      const galgameButton = fan.querySelector('.compact-input-tool-item-galgame');
+      const galgameButton = fan.querySelector('.compact-input-tool-item-history');
       expect(screenshotButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'true');
       expect(avatarButton).toHaveAttribute('data-compact-tool-pointer-hovered', 'false');
       expect(fan.style.getPropertyValue('--compact-tool-wheel-selection-angle')).toBe('45deg');
@@ -8534,7 +8535,7 @@ describe('App', () => {
       });
 
       expect(scroll.scrollTop).toBe(0);
-      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-galgame');
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-history');
     } finally {
       if (previousHistoryOpen === null) {
         window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
@@ -8794,7 +8795,7 @@ describe('App', () => {
     );
 
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-    expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
+    expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
 
     rerender(
       <App
@@ -8816,7 +8817,7 @@ describe('App', () => {
     );
 
     await waitFor(() => {
-      expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
+      expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', 'hidden-backward');
     });
   });
 
@@ -8861,7 +8862,7 @@ describe('App', () => {
     );
 
     await waitFor(() => {
-      expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
+      expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
     });
   });
 
@@ -9082,9 +9083,9 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(1);
       });
       expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')?.className).not.toBe(beforeReleaseCenter);
-      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-release-offset', '6');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-charge-release-offset', '7');
 
-      for (let timerRun = 0; timerRun < 64 && fan.getAttribute('data-compact-tool-wheel-charge-release-active') === 'true'; timerRun += 1) {
+      for (let timerRun = 0; timerRun < 128 && fan.getAttribute('data-compact-tool-wheel-charge-release-active') === 'true'; timerRun += 1) {
         await act(async () => {
           await vi.advanceTimersToNextTimerAsync();
         });
@@ -9883,6 +9884,7 @@ describe('App', () => {
         fireEvent.pointerUp(fan, { pointerId: 1, ...compactToolWheelPoint(-40 * (Math.PI / 180)), buttons: 0, pointerType: 'mouse' });
 
         const galgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
+        rotateCompactToolToCenter(galgameButton);
         expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
         await act(async () => {
           await vi.advanceTimersByTimeAsync(0);

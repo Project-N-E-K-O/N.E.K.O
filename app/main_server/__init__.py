@@ -1013,6 +1013,19 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                     await _config_manager.abackfill_character_uids()
             except Exception as e:
                 logger.warning("角色稳定 id 补发失败，下次启动重试: %s", e)
+
+            # Resume committed voice-archive purges before history and playback
+            # routes can expose rows for a recreated character name.
+            try:
+                from main_logic.voice_archive import retry_pending_voice_archive_purges
+
+                voice_purge_summary = await asyncio.to_thread(
+                    retry_pending_voice_archive_purges, _config_manager,
+                )
+                if voice_purge_summary.get("purged") or voice_purge_summary.get("errors"):
+                    logger.info("Voice archive purge recovery: %s", voice_purge_summary)
+            except Exception as e:
+                logger.warning("Voice archive purge recovery deferred to next startup: %s", e)
             await _sync_memory_server_after_startup_import(import_result)
 
             logger.info("正在初始化 Steamworks...")
@@ -1415,6 +1428,33 @@ async def on_shutdown():
             lambda: join_sync_connector_threads(3.0),
             what="同步连接器线程清理",
             deadline_monotonic=time.monotonic() + 3.5,
+            pending_cancellation=shutdown_cancellation,
+            cancellation_budget=cancellation_budget,
+        )
+
+        # Stop optional voice-archive producers before the loop tears down.
+        # Every queued SQLite commit finishes off-loop; otherwise cancellation
+        # can silently lose the final audio frames of a reply.
+        async def _drain_voice_archives():
+            from main_logic.voice_archive import retire_voice_archive
+
+            managers = [manager for _, manager in _iter_session_managers()]
+            if managers:
+                results = await asyncio.gather(
+                    *(retire_voice_archive(manager) for manager in managers),
+                    return_exceptions=True,
+                )
+                for result in results:
+                    if isinstance(result, BaseException):
+                        logger.warning(
+                            "Voice archive shutdown drain failed: %s",
+                            type(result).__name__,
+                        )
+
+        shutdown_cancellation = await _run_shutdown_step(
+            _drain_voice_archives,
+            what="voice archive drain",
+            deadline_monotonic=time.monotonic() + 10.0,
             pending_cancellation=shutdown_cancellation,
             cancellation_budget=cancellation_budget,
         )
