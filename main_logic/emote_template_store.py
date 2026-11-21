@@ -1,16 +1,13 @@
 # -*- coding: utf-8 -*-
-"""导入即拷副本：每个模板一份落盘的拷贝，重开时不再要求用户重新定位。
+"""Persist one independent copy of each imported template.
 
-设计上只有三条硬规则（和前端模板库的约定一一对应）：
-
-1. **副本即唯一事实**：原件更新/删除/挪走都与这里无关；想更新就再导一次，
-   同键原地覆盖（``save`` 永远是替换语义，没有合并）。
-2. 新包使用资源内容生成的 ``spine-<sha256>`` 作为库键和目录名；原文件名只作显示。
-   旧库键仍通过哈希定位原有副本，以便用户查看和删除，不批量重命名用户文件。
-3. **没有配额、没有过期清理**：占多少由调用方如实报告，删不删由用户决定；
-   ``delete`` 是唯一释放入口。
-
-改动这三条之前先看 tests/unit/test_emote_template_store.py——每条规则都有对应的红灯。
+The saved copy remains authoritative if the original is changed, moved or deleted.
+Importing an existing key replaces its copy rather than merging archives. New
+archives use a spine-<sha256> content identifier; original names are display
+metadata. Legacy keys retain their hashed locations so existing files remain
+accessible without bulk renaming. Storage has no quota or expiry: report actual
+bytes and release them only when the user deletes a copy. The corresponding
+storage tests cover these rules.
 """
 
 from __future__ import annotations
@@ -37,11 +34,11 @@ META_NAME = "meta.json"
 _KEY_HASH_ALGORITHM = "sha256"
 
 class EmoteTemplateStoreError(Exception):
-    """副本存取失败。message 面向用户，可直接透传到接口响应。"""
+    """Report a storage failure with a message suitable for the API response."""
 
 
 def dir_key_for(key: str) -> str:
-    """使用规范 Spine 内容标识作为目录名，旧格式库键保留原有哈希定位方式。"""
+    """Use canonical Spine content IDs and preserve hashed locations for legacy keys."""
     if re.fullmatch(r"spine-[0-9a-f]{64}", str(key)):
         return str(key)
     digest = hashlib.new(_KEY_HASH_ALGORITHM, str(key or "").encode("utf-8"))
@@ -49,7 +46,7 @@ def dir_key_for(key: str) -> str:
 
 
 def normalize_texture_path(value: str) -> str:
-    """限于副本内的 PNG，以及 StageImages 下的 GIF。"""
+    """Allow PNG textures within a copy and GIF images within StageImages."""
     raw = str(value or "").replace("\\", "/").strip()
     if not raw or raw.startswith("/") or re.match(r"^[A-Za-z]:", raw) or "\x00" in raw:
         raise EmoteTemplateStoreError("贴图路径不合法")
@@ -99,7 +96,7 @@ class EmoteTemplateArchiveStore:
         return meta if isinstance(meta, dict) and meta.get("key") else None
 
     def texture_paths(self, key: str) -> list[str]:
-        """这份副本附带的补全贴图（相对 textures/ 的路径，按序稳定）。"""
+        """Return stable, ordered supplemental texture paths relative to textures/."""
         textures_dir = self._entry_dir(key) / TEXTURES_DIR
         if not textures_dir.is_dir():
             return []
@@ -110,7 +107,7 @@ class EmoteTemplateArchiveStore:
         ]
 
     def list(self) -> list[dict]:
-        """全部副本 + 各自真实占用的字节数（stat 出来的，不是存的）。"""
+        """List saved copies and their actual byte sizes measured from the filesystem."""
         if not self.root.is_dir():
             return []
         entries = []
@@ -140,7 +137,7 @@ class EmoteTemplateArchiveStore:
         return archive
 
     def archive_name(self, key: str) -> str:
-        """当初那个 zip 的文件名；恢复时必须原样归还，库身份才不会分裂。"""
+        """Return the original archive filename for restoration and display metadata."""
         if re.fullmatch(r"spine-[0-9a-f]{64}", str(key)):
             return str(key) + ".zip"
         meta = self._read_meta(self._entry_dir(key))
@@ -185,10 +182,9 @@ class EmoteTemplateArchiveStore:
         textures: list[tuple[str, bytes]] | None = None,
         filename: str = "",
     ) -> dict:
-        """落一份副本；同键已存在就整体替换（原件语义：再导一次 = 更新）。
+        """Persist an archive, replacing the entire saved copy when its key already exists.
 
-        ``filename`` 是当初那个 zip 的名字。库键的第一段就是它（adapter 用上传文件名
-        当 packageName），恢复时不原样归还，同一个模板就会分裂成两个库身份。
+        Preserve the supplied original filename as metadata for archive restoration.
         """
         if not str(key or "").strip():
             raise EmoteTemplateStoreError("缺少模板标识")
@@ -249,10 +245,10 @@ class EmoteTemplateArchiveStore:
         }
 
     def save_textures(self, key: str, textures: list[tuple[str, bytes]]) -> dict:
-        """往已有副本里合并贴图（导入之后才补的那批）。同路径覆盖，其余保留。
+        """Merge supplemental textures into an existing saved copy.
 
-        这是"补全缺失贴图"的持久化出口：没有它，导入后补的贴图只活在本次会话，
-        重开一次就丢 —— 而那正是副本要消掉的痛点。
+        Replace matching paths while retaining other textures. Persisting textures
+        supplied after import makes them available when the editor reopens.
         """
         if not self.has(key):
             raise EmoteTemplateStoreError("这个模板还没有本地副本")
@@ -273,7 +269,7 @@ class EmoteTemplateArchiveStore:
         return {"key": str(key), "textures": self.texture_paths(key)}
 
     def remove_texture(self, key: str, relative: str) -> None:
-        """从副本里删掉单张贴图文件。"""
+        """Remove one texture file from a saved copy."""
         textures_dir = self._entry_dir(key) / TEXTURES_DIR
         target = self._safe_child(textures_dir, relative)
         if target.is_file():

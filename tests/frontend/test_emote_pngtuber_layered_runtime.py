@@ -206,7 +206,7 @@ def test_timed_return_goes_back_to_state_zero(uploaded: dict, page: Page,
 
 def test_upload_and_delete_leaves_no_residue(uploaded: dict, page: Page,
                                              running_server: str) -> None:
-    """验收包会在用户库里留一个文件夹；确认它删得掉，否则测试互相污染。"""
+    """Remove the imported acceptance-test package to avoid contaminating later library tests."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     listed = page.evaluate(
         "async () => (await (await fetch('/api/model/pngtuber/models')).json()).models.map(m => m.folder)")
@@ -273,7 +273,7 @@ def _priority(uploaded, page, running_server, priority):
 
 
 def test_speech_first_defers_the_emotion_until_speech_ends(uploaded, page, running_server):
-    """说话优先：情绪不插进来，也不是被丢掉 —— 话说完自己补上。"""
+    """Queue emotion during talking priority and play it after speech completes."""
     result = _priority(uploaded, page, running_server, "talking")
     assert result["readBack"] == "talking", result
     assert result["indexAtStart"] == 0, result
@@ -287,7 +287,7 @@ def test_speech_first_defers_the_emotion_until_speech_ends(uploaded, page, runni
 
 
 def test_emotion_first_lets_the_emotion_show_while_speaking(uploaded, page, running_server):
-    """情绪优先：平铺包里说话不得盖掉情绪。"""
+    """Keep a talking frame from overriding the active emotion in an emotion-first flat pack."""
     result = _priority(uploaded, page, running_server, "emotion")
     assert result["readBack"] == "emotion", result
     assert result["flatTalkingSrc"] == "h.gif", \
@@ -467,7 +467,7 @@ def wrapped(page: Page, running_server: str) -> dict:
 
 
 def test_mixed_frame_sizes_do_not_get_clipped_or_overlap(wrapped):
-    """一格里放不下更大的帧时，宁可把格子放大，也不能把后面那帧裁一角。"""
+    """Enlarge sprite-sheet cells rather than clipping a later, larger frame."""
     mixed = wrapped["mixed"]
     assert mixed["frame"] == [20, 20], f"格子尺寸跟着第一帧走了: {mixed}"
     assert mixed["size"] == [40, 20], f"画布按第一帧开，最后一帧被裁掉了: {mixed}"
@@ -476,7 +476,7 @@ def test_mixed_frame_sizes_do_not_get_clipped_or_overlap(wrapped):
 
 
 def test_wrapped_sheet_addresses_every_real_frame(wrapped, page, running_server):
-    """折行后每一帧都取得到自己的格子：不越界、不落进补齐的空格、不错到邻居的格子。"""
+    """Keep wrapped frame cells in bounds and separate from padding cells and adjacent frames."""
     grid = wrapped["grid"]
     assert grid["composedRows"] > 1, f"这组帧数没测到换行: {grid}"
     assert grid["hframes"] == grid["composedCols"] and grid["vframes"] == grid["composedRows"], \
@@ -764,7 +764,7 @@ def _step(out, label):
 
 
 def test_speech_drag_click_take_the_state_slot(page, running_server):
-    """说话/拖动/点击各自演自己那一格，并且层层让位：拖动 > 说话 > 默认。"""
+    """Use each layered state with priority drag above talking above default."""
     _upload_states(page, running_server, SLOT_FOLDER, SLOT_STATES)
     _runtime_page(page, running_server)
     page.evaluate(
@@ -798,7 +798,7 @@ def test_speech_drag_click_take_the_state_slot(page, running_server):
 
 
 def test_emotion_first_owns_the_slot_over_speech(page, running_server):
-    """情绪优先：情绪在演时说话不抢槽；情绪撤走后话还没说完就交还给说话。"""
+    """Restore ongoing talking after an emotion-first animation releases the state slot."""
     _upload_states(page, running_server, SLOT_EMO_FOLDER, SLOT_STATES, "emotion")
     _runtime_page(page, running_server)
     out = page.evaluate(EMOTION_SLOT_PROBE, [SLOT_EMO_FOLDER])
@@ -818,7 +818,7 @@ def test_emotion_first_owns_the_slot_over_speech(page, running_server):
 
 
 def test_costume_packs_are_not_disturbed(page, running_server):
-    """目录里没有这些名字的包（换装模型）：说话与拖动都不许动状态号。"""
+    """Keep talking and dragging from changing state indices in packs without those state names."""
     _upload_states(page, running_server, COSTUME_FOLDER, COSTUME_STATES)
     _runtime_page(page, running_server)
     out = page.evaluate(COSTUME_PROBE, [COSTUME_FOLDER])
@@ -883,7 +883,7 @@ FLAT_HOLD_PROBE = r"""async () => {
 
 
 def test_speech_first_blocks_the_emotion_from_flat_mouth_beats(page, running_server):
-    """平铺包说话期间，情绪图一帧都不许出现在 <img> 上；话说完再补。"""
+    """Keep emotion frames out of the image element during flat-pack speech and defer them until afterward."""
     _runtime_page(page, running_server)
     out = page.evaluate(FLAT_HOLD_PROBE)
     assert out["priority"] == "talking", out["priority"]

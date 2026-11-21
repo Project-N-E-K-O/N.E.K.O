@@ -1,7 +1,7 @@
-"""分组导出：组住在导出设置里，预览下方只剩一份动画列表。
+"""Test export groups and the single animation list below the preview.
 
-断言一律看渲染结果（getComputedStyle / 屏幕上真有哪几个选项 / 点得到点不到），
-不看内部属性或模块变量 —— 上一轮我因为查 `el.hidden` 写了条假通过的测试。
+Assertions inspect rendered styles, visible choices and reachable controls.
+Checking hidden attributes alone would miss CSS rules that override them.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ def _options(page: Page) -> list[str]:
 
 
 def test_dock_is_one_list_now_that_group_moved(page: Page, running_server: str) -> None:
-    """预览下方只留一份列表：以前两栏印的是同一批名字，差别看不出来。"""
+    """Show one animation list instead of duplicate lists with identical names."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     _import(page, "first.zip", "第一个", "A", scenes=3)
     assert _shown(page, '.list-segment') is False, "场景/动画 两栏开关还在"
@@ -113,14 +113,14 @@ def test_group_section_lives_in_export_settings(group_page: Page) -> None:
         "() => Boolean(document.querySelector('#add-scene-to-group-btn'))") is False
 
 def test_current_framing_line_is_gone(group_page: Page) -> None:
-    """「当前画面：xxx」删了：它复述的是列表里已经选中的那一条，白占一行。"""
+    """Omit a current-frame label that repeats the selected animation name."""
     assert group_page.evaluate("() => Boolean(document.querySelector('#group-current'))") is False
     assert "当前画面" not in group_page.evaluate(
         "() => document.querySelector('#group-section').textContent")
 
 
 def test_export_entry_is_two_buttons_on_one_row(group_page: Page) -> None:
-    """一行两个：导出当前 / 批量导出，宽度相当、等高。"""
+    """Place current and batch export buttons side by side with matching dimensions."""
     box = group_page.evaluate("""() => {
         const a = document.querySelector('#export-png-btn').getBoundingClientRect();
         const b = document.querySelector('#export-group-open-btn').getBoundingClientRect();
@@ -142,7 +142,7 @@ def test_export_entry_is_two_buttons_on_one_row(group_page: Page) -> None:
 
 
 def test_batch_button_opens_a_group_picker_above_it(group_page: Page) -> None:
-    """点「批量导出」在按钮上方长出气泡，一行一个组；点外面收起。"""
+    """Open a group popover above batch export and dismiss it on outside clicks."""
     group_page.evaluate("() => document.querySelector('#export-group-open-btn').click()")
     opened = group_page.evaluate("""() => {
         const picker = document.querySelector('#group-export-picker');
@@ -170,7 +170,7 @@ def test_batch_button_opens_a_group_picker_above_it(group_page: Page) -> None:
 
 
 def test_picker_rows_are_enabled_with_a_loaded_spine_renderer(group_page: Page) -> None:
-    """已验证的 Spine 模型可以直接选择组导出。"""
+    """Allow verified Spine models to be exported as groups."""
     group_page.evaluate("() => document.querySelector('#export-group-open-btn').click()")
     state = group_page.evaluate("""() => {
         const picker = document.querySelector('#group-export-picker');
@@ -187,7 +187,7 @@ def test_picker_rows_are_enabled_with_a_loaded_spine_renderer(group_page: Page) 
 
 
 def test_create_group_from_current_keeps_the_setup(group_page: Page) -> None:
-    """「按当前配置创建组」：建组的同时要把当前画面（含大小/角度）作为第一条存进去。"""
+    """Create a group with the current frame, scale and rotation as its first entry."""
     # 先把缩放/旋转调开默认值，再看它们有没有被带走
     group_page.evaluate("""() => {
         const set = (key, value) => {
@@ -282,7 +282,7 @@ def _rename_group_in_menu(page: Page, current: str, name: str) -> None:
 
 
 def test_a_typed_name_becomes_the_new_group_name(group_page: Page) -> None:
-    """下拉占满这一行。改名和删除是菜单里的两个图标，导入的组没有。"""
+    """Fill the row with the selector and offer rename/delete only for user-created groups."""
     stacked = group_page.evaluate("""() => {
         const row = document.querySelector('.group-picker-row').getBoundingClientRect();
         const trigger = document.querySelector('.group-picker-row .emote-select-trigger').getBoundingClientRect();
@@ -341,7 +341,7 @@ def test_a_typed_name_becomes_the_new_group_name(group_page: Page) -> None:
 
 
 def test_a_created_group_can_be_deleted(group_page: Page) -> None:
-    """自建组可以删。取消留着它，确认后组和只属于它的取景一起消失。导入的行没有垃圾桶。"""
+    """Delete custom groups and their exclusive views only after confirmation; retain imported rows."""
     group_page.evaluate("() => document.querySelector('#new-group-btn').click()")
     group_page.wait_for_function(
         """() => [...document.querySelectorAll('#batch-export-group-select option')]
@@ -379,7 +379,7 @@ def test_a_created_group_can_be_deleted(group_page: Page) -> None:
 
 
 def test_group_shot_does_not_overwrite_the_editor_look(group_page: Page) -> None:
-    """组里存的旋转只留给组预览和整组导出。点开那一条之后，动作列表用的滑杆还是编辑器自己的。"""
+    """Keep saved group rotation separate from the editor slider used by the animation list."""
     group_page.evaluate("""() => {
         const input = document.querySelector('#adjust-rotation');
         input.value = '35';
@@ -405,7 +405,7 @@ def test_group_shot_does_not_overwrite_the_editor_look(group_page: Page) -> None
 
 
 def test_group_panel_points_at_the_action_list_context_menu(group_page: Page) -> None:
-    """往组里加动作走右键菜单，组面板里写明这件事，不再单放一颗「存为取景」。"""
+    """Add animations through the context menu and explain that action in the group panel."""
     hint = group_page.evaluate("""() => {
         const note = document.querySelector('#group-section .panel-note');
         return {
@@ -468,7 +468,7 @@ def test_export_tips_show_once_per_page(group_page: Page) -> None:
 
 
 def test_groups_are_scoped_to_the_template(group_page: Page) -> None:
-    """换一个模板，不该看见上一个模板的组，也不该把上一个模板的多选带过去。"""
+    """Clear the previous template group and multiple selection when switching templates."""
     group_page.evaluate("() => document.querySelector('#new-group-btn').click()")
     group_page.wait_for_function(
         """() => {
@@ -492,9 +492,7 @@ def test_groups_are_scoped_to_the_template(group_page: Page) -> None:
 
 
 def test_group_controls_are_not_flush_against_the_clip_edge(group_page: Page) -> None:
-    """下拉以前总被削掉最左一像素：面板是滚动容器而左内边距是 0，控件正好压在裁剪边上。
-    量的是屏幕上真有的间距，不是 outline-offset 那种代理值 —— 上一版就是查属性自证通过的。
-    """
+    """Measure actual left spacing so the scroll container cannot clip the selector edge."""
     group_page.locator("#group-section summary").press("Enter")
     box = group_page.evaluate("""() => {
         const select = document.querySelector('#batch-export-group-select-trigger');
@@ -517,8 +515,7 @@ def test_group_controls_are_not_flush_against_the_clip_edge(group_page: Page) ->
 
 
 def test_help_bubble_anchors_above_the_control(group_page: Page) -> None:
-    """问号：悬停即出、钉在控件上方带尖角的气泡里——不是等半秒的 title，
-    不跟鼠标乱飘，更不是点一下甩到页面底部。"""
+    """Show an immediate anchored help bubble above its control rather than a native title tooltip."""
     group_page.locator("#group-section summary").click()
     anchor = group_page.evaluate("""() => {
         const el = document.querySelector('#new-group-help');
@@ -559,7 +556,7 @@ def test_help_bubble_anchors_above_the_control(group_page: Page) -> None:
 
 
 def test_collapse_caret_is_a_graphic_that_turns_in_place(group_page: Page) -> None:
-    """收起箭头：用字符 \203A 时墨迹不在行盒正中，转 90° 看着像在晃。改成居中的图形。"""
+    """Rotate a centered graphical chevron without the wobble caused by glyph metrics."""
     caret_style = """() => {
         const cs = getComputedStyle(document.querySelector('.group-summary'), '::before');
         return { content: cs.content, mask: cs.maskImage || cs.webkitMaskImage,
@@ -608,8 +605,7 @@ def test_collapse_caret_is_a_graphic_that_turns_in_place(group_page: Page) -> No
 
 
 def test_create_group_button_does_not_look_like_a_link(group_page: Page) -> None:
-    """「按当前配置创建组」以前是 .text-button：透明底、悬停下划线 —— 那是链接的样子，
-    可它会真的建出一个组。得有按钮的体积。"""
+    """Give the create-group action button dimensions instead of link-only styling."""
     group_page.locator("#group-section summary").click()
     style = group_page.evaluate("""() => {
         const el = document.querySelector('#new-group-btn');
@@ -627,7 +623,7 @@ def test_create_group_button_does_not_look_like_a_link(group_page: Page) -> None
 
 
 def test_select_tools_share_the_heading_and_only_show_when_used(group_page: Page) -> None:
-    """全选/取消全选：不再常驻、也不再自己占一行把列表压矮。"""
+    """Keep select-all actions from permanently consuming an animation-list row."""
     place = group_page.evaluate("""() => {
         const tools = document.querySelector('#list-select-tools');
         const heading = document.querySelector('.quick-preview-heading');
@@ -666,7 +662,7 @@ def test_select_tools_share_the_heading_and_only_show_when_used(group_page: Page
 
 
 def test_group_section_collapses_and_reopens(group_page: Page) -> None:
-    """收起时整块内容让位，摘要上仍要看得见"攒的是哪一组、几张"。"""
+    """Hide collapsed content while retaining the active group and item count in its summary."""
     group_page.evaluate("() => document.querySelector('#new-group-btn').click()")
     group_page.wait_for_function(
         "() => document.querySelectorAll('#group-members .group-member').length === 1",
@@ -699,10 +695,11 @@ def test_group_section_collapses_and_reopens(group_page: Page) -> None:
 
 
 def _open_context_menu(page: Page, index: int) -> None:
-    """在没有 Spine 运行时的那张卡上，卡片本身是 disabled 的：真右键浏览器不会派事件。
-    这里直接派发同一个 contextmenu 事件，走的是同一条处理函数 —— 真鼠标右键要拿
-    能渲染的模板人肉验一次，这条用例覆盖不到那半步。
-    """
+    """Dispatch contextmenu directly for a disabled card without a Spine runtime.
+
+        A real mouse context click on a renderable template still requires manual
+        verification because browsers do not dispatch it to disabled controls.
+        """
     page.evaluate(
         """(i) => {
             const card = document.querySelectorAll('#animation-list [data-animation-id]')[i];
@@ -718,7 +715,7 @@ def _open_context_menu(page: Page, index: int) -> None:
 
 
 def test_gif_format_hides_1024_and_the_removed_notes_stay_gone(group_page: Page) -> None:
-    """GIF 时 1024 直接不可见；这轮清掉的几处提示不许还魂。"""
+    """Hide the 1024 option for GIF export and keep retired hints absent."""
     group_page.evaluate("""() => {
         const format = document.querySelector('#export-format');
         format.value = 'gif';
@@ -761,7 +758,7 @@ def test_export_options_keep_other_editor_controls_and_save_the_gif_limit(group_
 
 
 def test_right_click_menu_adds_and_removes_selected_actions(group_page: Page) -> None:
-    """右键动作 → 加入/移出当前批量导出组；已在组里时菜单要反过来说。"""
+    """Toggle context-menu wording when an animation joins or leaves the current export group."""
     group_page.evaluate("() => document.querySelector('#new-group-btn').click()")
     group_page.wait_for_function(
         "() => document.querySelectorAll('#group-members .group-member').length === 1",
@@ -828,7 +825,7 @@ def test_right_click_menu_adds_and_removes_selected_actions(group_page: Page) ->
 
 
 def test_tip_help_buttons_sit_next_to_their_label_text(group_page: Page) -> None:
-    """问号要接在所属文字后面，不能被 .select-row 的两列 grid 排到下一行。"""
+    """Keep help icons beside their labels instead of moving them to another grid row."""
     places = group_page.evaluate("""() => {
         const rows = ['#pack-name', '#pack-priority'].map((id) => {
             const control = document.querySelector(id);

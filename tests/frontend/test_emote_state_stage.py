@@ -1,9 +1,8 @@
-"""状态表演台：导出设置里唯一的进阶编辑面。
+"""Test the state stage as the single advanced export editor.
 
-它替掉了节点编辑器入口（部件/调整/颜色在上游标签页已经定过，这里只该管
-"什么状态用哪条动画、演哪一段、多大多角度"）。这些测试钉住最容易烂的几件事：
-手柄拖出来的秒数真的进了图、舞台上拖的位置真的进了图、说话格按包格式显示、
-以及页面上不能再出现没翻译的裸 key。
+It selects animations, ranges and transforms while appearance remains in the
+upstream tabs. Verify that range and position gestures reach the graph, talking
+controls follow the package format, and untranslated keys stay off the page.
 """
 
 from __future__ import annotations
@@ -114,7 +113,7 @@ PANEL_TEXT = """() => ({
 
 
 def _upstream_scene(page: Page, state_key: str):
-    """问"这一格的上游接的是哪条动画"，而不是猜全局有几个场景节点。"""
+    """Resolve the animation upstream of the requested state rather than counting global scenes."""
     return page.evaluate(
         """(key) => {
             const g = window.__STAGE.getGraph();
@@ -128,7 +127,7 @@ def _upstream_scene(page: Page, state_key: str):
 
 
 def _open_library(page: Page) -> None:
-    """按钮是开关式的，所以"确保打开"而不是"再点一次"。"""
+    """Ensure the toggle is open instead of clicking an already open panel closed."""
     page.click(".st-anim")
     page.wait_for_timeout(250)
     if not page.evaluate("() => document.querySelector('.st-drawer').classList.contains('is-open')"):
@@ -187,7 +186,7 @@ def test_unassigned_tiles_say_follow_default_and_assign_on_click(page: Page, run
 
 
 def test_dragging_the_strip_end_changes_the_seconds_stored(page: Page, running_server: str) -> None:
-    """这是"UI 说的"和"包里有的"必须一致的根：手柄拖出来的秒数要落进图里。"""
+    """Persist range-handle seconds in the graph so UI selections agree with exported packages."""
     _boot(page, running_server, fps=10)
     box = page.locator(".st-strip-canvas").bounding_box()
     full = page.evaluate("() => window.__STAGE.getGraph().nodes.find(\
@@ -232,7 +231,7 @@ n => n.params.stateKey === 'idle_image').params")
 
 
 def test_dragging_the_figure_rotates_it(page: Page, running_server: str) -> None:
-    """抓住转，像转一张纸。之前横拖=角度、竖拖=大小，一次动两个量，手不知道在改什么。"""
+    """Rotate the frame directly instead of coupling horizontal rotation and vertical scaling."""
     _boot(page, running_server)
     box = page.locator(".st-stage").bounding_box()
     cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
@@ -277,7 +276,7 @@ def test_the_wheel_scales_and_the_keyboard_snaps_back(page: Page, running_server
 
 
 def test_pose_controls_are_doubtful_when_flat(page: Page, running_server: str) -> None:
-    """平铺包不存每个状态的大小角度，所以手势和读数都不该装作有效。"""
+    """Disable per-state transform gestures and readings for flat packs that cannot store them."""
     page.evaluate("() => { window.__FLAT = true; }")
     _boot(page, running_server, fmt="flat")
     box = page.locator(".st-stage").bounding_box()
@@ -388,7 +387,7 @@ def test_picking_an_animation_takes_effect_only_on_click(page: Page, running_ser
 
 
 def test_one_animation_is_captured_once_for_two_states(page: Page, running_server: str) -> None:
-    """缓存按动画存：两格用同一条动作时，第二次是瞬时命中，不该再采一遍。"""
+    """Reuse the animation cache when another state requests the same animation."""
     _boot(page, running_server)
     for state in ("idle_image", "happy_image"):
         page.evaluate("""(key) => document.querySelector(`[data-state="${key}"]`).click()""", state)
@@ -401,7 +400,7 @@ def test_one_animation_is_captured_once_for_two_states(page: Page, running_serve
 
 
 def test_the_drag_api_targets_one_tile(page: Page, running_server: str) -> None:
-    """长按动画列表拖进来时，emote_maker 只会调这四个方法——它们必须只认一格里。"""
+    """Keep the four public animation-drop methods scoped to the intended state."""
     _boot(page, running_server)
     result = page.evaluate(
         """async () => {
@@ -437,11 +436,11 @@ def test_the_drag_api_targets_one_tile(page: Page, running_server: str) -> None:
 
 
 def test_the_stage_canvas_backs_its_display_size(page: Page, running_server: str) -> None:
-    """预览"糊"的根因是后备存储比显示尺寸小（360 的画布拉到 ~500px）。
+    """Match canvas backing pixels to CSS dimensions times devicePixelRatio.
 
-    这条不看好感，只看那条不等式：画布像素数必须跟得上 CSS 尺寸 × dpr，
-    否则无论用什么采集边长都还是糊的。
-    """
+        Stretching a 360-pixel backing canvas to roughly 500 CSS pixels caused
+        blur regardless of the frame-capture resolution.
+        """
     _boot(page, running_server)
     ratios = page.evaluate(
         """() => {
@@ -464,10 +463,7 @@ def test_the_stage_canvas_backs_its_display_size(page: Page, running_server: str
         assert entry["heightRatio"] >= entry["needed"] - 0.02, (name, entry)
 
 def test_opening_the_picker_captures_no_animation_whole(page: Page, running_server: str) -> None:
-    """卡顿的根因就在这：展开一次把每条动画的整段都采一遍。
-
-    展开只允许要缩略图（1 帧小图）；帧采集必须等到真的有某条被悬停。
-    """
+    """Capture only a poster thumbnail on open and defer full frames until hover."""
     _boot(page, running_server)
     page.evaluate("""() => document.querySelector('[data-state="idle_image"]').click()""")
     page.wait_for_timeout(300)
@@ -483,7 +479,7 @@ def test_opening_the_picker_captures_no_animation_whole(page: Page, running_serv
 
 
 def test_hovering_the_library_previews_without_committing(page: Page, running_server: str) -> None:
-    """悬停＝看一眼：海报档、放大预览、时间轴跟着换；不写图、不升清晰档。"""
+    """Update the poster, inspection preview and timeline on hover without committing graph changes."""
     _boot(page, running_server)
     _open_library(page)
     page.evaluate("() => { window.__SOURCE_CALLS.length = 0; }")
@@ -508,7 +504,7 @@ def test_hovering_the_library_previews_without_committing(page: Page, running_se
 
 
 def test_the_library_rail_toggles_the_same_drawer(page: Page, running_server: str) -> None:
-    """左侧把手和仪表带那个按钮开的是同一个面板——两处入口不能变成两套选择器。"""
+    """Open the same animation drawer from the left handle and the instrument-strip button."""
     _boot(page, running_server)
     opened = page.evaluate("() => { document.querySelector('.st-rail').click(); return 1; }")
     page.wait_for_timeout(300)
@@ -522,7 +518,7 @@ def test_the_library_rail_toggles_the_same_drawer(page: Page, running_server: st
 
 
 def test_the_drawer_covers_the_stage_and_leaves_a_sliver(page: Page, running_server: str) -> None:
-    """铺满遮住台面，只留右缘一条缝；右侧状态行和底部时间轴照常能用。"""
+    """Cover the stage with the drawer while retaining usable state rows and timeline controls."""
     _boot(page, running_server)
     _open_library(page)
     geo = page.evaluate(
@@ -542,7 +538,7 @@ def test_the_drawer_covers_the_stage_and_leaves_a_sliver(page: Page, running_ser
 
 
 def test_the_stage_stops_painting_behind_the_drawer(page: Page, running_server: str) -> None:
-    """既然完全遮住，就不该再逐帧画它——这是这条改动的真正目的。"""
+    """Stop painting stage frames while the drawer completely covers the stage."""
     _boot(page, running_server)
     frame = "() => document.querySelector('.st-stage').toDataURL()"
     _open_library(page)
@@ -557,7 +553,7 @@ def test_the_stage_stops_painting_behind_the_drawer(page: Page, running_server: 
 
 
 def test_the_preview_pane_lives_inside_the_drawer(page: Page, running_server: str) -> None:
-    """台面被盖住后，'看一眼'挪到抽屉自己的检视窗里；没悬停时它也不能是空的。"""
+    """Keep a populated inspection preview inside the drawer when it covers the stage."""
     _boot(page, running_server)
     _open_library(page)
     layout = page.evaluate(
@@ -592,7 +588,7 @@ def test_the_preview_pane_lives_inside_the_drawer(page: Page, running_server: st
 
 
 def test_long_press_hands_off_a_drag_without_applying(page: Page, running_server: str) -> None:
-    """长按拖出去是"给别的格子用"，不该同时把自己这格也改掉。"""
+    """Drag an animation to another state without changing its source state."""
     _boot(page, running_server)
     page.click(".st-anim")
     page.wait_for_timeout(400)
@@ -644,10 +640,11 @@ def test_closing_the_picker_cancels_pending_thumbs(page: Page, running_server: s
 
 
 def test_playback_allocates_nothing_per_frame(page: Page, running_server: str) -> None:
-    """卡顿的另一半在绘制里：以前每个 tick 都给每一帧新建一张画布再贴一次。
+    """Compose the filmstrip once and move its viewport and pointer during playback.
 
-    稳定播放时不该再有分配——胶片带整条只合成一次，动的只有窗口和指针。
-    """
+        Creating a new canvas for every frame on every tick caused unnecessary
+        allocations and visible playback stalls.
+        """
     _boot(page, running_server, fps=12)
     # 先让缩略图/胶片各合成一次，把一次性分配排除在测量之外
     page.evaluate("""() => {
@@ -667,11 +664,7 @@ def test_playback_allocates_nothing_per_frame(page: Page, running_server: str) -
 
 
 def test_the_close_button_closes_only_the_stage(page: Page, running_server: str) -> None:
-    """这里曾经是个静默大 bug：裸 close 解析到了 window.close()。
-
-    表情制作页是 window.open 打开的，所以点"关闭"会把整个页面关掉 —— 断言
-    只看一件事：覆盖层没了、页面还在。
-    """
+    """Close the overlay without resolving an unqualified close call to window.close()."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     url = page.url
     page.evaluate("() => document.body.classList.remove('editor-empty')")
@@ -689,7 +682,7 @@ def test_the_close_button_closes_only_the_stage(page: Page, running_server: str)
 
 
 def test_opening_the_library_only_thumbs_what_is_visible(page: Page, running_server: str) -> None:
-    """几百条动作时，展开只该为看得见的几行取图。"""
+    """Capture only visible drawer rows when opening a library with hundreds of animations."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.evaluate("() => document.body.classList.remove('editor-empty')")
     page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
@@ -735,7 +728,7 @@ def test_the_library_can_be_filtered(page: Page, running_server: str) -> None:
 
 
 def test_filtering_jumps_back_to_the_top(page: Page, running_server: str) -> None:
-    """筛完还在原滚动位置的话，第一行（跟随默认）会藏在吸顶搜索框底下。"""
+    """Reset filtered scroll positions so the first result stays below the sticky search field."""
     _boot(page, running_server)
     _open_library(page)
     page.evaluate("() => { document.querySelector('.st-library-scroll').scrollTop = 400; }")
@@ -755,7 +748,7 @@ def test_filtering_jumps_back_to_the_top(page: Page, running_server: str) -> Non
 
 
 def test_the_backdrop_freezes_at_the_frame_the_drawer_opened(page: Page, running_server: str) -> None:
-    """背景是氛围，不是第二个预览窗：悬停换动作时它必须一动不动。"""
+    """Keep the decorative background fixed while hovering different animation previews."""
     _boot(page, running_server)
     page.wait_for_timeout(200)
     shot = "() => document.querySelector('.st-stage').toDataURL()"
@@ -792,7 +785,7 @@ def test_the_backdrop_freezes_at_the_frame_the_drawer_opened(page: Page, running
 
 
 def test_leaving_the_library_keeps_the_scroll_position(page: Page, running_server: str) -> None:
-    """滚动位置是用户读的进度，鼠标划过列表不该把它抹掉。"""
+    """Preserve the list scroll position when the pointer crosses animation entries."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.evaluate("() => document.body.classList.remove('editor-empty')")
     page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
@@ -849,8 +842,7 @@ def test_leaving_the_library_keeps_the_scroll_position(page: Page, running_serve
 
 
 def test_the_pane_shows_the_frame_the_still_state_froze_on(page: Page, running_server: str) -> None:
-    """平铺说话位只烘一帧，而抽屉展开时台面是定格的 —— 检视窗就是唯一的反馈，
-    它必须跟着起止手柄选的帧走，不能一直停在同一条动画的某一帧。"""
+    """Update the flat talking inspection preview when range handles choose a different still frame."""
     _boot(page, running_server, fmt="flat")
     page.evaluate("""() => document.querySelector('[data-state="talking_image"]').click()""")
     page.wait_for_timeout(500)
@@ -880,7 +872,7 @@ def test_the_pane_shows_the_frame_the_still_state_froze_on(page: Page, running_s
 
 
 def test_an_animation_behind_a_modifier_still_reads_as_assigned(page: Page, running_server: str) -> None:
-    """接了动画但中间夹了皮肤节点：以前只看直接上游，会显示成"跟随默认外观"。"""
+    """Resolve animation bindings through an intervening skin node instead of reporting defaults."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.evaluate("() => document.body.classList.remove('editor-empty')")
     page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
@@ -926,7 +918,7 @@ def test_an_animation_behind_a_modifier_still_reads_as_assigned(page: Page, runn
 
 
 def test_tile_and_library_share_one_thumb_cache(page: Page, running_server: str) -> None:
-    """状态行和动作库要的是同一张图：各要一遍就是同一条动画采两次。"""
+    """Share identical thumbnail requests between state rows and the animation library."""
     _boot(page, running_server)
     page.click(".st-rail")
     page.wait_for_timeout(600)
@@ -951,8 +943,7 @@ def test_tile_and_library_share_one_thumb_cache(page: Page, running_server: str)
         assert scene + "|full" not in calls, calls
 
 def test_only_a_state_row_accepts_a_dropped_animation(page: Page, running_server: str) -> None:
-    """拖到台面、胶片带或空白处都不该改动任何东西 —— 过去落在台面上会写进当前选中格，
-    等于"拖出去一松手就应用"，把试错空间吃掉了。"""
+    """Ignore drops on the stage, filmstrip and empty space instead of modifying the selected state."""
     _boot(page, running_server)
     result = page.evaluate(
         """() => {
@@ -976,8 +967,7 @@ def test_only_a_state_row_accepts_a_dropped_animation(page: Page, running_server
 
 
 def test_assigned_rows_show_a_thumb_without_being_clicked(page: Page, running_server: str) -> None:
-    """回归：抽屉一开就排进几百条低优先缩略图采集，右侧八条状态行排在长队末尾，
-    于是"接了动画的行"一直是空白框。状态行要的是交互级优先级。"""
+    """Prioritize state-row thumbnails above the drawer backlog so bound states do not remain blank."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.evaluate("() => document.body.classList.remove('editor-empty')")
     page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
@@ -1039,8 +1029,7 @@ def test_assigned_rows_show_a_thumb_without_being_clicked(page: Page, running_se
 
 
 def test_image_bound_rows_show_a_thumb_without_being_clicked(page: Page, running_server: str) -> None:
-    """绑了用户图片的行同样要不点击就有缩略图。committedScene 对绑图格子给的是
-    root: 前缀，旧逻辑把它排除在缩略图请求之外 → 图一直哑成空白（2026-10-18 用户抓的）。"""
+    """Render user-image state thumbnails without a click, including root-prefixed committed scenes."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.evaluate("() => document.body.classList.remove('editor-empty')")
     page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
@@ -1100,9 +1089,7 @@ def test_image_bound_rows_show_a_thumb_without_being_clicked(page: Page, running
 
 
 def test_late_image_list_refresh_repaints_tiles(page: Page, running_server: str) -> None:
-    """副本恢复晚于抽屉渲染：清单后补 + refreshUserImages 之后，绑图格子的
-    副标题/缩略图必须立刻跟上，不用点任何东西（2026-10-18 用户抓的：
-    不点刷新就一直显示"跟随默认"）。"""
+    """Refresh image-bound state labels and thumbnails when library restoration finishes after rendering."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.evaluate("() => document.body.classList.remove('editor-empty')")
     page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
@@ -1156,8 +1143,7 @@ def test_late_image_list_refresh_repaints_tiles(page: Page, running_server: str)
 
 
 def test_export_zone_box_marks_the_content_bounds(page: Page, running_server: str) -> None:
-    """台面淡蓝虚线框 + 网格线 = 导出可见区提示：透明边距看不出内容边界，
-    框补上这个信息。虚线框边缘有描边、框内有网格线、框外保持全透明。"""
+    """Outline and grid the export region while leaving its surrounding transparent area clear."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.evaluate("() => document.body.classList.remove('editor-empty')")
     page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
@@ -1227,8 +1213,7 @@ def test_export_zone_box_marks_the_content_bounds(page: Page, running_server: st
 
 
 def test_stage_close_button_sits_at_the_right_edge(page: Page, running_server: str) -> None:
-    """关闭按钮必须在头部右缘。st-hint 删除后推力改由 st-title 的
-    margin-right:auto 承担——回归就是它贴到了标题旁边（2026-10-20 用户抓的）。"""
+    """Keep the close button at the header right edge after removal of the former hint element."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.evaluate("() => document.body.classList.remove('editor-empty')")
     page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
@@ -1259,8 +1244,7 @@ def test_stage_close_button_sits_at_the_right_edge(page: Page, running_server: s
 
 
 def test_image_carousel_appends_and_removes(page: Page, running_server: str) -> None:
-    """轮播：同一格再赋一张 = 追加不是替换；已绑图片行可摘单张、可清空。
-    追加走 assignImage（拖拽/点击同一入口），删减只在这一行做。"""
+    """Append images to a state carousel through assignImage and allow individual or full removal."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.evaluate("() => document.body.classList.remove('editor-empty')")
     page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
@@ -1338,9 +1322,7 @@ def test_image_carousel_appends_and_removes(page: Page, running_server: str) -> 
 
 
 def test_state_tiles_capture_thumbs_at_their_start_frame(page: Page, running_server: str) -> None:
-    """格子缩略图采"起始手柄指的那一帧"：同一条动画不同起点的格子各采各的，
-    采集方（thumbFor）要拿到 {startAt}，缓存按起点拆开（2026-10-18 用户抓的：
-    缩略图一直是动画开头那帧，和实际播放对不上）。"""
+    """Capture each state thumbnail at its own start handle and key the cache by that start time."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.evaluate("() => document.body.classList.remove('editor-empty')")
     page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
@@ -1396,8 +1378,7 @@ def test_state_tiles_capture_thumbs_at_their_start_frame(page: Page, running_ser
 
 
 def test_rebinding_a_tile_does_not_stack_the_previous_preview(page: Page, running_server: str) -> None:
-    """换绑后格子画布必须清底再画：putFrame 走 drawImage 合成、画布又是复用的，
-    透明背景的帧叠在上一绑定的帧上 = 多重曝光（2026-10-19 用户抓的）。"""
+    """Clear reused state canvases before compositing transparent frames from a new binding."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.evaluate("() => document.body.classList.remove('editor-empty')")
     page.evaluate("""async () => { window.__STAGE_ZH = (await (await fetch('/static/locales/zh-CN.json')).json()).emoteMaker; return 1; }""")
@@ -1461,7 +1442,7 @@ def test_rebinding_a_tile_does_not_stack_the_previous_preview(page: Page, runnin
 
 
 def test_a_long_hover_drag_on_a_library_row_does_not_commit(page: Page, running_server: str) -> None:
-    """抽屉行的真实回归：长按起拖 → 停留超过旧窗口 → 松手 → 紧跟的 click 不能改图。"""
+    """Suppress the click after releasing a long drawer drag even when the old timeout has elapsed."""
     _boot(page, running_server)
     _open_library(page)
     page.wait_for_timeout(200)

@@ -1,4 +1,4 @@
-"""用户图片页签：胶囊切换、导入、赋格。"""
+"""Test the user-image tab switch, import flow and state assignments."""
 from __future__ import annotations
 
 import io
@@ -18,7 +18,7 @@ def _template() -> bytes:
 
 
 def _open_stage(page: Page, running_server: str, images=None) -> None:
-    """导入模板，注入图片列表并记录贴图上传请求。"""
+    """Import a template, inject its image list and record texture-upload requests."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.set_input_files("#template-archive-file", {
         "name": "first.zip", "mimeType": "application/zip", "buffer": _template(),
@@ -93,7 +93,7 @@ def test_capsule_switches_between_library_and_images(page: Page, running_server:
 
 
 def test_import_persists_into_the_template_copy(page: Page, running_server: str) -> None:
-    """导入走真实入口（File + change）：页面层把 PNG POST 进副本（StageImages/ 路径）。"""
+    """Import a PNG through the file/change entry point and persist it under StageImages/."""
     images = []
     _open_stage(page, running_server, images=images)
     _switch_to_images(page)
@@ -219,8 +219,7 @@ def test_gif_stage_image_survives_reload_and_exports_timed_frames(
 
 
 def test_seeded_image_renders_and_click_assigns(page: Page, running_server: str) -> None:
-    """表演台侧：用户图片格渲染缩略图与名字，点击赋给选中的状态
-    （图上出现 source.image 节点）。"""
+    """Show image thumbnails and names, then assign the selected image as a source.image node."""
     images = [{"id": "img-mine", "label": "我的图片.png", "thumb": ""}]
     _open_stage(page, running_server, images=images)
     _switch_to_images(page)

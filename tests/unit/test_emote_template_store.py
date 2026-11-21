@@ -1,12 +1,9 @@
 # -*- coding: utf-8 -*-
-"""「导入即拷副本」的存储规则：覆盖语义、真实占用、路径安全。
+"""Test replacement semantics, actual storage size and safe texture paths.
 
-存取本体（main_logic/emote_template_store.py）不依赖 FastAPI，直接用 tmp_path 单测；
-路由层只补两件事：multipart 的对齐解析、错误码。规则本身在这里钉死：
-
-- 同键再导一次 = 原地替换，不会攒出第二份；
-- bytes 一律来自 stat，不是保存时记的数；
-- 贴图路径永远是仓库内部相对路径。
+The storage layer uses temporary directories without FastAPI. Route tests cover
+multipart parsing and response errors. Importing an existing key replaces its
+copy, reported sizes come from stat, and texture paths remain within the copy.
 """
 
 from __future__ import annotations
@@ -633,7 +630,7 @@ def test_reimport_keeps_session_artwork_and_rejects_external_model_textures(clie
 
 
 def test_late_textures_merge_into_the_existing_copy(store):
-    """导入之后才补的贴图：同路径覆盖、其余保留；没有副本时明确拒绝。"""
+    """Merge late textures by path, retain other files and reject uploads without a saved copy."""
     key = "k"
     store.save(key, _zip())
     with pytest.raises(EmoteTemplateStoreError):

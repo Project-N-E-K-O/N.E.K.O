@@ -1,9 +1,8 @@
-"""Localization reconciliation for the emote maker.
+"""Reconcile all emote-maker localization references against eight locales.
 
-The failure mode this exists for: labels are referenced through variables
-(例如 `t(stateLabel(key))`), so scripts/check_i18n.py cannot see them —
-a missing key puts a raw dotted path on screen while CI stays green. So the key set is
-enumerated from the sources here and compared against all eight locale files.
+Dynamic expressions such as t(stateLabel(key)) are invisible to the static
+scanner. Enumerating their keys here prevents untranslated dotted paths from
+reaching the interface while static checks remain green.
 """
 
 from __future__ import annotations
@@ -20,11 +19,7 @@ LOCALES = ['en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW']
 
 
 def _referenced_keys() -> set[str]:
-    """对账全部 emoteMaker 键：JS 字面量 + HTML 的 data-i18n* + 动态拼接的状态名。
-
-    守卫原来只扫节点编辑器两个模块，于是 emote_maker.js 与页面里新加的键可以静默漏掉
-    —— 有一批键连中文兜底都没有，界面会直接露出裸键名。这里把范围扩到所有来源。
-    """
+    """Check literal, HTML and dynamically assembled emoteMaker keys across all editor sources."""
     keys: set[str] = set()
     for name in ('emote_maker.js', 'emote_node_graph.js',
                  'emote_state_stage.js',
@@ -51,7 +46,7 @@ def _referenced_keys() -> set[str]:
 
 
 def test_every_emote_key_exists_in_all_eight_locales() -> None:
-    """扫描器看不见动态键，所以这里按字面量枚举出来逐个查。"""
+    """Enumerate dynamic localization keys that the static scanner cannot discover."""
     keys = _referenced_keys()
     assert keys, '应当能枚举出 emote 引用的键'
     for lang in LOCALES:
@@ -62,7 +57,7 @@ def test_every_emote_key_exists_in_all_eight_locales() -> None:
 
 
 def test_locale_files_stay_line_aligned() -> None:
-    """check_i18n_sync.py 要求 8 个文件逐行对齐；这里提前拦住。"""
+    """Require identical key ordering in all eight locale files before the sync gate runs."""
     counts = set()
     for lang in LOCALES:
         raw = (ROOT / 'static' / 'locales' / f'{lang}.json').read_text(encoding='utf-8')
@@ -81,11 +76,7 @@ REVEAL = """() => {
 
 
 def test_no_raw_key_leaks_into_the_visible_page(page: Page, running_server: str) -> None:
-    """页面上任何一处文案都该走过 t()；漏一个键就是一串点号路径印在脸上。
-
-    静态对账只能覆盖"能被正则看见的引用"。这条是真的把页面打开、把编辑区里的文字
-    逐个扫一遍——两边各漏各的，所以都要有。
-    """
+    """Scan the rendered editor for raw localization keys as well as checking static references."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.wait_for_timeout(400)
     page.evaluate(REVEAL)

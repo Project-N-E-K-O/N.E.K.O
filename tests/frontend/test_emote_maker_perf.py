@@ -1,9 +1,9 @@
-"""页面性能守卫（这些数字都是量出来的，不是"感觉更快"）。
+"""Guard measured frontend performance regressions.
 
-背景：播放循环每帧都无条件写 DOM，实测 1 秒里 122 次 textContent + 122 次
-setAttribute；表演台拖一次起止手柄会重建八行（30 次拖动 = 14 次
-replaceChildren + 108 次 querySelectorAll）。两者都已改成"变了才写"，
-这里钉住，别被人顺手改回去。
+The playback loop previously wrote textContent and setAttribute 122 times each
+per second. Thirty range-handle moves rebuilt state rows through fourteen
+replaceChildren and 108 querySelectorAll calls. Updates should occur only when
+the displayed values change.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ DELTA = """(base) => {
 
 
 def test_playing_does_not_rewrite_unchanged_dom(page: Page, running_server: str) -> None:
-    """播放循环每帧都会跑控制条更新：值没变就不该写。"""
+    """Avoid DOM writes when the per-frame playback readings have not changed."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.wait_for_timeout(400)
     page.evaluate(INSTR)
@@ -51,7 +51,7 @@ def test_playing_does_not_rewrite_unchanged_dom(page: Page, running_server: str)
 
 
 def test_dragging_the_range_handles_rebuilds_nothing(page: Page, running_server: str) -> None:
-    """拖起止手柄是最高频的交互：只该重绘画布，不该拆建 DOM。"""
+    """Redraw the canvas during range dragging without rebuilding its DOM."""
     import io
     src = io.open('tests/frontend/test_emote_state_stage.py', encoding='utf-8').read()
     boot_js = src.split('BOOT = """')[1].split('"""')[0]

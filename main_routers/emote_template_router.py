@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Emote template package inspection endpoints.
+"""Inspect and persist emote template packages.
 
-两个职责， deliberately separate：
-
-- ``/import`` 保持只读：上传的 Spine ZIP 在内存里校验、生成渲染中立的
-  manifest，不落盘。
-- ``/library`` 是「导入即拷副本」：只保留所选 Spine 资源，使用内容标识命名
-  并保存到用户数据目录；编辑器会话图片另行存储。
+The import endpoint validates the supplied Spine ZIP in memory and returns a
+renderer-neutral manifest. Library endpoints save only the selected Spine
+resources under a content-derived identifier in the user data directory. Editor
+session images are stored separately.
 """
 
 from __future__ import annotations
@@ -798,7 +796,7 @@ def _unique_export_file(parent: Path, name: str) -> Path:
 
 @router.post("/export/folder")
 async def create_export_folder(body: ExportFolderBody, request: Request):
-    """在用户选好的目录里建一个不重名的子文件夹。只接受本页发起的请求。"""
+    """Create a unique child folder in the selected directory for a scoped editor request."""
 
     rejected = _reject_unscoped_export(request)
     if rejected is not None:

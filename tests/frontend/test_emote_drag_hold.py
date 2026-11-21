@@ -1,7 +1,7 @@
-"""长按圆环 + 选项卡样式的拖拽影（NekoEmoteDragHold）。
+"""Test the long-press ring and option-card drag ghost.
 
-这个模块单独成文件就是为了能在页面里直接被驱动：动画列表那份长按逻辑要有真模板
-才进得去测试，而圆环/ghost 这两个纯前端的东西不该因此没人管。
+These frontend interactions can be driven independently of a real animation
+template, keeping ring and ghost behavior covered by browser tests.
 """
 
 from __future__ import annotations
@@ -124,7 +124,7 @@ def test_a_full_ring_pops_before_the_drag_starts(page: Page, running_server: str
 
 
 def test_the_ghost_is_the_option_card_not_a_label(page: Page, running_server: str) -> None:
-    """只有一行文字的 ghost 会让人以为自己在拖空气。"""
+    """Render the dragged option card rather than a text-only ghost."""
     _open(page, running_server)
     built = page.evaluate(
         """() => {
@@ -156,7 +156,7 @@ def test_the_ghost_is_the_option_card_not_a_label(page: Page, running_server: st
 
 
 def test_the_ring_still_fills_without_motion_when_reduced(page: Page, running_server: str) -> None:
-    """进度是信息：减少动效只是不放缩，不能连"还要按多久"都不告诉人。"""
+    """Preserve visible hold progress when reduced motion disables scaling."""
     page.emulate_media(reduced_motion="reduce")
     _open(page, running_server)
     x, y = _centre(page)
@@ -175,7 +175,7 @@ def test_the_ring_still_fills_without_motion_when_reduced(page: Page, running_se
 
 
 def test_a_normal_click_never_shows_the_ring(page: Page, running_server: str) -> None:
-    """防误触：按下就闪一个圆环，会让人以为点坏了。"""
+    """Delay the hold ring so an ordinary pointer press does not flash it."""
     _open(page, running_server)
     x, y = _centre(page)
     page.mouse.move(x, y)
@@ -191,7 +191,7 @@ def test_a_normal_click_never_shows_the_ring(page: Page, running_server: str) ->
 
 
 def test_the_ghost_floats_and_does_not_move_the_page(page: Page, running_server: str) -> None:
-    """ghost 一旦落回文档流：既看不见，又会把页面撑长（看着像"拖动改变了布局"）。"""
+    """Keep the drag ghost outside document flow so dragging cannot stretch the page."""
     _open(page, running_server)
     before = page.evaluate("() => document.documentElement.scrollHeight")
     shape = page.evaluate(
@@ -223,7 +223,7 @@ def test_the_ghost_floats_and_does_not_move_the_page(page: Page, running_server:
 
 
 def test_the_ring_outranks_the_stage_overlay(page: Page, running_server: str) -> None:
-    """在表演台里长按时圆环被面板挡住，就是"进阶编辑没这个效果"的真相。"""
+    """Keep the hold ring visible above the state-stage overlay."""
     _open(page, running_server)
     layer = page.evaluate(
         """() => {
@@ -242,8 +242,7 @@ def test_the_ring_outranks_the_stage_overlay(page: Page, running_server: str) ->
 
 
 def test_a_native_dragstart_does_not_steal_our_drag(page: Page, running_server: str) -> None:
-    """卡片里有 img：浏览器一接管，我们的 pointermove 就断、ghost 刚建就被移除，
-    而且它会顺手自动滚动列表（看着像"拖动改变了页面布局"）。"""
+    """Prevent native image dragging from interrupting pointer events and scrolling the list."""
     _open(page, running_server)
     x, y = _centre(page)
     page.mouse.move(x, y)
@@ -261,7 +260,7 @@ def test_a_native_dragstart_does_not_steal_our_drag(page: Page, running_server: 
 
 
 def test_the_cursor_stays_grabbing_over_any_widget(page: Page, running_server: str) -> None:
-    """指针被下面的按钮改成 pointer/text 时，人会以为松手是点到那个东西上。"""
+    """Keep the drag cursor when the pointer crosses buttons or text controls."""
     _open(page, running_server)
     page.evaluate("() => document.body.classList.add('is-pack-dragging')")
     states = page.evaluate(
@@ -301,7 +300,7 @@ def test_the_ghost_swings_with_the_pointer_and_settles(page: Page, running_serve
 
 
 def test_the_basic_rows_are_addressable_as_drop_targets(page: Page, running_server: str) -> None:
-    """落点解析要按 data-state-key 认格子 —— 以前只读不写，拖上去等于没反应。"""
+    """Resolve drop targets by data-state-key so dropping updates the intended state."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.wait_for_timeout(400)
     page.evaluate("() => document.querySelector('#inspector-tab-export')?.click()")
@@ -341,8 +340,7 @@ def test_the_basic_rows_are_addressable_as_drop_targets(page: Page, running_serv
 
 
 def test_the_click_guard_starts_counting_at_release(page: Page, running_server: str) -> None:
-    """抑制窗口必须从"松手"开始算。从"起拖"算的话，按住多悬停一会儿再松手，
-    窗口已经过期，松手后紧跟的 click 就被当成一次选择。"""
+    """Start click suppression on release, not drag start, so long holds cannot outlast it."""
     _open(page, running_server)
     verdict = page.evaluate(
         """async () => {

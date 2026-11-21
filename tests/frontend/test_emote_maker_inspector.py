@@ -1,10 +1,8 @@
-"""右侧检视栏「调整」页 + 导出提示环的行为。
+"""Test inspector adjustment controls and the export drop hint.
 
-两条都是真故障换来的：
-1. 拖动滑杆时整块 DOM 被重建 —— 滚动容器内容瞬间变矮，scrollTop 被夹小，
-   于是"一拖就跳回最上面"。
-2. 「覆盖默认值」关着时四条滑杆根本不参与绘制，但导入了模板就永远不禁用，
-   看上去就是"滑杆坏了 / 重置没有作用"。
+Rebuilding slider DOM used to shorten the scroll container and clamp its scroll
+position. Sliders also remained enabled while their default-value override was
+disabled, although they could not affect the rendered result.
 """
 
 from __future__ import annotations
@@ -39,7 +37,7 @@ def adjust_page(page: Page, running_server: str) -> Page:
 
 
 def test_dragging_a_slider_does_not_rebuild_the_panel(adjust_page: Page) -> None:
-    """拖动滑杆只许改读数：一个节点都不许被换掉（换掉就会把滚动位置夹回去）。"""
+    """Update slider readings without replacing DOM nodes or resetting scroll position."""
     outcome = adjust_page.evaluate(r"""() => {
         const host = document.querySelector('#template-skin-controls');
         const keepAlive = host.querySelector('.template-compat-row');
@@ -68,7 +66,7 @@ def test_dragging_a_slider_does_not_rebuild_the_panel(adjust_page: Page) -> None
 
 
 def test_reset_is_only_offered_when_there_is_something_to_reset(adjust_page: Page) -> None:
-    """重置：有东西可复位才可点，复位完自己灰回去（不再是个按了没反应的按钮）。"""
+    """Enable reset only while there is a changed value, then disable it after restoration."""
     adjust_page.evaluate("""() => {
         const input = document.querySelector('#adjust-x');
         input.value = '40';
@@ -103,7 +101,7 @@ def test_a_range_drag_is_one_undo_step(adjust_page: Page) -> None:
 
 
 def test_unchecking_overwrite_greys_out_the_inert_sliders(adjust_page: Page) -> None:
-    """「覆盖默认值」关着时四条滑杆不参与绘制，就必须禁用 —— 而不是让人拖一条不动的滑杆。"""
+    """Disable all four transform sliders while their default-value override is off."""
     adjust_page.evaluate("""() => {
         const box = document.querySelector('#adjust-overwrite');
         box.checked = false;
@@ -123,13 +121,12 @@ def test_unchecking_overwrite_greys_out_the_inert_sliders(adjust_page: Page) -> 
 
 
 def test_drop_hint_ring_is_gone_once_the_breathe_finishes(page: Page, running_server: str) -> None:
-    """呼吸完就该消失：`.is-drop-hint` 上不能再留静态 border-color。
+    """Remove the static drop-hint border after its breathing animation.
 
-    这条查的是**已生效的样式表**而不是屏幕：形象包面板要求 Spine 运行时可用才渲染
-    （`renderPackPanel` 里的 `available`），合成模板没有可用的骨骼，用元素断言会
-    变成悄悄跳过。故障本身就是那条静态值 —— 动画跑完两下之后它还在，于是虚线一直
-    亮到松手。查 CSSOM 同样能抓住，而且带上这份文件里"同名规则后面那条才算"的坑。
-    """
+        Inspect the effective CSSOM rule: synthetic templates cannot render the
+        runtime-dependent pack panel, and later duplicate selectors can override
+        earlier rules. A persistent border would stay visible until release.
+        """
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     seen = page.evaluate(r"""() => {
         const alphaOf = (value) => {

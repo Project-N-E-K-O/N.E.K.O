@@ -382,7 +382,7 @@ def _drag_dock_to_the_limit(page: Page) -> None:
 
 
 def test_default_layout_fits_vertically(page: Page, running_server: str) -> None:
-    """不拖任何东西时，播放/进度条必须本来就在窗口里。"""
+    """Keep playback and progress controls inside the default viewport."""
     for width, height in ((1600, 1024), (1400, 900), (1280, 800)):
         _open(page, running_server, width, height)
         box = page.evaluate(GEOMETRY)
@@ -396,13 +396,12 @@ def test_default_layout_fits_vertically(page: Page, running_server: str) -> None
 def test_playback_controls_stay_reachable_when_dock_is_maximised(
     page: Page, running_server: str
 ) -> None:
-    """回归：行手柄的上限曾按 clientHeight 算，而 clientHeight 含上下 padding，
-    于是每个窗口都稳定多出一截，把播放/进度条顶到窗口外（且 dock 被 overflow 裁切）。
+    """Exclude vertical padding when clamping the dock resize handle.
 
-    这里刻意用**严格**断言：拖到上限意味着"正好放得下"，所以不允许任何溢出，也不许
-    拿"面板可以滚动"当逃生条件 —— 上一版这条测试正是加了那句或条件，才在 padY=0 的
-    变异下依旧全绿，白给了一份假信心。面内滚动只对默认状态是合法兜底。
-    """
+        At its maximum height the dock must fit without clipping or overflow;
+        allowing a scroll fallback here would hide the original regression.
+        Scrolling remains a valid fallback only for the default layout.
+        """
     for width, height in ((1600, 1024), (1400, 900), (1280, 800), (1200, 720), (1120, 660)):
         _open(page, running_server, width, height)
         _drag_dock_to_the_limit(page)
@@ -449,13 +448,12 @@ def test_short_workspace_scrolls_only_the_action_list(page: Page, running_server
 def test_stacked_mode_keeps_the_playback_bar_intact(
     page: Page, running_server: str
 ) -> None:
-    """回归：≤1080 堆叠态下面板变成整宽，方形画布跟着长到一千多像素，
-    而 .animation-dock 在四代规则里都被写成 min-height:0 —— 于是它能被 flex
-    压成十几像素，播放条的控件直接没了（内容本来要 108px）。
+    """Keep a usable dock height when narrow windows stack the panels.
 
-    堆叠态允许整页滚动（这是它的设计），所以这里**不**断言"在视口内"，
-    只断言 dock 没被裁、有该有的高度，并且画布不再按宽度无限长。
-    """
+        Page scrolling is intentional in this layout. Assert an unclipped dock
+        with room for its controls, and bound the square canvas height so it
+        cannot consume the entire stacked panel.
+        """
     for width in (1080, 1000, 900, 820):
         _open(page, running_server, width, 760)
         box = page.evaluate(GEOMETRY)

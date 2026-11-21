@@ -1,10 +1,8 @@
-"""The avatar-pack panel has exactly two surfaces: 基础 (two scene picks) and 进阶 (the node
-editor overlay). The earlier card-tree is gone on purpose — it was both ugly and a second
-source of truth, while export only ever reads a graph.
+"""Test the basic scene picks and advanced node-editor overlay.
 
-These tests pin the things most likely to rot: that basic mode compiles to a graph rather
-than a parallel bake path, and that leaving the talking scene empty means no talking image
-(which is what makes the runtime keep playing idle instead of flickering).
+Basic mode must compile to the same graph consumed by export rather than a
+parallel rendering path. An empty talking scene must produce no talking image,
+allowing the runtime to keep playing idle without flickering.
 """
 
 from __future__ import annotations
@@ -61,9 +59,7 @@ def test_the_old_card_tree_is_really_gone(page: Page, running_server: str) -> No
 
 
 def test_stage_open_button_is_flat(page: Page, running_server: str) -> None:
-    """打开状态表演台按钮压平成单色：渐变+大投影在面板圆角里被裁出硬边
-    （2026-10-19 用户抓的）。只看计算样式——这份 CSS 里同选择器有多个世代，
-    只有最后一条算数。"""
+    """Use a flat stage-open button background to avoid clipped gradient and shadow edges."""
     _open(page, running_server)
     style = page.evaluate("""() => {
         const btn = document.querySelector('#open-state-stage-btn');
@@ -75,8 +71,7 @@ def test_stage_open_button_is_flat(page: Page, running_server: str) -> None:
 
 
 def test_input_focus_and_select_styling(page: Page, running_server: str) -> None:
-    """输入框保持药丸焦点。下拉闭合控件是同款药丸，展开后是自绘菜单：
-    点选项写回 select，隐藏项不进菜单，脚本改 value 时按钮文字跟着变。"""
+    """Preserve pill-shaped focus and synchronize custom menus with their underlying selects."""
     _open(page, running_server)
     page.evaluate("() => document.querySelector('#inspector-tab-export').click()")
     page.click("#pack-name")   # 真实交互聚焦；文本框任何聚焦方式都算 focus-visible
@@ -124,8 +119,7 @@ def test_input_focus_and_select_styling(page: Page, running_server: str) -> None
 
 
 def test_opening_batch_export_does_not_squeeze_the_panel(page: Page, running_server: str) -> None:
-    """展开批量导出会把右侧面板撑出滚动条。滚动条若是临时冒出来的，
-    内容宽度会少掉一截，格式药丸之类会一起变短。"""
+    """Reserve scrollbar space so expanding batch export does not shrink inspector controls."""
     _open(page, running_server)
     page.evaluate("() => document.querySelector('#inspector-tab-export').click()")
     metrics = page.evaluate("""() => {
@@ -151,8 +145,7 @@ def test_opening_batch_export_does_not_squeeze_the_panel(page: Page, running_ser
 
 
 def test_empty_talking_scene_stays_quiet_instead_of_lying(page: Page, running_server: str) -> None:
-    """留空的说话场景不再解释"继续播待机"——那行说明已按要求退役，宁可不说也不含糊。
-    用户能看出来的部分：摘要行收起（隐藏/空），别处也不许再出现那两句。"""
+    """Keep the empty-talking summary and its retired explanatory copy absent."""
     panel = _open(page, running_server)
     # 留空的非必填槽位在运行时会回落，所以槽位标签仍要点明"跟随"
     assert "跟随" in panel["talkingBlankLabel"] or "回落" in panel["talkingBlankLabel"],         panel["talkingBlankLabel"]
@@ -197,8 +190,7 @@ def test_export_has_a_single_bake_path(page: Page, running_server: str) -> None:
     assert "currentBakeGraph()" in source, "两种编辑方式应汇流到同一张图"
 
 def test_page_loads_every_emote_module_it_needs(page: Page, running_server: str) -> None:
-    """回归防线：曾经有模块写好了、测试里靠 add_script_tag 注入才通过、但页面根本没加载它，
-    于是真实页面上编辑器一点就报"未加载"。这里要求页面自身把依赖装齐。"""
+    """Load editor dependencies through the page itself rather than injecting them only in tests."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     needed = {
         "NekoEmotePngtuberPack": "emote_pngtuber_pack.js",
@@ -216,10 +208,7 @@ def test_page_loads_every_emote_module_it_needs(page: Page, running_server: str)
 
 
 def test_editor_opens_from_the_button_without_injection(page: Page, running_server: str) -> None:
-    """上一条查的是脚本标签，这条查的是真点得动 —— 两者会各自失效。
-
-    没有模板时"点开表演台"做不到，但那不是把按钮做死的理由：必须给出提示。
-    """
+    """Make the stage button actionable and show feedback when no template is selected."""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.wait_for_timeout(300)
     page.evaluate(REVEAL)

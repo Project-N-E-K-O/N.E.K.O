@@ -56,7 +56,7 @@ def _priority(raw_pngtuber: dict) -> object:
 
 
 def test_state_priority_survives_upload_normalisation() -> None:
-    """不加进白名单就会被静默剥掉：界面上选了，运行时读到的还是默认值。"""
+    """Preserve state priority through upload normalization instead of silently falling back to defaults."""
     assert _priority({"idle_image": "idle.png", "state_priority": "emotion"}) == "emotion"
     assert _priority({"idle_image": "idle.png", "state_priority": "  EMOTION  "}) == "emotion"
     assert _priority({"idle_image": "idle.png", "state_priority": "talking"}) == "talking"
