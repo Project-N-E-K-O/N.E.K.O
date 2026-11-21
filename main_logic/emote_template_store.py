@@ -81,6 +81,7 @@ class EmoteTemplateArchiveStore:
     def _recover_retired(self) -> None:
         """Recover a complete old copy if directory publication was interrupted."""
         with _replacement_lock:
+            blocked = set()
             # Generated names include the retirement time. Prefer the newest
             # candidate before removing older copies of the same key.
             for retired in sorted(self.root.glob('.retired-*'), reverse=True):
@@ -89,18 +90,23 @@ class EmoteTemplateArchiveStore:
                 meta = self._read_meta(retired)
                 if not meta or not (retired / ARCHIVE_NAME).is_file():
                     continue
-                final = self._entry_dir(str(meta['key']))
+                key = str(meta['key'])
+                if key in blocked:
+                    continue
+                final = self._entry_dir(key)
                 if not final.exists():
                     try:
                         os.replace(retired, final)
-                    except OSError as exc:
-                        raise EmoteTemplateStoreError('模板副本恢复失败') from exc
+                    except OSError:
+                        blocked.add(key)
+                        print('[emote-template] Skipped an inaccessible recovery candidate')
                 elif ((final / ARCHIVE_NAME).is_file()
                       and (self._read_meta(final) or {}).get('key') == meta['key']):
                     try:
                         shutil.rmtree(retired)
-                    except OSError as exc:
-                        raise EmoteTemplateStoreError('旧模板副本清理失败') from exc
+                    except OSError:
+                        blocked.add(key)
+                        print('[emote-template] Skipped an inaccessible retired copy')
 
     # ── 路径解析 ────────────────────────────────────────────────────────────
     def _entry_dir(self, key: str) -> Path:

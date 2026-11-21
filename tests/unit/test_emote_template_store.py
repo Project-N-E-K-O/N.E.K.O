@@ -101,6 +101,47 @@ def test_recovery_chooses_the_newest_candidate_before_retiring_old_copies(store)
     assert not list(store.root.glob('.retired-*'))
 
 
+@pytest.mark.parametrize('published', [False, True])
+def test_inaccessible_recovery_candidate_does_not_block_the_library(store, monkeypatch, capsys, published):
+    store.save('healthy', _zip('healthy'))
+    store.save('recovering', _zip('old'))
+    oldest = store.root / '.retired-1000-old'
+    store._entry_dir('recovering').rename(oldest)
+    store.save('recovering', _zip('new'))
+    latest = store.root / '.retired-2000-new'
+    store._entry_dir('recovering').rename(latest)
+    if published:
+        store.save('recovering', _zip('published'))
+    original = store_module.shutil.rmtree if published else store_module.os.replace
+
+    def unavailable(path, *args, **kwargs):
+        if Path(path) == latest:
+            raise PermissionError('temporarily locked')
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        if published:
+            patch.setattr(store_module.shutil, 'rmtree', unavailable)
+        else:
+            patch.setattr(store_module.os, 'replace', unavailable)
+        reopened = EmoteTemplateArchiveStore(store.root)
+        expected = {'healthy', 'recovering'} if published else {'healthy'}
+        assert {entry['key'] for entry in reopened.list()} == expected
+        assert reopened.archive_path('healthy').read_bytes() == _zip('healthy')
+        assert reopened.delete('healthy')['freedBytes'] > 0
+        if published:
+            with pytest.raises(EmoteTemplateStoreError, match='删除未完成'):
+                reopened.delete('recovering')
+            assert reopened.has('recovering')
+        else:
+            assert not reopened.has('recovering')
+        assert latest.is_dir()
+    assert '[emote-template]' in capsys.readouterr().out
+    repaired = EmoteTemplateArchiveStore(store.root)
+    assert repaired.archive_path('recovering').read_bytes() == _zip('published' if published else 'new')
+    assert not list(store.root.glob('.retired-*'))
+
+
 def test_texture_merge_rejects_case_conflicts_without_losing_existing_files(store):
     store.save('case', _zip(), [('StageImages/A.png', b'first')])
     with pytest.raises(EmoteTemplateStoreError, match='大小写冲突'):
