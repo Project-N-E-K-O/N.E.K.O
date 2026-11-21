@@ -208,6 +208,10 @@ class WorkshopStaticFiles(StaticFiles):
     served too) are tried in order. Starlette's own ``lookup_path`` does the lookup,
     which rejects absolute paths and anything whose real path (after following
     symlinks) leaves the root being tried.
+
+    Registered roots only grow during a run (a library stays served after its last
+    item is unsubscribed, until restart). If the same item folder name exists in two
+    roots, the earlier root wins.
     """
 
     def __init__(
