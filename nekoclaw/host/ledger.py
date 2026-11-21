@@ -1436,11 +1436,14 @@ class Ledger:
             [*changes.values(), commission_id],
         )
         moved: dict[str, Any] = {"from": current.status, "to": status, "reason": reason}
-        if status == "waiting_user" and changes.get("pending_question"):
+        # The question it waits on: the one given with the move, or else the
+        # one it has (written before, with ``update``).
+        asked = changes["pending_question"] if "pending_question" in changes else current.pending_question
+        if status == "waiting_user" and asked:
             # What it asks, kept with the move: the commission keeps its
             # question only while it waits, and a replay shows it after.
             # Never what it would do or with what (``question_text``).
-            moved["question"], moved["question_kind"] = question_text(changes.get("pending_question"))
+            moved["question"], moved["question_kind"] = question_text(asked)
         self._event(conn, commission_id, "status", moved)
         if status in ENDED_STATUSES:
             # What it asked to be woken for goes with it, in the same
@@ -1530,17 +1533,18 @@ class Ledger:
         if unknown:
             raise ValueError(f"fields that cannot be updated: {sorted(unknown)}")
 
-        def work(conn: sqlite3.Connection) -> Commission | None:
-            if values:
-                changes = {**values, "updated_at": self._clock()}
-                assignments = ", ".join(f"{name} = ?" for name in changes)
-                conn.execute(
-                    f"UPDATE commissions SET {assignments} WHERE id = ?",
-                    [*changes.values(), commission_id],
-                )
-            return _commission(conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone())
+        return await self.run(lambda conn: self._write(conn, commission_id, values))
 
-        return await self.run(work)
+    def _write(self, conn: sqlite3.Connection, commission_id: str, values: dict[str, Any]) -> Commission | None:
+        """Write these columns (none of them the status) and return the commission; None for an unknown one."""
+        if values:
+            changes = {**values, "updated_at": self._clock()}
+            assignments = ", ".join(f"{name} = ?" for name in changes)
+            conn.execute(
+                f"UPDATE commissions SET {assignments} WHERE id = ?",
+                [*changes.values(), commission_id],
+            )
+        return _commission(conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone())
 
     async def file_under_project(self, commission_id: str, project: str, *, workdir: str | None = None) -> Commission | None:
         """Put a commission filed with no project under one, and note it, in one transaction.
@@ -1551,16 +1555,16 @@ class Ledger:
         Both are on record, or neither. None for an unknown commission.
         """
 
+        values: dict[str, Any] = {"project": project}
+        if workdir is not None:
+            values["workdir"] = workdir
+
         def work(conn: sqlite3.Connection) -> Commission | None:
-            changes: dict[str, Any] = {"project": project, "updated_at": self._clock()}
-            if workdir is not None:
-                changes["workdir"] = workdir
-            assignments = ", ".join(f"{name} = ?" for name in changes)
-            moved = conn.execute(f"UPDATE commissions SET {assignments} WHERE id = ?", [*changes.values(), commission_id])
-            if not moved.rowcount:
+            filed = self._write(conn, commission_id, values)
+            if filed is None:
                 return None
             self._event(conn, commission_id, "filed_under_project", {"project": project})
-            return _commission(conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone())
+            return filed
 
         return await self.run(work)
 

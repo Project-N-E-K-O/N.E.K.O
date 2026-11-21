@@ -224,6 +224,21 @@ async def test_back_to_waiting_for_the_user_with_nothing_asked_is_no_question(le
     assert _of(await _all(ledger), "started")[-1]["detail"] == {"from": "waiting_user"}
 
 
+async def test_a_question_written_before_the_move_is_the_one_recorded(ledger):
+    main = await _session(ledger, "main")
+    commission = await _working(ledger, main)
+    await ledger.update(commission.id, pending_question='{"kind": "confirmation", "question": "go on?"}')
+
+    assert (await ledger.transition(commission.id, "waiting_user")).applied
+    # Given with the move, the move's own wins; given as none, none is asked.
+    other = await _working(ledger, main, "other")
+    await ledger.update(other.id, pending_question='{"question": "old?"}')
+    assert (await ledger.transition(other.id, "waiting_user", pending_question=None)).applied
+
+    [asked] = _of(await _all(ledger), "asked_user")
+    assert (asked["commission_id"], asked["text"], asked["detail"]) == (commission.id, "go on?", {"question_kind": "confirmation"})
+
+
 async def test_a_question_too_deep_to_read_still_moves_the_commission(ledger):
     main = await _session(ledger, "main")
     commission = await _working(ledger, main)
