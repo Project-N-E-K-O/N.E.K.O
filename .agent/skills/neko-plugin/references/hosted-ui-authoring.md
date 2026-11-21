@@ -59,7 +59,7 @@ Manifest rules:
 - `id` defaults from the entry stem; use explicit ids for stable links.
 - `context` defaults to the surface id for `panel` and `guide`; set it explicitly when the Python context id differs.
 - `permissions` defaults to `["state:read", "config:read", "action:call"]` for panels and `["state:read"]` for guide/docs.
-- Valid permissions are `state:read`, `config:read`, `config:write`, `action:call`, `document:parse`, `logs:read`, and `runs:read`. `neko-plugin check` currently warns that `document:parse` is unrecognized ([#3809](https://github.com/Project-N-E-K-O/N.E.K.O/issues/3809)); that warning is wrong and can be ignored.
+- Valid permissions are `state:read`, `config:read`, `config:write`, `action:call`, `document:parse`, `logs:read`, and `runs:read`.
 - Add only the permissions the surface needs. `action:call` is required for Hosted TSX action calls.
 - Entry paths are resolved inside `<plugin_dir>` (the folder holding `plugin.toml`); path traversal is rejected.
 - The entry file must exist or the surface is marked unavailable.
