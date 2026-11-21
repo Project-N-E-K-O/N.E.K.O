@@ -280,10 +280,15 @@ describe('the built-in abilities tab', () => {
   })
 
   it('says that nothing here takes effect while it is all switched off', async () => {
-    api.getSwitches.mockResolvedValue(switches({ enabled: false }))
+    api.getSwitches.mockResolvedValue(switches({
+      enabled: false,
+      capabilities: { computer_use: { ready: false, reason: 'AGENT_PRECHECK_PENDING' }, browser_use: { ready: true } },
+    }))
     api.getBrowser.mockResolvedValue(browser())
     await mount(BuiltinTab)
     expect(byTest('builtin-needs-power')).toBeTruthy()
+    // The keyboard switch is off: why it could not be used is of no interest.
+    expect(byTest('keyboard-reason')).toBeNull()
   })
 
   it('tells why the model is not sent pictures', async () => {
