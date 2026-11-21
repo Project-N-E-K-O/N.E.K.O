@@ -493,10 +493,18 @@
         renderDetail(selectedUid ? pointByUid[selectedUid] : null);
         window.requestAnimationFrame(draw);
 
+        let ro = null;
         if (typeof ResizeObserver !== 'undefined') {
-            const ro = new ResizeObserver(function () { draw(); });
+            ro = new ResizeObserver(function () { draw(); });
             ro.observe(stage);
         }
+
+        return function unmount() {
+            if (ro) {
+                ro.disconnect();
+                ro = null;
+            }
+        };
     }
 
     window.nekoMemoryStarMap = {

@@ -7049,8 +7049,42 @@ class FactStore:
             )
         return ok
 
+    def _load_facts_locked(self, name: str) -> list[dict]:
+        """Load facts for ``name`` assuming caller ALREADY holds ``self._get_lock(name)``."""
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
+        if name in self._facts:
+            return self._facts[name]
+        path = self._facts_path(name)
+        if os.path.exists(path):
+            try:
+                with consistent_view_read(path):
+                    with open(path, encoding='utf-8') as f:
+                        data = json.load(f)
+                if isinstance(data, list):
+                    data = self._without_cold_copies(name, data)
+                    if self._migrate_v1_entity_values(data):
+                        try:
+                            assert_cloudsave_writable(
+                                self._config_manager,
+                                operation="migrate",
+                                target=f"memory/{name}/facts.json",
+                            )
+                            atomic_write_json(path, data, indent=2, ensure_ascii=False)
+                            logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
+                        except MaintenanceModeError as exc:
+                            logger.debug(f"[FactStore] {name}: 维护态跳过 facts.json 迁移落盘: {exc}")
+                    self._facts[name] = data
+                    return data
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"[FactStore] 加载 facts 文件失败: {e}")
+        self._facts[name] = []
+        return self._facts[name]
+
     async def aedit_fact_manual(self, name: str, fact_id: str, new_text: str) -> dict | None:
-        """Manually edit one active fact's text and invalidate its embedding cache."""
+        """Manually edit one active fact's text, recompute dedup hash, and clear embedding cache."""
+        from memory._embeddings.schema import clear_embedding_fields
+
         cleaned = str(new_text or "").strip()
         if not cleaned or len(cleaned) > 1000:
             raise ValueError("Fact text must be 1..1000 chars")
@@ -7062,7 +7096,7 @@ class FactStore:
                     operation="save",
                     target=f"memory/{name}/facts.json",
                 )
-                current = self.load_facts(name)
+                current = self._load_facts_locked(name)
                 target = None
                 for fact in current:
                     if isinstance(fact, dict) and fact.get("id") == fact_id:
@@ -7071,16 +7105,29 @@ class FactStore:
                 if target is None:
                     return None
                 target["text"] = cleaned
-                target.pop("embedding", None)
+                # Recompute exact-dedup hash preserving daily event_date & subject/scope salts.
+                ext = target.get("_external_import")
+                daily_date = (
+                    str(ext.get("event_date"))
+                    if isinstance(ext, dict) and ext.get("section") == "daily" and ext.get("event_date")
+                    else None
+                )
+                hash_input = f"{daily_date}\n{cleaned}" if daily_date else cleaned
+                subj = subject_from_entry(target)
+                if subj is not None:
+                    hash_input = f"{subj.key}\n{subj.scope}\n{hash_input}"
+                target["hash"] = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+                clear_embedding_fields(target)
                 target.pop("embedding_model", None)
                 target.pop("embedding_text_hash", None)
                 self.save_facts(name, _fact_lock_held=True)
                 return dict(target)
 
-        return await asyncio.to_thread(_edit)
+        async with self._get_persist_alock(name):
+            return await asyncio.to_thread(_edit)
 
     async def aarchive_fact_manual(self, name: str, fact_id: str) -> bool:
-        """Manually archive (forget) one active fact into facts_archive.json."""
+        """Manually archive (forget) one active fact with recall-honored retirement markers."""
         def _archive() -> bool:
             with self._get_lock(name):
                 assert_cloudsave_writable(
@@ -7088,7 +7135,7 @@ class FactStore:
                     operation="archive",
                     target=f"memory/{name}/facts_archive.json",
                 )
-                current = self.load_facts(name)
+                current = self._load_facts_locked(name)
                 kept: list[dict] = []
                 removed: dict | None = None
                 for fact in current:
@@ -7098,24 +7145,29 @@ class FactStore:
                     kept.append(fact)
                 if removed is None:
                     return False
-                removed["archived_at"] = datetime.now().isoformat()
+                now_iso = datetime.now().isoformat()
+                removed["archived_at"] = now_iso
+                removed["arbitration_archived_at"] = now_iso
+                removed["arbitration_reason"] = "manual_forget"
                 removed["archive_reason"] = "manual_forget"
                 archive_path = self._facts_archive_path(name)
                 existing_archive: list[dict] = []
                 if os.path.exists(archive_path):
-                    try:
-                        with open(archive_path, encoding="utf-8") as fh:
-                            loaded = json.load(fh)
-                        if isinstance(loaded, list):
-                            existing_archive = loaded
-                    except (OSError, json.JSONDecodeError):
-                        existing_archive = []
-                existing_archive.append(removed)
+                    with open(archive_path, encoding="utf-8") as fh:
+                        loaded = json.load(fh)
+                    if not isinstance(loaded, list):
+                        raise ValueError(
+                            f"facts_archive.json expected list, got {type(loaded).__name__}"
+                        )
+                    existing_archive = loaded
+                merged_archive = _merge_archive_entries(existing_archive, [removed])
                 atomic_write_json(
-                    archive_path, existing_archive, indent=2, ensure_ascii=False,
+                    archive_path, merged_archive, indent=2, ensure_ascii=False,
                 )
-                self._facts[name] = kept
+                # Mutate cached list in-place to preserve list identity for concurrent holders.
+                current[:] = kept
                 self.save_facts(name, _fact_lock_held=True)
                 return True
 
-        return await asyncio.to_thread(_archive)
+        async with self._get_persist_alock(name):
+            return await asyncio.to_thread(_archive)

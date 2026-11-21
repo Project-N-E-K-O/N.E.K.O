@@ -28,7 +28,7 @@ import os
 import re
 import secrets
 import shutil
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, ExitStack
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -181,6 +181,8 @@ def _restore_snapshot_files_sync(
     *,
     memory_dir: Path,
     max_keep: int = MEMORY_BROWSER_SNAPSHOT_MAX_KEEP,
+    fact_store=None,
+    directives_manager=None,
 ) -> dict[str, Any]:
     if not _SAFE_SNAPSHOT_ID_RE.match(str(snapshot_id or "")):
         raise ValueError("Invalid snapshot_id")
@@ -197,33 +199,62 @@ def _restore_snapshot_files_sync(
     if not snap_dir.is_dir() or not isinstance(meta, dict):
         raise FileNotFoundError(f"Snapshot not found: {snapshot_id}")
 
-    # Always capture a safety backup of current state before restoring.
-    pre_backup = create_snapshot_sync(
-        character_name,
-        label=f"Auto backup before restoring {meta.get('label') or snapshot_id}",
-        reason="pre_restore",
-        memory_dir=memory_dir,
-        max_keep=max_keep,
-    )
-
-    recorded_files = set(meta.get("files") or [])
-    restored_files: list[str] = []
-    removed_files: list[str] = []
-    for fname in _SNAPSHOT_FILES:
+    # 1. Read and validate ALL recorded snapshot files BEFORE creating pre_restore
+    #    (creating pre_restore prunes old snapshots when the vault is at capacity,
+    #    which could otherwise delete the very oldest snapshot we are restoring).
+    recorded_files = [str(f) for f in (meta.get("files") or []) if str(f) in _SNAPSHOT_FILES]
+    recorded_set = set(recorded_files)
+    staged_bytes: dict[str, bytes] = {}
+    for fname in recorded_files:
         snap_file = snap_dir / fname
-        target_file = char_dir / fname
-        if fname in recorded_files and snap_file.is_file():
-            raw = snap_file.read_bytes()
-            # Validate JSON integrity before overwriting live memory.
-            json.loads(raw.decode("utf-8"))
-            atomic_write_bytes(str(target_file), raw)
-            restored_files.append(fname)
-        elif target_file.is_file():
-            try:
-                os.remove(target_file)
-                removed_files.append(fname)
-            except OSError:
-                pass
+        if not snap_file.is_file():
+            raise FileNotFoundError(f"Snapshot file missing: {snapshot_id}/{fname}")
+        raw = snap_file.read_bytes()
+        # Validate JSON integrity before modifying live memory.
+        json.loads(raw.decode("utf-8"))
+        staged_bytes[fname] = raw
+
+    # 2. Hold thread-level store locks across pre_restore backup, live file swap,
+    #    and cache eviction so concurrent FactStore / UserDirectives writers
+    #    cannot flush pre-restore cached state over the restored files.
+    with ExitStack() as lock_stack:
+        if fact_store is not None and callable(getattr(fact_store, "_get_lock", None)):
+            lock_stack.enter_context(fact_store._get_lock(character_name))
+        if directives_manager is not None and callable(getattr(directives_manager, "_get_lock", None)):
+            lock_stack.enter_context(directives_manager._get_lock(character_name))
+
+        # Capture a safety backup of current state before overwriting.
+        pre_backup = create_snapshot_sync(
+            character_name,
+            label=f"Auto backup before restoring {meta.get('label') or snapshot_id}",
+            reason="pre_restore",
+            memory_dir=memory_dir,
+            max_keep=max_keep,
+        )
+
+        restored_files: list[str] = []
+        removed_files: list[str] = []
+        for fname in _SNAPSHOT_FILES:
+            target_file = char_dir / fname
+            if fname in recorded_set:
+                atomic_write_bytes(str(target_file), staged_bytes[fname])
+                restored_files.append(fname)
+            elif target_file.is_file():
+                try:
+                    os.remove(target_file)
+                    removed_files.append(fname)
+                except OSError:
+                    pass
+
+        if fact_store is not None:
+            facts_cache = getattr(fact_store, "_facts", None)
+            if isinstance(facts_cache, dict):
+                facts_cache.pop(character_name, None)
+
+        if directives_manager is not None:
+            dm_cache = getattr(directives_manager, "_cache", None)
+            if isinstance(dm_cache, dict):
+                dm_cache.pop(character_name, None)
 
     return {
         "restored_snapshot_id": snapshot_id,
@@ -292,59 +323,56 @@ async def arestore_snapshot(
     )
     resolved_dir = Path(memory_dir) if memory_dir is not None else Path(cm.memory_dir)
 
+    dm = directives_manager
+    if dm is None:
+        try:
+            from memory.user_directives import get_user_directives_manager
+            dm = get_user_directives_manager()
+        except Exception:
+            dm = None
+
     async with AsyncExitStack() as stack:
-        if persona_manager is not None and hasattr(persona_manager, "_get_alock"):
-            await stack.enter_async_context(persona_manager._get_alock(character_name))
+        # Lock order MUST match promotion (reflection_engine -> persona_manager)
+        # to prevent lock-order inversion deadlocks.
         if reflection_engine is not None and hasattr(reflection_engine, "_get_alock"):
             await stack.enter_async_context(reflection_engine._get_alock(character_name))
+        if persona_manager is not None and hasattr(persona_manager, "_get_alock"):
+            await stack.enter_async_context(persona_manager._get_alock(character_name))
         if fact_store is not None and hasattr(fact_store, "_get_persist_alock"):
             await stack.enter_async_context(fact_store._get_persist_alock(character_name))
 
-        result = await asyncio.to_thread(
-            _restore_snapshot_files_sync,
-            character_name,
-            snapshot_id,
-            memory_dir=resolved_dir,
-            max_keep=max_keep,
+        # Shield the worker thread so task cancellation cannot exit AsyncExitStack
+        # and release manager locks while the thread is still swapping files.
+        worker = asyncio.create_task(
+            asyncio.to_thread(
+                _restore_snapshot_files_sync,
+                character_name,
+                snapshot_id,
+                memory_dir=resolved_dir,
+                max_keep=max_keep,
+                fact_store=fact_store,
+                directives_manager=dm,
+            )
         )
+        try:
+            result = await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            try:
+                await worker
+            except Exception:
+                pass
+            raise
 
-        # Invalidate in-memory caches while still holding the per-character locks.
+        # Invalidate async-locked manager caches while still holding the per-character locks.
         if persona_manager is not None:
             personas_cache = getattr(persona_manager, "_personas", None)
             if isinstance(personas_cache, dict):
                 personas_cache.pop(character_name, None)
 
-        if fact_store is not None:
-            lock_fn = getattr(fact_store, "_get_lock", None)
-            facts_cache = getattr(fact_store, "_facts", None)
-            if isinstance(facts_cache, dict):
-                if callable(lock_fn):
-                    with lock_fn(character_name):
-                        facts_cache.pop(character_name, None)
-                else:
-                    facts_cache.pop(character_name, None)
-
         if reflection_engine is not None:
             refl_cache = getattr(reflection_engine, "_reflections", None)
             if isinstance(refl_cache, dict):
                 refl_cache.pop(character_name, None)
-
-        dm = directives_manager
-        if dm is None:
-            try:
-                from memory.user_directives import get_user_directives_manager
-                dm = get_user_directives_manager()
-            except Exception:
-                dm = None
-        if dm is not None:
-            dm_cache = getattr(dm, "_cache", None)
-            dm_lock_fn = getattr(dm, "_get_lock", None)
-            if isinstance(dm_cache, dict):
-                if callable(dm_lock_fn):
-                    with dm_lock_fn(character_name):
-                        dm_cache.pop(character_name, None)
-                else:
-                    dm_cache.pop(character_name, None)
 
     # Also invalidate star-map FIFO cache in case filesystem mtime granularity matches.
     try:

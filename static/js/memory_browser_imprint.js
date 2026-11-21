@@ -30,6 +30,70 @@
     let deepConflictsLoading = false;
     let exportingMode = '';
     let activeToast = null;
+    let csrfTokenCache = '';
+    let overviewError = '';
+    let dataVersion = 0;
+    let searchRequestId = 0;
+    let lineageRequestId = 0;
+    let dagRequestId = 0;
+    let unmountStarMap = null;
+
+    async function fetchCsrfToken(forceRefresh) {
+        if (csrfTokenCache && !forceRefresh) {
+            return csrfTokenCache;
+        }
+        try {
+            const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
+            if (resp.ok) {
+                const cfg = await resp.json();
+                if (cfg && typeof cfg.autostart_csrf_token === 'string' && cfg.autostart_csrf_token) {
+                    csrfTokenCache = cfg.autostart_csrf_token;
+                    return csrfTokenCache;
+                }
+            }
+        } catch (_err) {
+            // Non-fatal fallback for mocked/preview environments
+        }
+        return csrfTokenCache;
+    }
+
+    async function postJsonWithCsrf(url, bodyObj) {
+        const payload = JSON.stringify(bodyObj || {});
+        const token = await fetchCsrfToken(false);
+        const headers = { 'Content-Type': 'application/json' };
+        if (token) {
+            headers['X-CSRF-Token'] = token;
+        }
+        let resp = await fetch(url, {
+            method: 'POST',
+            headers: headers,
+            body: payload,
+        });
+        if (resp.status === 403) {
+            let isCsrfError = false;
+            try {
+                const clone = await resp.clone().json();
+                isCsrfError = Boolean(clone && clone.error_code === 'csrf_validation_failed');
+            } catch (_e) {
+                // ignore parse failure
+            }
+            if (isCsrfError) {
+                const fresh = await fetchCsrfToken(true);
+                if (fresh) {
+                    const retryHeaders = {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': fresh,
+                    };
+                    resp = await fetch(url, {
+                        method: 'POST',
+                        headers: retryHeaders,
+                        body: payload,
+                    });
+                }
+            }
+        }
+        return resp;
+    }
 
     function tr(key, fallback, vars) {
         if (typeof window.t === 'function') {
@@ -160,15 +224,20 @@
     }
 
     function renderActiveToastIntoHost() {
-        const host = document.getElementById('memory-profile-toast-slot');
-        if (!host) return;
-        host.textContent = '';
-        if (!activeToast || !activeToast.message) return;
-        host.appendChild(el('div', {
-            className: 'memory-profile-toast' + (activeToast.isError ? ' is-error' : ''),
-            role: 'status',
-            textContent: activeToast.message,
-        }));
+        const hosts = [
+            document.getElementById('memory-imprint-toast-slot'),
+            document.getElementById('memory-profile-toast-slot'),
+        ];
+        hosts.forEach(function (host) {
+            if (!host) return;
+            host.textContent = '';
+            if (!activeToast || !activeToast.message) return;
+            host.appendChild(el('div', {
+                className: 'memory-profile-toast' + (activeToast.isError ? ' is-error' : ''),
+                role: 'status',
+                textContent: activeToast.message,
+            }));
+        });
     }
 
     function showToast(message, isError) {
@@ -247,9 +316,11 @@
             if (reqId !== loadingRequestId) return;
             if (!resp.ok || !data.success) {
                 overviewData = null;
-                renderErrorState(data.error || tr('memory.loadFailed', '加载失败'));
+                overviewError = data.error || tr('memory.loadFailed', '加载失败');
+                renderErrorState(overviewError);
                 return;
             }
+            overviewError = '';
             overviewData = data;
             searchResults = null;
             updateAttentionBadges();
@@ -258,7 +329,8 @@
         } catch (err) {
             if (reqId !== loadingRequestId) return;
             overviewData = null;
-            renderErrorState(err && err.message ? err.message : tr('memory.loadFailed', '加载失败'));
+            overviewError = (err && err.message) ? err.message : tr('memory.loadFailed', '加载失败');
+            renderErrorState(overviewError);
         }
     }
 
@@ -304,7 +376,7 @@
         } finally {
             if (reqId === snapshotsRequestId) {
                 snapshotsLoading = false;
-                if (activeTab === 'profile') {
+                if (activeTab === 'profile' && !overviewError) {
                     renderProfilePanel();
                 }
             }
@@ -312,76 +384,79 @@
     }
 
     async function handleCreateSnapshot(labelText) {
-        if (!activeCharacter || snapshotCreating) return;
+        const targetChar = activeCharacter;
+        if (!targetChar || snapshotCreating) return;
         snapshotCreating = true;
         vaultOpen = true;
         renderProfilePanel();
         try {
-            const resp = await fetch(
-                '/api/memory/snapshots/create/' + encodeURIComponent(activeCharacter),
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ label: String(labelText || '').trim(), reason: 'manual' }),
-                }
+            const resp = await postJsonWithCsrf(
+                '/api/memory/snapshots/create/' + encodeURIComponent(targetChar),
+                { label: String(labelText || '').trim(), reason: 'manual' }
             );
             const data = await resp.json();
+            if (targetChar !== activeCharacter) return;
             if (!resp.ok || !data.success) {
                 showToast(data.error || tr('memory.snapshotCreateFailed', '创建安全点失败'), true);
             } else {
                 showToast(tr('memory.snapshotCreatedToast', '已创建记忆安全点'), false);
-                await fetchSnapshots(activeCharacter);
+                await fetchSnapshots(targetChar);
             }
         } catch (err) {
+            if (targetChar !== activeCharacter) return;
             showToast((err && err.message) || tr('memory.snapshotCreateFailed', '创建安全点失败'), true);
         } finally {
-            snapshotCreating = false;
-            renderProfilePanel();
+            if (targetChar === activeCharacter) {
+                snapshotCreating = false;
+                renderProfilePanel();
+            }
         }
     }
 
     async function handleRestoreSnapshot(snapshotId) {
-        if (!activeCharacter || !snapshotId || snapshotRestoringId) return;
+        const targetChar = activeCharacter;
+        if (!targetChar || !snapshotId || snapshotRestoringId) return;
         snapshotRestoringId = snapshotId;
         snapshotConfirmId = '';
         vaultOpen = true;
         renderProfilePanel();
         try {
-            const resp = await fetch(
-                '/api/memory/snapshots/restore/' + encodeURIComponent(activeCharacter),
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ snapshot_id: snapshotId }),
-                }
+            const resp = await postJsonWithCsrf(
+                '/api/memory/snapshots/restore/' + encodeURIComponent(targetChar),
+                { snapshot_id: snapshotId }
             );
             const data = await resp.json();
+            if (targetChar !== activeCharacter) return;
             if (!resp.ok || !data.success) {
                 showToast(data.error || tr('memory.snapshotRestoreFailed', '恢复安全点失败'), true);
             } else {
                 showToast(tr('memory.snapshotRestoredToast', '已恢复记忆安全点（恢复前已自动留存备份）'), false);
                 dagData = null;
                 deepConflictsData = null;
-                notifyMainWindowMemoryEdited(activeCharacter);
-                await fetchOverview(activeCharacter);
+                notifyMainWindowMemoryEdited(targetChar);
+                await fetchOverview(targetChar);
             }
         } catch (err) {
+            if (targetChar !== activeCharacter) return;
             showToast((err && err.message) || tr('memory.snapshotRestoreFailed', '恢复安全点失败'), true);
         } finally {
-            snapshotRestoringId = '';
-            renderProfilePanel();
+            if (targetChar === activeCharacter) {
+                snapshotRestoringId = '';
+                renderProfilePanel();
+            }
         }
     }
 
     async function handleExportZip(mode) {
-        if (!activeCharacter || exportingMode) return;
+        const targetChar = activeCharacter;
+        if (!targetChar || exportingMode) return;
         const normMode = mode === 'diagnostics' ? 'diagnostics' : 'keepsake';
         exportingMode = normMode;
         if (normMode === 'keepsake') renderImprintPanel();
         else renderProfilePanel();
         try {
             const resp = await fetch(
-                '/api/memory/export/' + encodeURIComponent(activeCharacter) + '?mode=' + normMode
+                '/api/memory/export/' + encodeURIComponent(targetChar) + '?mode=' + normMode
             );
             if (!resp.ok) {
                 let errMsg = tr('memory.exportFailed', '导出失败');
@@ -389,81 +464,95 @@
                     const j = await resp.json();
                     if (j && j.error) errMsg = j.error;
                 } catch (_e) { /* ignore */ }
-                showToast(errMsg, true);
+                if (targetChar === activeCharacter) {
+                    showToast(errMsg, true);
+                }
                 return;
             }
             const blob = await resp.blob();
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = activeCharacter + '_' + (normMode === 'diagnostics' ? 'diagnostics_redacted' : 'keepsake') + '.zip';
+            a.download = targetChar + '_' + (normMode === 'diagnostics' ? 'diagnostics_redacted' : 'keepsake') + '.zip';
             document.body.appendChild(a);
             a.click();
             a.remove();
             URL.revokeObjectURL(url);
-            showToast(
-                normMode === 'diagnostics'
-                    ? tr('memory.exportDiagnosticsSuccess', '脱敏诊断包 (ZIP) 已开始下载')
-                    : tr('memory.exportKeepsakeSuccess', '珍藏记忆包 (ZIP) 已开始下载'),
-                false
-            );
+            if (targetChar === activeCharacter) {
+                showToast(
+                    normMode === 'diagnostics'
+                        ? tr('memory.exportDiagnosticsSuccess', '脱敏诊断包 (ZIP) 已开始下载')
+                        : tr('memory.exportKeepsakeSuccess', '珍藏记忆包 (ZIP) 已开始下载'),
+                    false
+                );
+            }
         } catch (err) {
-            showToast((err && err.message) || tr('memory.exportFailed', '导出失败'), true);
+            if (targetChar === activeCharacter) {
+                showToast((err && err.message) || tr('memory.exportFailed', '导出失败'), true);
+            }
         } finally {
-            exportingMode = '';
-            renderImprintPanel();
-            renderProfilePanel();
+            if (targetChar === activeCharacter) {
+                exportingMode = '';
+                renderImprintPanel();
+                renderProfilePanel();
+            }
         }
     }
 
     async function handleToggleDag() {
-        if (!activeCharacter) return;
+        const targetChar = activeCharacter;
+        if (!targetChar) return;
         if (dagExpanded) {
             dagExpanded = false;
             renderProfilePanel();
             return;
         }
         dagExpanded = true;
-        if (dagData && dagData.character_name === activeCharacter) {
+        if (dagData && dagData.character_name === targetChar && dagData._dataVersion === dataVersion) {
             renderProfilePanel();
             return;
         }
+        const reqId = ++dagRequestId;
+        const reqVer = dataVersion;
         dagLoading = true;
         renderProfilePanel();
         try {
             const resp = await fetch(
-                '/api/memory/lineage_graph/' + encodeURIComponent(activeCharacter)
+                '/api/memory/lineage_graph/' + encodeURIComponent(targetChar)
             );
             const data = await resp.json();
+            if (targetChar !== activeCharacter || reqId !== dagRequestId || reqVer !== dataVersion) return;
             if (!resp.ok || !data.success) {
                 showToast(data.error || tr('memory.dagLoadFailed', '加载记忆因果图失败'), true);
                 dagExpanded = false;
             } else {
+                data._dataVersion = reqVer;
                 dagData = data;
             }
         } catch (err) {
+            if (targetChar !== activeCharacter || reqId !== dagRequestId) return;
             showToast((err && err.message) || tr('memory.dagLoadFailed', '加载记忆因果图失败'), true);
             dagExpanded = false;
         } finally {
-            dagLoading = false;
-            renderProfilePanel();
+            if (targetChar === activeCharacter && reqId === dagRequestId) {
+                dagLoading = false;
+                renderProfilePanel();
+            }
         }
     }
 
     async function handleRunDeepConflictCheck() {
-        if (!activeCharacter || deepConflictsLoading) return;
+        const targetChar = activeCharacter;
+        if (!targetChar || deepConflictsLoading) return;
         deepConflictsLoading = true;
         renderProfilePanel();
         try {
-            const resp = await fetch(
-                '/api/memory/deep_conflicts/' + encodeURIComponent(activeCharacter),
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ language: getUiLanguage() }),
-                }
+            const resp = await postJsonWithCsrf(
+                '/api/memory/deep_conflicts/' + encodeURIComponent(targetChar),
+                { language: getUiLanguage() }
             );
             const data = await resp.json();
+            if (targetChar !== activeCharacter) return;
             if (!resp.ok || !data.success) {
                 showToast(data.error || tr('memory.deepConflictFailed', '深度矛盾核查失败，请检查纠错模型配置'), true);
             } else {
@@ -476,62 +565,64 @@
                 );
             }
         } catch (err) {
+            if (targetChar !== activeCharacter) return;
             showToast((err && err.message) || tr('memory.deepConflictFailed', '深度矛盾核查失败'), true);
         } finally {
-            deepConflictsLoading = false;
-            renderProfilePanel();
+            if (targetChar === activeCharacter) {
+                deepConflictsLoading = false;
+                renderProfilePanel();
+            }
         }
     }
 
     async function handleLabelStarMapClusters() {
-        if (!activeCharacter || clusterLabeling) return;
+        const targetChar = activeCharacter;
+        if (!targetChar || clusterLabeling) return;
         clusterLabeling = true;
         renderImprintPanel();
         try {
-            const resp = await fetch(
-                '/api/memory/star_map/label_clusters/' + encodeURIComponent(activeCharacter),
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ language: getUiLanguage() }),
-                }
+            const resp = await postJsonWithCsrf(
+                '/api/memory/star_map/label_clusters/' + encodeURIComponent(targetChar),
+                { language: getUiLanguage() }
             );
             const data = await resp.json();
+            if (targetChar !== activeCharacter) return;
             if (!resp.ok || !data.success) {
                 showToast(data.error || tr('memory.starMapLabelFailed', '刷新星云主题失败'), true);
             } else {
                 if (data.star_map) {
                     starMapData = Object.assign({ success: true }, data.star_map);
                 } else {
-                    await fetchStarMap(activeCharacter);
+                    await fetchStarMap(targetChar);
                 }
                 showToast(tr('memory.starMapLabelSuccess', '星云主题已更新'), false);
             }
         } catch (err) {
+            if (targetChar !== activeCharacter) return;
             showToast(err && err.message ? err.message : tr('memory.starMapLabelFailed', '刷新星云主题失败'), true);
         } finally {
-            clusterLabeling = false;
-            renderImprintPanel();
+            if (targetChar === activeCharacter) {
+                clusterLabeling = false;
+                renderImprintPanel();
+            }
         }
     }
 
     async function checkRelatedMemoriesAfterMutation(kind, entryId, text) {
-        if (!activeCharacter || !text) return;
+        const targetChar = activeCharacter;
+        if (!targetChar || !text) return;
         try {
-            const resp = await fetch(
-                '/api/memory/related/' + encodeURIComponent(activeCharacter),
+            const resp = await postJsonWithCsrf(
+                '/api/memory/related/' + encodeURIComponent(targetChar),
                 {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        kind: kind,
-                        entry_id: entryId || '',
-                        text: text,
-                        top_k: 4,
-                    }),
+                    kind: kind,
+                    entry_id: entryId || '',
+                    text: text,
+                    top_k: 4,
                 }
             );
             const data = await resp.json();
+            if (targetChar !== activeCharacter) return;
             if (resp.ok && data && data.success && Array.isArray(data.related) && data.related.length > 0) {
                 relatedCheckContext = {
                     sourceText: text,
@@ -552,7 +643,9 @@
     }
 
     async function openLineageDrawer(item) {
-        if (!activeCharacter || !item || !item.id) return;
+        const targetChar = activeCharacter;
+        if (!targetChar || !item || !item.id) return;
+        const reqId = ++lineageRequestId;
         const drawer = document.getElementById('memory-lineage-drawer');
         const backdrop = document.getElementById('memory-lineage-backdrop');
         const body = document.getElementById('memory-lineage-drawer-body');
@@ -571,9 +664,10 @@
             const qs = '?kind=' + encodeURIComponent(item.kind || 'persona')
                 + '&entry_id=' + encodeURIComponent(item.id);
             const resp = await fetch(
-                '/api/memory/lineage/' + encodeURIComponent(activeCharacter) + qs
+                '/api/memory/lineage/' + encodeURIComponent(targetChar) + qs
             );
             const data = await resp.json();
+            if (targetChar !== activeCharacter || reqId !== lineageRequestId) return;
             if (!resp.ok || !data.success) {
                 body.textContent = '';
                 body.appendChild(el('div', {
@@ -584,6 +678,7 @@
             }
             renderLineageStory(body, data);
         } catch (err) {
+            if (targetChar !== activeCharacter || reqId !== lineageRequestId) return;
             body.textContent = '';
             body.appendChild(el('div', {
                 className: 'memory-empty-state',
@@ -700,6 +795,18 @@
                 ]));
             }
         });
+        const versionHist = Array.isArray(steps.version_history) ? steps.version_history : [];
+        if (versionHist.length > 0) {
+            versionHist.slice().reverse().forEach(function (vh) {
+                step3.appendChild(el('div', { className: 'lineage-snippet' }, [
+                    el('div', { className: 'lineage-snippet-meta' }, [
+                        el('span', { textContent: tr('memory.evolutionTag', '印象演变') }),
+                        el('span', { textContent: formatShortDate(vh.replaced_at) }),
+                    ]),
+                    el('div', { textContent: vh.text }),
+                ]));
+            });
+        }
         body.appendChild(step3);
     }
 
@@ -732,13 +839,16 @@
     }
 
     async function postMutation(url, payload, successToast) {
+        const targetChar = (payload && payload.character_name) || activeCharacter;
         try {
-            const resp = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-            });
+            const resp = await postJsonWithCsrf(url, payload);
             const data = await resp.json();
+            if (targetChar !== activeCharacter) {
+                if (resp.ok && data.success) {
+                    notifyMainWindowMemoryEdited(targetChar);
+                }
+                return Boolean(resp.ok && data.success);
+            }
             if (!resp.ok || !data.success) {
                 showToast(data.error || tr('memory.operationFailed', '操作失败'), true);
                 return false;
@@ -746,11 +856,16 @@
             if (successToast) {
                 showToast(successToast, false);
             }
-            notifyMainWindowMemoryEdited(activeCharacter);
-            await fetchOverview(activeCharacter);
+            dataVersion += 1;
+            dagData = null;
+            deepConflictsData = null;
+            notifyMainWindowMemoryEdited(targetChar);
+            await fetchOverview(targetChar);
             return true;
         } catch (err) {
-            showToast(err && err.message ? err.message : tr('memory.operationFailed', '操作失败'), true);
+            if (targetChar === activeCharacter) {
+                showToast(err && err.message ? err.message : tr('memory.operationFailed', '操作失败'), true);
+            }
             return false;
         }
     }
@@ -872,19 +987,17 @@
     }
 
     async function handleGenerateWarmNote() {
-        if (!activeCharacter || noteGenerating) return;
+        const targetChar = activeCharacter;
+        if (!targetChar || noteGenerating) return;
         noteGenerating = true;
         renderImprintPanel();
         try {
-            const resp = await fetch(
-                '/api/memory/imprint_note/' + encodeURIComponent(activeCharacter),
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ language: getUiLanguage() }),
-                }
+            const resp = await postJsonWithCsrf(
+                '/api/memory/imprint_note/' + encodeURIComponent(targetChar),
+                { language: getUiLanguage() }
             );
             const data = await resp.json();
+            if (targetChar !== activeCharacter) return;
             if (!resp.ok || !data.success) {
                 showToast(data.error || tr('memory.generateNoteFailed', '生成寄语失败，请检查总结模型配置'), true);
             } else {
@@ -894,17 +1007,26 @@
                 showToast(tr('memory.generateNoteSuccess', '专属关系寄语已更新'), false);
             }
         } catch (err) {
+            if (targetChar !== activeCharacter) return;
             showToast(err && err.message ? err.message : tr('memory.generateNoteFailed', '生成寄语失败'), true);
         } finally {
-            noteGenerating = false;
-            renderImprintPanel();
+            if (targetChar === activeCharacter) {
+                noteGenerating = false;
+                renderImprintPanel();
+            }
         }
     }
 
     function renderImprintPanel() {
         const panel = document.getElementById('memory-panel-imprint');
         if (!panel) return;
+        if (typeof unmountStarMap === 'function') {
+            unmountStarMap();
+            unmountStarMap = null;
+        }
         panel.textContent = '';
+        panel.appendChild(el('div', { id: 'memory-imprint-toast-slot' }));
+        renderActiveToastIntoHost();
 
         if (!activeCharacter) {
             panel.appendChild(el('div', {
@@ -945,6 +1067,7 @@
 
         const genBtn = el('button', {
             type: 'button',
+            id: 'memory-generate-note-btn',
             className: 'memory-pill-btn',
             disabled: noteGenerating,
             onClick: handleGenerateWarmNote,
@@ -1051,7 +1174,7 @@
         panel.appendChild(starMapCard);
 
         if (starMapData && window.nekoMemoryStarMap && typeof window.nekoMemoryStarMap.mount === 'function') {
-            window.nekoMemoryStarMap.mount(starMapHost, starMapData, {
+            unmountStarMap = window.nekoMemoryStarMap.mount(starMapHost, starMapData, {
                 onTrace: function (point) {
                     openLineageDrawer(point);
                 },
@@ -1138,7 +1261,7 @@
     function renderHealthDiagnostics(health) {
         if (!health) return null;
         const advMode = isAdvancedDiagnosticsEnabled();
-        const expanded = healthExpanded || advMode;
+        const expanded = healthExpanded;
         const overallStatus = health.overall_status || 'good';
         const overallTone = resolveOptimisticTone(health.overall_score, overallStatus);
 
@@ -1438,12 +1561,20 @@
         ]);
 
         // 1. Contradiction resolution cards
+        const cardChar = activeCharacter;
         corrections.forEach(function (c) {
             const mergeInput = el('textarea', {
                 className: 'memory-inline-textarea',
                 placeholder: tr('memory.mergeTextPlaceholder', '也可以直接修改成你想让 TA 记住的话...'),
             });
             mergeInput.value = c.new_text || c.old_text || '';
+            const baseCorrPayload = {
+                character_name: cardChar,
+                correction_index: c.index,
+                correction_id: c.correction_id || null,
+                expected_old_text: c.old_text || '',
+                expected_new_text: c.new_text || '',
+            };
 
             box.appendChild(el('div', { className: 'memory-attention-item' }, [
                 el('div', { className: 'memory-entry-badges' }, [
@@ -1466,12 +1597,10 @@
                         className: 'memory-pill-btn is-primary is-sm',
                         textContent: tr('memory.actionKeepNew', '按新的更新'),
                         onClick: function () {
-                            postMutation('/api/memory/correction/resolve', {
-                                character_name: activeCharacter,
-                                correction_index: c.index,
+                            postMutation('/api/memory/correction/resolve', Object.assign({}, baseCorrPayload, {
                                 action: 'keep_new',
                                 merged_text: mergeInput.value.trim() || c.new_text,
-                            }, tr('memory.correctionResolvedToast', '已更新记忆'));
+                            }), tr('memory.correctionResolvedToast', '已更新记忆'));
                         },
                     }),
                     el('button', {
@@ -1479,11 +1608,9 @@
                         className: 'memory-pill-btn is-sm',
                         textContent: tr('memory.actionKeepOld', '保留原来的'),
                         onClick: function () {
-                            postMutation('/api/memory/correction/resolve', {
-                                character_name: activeCharacter,
-                                correction_index: c.index,
+                            postMutation('/api/memory/correction/resolve', Object.assign({}, baseCorrPayload, {
                                 action: 'keep_old',
-                            }, tr('memory.correctionKeptOldToast', '已保留原印象'));
+                            }), tr('memory.correctionKeptOldToast', '已保留原印象'));
                         },
                     }),
                     el('button', {
@@ -1491,12 +1618,10 @@
                         className: 'memory-pill-btn is-sm',
                         textContent: tr('memory.actionMerge', '按编辑框合并'),
                         onClick: function () {
-                            postMutation('/api/memory/correction/resolve', {
-                                character_name: activeCharacter,
-                                correction_index: c.index,
+                            postMutation('/api/memory/correction/resolve', Object.assign({}, baseCorrPayload, {
                                 action: 'merge',
                                 merged_text: mergeInput.value.trim(),
-                            }, tr('memory.correctionResolvedToast', '已更新记忆'));
+                            }), tr('memory.correctionResolvedToast', '已更新记忆'));
                         },
                     }),
                 ]),
@@ -1913,19 +2038,21 @@
     }
 
     async function runSearch(query) {
+        const targetChar = activeCharacter;
         searchQuery = (query || '').trim();
-        if (!searchQuery || !activeCharacter) {
+        const reqId = ++searchRequestId;
+        if (!searchQuery || !targetChar) {
             searchResults = null;
             renderProfilePanel();
             return;
         }
         try {
-            const resp = await fetch('/api/memory/search/' + encodeURIComponent(activeCharacter), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query: searchQuery, top_k: 25 }),
-            });
+            const resp = await postJsonWithCsrf(
+                '/api/memory/search/' + encodeURIComponent(targetChar),
+                { query: searchQuery, top_k: 25 }
+            );
             const data = await resp.json();
+            if (targetChar !== activeCharacter || reqId !== searchRequestId) return;
             if (!resp.ok || !data.success) {
                 showToast(data.error || tr('memory.searchFailed', '搜索失败'), true);
                 return;
@@ -1937,6 +2064,7 @@
                 footer.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }
         } catch (err) {
+            if (targetChar !== activeCharacter || reqId !== searchRequestId) return;
             showToast(err && err.message ? err.message : tr('memory.searchFailed', '搜索失败'), true);
         }
     }
@@ -2319,6 +2447,9 @@
         const advCheckbox = document.getElementById('advanced-diagnostics-toggle-checkbox');
         if (advCheckbox) {
             syncAdvancedDiagnosticsToggle();
+            if (isAdvancedDiagnosticsEnabled()) {
+                healthExpanded = true;
+            }
             advCheckbox.addEventListener('change', function () {
                 setAdvancedDiagnosticsEnabled(Boolean(advCheckbox.checked));
             });
@@ -2353,13 +2484,28 @@
         window.addEventListener('neko:memory-character-selected', function (evt) {
             const catName = (evt && evt.detail && evt.detail.catName) ? String(evt.detail.catName) : '';
             activeCharacter = catName;
+            overviewData = null;
+            starMapData = null;
+            snapshotsList = [];
+            relatedCheckContext = null;
             searchQuery = '';
             searchResults = null;
             dagData = null;
             dagExpanded = false;
+            dagLoading = false;
             deepConflictsData = null;
+            deepConflictsLoading = false;
+            noteGenerating = false;
+            clusterLabeling = false;
+            snapshotCreating = false;
+            snapshotRestoringId = '';
             snapshotConfirmId = '';
+            exportingMode = '';
+            closeLineageDrawer();
             setActiveTab(activeTab);
+            updateAttentionBadges();
+            renderImprintPanel();
+            renderProfilePanel();
             fetchOverview(catName);
         });
 

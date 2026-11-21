@@ -178,6 +178,16 @@ def make_reflection_state_changed_handler(reflection_engine):
                 if r.get('reject_reason') != payload['reject_explanation']:
                     r['reject_reason'] = payload['reject_explanation']
                     changed = True
+            if payload.get('rewrite_text_sha256'):
+                current_sha = hashlib.sha256(
+                    (r.get('text') or '').encode('utf-8'),
+                ).hexdigest()
+                if current_sha != payload['rewrite_text_sha256']:
+                    raise RuntimeError(
+                        f"[Reconciler] {name}/reflection.state_changed: "
+                        f"reflection {rid} text sha256 mismatch; "
+                        f"view drifted from log, manual inspection required"
+                    )
             break
         if changed:
             atomic_write_json(path, data, indent=2, ensure_ascii=False)

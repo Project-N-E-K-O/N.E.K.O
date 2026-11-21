@@ -883,6 +883,7 @@ def test_storage_location_link_waits_for_unsaved_memory_confirmation(
     url = f"{running_server}/memory_browser"
     storage_link = f"{url}#change-storage-location"
     mock_page.goto(url)
+    mock_page.locator("#memory-tab-recent").click()
     draft = mock_page.locator("#memory-chat-edit .memo-textarea").first
     draft.fill("unsaved memory draft")
     target = mock_page.locator("#memory-file-list .cat-btn", has_text="备用猫娘")
@@ -7084,7 +7085,7 @@ def test_memory_browser_defaults_to_imprint_tab_with_warm_summary_and_radar(
 
     # Manual trigger for refreshing warm relationship note (no automatic LLM call on open)
     assert len(note_requests) == 0
-    mock_page.locator(".imprint-hero-card button.memory-pill-btn").click()
+    mock_page.locator("#memory-generate-note-btn").click()
     expect(mock_page.locator(".imprint-summary-text")).to_contain_text("重新整理后的关系总结", timeout=5_000)
     assert len(note_requests) == 1
 

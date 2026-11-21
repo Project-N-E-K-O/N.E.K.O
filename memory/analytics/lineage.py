@@ -25,6 +25,7 @@ Traces one selected memory (persona / reflection / fact) backwards into:
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -40,12 +41,46 @@ logger = get_module_logger(__name__, "Memory")
 _MAX_CONV_SCAN_ROWS = 600
 
 
+def _extract_message_role_and_text(raw_message: Any) -> tuple[str, str] | None:
+    """Decode one serialized ``time_indexed_original.message`` JSON cell."""
+    if raw_message is None:
+        return None
+    parsed: Any = raw_message
+    if isinstance(raw_message, str):
+        stripped = raw_message.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return ("human", stripped[:260])
+    if not isinstance(parsed, dict):
+        return None
+    mtype = str(parsed.get("type") or parsed.get("role") or "").strip().lower()
+    if mtype in ("user", "human"):
+        role = "human"
+    elif mtype in ("assistant", "ai"):
+        role = "ai"
+    else:
+        return None
+    data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
+    content = data.get("content")
+    if isinstance(content, list):
+        parts = [str(p.get("text") or "") for p in content if isinstance(p, dict)]
+        text = " ".join(parts).strip()
+    else:
+        text = str(content or "").strip()
+    if not text:
+        return None
+    return (role, text[:260])
+
+
 def _read_recent_conversations_ro(db_path: Path, limit: int = _MAX_CONV_SCAN_ROWS) -> list[dict[str, Any]]:
     if not db_path.is_file():
         return []
     conn = None
     try:
-        uri = f"file:{db_path.as_posix()}?mode=ro"
+        uri = f"{db_path.resolve().as_uri()}?mode=ro"
         conn = sqlite3.connect(uri, uri=True, timeout=2.0)
         cur = conn.cursor()
         cur.execute(
@@ -53,21 +88,38 @@ def _read_recent_conversations_ro(db_path: Path, limit: int = _MAX_CONV_SCAN_ROW
         )
         if cur.fetchone() is None:
             return []
-        cur.execute(
-            "SELECT timestamp, role, content FROM time_indexed_original ORDER BY id DESC LIMIT ?",
-            (int(limit),),
-        )
-        rows = cur.fetchall()
+        cur.execute("PRAGMA table_info(time_indexed_original)")
+        col_names = {str(row[1]) for row in cur.fetchall() if len(row) > 1}
         out: list[dict[str, Any]] = []
-        for ts, role, content in rows:
-            txt = str(content or "").strip()
-            if not txt:
-                continue
-            out.append({
-                "timestamp": str(ts) if ts else None,
-                "role": str(role or "human"),
-                "text": txt[:260],
-            })
+        if "message" in col_names:
+            cur.execute(
+                "SELECT timestamp, message FROM time_indexed_original ORDER BY id DESC LIMIT ?",
+                (int(limit),),
+            )
+            for ts, raw_msg in cur.fetchall():
+                decoded = _extract_message_role_and_text(raw_msg)
+                if decoded is None:
+                    continue
+                role, txt = decoded
+                out.append({
+                    "timestamp": str(ts) if ts else None,
+                    "role": role,
+                    "text": txt,
+                })
+        elif {"role", "content"} <= col_names:
+            cur.execute(
+                "SELECT timestamp, role, content FROM time_indexed_original ORDER BY id DESC LIMIT ?",
+                (int(limit),),
+            )
+            for ts, role, content in cur.fetchall():
+                txt = str(content or "").strip()
+                if not txt:
+                    continue
+                out.append({
+                    "timestamp": str(ts) if ts else None,
+                    "role": str(role or "human"),
+                    "text": txt[:260],
+                })
         return out
     except Exception as exc:
         logger.debug("[MemoryLineage] time_indexed_original read failed: %s", exc)
@@ -292,7 +344,9 @@ def build_memory_lineage_story(
         bonus = 0.25 if near_time else 0.0
         total_score = ov + bonus
         if total_score >= 0.22:
-            conv_candidates.append((total_score, not near_time, row))
+            # Conversation rows do not carry a persisted foreign key to facts;
+            # always mark matched snippets as inferred rather than exact provenance.
+            conv_candidates.append((total_score, True, row))
 
     conv_candidates.sort(key=lambda t: -t[0])
     conversations_step = [

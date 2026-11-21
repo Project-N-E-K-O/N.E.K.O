@@ -43,7 +43,7 @@ from utils.file_utils import atomic_write_json_async
 from utils.language_utils import get_global_language_full, normalize_language_code
 from utils.llm_client import create_chat_llm_async
 from utils.logger_config import get_module_logger
-from utils.token_budget import truncate_to_tokens
+from utils.tokenize import count_tokens, truncate_to_tokens
 from utils.token_tracker import set_call_type
 
 from .imprint import _IMPRINT_CACHE_FILENAME, abuild_memory_overview
@@ -122,17 +122,23 @@ async def agenerate_imprint_note(
     stats_summary, memory_digest = _build_memory_digest(overview)
 
     raw_lang = language or get_global_language_full()
-    prompt_lang = normalize_language_code(raw_lang, format="short")
-    if str(raw_lang or "").lower().replace("_", "-") in ("zh-tw", "zh-hk", "zh-hant"):
-        prompt_lang = "zh-TW"
+    full_lang = normalize_language_code(raw_lang, format="full")
+    prompt_lang = "zh-TW" if full_lang == "zh-TW" else normalize_language_code(full_lang, format="short")
 
     template = get_imprint_note_prompt(prompt_lang)
+    shell_tokens = count_tokens(
+        template.replace("{CHARACTER_NAME}", str(character_name))
+        .replace("{STATS_SUMMARY}", stats_summary)
+        .replace("{MEMORY_DIGEST}", "")
+    )
+    digest_budget = max(200, IMPRINT_NOTE_INPUT_MAX_TOKENS - shell_tokens)
+    capped_digest = truncate_to_tokens(memory_digest, digest_budget)
     prompt = (
         template.replace("{CHARACTER_NAME}", str(character_name))
         .replace("{STATS_SUMMARY}", stats_summary)
-        .replace("{MEMORY_DIGEST}", memory_digest)
+        .replace("{MEMORY_DIGEST}", capped_digest)
     )
-    prompt = truncate_to_tokens(prompt, IMPRINT_NOTE_INPUT_MAX_TOKENS + 600)
+    prompt = truncate_to_tokens(prompt, IMPRINT_NOTE_INPUT_MAX_TOKENS)
 
     api_config = await cm.aget_model_api_config("summary")
     set_call_type("imprint_warm_note")
@@ -169,6 +175,11 @@ async def agenerate_imprint_note(
         "source": "llm_cached",
     }
 
+    assert_cloudsave_writable(
+        cm,
+        operation="save",
+        target=f"memory/{character_name}/{_IMPRINT_CACHE_FILENAME}",
+    )
     char_dir = memory_dir / character_name
     await asyncio.to_thread(char_dir.mkdir, parents=True, exist_ok=True)
     await atomic_write_json_async(

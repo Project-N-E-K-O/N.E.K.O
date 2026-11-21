@@ -2630,16 +2630,78 @@ async def _proxy_memory_browser(
     except Exception as exc:
         logger.warning("Memory browser proxy %s %s failed: %s", method, internal_path, exc)
         return JSONResponse(
-            {"success": False, "error": f"Memory service unavailable: {exc}"},
+            {"success": False, "error": "Memory service unavailable"},
             status_code=503,
         )
 
 
 def _validate_browser_character_or_400(character_name: str) -> JSONResponse | None:
-    ok, err = validate_catgirl_name(character_name, allow_dots=True)
-    if not ok:
-        return JSONResponse({"success": False, "error": err}, status_code=400)
+    validation = validate_character_name(character_name, allow_dots=True, max_length=50)
+    if not validation.ok:
+        return JSONResponse({"success": False, "error": validation.error or "Invalid character name"}, status_code=400)
     return None
+
+
+_MANUAL_LLM_COOLDOWN_SECONDS = 15.0
+_manual_llm_last_trigger: dict[tuple[str, str], float] = {}
+
+
+def _check_manual_llm_cooldown(action: str, character_name: str) -> JSONResponse | None:
+    import time
+    now = time.monotonic()
+    key = (action, character_name)
+    last = _manual_llm_last_trigger.get(key)
+    if last is not None and (now - last) < _MANUAL_LLM_COOLDOWN_SECONDS:
+        retry_after = max(1, int(_MANUAL_LLM_COOLDOWN_SECONDS - (now - last) + 0.999))
+        return JSONResponse(
+            {
+                "success": False,
+                "error": f"Please wait {retry_after}s before triggering this action again.",
+                "retry_after": retry_after,
+            },
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
+    if len(_manual_llm_last_trigger) > 256:
+        cutoff = now - _MANUAL_LLM_COOLDOWN_SECONDS * 2
+        for k in [k for k, ts in _manual_llm_last_trigger.items() if ts < cutoff]:
+            _manual_llm_last_trigger.pop(k, None)
+    _manual_llm_last_trigger[key] = now
+    return None
+
+
+async def _parse_and_validate_browser_post(
+    request: Request,
+) -> tuple[dict | None, JSONResponse | None]:
+    """Require JSON content-type and valid local CSRF/Origin on memory-browser POSTs."""
+    from main_routers.system_router._shared import _validate_local_mutation_request
+
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" not in content_type:
+        return None, JSONResponse(
+            {"success": False, "error": "Content-Type must be application/json"},
+            status_code=415,
+        )
+    try:
+        payload = await request.json()
+    except Exception:
+        return None, JSONResponse(
+            {"success": False, "error": "Invalid JSON body"},
+            status_code=400,
+        )
+    if not isinstance(payload, dict):
+        return None, JSONResponse(
+            {"success": False, "error": "Payload must be an object"},
+            status_code=400,
+        )
+    csrf_err = _validate_local_mutation_request(
+        request,
+        payload=payload,
+        error_defaults={"success": False},
+    )
+    if csrf_err is not None:
+        return None, csrf_err
+    return payload, None
 
 
 @router.get('/overview/{catgirl_name}')
@@ -2662,10 +2724,12 @@ async def generate_memory_imprint_note(catgirl_name: str, request: Request):
     err_resp = _validate_browser_character_or_400(catgirl_name)
     if err_resp is not None:
         return err_resp
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload, post_err = await _parse_and_validate_browser_post(request)
+    if post_err is not None:
+        return post_err
+    cooldown_err = _check_manual_llm_cooldown("imprint_note", catgirl_name)
+    if cooldown_err is not None:
+        return cooldown_err
     from urllib.parse import quote
     return await _proxy_memory_browser(
         "POST",
@@ -2681,27 +2745,23 @@ async def search_character_memory(catgirl_name: str, request: Request):
     err_resp = _validate_browser_character_or_400(catgirl_name)
     if err_resp is not None:
         return err_resp
-    try:
-        payload = await request.json()
-    except Exception:
-        return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
+    payload, post_err = await _parse_and_validate_browser_post(request)
+    if post_err is not None:
+        return post_err
     from urllib.parse import quote
     return await _proxy_memory_browser(
         "POST",
         f"/internal/memory/browser/search/{quote(catgirl_name, safe='')}",
-        json_body=payload if isinstance(payload, dict) else {},
+        json_body=payload or {},
         timeout=20.0,
     )
 
 
 async def _proxy_character_mutation(request: Request, internal_path: str) -> JSONResponse:
-    try:
-        payload = await request.json()
-    except Exception:
-        return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
-    if not isinstance(payload, dict):
-        return JSONResponse({"success": False, "error": "Payload must be an object"}, status_code=400)
-    character_name = str(payload.get("character_name") or "").strip()
+    payload, post_err = await _parse_and_validate_browser_post(request)
+    if post_err is not None:
+        return post_err
+    character_name = str((payload or {}).get("character_name") or "").strip()
     err_resp = _validate_browser_character_or_400(character_name)
     if err_resp is not None:
         return err_resp
@@ -2783,10 +2843,12 @@ async def label_memory_star_map_clusters(catgirl_name: str, request: Request):
     err_resp = _validate_browser_character_or_400(catgirl_name)
     if err_resp is not None:
         return err_resp
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload, post_err = await _parse_and_validate_browser_post(request)
+    if post_err is not None:
+        return post_err
+    cooldown_err = _check_manual_llm_cooldown("star_map_labels", catgirl_name)
+    if cooldown_err is not None:
+        return cooldown_err
     from urllib.parse import quote
     return await _proxy_memory_browser(
         "POST",
@@ -2819,17 +2881,14 @@ async def get_related_memories(catgirl_name: str, request: Request):
     err_resp = _validate_browser_character_or_400(catgirl_name)
     if err_resp is not None:
         return err_resp
-    try:
-        payload = await request.json()
-    except Exception:
-        return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
-    if not isinstance(payload, dict):
-        return JSONResponse({"success": False, "error": "Payload must be an object"}, status_code=400)
+    payload, post_err = await _parse_and_validate_browser_post(request)
+    if post_err is not None:
+        return post_err
     from urllib.parse import quote
     return await _proxy_memory_browser(
         "POST",
         f"/internal/memory/browser/related/{quote(catgirl_name, safe='')}",
-        json_body=payload,
+        json_body=payload or {},
         timeout=20.0,
     )
 
@@ -2854,15 +2913,14 @@ async def create_memory_snapshot(catgirl_name: str, request: Request):
     err_resp = _validate_browser_character_or_400(catgirl_name)
     if err_resp is not None:
         return err_resp
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload, post_err = await _parse_and_validate_browser_post(request)
+    if post_err is not None:
+        return post_err
     from urllib.parse import quote
     return await _proxy_memory_browser(
         "POST",
         f"/internal/memory/browser/snapshots/create/{quote(catgirl_name, safe='')}",
-        json_body=payload if isinstance(payload, dict) else {},
+        json_body=payload or {},
         timeout=25.0,
     )
 
@@ -2873,11 +2931,10 @@ async def restore_memory_snapshot(catgirl_name: str, request: Request):
     err_resp = _validate_browser_character_or_400(catgirl_name)
     if err_resp is not None:
         return err_resp
-    try:
-        payload = await request.json()
-    except Exception:
-        return JSONResponse({"success": False, "error": "Invalid JSON body"}, status_code=400)
-    if not isinstance(payload, dict) or not payload.get("snapshot_id"):
+    payload, post_err = await _parse_and_validate_browser_post(request)
+    if post_err is not None:
+        return post_err
+    if not (payload or {}).get("snapshot_id"):
         return JSONResponse({"success": False, "error": "snapshot_id is required"}, status_code=400)
     from urllib.parse import quote
     return await _proxy_memory_browser(
@@ -2894,7 +2951,9 @@ async def export_memory_archive(catgirl_name: str, mode: str = "keepsake"):
     err_resp = _validate_browser_character_or_400(catgirl_name)
     if err_resp is not None:
         return err_resp
-    norm_mode = "diagnostics" if mode == "diagnostics" else "keepsake"
+    norm_mode = str(mode or "keepsake").strip().lower()
+    if norm_mode not in ("keepsake", "diagnostics"):
+        return JSONResponse({"success": False, "error": "Invalid export mode"}, status_code=400)
     from urllib.parse import quote, urlencode
     from config import MEMORY_SERVER_PORT
     from utils.internal_http_client import get_internal_http_client
@@ -2925,7 +2984,7 @@ async def export_memory_archive(catgirl_name: str, mode: str = "keepsake"):
     except Exception as exc:
         logger.warning("Memory browser export proxy failed: %s", exc)
         return JSONResponse(
-            {"success": False, "error": f"Memory service unavailable: {exc}"},
+            {"success": False, "error": "Memory service unavailable"},
             status_code=503,
         )
 
@@ -2950,10 +3009,12 @@ async def run_memory_deep_conflict_check(catgirl_name: str, request: Request):
     err_resp = _validate_browser_character_or_400(catgirl_name)
     if err_resp is not None:
         return err_resp
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload, post_err = await _parse_and_validate_browser_post(request)
+    if post_err is not None:
+        return post_err
+    cooldown_err = _check_manual_llm_cooldown("deep_conflicts", catgirl_name)
+    if cooldown_err is not None:
+        return cooldown_err
     from urllib.parse import quote
     return await _proxy_memory_browser(
         "POST",

@@ -115,7 +115,7 @@ def _read_timeindex_stats(db_path: Path) -> dict[str, Any]:
         }
     conn = None
     try:
-        uri = f"file:{db_path.as_posix()}?mode=ro"
+        uri = f"{db_path.resolve().as_uri()}?mode=ro"
         conn = sqlite3.connect(uri, uri=True, timeout=2.0)
         cur = conn.cursor()
         cur.execute(
@@ -206,11 +206,16 @@ def _inspect_embeddings(items: list[tuple[str, dict]]) -> dict[str, Any]:
         embedded += 1
         dim = int(vec.size)
         dims[dim] = dims.get(dim, 0) + 1
-        emb_hash = entry.get("embedding_text_hash")
-        if emb_hash and text:
-            expected = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-            if str(emb_hash)[:16] != expected:
-                stale += 1
+        emb_sha = entry.get("embedding_text_sha256")
+        emb_legacy_hash = entry.get("embedding_text_hash")
+        if text:
+            full_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            if emb_sha:
+                if str(emb_sha).strip() != full_sha:
+                    stale += 1
+            elif emb_legacy_hash:
+                if str(emb_legacy_hash).strip()[:16] != full_sha[:16]:
+                    stale += 1
         if eid and text:
             decoded_vectors.append((kind, entity, eid, text, vec))
 
@@ -265,8 +270,12 @@ def _find_near_duplicates(
                     for j in range(i + 1, n):
                         score = float(row[j])
                         if score >= cosine_threshold:
-                            # Only propose merges within the same kind & entity for safe 1-click merge.
-                            if usable[i][0] == usable[j][0] and usable[i][1] == usable[j][1]:
+                            # Only propose merges within the same kind & entity with distinct IDs.
+                            if (
+                                usable[i][0] == usable[j][0]
+                                and usable[i][1] == usable[j][1]
+                                and usable[i][2] != usable[j][2]
+                            ):
                                 raw_hits.append((score, i, j))
                 raw_hits.sort(key=lambda t: -t[0])
                 for score, i, j in raw_hits[:max_pairs]:
@@ -282,11 +291,18 @@ def _find_near_duplicates(
                             "method": "embedding",
                         }
                     )
-                return pairs
         except Exception as exc:
             logger.debug("[MemoryAnalytics] vector duplicate scan skipped: %s", exc)
 
-    # Lightweight text bigram fallback when embeddings are not yet generated.
+    if len(pairs) >= max_pairs:
+        return pairs[:max_pairs]
+
+    seen_pair_keys = {
+        (p["kind"], p["entity"], min(p["a_id"], p["b_id"]), max(p["a_id"], p["b_id"]))
+        for p in pairs
+    }
+
+    # Lightweight text bigram fallback/supplement for items without comparable embeddings.
     capped = fallback_items[:200]
     shingles = [_text_bigrams(item[3]) for item in capped]
     hits: list[tuple[float, int, int]] = []
@@ -296,6 +312,16 @@ def _find_near_duplicates(
             continue
         for j in range(i + 1, len(capped)):
             if capped[i][0] != capped[j][0] or capped[i][1] != capped[j][1]:
+                continue
+            if capped[i][2] == capped[j][2]:
+                continue
+            pk = (
+                capped[i][0],
+                capped[i][1],
+                min(capped[i][2], capped[j][2]),
+                max(capped[i][2], capped[j][2]),
+            )
+            if pk in seen_pair_keys:
                 continue
             sb = shingles[j]
             if len(sb) < 3:
@@ -476,6 +502,7 @@ def build_memory_overview(
                     duplicate_ids.append(eid)
                 persona_ids_seen.add(eid)
             is_protected = bool(entry.get("protected")) or entry.get("source") == "character_card"
+            is_perm_suppressed = bool(entry.get("permanent_suppression"))
             score = evidence_score(entry, now_dt)
             rein_count = int(entry.get("user_fact_reinforce_count") or 0)
             vh = entry.get("version_history") if isinstance(entry.get("version_history"), list) else []
@@ -493,7 +520,8 @@ def build_memory_overview(
                 "source": str(entry.get("source") or "unknown"),
                 "protected": is_protected,
                 "user_pinned": bool(entry.get("user_pinned")),
-                "suppress": bool(entry.get("suppress")),
+                "suppress": bool(entry.get("suppress")) or is_perm_suppressed,
+                "permanent_suppression": is_perm_suppressed,
                 "suppressed_at": entry.get("suppressed_at"),
                 "strength": _strength_level(score, rein_count),
                 "reinforce_count": rein_count,
@@ -512,6 +540,11 @@ def build_memory_overview(
 
             if is_protected:
                 character_card_items.append(card_item)
+                continue
+
+            if is_perm_suppressed:
+                suppressed_count += 1
+                suppressed_items.append(card_item)
                 continue
 
             persona_all_non_protected.append(entry)
@@ -721,6 +754,7 @@ def build_memory_overview(
         pending_corrections.append(
             {
                 "index": idx,
+                "correction_id": str(item.get("correction_id") or "").strip(),
                 "entity": str(item.get("entity") or "master"),
                 "old_text": old_text,
                 "new_text": new_text,
@@ -989,7 +1023,7 @@ def build_memory_overview(
         "imprint": {
             "stats": {
                 "companion_days": companion_days,
-                "first_chat_at": first_dt.isoformat() if first_dt else None,
+                "first_chat_at": first_db_dt.isoformat() if first_db_dt else None,
                 "total_messages": total_messages,
                 "facts_total": facts_total,
                 "imprint_persona_count": imprint_persona_count,

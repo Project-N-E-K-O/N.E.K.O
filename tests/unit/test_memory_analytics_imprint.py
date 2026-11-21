@@ -307,10 +307,10 @@ async def test_manual_persona_reflection_fact_and_directive_mutations(tmp_path: 
         ev_log = EventLog()
         pm = PersonaManager(event_log=ev_log)
         pm._config_manager = cm
-        re_eng = ReflectionEngine(event_log=ev_log)
-        re_eng._config_manager = cm
         fs = FactStore()
         fs._config_manager = cm
+        re_eng = ReflectionEngine(fact_store=fs, persona_manager=pm, event_log=ev_log)
+        re_eng._config_manager = cm
 
         # 1. Protected entry cannot be edited
         with pytest.raises(PermissionError):
@@ -523,12 +523,23 @@ async def test_lineage_story_builds_3_steps_with_persisted_and_fallback_links(tm
     char_dir.mkdir(parents=True, exist_ok=True)
     ts = "2026-06-15T21:30:00"
 
-    _seed_timeindex(char_dir / "time_indexed.db", [ts])
+    # Seed using production time_indexed_original schema: (id, session_id, timestamp, message JSON)
     conn = sqlite3.connect(str(char_dir / "time_indexed.db"))
     try:
         conn.execute(
-            "INSERT INTO time_indexed_original (timestamp, role, content) VALUES (?, ?, ?)",
-            (ts, "human", "我最近早上都改喝燕麦拿铁啦，冰美式有点伤胃"),
+            "CREATE TABLE IF NOT EXISTS time_indexed_original "
+            "(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, timestamp TEXT, message TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO time_indexed_original (session_id, timestamp, message) VALUES (?, ?, ?)",
+            (
+                "sess_1",
+                ts,
+                json.dumps(
+                    {"type": "human", "data": {"content": "我最近早上都改喝燕麦拿铁啦，冰美式有点伤胃"}},
+                    ensure_ascii=False,
+                ),
+            ),
         )
         conn.commit()
     finally:
@@ -657,13 +668,15 @@ async def test_phase3_snapshots_create_cap_and_restore_with_cache_invalidation(t
 
         pm = _DummyPersona()
         fs = _DummyFacts()
+        # Restore the OLDEST snapshot while vault is AT CAPACITY (len == max_keep == 3)
+        # to verify pre_restore pruning never deletes the snapshot before reading it.
         res = await arestore_snapshot(
             char_name,
             snap1["snapshot_id"],
             config_manager=cm,
             persona_manager=pm,
             fact_store=fs,
-            max_keep=10,
+            max_keep=3,
         )
         assert res["restored_snapshot_id"] == snap1["snapshot_id"]
         assert res["pre_restore_snapshot_id"].startswith("snap_")
@@ -698,7 +711,10 @@ async def test_phase3_zip_export_keepsake_and_redacted_diagnostics(tmp_path: Pat
                 "facts": [
                     {
                         "id": "p1",
-                        "text": "邮箱 alice@example.com，手机 13812345678，密钥 sk-1234567890abcdef1234",
+                        "text": (
+                            "邮箱 alice@example.com，手机 13812345678，密钥 sk-1234567890abcdef1234，"
+                            'password=abc!def123 secret="my p@ss! word"'
+                        ),
                         "created_at": ts,
                     }
                 ]
@@ -740,10 +756,13 @@ async def test_phase3_zip_export_keepsake_and_redacted_diagnostics(tmp_path: Pat
         assert "alice@example.com" not in combined
         assert "13812345678" not in combined
         assert "sk-1234567890abcdef1234" not in combined
+        assert "abc!def123" not in combined
+        assert "my p@ss! word" not in combined
         assert "绝密原始聊天内容" not in combined
         assert "[REDACTED_EMAIL]" in combined
         assert "[REDACTED_PHONE]" in combined
         assert "[REDACTED_API_KEY]" in combined
+        assert "[REDACTED]" in combined
 
 
 @pytest.mark.asyncio
@@ -829,7 +848,106 @@ async def test_phase3_full_lineage_dag_and_deep_conflict_llm_compliance(tmp_path
 
     assert audit["checked_pairs"] >= 1
     assert audit["summary"]["contradiction"] == 1
+    sent_prompt = fake_llm.ainvoke.call_args[0][0]
+    assert "{PAIRS}" not in sent_prompt
+    assert "燕麦拿铁" in sent_prompt
     _, kwargs = create_mock.call_args
     assert "temperature" not in kwargs
     assert kwargs["max_completion_tokens"] > 0
     assert kwargs["timeout"] > 0
+
+
+@pytest.mark.asyncio
+async def test_greptile_regression_guards_replay_stale_sha_and_correction_id(tmp_path: Path):
+    """Regression tests for EventLog text replay, embedding_text_sha256 staleness,
+    correction_id conflict safety, and manual-forget retirement markers."""
+    from memory.evidence_handlers import make_persona_entry_handler
+    from memory.facts import FactStore
+    from memory.persona.manager import PersonaManager
+
+    cm = _FakeConfigManager(tmp_path)
+    char_name = "回归猫"
+    char_dir = cm.memory_dir / char_name
+    char_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Stale embedding_text_sha256 detection in overview health
+    import base64
+    import numpy as np
+
+    vec_b64 = base64.b64encode(np.ones(8, dtype=np.float16).tobytes()).decode("ascii")
+    _write_json(
+        char_dir / "persona.json",
+        {
+            "master": {
+                "facts": [
+                    {
+                        "id": "p_stale",
+                        "text": "现在改喝乌龙茶",
+                        "embedding": vec_b64,
+                        "embedding_text_sha256": "0" * 64,
+                        "source": "reflection",
+                    }
+                ]
+            }
+        },
+    )
+    overview = build_memory_overview(char_name, memory_dir=cm.memory_dir)
+    emb_dim = next(d for d in overview["health"]["dimensions"] if d["key"] == "embedding")
+    assert emb_dim["metrics"]["stale"] == 1
+
+    # 2. EVT_PERSONA_ENTRY_UPDATED uses RFC §3.3.6 rewrite_text_sha256 (no plaintext in log)
+    #    and raises RuntimeError when the view text drifted from the recorded sha256.
+    with patch("memory.persona.manager.get_config_manager", return_value=cm):
+        pm = PersonaManager()
+        pm._config_manager = cm
+        handler = make_persona_entry_handler(pm)
+        matching_sha = hashlib.sha256("现在改喝乌龙茶".encode("utf-8")).hexdigest()
+        assert handler(
+            char_name,
+            {
+                "entity_key": "master",
+                "entry_id": "p_stale",
+                "rewrite_text_sha256": matching_sha,
+            },
+        ) is False
+        with pytest.raises(RuntimeError):
+            handler(
+                char_name,
+                {
+                    "entity_key": "master",
+                    "entry_id": "p_stale",
+                    "rewrite_text_sha256": "f" * 64,
+                },
+            )
+
+    # 3. Stale correction_id raises LookupError instead of mutating another queued item
+    _write_json(
+        char_dir / "persona_corrections.json",
+        [{"correction_id": "cid_live", "entity": "master", "old_text": "A", "new_text": "B"}],
+    )
+    with (
+        patch("memory.persona.manager.get_config_manager", return_value=cm),
+        patch("memory.persona.corrections.assert_cloudsave_writable"),
+    ):
+        pm2 = PersonaManager()
+        pm2._config_manager = cm
+        with pytest.raises(LookupError):
+            await pm2.aresolve_correction_manual(
+                char_name, 0, "keep_new", correction_id="cid_already_gone",
+            )
+
+    # 4. Cold-cache manual fact forget does not deadlock & stamps arbitration_archived_at
+    _write_json(char_dir / "facts.json", [{"id": "f_cold", "entity": "master", "text": "旧事实"}])
+    with (
+        patch("memory.facts.get_config_manager", return_value=cm),
+        patch("memory.facts.assert_cloudsave_writable"),
+    ):
+        fs = FactStore()
+        fs._config_manager = cm
+        assert char_name not in fs._facts  # cold cache!
+        edited = await fs.aedit_fact_manual(char_name, "f_cold", "新事实")
+        assert edited is not None and edited["text"] == "新事实"
+        assert await fs.aarchive_fact_manual(char_name, "f_cold") is True
+        archived = json.loads((char_dir / "facts_archive.json").read_text(encoding="utf-8"))
+        assert archived and archived[0].get("arbitration_archived_at")
+        assert archived[0].get("arbitration_reason") == "manual_forget"

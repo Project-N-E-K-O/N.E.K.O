@@ -433,16 +433,18 @@ class EvidenceFlowMixin:
                 return None
             prev_status = str(entry.get("status") or "pending")
             now_iso = datetime.now().isoformat()
+            text_changed = bool(cleaned and cleaned != entry.get("text"))
 
-            if cleaned and cleaned != entry.get("text"):
-                entry["text"] = cleaned
-                entry.pop("embedding", None)
-                entry.pop("embedding_model", None)
-                entry.pop("embedding_text_hash", None)
+            def _apply_text_edit(target: dict) -> None:
+                if not text_changed or cleaned is None:
+                    return
+                from memory._embeddings.schema import clear_embedding_fields
+                target["text"] = cleaned
+                clear_embedding_fields(target)
+                target.pop("embedding_model", None)
+                target.pop("embedding_text_hash", None)
 
             if decision == "confirm" and prev_status == "pending":
-                entry["status"] = "confirmed"
-                entry["confirmed_at"] = now_iso
                 if self._event_log is not None:
                     payload = {
                         "reflection_id": reflection_id,
@@ -450,12 +452,17 @@ class EvidenceFlowMixin:
                         "to": "confirmed",
                         "source": EVIDENCE_SOURCE_USER_CONFIRM,
                     }
+                    if text_changed and cleaned is not None:
+                        import hashlib
+                        payload["rewrite_text_sha256"] = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
 
                     def _sync_load(_n: str):
                         return reflections_full
 
                     def _sync_mutate(_view):
-                        pass
+                        _apply_text_edit(entry)
+                        entry["status"] = "confirmed"
+                        entry["confirmed_at"] = now_iso
 
                     def _sync_save(n: str, view):
                         assert_cloudsave_writable(
@@ -474,8 +481,12 @@ class EvidenceFlowMixin:
                         sync_save_view=_sync_save,
                     )
                 else:
+                    _apply_text_edit(entry)
+                    entry["status"] = "confirmed"
+                    entry["confirmed_at"] = now_iso
                     await self.asave_reflections(lanlan_name, reflections_full)
             else:
+                _apply_text_edit(entry)
                 await self.asave_reflections(lanlan_name, reflections_full)
 
         if decision == "confirm" and self._event_log is not None:

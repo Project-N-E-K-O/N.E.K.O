@@ -1214,14 +1214,19 @@ class CorrectionsMixin:
     async def aresolve_correction_manual(
         self,
         name: str,
-        correction_index: int,
+        correction_index: int | None,
         action: str,
         *,
         merged_text: str | None = None,
+        correction_id: str | None = None,
+        expected_old_text: str | None = None,
+        expected_new_text: str | None = None,
     ) -> dict:
         """Manually resolve one pending persona correction from the UI.
 
         Supported actions: ``keep_new``, ``keep_old``, ``merge``, ``keep_both``.
+        Matches by ``correction_id`` when provided so concurrent queue removals
+        never apply the user's decision to a shifted index.
         """
         from config import PERSONA_VERSION_HISTORY_MAX
 
@@ -1231,33 +1236,94 @@ class CorrectionsMixin:
         async with self._get_resolve_alock(name):
             async with self._get_alock(name):
                 corrections = await self.aload_pending_corrections(name)
-                if not (0 <= correction_index < len(corrections)):
-                    raise IndexError("Correction index out of range")
-                item = corrections[correction_index]
-                entity = str(item.get("entity") or "master")
+                resolved_idx: int | None = None
+                cid = str(correction_id or "").strip()
+                if cid:
+                    for idx, cand in enumerate(corrections):
+                        if isinstance(cand, dict) and str(cand.get("correction_id") or "").strip() == cid:
+                            resolved_idx = idx
+                            break
+                    if resolved_idx is None:
+                        raise LookupError(f"Correction already resolved or removed: {cid}")
+                elif expected_old_text is not None or expected_new_text is not None:
+                    exp_old = str(expected_old_text or "").strip()
+                    exp_new = str(expected_new_text or "").strip()
+                    if (
+                        correction_index is not None
+                        and 0 <= correction_index < len(corrections)
+                        and isinstance(corrections[correction_index], dict)
+                        and str(corrections[correction_index].get("old_text") or "").strip() == exp_old
+                        and str(corrections[correction_index].get("new_text") or "").strip() == exp_new
+                    ):
+                        resolved_idx = correction_index
+                    else:
+                        for idx, cand in enumerate(corrections):
+                            if (
+                                isinstance(cand, dict)
+                                and str(cand.get("old_text") or "").strip() == exp_old
+                                and str(cand.get("new_text") or "").strip() == exp_new
+                            ):
+                                resolved_idx = idx
+                                break
+                    if resolved_idx is None:
+                        raise LookupError("Correction already resolved or modified")
+                else:
+                    if correction_index is None or not (0 <= correction_index < len(corrections)):
+                        raise IndexError("Correction index out of range")
+                    resolved_idx = correction_index
+
+                item = corrections[resolved_idx]
+                correction_index = resolved_idx
+                raw_entity = item.get("entity")
+                if not isinstance(raw_entity, str) or not raw_entity.strip():
+                    raise ValueError("Correction item has invalid entity")
+                entity = raw_entity.strip()
+                item_subject = subject_from_entry(item)
+                item_cid = str(item.get("correction_id") or "").strip()
                 old_text = str(item.get("old_text") or "").strip()
                 new_text = str(item.get("new_text") or "").strip()
                 final_text = str(merged_text or "").strip()
 
                 persona = await self._aensure_persona_locked(name)
-                section_facts = self._get_section_facts(persona, entity)
+                section_facts = self._get_section_facts(persona, entity, subject=item_subject)
                 now_iso = datetime.now().isoformat()
                 persona_changed = False
 
+                def _matches_scope(entry_obj: object) -> bool:
+                    if item_subject is None:
+                        return not (isinstance(entry_obj, dict) and subject_from_entry(entry_obj) is not None)
+                    return isinstance(entry_obj, dict) and entry_matches_subject(entry_obj, item_subject)
+
                 def _make_entry(text_val: str) -> dict:
-                    return self._normalize_entry({
+                    raw = {
                         "id": f"manual_{uuid.uuid4().hex[:8]}",
                         "text": text_val,
                         "source": "manual",
                         "created_at": now_iso,
-                    })
+                    }
+                    if item_cid:
+                        raw["applied_correction_id"] = item_cid
+                    if item_subject is not None:
+                        raw.update(item_subject.as_entry_fields())
+                    return self._normalize_entry(raw)
 
-                if action == "keep_old":
+                already_applied = bool(
+                    item_cid
+                    and any(
+                        isinstance(e, dict)
+                        and e.get("applied_correction_id") == item_cid
+                        and _matches_scope(e)
+                        for e in section_facts
+                    )
+                )
+
+                if action == "keep_old" or already_applied:
                     pass
                 elif action == "keep_both":
                     text_to_add = final_text or new_text
                     if text_to_add and not any(
-                        (e.get("text") if isinstance(e, dict) else str(e)) == text_to_add
+                        _matches_scope(e)
+                        and (e.get("text") if isinstance(e, dict) else str(e)) == text_to_add
                         for e in section_facts
                     ):
                         section_facts.append(_make_entry(text_to_add))
@@ -1271,6 +1337,8 @@ class CorrectionsMixin:
                         raise ValueError("Resolved text cannot be empty")
                     replaced = False
                     for idx, existing in enumerate(section_facts):
+                        if not _matches_scope(existing):
+                            continue
                         et = (
                             existing.get("text", "")
                             if isinstance(existing, dict)
@@ -1288,6 +1356,8 @@ class CorrectionsMixin:
                                 })
                                 existing["text"] = replacement_text
                                 existing["version_history"] = prior[-PERSONA_VERSION_HISTORY_MAX:]
+                                if item_cid:
+                                    existing["applied_correction_id"] = item_cid
                                 self._invalidate_token_count_cache(existing)
                                 self._invalidate_embedding_cache(existing)
                                 section_facts[idx] = self._normalize_entry(existing)
@@ -1302,7 +1372,11 @@ class CorrectionsMixin:
                             replaced = True
                             persona_changed = True
                             break
-                    if not replaced:
+                    if not replaced and not any(
+                        _matches_scope(e)
+                        and (e.get("text") if isinstance(e, dict) else str(e)) == replacement_text
+                        for e in section_facts
+                    ):
                         section_facts.append(_make_entry(replacement_text))
                         persona_changed = True
 

@@ -278,7 +278,7 @@ class UserDirectivesManager:
         self._cache[name] = directives
         return directives
 
-    def _save_unlocked(self, name: str) -> None:
+    def _save_unlocked(self, name: str, *, raise_on_error: bool = False) -> None:
         # Deliberately retain synchronous persistence on the event-loop thread:
         #
         # async _process_stream_data_internal calls
@@ -309,6 +309,8 @@ class UserDirectivesManager:
             atomic_write_json(path, payload, indent=2, ensure_ascii=False)  # noqa: ASYNC_BLOCK — Synchronous fan-out contract, documented above.
         except Exception as exc:
             logger.warning("[UserDirectives] save failed for %s: %s", name, exc)
+            if raise_on_error:
+                raise
 
     # ── public API ────────────────────────────────────────────
 
@@ -566,7 +568,7 @@ class UserDirectivesManager:
         with self._pending_guard:
             self._pending_injection.discard(name)
 
-    def remove(self, name: str, term: str) -> bool:
+    def remove(self, name: str, term: str, *, raise_on_error: bool = False) -> bool:
         """Remove a specific ban-topic directive by case-insensitive term match."""
         if not name or not isinstance(term, str) or not term.strip():
             return False
@@ -576,8 +578,13 @@ class UserDirectivesManager:
             kept = [e for e in entries if str(e.get("term") or "").casefold() != target]
             if len(kept) == len(entries):
                 return False
+            prev = list(entries)
             self._cache[name] = kept
-            self._save_unlocked(name)
+            try:
+                self._save_unlocked(name, raise_on_error=raise_on_error)
+            except Exception:
+                self._cache[name] = prev
+                raise
             return True
 
     async def aget_active(
@@ -589,6 +596,57 @@ class UserDirectivesManager:
     ) -> List[Dict[str, Any]]:
         import asyncio
         return await asyncio.to_thread(self.get_active, name, now=now, limit=limit)
+
+    def _record_strict(
+        self,
+        name: str,
+        *,
+        locale: str,
+        kind: str,
+        term: str,
+        source: str = "manual",
+        now: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        if not name:
+            return {}
+        term_norm = _normalize_term(term)
+        if term_norm is None:
+            return {}
+        ts = float(now if now is not None else _now())
+        key = (kind, term_norm.casefold())
+        with self._get_lock(name):
+            entries = self._load_unlocked(name)
+            prev = [dict(e) for e in entries]
+            matched: Optional[Dict[str, Any]] = None
+            for e in entries:
+                if (e.get("kind"), str(e.get("term", "")).casefold()) == key:
+                    matched = e
+                    break
+            if matched is not None:
+                matched["last_seen_at"] = ts
+                matched["expire_at"] = ts + USER_DIRECTIVE_TTL_SECONDS
+                matched["hit_count"] = int(matched.get("hit_count", 1)) + 1
+                result = dict(matched)
+            else:
+                entry: Dict[str, Any] = {
+                    "term": term_norm,
+                    "kind": kind,
+                    "locale": locale or "zh",
+                    "created_at": ts,
+                    "last_seen_at": ts,
+                    "expire_at": ts + USER_DIRECTIVE_TTL_SECONDS,
+                    "hit_count": 1,
+                    "source": source or "manual",
+                }
+                entries.append(entry)
+                result = dict(entry)
+            try:
+                self._save_unlocked(name, raise_on_error=True)
+            except Exception:
+                self._cache[name] = prev
+                raise
+        self.mark_pending_injection(name)
+        return result
 
     async def arecord(
         self,
@@ -602,7 +660,7 @@ class UserDirectivesManager:
     ) -> Dict[str, Any]:
         import asyncio
         return await asyncio.to_thread(
-            self.record,
+            self._record_strict,
             name,
             locale=locale,
             kind=kind,
@@ -613,7 +671,7 @@ class UserDirectivesManager:
 
     async def aremove(self, name: str, term: str) -> bool:
         import asyncio
-        return await asyncio.to_thread(self.remove, name, term)
+        return await asyncio.to_thread(self.remove, name, term, raise_on_error=True)
 
 
 # -- Process singleton and registration --

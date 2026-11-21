@@ -251,16 +251,25 @@
                     class: 'memory-dag-node-meta',
                 }, (n.entity || '') + (n.status ? ' · ' + n.status : '')));
 
-                function onSelect() {
-                    selectedId = (selectedId === n.id) ? null : n.id;
+                function onSelect(restoreFocus) {
+                    const targetId = n.id;
+                    selectedId = (selectedId === targetId) ? null : targetId;
                     renderSvg();
                     renderInspector();
+                    if (restoreFocus) {
+                        const nextEl = scrollWrap.querySelector(
+                            '[data-dag-node-id="' + targetId.replace(/"/g, '\\"') + '"]'
+                        );
+                        if (nextEl && typeof nextEl.focus === 'function') {
+                            nextEl.focus();
+                        }
+                    }
                 }
-                g.addEventListener('click', onSelect);
+                g.addEventListener('click', function () { onSelect(false); });
                 g.addEventListener('keydown', function (ev) {
                     if (ev.key === 'Enter' || ev.key === ' ') {
                         ev.preventDefault();
-                        onSelect();
+                        onSelect(true);
                     }
                 });
                 nodeLayer.appendChild(g);

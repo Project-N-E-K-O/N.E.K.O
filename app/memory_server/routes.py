@@ -8413,7 +8413,10 @@ class _BrowserPersonaRestoreRequest(BaseModel):
 
 class _BrowserCorrectionResolveRequest(BaseModel):
     character_name: str
-    correction_index: int
+    correction_index: int | None = None
+    correction_id: str | None = None
+    expected_old_text: str | None = None
+    expected_new_text: str | None = None
     action: Literal["keep_new", "keep_old", "merge", "keep_both"]
     merged_text: str | None = None
 
@@ -8559,6 +8562,7 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                 continue
             tier = str(item.get("tier") or item.get("type") or item.get("kind") or "fact")
             kind = "reflection" if "reflection" in tier else "fact"
+            is_archived_hit = "archive" in tier or bool(item.get("archived_at"))
             iid = str(item.get("id") or "")
             if iid and (kind, iid) in seen_ids:
                 continue
@@ -8569,6 +8573,8 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                 "entity": str(item.get("entity") or "master"),
                 "text": str(item.get("text") or "").strip(),
                 "status": item.get("status"),
+                "archived": is_archived_hit,
+                "protected": is_archived_hit,
                 "created_at": item.get("created_at"),
                 "score": float(item.get("score") or 0.0),
             })
@@ -8696,7 +8702,12 @@ async def browser_resolve_correction(request: _BrowserCorrectionResolveRequest):
             request.correction_index,
             request.action,
             merged_text=request.merged_text,
+            correction_id=request.correction_id,
+            expected_old_text=request.expected_old_text,
+            expected_new_text=request.expected_new_text,
         )
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except (IndexError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"success": True, **res}
@@ -8757,7 +8768,70 @@ async def browser_merge_duplicate(request: _BrowserDuplicateMergeRequest):
     if request.keep_id == request.drop_id:
         raise HTTPException(status_code=400, detail="keep_id and drop_id must differ")
 
-    # Capture a lightweight automatic safety checkpoint before merging duplicates.
+    if request.kind == "persona":
+        if runtime.persona_manager is None:
+            raise HTTPException(status_code=503, detail="PersonaManager not ready")
+        # Verify BOTH keep_id and drop_id exist and are non-protected BEFORE taking
+        # a snapshot or mutating either entry.
+        persona_view = await runtime.persona_manager.aload_persona(name)
+        section = persona_view.get(request.entity) if isinstance(persona_view, dict) else None
+        facts_list = section.get("facts", []) if isinstance(section, dict) else []
+        by_id = {
+            str(e.get("id") or ""): e
+            for e in facts_list
+            if isinstance(e, dict) and e.get("id")
+        }
+        keep_obj = by_id.get(request.keep_id)
+        drop_obj = by_id.get(request.drop_id)
+        if keep_obj is None:
+            raise HTTPException(status_code=404, detail="keep_id not found")
+        if drop_obj is None:
+            raise HTTPException(status_code=404, detail="drop_id not found")
+        if (
+            keep_obj.get("protected") or keep_obj.get("source") == "character_card"
+            or drop_obj.get("protected") or drop_obj.get("source") == "character_card"
+        ):
+            raise HTTPException(status_code=403, detail="Character card entries are protected")
+
+        try:
+            from memory.analytics import acreate_snapshot
+            await acreate_snapshot(
+                name,
+                label="Before duplicate merge",
+                reason="pre_merge",
+                config_manager=runtime._config_manager,
+            )
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            logger.debug("[MemoryBrowser] pre-merge snapshot skipped for %s: %s", name, exc)
+
+        dropped = await runtime.persona_manager.aarchive_persona_entry(
+            name, request.entity, request.drop_id,
+        )
+        if not dropped:
+            raise HTTPException(status_code=409, detail="drop_id was already removed")
+        try:
+            updated = await runtime.persona_manager.aedit_persona_entry(
+                name, request.entity, request.keep_id, merged,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if updated is None:
+            raise HTTPException(status_code=404, detail="keep_id not found")
+        return {"success": True, "kept": updated, "dropped": dropped}
+
+    if runtime.reflection_engine is None:
+        raise HTTPException(status_code=503, detail="ReflectionEngine not ready")
+    refls = await runtime.reflection_engine.aload_reflections(name, include_archived=False)
+    refl_ids = {str(r.get("id") or "") for r in refls if isinstance(r, dict)}
+    if request.keep_id not in refl_ids:
+        raise HTTPException(status_code=404, detail="keep_id not found")
+    if request.drop_id not in refl_ids:
+        raise HTTPException(status_code=404, detail="drop_id not found")
+
     try:
         from memory.analytics import acreate_snapshot
         await acreate_snapshot(
@@ -8771,32 +8845,14 @@ async def browser_merge_duplicate(request: _BrowserDuplicateMergeRequest):
     except Exception as exc:
         logger.debug("[MemoryBrowser] pre-merge snapshot skipped for %s: %s", name, exc)
 
-    if request.kind == "persona":
-        if runtime.persona_manager is None:
-            raise HTTPException(status_code=503, detail="PersonaManager not ready")
-        try:
-            updated = await runtime.persona_manager.aedit_persona_entry(
-                name, request.entity, request.keep_id, merged,
-            )
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc))
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        if updated is None:
-            raise HTTPException(status_code=404, detail="keep_id not found")
-        dropped = await runtime.persona_manager.aarchive_persona_entry(
-            name, request.entity, request.drop_id,
-        )
-        return {"success": True, "kept": updated, "dropped": dropped}
-
-    if runtime.reflection_engine is None:
-        raise HTTPException(status_code=503, detail="ReflectionEngine not ready")
+    dropped = await runtime.reflection_engine.aarchive_reflection(name, request.drop_id)
+    if not dropped:
+        raise HTTPException(status_code=409, detail="drop_id was already removed")
     updated = await runtime.reflection_engine.amanual_review_reflection(
         name, request.keep_id, "edit", edited_text=merged,
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="keep_id not found")
-    dropped = await runtime.reflection_engine.aarchive_reflection(name, request.drop_id)
     return {"success": True, "kept": updated, "dropped": dropped}
 
 

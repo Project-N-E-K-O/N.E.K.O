@@ -42,7 +42,7 @@ from utils.config_manager import get_config_manager
 from utils.language_utils import get_global_language_full, normalize_language_code
 from utils.llm_client import create_chat_llm_async
 from utils.logger_config import get_module_logger
-from utils.token_budget import truncate_to_tokens
+from utils.tokenize import count_tokens, truncate_to_tokens
 from utils.token_tracker import set_call_type
 
 from .imprint import _CORE_ENTITIES, _META_ENTITY, _read_json_safe, _text_bigrams
@@ -242,28 +242,48 @@ async def arun_deep_conflict_check(
             },
         }
 
+    raw_lang = language or get_global_language_full()
+    full_lang = normalize_language_code(raw_lang, format="full")
+    prompt_lang = "zh-TW" if full_lang == "zh-TW" else normalize_language_code(full_lang, format="short")
+
+    template = get_deep_conflict_check_prompt(prompt_lang)
+    shell_tokens = count_tokens(
+        template.replace("{CHARACTER_NAME}", str(character_name))
+        .replace("{PAIRS}", "")
+        .replace("{PAIRS_BLOCK}", "")
+    )
+    pair_budget = max(256, DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS - shell_tokens)
+
+    # Allocate budget per complete candidate pair so checked_pairs & findings
+    # only account for pairs actually transmitted to the model.
     lines: list[str] = []
+    sent_pairs: list[dict[str, Any]] = []
     pair_by_id: dict[str, dict[str, Any]] = {}
+    used_tokens = 0
     for p in pairs:
-        pair_by_id[p["pair_id"]] = p
-        lines.append(
+        block = (
             f"[{p['pair_id']}] (entity={p['entity']}, sim={p['similarity']})\n"
             f"  A ({p['left']['kind']}): {p['left']['text']}\n"
             f"  B ({p['right']['kind']}): {p['right']['text']}"
         )
-    pairs_block = truncate_to_tokens("\n".join(lines), DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS)
+        block_tokens = count_tokens(block)
+        if sent_pairs and (used_tokens + block_tokens > pair_budget):
+            break
+        if not sent_pairs and block_tokens > pair_budget:
+            block = truncate_to_tokens(block, pair_budget)
+            block_tokens = pair_budget
+        lines.append(block)
+        sent_pairs.append(p)
+        pair_by_id[p["pair_id"]] = p
+        used_tokens += block_tokens
 
-    raw_lang = language or get_global_language_full()
-    prompt_lang = normalize_language_code(raw_lang, format="short")
-    if str(raw_lang or "").lower().replace("_", "-") in ("zh-tw", "zh-hk", "zh-hant"):
-        prompt_lang = "zh-TW"
-
-    template = get_deep_conflict_check_prompt(prompt_lang)
+    pairs_block = "\n".join(lines)
     prompt = (
         template.replace("{CHARACTER_NAME}", str(character_name))
+        .replace("{PAIRS}", pairs_block)
         .replace("{PAIRS_BLOCK}", pairs_block)
     )
-    prompt = truncate_to_tokens(prompt, DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS + 600)
+    prompt = truncate_to_tokens(prompt, DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS)
 
     api_config = await cm.aget_model_api_config("correction")
     set_call_type("memory_deep_conflict_check")
@@ -289,22 +309,22 @@ async def arun_deep_conflict_check(
     for row in parsed:
         pid = str(row.get("pair_id") or "").strip()
         if pid in pair_by_id:
-            verdict = str(row.get("verdict") or "unrelated").strip().lower()
+            verdict = str(row.get("verdict") or "").strip().lower()
             if verdict not in _VALID_VERDICTS:
-                verdict = "unrelated"
+                verdict = "unverified"
             verdict_by_id[pid] = {
                 "verdict": verdict,
                 "reason": str(row.get("reason") or "").strip()[:240],
                 "suggestion": str(row.get("suggestion") or "").strip()[:240],
             }
 
-    counts = {k: 0 for k in ("contradiction", "duplicate", "complementary", "unrelated")}
+    counts = {k: 0 for k in ("contradiction", "duplicate", "complementary", "unrelated", "unverified")}
     findings: list[dict[str, Any]] = []
-    priority = {"contradiction": 0, "duplicate": 1, "complementary": 2, "unrelated": 3}
-    for p in pairs:
+    priority = {"contradiction": 0, "duplicate": 1, "complementary": 2, "unverified": 3, "unrelated": 4}
+    for p in sent_pairs:
         v = verdict_by_id.get(
             p["pair_id"],
-            {"verdict": "unrelated", "reason": "", "suggestion": ""},
+            {"verdict": "unverified", "reason": "", "suggestion": ""},
         )
         counts[v["verdict"]] += 1
         findings.append({
@@ -322,7 +342,8 @@ async def arun_deep_conflict_check(
     return {
         "character_name": character_name,
         "checked_at": checked_at,
-        "checked_pairs": len(pairs),
+        "checked_pairs": len(sent_pairs),
+        "skipped_pairs": max(0, len(pairs) - len(sent_pairs)),
         "findings": findings,
         "summary": counts,
     }

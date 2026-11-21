@@ -5214,9 +5214,16 @@
                 const bubble = document.createElement('div');
                 bubble.className = 'chat-bubble';
                 bubble.textContent = content;
+                bubble.tabIndex = 0;
                 bubble.title = translate('memory.doubleClickToEditBubble', '双击可编辑本条内容');
                 bubble.addEventListener('dblclick', function () {
-                    beginBubbleInlineEdit(bubble, i, 'ai');
+                    beginBubbleInlineEdit(bubble, msg, 'ai');
+                });
+                bubble.addEventListener('keydown', function (ev) {
+                    if ((ev.key === 'Enter' || ev.key === 'F2') && !bubble.classList.contains('is-inline-editing')) {
+                        ev.preventDefault();
+                        beginBubbleInlineEdit(bubble, msg, 'ai');
+                    }
                 });
                 contentWrapper.appendChild(bubble);
 
@@ -5246,9 +5253,16 @@
                 const bubble = document.createElement('div');
                 bubble.className = 'chat-bubble';
                 bubble.textContent = msg.text;
+                bubble.tabIndex = 0;
                 bubble.title = translate('memory.doubleClickToEditBubble', '双击可编辑本条内容');
                 bubble.addEventListener('dblclick', function () {
-                    beginBubbleInlineEdit(bubble, i, 'human');
+                    beginBubbleInlineEdit(bubble, msg, 'human');
+                });
+                bubble.addEventListener('keydown', function (ev) {
+                    if ((ev.key === 'Enter' || ev.key === 'F2') && !bubble.classList.contains('is-inline-editing')) {
+                        ev.preventDefault();
+                        beginBubbleInlineEdit(bubble, msg, 'human');
+                    }
                 });
                 contentWrapper.appendChild(bubble);
 
@@ -5282,9 +5296,13 @@
         }
     }
 
-    function beginBubbleInlineEdit(bubbleEl, idx, role) {
+    function beginBubbleInlineEdit(bubbleEl, msgRef, role) {
         if (!bubbleEl || bubbleEl.classList.contains('is-inline-editing')) return;
-        const msg = chatData[idx];
+        const rowEl = bubbleEl.closest('.chat-item');
+        if (rowEl && rowEl.classList.contains('is-leaving')) return;
+        const currentIdx = chatData.indexOf(msgRef);
+        if (currentIdx < 0) return;
+        const msg = chatData[currentIdx];
         if (!msg) return;
         const originalText = role === 'ai'
             ? (function () {
@@ -5308,11 +5326,12 @@
             committed = true;
             const nextVal = textarea.value.trim();
             bubbleEl.classList.remove('is-inline-editing');
-            if (commit && nextVal && nextVal !== originalText) {
+            const liveIdx = chatData.indexOf(msgRef);
+            if (commit && nextVal && nextVal !== originalText && liveIdx >= 0) {
                 if (role === 'ai') {
-                    updateAIContent(idx, ' ' + nextVal);
+                    updateAIContent(liveIdx, ' ' + nextVal);
                 } else {
-                    chatData[idx].text = nextVal;
+                    chatData[liveIdx].text = nextVal;
                 }
                 setMemoryDirty(true);
                 bubbleEl.textContent = nextVal;

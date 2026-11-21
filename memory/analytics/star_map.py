@@ -51,7 +51,7 @@ from utils.file_utils import atomic_write_json_async
 from utils.language_utils import get_global_language_full, normalize_language_code
 from utils.llm_client import create_chat_llm_async
 from utils.logger_config import get_module_logger
-from utils.token_budget import truncate_to_tokens
+from utils.tokenize import truncate_to_tokens
 from utils.token_tracker import set_call_type
 
 from .imprint import _CORE_ENTITIES, _META_ENTITY, _read_json_safe, _strength_level, _text_bigrams
@@ -337,7 +337,13 @@ def build_star_map(
     coords = _pca_2d(unit)
     cluster_ids = _cluster_cosine_cc(sim_mat)
 
-    corpus_material = "|".join(sorted(item["uid"] for item, _ in usable))
+    # Include entry uid, text fingerprint, and cluster membership so editing
+    # text or rebuilding vectors invalidates cached cluster labels cleanly.
+    corpus_rows = sorted(
+        f"{item['uid']}:{hashlib.sha256(item['text'].encode('utf-8')).hexdigest()[:12]}:c{cluster_ids[idx]}"
+        for idx, (item, _) in enumerate(usable)
+    )
+    corpus_material = "|".join(corpus_rows)
     corpus_hash = hashlib.sha256(corpus_material.encode("utf-8")).hexdigest()[:16]
 
     cached_labels_map: dict[str, str] = {}
@@ -345,6 +351,7 @@ def build_star_map(
     if (
         isinstance(label_cache.get("labels"), dict)
         and label_cache.get("labels")
+        and label_cache.get("corpus_hash") == corpus_hash
     ):
         cached_labels_map = {
             str(k): str(v).strip()
@@ -352,11 +359,7 @@ def build_star_map(
             if str(v or "").strip()
         }
         if cached_labels_map:
-            labels_source = (
-                "llm_cached"
-                if label_cache.get("corpus_hash") == corpus_hash
-                else "llm_cached_stale"
-            )
+            labels_source = "llm_cached"
 
     # Assemble clusters & medoids
     cluster_members: dict[int, list[int]] = {}
@@ -533,13 +536,12 @@ async def alabel_star_map_clusters(
     clusters_block = truncate_to_tokens("\n".join(lines), STAR_MAP_LABEL_INPUT_MAX_TOKENS)
 
     raw_lang = language or get_global_language_full()
-    prompt_lang = normalize_language_code(raw_lang, format="short")
-    if str(raw_lang or "").lower().replace("_", "-") in ("zh-tw", "zh-hk", "zh-hant"):
-        prompt_lang = "zh-TW"
+    full_lang = normalize_language_code(raw_lang, format="full")
+    prompt_lang = "zh-TW" if full_lang == "zh-TW" else normalize_language_code(full_lang, format="short")
 
     template = get_star_map_cluster_label_prompt(prompt_lang)
     prompt = template.replace("{CLUSTERS}", clusters_block)
-    prompt = truncate_to_tokens(prompt, STAR_MAP_LABEL_INPUT_MAX_TOKENS + 400)
+    prompt = truncate_to_tokens(prompt, STAR_MAP_LABEL_INPUT_MAX_TOKENS)
 
     api_config = await cm.aget_model_api_config("summary")
     set_call_type("star_map_cluster_labels")
@@ -653,23 +655,30 @@ def find_related_memories(
         except Exception as exc:
             logger.debug("[MemoryAnalytics] related vector lookup skipped: %s", exc)
 
-    # 2. Text bigram Jaccard supplement / fallback (always helps right after an edit clears embedding)
+    # 2. Exact normalized match + text bigram Jaccard supplement / fallback
     if target_text:
+        t_norm_text = " ".join(target_text.casefold().split())
         t_shingles = _text_bigrams(target_text)
         seen_uids = {item["uid"] for _, item, _ in scored}
-        if len(t_shingles) >= 2:
-            for item in candidates:
-                if item["uid"] in seen_uids:
-                    continue
-                c_shingles = _text_bigrams(item["text"])
-                if len(c_shingles) < 2:
-                    continue
-                inter = len(t_shingles & c_shingles)
-                if inter == 0:
-                    continue
-                jacc = inter / len(t_shingles | c_shingles)
-                if jacc >= 0.25:
-                    scored.append((jacc, item, "text"))
+        for item in candidates:
+            if item["uid"] in seen_uids:
+                continue
+            c_norm_text = " ".join(str(item["text"] or "").casefold().split())
+            if t_norm_text and c_norm_text == t_norm_text:
+                scored.append((1.0, item, "text"))
+                seen_uids.add(item["uid"])
+                continue
+            if len(t_shingles) < 2:
+                continue
+            c_shingles = _text_bigrams(item["text"])
+            if len(c_shingles) < 2:
+                continue
+            inter = len(t_shingles & c_shingles)
+            if inter == 0:
+                continue
+            jacc = inter / len(t_shingles | c_shingles)
+            if jacc >= 0.25:
+                scored.append((jacc, item, "text"))
 
     scored.sort(key=lambda t: -t[0])
     out: list[dict[str, Any]] = []

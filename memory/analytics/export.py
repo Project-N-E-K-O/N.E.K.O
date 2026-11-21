@@ -44,8 +44,13 @@ _REDACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # OpenAI / Anthropic / Google / generic bearer/API keys
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"), "[REDACTED_API_KEY]"),
     (re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"), "[REDACTED_API_KEY]"),
-    (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._-]{16,}\b"), r"\1[REDACTED_TOKEN]"),
-    (re.compile(r"(?i)\b(api[_-]?key|secret|token|password)\s*[:=]\s*['\"]?[A-Za-z0-9._-]{8,}['\"]?"), r"\1=[REDACTED]"),
+    (re.compile(r"(?i)\b(bearer\s+)\S+"), r"\1[REDACTED_TOKEN]"),
+    (
+        re.compile(
+            r"""(?i)\b(api[_-]?key|secret|token|password|passwd|pwd)\s*([:=])\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\])}'"]+)"""
+        ),
+        r"\1\2[REDACTED]",
+    ),
     # Email addresses
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "[REDACTED_EMAIL]"),
     # Phone numbers (CN 11-digit mobile & international formats)
@@ -205,7 +210,7 @@ def build_memory_export_zip(
             }
             zf.writestr(
                 "manifest.json",
-                json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+                json.dumps(redact_obj(manifest), ensure_ascii=False, indent=2).encode("utf-8"),
             )
             zf.writestr(
                 "overview.json",

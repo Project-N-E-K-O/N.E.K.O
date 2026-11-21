@@ -1180,12 +1180,11 @@ class FactsMixin:
             })
             updated_history = prev_history[-PERSONA_VERSION_HISTORY_MAX:]
 
+            import hashlib
             payload = {
                 'entity_key': entity_key,
                 'entry_id': entry_id,
-                'text': cleaned,
-                'previous_text': old_text,
-                'version_history': updated_history,
+                'rewrite_text_sha256': hashlib.sha256(cleaned.encode('utf-8')).hexdigest(),
                 'source': 'manual_edit',
             }
 
@@ -1285,12 +1284,11 @@ class FactsMixin:
                 })
             new_history = new_history[-PERSONA_VERSION_HISTORY_MAX:]
 
+            import hashlib
             payload = {
                 'entity_key': entity_key,
                 'entry_id': entry_id,
-                'text': restored_text,
-                'previous_text': current_text,
-                'version_history': new_history,
+                'rewrite_text_sha256': hashlib.sha256(restored_text.encode('utf-8')).hexdigest(),
                 'source': 'manual_restore',
             }
 
