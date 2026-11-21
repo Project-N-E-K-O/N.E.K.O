@@ -13,6 +13,40 @@ function normalizeJukeboxBundledVrmIdleUrl(url) {
   return value.replace(/\.vrma(?=[?#]|$)/i, '.vrma.gz');
 }
 
+/**
+ * Escape a local jukebox path for the request. Song and action entries keep
+ * raw file names (uploads keep the original name, e.g. 'songs/Song #1.mp3'),
+ * so '#', '?' and '%' must be escaped or the browser reads them as URL syntax
+ * and both the HEAD preflight and playback request a truncated path.
+ * Same rule as MMDCore.toRequestUrl / VRMAnimation.toRequestUrl: valid %XX
+ * runs are decoded once first, so an already-escaped path is returned
+ * unchanged (and those helpers leave this output unchanged too).
+ * A value ending in a known extension is a file name throughout ('a?.mp3'
+ * escapes the '?'); otherwise a '?' or '#' right after the last extension
+ * starts a query / fragment and is kept as URL syntax ('x.vrma?v=1').
+ * Trade-off: a file literally named with a valid escape (e.g. 'a%23b.mp3')
+ * is read as that escape; such names did not load before this either.
+ */
+function encodeJukeboxLocalPath(localPath) {
+  const value = String(localPath || '');
+  const extension = '\\.(?:mp3|wav|ogg|flac|vmd|bvh|fbx|vrma\\.gz|vrma)';
+  let path = value;
+  let suffix = '';
+  if (!new RegExp(extension + '$', 'i').test(value)) {
+    const match = value.match(new RegExp('^(.*' + extension + ')([?#].*)$', 'is'));
+    if (match) {
+      path = match[1];
+      suffix = match[2];
+    }
+  }
+  return path.split('/').map(segment => encodeURIComponent(
+    segment.replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
+      try { return decodeURIComponent(encoded); }
+      catch (_) { return encoded; }
+    })
+  )).join('/') + suffix;
+}
+
 Object.assign(window.Jukebox, {
   startConfigPolling: function() {
     Jukebox.stopConfigPolling();
@@ -1236,17 +1270,22 @@ Object.assign(window.Jukebox, {
     }
   },
 
+  // Returns the request URL used by both the HEAD preflight and playback, so
+  // the two always ask for the same resource.
   resolveJukeboxFileUrl: function(filePath) {
     const rawPath = String(filePath || '').trim();
     if (!rawPath) return '';
     if (/^(?:https?:|data:|blob:)/i.test(rawPath)) return rawPath;
     if (/^\/?static\/jukebox\//.test(rawPath)) {
-      return '/api/jukebox/file/' + rawPath.replace(/^\/?static\/jukebox\//, '');
+      return '/api/jukebox/file/'
+        + encodeJukeboxLocalPath(rawPath.replace(/^\/?static\/jukebox\//, ''));
     }
-    if (rawPath.startsWith('/api/') || rawPath.startsWith('/static/') || rawPath.startsWith('/user_')) {
-      return rawPath;
+    if (rawPath.startsWith('/api/jukebox/file/') || rawPath.startsWith('/static/') || rawPath.startsWith('/user_')) {
+      return encodeJukeboxLocalPath(rawPath);
     }
-    return '/api/jukebox/file' + '/' + rawPath.replace(/^\/+/, '');
+    // Other API endpoints are already URLs; leave them alone.
+    if (rawPath.startsWith('/api/')) return rawPath;
+    return '/api/jukebox/file/' + encodeJukeboxLocalPath(rawPath.replace(/^\/+/, ''));
   },
 
   renderList: function() {
