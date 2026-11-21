@@ -2343,3 +2343,31 @@ async def test_a_worktree_whose_registration_went_can_be_opened_and_removed(
     assert found.id == "w1" and found.start == tree.start
     await restarted.remove(found)
     assert not exists(tree.path) and git(repo, "for-each-ref", REF_PREFIX) == ""
+
+
+async def test_stopping_git_is_not_cut_short_by_another_cancellation(
+    repo: Path, manager: WorktreeManager, monkeypatch: Any
+) -> None:
+    import threading
+    import time
+
+    started = spawn_one_that_holds_its_pipes(monkeypatch)
+    real_kill_tree = worktrees._kill_tree
+    killing = threading.Event()
+
+    def slow_kill_tree(pid: int) -> None:
+        killing.set()
+        time.sleep(0.5)
+        real_kill_tree(pid)
+
+    monkeypatch.setattr(worktrees, "_kill_tree", slow_kill_tree)
+    running = asyncio.ensure_future(manager._git(repo, "status"))
+    while not started:
+        await asyncio.sleep(0.05)
+    running.cancel()  # the first: stopping begins
+    began = await asyncio.to_thread(killing.wait, 30)
+    assert began
+    running.cancel()  # the second, while the tree is being killed
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert started[0].returncode is not None  # killed and reaped all the same

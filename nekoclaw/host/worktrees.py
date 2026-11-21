@@ -1336,20 +1336,25 @@ async def _settle(future: asyncio.Future) -> bool:  # type: ignore[type-arg]
 async def _stop(process: asyncio.subprocess.Process) -> None:
     """Kill ``process`` and what it started, then read what is left of its output (which lets it be reaped).
 
-    Done even when cancelled meanwhile, but for ``WORKTREE_GIT_STOP_SECONDS``
-    at most: a process that still holds the pipes then is left behind.
+    One piece no cancellation cuts, re-raising it after; the reading takes
+    ``WORKTREE_GIT_STOP_SECONDS`` at most: a process that still holds the
+    pipes then is left behind, its pipes closed.
     """
-    await _to_the_end(asyncio.to_thread(_kill_tree, process.pid))
-    with contextlib.suppress(ProcessLookupError):
-        process.kill()
-    try:
-        await _to_the_end(asyncio.wait_for(process.communicate(), settings.WORKTREE_GIT_STOP_SECONDS))
-    except Exception:
-        # Left behind: its pipes are let go of rather than waited on. The
-        # transport is not public on Process, but closing it is what does it.
-        transport = getattr(process, "_transport", None)
-        if transport is not None:
-            transport.close()
+
+    async def finish() -> None:
+        await asyncio.to_thread(_kill_tree, process.pid)
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        try:
+            await asyncio.wait_for(process.communicate(), settings.WORKTREE_GIT_STOP_SECONDS)
+        except Exception:
+            # Left behind: its pipes are let go of rather than waited on. The
+            # transport is not public on Process, but closing it is what does it.
+            transport = getattr(process, "_transport", None)
+            if transport is not None:
+                transport.close()
+
+    await _to_the_end(finish())
 
 
 def _kill_tree(pid: int) -> None:
