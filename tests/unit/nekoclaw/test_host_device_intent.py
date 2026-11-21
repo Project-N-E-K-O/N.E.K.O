@@ -279,11 +279,14 @@ def test_clauses_select_all_needed_tools_but_last_target_locates_the_next_click(
     ("Switch to the Example app and paste the text", DESKTOP),
     ("Switch to the Notepad window now, then click OK", DESKTOP),
     ("Switch to the window showing the report, then click OK", DESKTOP),
+    ("Switch to the window showing the code, then click OK", DESKTOP),
     ("Switch to VS Code window, then click Save", DESKTOP),
     ("点击桌面图标并切换到深色模式", DESKTOP),
     ("Click the desktop icon and switch to dark mode", DESKTOP),
     ("Switch to Word in the browser, then click Save", BROWSER),
     ("Switch to Word from the browser, then click Save", DESKTOP),
+    ("Switch to Microsoft Word and click the Layout tab", DESKTOP),
+    ("Switch to Microsoft Word in the browser and click the Layout tab", BROWSER),
 ])
 def test_a_switch_keeps_its_destination_name_and_ordered_actions(instruction, target):
     from nekoclaw.device_intent import classify_device_intent
@@ -297,3 +300,14 @@ def test_a_prohibited_click_and_switch_leave_the_original_surface_in_place():
     from nekoclaw.device_intent import classify_device_intent
 
     assert classify_device_intent("不要点击桌面图标并切换到记事本", browser_context=True) == ((), True)
+
+
+@pytest.mark.parametrize("instruction", [
+    "Click the login button and return to the desktop",
+    "Click the login button and go back to the desktop",
+    "点击登录并返回桌面",
+])
+def test_the_click_precedes_a_joined_return_to_the_desktop(instruction):
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent(instruction, browser_context=True) == ((BROWSER,), False)

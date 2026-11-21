@@ -121,7 +121,7 @@ _DESKTOP_TARGET = re.compile(
     r"\b(?:desktop|taskbar|start menu|system tray|file explorer|finder)\b"
 )
 _SWITCH_TARGET = re.compile(r"切[换換][到至]|[转轉]到|回到|返回|\b(?:switch(?:\s+over)?|go\s+back|return)\s+to\b")
-_JOINED_SWITCH = re.compile(r"\band\s+(?=switch(?:\s+over)?\s+to\b)|[并並](?:且)?(?=切[换換][到至])")
+_JOINED_SWITCH = re.compile(rf"(?:\band\s+|[并並](?:且)?)(?={_SWITCH_TARGET.pattern})")
 _SWITCH_ACTION = re.compile(
     r"\band\s+(?=(?:(?:double-|right-)?click|type|press|open|use)\b)|"
     r"[并並](?:且)?(?=[点點双雙][击擊]|[输輸]入|打[开開]|按|截)"
@@ -178,6 +178,7 @@ def classify_device_intent(
         switch = _SWITCH_TARGET.search(clause)
         destination = None
         surface = without_files
+        control_surface = without_files
         device_actions = clause
         desktop_target = bool(_DESKTOP_TARGET.search(clause))
         if switch:
@@ -200,13 +201,16 @@ def classify_device_intent(
                 # instead names the old surface, not where this app runs.
                 web_object_text = parts[0] if location and location["prep"] != "from" else target
                 surface = _CODE_FILE.sub(" ", " ".join([web_object_text, *parts[1:]]))
+                # A tab or page within the new application is a local control.
+                # An explicit browser or URL in the action still locates it.
+                control_surface = _CODE_FILE.sub(" ", web_object_text)
         # "Code" in the app name is not a request to work on source code.
         code_text = clause
         if destination:
-            code_text = clause[:switch.end()] + clause[switch.end() + destination.end():]
+            code_text = clause[:switch.end()] + clause[switch.end() + len(target):]
         code = without_files != clause or bool(_CODE_CONTEXT.search(code_text))
         explicit_web = bool(_EXPLICIT_WEB.search(surface))
-        web_object = bool(_WEB_OBJECT.search(surface))
+        web_object = bool(_WEB_OBJECT.search(control_surface))
         file_object = bool(_FILE_OBJECT.search(clause))
         web_target = explicit_web or (web_object and not code and not file_object)
         screenshot = bool(_SCREENSHOT_ACTION.search(clause))
