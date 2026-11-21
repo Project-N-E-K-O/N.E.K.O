@@ -930,3 +930,61 @@ def test_cloudsave_live2d_fallbacks_try_the_next_ranked_copy(libraries, monkeypa
 
     monkeypatch.setattr(builtins, "open", _open)
     assert resolve() == other_root / "200" / "Bravo" / "Bravo.model3.json"
+
+
+@pytest.mark.parametrize("model_ref", ["/workshop/200/Bravo.model3.json", "Bravo.model3.json"])
+def test_cloudsave_live2d_fallback_never_swaps_in_a_different_model(libraries, monkeypatch, model_ref):
+    """The bound model exists but cannot be read: another model in the same item
+    must not be reported in its place (wrong fingerprint, hidden read failure)."""
+    from utils.cloudsave_runtime import bindings
+    import builtins
+
+    item = libraries.a / "200"
+    _write_model(item, "live2d", "Bravo")
+    _write_model(item, "live2d", "Other")
+    blocked = item / "Bravo.model3.json"
+    real_open = builtins.open
+
+    def _open(file, *args, **kwargs):
+        if str(file) == str(blocked):
+            raise PermissionError(13, "Permission denied", str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _open)
+    resolved = bindings._resolve_binding_file_path(
+        libraries.config, model_type="live2d", model_ref=model_ref,
+        asset_source="steam_workshop", asset_source_id="200")
+    assert resolved is None
+    payload = {"_reserved": {"avatar": {
+        "model_type": "live2d",
+        "asset_source": "steam_workshop",
+        "asset_source_id": "200",
+        "live2d": {"model_path": model_ref},
+    }}}
+    summary = bindings._derive_character_binding_summary(libraries.config, "Neko", payload)
+    assert summary["asset_state"] == "downloadable"
+    assert summary["asset_fingerprint"] == ""
+
+
+def test_cloudsave_local_live2d_fallback_never_swaps_in_a_different_model(libraries, monkeypatch):
+    """Same as above through the local fallback (no stored source, nested folder)."""
+    from utils.cloudsave_runtime import bindings
+    import builtins
+
+    folder = libraries.a / "200" / "Bravo"
+    _write_model(folder, "live2d", "Bravo")
+    _write_model(folder, "live2d", "Other")
+    blocked = folder / "Bravo.model3.json"
+    real_open = builtins.open
+
+    def _open(file, *args, **kwargs):
+        if str(file) == str(blocked):
+            raise PermissionError(13, "Permission denied", str(file))
+        return real_open(file, *args, **kwargs)
+
+    resolve = lambda: bindings._resolve_binding_file_path(  # noqa: E731
+        libraries.config, model_type="live2d", model_ref="Bravo.model3.json",
+        asset_source="", asset_source_id="")
+    assert resolve() == blocked
+    monkeypatch.setattr(builtins, "open", _open)
+    assert resolve() is None

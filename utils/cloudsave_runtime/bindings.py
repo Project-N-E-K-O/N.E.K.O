@@ -754,12 +754,16 @@ def _resolve_binding_file_path(
             return None
 
         ranked_candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
-        # Best-ranked copy that can actually be read; an unreadable copy in one
-        # library must not hide a readable one elsewhere.
+        # The best-ranked model, from the first library whose copy can be read. Only
+        # copies of that same model (same rank and same path under their own root)
+        # are retried; a different model is never taken in its place.
+        best_key = ranked_candidates[0][:3]
         for ranked_candidate in ranked_candidates:
+            if ranked_candidate[:3] != best_key:
+                break
             if _is_readable_file(ranked_candidate[3]):
                 return ranked_candidate[3]
-        return None
+        return ranked_candidates[0][3]
 
     def _resolve_local_live2d_fallback() -> Path | None:
         if model_type != "live2d" or normalized_ref.startswith("/"):
@@ -828,12 +832,16 @@ def _resolve_binding_file_path(
             return None
 
         ranked_candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
-        # Best-ranked copy that can actually be read; an unreadable copy in one
-        # library must not hide a readable one elsewhere.
+        # The best-ranked model, from the first library whose copy can be read. Only
+        # copies of that same model (same rank and same path under their own root)
+        # are retried; a different model is never taken in its place.
+        best_key = ranked_candidates[0][:3]
         for ranked_candidate in ranked_candidates:
+            if ranked_candidate[:3] != best_key:
+                break
             if _is_readable_file(ranked_candidate[3]):
                 return ranked_candidate[3]
-        return None
+        return ranked_candidates[0][3]
 
     if model_type == "live2d":
         if normalized_ref.startswith("/user_live2d/"):
