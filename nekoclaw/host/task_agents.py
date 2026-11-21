@@ -2000,12 +2000,16 @@ class TaskAgentManager:
                 groups: tuple[str, ...] = ()
                 custom_tools = {"tools", "tool_choice"}.intersection(model.extra_body or {})
                 if FIRST_TURN_DEVICE_TOOLS and kept.kind != "fork" and not custom_tools:
-                    from nekoclaw.host.device_intent import select_device_groups
+                    from nekoclaw.device_intent import select_device_groups
 
                     # On relaunch, a short follow-up like "click login" belongs to the
                     # same commission's browser task. A new commission starts afresh.
-                    instructions = commission.dispatch_text
-                    if prompt:
+                    # After this commission's session has been summed up, the
+                    # original dispatch is history. A restart or idle wake
+                    # must not put a folded device back in the request.
+                    summed_up = opened and kept.compacted_at is not None and kept.compacted_at >= commission.created_at
+                    instructions = "" if summed_up else commission.dispatch_text
+                    if prompt and not isinstance(prompt, (_Handed, _Unsaid)):
                         instructions += "\n" + prompt
                     groups = select_device_groups(instructions)
                     if groups and runtime_name == RUNTIME_DSH:

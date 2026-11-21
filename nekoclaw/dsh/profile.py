@@ -135,6 +135,7 @@ GUARD_SOURCE = """\
 export const name = 'nekoclaw-guard'
 
 export function apply(ctx, config) {
+  if (config?.deviceViewUrl) installDeviceView(ctx, config.deviceViewUrl)
   const unasked = new Set(Array.isArray(config?.unasked) ? config.unasked : [])
   const prefixes = Array.isArray(config?.unaskedPrefixes) ? config.unaskedPrefixes : []
   const asked = new Set(Array.isArray(config?.asked) ? config.asked : [])
@@ -149,6 +150,80 @@ export function apply(ctx, config) {
   process.stderr.write('%s\\n')
 }
 """ % GUARD_READY
+
+
+# dsh assembles schemas *before* its pre-step compaction and prepares the model
+# request *afterwards*. Keep the actual assembled array for that request so a
+# successful summary takes effect immediately, including overflow retries.
+GUARD_SOURCE += """
+function installDeviceView(ctx, url) {
+  const views = new WeakMap()
+  const prefix = 'mcp__gateway__'
+  const device = name => name === prefix + 'computer' || name.startsWith(prefix + 'browser_')
+  ctx.on('system-prompt/assemble', async (_assembly, { agent }, next) => {
+    const assembly = await next()
+    if (agent && assembly.tools.some(tool => device(tool.name))) {
+      const session = agent.session
+      const view = views.get(session) || { epoch: 0, dirty: false, allowed: null }
+      view.tools = assembly.tools
+      view.unfiltered = null
+      views.set(session, view)
+    }
+    return assembly
+  })
+  ctx.on('session/event', (session, event) => {
+    const view = views.get(session)
+    if (view && event.type === 'compaction/end' && event.data.error === undefined) {
+      view.epoch++
+      view.dirty = true
+    }
+  })
+  ctx.on('tools/result', (exec, result) => {
+    const view = views.get(exec.agent?.session)
+    if (view?.hidden && !result.isError && exec.name === prefix + 'capability_search' && exec.arguments?.group) {
+      view.dirty = true
+    }
+    if (view?.hidden && exec.name === 'mcp__host__wait_agent') view.checkIntent = true
+  })
+  ctx.on('agent/request', async ({ agent, turn, signal }, next) => {
+    const view = views.get(agent.session)
+    if (!view?.epoch || !view.tools || view.disabled) return next()
+    if (view.dirty || (view.hidden && (view.turn !== turn || view.checkIntent))) {
+      try {
+        const response = await fetch(url, {
+          method: 'POST', redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+          headers: {
+            Authorization: 'Bearer ' + process.env.NEKOCLAW_DSH_ENDPOINT_TOKEN,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ session: agent.session.id, epoch: view.epoch, refresh: view.dirty }),
+        })
+        if (response.ok) {
+          const names = await response.json()
+          if (names === null) view.disabled = true
+          if (Array.isArray(names)) view.allowed = new Set(names.map(name => prefix + name))
+          view.dirty = false
+          view.checkIntent = false
+          view.turn = turn
+        }
+      } catch {
+        // A failed refresh keeps the last confirmed view and retries next request.
+      }
+    }
+    if (view.allowed !== null) {
+      // A retry may reuse this assembly instead of starting a new step.
+      const source = view.unfiltered || view.tools
+      const visible = source.filter(tool => !device(tool.name) || view.allowed.has(tool.name))
+      view.hidden = visible.length !== source.length
+      if (view.hidden || view.unfiltered) {
+        if (!view.unfiltered) view.unfiltered = [...source]
+        view.tools.splice(0, view.tools.length, ...visible)
+      }
+    }
+    return next()
+  })
+}
+"""
 
 
 class DshUnavailable(RuntimeError):
@@ -204,7 +279,7 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
     address on the loopback interface ending in ``/v1``). A patch replaces
     the whole configuration of the row it names.
     """
-    from config.nekoclaw_settings import DSH_MODEL_RETRIES, DSH_SPILL_KEPT_DAYS
+    from config.nekoclaw_settings import DSH_MODEL_RETRIES, DSH_SPILL_KEPT_DAYS, FIRST_TURN_DEVICE_TOOLS
     from config.prompts.prompts_nekoclaw import TASK_AGENT_IDENTITY
     from config.prompts.prompts_nekoclaw_dsh import DSH_HOST_TOOLS_SECTION, HOST_TOOL_PREFIX
 
@@ -213,6 +288,11 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
     from nekoclaw.runtime.context import headroom_of
 
     headroom = headroom_of(shape.context_window)
+    # A fresh home is initialized with the pinned stock ACP recipe on launch.
+    # With a pre-existing custom recipe, leave every plugin hook untouched.
+    device_view = FIRST_TURN_DEVICE_TOOLS and (
+        not (home / "profiles" / PROFILE).exists() or uses_stock_tool_presentation(home)
+    )
     models = [
         {
             "id": slot_model(index),
@@ -298,6 +378,7 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
                         "unasked": list(UNASKED_TOOLS),
                         "unaskedPrefixes": [HOST_TOOL_PREFIX],
                         "asked": [f"{HOST_TOOL_PREFIX}{name}" for name in ASKED_HOST_TOOLS],
+                        **({"deviceViewUrl": f"{endpoint}/device-tools"} if device_view else {}),
                     },
                 }
             ]

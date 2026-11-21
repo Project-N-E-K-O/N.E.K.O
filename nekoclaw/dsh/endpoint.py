@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 MODEL_PREFIX = "/model/v1"
 MODEL_PATH = f"{MODEL_PREFIX}/chat/completions"
+DEVICE_PATH = f"{MODEL_PREFIX}/device-tools"
 TOOLS_PATH = "/tools/mcp"
 _START_TIMEOUT_SECONDS = 10.0
 
@@ -84,9 +85,13 @@ async def _wait_disconnect(receive: Receive) -> None:
 class LocalEndpoint:
     """Serves the model endpoint and the host's tools to the driver's dsh processes."""
 
-    def __init__(self, *, forwarder: ModelForwarder, tools: HostTools) -> None:
+    def __init__(
+        self, *, forwarder: ModelForwarder, tools: HostTools,
+        device_view: Callable[[str, str, int, bool], Awaitable[list[str] | None]] | None = None,
+    ) -> None:
         self._forwarder = forwarder
         self._tools = tools
+        self._device_view = device_view
         # The "keys" the dsh processes send with their model requests.
         self._process_tokens: set[str] = set()
         self._session_tokens: dict[str, str] = {}
@@ -222,7 +227,7 @@ class LocalEndpoint:
             return
         headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope.get("headers", [])}
         path = scope.get("path")
-        if path not in (MODEL_PATH, TOOLS_PATH):
+        if path not in (MODEL_PATH, TOOLS_PATH, DEVICE_PATH):
             await respond_json(send, 404, {"error": "not found"})
             return
         if scope.get("method") != "POST":
@@ -240,13 +245,30 @@ class LocalEndpoint:
             await respond_json(send, 403, {"error": "requests with an Origin are not served"})
             return
         token = _bearer(headers)
-        if path == MODEL_PATH:
+        if path in (MODEL_PATH, DEVICE_PATH):
             process = self._process_of(token)
             if process is None:
                 await respond_json(send, 401, {"error": {"message": "unknown or missing token", "type": "invalid_api_key"}})
                 return
             body = await _read_body(receive)
-            if body is not None:
+            if body is not None and path == DEVICE_PATH:
+                try:
+                    payload = json.loads(body)
+                    session, epoch, refresh = payload["session"], payload["epoch"], payload["refresh"]
+                    if not isinstance(session, str) or type(epoch) is not int or epoch < 1 or type(refresh) is not bool:
+                        raise ValueError("invalid device view request")
+                except (KeyError, TypeError, ValueError):
+                    await respond_json(send, 400, {"error": "invalid device view request"})
+                    return
+                from nekoclaw.runtime.tools.gateway import GatewayError
+
+                try:
+                    view = await self._device_view(process, session, epoch, refresh) if self._device_view else None
+                except GatewayError:
+                    await respond_json(send, 503, {"error": "device view unavailable"})
+                    return
+                await respond_json(send, 200, view)
+            elif body is not None:
                 # A model name stands for a session of the process that asks, and of no other.
                 await self._forwarder.serve(process, body, receive, send)
             return

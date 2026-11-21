@@ -244,6 +244,12 @@ class _Session:
     # The next reply is the endpoint's own word after a closing report
     # (``forward.py``), not something the task agent said.
     local_reply_due: bool = False
+    # One newly accepted user instruction. Never send its text to the gateway.
+    device_intent: tuple[str, ...] = ()
+    device_intent_input: int = 0
+    visible_devices: list[str] | None = None
+    device_epoch: int = 0
+    device_refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def id(self) -> str:
@@ -380,7 +386,7 @@ class DshRuntime:
             on_local_reply=self._on_local_reply,
             on_window=self._on_window,
         )
-        self._endpoint = LocalEndpoint(forwarder=self._forwarder, tools=self._tools)
+        self._endpoint = LocalEndpoint(forwarder=self._forwarder, tools=self._tools, device_view=self._device_view)
         self._sessions: dict[str, _Session] = {}
         self._processes: dict[Shape, _Process] = {}
         self._process_lock = asyncio.Lock()
@@ -536,6 +542,32 @@ class DshRuntime:
         """Whether the prepared process serves the explicitly verified ACP tool route."""
         process = self._processes.get(shape_of(model))
         return bool(process and process.native_device_schemas and not process.retiring and process.connection.alive)
+
+    async def _device_view(self, token: str, dsh_id: str, epoch: int, refresh: bool) -> list[str] | None:
+        """Refresh just this process's registered commission devices after a successful summary."""
+        from nekoclaw.runtime.tools.gateway import GatewayClient
+
+        process = next((p for p in self._processes.values() if p.token == token), None)
+        session = process.by_dsh_id.get(dsh_id) if process and process.native_device_schemas else None
+        if session is None or session.spec.gateway is None or session.closing is not None:
+            return None
+        gateway = session.spec.gateway
+        # A timed-out local lookup may still be finishing when dsh retries.
+        async with session.device_refresh_lock:
+            wanted = session.device_intent
+            input_number = session.device_intent_input
+            if epoch < session.device_epoch or (not refresh and not wanted and epoch == session.device_epoch):
+                return session.visible_devices
+            client = GatewayClient(gateway.url, gateway.token)
+            try:
+                await client.list_tools(compactions=epoch, wanted=wanted)
+            finally:
+                await client.aclose()
+            if epoch > session.device_epoch and session.device_intent_input == input_number:
+                session.device_intent = ()
+            session.device_epoch = epoch
+            session.visible_devices = sorted(client.commission_tools)
+            return session.visible_devices
 
     async def _ensure_process(self, shape: Shape) -> _Process:
         async with self._process_lock:
@@ -865,7 +897,7 @@ class DshRuntime:
                 "category": "other",
                 "arguments": given,
                 "workdir": session.spec.workdir,
-                "default": "allow",
+                "default": "ask",
             }
         if "decide_permission" not in self._host.capabilities:
             return payload["default"] == "allow"
@@ -1153,10 +1185,17 @@ class DshRuntime:
             # Resumed, it is told once more.
             logger.warning("the note of dsh session %s could not be written", session.id, exc_info=True)
 
-    def _queue(self, session: _Session, text: str) -> None:
+    def _queue(self, session: _Session, text: str, *, human: bool = False, opening: bool = False) -> None:
         # Numbered as it is given, like the host numbers what it sends: a
         # text that is dropped before dsh has it leaves its number unused.
         session.given += 1
+        if (human or opening) and session.process and session.process.native_device_schemas and session.spec.gateway:
+            from config.nekoclaw_settings import BUILTIN_GROUPS
+            from nekoclaw.device_intent import select_device_groups
+
+            # The gateway intersects the opening hint with the actual initial group set.
+            session.device_intent = BUILTIN_GROUPS if opening else select_device_groups(text)
+            session.device_intent_input = session.given
         session.queue.append(_Given(text, session.given))
         session.arrived.set()
         if session.run is None:
@@ -1504,12 +1543,6 @@ class DshRuntime:
     async def prompt(
         self, session_id: str, text: str, *, opening: bool = False, human: bool = True, serial: int | None = None
     ) -> None:
-        # ``opening`` is for a runtime that sums the conversation up itself
-        # and can leave that text as it is; dsh sums up on its own. ``human``
-        # is for one that keeps something for the user's own words; dsh
-        # asks the host before every call that needs asking. ``serial`` is
-        # said again where the text is refused.
-        del opening, human
         session = await self._session(session_id, "prompt", serial)
         if session is None:
             return
@@ -1518,24 +1551,22 @@ class DshRuntime:
         elif session.run is not None:
             self._reject(session_id, "prompt", "a run is in progress", serial)
         else:
-            self._queue(session, text)
+            self._queue(session, text, human=human, opening=opening)
 
     async def steer(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
-        del human
-        await self._add(session_id, "steer", text, serial)
+        await self._add(session_id, "steer", text, serial, human)
 
     async def follow_up(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
-        del human
-        await self._add(session_id, "follow_up", text, serial)
+        await self._add(session_id, "follow_up", text, serial, human)
 
-    async def _add(self, session_id: str, command: str, text: str, serial: int | None) -> None:
+    async def _add(self, session_id: str, command: str, text: str, serial: int | None, human: bool) -> None:
         session = await self._session(session_id, command, serial)
         if session is None:
             return
         if self._shutdowns:
             self._reject(session_id, command, "the runtime is shutting down", serial)
             return
-        self._queue(session, text)
+        self._queue(session, text, human=human)
 
     async def abort(self, session_id: str) -> None:
         session = await self._session(session_id, "abort")

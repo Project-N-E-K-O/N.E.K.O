@@ -224,8 +224,11 @@ async def test_dispatch_only_mounts_devices_on_a_supported_related_route(
     assert "computer" not in names and {"capability_call", "capability_search"} <= names
 
 
-@pytest.mark.parametrize("follow_up", ["点击登录按钮", "继续"])
-async def test_relaunch_keeps_the_device_context_of_the_same_commission(hosts, tmp_path, follow_up):
+@pytest.mark.parametrize(("follow_up", "compacted", "expected"), [
+    ("点击登录按钮", False, True), ("继续", False, True),
+    ("继续", True, False), ("列出浏览器标签页", True, True),
+])
+async def test_relaunch_uses_current_device_intent_after_a_summary(hosts, tmp_path, follow_up, compacted, expected):
     from nekoclaw.builtin.provider import BuiltinToolProvider
 
     llm = ScriptedLLM([_report("blocked", "waiting for login"), _report("ready", "done")])
@@ -234,12 +237,17 @@ async def test_relaunch_keeps_the_device_context_of_the_same_commission(hosts, t
     commission_id = await _dispatch(host, "打开浏览器")
     await wait_status(host, commission_id, "blocked")
     await wait_until(lambda: host.task_agents.running == [], what="the blocked session being released")
+    if compacted:
+        commission = await host.ledger.get(commission_id)
+        # Both the active runtime's compacted event and a host idle summary
+        # save this timestamp on the persistent session.
+        await host.ledger.update_session(commission.session_id, compacted_at=host.ledger._clock())
     assert await host.task_agents.tell(commission_id, follow_up)
     await wait_status(host, commission_id, "done")
     assert len(llm.overrides) == 2
-    for request in llm.overrides:
+    for request, browser in zip(llm.overrides, [True, expected], strict=True):
         names = {tool["function"]["name"] for tool in request["tools"]}
-        assert "browser_click" in names and "computer" not in names
+        assert ("browser_click" in names) == browser and "computer" not in names
 
 
 # ---------------------------------------------------------------------------
@@ -791,15 +799,26 @@ async def test_a_ruling_on_a_search_does_not_wait_for_its_call_for_ever_or_outli
     assert len(asked) == 3 and host.task_agents._search_rulings == {}
 
 
-async def test_a_tool_a_dsh_plugin_brought_follows_the_setting_for_everything_else(hosts, tmp_path):
+async def test_an_unidentified_dsh_plugin_asks_each_time_unless_the_user_configured_it(hosts, tmp_path):
     host = _host(hosts, tmp_path, ScriptedLLM(), Installation())
     payload = {"tool": "plugin_weather", "category": "other", "arguments": {"city": "Oslo"}, "workdir": "w", "default": "allow"}
+    asked = []
 
+    async def once(commission_id, question):
+        asked.append(question.options)
+        return "once"
+
+    host.permissions.set_asker(once)
+    for _ in range(2):
+        assert (await host.task_agents._cb_permission("c1", payload))["allow"] is True
+    assert asked == [("once", "deny")] * 2
+
+    await host.permission_store.set_mode("other", "allow")
     assert (await host.task_agents._cb_permission("c1", payload))["allow"] is True
-
     await host.permission_store.set_mode("other", "deny")
     refused = await host.task_agents._cb_permission("c1", payload)
     assert refused["allow"] is False and "settings" in refused["reason"]
+    assert len(asked) == 2
 
 
 # ---------------------------------------------------------------------------

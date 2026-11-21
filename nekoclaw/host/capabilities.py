@@ -57,6 +57,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from config.nekoclaw_settings import (
+    BUILTIN_GROUP_BROWSER as BUILTIN_GROUP_BROWSER,
+    BUILTIN_GROUP_KEYBOARD_MOUSE as BUILTIN_GROUP_KEYBOARD_MOUSE,
+    BUILTIN_GROUPS,
+)
 from nekoclaw.host.plugin_runs import PluginCatalog
 from nekoclaw.host.selection import routable_plugins, visible_entries
 
@@ -119,13 +124,6 @@ class Capability:
             item.available and item.id == self.id and item.kind == self.kind and item.permission_key == self.permission_key
             for item in candidates
         )
-
-
-# The two groups of built-in tools. A group's name is also its permission
-# category and the thing one commission occupies at a time.
-BUILTIN_GROUP_KEYBOARD_MOUSE = "keyboard_mouse"
-BUILTIN_GROUP_BROWSER = "browser"
-BUILTIN_GROUPS: tuple[str, ...] = (BUILTIN_GROUP_KEYBOARD_MOUSE, BUILTIN_GROUP_BROWSER)
 
 
 def builtin_tool(
@@ -279,7 +277,8 @@ class McpDenial:
     def server_denied(self, server: str) -> bool:
         """Whether this server is forbidden: its own mode first, else the category's."""
         slot = (server or "").strip() or "*"
-        return self.servers.get(slot, self.category) == "deny"
+        mode = self.servers.get(slot, "auto")
+        return self.category == "deny" if mode == "auto" else mode == "deny"
 
     @property
     def any_denied(self) -> bool:

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from config import nekoclaw_settings
 from nekoclaw.dsh import profile
 from nekoclaw.dsh.profile import Shape
 
@@ -34,6 +37,18 @@ def test_only_stock_acp_presents_native_device_schemas(tmp_path):
     assert not profile.uses_stock_tool_presentation(tmp_path)
 
 
+@pytest.mark.parametrize("enabled, custom", [(True, False), (False, False), (True, True)])
+def test_device_view_hook_only_enabled_for_stock_acp(tmp_path, monkeypatch, enabled, custom):
+    monkeypatch.setattr(nekoclaw_settings, "FIRST_TURN_DEVICE_TOOLS", enabled)
+    if custom:
+        directory = tmp_path / "profiles" / profile.PROFILE
+        directory.mkdir(parents=True)
+        (directory / "cordis.patch.yml").write_text("- id: custom-plugin", encoding="utf-8")
+    rows = profile.build_patch(shape=SHAPE, endpoint="http://127.0.0.1/model/v1", slots=1, home=tmp_path)
+    guard = next(item for row in rows for item in row.get("insert", []) if item["id"] == "nekoclaw-guard")
+    assert ("deviceViewUrl" in guard["config"]) == (enabled and not custom)
+
+
 def _rows(shape: Shape = SHAPE, slots: int = 4, home: Path = Path("home")) -> dict[str, dict[str, Any]]:
     patch = profile.build_patch(shape=shape, endpoint="http://127.0.0.1:5000/model/v1", slots=slots, home=home)
     return {row["id"]: row for row in patch if "id" in row}
@@ -42,6 +57,34 @@ def _rows(shape: Shape = SHAPE, slots: int = 4, home: Path = Path("home")) -> di
 def _inserted(shape: Shape = SHAPE) -> list[dict[str, Any]]:
     patch = profile.build_patch(shape=shape, endpoint="http://127.0.0.1:5000/model/v1", slots=2, home=Path("home"))
     return [item for row in patch for item in row.get("insert") or []]
+
+
+def test_device_projection_can_restore_a_retry_of_the_same_assembly(tmp_path):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is needed to exercise the pinned profile hook directly")
+    (tmp_path / "guard.mjs").write_text(profile.GUARD_SOURCE, encoding="utf-8")
+    subprocess.run([node, "--input-type=module", "-"], input="""
+import assert from 'node:assert/strict'
+import { apply } from './guard.mjs'
+const hooks = {}
+apply({ on: (name, fn) => { hooks[name] = fn } }, { deviceViewUrl: 'http://localhost/unused' })
+const agent = { session: { id: 'test' } }
+const request = { agent, turn: 1, signal: new AbortController().signal }
+const all = [{name: 'mcp__gateway__computer'}, {name: 'mcp__gateway__capability_search'}]
+const assembly = { tools: [...all] }
+let allowed = []
+globalThis.fetch = async () => ({ ok: true, json: async () => allowed })
+await hooks['system-prompt/assemble'](assembly, {agent}, async () => assembly)
+hooks['session/event'](agent.session, {type: 'compaction/end', data: {}})
+await hooks['agent/request'](request, async () => {})
+await hooks['agent/request'](request, async () => {})
+assert.deepEqual(assembly.tools, [all[1]])
+allowed = ['computer']
+hooks['tools/result']({agent, name: 'mcp__gateway__capability_search', arguments: {group: 'keyboard_mouse'}}, {})
+await hooks['agent/request'](request, async () => {})
+assert.deepEqual(assembly.tools, all)
+""", text=True, capture_output=True, check=True, cwd=tmp_path)
 
 
 def test_nothing_is_uploaded() -> None:
@@ -105,6 +148,7 @@ def test_the_sandbox_is_off_and_every_call_the_host_rules_on_is_asked_about() ->
         "unaskedPrefixes": ["mcp__host__"],
         # The one tool of the host's that may have to wait for the user is asked about all the same.
         "asked": ["mcp__host__web_search"],
+        **({"deviceViewUrl": "http://127.0.0.1:5000/model/v1/device-tools"} if nekoclaw_settings.FIRST_TURN_DEVICE_TOOLS else {}),
     }
     # The tools the built-in runtime's gate has a category for are asked about, each of them.
     workdir = Path("work").resolve()

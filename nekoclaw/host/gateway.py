@@ -76,6 +76,12 @@ sums a conversation up says so with every call
 count as not handed over, and each is handed over anew when one of its
 tools is next called.
 
+On a complete summary, a runtime with native device tools refreshes its
+list. The grant keeps groups in use, awaiting execution or approval, used
+since its last summary, or named by fresh user input. The search and call
+tools stay available. Discovery or a new device instruction can restore
+one of the groups the runtime registered when the commission opened.
+
 Permissions are decided here, at the gateway's entry, by the same
 ``PermissionGate`` the built-in tools use. A runtime whose client gives a
 call little time (dsh ends a call after a minute, and a person asked for an
@@ -104,7 +110,8 @@ import hmac
 import json
 import logging
 import secrets
-from collections.abc import Awaitable, Callable
+from collections import Counter
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -193,6 +200,7 @@ class _Cleared:
     grant_id: str | None = None
     # Drops it when it has waited for its call long enough.
     expiry: asyncio.TimerHandle | None = None
+    device_group: str | None = None
 
 
 def _call_key(capability_id: str, arguments: dict[str, Any]) -> tuple[str, str]:
@@ -221,6 +229,12 @@ class Grant:
     # Requested for this commission, and the exact tools actually declared
     # to its runtime. A later switch-on still goes through discovery.
     first_turn_groups: tuple[str, ...] = ()
+    mounted_groups: set[str] = field(default_factory=set)
+    used_groups: set[str] = field(default_factory=set)
+    active_groups: Counter[str] = field(default_factory=Counter)
+    # A repeated tools/list for one summary must not consume a second cycle.
+    folded_at: int = 0
+    initial_devices: dict[str, str] | None = None
     declared_devices: set[str] = field(default_factory=set)
     # The groups of built-in tools that were handed over through this token:
     # how they are used and their tools' definitions. A new token starts
@@ -238,6 +252,20 @@ class Grant:
     # Calls ruled on before they were made, by capability and arguments
     # (``_call_key``); each is taken by the call it was ruled on for.
     cleared: dict[tuple[str, str], _Cleared] = field(default_factory=dict)
+
+    @contextlib.contextmanager
+    def using_device(self, name: str) -> Iterator[None]:
+        group = self.initial_devices.get(name) if self.initial_devices else None
+        if group is None:
+            yield
+            return
+        self.active_groups[group] += 1
+        try:
+            yield
+        finally:
+            self.active_groups[group] -= 1
+            if not self.active_groups[group]:
+                del self.active_groups[group]
 
 
 _READS_ONLY_TEXT = (
@@ -281,7 +309,7 @@ def _note_compactions(grant: Grant, compactions: int | None) -> None:
     handed over anew by the call that next needs it. A client that says
     nothing of summaries is taken to hold what it was handed.
     """
-    if compactions is None:
+    if compactions is None or compactions < grant.folded_at:
         return
     if grant.compactions is not None and compactions != grant.compactions:
         grant.loaded_groups.clear()
@@ -499,6 +527,7 @@ class CapabilityGateway:
             supports_images=bool(supports_images),
             reads_only=bool(reads_only),
             first_turn_groups=() if reads_only else first_turn_groups,
+            mounted_groups=set() if reads_only else set(first_turn_groups),
         )
         self._grants[grant.token] = grant
         self._by_commission[commission_id] = grant
@@ -739,7 +768,12 @@ class CapabilityGateway:
         if method == "ping":
             return {}
         if method == "tools/list":
-            return {"tools": await self.tool_definitions(grant)}
+            from config.nekoclaw_settings import GATEWAY_DEVICE_INTENT_META_KEY
+
+            meta = params.get("_meta")
+            asked = meta.get(GATEWAY_DEVICE_INTENT_META_KEY) if isinstance(meta, dict) else None
+            wanted = {g for g in asked if isinstance(g, str)} if isinstance(asked, list) else set()
+            return {"tools": await self.tool_definitions(grant, compactions=_compactions_of(params), wanted=wanted)}
         if method == "tools/call":
             name = params.get("name")
             if not isinstance(name, str) or not name:
@@ -756,22 +790,47 @@ class CapabilityGateway:
 
     # -- tools ------------------------------------------------------------
 
-    async def tool_definitions(self, grant: Grant) -> list[dict[str, Any]]:
+    async def tool_definitions(
+        self, grant: Grant, *, compactions: int | None = None, wanted: set[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Offer discovery and call to every session, plus devices selected for this commission."""
-        from config.nekoclaw_settings import GATEWAY_COMMISSION_TOOL_META_KEY
+        from config.nekoclaw_settings import GATEWAY_COMMISSION_TOOL_META_KEY, GATEWAY_DEVICE_INTENT_META_KEY
         from config.prompts.prompts_nekoclaw_builtin import BUILTIN_GROUP_GUIDANCE
 
+        requested_at = grant.folded_at
         callable_now = self._offered(grant, await self._registry.callable_by_task_agents())
+        # Read the registry before rotating the cycle. No await from here
+        # through the returned declarations, including on simultaneous lists.
+        if compactions is not None and compactions > grant.folded_at:
+            grant.folded_at = compactions
+            grant.loaded_groups.clear()
+            grant.handed_in.clear()
+            grant.compactions = compactions
+            waiting = {decision.device_group for decision in grant.cleared.values() if decision.refusal is None}
+            grant.mounted_groups.intersection_update(grant.used_groups | grant.active_groups.keys() | waiting)
+            grant.used_groups.clear()
+        epoch = requested_at if compactions is None else compactions
+        if wanted and epoch >= grant.folded_at:
+            grant.mounted_groups.update(wanted.intersection(grant.first_turn_groups))
         listed = [_search_tool_definition(callable_now), _CALL_TOOL_DEFINITION]
+        grant.declared_devices.clear()
         described: set[str] = set()
         for item in callable_now:
-            if item.kind == KIND_BUILTIN and item.group in grant.first_turn_groups:
-                tool = _definition(item)
-                if item.group not in described:
-                    tool["description"] += "\n\n" + BUILTIN_GROUP_GUIDANCE[item.group]
-                    described.add(item.group)
-                listed.append({**tool, "_meta": {GATEWAY_COMMISSION_TOOL_META_KEY: True}})
-                grant.declared_devices.add(item.tool_name)
+            if item.kind != KIND_BUILTIN or item.group not in grant.mounted_groups:
+                continue
+            if grant.initial_devices is not None and item.tool_name not in grant.initial_devices:
+                continue
+            tool = _definition(item)
+            if item.group not in described:
+                tool["description"] += "\n\n" + BUILTIN_GROUP_GUIDANCE[item.group]
+                described.add(item.group)
+            meta = {GATEWAY_COMMISSION_TOOL_META_KEY: True, GATEWAY_DEVICE_INTENT_META_KEY: item.group}
+            listed.append({**tool, "_meta": meta})
+            grant.declared_devices.add(item.tool_name)
+        if grant.initial_devices is None:
+            grant.initial_devices = {
+                item.tool_name: item.group for item in callable_now if item.tool_name in grant.declared_devices and item.group
+            }
         return listed
 
     async def candidate_definitions(self, commission_id: str) -> list[dict[str, Any]]:
@@ -850,6 +909,14 @@ class CapabilityGateway:
                 return _text(f"{CALL_TOOL} needs the name of a capability", error=True)
             inner = arguments.get("arguments")
             name, arguments = target, inner if isinstance(inner, dict) else {}
+        # Hold a native group from receipt, including while the registry
+        # and the ledger are read. Concurrent tools/list may run there.
+        with grant.using_device(name):
+            return await self._call_named(grant, name, arguments, reply)
+
+    async def _call_named(
+        self, grant: Grant, name: str, arguments: dict[str, Any], reply: int | str | None
+    ) -> dict[str, Any]:
         callable_now = await self._registry.callable_by_task_agents()
         capability = next((item for item in self._offered(grant, callable_now) if item.tool_name == name), None)
         if capability is None:
@@ -950,7 +1017,13 @@ class CapabilityGateway:
                 error=True,
             )
         _hand_over(grant, group, reply)
-        return _text(_group_text(group, offered))
+        result = _text(_group_text(group, offered))
+        if group in grant.first_turn_groups and group not in grant.mounted_groups:
+            from config.nekoclaw_settings import GATEWAY_DEVICE_INTENT_META_KEY
+
+            grant.mounted_groups.add(group)
+            result["_meta"] = {GATEWAY_DEVICE_INTENT_META_KEY: group}
+        return result
 
     async def _search(self, grant: Grant, query: str) -> str:
         from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS, GATEWAY_SEARCH_RESULTS
@@ -1018,8 +1091,6 @@ class CapabilityGateway:
         search tool, an unknown capability, a tool of a group that the call
         will hand over instead.
         """
-        from config.nekoclaw_settings import GATEWAY_CLEARED_CALL_SECONDS
-
         grant = self._by_commission.get(commission_id)
         if grant is None or grant.reads_only or name == SEARCH_TOOL:
             return
@@ -1029,6 +1100,13 @@ class CapabilityGateway:
                 return
             inner = arguments.get("arguments")
             name, arguments = target, inner if isinstance(inner, dict) else {}
+        with grant.using_device(name):
+            await self._clear_named(grant, name, arguments)
+
+    async def _clear_named(self, grant: Grant, name: str, arguments: dict[str, Any]) -> None:
+        from config.nekoclaw_settings import GATEWAY_CLEARED_CALL_SECONDS
+
+        commission_id = grant.commission_id
         callable_now = await self._registry.callable_by_task_agents()
         capability = next((item for item in self._offered(grant, callable_now) if item.tool_name == name), None)
         if capability is None:
@@ -1044,6 +1122,7 @@ class CapabilityGateway:
             return
         key = _call_key(capability.id, arguments)
         cleared = await self._permit(commission, capability)
+        cleared.device_group = group
         if self._by_commission.get(commission_id) is not grant:
             # The token was taken back while the user was asked: no call will come for it.
             self._permissions.release_grant(cleared.grant_id)
@@ -1343,6 +1422,9 @@ class CapabilityGateway:
                 return _text(DENIED_BY_SETTINGS, error=True)
             keep = True
             try:
+                grant = self._by_commission.get(commission.id)
+                if grant is not None and group in grant.active_groups:
+                    grant.used_groups.add(group)
                 outcome = await self._registry.run_builtin(
                     capability, commission_id=commission.id, arguments=arguments, reopen_agreement=reopen_agreement,
                     still_allowed=lambda: self._permissions.grant_active(grant_id),

@@ -503,6 +503,11 @@ class TaskAgentSession(SessionInbox):
         # These gateway tools follow a commission, not its persistent session.
         # They belong to live requests but never to the shared system snapshot.
         self._commission_tools: list[AgentTool] = []
+        # Fresh user input only. Consume it at the next summary, even when
+        # it asked for the same device as the commission that opened here.
+        self._wanted_device_groups: tuple[str, ...] = ()
+        self._device_fold_due = False
+        self._device_fold_at = 0
         # What the model is told of, as the snapshot has it.
         self._wire_tools: list[AgentTool] = []
         self._workdir = Path(".")
@@ -623,6 +628,7 @@ class TaskAgentSession(SessionInbox):
             except GatewayError as exc:
                 raise SessionError(f"the capability gateway cannot be reached: {exc}") from exc
             self._commission_tools = [tool for tool in gateway_tools if tool.name in self._gateway.commission_tools]
+            self._wanted_device_groups = tuple(sorted(set(self._gateway.device_groups.values())))
             executors = sorted([*executors, *gateway_tools], key=lambda tool: tool.name)
         self._executors = executors
         self._workdir, self._session_dir = workdir, session_dir
@@ -751,7 +757,51 @@ class TaskAgentSession(SessionInbox):
                 dataclasses.replace(tool, description=definition.description, parameters=definition.parameters)
             )
         self._system = snapshot.system
-        self._wire_tools = [*wire, *self._commission_tools]
+        self._wire_tools = [*wire, *self._visible_commission_tools()]
+
+    def _visible_commission_tools(self) -> list[AgentTool]:
+        return [tool for tool in self._commission_tools if tool.name in self._gateway.commission_tools]
+
+    async def _refresh_device_tools(self, *, compacted: bool = False) -> None:
+        gateway = self._gateway
+        if not self._commission_tools or not gateway.device_groups:
+            return
+        # Only a whole summary made while this commission held the session
+        # may fold its tools. A disk replay or forced truncation may not.
+        fold = (compacted and self._device_fold_at > 0) or self._device_fold_due
+        if not (fold or gateway.device_list_dirty):
+            return
+        from nekoclaw.runtime.tools.gateway import GatewayError
+
+        try:
+            definitions = await gateway.list_tools(
+                compactions=self._device_fold_at if fold else None, wanted=self._wanted_device_groups
+            )
+        except GatewayError:
+            # The host still controls every call. Keep the last usable list
+            # and retry on the next request instead of losing the session.
+            logger.warning("could not refresh device tools for session %s", self.session_id)
+            self._device_fold_due = fold
+            return
+        self._device_fold_due = False
+        gateway.device_list_dirty = False
+        if fold:
+            self._wanted_device_groups = ()
+            self._device_fold_at = 0
+        by_name = {tool.name: tool for tool in self._commission_tools}
+        # Keep all original executors. This list alone changes what the next
+        # model request describes and removes the group's guidance with it.
+        for definition in definitions:
+            name = definition["name"]
+            if name in by_name and name in gateway.commission_tools:
+                by_name[name] = dataclasses.replace(
+                    by_name[name], description=definition["description"], parameters=definition["inputSchema"]
+                )
+        self._commission_tools = list(by_name.values())
+        self._wire_tools = [tool for tool in self._wire_tools if tool.name not in by_name] + self._visible_commission_tools()
+        if not compacted:
+            self.context.fixed_tokens = await self._fixed_tokens()
+            self.context.invalidate()
 
     async def _renew_snapshot(self, reason: str) -> None:
         """Put the system prompt and the tool definitions together from what there is now, and keep them."""
@@ -764,7 +814,7 @@ class TaskAgentSession(SessionInbox):
             platform=self._platform,
             instructions=spec.instructions,
         )
-        self._wire_tools = [*baseline, *self._commission_tools]
+        self._wire_tools = [*baseline, *self._visible_commission_tools()]
         snapshot = SystemSnapshot(
             self._system,
             definitions_of(baseline),
@@ -918,6 +968,7 @@ class TaskAgentSession(SessionInbox):
 
     def _on_message(self, message: AgentMessage) -> None:
         taken: Callable[[], None] | None = None
+        opening = message is self._opening_message
         for index, (number, given) in enumerate(self._given):
             if given is message:
                 # One of the texts the session was given is in its
@@ -945,6 +996,14 @@ class TaskAgentSession(SessionInbox):
             else:
                 # Text from the user: it authorizes goal management for this run.
                 self._human_in_run = True
+                gateway = self._gateway
+                if taken is not None and not opening and self._commission_tools and gateway.device_groups:
+                    from nekoclaw.device_intent import select_device_groups
+
+                    self._wanted_device_groups = select_device_groups(message.text)
+                    hidden = gateway.device_groups.keys() - gateway.commission_tools
+                    if any(gateway.device_groups[name] in self._wanted_device_groups for name in hidden):
+                        gateway.device_list_dirty = True
             # Either makes an earlier run of identical tool calls irrelevant.
             self._repeat.reset()
         elif isinstance(message, AssistantMessage):
@@ -1018,6 +1077,7 @@ class TaskAgentSession(SessionInbox):
                 stopped = AssistantMessage(model=model, stop_reason="aborted", error_message="stopped")
                 yield AssistantErrorEvent(reason="aborted", error=stopped)
                 return
+            await self._refresh_device_tools()
             self._inject_runtime_context()
             failed_before, self._last_request_failed = self._last_request_failed, False
             long = failed_before and await self._size() > TASK_AGENT_UNSURE_REFUSAL_TOKENS
@@ -1262,6 +1322,8 @@ class TaskAgentSession(SessionInbox):
             )
         )
         self._compactions += 1
+        if compaction.complete:
+            self._device_fold_at = self._compactions
         self._compaction_entry_id = compaction.summary_row.entry_id
         self._tokens_before_compaction = compaction.tokens_before
         # (What the request that wrote it used was told when it came back:
@@ -1287,6 +1349,7 @@ class TaskAgentSession(SessionInbox):
         made before the session was last closed) by a summing up that
         made none itself: the host takes the word for that one.
         """
+        await self._refresh_device_tools(compacted=True)
         await self._renew_snapshot(REASON_COMPACTED)
         self.context.fixed_tokens = await self._fixed_tokens()
         self.context.invalidate()
@@ -1791,6 +1854,8 @@ class TaskAgentSession(SessionInbox):
         self.transcript.rewrite(as_it_was)
         self.context.invalidate()
         self._compactions, self._compaction_due = before, due_before
+        if self._device_fold_at > before:
+            self._device_fold_at = 0
         if self._gateway is not None:
             # Nor is the gateway to take what it handed over before (a
             # group of tools and how they are used) for gone: the

@@ -19,7 +19,7 @@ from nekoclaw.dsh.driver import DshRuntime
 from nekoclaw.dsh.profile import DshLaunch
 from nekoclaw.runtime.core import InProcessRuntime
 from nekoclaw.runtime.protocol import GatewaySpec, ModelConfig
-from tests.unit.nekoclaw.fake_openai_server import FakeOpenAIServer, sse_finish, sse_text
+from tests.unit.nekoclaw.fake_openai_server import FakeOpenAIServer, sse_finish, sse_text, sse_tool_call, sse_usage
 from tests.unit.nekoclaw.fakes import Recorder, make_spec
 from tests.unit.nekoclaw.host_fakes import make_host
 
@@ -78,6 +78,93 @@ async def test_device_schemas_reach_the_model_and_leave_on_session_reuse(tmp_pat
             if backend == "builtin":
                 snapshot = json.loads((Path(spec.session_dir) / "system.json").read_text(encoding="utf-8"))
                 assert not any(tool["name"] in expected for tool in snapshot["tools"])
+    finally:
+        await runtime.shutdown()
+        await host.shutdown()
+
+
+@pytest.mark.parametrize("scenario", ["manual-explicit-intent", "automatic-rediscovery", "truncated-summary"])
+async def test_builtin_model_receives_folded_and_restored_browser_schema(tmp_path, monkeypatch, scenario):
+    from utils.tokenize import count_tokens
+
+    automatic = scenario != "manual-explicit-intent"
+    rediscover = scenario == "automatic-rediscovery"
+    failed = scenario == "truncated-summary"
+    provider = BuiltinToolProvider(state=lambda group: (True, ""))
+    host = make_host(tmp_path, builtins=provider, plugins_enabled=lambda: False)
+    events = Recorder()
+    runtime = InProcessRuntime(events)
+    listings = []
+    original_list = host.gateway.tool_definitions
+
+    async def record_list(grant, **options):
+        listings.append((options.get("compactions"), sorted(options.get("wanted") or ())))
+        return await original_list(grant, **options)
+
+    monkeypatch.setattr(host.gateway, "tool_definitions", record_list)
+    long_answer = " ".join(f"step{i}" for i in range(1_600))
+    ordinary_reply = [sse_text(long_answer), sse_finish()]
+    replies = [ordinary_reply] * 2 + [
+        ordinary_reply + ([sse_usage(29_000, 1_000)] if automatic else []),
+        [sse_text("## Current Work\nOpen the browser."), sse_finish("length" if failed else "stop")],
+        [sse_text("Open the browser."), sse_finish()], [sse_text("Done."), sse_finish()],
+    ]
+    if rediscover:
+        replies.append([sse_tool_call("capability_search", {"group": "browser"}), sse_finish("tool_calls")])
+    replies.append([sse_text("Done."), sse_finish()])
+    script = iter(replies)
+    try:
+        url = await host.gateway.start()
+        token = host.gateway.issue("wire", supports_images=True, first_turn_groups=("browser",))
+        with FakeOpenAIServer(lambda _: next(script)) as server:
+            model = ModelConfig(model="local-fixture", base_url=server.base_url, api_key="test-only",
+                                auto_extra_body=False, supports_images=True, context_window=32_000, max_output_tokens=2_000)
+            spec = make_spec(tmp_path, model=model, gateway=GatewaySpec(url=url, token=token))
+            await runtime.start(spec)
+
+            async def prompt(message, **kwargs):
+                start = len(events.events)
+                await runtime.prompt(spec.session_id, message, **kwargs)
+                await events.wait_ended(spec.session_id, start=start)
+
+            await prompt("Open the browser", opening=True)
+            start = len(events.events)
+            await runtime.compact(spec.session_id)
+            await events.wait_ended(spec.session_id, start=start)
+            assert not events.of("compacted") and listings == [(None, [])]
+            await prompt("Summarize step one.")
+            await prompt("Summarize step two.")
+            if not automatic:
+                start = len(events.events)
+                await runtime.compact(spec.session_id)
+                await events.wait_ended(spec.session_id, start=start)
+            await prompt("Continue.")
+            assert len(events.of("compacted")) == 1
+            await prompt("Open the browser", human=False)
+            await prompt("Continue." if rediscover else "List browser tabs")
+            tools = [request["tools"] for request in server.requests]
+            assert len(tools) == (8 if rediscover else 7)
+            if failed:
+                # Forced fit still records the shortened conversation, but
+                # a truncated checkpoint cannot withdraw a device schema.
+                assert listings == [(None, [])] and all(row == tools[0] for row in tools)
+                return
+            assert tools[0] == tools[1] == tools[2] == tools[3] == tools[-1]
+            assert tools[4] == tools[5]
+            if rediscover:
+                assert tools[6] == tools[5]
+            web = {c.tool_name for c in provider.available() if c.group == "browser"}
+            def names(rows):
+                return {d["function"]["name"] for d in rows}
+
+            assert names(tools[0]) - names(tools[4]) == web
+            assert {"capability_search", "capability_call"} <= names(tools[4])
+            assert not any(BUILTIN_GROUP_GUIDANCE["browser"] in tool["function"]["description"] for tool in tools[4])
+            assert listings == [(None, []), (1, []), (None, [] if rediscover else ["browser"])]
+            encoded = [json.dumps(row, ensure_ascii=False, separators=(",", ":")) for row in tools]
+            print("builtin tools (count, bytes, estimated tokens)",
+                  [(len(row), len(raw.encode()), count_tokens(raw)) for row, raw in zip(tools, encoded, strict=True)],
+                  "tools/list", listings)
     finally:
         await runtime.shutdown()
         await host.shutdown()
