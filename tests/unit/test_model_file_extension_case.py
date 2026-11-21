@@ -5,8 +5,9 @@ The upload endpoints check extensions case-insensitively, so 'Foo.VMD',
 ``glob('*.vmd')`` / ``rglob('*.pmx')``, which is case-sensitive on Linux: such a
 file was stored but never listed (and an MMD ZIP holding 'Foo.PMX' failed with
 "no model found" after extraction). These tests upload or create synthetic files
-under ``tmp_path`` and check that every list returns them next to the lower-case
-ones, that the listed URL is served, and that the MMD animation can be deleted.
+under ``tmp_path`` and check that every list (including the VRM part of
+``/api/live2d/user_models``) returns them next to the lower-case ones, that the
+listed URL is served, and that the MMD animation can be deleted.
 """
 
 import io
@@ -215,3 +216,25 @@ def test_vrm_uploaded_animation_with_any_extension_case_is_listed_and_played(vrm
             served = client.get(_request_path(f"/user_vrm/animation/{name}"))
             assert served.status_code == 200
             assert served.content == b"vrma-" + name.encode()
+
+
+def test_live2d_user_models_list_vrm_files_with_any_extension_case(tmp_path, monkeypatch):
+    from main_routers import live2d_router
+
+    live2d_dir = tmp_path / "live2d"
+    live2d_dir.mkdir()
+    vrm_dir = tmp_path / "vrm"
+    vrm_dir.mkdir()
+    _require_case_sensitive_fs(tmp_path)
+    for name in ["lower.vrm", "UPPER.VRM", "Mixed.Vrm", "notes.txt"]:
+        (vrm_dir / name).write_bytes(b"glTF")
+    config = SimpleNamespace(live2d_dir=live2d_dir, readable_live2d_dir=None, vrm_dir=vrm_dir,
+                             ensure_live2d_directory=lambda: True, ensure_vrm_directory=lambda: True)
+    monkeypatch.setattr(live2d_router, "get_config_manager", lambda: config)
+    app = FastAPI()
+    app.include_router(live2d_router.router)
+    with TestClient(app) as client:
+        models = client.get("/api/live2d/user_models").json()["models"]
+    assert sorted(model["path"] for model in models if model.get("type") == "vrm") == [
+        "/user_vrm/Mixed.Vrm", "/user_vrm/UPPER.VRM", "/user_vrm/lower.vrm",
+    ]
