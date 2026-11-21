@@ -365,17 +365,23 @@ test('tick firing before the heartbeat after a medium sleep (late < one long int
     assert.ok(pet.scheduledDelay() >= 59999);
 });
 
-test('an inactive pass never shortens a longer pending quiet window', async () => {
-    const pet = setup();
+test('a later wake jump never shortens a longer pending recheck wait', async () => {
+    channels.length = 0;
+    queue.length = 0;
+    clock.now = 1_000_000;
+    const pet = createWindow('/', { captureIntervals: true, noBroadcastChannel: true });
     pet.window.__proactiveResponse = INACTIVE;
     pet.appState.proactiveChatInterval = 300;  // recheck = max(300s, 60s)
     pet.window.scheduleProactiveChat();
     clock.now += pet.scheduledDelay();
+    pet.heartbeat();
     await pet.fire();
-    assert.ok(pet.scheduledDelay() >= 299999);
-    pet.appState.proactiveChatInterval = 10;   // a shorter interval must not cut the pending wait
+    const passAt = clock.now;
+    clock.now += 130 * 1000;  // > 120s without a sample: looks like a wake jump (quiet = now + 60s)
+    pet.heartbeat();
     pet.window.scheduleProactiveChat();
-    assert.ok(pet.scheduledDelay() >= 299999 - 1000);
+    const remaining = passAt + 300 * 1000 - clock.now;
+    assert.ok(pet.scheduledDelay() >= remaining - 1, 'the 300s recheck wait is kept');
 });
 
 for (const mode of ['text', 'voice']) {
@@ -476,4 +482,27 @@ test('text request never carries voice_session_active', async () => {
     await pet.fire();
     assert.equal(pet.bodies.length, 1);
     assert.equal(pet.bodies[0].voice_session_active, undefined);
+});
+
+test('clock set back after wake does not stretch the quiet window', async () => {
+    const pet = setup();
+    pet.window.scheduleProactiveChat();
+    clock.now += pet.scheduledDelay() + 10 * 60 * 1000;
+    await pet.fire();                     // dropped: quiet for 60s
+    clock.now -= 10 * 60 * 1000;          // time sync moves the clock back 10 min
+    pet.window.scheduleProactiveChat();
+    assert.ok(pet.scheduledDelay() <= 60000 + 1, `delay ${pet.scheduledDelay()} capped to the quiet floor`);
+});
+
+test('a tick firing a few ms before the quiet deadline still speaks', async () => {
+    const pet = setup();
+    pet.window.scheduleProactiveChat();
+    clock.now += pet.scheduledDelay() + 10 * 60 * 1000;
+    await pet.fire();                     // dropped: quiet for 60s, next tick at the deadline
+    const id = pet.appState.proactiveChatTimer;
+    const timer = pet.timers.get(id);
+    clock.now = timer.due - 1;            // browser timer fires 1ms early
+    pet.timers.delete(id);
+    await timer.fn();
+    assert.equal(proactiveFetches(pet), 1, 'no extra full interval for a 1ms early timer');
 });

@@ -561,8 +561,22 @@
         _proactiveTimerDueAt = Date.now() + Math.max(0, Number(delay) || 0);
     }
 
+    // Timers may fire a few ms before Date.now() reaches the deadline; treat
+    // that as "quiet over" instead of waiting another full interval.
+    var SYSTEM_QUIET_SLACK_MS = 50;
+
     function _getSystemQuietDelay() {
-        return Math.max(0, _systemQuietUntil - Date.now());
+        var remaining = Math.max(0, _systemQuietUntil - Date.now());
+        // The deadline is wall-clock based: if the clock is set back after wake
+        // (e.g. a time sync), don't let the quiet window stretch with it. No
+        // quiet window is ever longer than one base interval or the 60s floors.
+        var baseMs = (Number(S.proactiveChatInterval) || 0) * 1000;
+        var cap = Math.max(baseMs, SYSTEM_RETURN_QUIET_MS, SYSTEM_INACTIVE_RECHECK_MS);
+        return Math.min(remaining, cap);
+    }
+
+    function _systemQuietPending() {
+        return _getSystemQuietDelay() > SYSTEM_QUIET_SLACK_MS;
     }
 
     // Called first thing in a firing tick. Returns true when the tick is a
@@ -617,7 +631,7 @@
     // (not an attempt) and rescheduling honours the quiet deadline.
     function _systemQuietBlocksSend() {
         _checkWallClockJump();
-        return _getSystemQuietDelay() > 0;
+        return _systemQuietPending();
     }
 
     // Push the earliest next tick out by the recheck interval; scheduling and
@@ -1063,7 +1077,7 @@
                 // Catch-up after system sleep, or an on-time tick that lands inside
                 // the wake quiet window (set later by the heartbeat): not an
                 // attempt, not counted; rescheduling honours the quiet deadline.
-                if (_proactiveTickMissedBySleep() || _getSystemQuietDelay() > 0) {
+                if (_proactiveTickMissedBySleep() || _systemQuietPending()) {
                     scheduleProactiveChat();
                     return;
                 }
@@ -1243,7 +1257,7 @@
             // Catch-up after system sleep, or an on-time tick that lands inside the
             // wake quiet window (set later by the heartbeat): drop it without
             // touching the backoff level; rescheduling honours the quiet deadline.
-            if (_proactiveTickMissedBySleep() || _getSystemQuietDelay() > 0) {
+            if (_proactiveTickMissedBySleep() || _systemQuietPending()) {
                 scheduleProactiveChat();
                 return;
             }
