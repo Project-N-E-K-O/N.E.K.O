@@ -462,6 +462,32 @@ def test_symlink_validation_prunes_the_excluded_root_directories(tmp_path, monke
     assert issues == []
 
 
+def test_symlink_validation_keeps_links_found_before_a_scan_error(tmp_path, monkeypatch):
+    from plugin.neko_plugin_cli.commands import validate_cmd
+
+    try:
+        (tmp_path / "linked").symlink_to(tmp_path.parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available here")
+    # A denied directory is skipped; any other error (e.g. I/O on a network
+    # share) stops the scan.
+    broken = tmp_path / "zz_broken"
+    broken.mkdir()
+    real_scandir = os.scandir
+
+    def scandir(path):
+        if Path(path) == broken:
+            raise OSError(5, "Input/output error", str(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    issues = []
+    validate_cmd._check_symlink_tree(tmp_path, issues)
+    assert [severity for severity, _ in issues] == ["warning", "error"]
+    assert issues[0][1].startswith("plugin source tree could not be scanned for links")
+    assert issues[1] == ("error", "plugin source must not contain symbolic links: linked")
+
+
 def test_symlink_validation_reports_a_windows_junction(tmp_path, monkeypatch):
     from plugin.neko_plugin_cli.commands import validate_cmd
 

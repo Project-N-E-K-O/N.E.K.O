@@ -1481,8 +1481,8 @@ def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None
     # rule locally so the upload is not the first place it surfaces. CI scans
     # the checkout before dependency sync, so vendor/ (which pip may populate
     # with link wrappers) and .git/ are out of scope here too.
+    links: list[Path] = []
     try:
-        links = []
         for root, directories, files in os.walk(plugin_dir, onerror=reraise_walk_error, followlinks=False):
             base = Path(root)
             if base == plugin_dir:
@@ -1496,8 +1496,8 @@ def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None
             links.extend(base / name for name in (*directories, *files) if name in linked)
             directories[:] = [name for name in directories if name not in linked]
     except OSError as exc:
+        # Still report the links found before the failure.
         issues.append(("warning", f"plugin source tree could not be scanned for links: {exc}"))
-        return
     if not links:
         return
     shown = ", ".join(str(path.relative_to(plugin_dir)) for path in links[:5])
