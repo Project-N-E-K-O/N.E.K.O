@@ -109,8 +109,20 @@ class EmoteTemplateArchiveStore:
                         print('[emote-template] Skipped an inaccessible retired copy')
 
     def _require_writable(self, key: str) -> None:
-        if str(key) in self._recovery_blocked_keys:
-            raise EmoteTemplateStoreError("这个模板的副本尚未恢复，请稍后重试")
+        with _replacement_lock:
+            blocked = str(key) in self._recovery_blocked_keys
+            if not blocked and not self._entry_dir(key).exists():
+                # Another store may have failed publication after this instance
+                # was created. Reject rather than restore here: callers may
+                # already have collected an empty image list for reimport.
+                blocked = any(
+                    not retired.is_symlink() and retired.is_dir()
+                    and (retired / ARCHIVE_NAME).is_file()
+                    and (self._read_meta(retired) or {}).get('key') == str(key)
+                    for retired in self.root.glob('.retired-*')
+                )
+            if blocked:
+                raise EmoteTemplateStoreError("这个模板的副本尚未恢复，请稍后重试")
 
     def _publish_copy(self, key: str, staging: Path) -> None:
         """Publish a complete archive/image generation with recoverable rollback."""

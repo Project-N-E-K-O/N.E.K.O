@@ -77,7 +77,7 @@ def test_published_retired_copy_cannot_resurrect_after_delete(store, reopen_firs
     key = 'published'
     store.save(key, _zip('old'), [('StageImages/old.png', b'old-image')], filename='old.zip')
     retired = store.root / '.retired-after-publish'
-    store._entry_dir(key).rename(retired)
+    store_module.shutil.copytree(store._entry_dir(key), retired)
     store.save(key, _zip('new'), filename='new.zip')
     assert retired.is_dir()
     if reopen_first:
@@ -93,7 +93,7 @@ def test_published_retired_copy_cannot_resurrect_after_delete(store, reopen_firs
 def test_recovery_chooses_the_newest_candidate_before_retiring_old_copies(store):
     key = 'recover-newest'
     store.save(key, _zip('old'))
-    store._entry_dir(key).rename(store.root / '.retired-1000-old')
+    store_module.shutil.copytree(store._entry_dir(key), store.root / '.retired-1000-old')
     store.save(key, _zip('new'))
     store._entry_dir(key).rename(store.root / '.retired-2000-new')
     reopened = EmoteTemplateArchiveStore(store.root)
@@ -106,12 +106,13 @@ def test_inaccessible_recovery_candidate_does_not_block_the_library(store, monke
     store.save('healthy', _zip('healthy'))
     store.save('recovering', _zip('old'))
     oldest = store.root / '.retired-1000-old'
-    store._entry_dir('recovering').rename(oldest)
+    store_module.shutil.copytree(store._entry_dir('recovering'), oldest)
     store.save('recovering', _zip('new'))
     latest = store.root / '.retired-2000-new'
     store._entry_dir('recovering').rename(latest)
     if published:
-        store.save('recovering', _zip('published'))
+        store_module.shutil.copytree(latest, store._entry_dir('recovering'))
+        (store._entry_dir('recovering') / store_module.ARCHIVE_NAME).write_bytes(_zip('published'))
     original = store_module.shutil.rmtree if published else store_module.os.replace
 
     def unavailable(path, *args, **kwargs):
@@ -140,6 +141,37 @@ def test_inaccessible_recovery_candidate_does_not_block_the_library(store, monke
     repaired = EmoteTemplateArchiveStore(store.root)
     assert repaired.archive_path('recovering').read_bytes() == _zip('published' if published else 'new')
     assert not list(store.root.glob('.retired-*'))
+
+
+def test_stale_store_rechecks_recovery_after_another_writer_fails(store, monkeypatch):
+    key = 'stale'
+    store.save(key, _zip(), [('StageImages/saved.png', b'original-image')])
+    stale = EmoteTemplateArchiveStore(store.root)
+    original = store_module.os.replace
+    final = store._entry_dir(key)
+
+    def fail_publish_and_rollback(source, target):
+        if Path(target) == final:
+            raise PermissionError('publication and rollback are locked')
+        return original(source, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store_module.os, 'replace', fail_publish_and_rollback)
+        with pytest.raises(EmoteTemplateStoreError, match='副本写入失败'):
+            store.save(key, _zip('replacement'))
+        assert not stale.has(key)
+        assert key not in stale._recovery_blocked_keys
+        for write in (
+            lambda: stale.save(key, _zip('reimport')),
+            lambda: stale.save_textures(key, [('StageImages/new.png', b'new')]),
+        ):
+            with pytest.raises(EmoteTemplateStoreError, match='尚未恢复'):
+                write()
+        stale.save('healthy', _zip('unrelated'))
+        assert stale.has('healthy')
+    repaired = EmoteTemplateArchiveStore(store.root)
+    assert repaired.archive_path(key).read_bytes() == _zip()
+    assert repaired.texture_path(key, 'StageImages/saved.png').read_bytes() == b'original-image'
 
 
 def test_locked_recovery_rejects_reimport_without_losing_saved_images(store, monkeypatch):
