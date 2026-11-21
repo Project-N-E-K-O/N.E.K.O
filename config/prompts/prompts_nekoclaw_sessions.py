@@ -257,7 +257,7 @@ MESSAGE_QUEUED_NOTIFY = (
 MESSAGE_REFUSALS = {
     "same": 'Not sent: the same words were written to "{name}" a moment ago and are sent once. That note is queued or handed over; this one adds nothing.',
     "too_soon": 'Not sent: a note went to "{name}" less than {interval} seconds ago. Wait {wait} seconds, and put what you have to say in one note.',
-    "too_many": "Not sent: this session has written {limit} notes and questions within the hour. The next can go in {wait} seconds.",
+    "too_many": "Not sent: this session has written {limit} notes within the hour. The next can go in {wait} seconds.",
     "queue_full": 'Not sent: too many notes are waiting for "{name}" already.',
     "too_long": "Not sent: the note is {tokens} tokens long and {limit} is the most. Write the long part to a file in your working directory and send its path.",
     "too_deep": "Not sent: this commission was itself started by a note from another session, and so was the one that wrote that. The chain ends here; report what you have instead.",
@@ -284,7 +284,6 @@ ASK_REFUSALS = {
     "dsh": 'Not asked: "{name}" is worked on in dsh, whose conversation cannot be copied. read_session reads its results; message_session writes to it.',
     "no_copy": 'Not asked: no copy of "{name}" could be made ({reason}). read_session reads what it left.',
     "too_many_asks": "Not asked: this session has asked {limit} questions within the hour. The next can go in {wait} seconds; read_session may answer it meanwhile.",
-    "too_many": "Not asked: this session has written {limit} notes and questions within the hour. The next can go in {wait} seconds.",
     "too_long": "Not asked: the question is {tokens} tokens long and {limit} is the most. Write the long part to a file in your working directory and ask about its path.",
     "self": "Not asked: that is this session.",
     "child": 'Not asked: "{name}" is a task agent another task agent started, or a copy of a session; ask the session it belongs to.',

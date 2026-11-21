@@ -396,7 +396,14 @@ async def _answer(value: Any) -> Any:
     return value
 
 
-async def test_a_session_asks_no_more_than_so_many_questions_an_hour_counted_with_its_notes(hosts, tmp_path, monkeypatch):
+def test_a_session_asks_ten_questions_an_hour_and_writes_twenty_notes_counted_apart():
+    # As the owner set them (2026-11-21).
+    from config import nekoclaw_settings as settings
+
+    assert (settings.SESSION_ASKS_PER_HOUR, settings.SESSION_MESSAGES_PER_HOUR) == (10, 20)
+
+
+async def test_a_session_asks_no_more_than_so_many_questions_an_hour_counted_apart_from_its_notes(hosts, tmp_path, monkeypatch):
     monkeypatch.setattr("config.nekoclaw_settings.SESSION_ASKS_PER_HOUR", 2)
     monkeypatch.setattr("config.nekoclaw_settings.SESSION_MESSAGES_PER_HOUR", 3)
     monkeypatch.setattr("config.nekoclaw_settings.SESSION_MESSAGE_TARGET_INTERVAL_SECONDS", 0.0)
@@ -435,11 +442,13 @@ async def test_a_session_asks_no_more_than_so_many_questions_an_hour_counted_wit
         await _ask(host, asker, "fence")
     assert str(raised.value).startswith("Not asked: this session has asked 2 questions within the hour.")
     assert len(forks) == 3
-    # The questions count with the notes: one note more, and the hour's three are used up.
-    await host.task_agents._cb_session_send(asker.session_id, {"to": "fence", "message": "the build is green"})
+    # The questions are counted apart from the notes: all three of the hour still go, and only then
+    # is one refused, told of the notes alone.
+    for said in ("the build is green", "and deployed", "and tagged"):
+        await host.task_agents._cb_session_send(asker.session_id, {"to": "fence", "message": said})
     with pytest.raises(RuntimeError) as raised:
-        await host.task_agents._cb_session_send(asker.session_id, {"to": "fence", "message": "and deployed"})
-    assert str(raised.value).startswith("Not sent: this session has written 3 notes and questions within the hour.")
+        await host.task_agents._cb_session_send(asker.session_id, {"to": "fence", "message": "and announced"})
+    assert str(raised.value).startswith("Not sent: this session has written 3 notes within the hour. The next")
     release.set()
 
 
@@ -477,7 +486,7 @@ async def _at_work(ledger: Any, title: str) -> Any:
 
 
 def _asking(ledger: Any, asker: Any, target: Any, body: str = "which port?", **limits: Any) -> Any:
-    values = {"per_hour": 3, "asks_per_hour": 2, **limits}
+    values = {"asks_per_hour": 2, **limits}
     return ledger.ask_add(
         from_session=asker.session_id, from_commission=asker.id, to_session=target.session_id, body=body, **values
     )
@@ -494,32 +503,46 @@ async def test_a_question_is_on_record_as_delivered_and_nothing_hands_it_over(le
     assert [event.type for event in await ledger.events(asker.id)][-1] == "session_asked"
 
 
-async def test_what_a_session_may_ask_is_counted_by_the_hour_with_its_notes(ledger):
+def _noting(ledger: Any, asker: Any, target: Any, body: str) -> Any:
     from nekoclaw.host.ledger import MessageLimits
 
+    return ledger.message_add(
+        from_session=asker.session_id, from_commission=asker.id, to_session=target.session_id, body=body,
+        depth=1, notify_when_done=False, notice_after=3600.0,
+        limits=MessageLimits(target_interval=0.0, per_hour=3, queue_max=10, dedup_seconds=0.0),
+    )
+
+
+async def test_what_a_session_may_ask_is_counted_by_the_hour_apart_from_its_notes(ledger):
     asker, target = await _at_work(ledger, "asker"), await _at_work(ledger, "target")
-    limits = MessageLimits(target_interval=0.0, per_hour=3, queue_max=10, dedup_seconds=0.0)
 
     for _ in range(2):
         assert (await _asking(ledger, asker, target))[1] == ""
     ledger.clock.now += 600
     # A third question within the hour is not asked: ``wait`` is until the first is an hour old.
     assert await _asking(ledger, asker, target) == (None, "too_many_asks", 3000.0)
-    # A note still goes, and with it the three of the hour are used up: no question and no note more.
-    note, refusal, _wait = await ledger.message_add(
-        from_session=asker.session_id, from_commission=asker.id, to_session=target.session_id, body="hello",
-        depth=1, notify_when_done=False, notice_after=3600.0, limits=limits,
-    )
-    assert note is not None and refusal == ""
-    assert (await _asking(ledger, asker, target, asks_per_hour=10))[1] == "too_many"
-    refused = await ledger.message_add(
-        from_session=asker.session_id, from_commission=asker.id, to_session=target.session_id, body="again",
-        depth=1, notify_when_done=False, notice_after=3600.0, limits=limits,
-    )
-    assert refused[1] == "too_many"
-    # Once the first is more than an hour old, it may ask again.
+    # The questions take none of the notes: the three of the hour all go, and a fourth does not.
+    for body in ("one", "two", "three"):
+        assert (await _noting(ledger, asker, target, body))[1] == ""
+    assert await _noting(ledger, asker, target, "four") == (None, "too_many", 3600.0)
+    # Once the first question is more than an hour old, it may ask again, with the notes of the
+    # hour used up; and the notes stay used up until they are an hour old.
     ledger.clock.now += 3001
     assert (await _asking(ledger, asker, target))[1] == ""
+    assert (await _noting(ledger, asker, target, "five"))[1] == "too_many"
+
+
+async def test_a_session_whose_notes_for_the_hour_are_used_up_may_still_ask(ledger):
+    asker, target = await _at_work(ledger, "asker"), await _at_work(ledger, "target")
+
+    for body in ("one", "two", "three"):
+        assert (await _noting(ledger, asker, target, body))[1] == ""
+    assert (await _noting(ledger, asker, target, "four"))[1] == "too_many"
+    # The notes take none of the questions: both of the hour are asked, and the third is refused
+    # for the questions, not the notes.
+    for _ in range(2):
+        assert (await _asking(ledger, asker, target))[1] == ""
+    assert (await _asking(ledger, asker, target))[1] == "too_many_asks"
 
 
 async def test_a_question_that_was_not_asked_after_all_counts_for_nothing(ledger):
