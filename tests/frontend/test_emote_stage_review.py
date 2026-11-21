@@ -94,6 +94,24 @@ def test_appending_images_through_a_shared_modifier_keeps_existing_images(page, 
     assert result == {'idle':['one','two'],'talking':'source.default','count':6}
 
 
+def test_restored_image_reloads_the_selected_preview_without_reselecting(page, running_server):
+    page.goto(running_server + '/emote_maker', wait_until='networkidle')
+    page.evaluate(REVEAL)
+    page.evaluate('window.reviewImagesReady = false')
+    modified = BOOT.replace("framesFor: (source, quality) => {", "framesFor: (source, quality) => {\n"
+                            "if (source.startsWith('images:') && !window.reviewImagesReady) return [];")
+    page.evaluate(modified, .1)
+    page.evaluate("__STAGE.assignImage('idle_image', 'restored')")
+    assert page.locator('.st-tile[data-state="idle_image"] .st-tile-status').inner_text() == '—'
+    page.evaluate('''async () => {
+        window.reviewImagesReady = true;
+        NekoEmoteStateStage.setUserImages([{id:'restored',label:'restored'}]);
+        await __STAGE.refreshUserImages();
+    }''')
+    assert page.locator('.st-tile[data-state="idle_image"] .st-tile-status').inner_text() == '20f'
+    assert page.evaluate("__SOURCE_CALLS.includes('images:restored|full')")
+
+
 def test_dispose_during_frame_loading_cannot_publish_a_late_graph(page, running_server):
     page.goto(running_server + '/emote_maker', wait_until='networkidle')
     page.evaluate(REVEAL)

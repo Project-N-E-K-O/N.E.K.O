@@ -1,12 +1,27 @@
 """Storage initialization policy and final image-reference bounds."""
 import ast
 import io
+import re
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
 from main_logic.emote_wardrobe import prepare_spritesheet_crops
+
+
+def test_packaged_zip_worker_dependencies_are_all_required():
+    from scripts.check_nuitka_dist import _REQUIRED_ASSETS
+
+    root = Path(__file__).resolve().parents[2]
+    worker = (root / 'static/js/emote_template_zip_worker.js').read_text(encoding='utf-8')
+    imports = re.findall(r"['\"]([^'\"]+\.js)['\"]", worker.split('importScripts(', 1)[1].split(');', 1)[0])
+    assert imports
+    required = {Path(folder, name).as_posix() for folder, name in _REQUIRED_ASSETS if name is not None}
+    for dependency in imports:
+        path = (root / 'static/js' / dependency).resolve()
+        assert path.is_file()
+        assert path.relative_to(root).as_posix() in required
 
 
 def test_editor_and_write_apis_are_gated_together_until_storage_is_ready():

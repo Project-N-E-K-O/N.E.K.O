@@ -1,6 +1,7 @@
 """Decode a GIF imported into the state editor into composited, timed frames."""
 
 import io
+import struct
 from math import ceil, isqrt, sqrt
 
 from PIL import Image
@@ -91,5 +92,5 @@ def decode_stage_gif(raw: bytes, edge: int) -> tuple[bytes, int, int, list[int]]
             output = io.BytesIO()
             sheet.save(output, "PNG")
             return output.getvalue(), cell, columns, delays
-    except (OSError, EOFError, Image.DecompressionBombError, SyntaxError, ValueError) as exc:
+    except (OSError, EOFError, Image.DecompressionBombError, SyntaxError, ValueError, IndexError, struct.error) as exc:
         raise ValueError("invalid_stage_gif") from exc

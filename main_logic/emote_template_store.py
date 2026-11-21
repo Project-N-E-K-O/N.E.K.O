@@ -17,7 +17,6 @@ import json
 import os
 import re
 import shutil
-import tempfile
 import threading
 import time
 from pathlib import Path, PurePosixPath
@@ -76,12 +75,13 @@ def _dir_size(root: Path) -> int:
 class EmoteTemplateArchiveStore:
     def __init__(self, root: Path):
         self.root = Path(root)
+        self._recovery_blocked_keys: set[str] = set()
         self._recover_retired()
 
     def _recover_retired(self) -> None:
         """Recover a complete old copy if directory publication was interrupted."""
         with _replacement_lock:
-            blocked = set()
+            blocked = self._recovery_blocked_keys
             # Generated names include the retirement time. Prefer the newest
             # candidate before removing older copies of the same key.
             for retired in sorted(self.root.glob('.retired-*'), reverse=True):
@@ -107,6 +107,36 @@ class EmoteTemplateArchiveStore:
                     except OSError:
                         blocked.add(key)
                         print('[emote-template] Skipped an inaccessible retired copy')
+
+    def _require_writable(self, key: str) -> None:
+        if str(key) in self._recovery_blocked_keys:
+            raise EmoteTemplateStoreError("这个模板的副本尚未恢复，请稍后重试")
+
+    def _publish_copy(self, key: str, staging: Path) -> None:
+        """Publish a complete archive/image generation with recoverable rollback."""
+        final = self._entry_dir(key)
+        retired = self.root / f".retired-{int(time.time() * 1000)}-{os.urandom(4).hex()}"
+        with _replacement_lock:
+            self._require_writable(key)
+            swapped_old = False
+            try:
+                # Windows cannot replace a populated directory directly.
+                if final.exists():
+                    os.replace(final, retired)
+                    swapped_old = True
+                os.replace(staging, final)
+            except OSError:
+                if swapped_old and not final.exists() and retired.exists():
+                    try:
+                        os.replace(retired, final)
+                    except OSError:
+                        self._recovery_blocked_keys.add(str(key))
+                        raise
+                raise
+            finally:
+                # Retain the recovery copy if publication and rollback both fail.
+                if final.is_dir():
+                    shutil.rmtree(retired, ignore_errors=True)
 
     # ── 路径解析 ────────────────────────────────────────────────────────────
     def _entry_dir(self, key: str) -> Path:
@@ -227,6 +257,7 @@ class EmoteTemplateArchiveStore:
 
         Preserve the supplied original filename as metadata for archive restoration.
         """
+        self._require_writable(key)
         if not str(key or "").strip():
             raise EmoteTemplateStoreError("缺少模板标识")
         if not archive:
@@ -240,7 +271,6 @@ class EmoteTemplateArchiveStore:
         self.root.mkdir(parents=True, exist_ok=True)
         staging = self.root / f".uploading-{int(time.time() * 1000)}-{os.urandom(4).hex()}"
         final = self._entry_dir(key)
-        retired = self.root / f".retired-{int(time.time() * 1000)}-{os.urandom(4).hex()}"
         try:
             staging.mkdir(parents=True)
             (staging / ARCHIVE_NAME).write_bytes(archive)
@@ -260,26 +290,11 @@ class EmoteTemplateArchiveStore:
             (staging / META_NAME).write_text(
                 json.dumps(meta, ensure_ascii=False), encoding="utf-8"
             )
-            # Windows 上 os.replace 不能盖非空目录：先把旧的挪去待删，再换新的进来。
-            # 换新失败时把旧目录原样换回去，宁可留一个 .retired- 孤儿也不丢用户副本。
-            with _replacement_lock:
-                swapped_old = False
-                try:
-                    if final.exists():
-                        os.replace(final, retired)
-                        swapped_old = True
-                    os.replace(staging, final)
-                except OSError:
-                    if swapped_old and not final.exists() and retired.exists():
-                        os.replace(retired, final)
-                    raise
+            self._publish_copy(key, staging)
         except OSError as exc:
-            shutil.rmtree(staging, ignore_errors=True)
             raise EmoteTemplateStoreError(f"副本写入失败：{exc}") from exc
         finally:
-            # 只有 final 活着才清旧目录：restore-back 也失败时留着孤儿，比删掉强
-            if final.is_dir():
-                shutil.rmtree(retired, ignore_errors=True)
+            shutil.rmtree(staging, ignore_errors=True)
         return {
             "key": str(key),
             "bytes": _dir_size(final),
@@ -292,9 +307,12 @@ class EmoteTemplateArchiveStore:
         Replace matching paths while retaining other textures. Persisting textures
         supplied after import makes them available when the editor reopens.
         """
+        self._require_writable(key)
         if not self.has(key):
             raise EmoteTemplateStoreError("这个模板还没有本地副本")
         cleaned = self._clean_textures(textures)
+        if not cleaned:
+            return {"key": str(key), "textures": self.texture_paths(key)}
         textures_dir = self._entry_dir(key) / TEXTURES_DIR
         existing = self.texture_paths(key)
         spellings = {}
@@ -311,22 +329,26 @@ class EmoteTemplateArchiveStore:
             raise EmoteTemplateStoreError(f"贴图数量超过上限（最多 {MAX_TEXTURE_FILES} 张）")
         if total_bytes > MAX_TEXTURE_TOTAL_BYTES:
             raise EmoteTemplateStoreError("附带贴图总大小超过上限")
-        for relative, blob in cleaned:
-            target = self._safe_child(textures_dir, relative)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            temporary = None
-            try:
-                with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
-                    temporary = Path(stream.name)
-                    stream.write(blob)
-                os.replace(temporary, target)
-            finally:
-                if temporary is not None:
-                    temporary.unlink(missing_ok=True)
+        staging = self.root / f".uploading-{int(time.time() * 1000)}-{os.urandom(4).hex()}"
+        try:
+            # Copy on disk instead of loading every existing image into memory.
+            # A failed write/publication leaves the whole previous batch intact.
+            with _replacement_lock:
+                shutil.copytree(self._entry_dir(key), staging)
+                for relative, blob in cleaned:
+                    target = self._safe_child(staging / TEXTURES_DIR, relative)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(blob)
+                self._publish_copy(key, staging)
+        except OSError as exc:
+            raise EmoteTemplateStoreError(f"贴图写入失败：{exc}") from exc
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
         return {"key": str(key), "textures": self.texture_paths(key)}
 
     def remove_texture(self, key: str, relative: str) -> None:
         """Remove one texture file from a saved copy."""
+        self._require_writable(key)
         textures_dir = self._entry_dir(key) / TEXTURES_DIR
         target = self._safe_child(textures_dir, relative)
         if target.is_file():

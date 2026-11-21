@@ -20,7 +20,8 @@ def editor(page, running_server):
     hooks = """    window.reviewEditor = {
         state, importTemplateFile, persistTemplateToLibrary, getImportedScenes,
         queueStageCapture, captureGifFrames, bakePackJobs, produceGroupFile, currentLookDefaults,
-        importStageImages, persistExportSettings,
+        importStageImages, persistExportSettings, previewGroupMember, renderLook,
+        applyTemplateFromRegistry, currentTemplateKey,
         renderer: () => spineRenderer,
     };
 """
@@ -94,6 +95,107 @@ def test_unicode_zip_and_atlas_regions_render_without_network_texture_fallback(e
     }''')
     assert result == {'loaded': True, 'visible': True}
     assert external == []
+
+
+@pytest.mark.parametrize('path', ['registry', 'import', 'reimport'])
+def test_template_activation_clears_the_previous_group_preview(editor, path):
+    original = _two_skins()
+    _import(editor, original, 'A.zip')
+    if path == 'registry':
+        a_key = editor.evaluate('reviewEditor.currentTemplateKey()')
+        _import(editor, spine_zip(), 'B.zip')
+        b_key = editor.evaluate('reviewEditor.currentTemplateKey()')
+        editor.evaluate('key => reviewEditor.applyTemplateFromRegistry(key)', a_key)
+        editor.wait_for_function('Boolean(reviewEditor.renderer()?.loaded)')
+    editor.evaluate('''() => {
+        const q = reviewEditor, look = q.currentLookDefaults();
+        look.transform.x = 170;
+        look.skins = [{group:'skin', value:'alternate'}];
+        q.previewGroupMember({kind:'scene', ref:q.getImportedScenes()[0].id}, look);
+    }''')
+    assert editor.evaluate('reviewEditor.renderLook().transform.x') == 170
+    if path == 'registry':
+        editor.evaluate('key => reviewEditor.applyTemplateFromRegistry(key)', b_key)
+        editor.wait_for_function('Boolean(reviewEditor.renderer()?.loaded)')
+    else:
+        _import(editor, original if path == 'reimport' else spine_zip(), 'next.zip')
+    assert editor.evaluate('reviewEditor.renderLook()') is None
+    assert editor.evaluate('reviewEditor.state.adjustments.x') == 0
+    assert editor.evaluate('reviewEditor.state.templateSkins[0].value') == 'default'
+
+
+def test_failed_import_keeps_the_current_group_preview(editor):
+    _import(editor, spine_zip())
+    result = editor.evaluate('''async () => {
+        const q = reviewEditor, look = q.currentLookDefaults();
+        look.transform.x = 170;
+        q.previewGroupMember({kind:'scene', ref:q.getImportedScenes()[0].id}, look);
+        const imported = await q.importTemplateFile(new File(['invalid'], 'bad.zip'));
+        return {imported, x:q.renderLook()?.transform.x, loaded:q.renderer().loaded};
+    }''')
+    assert result == {'imported': False, 'x': 170, 'loaded': True}
+
+
+@pytest.mark.parametrize(('fmt', 'edge'), [('png', 512), ('png', 1024), ('gif', 512)])
+def test_batch_file_uses_the_selected_resolution(editor, fmt, edge):
+    from PIL import Image
+
+    _import(editor, spine_zip())
+    encoded = editor.evaluate('''async ([format, edge]) => {
+        const q = reviewEditor;
+        q.state.exportResolution = edge;
+        const bytes = await q.produceGroupFile({readOnly:true},
+            {kind:'scene', ref:q.getImportedScenes()[0].id}, format);
+        let binary = '';
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        return btoa(binary);
+    }''', [fmt, edge])
+    with Image.open(io.BytesIO(base64.b64decode(encoded))) as image:
+        assert image.format.lower() == fmt
+        assert image.size == (edge, edge)
+
+
+@pytest.mark.parametrize('fail', [False, True])
+def test_export_blocks_animation_and_appearance_edits_and_unlocks_afterward(editor, fail):
+    _import(editor, spine_zip())
+    result = editor.evaluate('''async fail => {
+        const q = reviewEditor, scene = q.getImportedScenes()[0];
+        const animation = document.querySelectorAll('#animation-list .animation-card')[1];
+        const scale = document.querySelector('#adjust-scale');
+        const before = {animation:q.state.animationId, scale:q.state.adjustments.scale};
+        let tested = false;
+        window.reviewCaptureHook = () => {
+            if (tested) return;
+            tested = true;
+            // Leave the attempted edits pending until a readback yields.
+            queueMicrotask(() => {
+                animation?.dispatchEvent(new MouseEvent('click', {bubbles:true}));
+                scale.value = '180';
+                scale.dispatchEvent(new Event('input', {bubbles:true}));
+                window.reviewEditsBlocked = scale.disabled;
+            });
+        };
+        let count = 0;
+        const hook = window.reviewCaptureHook;
+        window.reviewCaptureHook = () => {
+            hook();
+            if (++count > 2 && fail) throw new Error('expected-capture-failure');
+            if (q.state.animationId !== before.animation || q.state.adjustments.scale !== before.scale)
+                throw new Error('capture-mutated');
+        };
+        let error = '';
+        try { await q.captureGifFrames({scene, maxFrames:8, maxDimension:32}); }
+        catch (e) { error = e.message; }
+        finally { delete window.reviewCaptureHook; }
+        const unchanged = q.state.animationId === before.animation && q.state.adjustments.scale === before.scale;
+        const unlocked = !scale.disabled && !document.querySelector('.emote-maker-page').hasAttribute('aria-busy');
+        scale.value = '125';
+        scale.dispatchEvent(new Event('input', {bubbles:true}));
+        return {tested:tested && Boolean(animation), blocked:window.reviewEditsBlocked,
+            unchanged, unlocked, editable:q.state.adjustments.scale === 125, error};
+    }''', fail)
+    assert result == {'tested': True, 'blocked': True, 'unchanged': True, 'unlocked': True,
+                      'editable': True, 'error': 'expected-capture-failure' if fail else ''}
 
 
 def test_browser_decodes_zip_in_a_dedicated_worker(editor):

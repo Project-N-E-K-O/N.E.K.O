@@ -32,6 +32,9 @@ from main_logic.emote_template_adapter import (
     spine_resource_archive,
 )
 from main_logic.emote_template_store import (
+    MAX_TEXTURE_BYTES,
+    MAX_TEXTURE_FILES,
+    MAX_TEXTURE_TOTAL_BYTES,
     EmoteTemplateArchiveStore,
     EmoteTemplateStoreError,
     normalize_texture_path,
@@ -62,6 +65,8 @@ from .shared_state import get_config_manager
 
 
 router = APIRouter(prefix="/api/emote-maker", tags=["emote-maker"])
+# Includes multipart headers/paths while bounding the parser's spooled uploads.
+MAX_MULTIPART_BODY_BYTES = MAX_TEXTURE_TOTAL_BYTES + 8 * 1024 * 1024
 _CHUNK_SIZE = 1024 * 1024
 _EXPORT_FILE_LIMIT = 32 * 1024 * 1024
 _EXPORT_HEADER = "x-neko-emote-export"
@@ -208,11 +213,15 @@ async def import_spine_template(
 
 # ── 导入即拷副本 ────────────────────────────────────────────────────────────
 # 键使用 query 参数，同时支持新的内容标识和含有斜杠的旧库键。
-def _archive_store() -> EmoteTemplateArchiveStore:
+def _template_library_directory() -> Path:
     config_mgr = get_config_manager()
     if not config_mgr.ensure_emote_templates_directory():
         raise EmoteTemplateStoreError("本地模板目录不可用")
-    return EmoteTemplateArchiveStore(config_mgr.emote_templates_dir)
+    return Path(config_mgr.emote_templates_dir)
+
+
+def _archive_store() -> EmoteTemplateArchiveStore:
+    return EmoteTemplateArchiveStore(_template_library_directory())
 
 
 def _store_error(exc: Exception, status: int = 400) -> JSONResponse:
@@ -223,7 +232,7 @@ async def _read_upload_bytes(upload: UploadFile, limit: int, label: str) -> byte
     buffer = io.BytesIO()
     total = 0
     while True:
-        chunk = await upload.read(_CHUNK_SIZE)
+        chunk = await upload.read(min(_CHUNK_SIZE, limit - total + 1))
         if not chunk:
             break
         total += len(chunk)
@@ -453,7 +462,7 @@ async def generate_builtin_wardrobe_spritesheet(
 
 
 def _wardrobe_sheet_directory() -> Path:
-    return _archive_store().root / ".wardrobe-sheets"
+    return _template_library_directory() / ".wardrobe-sheets"
 
 
 @router.get("/builtin/wardrobe/spritesheets")
@@ -665,14 +674,20 @@ async def merge_template_library_textures(
         if request.headers.get(_LIBRARY_HEADER) != "1":
             return _store_error(ValueError("forbidden"), status=403)
         paths = [str(path or "") for path in (texture_paths or [])]
+        if len(textures or []) > MAX_TEXTURE_FILES or len(paths) > MAX_TEXTURE_FILES:
+            raise EmoteTemplateStoreError(f"贴图数量超过上限（最多 {MAX_TEXTURE_FILES} 张）")
         blobs: list[tuple[str, bytes]] = []
+        total_bytes = 0
         for index, texture in enumerate(textures or []):
             relative = paths[index] if index < len(paths) else (texture.filename or "")
             prefixes = _BUILTIN_USER_TEXTURE_PREFIXES if key == _BUILTIN_KEY else ("StageImages/",)
             if not normalize_texture_path(relative).startswith(prefixes):
                 raise EmoteTemplateStoreError("Spine 模型贴图必须随 ZIP 提供；这里只接受会话图片")
-            blobs.append((relative, await _read_upload_bytes(
-                texture, MAX_ARCHIVE_BYTES, "附带贴图")))
+            blob = await _read_upload_bytes(
+                texture, min(MAX_TEXTURE_BYTES, MAX_TEXTURE_TOTAL_BYTES - total_bytes), "附带贴图",
+            )
+            total_bytes += len(blob)
+            blobs.append((relative, blob))
         lock = _builtin_storage_lock if key == _BUILTIN_KEY else _library_storage_lock
         result = await _storage_transaction(lock, _merge_library_textures, key, blobs)
     except (EmoteTemplateStoreError, EmoteTemplatePackageError, OSError) as exc:
@@ -711,12 +726,24 @@ async def remove_template_library_texture(
 
 @router.get("/library/texture")
 async def open_template_library_texture(key: str = Query(...), path: str = Query(...)):
+    def read_texture():
+        target = _archive_store().texture_path(key, path)
+        with target.open('rb') as stream:
+            content = stream.read(MAX_TEXTURE_BYTES + 1)
+        if len(content) > MAX_TEXTURE_BYTES:
+            raise EmoteTemplateStoreError("附带贴图超过上限")
+        return content, target.name, target.suffix
+
     try:
-        target = await asyncio.to_thread(lambda: _archive_store().texture_path(key, path))
-    except EmoteTemplateStoreError as exc:
+        lock = _builtin_storage_lock if key == _BUILTIN_KEY else _library_storage_lock
+        content, name, suffix = await _storage_transaction(lock, read_texture)
+    except (EmoteTemplateStoreError, OSError) as exc:
         return _store_error(exc, status=404)
-    media_type = "image/gif" if target.suffix.lower() == ".gif" else "image/png"
-    return FileResponse(target, filename=target.name, media_type=media_type)
+    media_type = "image/gif" if suffix.lower() == ".gif" else "image/png"
+    return Response(content, media_type=media_type, headers={
+        "Cache-Control": "no-store",
+        "Content-Disposition": f"attachment; filename*=utf-8''{quote(name)}",
+    })
 
 
 @router.post("/library/stage-image-frames")

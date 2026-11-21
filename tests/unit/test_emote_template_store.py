@@ -142,6 +142,72 @@ def test_inaccessible_recovery_candidate_does_not_block_the_library(store, monke
     assert not list(store.root.glob('.retired-*'))
 
 
+def test_locked_recovery_rejects_reimport_without_losing_saved_images(store, monkeypatch):
+    key = 'recovering'
+    store.save(key, _zip(), [('StageImages/saved.png', b'original-image')])
+    retired = store.root / '.retired-locked'
+    store._entry_dir(key).rename(retired)
+    original = store_module.os.replace
+
+    def locked(source, target):
+        if Path(source) == retired:
+            raise PermissionError('locked')
+        return original(source, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store_module.os, 'replace', locked)
+        reopened = EmoteTemplateArchiveStore(store.root)
+        assert not reopened.has(key)
+        for write in (
+            lambda: reopened.save(key, _zip('reimport')),
+            lambda: reopened.save_textures(key, [('StageImages/new.png', b'new')]),
+            lambda: reopened.remove_texture(key, 'StageImages/saved.png'),
+        ):
+            with pytest.raises(EmoteTemplateStoreError, match='尚未恢复'):
+                write()
+        reopened.save('unrelated', _zip())
+        assert reopened.has('unrelated')
+        assert (retired / 'textures/StageImages/saved.png').read_bytes() == b'original-image'
+    repaired = EmoteTemplateArchiveStore(store.root)
+    assert repaired.texture_path(key, 'StageImages/saved.png').read_bytes() == b'original-image'
+    assert repaired.archive_path(key).read_bytes() == _zip()
+
+
+@pytest.mark.parametrize('failure', ['write', 'publish', None])
+def test_texture_batch_is_all_or_nothing_and_keeps_unmodified_images(store, monkeypatch, failure):
+    originals = [('StageImages/a.png', b'old-a'), ('StageImages/b.png', b'old-b'),
+                 ('StageImages/unchanged.png', b'untouched')]
+    store.save('batch', _zip(), originals)
+    original_write = Path.write_bytes
+    original_replace = store_module.os.replace
+
+    def write(path, data):
+        if path.name == 'b.png' and any(p.startswith('.uploading-') for p in path.parts):
+            raise OSError('disk full')
+        return original_write(path, data)
+
+    def replace(source, target):
+        if Path(source).name.startswith('.uploading-'):
+            raise OSError('publication failed')
+        return original_replace(source, target)
+
+    if failure == 'write':
+        monkeypatch.setattr(Path, 'write_bytes', write)
+    elif failure == 'publish':
+        monkeypatch.setattr(store_module.os, 'replace', replace)
+    changed = [('StageImages/a.png', b'new-a'), ('StageImages/b.png', b'new-b')]
+    if failure:
+        with pytest.raises(EmoteTemplateStoreError, match='贴图写入失败'):
+            store.save_textures('batch', changed)
+    else:
+        store.save_textures('batch', changed)
+    reopened = EmoteTemplateArchiveStore(store.root)
+    expected = dict(originals) | (dict(changed) if failure is None else {})
+    assert {path: reopened.texture_path('batch', path).read_bytes() for path in reopened.texture_paths('batch')} == expected
+    assert reopened.archive_path('batch').read_bytes() == _zip()
+    assert not list(store.root.glob('.uploading-*'))
+
+
 def test_texture_merge_rejects_case_conflicts_without_losing_existing_files(store):
     store.save('case', _zip(), [('StageImages/A.png', b'first')])
     with pytest.raises(EmoteTemplateStoreError, match='大小写冲突'):
@@ -253,10 +319,111 @@ def client(tmp_path: Path, monkeypatch):
     app = FastAPI()
     app.include_router(router_module.router)
     monkeypatch.setattr(
-        router_module, "_archive_store",
-        lambda: EmoteTemplateArchiveStore(tmp_path / "emote_templates"),
+        router_module, "_template_library_directory",
+        lambda: tmp_path / "emote_templates",
     )
     return TestClient(app, client=("127.0.0.1", 40000), headers={"x-neko-emote-library": "1"})
+
+
+@pytest.mark.parametrize('over_count', [False, True])
+def test_texture_upload_checks_count_and_running_total_before_retaining_bytes(monkeypatch, over_count):
+    import asyncio
+    from fastapi import Request, UploadFile
+    import main_routers.emote_template_router as routes
+
+    uploads = [UploadFile(io.BytesIO(b'abcd'), filename=f'{i}.png') for i in range(3)]
+    reads = [0, 0, 0]
+    for index, upload in enumerate(uploads):
+        original = upload.read
+
+        async def read(size, index=index, original=original):
+            result = await original(size)
+            reads[index] += len(result)
+            return result
+
+        monkeypatch.setattr(upload, 'read', read)
+    monkeypatch.setattr(routes, 'MAX_TEXTURE_FILES', 2 if over_count else 10)
+    monkeypatch.setattr(routes, 'MAX_TEXTURE_TOTAL_BYTES', 5)
+    monkeypatch.setattr(routes, '_merge_library_textures', lambda *args: pytest.fail('oversized upload was persisted'))
+    request = Request({'type': 'http', 'headers': [(b'x-neko-emote-library', b'1')]})
+    response = asyncio.run(routes.merge_template_library_textures(
+        request, key='test', textures=uploads,
+        texture_paths=[f'StageImages/{i}.png' for i in range(3)],
+    ))
+    assert response.status_code == 400
+    assert reads == ([0, 0, 0] if over_count else [4, 2, 0])
+    assert all(upload.file.closed for upload in uploads)
+
+
+def test_wardrobe_directory_does_not_wait_for_template_recovery(monkeypatch, tmp_path):
+    import main_routers.emote_template_router as routes
+
+    monkeypatch.setattr(routes, '_template_library_directory', lambda: tmp_path)
+    monkeypatch.setattr(routes, '_archive_store', lambda: pytest.fail('wardrobe lookup attempted recovery'))
+    assert routes._wardrobe_sheet_directory() == tmp_path / '.wardrobe-sheets'
+
+
+def test_texture_read_waits_for_publication_and_owns_a_snapshot(store, monkeypatch):
+    import asyncio
+    import threading
+    import main_routers.emote_template_router as routes
+
+    store.save('read', _zip(), [('StageImages/a.png', b'original')])
+    moved, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(routes, '_archive_store', lambda: store)
+
+    async def scenario():
+        lock = asyncio.Lock()
+        monkeypatch.setattr(routes, '_library_storage_lock', lock)
+
+        def publish():
+            final, retired = store._entry_dir('read'), store.root / '.retired-test'
+            final.rename(retired)
+            moved.set()
+            try:
+                assert release.wait(5)
+            finally:
+                retired.rename(final)
+
+        write = asyncio.create_task(routes._storage_transaction(lock, publish))
+        try:
+            assert await asyncio.to_thread(moved.wait, 5)
+            read = asyncio.create_task(routes.open_template_library_texture('read', 'StageImages/a.png'))
+            await asyncio.sleep(.02)
+            assert not read.done(), 'read entered the directory publication gap'
+        finally:
+            release.set()
+        await write
+        response = await read
+        store.save_textures('read', [('StageImages/a.png', b'replaced')])
+        assert response.body == b'original'
+        assert response.media_type == 'image/png'
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('known_length', [False, True])
+def test_template_upload_body_is_capped_before_route_processing(monkeypatch, known_length):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
+    import main_routers.emote_template_router as routes
+
+    app = FastAPI()
+    app.include_router(routes.router)
+    app.add_middleware(InboundBodySizeLimitMiddleware,
+                       multipart_path_prefix='/api/emote-maker', multipart_methods=('POST',),
+                       max_multipart_body_bytes=128)
+    monkeypatch.setattr(routes, '_archive_store', lambda: pytest.fail('oversized request reached the route'))
+    body = b'--abc\r\nContent-Disposition: form-data; name="file"; filename="test.zip"\r\n\r\n' + b'x' * 256 + b'\r\n--abc--\r\n'
+    headers = {'content-type': 'multipart/form-data; boundary=abc', 'x-neko-emote-library': '1'}
+    if known_length:
+        headers['content-length'] = str(len(body))
+    with TestClient(app) as http:
+        response = http.post('/api/emote-maker/library/archive?key=test',
+                             headers=headers, content=iter([body[:100], body[100:]]))
+    assert response.status_code == 413
+    assert response.json()['error_code'] == 'payload_too_large'
 
 
 def test_router_roundtrip_uses_our_names_and_self_contained_zip(client, tmp_path, monkeypatch):

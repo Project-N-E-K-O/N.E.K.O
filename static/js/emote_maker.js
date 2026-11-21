@@ -4019,7 +4019,7 @@
     async function produceGroupFileNow(group, item, format) {
         const encoder = window.NekoEmoteGifEncoder;
         const sheet = window.NekoEmoteSheet;
-        const edge = Math.min(state.exportResolution || GIF_EXPORT_WIDTH, GIF_EXPORT_WIDTH);
+        const edge = state.exportResolution || GIF_EXPORT_WIDTH;
         const fps = state.exportFps || GIF_EXPORT_FPS;
         let scene = getImportedScenes().find((entry) => entry.id === item.ref) || null;
         let timeWindow;
@@ -5666,6 +5666,39 @@
     let stageQueueRunning = false;
     let stagePersistTimer = 0;
 
+    // A capture owns the live renderer while yielding between readbacks. Keep
+    // editing gestures and shortcuts from changing its animation or appearance.
+    // Window controls and the batch stop button remain available.
+    function lockExportEditing() {
+        const main = document.querySelector('.emote-maker-page');
+        const controls = new Map();
+        const allowed = (target) => target instanceof Element && Boolean(target.closest(
+            '[data-neko-window-control], #emote-maker-close'
+            + (groupExportBusy ? ', #export-group-open-btn' : ''),
+        ));
+        document.querySelectorAll('button, input, select, textarea').forEach((control) => {
+            if (allowed(control)) return;
+            controls.set(control, control.disabled);
+            control.disabled = true;
+        });
+        const wasBusy = main?.getAttribute('aria-busy');
+        main?.setAttribute('aria-busy', 'true');
+        const block = (event) => {
+            if (allowed(event.target)) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        };
+        const events = ['pointerdown', 'pointermove', 'pointerup', 'click', 'dblclick',
+            'contextmenu', 'wheel', 'keydown', 'input', 'change', 'drop'];
+        events.forEach((type) => window.addEventListener(type, block, { capture: true, passive: false }));
+        return () => {
+            events.forEach((type) => window.removeEventListener(type, block, true));
+            controls.forEach((disabled, control) => { control.disabled = disabled; });
+            if (wasBusy == null) main?.removeAttribute('aria-busy');
+            else main?.setAttribute('aria-busy', wasBusy);
+        };
+    }
+
     function queueStageCapture(key, priority, kind, task) {
         if (stagePending.has(key)) {
             // 已经在队里的任务可以提优先级：抽屉一开会排进几百条缩略图，
@@ -5696,10 +5729,13 @@
             while (stageQueue.length) {
                 stageQueue.sort((a, b) => b.priority - a.priority);
                 const job = stageQueue.shift();
+                const unlock = job.kind === 'export' ? lockExportEditing() : () => {};
                 try {
                     job.resolve(await job.task());
                 } catch (error) {
                     job.reject(error);
+                } finally {
+                    unlock();
                 }
             }
         } finally {
@@ -6564,6 +6600,7 @@
         const entry = findTemplateLibraryEntry(key);
         if (!held || !entry) return false;
         persistTemplateToLibrary();
+        groupPreview = null;
         spineRendererGeneration += 1;
         disposeSpineRenderer();
         templatePackage = held.pkg;
@@ -8061,6 +8098,7 @@
     const PACK_MAX_FRAMES = 120; // Four seconds at 30 FPS.
     const GROUP_EXPORT_MAX_FRAMES = 60;
     let packBusy = false;
+    let unlockPackEditing = null;
     let stateStageSession = null;
     // 表演台的用户图片导入入口：input 常驻页面，表演台的"导入图片"按钮只负责叫它
     const stageImageInput = document.createElement('input');
@@ -8095,6 +8133,11 @@
 
     function setPackBusy(busy) {
         packBusy = Boolean(busy);
+        if (packBusy && !unlockPackEditing) unlockPackEditing = lockExportEditing();
+        if (!packBusy && unlockPackEditing) {
+            unlockPackEditing();
+            unlockPackEditing = null;
+        }
         // 烘一批的时候把单张导出按住：并发跑两次只会互相抢同一个渲染上下文。
         // 「批量导出」那颗不在此列 —— 跑起来时它就是停止按钮，按住就停不下来了。
         ['#pack-export-btn', '#pack-import-btn', '#export-png-btn'].forEach((selector) => {
@@ -8355,6 +8398,7 @@
             const firstScene = Array.isArray(nextPackage.scenes) ? nextPackage.scenes[0] : null;
 
             const previousAssetStore = templateAssetStore;
+            groupPreview = null;
             spineRendererGeneration += 1;
             disposeSpineRenderer();
             if (previousAssetStore && previousAssetStore !== nextAssetStore

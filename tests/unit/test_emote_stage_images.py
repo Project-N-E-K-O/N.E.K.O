@@ -38,6 +38,16 @@ def test_still_rejects_truncated_frame_data():
         decode_stage_gif(raw[:-4], 64)
 
 
+@pytest.mark.parametrize('control', [b'\x21\xf9\x01\x01\x00', b'\x21\xf9\x02\x01\x00\x00'])
+def test_short_graphics_control_before_a_later_frame_is_a_validation_error(control):
+    raw = _gif()
+    start = raw.rfind(b'\x21\xf9\x04')
+    assert start > 13
+    raw = raw[:start] + control + raw[start + 8:]
+    with pytest.raises(ValueError, match='invalid_stage_gif'):
+        decode_stage_gif(raw, 64)
+
+
 def test_rejects_a_later_frame_expanding_the_canvas_before_opening_pillow(monkeypatch):
     raw = bytearray(_gif())
     descriptor = raw.rfind(b'\x2c\x00\x00\x00\x00\x10\x00\x10\x00')
