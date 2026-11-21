@@ -1645,16 +1645,18 @@
     }
     mod.beginScreenFrameMaskSession = beginScreenFrameMaskSession;
 
+    // 浏览器流和原生屏幕分享的抓帧质量；被遮的屏幕帧按它重编码，帧不会因遮罩变大。
+    var STREAM_FRAME_JPEG_QUALITY = 0.8;
+
     /**
      * 持续屏幕分享、原生屏幕分享、语音期间视觉心跳共用的发送前一步：
      * 先把这一帧里 N.E.K.O 自己的聊天记录 / 选项区遮住，再构造 stream_data。
      * 画面来源在 await 之前钉住，避免遮罩期间换源导致 Avatar 标注按新源解释旧帧。
      *
-     * @param {{sourceId?: string|null, via?: string, session?: object}} [maskOptions]
+     * @param {{sourceId?: string|null, via?: string, session?: object, stream?: MediaStream}} [maskOptions]
+     *        stream：浏览器流帧所属的流，用来判断共享的是不是本标签页
      * @returns {Promise<object|null>} 要发送的消息；null 表示这一帧不发
      */
-    var STREAM_FRAME_JPEG_QUALITY = 0.8;
-
     async function buildMaskedStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType, maskOptions) {
         if (input_type !== 'screen') {
             return buildStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType);
@@ -1669,7 +1671,8 @@
                 captureType: captureType,
                 sourceId: opts.sourceId || sourceId || null,
                 via: opts.via || (sourceId ? 'native' : 'stream'),
-                // 屏幕帧抓帧时都是 JPEG 0.8；重编码沿用同一质量，帧大小不因遮罩变大。
+                stream: opts.stream || null,
+                // 语音心跳的原生帧可能是壳的默认质量，这里统一按 0.8 重编码。
                 jpegQuality: STREAM_FRAME_JPEG_QUALITY
             }, opts.session);
             if (!maskedDataUrl) return null;
@@ -1768,7 +1771,8 @@
                 }
                 if (!isCurrentStream()) return;
                 if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
-                // 帧属于抓帧时的那条连接：遮罩等待期间重连换了 S.socket 的话不发（同原生路径）。
+                // 帧属于抓帧时的那条连接：遮罩等待期间重连换了 S.socket 的话只丢这一帧，
+                // 下一拍在新连接上继续（原生路径则停止整段分享，见 startNativeScreenStreaming）。
                 var captureSocket = S.socket;
                 // 同一帧的源 ID 在抓帧时钉住；截图前后各取一次遮罩区域（#3474）。
                 var frameSourceId = S.selectedScreenSourceId || null;
@@ -1777,7 +1781,7 @@
                 if (frame && frame.dataUrl) {
                     var frameMessage = await buildMaskedStreamDataMessage(
                         frame.dataUrl, input_type, undefined, undefined,
-                        { sourceId: frameSourceId, via: 'stream', session: maskSession }
+                        { sourceId: frameSourceId, via: 'stream', session: maskSession, stream: stream }
                     );
                     // 遮罩期间可能停止 / 换源 / 断线：旧帧不能落到新会话里。
                     if (!frameMessage || !isCurrentStream()) return;
@@ -1904,12 +1908,13 @@
                 return false;
             }
             if (!nativeMessage) return true;
-            if (canSendLiveVisionStreamFrame(inputType)) {
-                captureSocket.send(JSON.stringify(nativeMessage));
-            } else if (isCurrentNativeCapture()) {
-                stopScreening();
+            if (!canSendLiveVisionStreamFrame(inputType)) {
+                // 遮罩等待期间语音结束 / 进入告别模式：和函数开头一样完整停止分享，
+                // 不只停帧循环（否则界面仍显示共享中、后端也不知道）。
+                if (isCurrentNativeCapture()) await stopLiveVisionStreamIfBlocked(inputType);
                 return false;
             }
+            captureSocket.send(JSON.stringify(nativeMessage));
             return true;
         }
 

@@ -127,6 +127,10 @@ function makeWindow(opts) {
         Promise,
     };
     if (opts.multiWindow) w.__NEKO_MULTI_WINDOW__ = true;
+    if (opts.captureHandle) {
+        w.location = { origin: 'http://127.0.0.1:48911' };
+        w.navigator = { mediaDevices: { setCaptureHandleConfig: (cfg) => { w.__captureHandleConfig = cfg; } } };
+    }
     // Chat-window preload exposes C1 before page scripts run.
     if (opts.nekoCaptureMask) w.nekoCaptureMask = opts.nekoCaptureMask;
     if (opts.shell) w.electronScreen = opts.shell;
@@ -920,4 +924,140 @@ test('fallback policy is told why: position unknown vs painting failed', async (
     assert.equal(await broken.w.appCaptureMask.maskFrameForModel('data:bad,xx', { captureType: 'viewport' }), 'data:bad,xx');
     seen.push(...broken.w.__reasons);
     assert.deepEqual(seen, ['position_unknown', 'paint_failed']);
+});
+
+
+// ---------------------------------------------------------------- review round 3: background tab / own-tab detection
+
+function tabStream(handle) {
+    const track = {
+        readyState: 'live', kind: 'video',
+        getSettings: () => ({ displaySurface: 'browser' }),
+        getCaptureHandle: () => (handle === undefined ? null : { handle }),
+    };
+    return { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+}
+
+test('capture handle: this page publishes a random handle readable only by its own origin', () => {
+    const { w } = makeWindow({ captureHandle: true });
+    const cfg = w.__captureHandleConfig;
+    assert.ok(cfg && cfg.handle === w.appCaptureMask.OWN_CAPTURE_HANDLE && /^neko-self-ui-mask:/.test(cfg.handle));
+    assert.equal(cfg.exposeOrigin, false);
+    assert.deepEqual(JSON.parse(JSON.stringify(cfg.permittedOrigins)), ['http://127.0.0.1:48911']);
+});
+
+test('browser tab share of THIS tab: regions are masked even while the tab is in the background', async () => {
+    const env = makeWindow({ captureHandle: true, elements: chatElements({ galOpen: true }), imageSizes: { [RAW_FRAME]: [1000, 800] } });
+    const own = tabStream(env.w.appCaptureMask.OWN_CAPTURE_HANDLE);
+    for (const visibility of ['visible', 'hidden']) {
+        env.w.document.visibilityState = visibility;
+        const session = env.w.appCaptureMask.beginMaskSession({ via: 'stream' });
+        const out = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream', stream: own }, session);
+        assert.deepEqual(fillsOf(out), [[592, 92, 316, 416], [592, 512, 316, 116]], `own tab, ${visibility}`);
+    }
+});
+
+test('background tab + whole-screen share: the page is not on screen, nothing is painted', async () => {
+    const env = makeWindow({
+        captureHandle: true, elements: chatElements({ galOpen: true }),
+        geom: { screenWidth: 1000, screenHeight: 800 },
+    });
+    env.w.document.visibilityState = 'hidden';
+    const session = env.w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session), RAW_FRAME);
+});
+
+test('browser tab share of ANOTHER tab: nothing of this page is in the frame, nothing is painted', async () => {
+    for (const otherHandle of [undefined, 'someone-else']) {
+        const env = makeWindow({ captureHandle: true, elements: chatElements({ galOpen: true }) });
+        const other = tabStream(otherHandle);
+        assert.equal(env.w.appCaptureMask.isOwnTabCapture(other), false);
+        const out = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream', stream: other });
+        assert.equal(out, RAW_FRAME, `other tab (${otherHandle})`);
+    }
+});
+
+test('no Capture Handle API: tab share keeps the old rule (visible page masked, hidden page not)', async () => {
+    const env = makeWindow({ elements: chatElements({ galOpen: true }), imageSizes: { [RAW_FRAME]: [1000, 800] } });
+    const stream = tabStream(undefined);
+    assert.equal(env.w.appCaptureMask.isOwnTabCapture(stream), null);
+    const visible = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', stream });
+    assert.equal(fillsOf(visible).length, 2);
+    env.w.document.visibilityState = 'hidden';
+    assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', stream }), RAW_FRAME);
+});
+
+test('browser screen share of this tab in the background: the sent stream_data frame is masked', async () => {
+    const env = bootScreen({ captureHandle: true, elements: chatElements({ galOpen: true }), defaultImageSize: [1000, 800] });
+    env.w.document.visibilityState = 'hidden';
+    const own = tabStream(env.w.appCaptureMask.OWN_CAPTURE_HANDLE);
+    env.S.screenCaptureStream = own;
+    env.w.startScreenVideoStreaming(own, 'screen');
+    for (let i = 0; i < 10 && env.intervals.length === 0; i++) await new Promise((r) => setImmediate(r));
+    await env.intervals[0]();
+    assert.equal(env.sent.length, 1);
+    assert.deepEqual(fillsOf(env.sent[0].data), [[592, 92, 316, 416], [592, 512, 316, 116]]);
+});
+
+test('native screen share: voice ending while a frame is being masked stops the share completely', async () => {
+    let env;
+    let calls = 0;
+    const shell = shellStub(async () => {
+        calls += 1;
+        if (calls === 4) env.S.voiceChatActive = false; // voice session ends during frame 2's mask
+        return { ok: true, rects: [] };
+    });
+    env = bootScreen({ multiWindow: true, shell });
+    env.w.captureDesktopSourceWithTimeout = async () => ({ success: true, dataUrl: RAW_FRAME });
+    const frameTimers = [];
+    const realSetTimeout = env.w.setTimeout;
+    env.w.setTimeout = (fn, ms) => (ms === 1000 ? (frameTimers.push(fn), frameTimers.length) : realSetTimeout(fn, ms));
+    await env.w.appScreen.startNativeScreenStreaming({ nativeFrameCapture: true, captureSourceAsDataUrl() {} }, 'screen:3:0', 'screen');
+    assert.equal(env.sent.filter((m) => m.action === 'stream_data').length, 1);
+    await frameTimers[0]();
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    assert.equal(env.sent.filter((m) => m.action === 'stream_data').length, 1, 'frame 2 not sent');
+    assert.ok(env.sent.some((m) => m.action === 'screen_share_stopped'), 'share stopped for real, backend told');
+});
+
+test('browser tab share of ANOTHER tab while this page is in the background: nothing is painted', async () => {
+    const env = makeWindow({ captureHandle: true, elements: chatElements({ galOpen: true }) });
+    env.w.document.visibilityState = 'hidden';
+    const out = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', stream: tabStream('someone-else') });
+    assert.equal(out, RAW_FRAME);
+});
+
+test('single-shot: the frame from a share of this tab in the background is masked using the stream it came from', async () => {
+    const env = bootProactive({ captureHandle: true, elements: chatElements({ galOpen: true }) });
+    const own = tabStream(env.w.appCaptureMask.OWN_CAPTURE_HANDLE);
+    env.S.screenCaptureStream = own;
+    env.w.document.visibilityState = 'hidden';
+    // The cached stream is replaced by another tab's stream while the frame is
+    // being masked; the frame must still be judged by the stream it came from.
+    env.w.appScreen.captureFrameFromStream = async () => {
+        env.S.screenCaptureStream = tabStream('someone-else');
+        return { dataUrl: RAW_FRAME };
+    };
+    const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
+    assert.equal(shot.via, 'stream');
+    assert.deepEqual(fillsOf(shot.dataUrl), [[592, 92, 316, 416], [592, 512, 316, 116]]);
+});
+
+test('single-shot: backend desktop frames are re-encoded at their capture quality (0.8)', async () => {
+    const qualities = [];
+    const env = bootProactive({ elements: chatElements({ galOpen: true }), geom: { screenWidth: 1000, screenHeight: 800 } });
+    env.S.screenCaptureStream = null;
+    env.w.appScreen.acquireOrReuseCachedStream = async () => null;
+    env.w.appScreen.fetchBackendScreenshot = async () => ({ dataUrl: RAW_FRAME });
+    const create = env.w.document.createElement;
+    env.w.document.createElement = (tag) => {
+        const el = create(tag);
+        const toDataURL = el.toDataURL;
+        el.toDataURL = (mime, q) => { qualities.push([mime, q]); return toDataURL(mime, q); };
+        return el;
+    };
+    const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
+    assert.equal(shot.via, 'backend');
+    assert.equal(fillsOf(shot.dataUrl).length, 2);
+    assert.deepEqual(qualities, [['image/jpeg', 0.8]]);
 });

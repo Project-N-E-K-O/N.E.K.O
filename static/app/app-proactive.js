@@ -2111,6 +2111,7 @@
             // 遮罩（#3474）要知道这一帧来自哪个源、哪条路径，同 captureType 一样在取到画面时钉住。
             var captureSourceId = null;
             var captureVia = null;
+            var captureStream = null;
             var maskSession = beginSelfUiMaskSession({ sourceId: S.selectedScreenSourceId || null, via: 'stream' });
 
             // 优先前端流（缓存流 → Electron源 → 不弹窗）
@@ -2125,6 +2126,7 @@
                     captureType = window.detectScreenshotCaptureType(stream, streamSourceId);
                     captureSourceId = streamSourceId || null;
                     captureVia = 'stream';
+                    captureStream = stream;
                 } else if (S.screenCaptureStream === stream) {
                     // 空帧（黑帧或空壳流），废弃缓存流
                     console.warn('[ProactiveVision] 缓存流提取帧失败，废弃该流');
@@ -2232,7 +2234,7 @@
                 var visionInputType = (window.appUtils && window.appUtils.isMobile) ? (window.appUtils.isMobile() ? 'camera' : 'screen') : 'screen';
                 visionMessage = await buildMaskedStreamDataMessage(
                     dataUrl, visionInputType, null, captureType,
-                    { sourceId: captureSourceId, via: captureVia, session: maskSession }
+                    { sourceId: captureSourceId, via: captureVia, session: maskSession, stream: captureStream }
                 );
             }
 
@@ -2593,6 +2595,7 @@
                             dataUrl: cachedFrame.dataUrl,
                             via: 'stream',
                             sourceId: cachedSourceId || null,
+                            stream: cachedStream,
                             allowDesktopFallback: allowDesktopFallback,
                             captureType: resolveCaptureTypeFor('stream', cachedStream, cachedSourceId)
                         };
@@ -2655,6 +2658,7 @@
                     dataUrl: frame.dataUrl,
                     via: 'stream',
                     sourceId: streamSourceId || null,
+                    stream: stream,
                     allowDesktopFallback: allowDesktopFallback,
                     captureType: resolveCaptureTypeFor('stream', stream, streamSourceId)
                 };
@@ -2684,6 +2688,7 @@
                         dataUrl: frame.dataUrl,
                         via: 'stream',
                         sourceId: retrySourceId || null,
+                        stream: stream,
                         allowDesktopFallback: allowDesktopFallback,
                         captureType: resolveCaptureTypeFor('stream', stream, retrySourceId)
                     };
@@ -2740,7 +2745,11 @@
             var maskedDataUrl = await maskSelfUiInFrame(shot.dataUrl, {
                 captureType: shot.captureType || null,
                 sourceId: shot.sourceId || null,
-                via: shot.via
+                via: shot.via,
+                // 浏览器标签页共享时用来判断截的是不是本页（#3474）。
+                stream: shot.stream || null,
+                // 按这张图抓取时的质量重编码：后端整屏图是 JPEG 80，前端流截图是 0.85。
+                jpegQuality: shot.via === 'backend' ? 0.8 : 0.85
             }, maskSession);
             if (!maskedDataUrl) {
                 shot = { dataUrl: null, via: null, captureType: null, allowDesktopFallback: false };

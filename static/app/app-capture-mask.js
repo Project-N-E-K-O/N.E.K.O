@@ -38,8 +38,8 @@
     var MASK_FILL_STYLE = '#2b2b2b';
     var CONTRACT_VERSION = 1;
     var SHELL_QUERY_TIMEOUT_MS = 500;
-    // Default re-encode quality = the proactive screenshot capture quality;
-    // callers pass ctx.jpegQuality to match their own capture quality.
+    // Default re-encode quality when the caller does not pass ctx.jpegQuality
+    // (the proactive screenshot stream capture uses 0.85).
     var JPEG_REENCODE_QUALITY = 0.85;
     var PIXEL_EPSILON = 1e-6;
 
@@ -309,7 +309,83 @@
         // Keep the window geometry of this sample too: if the browser window
         // moves before the post-capture sample, each sample is mapped with
         // the position it was taken at.
-        return { hint: hint, localRects: collectLocalMaskRects(win.document, win), geom: readBrowserGeometry(win) };
+        return { hint: hint, local: sampleLocal(win), geom: readBrowserGeometry(win) };
+    }
+
+    // One sample of this page's regions. Regions of a background tab are
+    // collected too: whether they can be in the frame depends on what is
+    // captured (see mapLocalSample).
+    function sampleLocal(win) {
+        var doc = win.document;
+        return {
+            rects: collectLocalMaskRects(doc, win, { includeHiddenDocument: true }),
+            hidden: !!doc && doc.visibilityState === 'hidden'
+        };
+    }
+
+    function mapLocalSample(sample, ctx, geom) {
+        var captureType = ctx && ctx.captureType;
+        if (captureType === 'viewport') {
+            var ownTab = isOwnTabCapture(ctx && ctx.stream);
+            // Another tab is being shared: none of this page is in the frame.
+            if (ownTab === false) return { known: true, rects: [] };
+            // This tab is being shared: it keeps producing frames in the
+            // background, so its regions are masked even while hidden.
+            if (ownTab === true) return mapViewportRectsToCapture(sample.rects, captureType, geom);
+            // Unknown (no Capture Handle): treat a hidden page as not shown.
+        }
+        // A background tab is not on any screen or window capture.
+        if (sample.hidden) return { known: true, rects: [] };
+        return mapViewportRectsToCapture(sample.rects, captureType, geom);
+    }
+
+    // ======================== Own-tab detection (Capture Handle) ========================
+    // A browser-tab share only reports displaySurface 'browser'; it does not
+    // say which tab. This page publishes a random capture handle, and a tab
+    // share whose track reports that handle is this page.
+    var OWN_CAPTURE_HANDLE = 'neko-self-ui-mask:' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    var ownCaptureHandleConfigured = false;
+
+    function configureOwnCaptureHandle(win) {
+        try {
+            var md = win.navigator && win.navigator.mediaDevices;
+            if (!md || typeof md.setCaptureHandleConfig !== 'function') return;
+            var origin = win.location && win.location.origin;
+            md.setCaptureHandleConfig({
+                handle: OWN_CAPTURE_HANDLE,
+                exposeOrigin: false,
+                permittedOrigins: origin ? [origin] : []
+            });
+            ownCaptureHandleConfigured = true;
+        } catch (e) {
+            // Not a top-level secure context, or unsupported: stay unknown.
+            ownCaptureHandleConfigured = false;
+        }
+    }
+
+    /**
+     * @returns {boolean|null} true: the stream captures this tab; false: it
+     *          captures another tab; null: cannot tell.
+     */
+    function isOwnTabCapture(stream) {
+        if (!ownCaptureHandleConfigured) return null;
+        var candidate = stream || (window.appState && window.appState.screenCaptureStream);
+        var track = null;
+        try {
+            var tracks = candidate && typeof candidate.getVideoTracks === 'function' ? candidate.getVideoTracks() : [];
+            track = tracks && tracks[0];
+        } catch (e) { track = null; }
+        if (!track || typeof track.getCaptureHandle !== 'function') return null;
+        var captureHandle = null;
+        try { captureHandle = track.getCaptureHandle(); } catch (e) { return null; }
+        // Our handle is set and readable by our own origin, so any other
+        // answer (another handle, or none) is a different tab.
+        // Coupling: setCaptureHandleConfig is per document and the last call
+        // wins. static/game/sdk/neko-minigame-vision-host.js sets and clears
+        // its own handle; it is not loaded on the pages that load this module
+        // (index.html, chat.html). If it ever is, own-tab shares would read
+        // as "another tab" here and stop being masked.
+        return !!(captureHandle && captureHandle.handle === OWN_CAPTURE_HANDLE);
     }
 
     async function resolveGeometry(session, ctx) {
@@ -325,9 +401,9 @@
             return unionGeometry(pre, post);
         }
         var geom = readBrowserGeometry(win);
-        var postLocal = mapViewportRectsToCapture(collectLocalMaskRects(win.document, win), ctx && ctx.captureType, geom);
-        var preLocal = session && session.localRects
-            ? mapViewportRectsToCapture(session.localRects, ctx && ctx.captureType, session.geom || geom)
+        var postLocal = mapLocalSample(sampleLocal(win), ctx, geom);
+        var preLocal = session && session.local
+            ? mapLocalSample(session.local, ctx, session.geom || geom)
             : null;
         return unionGeometry(preLocal, postLocal);
     }
@@ -427,9 +503,11 @@
      * before it is sent to the model.
      *
      * @param {string} dataUrl the captured frame
-     * @param {{captureType: ('screen'|'viewport'|null), sourceId?: string|null, via?: string, jpegQuality?: number}} ctx
-     *        jpegQuality: re-encode quality for JPEG frames (match the capture quality)
-     *        what this frame actually is (pinned when it was captured)
+     * @param {{captureType: ('screen'|'viewport'|null), sourceId?: string|null, via?: string, jpegQuality?: number, stream?: MediaStream}} ctx
+     *        what this frame actually is (pinned when it was captured).
+     *        jpegQuality: re-encode quality for JPEG frames (match the capture
+     *        quality). stream: the stream a browser-tab frame came from, used
+     *        to tell this tab from another one (defaults to the cached stream).
      * @param {object} [session] from beginMaskSession(), taken before capture
      * @returns {Promise<string|null>} the frame to send, or null to send nothing
      */
@@ -565,6 +643,8 @@
         return { flush: flush };
     }
 
+    configureOwnCaptureHandle(window);
+
     // Only chat windows of the desktop shell expose nekoCaptureMask.report.
     try {
         if (window.nekoCaptureMask && typeof window.nekoCaptureMask.report === 'function') {
@@ -588,6 +668,8 @@
         buildReportPayload: buildReportPayload,
         limitRectCount: limitRectCount,
         REPORT_MAX_RECTS: REPORT_MAX_RECTS,
-        startShellReporter: startShellReporter
+        startShellReporter: startShellReporter,
+        isOwnTabCapture: isOwnTabCapture,
+        OWN_CAPTURE_HANDLE: OWN_CAPTURE_HANDLE
     };
 })();
