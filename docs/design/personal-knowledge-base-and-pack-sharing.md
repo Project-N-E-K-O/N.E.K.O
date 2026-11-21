@@ -10,7 +10,7 @@
 - 新导入个人文档创建的 pack、通过本地上传导入的 JSON/ZIP，默认 `enabled=False`、`auto_context=False`、`local_embedding=True`。启用意味着命中片段可能发给云端模型，导入及启用界面明确说明。市场订阅继续使用既有安装语义；默认关闭约定不扩大到市场订阅。本地 JSON/ZIP 替换已有包的新正文属于新的披露范围，参与检索和自动参考都先关闭，由用户重新开启；已经过确认的来源版本更新保留原开关。
 - 原件、全文和历史版本全部保留，成品包默认保留。仅当用户明确删除一次本地导出时，移除该导出记录及未被引用的 ZIP；知识库仍使用的成品文件保留。不在开发过程中对真实用户目录执行迁移、清理或删除。
 - 冻结重试输入遵守保留决定，不自动按时限回收。显式丢弃任务时一并删除其冻结重试输入；其余冻结输入仍全部保留。用户取消或替换尚未提交的预览时，只删除该预览自己的原件与解析文本两份文件；已提交的预览及其冻结版本保留。不做按时限的预览回收；未点取消直接关闭页面的预览保留，磁盘长期预算仍待另行产品决定，不能以索引清理代替资料删除授权。
-- 前台请求全部接纳，但实际模型计算串行。后台常规空闲执行，持续前台压力下允许最小批次保底。
+- 知识库借用记忆进程的向量模型，但不改记忆自己的调用路径（`embed/embed_batch`、补向量 worker、召回、模型加载、单例均保持 main 原样）。知识库的节流只作用在知识库自己的调用上。
 - 不做旧客户端、独立个人库格式或双产物市场发布兼容；统一 pack JSON 仍是文本基础格式，保留 JSON 导入，导出统一为 v2 成品 ZIP。
 - 三仓继续各维护现有整体功能分支和 PR，不按 PDF 的示例再拆成多个 PR；不自动合并或部署。
 
@@ -24,8 +24,8 @@
 | `knowledge/service.py` / `store.py` / `registry.py` | 既有任务、SQLite FTS/向量、注册表与查询；不增加第二套 Store |
 | `knowledge/archive.py` | 用已计算向量导出通用 v2、读取成品种子向量；不调用模型 |
 | `utils/knowledge_package.py` | 纯标准库包规范、规格、ZIP 安全与数值检查；市场逐字同步 |
-| `memory/_embeddings/spec.py` | 只读模型规格与无截断 token 计数；不加载 ONNX |
-| `utils/embedding_contract.py` | 无进程依赖的结构化编码结果和后台延后异常 |
+| `memory/_embeddings/spec.py` / `resources.py` | 纯函数：按需计算模型指纹与无截断 token 计数；不加载 ONNX，不在模型加载路径上 |
+| `utils/embedding_contract.py` | 无进程依赖的后台延后异常 |
 | `app/memory_server/knowledge_routes.py` | 统一 `/internal/knowledge` 管理接口与共享编码器适配 |
 | `frontend/plugin-manager/src/views/KnowledgeManager.vue` | 来源、启用、文件预览、历史、导出和分享，沿用八语 |
 | `plugin/server/routes/knowledge_market.py` / `knowledge_publish.py` | 现有订阅和新增发布；账号凭据不进入 Main 或页面 |
@@ -95,14 +95,10 @@ ZIP 校验从请求到达起占用同一准入位置并保留订阅顺序；重�
 
 ## 4. 嵌入调度与完整分块
 
-- 默认前台兼容既有 `embed/embed_batch`；新 `embed_query` 为前台，`embed_documents` 为后台。
-- 记忆回填、统一知识库索引、导入资料与种子向量缺口都显式进入后台 lane。
-- `embed_ex` 返回 `ok/unavailable/loading/disabled/busy/timeout/error` 和无正文的状态计数；后台 busy 用 `EmbedDeferred` 延后，不能变成 None 后增加 attempts。
+- 知识库经 `app/memory_server/knowledge_routes.py` 的适配层调用记忆模型的公开 `embed/embed_batch`，一律 `sticky_failure=False`：知识库文本的推理错误只让这次调用失败，不关闭记忆向量。
+- 索引批 `embed_documents` 在适配层串行，一次只跑一批；索引循环在批与批之间按 `INDEX_TARGET_DUTY` 留出间隔。知识库的检索查询 `embed_query` 不排在索引批后面。记忆自己的调用不经过这些节流。批大小沿用记忆已有的 token 上限。
 - 调度与知识库接口不调用 `request_load()`。未就绪时文本仍可用，warmup 完成后由原索引循环补齐。
-- 后台 token 预算按实际 padding 成本计算：4–8 GiB 为 1,024，8 GiB 以上为 2,048；未知内存采用保守预算，原低于 4 GiB 默认禁用规则不变。
-- 后台占空比为 15% / 25%。冷却不占模型槽、不阻塞前台；有后台真正等待、达到 8 次前台且冷却结束后，保底只执行 1 条，剩余保序重新竞争。
-- 取消保持真实原生线程 drain；关闭应唤醒等待者，不等漫长后台冷却结束。
-- `spec()` / `count_tokens()` 不加载 ONNX；首次指纹和 token 计算须 offload。
+- 模型指纹（`spec()`）和无截断 token 计数（`count_tokens()`）只在知识库需要时于工作线程按需计算，按文件身份缓存，不加载 ONNX。算不出来时只影响知识包功能（编码延后、导入导出报错或稍后重试），不关闭记忆向量。已知边界：指纹描述的是磁盘上当前的模型文件；进程运行中若有人替换了模型文件，导出的指纹可能对应新文件而不是已加载的那份。
 - 具有规格接口但暂时无法验证资源时延后编码；向量就绪统计同时绑定完整规格，不能仅凭 model_id。每批前后核对规格，失效种子尝试可在策略变化后重试。
 - 规格暂不可验证时，空快照不能标记为已构建；资源恢复后允许同一 generation/model_id 重载。后台刷新对未加载快照返回未完成，等待下一轮调度，不能立即自旋重试。
 - `chunk_bodies(..., fit=...)` 和 `derive_chunks(..., fit=...)` 检查包含标题/摘要的完整输入，超过 token 预算继续切分，不静默截尾；未传 fit 保持现有 v1 哈希规则。

@@ -41,7 +41,8 @@ async def test_real_encoder_cold_import_backfill_and_vector_reuse(tmp_path, monk
     encoder = EmbeddingService(model_dir=model_root, enabled=True, ram_gb=8,
                                embedding_dim_setting=128, quantization_setting="int8",
                                has_vnni=False, has_avx2=False)
-    library = KnowledgeService(tmp_path / "author", embedder=_SharedEmbedder(encoder))
+    shared = _SharedEmbedder(encoder)
+    library = KnowledgeService(tmp_path / "author", embedder=shared)
     installed = None
     calls = []
     original = encoder._infer_blocking
@@ -53,11 +54,11 @@ async def test_real_encoder_cold_import_backfill_and_vector_reuse(tmp_path, monk
     monkeypatch.setattr(encoder, "_infer_blocking", count_native)
     try:
         # Resource fingerprints and full token counts must leave ONNX cold.
-        spec = await asyncio.to_thread(encoder.spec)
+        spec = await asyncio.to_thread(shared.spec)
         assert spec and spec["dimension"] == 128
-        assert (await asyncio.to_thread(encoder.count_tokens, ["lighthouse " * 1500]))[0] > 1024
+        assert (await asyncio.to_thread(shared.count_tokens, ["lighthouse " * 1500]))[0] > 1024
         assert not encoder.is_available() and encoder._session is None
-        assert (await encoder.embed_ex(["cold query"])).status == "unavailable"
+        assert await encoder.embed("cold query") is None
         await library.start()
         await _manual_backfill(library)
         preview = await library.preview_source("synthetic-coast.txt", (
@@ -79,7 +80,7 @@ async def test_real_encoder_cold_import_backfill_and_vector_reuse(tmp_path, monk
         rows = library._store.vectors_for_pack(pack["pack_id"], encoder.model_id())
         assert rows and len(rows) == pack["chunks_total"]
         assert all(size <= 1024 for size in await asyncio.to_thread(
-            encoder.count_tokens, [row["embedding_text"] for row in rows]))
+            shared.count_tokens, [row["embedding_text"] for row in rows]))
         before_export = len(calls)
         exported = await _terminal(library, await library.export_pack(pack["pack_id"], format_version=2))
         archive = library.artifact_path(exported["result"]["artifact_id"])
@@ -87,7 +88,7 @@ async def test_real_encoder_cold_import_backfill_and_vector_reuse(tmp_path, monk
         assert checked.semantic_available and len(checked.chunks) == len(rows)
         assert len(calls) == before_export
 
-        installed = KnowledgeService(tmp_path / "reader", embedder=_SharedEmbedder(encoder))
+        installed = KnowledgeService(tmp_path / "reader", embedder=shared)
         await installed.start()
         await _manual_backfill(installed)
         await _terminal(installed, await installed.import_pack(archive))
@@ -95,12 +96,10 @@ async def test_real_encoder_cold_import_backfill_and_vector_reuse(tmp_path, monk
         assert await installed._index_round() == 0
         assert len(calls) == before_export  # No re-encoding during either operation.
         await installed.set_pack_enabled(pack["pack_id"], True)
-        query_count = encoder.status_counts().get("ok", 0)
         native_count = len(calls)
         result = await installed.query(query="lighthouses", budget_ms=5000)
         assert result["result"] == "matched"
         assert result["retrieval_mode"] == "hybrid"
-        assert encoder.status_counts().get("ok", 0) == query_count + 1
         assert len(calls) == native_count + 1
     finally:
         if installed is not None:

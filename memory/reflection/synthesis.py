@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import asyncio
 
 
 
@@ -834,14 +833,14 @@ class SynthesisMixin:
         the rid hash of the unabsorbed set."""
         try:
             from memory.embeddings import (
-                aget_embedding_service,
+                get_embedding_service,
                 is_cached_embedding_valid,
             )
             # Check both sticky is_disabled and READY is_available:
             # INIT/LOADING has is_disabled=False but is_available=False.
             # Disabled-only checks let rerankers degrade to evidence-only ordering, injecting unrelated historical
             # facts as relevant context (Codex P2 #1392).
-            service = await aget_embedding_service()
+            service = get_embedding_service()
             if service.is_disabled() or not service.is_available():
                 return ""
             model_id = service.model_id()
@@ -898,9 +897,7 @@ class SynthesisMixin:
                 REFLECTION_RELATED_PER_QUERY_K,
                 REFLECTION_RELATED_TOTAL_CAP,
             )
-            # Its synchronous constructor resolves the shared encoder and may
-            # wait behind a cold warmup. Keep that wait off the event loop.
-            reranker = await asyncio.to_thread(MemoryRecallReranker)
+            reranker = MemoryRecallReranker()
             # Per-query top-K: every unabsorbed fact gets PER_QUERY_K, then union dedup
             # and TOTAL_CAP, never global max-pool budgets. See
             # aretrieve_per_query_topk docs and PR #1401: dispersed topics let max-pool
@@ -959,7 +956,7 @@ class SynthesisMixin:
         )
         from memory.scopes import entry_matches_subject
 
-        if not await asyncio.to_thread(vectors_ready):
+        if not vectors_ready():
             return "", {}
         pool: list[tuple[str, dict, dict]] = []
         try:

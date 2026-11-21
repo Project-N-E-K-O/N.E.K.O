@@ -1,4 +1,4 @@
-"""Describe embedding resource files consistently for loading and fingerprint caches."""
+"""Describe embedding resource files for the on-demand fingerprint cache."""
 
 import os
 import sys
@@ -29,8 +29,8 @@ def _change_stamp(path, info):
 def resource_file_identity(paths) -> tuple:
     """Invalidate digest caches even after equal-size writes restore mtime.
 
-    This is a cache key, not semantic identity: metadata-only changes can
-    rehash resources, but only actual digest changes invalidate a loaded model.
+    This is a cache key, not semantic identity: metadata-only changes only
+    cause the on-demand fingerprint to be recomputed.
     """
     identities = []
     for source in paths:

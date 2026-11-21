@@ -15,7 +15,12 @@ _tokenizers: dict[tuple, object] = {}
 
 
 def specification(service, *, max_length: int) -> dict | None:
-    """Fingerprint trusted local resources; callers run this IO off-loop."""
+    """Fingerprint the encoder's resource files on demand; callers run this off-loop.
+
+    Only knowledge packs need this identity, so it never runs on the model
+    loading path. Any failure returns None, which affects knowledge packs only
+    and never disables memory vectors. Digests are cached per file identity.
+    """
     if service.is_disabled() or not service.model_id():
         return None
     model_path = Path(service._model_file_path())
@@ -23,10 +28,6 @@ def specification(service, *, max_length: int) -> dict | None:
              "tokenizer": Path(service._tokenizer_file_path())}
     try:
         identity = resource_file_identity(paths.values())
-        loaded = getattr(service, "_loaded_file_identity", None)
-        loaded_hashes = getattr(service, "_loaded_weights_sha256", None)
-        if loaded is not None and loaded_hashes is None and identity != loaded:
-            return None
         with _cache_lock:
             hashes = _fingerprints.get(identity)
             if hashes is None:
@@ -44,10 +45,6 @@ def specification(service, *, max_length: int) -> dict | None:
                     return None
                 _fingerprints.clear()
                 _fingerprints[identity] = hashes
-            # A permission change only invalidates the cheap cache key. Bind
-            # compatibility to the bytes loaded by ONNX, not metadata alone.
-            if loaded_hashes is not None and hashes != loaded_hashes:
-                return None
             return {"model_id": service.model_id(), "profile": service._profile_id,
                     "dimension": service.dim(), "quantization": service.quantization(),
                     "max_length": max_length, "weights_sha256": dict(hashes),

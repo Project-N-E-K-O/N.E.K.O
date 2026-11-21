@@ -97,10 +97,17 @@ class _SharedEmbedder:
 
     The adapter never asks the service to load: warming the model is the
     memory warmup worker's decision (it waits for cold start to finish).
+    Everything knowledge needs beyond memory's public ``embed`` /
+    ``embed_batch`` lives here, so memory's own paths stay untouched:
+    index batches run one at a time (the indexer also pauses between them),
+    and the model fingerprint / token counts are computed on demand.
     """
 
     def __init__(self, service: Any) -> None:
         self._service = service
+        # Only knowledge's background indexing is serialized; memory's own
+        # callers and knowledge's interactive queries never wait on it.
+        self._index_lock = asyncio.Lock()
 
     def state(self) -> str:
         service = self._service
@@ -116,14 +123,29 @@ class _SharedEmbedder:
         return self._service.model_id() if self._service is not None else None
 
     def spec(self) -> dict | None:
-        """Read exact local identity off-loop without requesting model loading."""
-        method = getattr(self._service, "spec", None)
-        return method() if callable(method) else None
+        """Fingerprint the local model files; blocking IO, callers run it off-loop.
+
+        A failure only affects knowledge packs and never disables vectors.
+        """
+        if self._service is None:
+            return None
+        try:
+            from memory._embeddings.spec import specification
+            from memory.embeddings import DEFAULT_VECTORS_MAX_LENGTH
+            return specification(self._service, max_length=DEFAULT_VECTORS_MAX_LENGTH)
+        except (ImportError, AttributeError):
+            return None
 
     def count_tokens(self, texts: list[str]) -> list[int] | None:
-        """Count complete inputs off-loop with the owner's untruncated tokenizer."""
-        method = getattr(self._service, "count_tokens", None)
-        return method(texts) if callable(method) else None
+        """Count complete inputs with an untruncated tokenizer; callers run it off-loop."""
+        if self._service is None:
+            return None
+        try:
+            from memory._embeddings.spec import count_tokens
+            from memory.embeddings import DEFAULT_VECTORS_MAX_LENGTH
+            return count_tokens(self._service, texts, max_length=DEFAULT_VECTORS_MAX_LENGTH)
+        except (ImportError, AttributeError):
+            return None
 
     # Knowledge only borrows the loaded model: an inference error on its
     # (third-party) text fails that call alone and never disables vectors
@@ -134,22 +156,13 @@ class _SharedEmbedder:
         return await self._service.embed(text, sticky_failure=False)
 
     async def embed_query(self, text: str) -> list[float] | None:
-        """Interactive lookup always uses foreground admission."""
+        """Interactive lookup goes straight to the shared model, never queued."""
         return await self.embed(text)
 
     async def embed_documents(self, texts: list[str]) -> list[list[float] | None]:
-        """Index every knowledge source through the same deferred background lane."""
-        if self._service is None:
-            return [None] * len(texts)
-        method = getattr(self._service, "embed_documents", None)
-        if not callable(method):
-            return [None] * len(texts)
-        vectors = await method(texts, sticky_failure=False)
-        if len(texts) > 1 and all(vector is None for vector in vectors) and self._service.is_available():
-            # Isolate genuine bad rows, but keep every retry in the background
-            # lane. EmbedDeferred propagates before the indexer charges attempts.
-            vectors = [(await method([text], sticky_failure=False))[0] for text in texts]
-        return vectors
+        """Index knowledge sources one batch at a time."""
+        async with self._index_lock:
+            return await self.embed_batch(texts)
 
     async def embed_batch(self, texts: list[str]) -> list[list[float] | None]:
         if self._service is None:

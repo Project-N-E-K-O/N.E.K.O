@@ -52,15 +52,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from utils.embedding_contract import EmbedDeferred
-
-
-class _PartialEmbedDeferred(EmbedDeferred):
-    """Carry already computed vectors through scheduling deferral, never logs."""
-
-    def __init__(self, deferred, vectors):
-        super().__init__(deferred.retry_after_ms)
-        self.vectors = vectors
 
 try:
     from memory.embeddings import (
@@ -232,14 +223,6 @@ class EmbeddingWarmupWorker:
         while not self._stop_event.is_set():
             try:
                 processed = await self._sweep_once()
-            except EmbedDeferred as deferred:
-                # Pressure is scheduling, not a failed embedding. Keep stale
-                # records untouched and remain interruptible while yielding.
-                try:
-                    await asyncio.wait_for(self._stop_event.wait(), deferred.retry_after_ms / 1000)
-                except TimeoutError:
-                    pass
-                continue
             except Exception as e:  # noqa: BLE001 — best effort, log + retry
                 logger.warning(
                     "[EmbeddingWorker] sweep raised (%s: %s); retrying next tick",
@@ -326,23 +309,14 @@ class EmbeddingWarmupWorker:
         texts = list(dict.fromkeys(
             text for _name, _kind, wanted in plan for text in wanted
         ))
-        deferred = None
-        try:
-            vectors = await self._embed_texts(texts)
-        except _PartialEmbedDeferred as error:
-            # Completed batches still pass the current model/text/write guards
-            # below before the remaining work yields to its retry deadline.
-            vectors, deferred = error.vectors, error
+        vectors = await self._embed_texts(texts)
         if self._service.model_id() != model_id:
             # The service flipped (disabled / reloaded) while embedding;
             # these vectors belong to a model id that no longer applies.
             return 0
-        processed = await self._under_sweep_barrier(
+        return await self._under_sweep_barrier(
             lambda: self._apply_sweep_plan(plan, vectors, model_id),
         )
-        if deferred is not None:
-            raise deferred
-        return processed
 
     async def _under_sweep_barrier(self, step):
         """Run ``step`` while the caller keeps component generation stable."""
@@ -632,14 +606,5 @@ class EmbeddingWarmupWorker:
         vectors: dict = {}
         for i in range(0, len(texts), BATCH_SIZE):
             chunk = texts[i : i + BATCH_SIZE]
-            background = getattr(self._service, "embed_documents", None)
-            # Legacy disabled/fake services retain their small compatibility
-            # surface; production always exposes the explicit background lane.
-            try:
-                values = await background(chunk, sticky_failure=True) if callable(background) else await self._service.embed_batch(chunk)
-            except EmbedDeferred as deferred:
-                if vectors:
-                    raise _PartialEmbedDeferred(deferred, vectors) from deferred
-                raise
-            vectors.update(zip(chunk, values))
+            vectors.update(zip(chunk, await self._service.embed_batch(chunk)))
         return vectors

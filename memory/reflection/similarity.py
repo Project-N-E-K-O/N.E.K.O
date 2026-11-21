@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from ._shared import logger
 
 
@@ -61,9 +60,7 @@ async def ascore_against_queries(
     """
     if not query_entries or not candidate_entries:
         return None
-    # The synchronous gate is also used by synchronous callers. Resolve its
-    # possible cold-singleton wait in a worker from this async path.
-    ready = await asyncio.to_thread(_ready_service)
+    ready = _ready_service()
     if ready is None:
         return None
     service, model_id = ready

@@ -433,10 +433,10 @@ async def _arecall(
     """
     embed_task: asyncio.Task[Any] | None = None
     try:
-        from memory.embeddings import aget_embedding_service, parse_dim_from_model_id
+        from memory.embeddings import get_embedding_service, parse_dim_from_model_id
         from memory.hybrid_recall import _bm25_scores, _tokenize
 
-        service = await aget_embedding_service()
+        service = get_embedding_service()
         model_id = service.model_id() if service.is_available() else None
         if model_id:
             _ensure_probe_vectors(service, model_id)
