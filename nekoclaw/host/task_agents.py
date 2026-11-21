@@ -2480,7 +2480,12 @@ class TaskAgentManager:
             documents = "" if unsaid else await self._repository_documents(workdir, session_path)
             # Once, for whichever wording is said: what it says of copies of
             # the session is what is put on record as told (``_note_opened``).
-            copies = await self._copies_said(commission)
+            try:
+                copies = await self._copies_said(commission)
+            except Exception:  # noqa: BLE001 - it starts all the same; what copies did is told with the next
+                logger.warning("reading what copies of a session finished failed", exc_info=True)
+                self._forks_said.pop(commission.id, None)
+                copies = ""
 
             async def worded(*, cleared: bool, back: bool = False, excerpt: str = "") -> str:
                 return await self._opening(
@@ -7839,7 +7844,11 @@ class TaskAgentManager:
         if not may():
             await self._discard_copy(copy)
             return
-        place_in_queue = self._queue.index(commission_id)
+        # Those of the same session queued behind it: should it come back to
+        # the queue, it goes in front of them (whatever came and went
+        # elsewhere in the queue meanwhile).
+        behind = list(self._queue)[self._queue.index(commission_id) + 1 :]
+        behind = [item for item in behind if self._session_of.get(item) == main]
         self._queue.remove(commission_id)
         self._session_of[commission_id] = copy.id
         if not self._take_place(commission_id):
@@ -7869,7 +7878,9 @@ class TaskAgentManager:
                 del self._held_by[copy.id]
             self._session_of[commission_id] = main
             if commission_id not in self._queue:
-                self._queue.insert(min(place_in_queue, len(self._queue)), commission_id)
+                ahead_of = next((item for item in behind if item in self._queue), None)
+                at = self._queue.index(ahead_of) if ahead_of is not None else len(self._queue)
+                self._queue.insert(at, commission_id)
             await self._discard_copy(copy)
             if self._queue and len(self._sessions) < self.limit:
                 self._spawn(self._start_next())
@@ -8012,7 +8023,6 @@ class TaskAgentManager:
             del self._held_by[copy_id]
         if candidates is not None:
             self._candidates[commission_id] = candidates
-        self._session_of[commission_id] = main
         if self._closed:
             return
         # Until it is back in the queue, in its place, nothing else is
@@ -8046,9 +8056,10 @@ class TaskAgentManager:
             if stands is None or stands.status != "working":
                 # Over meanwhile (stopped, say), or never read before it was
                 # handed back: it stays the copy's, and nothing is queued.
-                self._session_of[commission_id] = copy_id
                 return
             await self._ledger.update(commission_id, session_id=main)
+            # The session itself's here too, now that the ledger has it so.
+            self._session_of[commission_id] = main
             # Everything the user said to it so far went to the copy: what
             # came while it was queued went with the work it was given
             # there. (It is handed back once: from then on it is the
