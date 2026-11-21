@@ -70,6 +70,11 @@ TEST_DIRS = {"e2e", "__tests__", "tests"}
 # followed. The comment lexer treats `/` after `)` as division, so a regex
 # literal right after `if (...)` containing `//` could blank the rest of its
 # line.
+# On the Dockerfile side (_builder_copies / _covered): only two-argument
+# `COPY <src> <dst>` is understood -- JSON-form `COPY ["a", "b"]`, multi-source
+# COPY and ADD are ignored, and .dockerignore / `COPY --exclude` are not taken
+# into account. Coverage is a path-prefix check, so a glob with a wildcard in a
+# directory segment (e.g. `static/icon?/*.svg`) may over-report.
 # Group "type" captures a leading `type` keyword (type-only import / export).
 # The clause between `import`/`export` and `from` may span lines (multi-line
 # named imports) but never another import/export statement, so a bare
@@ -527,6 +532,15 @@ def test_frontend_builder_copies_every_cross_project_import(dockerfile, frontend
         ("const r = /\\/\\/'/g; import z from '../z'", ["../z"]),
         ("const d = a / b; // '\nimport e from '../e'", ["../e"]),
         ("if (x) return /'/.test(y)\nimport f from '../f'", ["../f"]),
+        # 字符串 / 模板 / 正则里的 /* 不是块注释开头
+        ("const s = '/*'; import g from '../g'; const e = '*/'", ["../g"]),
+        ("const s = \"a/*b\"; import h from '../h'", ["../h"]),
+        ("const t = `/* ${x}`; import i from '../i'", ["../i"]),
+        ("const r = /\\/\\*/; import j from '../j'", ["../j"]),
+        ("const r = /a[//]'/; import j2 from '../j2'", ["../j2"]),
+        ("const r = /[/*]/; import k from '../k'", ["../k"]),
+        # 反过来：注释里的引号 / 反引号不能开出字符串
+        ("/* ` */ import l from '../l'", ["../l"]),
     ],
 )
 def test_comments_are_stripped_before_matching(source, expected):
