@@ -316,6 +316,18 @@ def _is_file_quietly(path: Path) -> bool:
         return False
 
 
+def _is_readable_file(path: Path) -> bool:
+    """A regular file that can actually be opened, so the search moves on to the
+    next library when this copy exists but cannot be read."""
+    if not _is_file_quietly(path):
+        return False
+    try:
+        with open(path, "rb"):
+            return True
+    except OSError:
+        return False
+
+
 def _is_dir_quietly(path: Path) -> bool:
     """``Path.is_dir`` that treats an unreadable path (e.g. permission denied) as absent."""
     try:
@@ -364,14 +376,8 @@ def _collect_binding_workshop_roots(config_manager) -> list[Path]:
                 seen_roots.add(normalized_root)
                 roots.append(Path(configured_workshop_root))
 
-    fallback_workshop_root = getattr(config_manager, "workshop_dir", None)
-    if fallback_workshop_root:
-        normalized_root = os.path.normcase(os.path.normpath(str(fallback_workshop_root)))
-        if normalized_root not in seen_roots:
-            seen_roots.add(normalized_root)
-            roots.append(Path(fallback_workshop_root))
-
-    # Workshop content folders of the other Steam libraries that /workshop also serves.
+    # Workshop content folders of the other Steam libraries, in the order /workshop
+    # serves them (right after the configured root), before the local workshop_dir.
     get_library_roots = getattr(config_manager, "get_steam_workshop_library_roots", None)
     if callable(get_library_roots):
         try:
@@ -385,6 +391,13 @@ def _collect_binding_workshop_roots(config_manager) -> list[Path]:
             if normalized_root not in seen_roots:
                 seen_roots.add(normalized_root)
                 roots.append(Path(library_root))
+
+    fallback_workshop_root = getattr(config_manager, "workshop_dir", None)
+    if fallback_workshop_root:
+        normalized_root = os.path.normcase(os.path.normpath(str(fallback_workshop_root)))
+        if normalized_root not in seen_roots:
+            seen_roots.add(normalized_root)
+            roots.append(Path(fallback_workshop_root))
 
     return roots
 
@@ -854,14 +867,14 @@ def _resolve_binding_file_path(
                 candidates.append(workshop_root / relative_workshop_path)
 
     for candidate in candidates:
-        if _is_file_quietly(candidate):
+        if _is_readable_file(candidate):
             return candidate
 
     fallback_candidate = _resolve_workshop_live2d_fallback()
-    if fallback_candidate is not None and _is_file_quietly(fallback_candidate):
+    if fallback_candidate is not None and _is_readable_file(fallback_candidate):
         return fallback_candidate
     fallback_candidate = _resolve_local_live2d_fallback()
-    if fallback_candidate is not None and _is_file_quietly(fallback_candidate):
+    if fallback_candidate is not None and _is_readable_file(fallback_candidate):
         return fallback_candidate
     return None
 

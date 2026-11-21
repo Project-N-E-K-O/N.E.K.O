@@ -846,3 +846,54 @@ def test_cloudsave_binding_skips_a_library_it_cannot_stat(libraries, monkeypatch
     summary = bindings._derive_character_binding_summary(libraries.config, "Neko", payload)
     assert summary["asset_state"] == "downloadable"
     assert summary["asset_fingerprint"] == ""
+
+
+def test_cloudsave_binding_moves_on_when_a_copy_exists_but_cannot_be_opened(libraries, monkeypatch):
+    from utils.cloudsave_runtime import bindings
+    import builtins
+
+    _write_model(libraries.a / "200", "vrm", "Bravo")
+    (libraries.b / "200").mkdir()
+    (libraries.b / "200" / "Bravo.vrm").write_bytes(b"glTF from B")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    payload = _vrm_character("200", "Bravo")
+
+    # Both readable: library A (the configured root) wins.
+    resolved = bindings._resolve_binding_file_path(
+        libraries.config, model_type="vrm", model_ref="/workshop/200/Bravo.vrm",
+        asset_source="steam_workshop", asset_source_id="200")
+    assert resolved == libraries.a / "200" / "Bravo.vrm"
+
+    locked = str(libraries.a)
+    real_open = builtins.open
+
+    def _open(file, *args, **kwargs):
+        if str(file).startswith(locked):
+            raise PermissionError(13, "Permission denied", str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _open)
+    summary = bindings._derive_character_binding_summary(libraries.config, "Neko", payload)
+    assert summary["asset_state"] == "ready"
+    assert summary["fallback_model_ref"] == ""
+    expected = bindings._sha256_file(libraries.b / "200" / "Bravo.vrm")
+    assert summary["asset_fingerprint"] == expected
+
+
+def test_cloudsave_registered_libraries_come_before_the_local_workshop_dir(libraries, tmp_path):
+    from utils.cloudsave_runtime.bindings import _collect_binding_workshop_roots
+
+    libraries.config.workshop_dir = tmp_path / "local_workshop"
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    assert _collect_binding_workshop_roots(libraries.config) == [
+        libraries.a, libraries.b, tmp_path / "local_workshop"]
+
+
+def test_by_id_lookup_prefers_a_non_empty_item_folder_over_an_empty_leftover(libraries):
+    (libraries.a / "300").mkdir()
+    _write_model(libraries.b / "300", "vrm", "Charlie")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "300")}])
+    assert frontend_utils.find_workshop_item_by_id("300") == (str(libraries.b / "300"), "/workshop")
+    # Only empty folders: the first one, as before.
+    (libraries.b / "300" / "Charlie.vrm").unlink()
+    assert frontend_utils.find_workshop_item_by_id("300") == (str(libraries.a / "300"), "/workshop")
