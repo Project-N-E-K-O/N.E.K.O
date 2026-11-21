@@ -149,7 +149,16 @@ class SystemPresenceState:
 
     # ── query ──────────────────────────────────────────────────
 
-    def inactive_reason(self) -> str | None:
+    def inactive_reason(self, *, voice_session_active: bool = False) -> str | None:
+        """Reason to stay quiet, or ``None``.
+
+        ``voice_session_active``: a voice call is running in the requesting
+        client. Windows turns the display off after N minutes without keyboard
+        or mouse input, and speech is not input, so a user who only talks hits
+        ``display_off`` while sitting at the microphone. Such requests are
+        gated only by lock and suspend; display off and the return quiet window
+        are ignored (voice mode stops by itself after repeated no-responses).
+        """
         with self._lock:
             if self._failed or not self._armed_locked():
                 return None
@@ -164,10 +173,12 @@ class SystemPresenceState:
                     self._mark_returned_locked()
                 else:
                     return REASON_SUSPENDED
-            if self._display_on is False:
-                return REASON_DISPLAY_OFF
             if self._session_locked is True:
                 return REASON_SESSION_LOCKED
+            if voice_session_active:
+                return None
+            if self._display_on is False:
+                return REASON_DISPLAY_OFF
             if (
                 self._returned_at is not None
                 and self._clock() - self._returned_at < self._quiet_seconds
@@ -275,10 +286,10 @@ def ensure_system_presence_watcher_started() -> None:
             logger.warning('System presence watcher unavailable, proactive chat is not gated by it: %s', exc)
 
 
-def get_system_inactive_reason() -> str | None:
+def get_system_inactive_reason(*, voice_session_active: bool = False) -> str | None:
     """Reason the local session should not be spoken to, or ``None``."""
     ensure_system_presence_watcher_started()
     try:
-        return _state.inactive_reason()
+        return _state.inactive_reason(voice_session_active=voice_session_active)
     except Exception:  # noqa: BLE001 - must fail open
         return None

@@ -39,6 +39,7 @@ function createWindow(pathname, options = {}) {
     let nextTimer = 1;
     const listeners = { document: {}, window: {} };
     const fetches = [];
+    const bodies = [];
     const appState = {
         proactiveChatEnabled: true,
         proactiveNewsChatEnabled: true,
@@ -93,8 +94,9 @@ function createWindow(pathname, options = {}) {
             return 1000 + intervals.length;
         },
         clearInterval() {},
-        fetch(url) {
+        fetch(url, opts) {
             fetches.push(url);
+            if (opts && typeof opts.body === 'string') bodies.push(JSON.parse(opts.body));
             const body = window.__proactiveResponse || { success: false, action: 'pass' };
             return Promise.resolve({
                 ok: true,
@@ -110,7 +112,7 @@ function createWindow(pathname, options = {}) {
     vm.runInContext('Date.now = () => globalThis.__clock.now;', window);
     vm.runInContext(source, window, { filename: 'static/app/app-proactive.js' });
     return {
-        window, appState, document, input, timers, fetches, listeners,
+        window, appState, document, input, timers, fetches, bodies, listeners,
         heartbeat() {
             for (const fn of intervals) fn();
         },
@@ -436,3 +438,42 @@ for (const mode of ['text', 'voice']) {
         });
     }
 }
+
+test('voice request carries voice_session_active only while actually recording', async () => {
+    const pet = setup();
+    pet.appState.isRecording = true;
+    pet.window.scheduleProactiveChat();
+    clock.now += pet.scheduledDelay();
+    await pet.fire();
+    assert.equal(pet.bodies.length, 1);
+    assert.equal(pet.bodies[0].voice_session_active, true);
+});
+
+test('recording stopped while headers are fetched: flag is false at send time', async () => {
+    const pet = setup();
+    pet.appState.isRecording = true;
+    let release;
+    pet.window.nekoLocalMutationSecurity = {
+        getMutationHeaders: () => new Promise((resolve) => { release = () => resolve({}); }),
+    };
+    pet.window.scheduleProactiveChat();
+    clock.now += pet.scheduledDelay();
+    const pending = pet.fire();
+    for (let i = 0; i < 20 && typeof release !== 'function'; i += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    pet.appState.isRecording = false;
+    release();
+    await pending;
+    assert.equal(pet.bodies.length, 1);
+    assert.equal(pet.bodies[0].voice_session_active, false);
+});
+
+test('text request never carries voice_session_active', async () => {
+    const pet = setup();
+    pet.window.scheduleProactiveChat();
+    clock.now += pet.scheduledDelay();
+    await pet.fire();
+    assert.equal(pet.bodies.length, 1);
+    assert.equal(pet.bodies[0].voice_session_active, undefined);
+});

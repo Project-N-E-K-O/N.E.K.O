@@ -259,7 +259,7 @@ def _request(client_host: str, body: dict | None = None, headers: dict | None = 
 def test_entry_guard_uses_signal_for_loopback(monkeypatch, host):
     monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
     monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
-    monkeypatch.setattr(flow, "get_system_inactive_reason", lambda: sp.REASON_DISPLAY_OFF)
+    monkeypatch.setattr(flow, "get_system_inactive_reason", lambda **_: sp.REASON_DISPLAY_OFF)
     assert flow._local_system_inactive_reason(_request(host)) == sp.REASON_DISPLAY_OFF
 
 
@@ -267,7 +267,7 @@ def test_entry_guard_uses_signal_for_loopback(monkeypatch, host):
 def test_entry_guard_ignores_signal_for_non_loopback(monkeypatch, host):
     monkeypatch.setattr(
         flow, "get_system_inactive_reason",
-        lambda: pytest.fail("remote requests must not consult local OS signals"),
+        lambda **_: pytest.fail("remote requests must not consult local OS signals"),
     )
     assert flow._local_system_inactive_reason(_request(host)) is None
 
@@ -276,7 +276,7 @@ def test_entry_guard_ignores_signal_for_remote_deployment(monkeypatch):
     monkeypatch.setenv("NEKO_ACTIVITY_TRACKER_REMOTE", "1")
     monkeypatch.setattr(
         flow, "get_system_inactive_reason",
-        lambda: pytest.fail("remote deployments must not consult local OS signals"),
+        lambda **_: pytest.fail("remote deployments must not consult local OS signals"),
     )
     assert flow._local_system_inactive_reason(_request("127.0.0.1")) is None
 
@@ -289,7 +289,7 @@ def _wire_route(monkeypatch, reason):
         aget_character_data=AsyncMock(return_value=("Master", "Neko", None, None, None, {}, None, None, None))))
     monkeypatch.setattr(flow, "get_session_manager", lambda: {})
     monkeypatch.setattr(flow, "is_theater_active", lambda _: False)
-    monkeypatch.setattr(flow, "get_system_inactive_reason", lambda: reason)
+    monkeypatch.setattr(flow, "get_system_inactive_reason", lambda **_: reason)
     service = AsyncMock(side_effect=AssertionError("service must not run"))
     monkeypatch.setattr(flow.proactive_service, "handle_proactive_chat", service)
     return service
@@ -328,7 +328,7 @@ async def test_route_runs_service_from_remote_client_even_if_local_session_inact
 
 
 def test_entry_guard_fails_open_on_unexpected_request_shape(monkeypatch):
-    monkeypatch.setattr(flow, "get_system_inactive_reason", lambda: sp.REASON_DISPLAY_OFF)
+    monkeypatch.setattr(flow, "get_system_inactive_reason", lambda **_: sp.REASON_DISPLAY_OFF)
     assert flow._local_system_inactive_reason(SimpleNamespace()) is None
 
 
@@ -343,3 +343,57 @@ def test_missed_resume_broadcast_does_not_silence_forever():
     assert state.inactive_reason() == sp.REASON_RECENTLY_RETURNED
     clock.now += sp.SYSTEM_RETURN_QUIET_SECONDS
     assert state.inactive_reason() is None
+
+
+# ── voice call in progress: only lock and suspend gate it (tl decision B) ──
+
+
+def test_voice_session_ignores_display_off_and_return_quiet():
+    clock = FakeClock()
+    state = _armed_state(clock)
+    state.on_display_state(False)
+    assert state.inactive_reason(voice_session_active=True) is None
+    assert state.inactive_reason() == sp.REASON_DISPLAY_OFF, "pair: without the flag display-off still gates"
+    state.on_display_state(True)
+    assert state.inactive_reason(voice_session_active=True) is None
+    assert state.inactive_reason() == sp.REASON_RECENTLY_RETURNED, "pair: without the flag the quiet window still applies"
+
+
+def test_voice_session_still_gated_by_lock_and_suspend():
+    state = _armed_state()
+    state.on_display_state(False)
+    state.on_session_lock_state(True)
+    assert state.inactive_reason(voice_session_active=True) == sp.REASON_SESSION_LOCKED
+    state.on_suspend()
+    assert state.inactive_reason(voice_session_active=True) == sp.REASON_SUSPENDED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload_flag, display_off, locked, expect_pass", [
+    (True, True, False, False),    # voice call, display off: speaks
+    (True, False, True, True),     # voice call, locked: still gated
+    (None, True, False, True),     # no flag, display off: gated
+    ("true", True, False, True),   # only a JSON boolean counts
+])
+async def test_route_voice_session_flag(monkeypatch, payload_flag, display_off, locked, expect_pass):
+    from main_logic.proactive_chat.contracts import ProactiveChatResult
+
+    state = _armed_state()
+    if display_off:
+        state.on_display_state(False)
+    if locked:
+        state.on_session_lock_state(True)
+    _wire_route(monkeypatch, None)
+    monkeypatch.setattr(
+        flow, "get_system_inactive_reason",
+        lambda *, voice_session_active=False: state.inactive_reason(voice_session_active=voice_session_active),
+    )
+    monkeypatch.setattr(flow.proactive_service, "handle_proactive_chat", AsyncMock(
+        return_value=ProactiveChatResult(body={"success": True, "action": "chat", "reason_code": "CHAT_DELIVERED"})))
+    monkeypatch.setattr(flow, "capture_owner", AsyncMock(return_value=None))
+    body = {"lanlan_name": "Neko", "voice_mode": True}
+    if payload_flag is not None:
+        body["voice_session_active"] = payload_flag
+    response = await flow.proactive_chat(_request("127.0.0.1", body))
+    reason = json.loads(response.body)["reason_code"]
+    assert (reason == PROACTIVE_REASON_PASS_SYSTEM_INACTIVE) is expect_pass

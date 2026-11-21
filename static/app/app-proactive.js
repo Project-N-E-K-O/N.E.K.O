@@ -1430,6 +1430,12 @@
                         && !canProactiveVisionRunDuringSpeech()) {
                         voiceProactivePayload.enabled_modes = [];
                     }
+                    // Tell the backend a voice call is actually running right now
+                    // (read at send time, after the header await). Such requests
+                    // are not gated by display-off: Windows blanks the screen
+                    // after N minutes without keyboard/mouse input even while the
+                    // user is talking. Lock and suspend still gate them.
+                    voiceProactivePayload.voice_session_active = !!S.isRecording;
                     return fetch('/api/proactive_chat', {
                         method: 'POST',
                         headers: hdrs,

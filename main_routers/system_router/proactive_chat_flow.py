@@ -144,19 +144,22 @@ def _adapt_result(result) -> JSONResponse:
     return JSONResponse(result.body, status_code=result.status_code)
 
 
-def _local_system_inactive_reason(request: Request) -> str | None:
+def _local_system_inactive_reason(
+    request: Request, *, voice_session_active: bool = False,
+) -> str | None:
     """Why the local desktop session should not be spoken to, or ``None``.
 
     The OS signals describe the machine the backend runs on. They only say
     something about the user when the request comes straight from this
     machine; for remote clients (another device, a proxy, a declared remote
     deployment) they are ignored and only the frontend's own wake guard
-    applies.
+    applies. ``voice_session_active`` (a voice call is running in the client)
+    limits the gate to lock and suspend.
     """
     try:
         if is_remote_backend_deployment() or not _is_loopback_request(request):
             return None
-        return get_system_inactive_reason()
+        return get_system_inactive_reason(voice_session_active=voice_session_active)
     except Exception as exc:  # noqa: BLE001 - this guard must never block proactive chat
         logger.debug("System presence check skipped: %s", exc)
         return None
@@ -200,7 +203,10 @@ async def proactive_chat(request: Request):
         payload = await request.json()
         command = ProactiveChatCommand.from_payload(payload)
         lanlan_name = command.lanlan_name or her_name_current
-        inactive_reason = _local_system_inactive_reason(request)
+        inactive_reason = _local_system_inactive_reason(
+            request,
+            voice_session_active=isinstance(payload, dict) and payload.get("voice_session_active") is True,
+        )
         if inactive_reason is not None:
             # Display off, session locked, asleep, or just back from one of
             # those: nobody is there to hear it. The frontend treats this
