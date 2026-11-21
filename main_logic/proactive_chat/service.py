@@ -1190,18 +1190,30 @@ async def handle_proactive_chat(
                         # invite: a banned game or story never gets offered,
                         # even if the model's line would not name it. Plain
                         # reminder instead; no model call spent on the combo.
-                        if gi_prompt is not None and _proactive_delivery_directive_hit_count(
-                            lanlan_name,
-                            _mini_game_invite_surface_text(
-                                _render_mini_game_invite_line(
-                                    chosen_game_type,
-                                    _break_invite_lang,
-                                    master_name_current,
-                                    selected_story=selected_theater,
+                        _invite_hits = (
+                            _proactive_delivery_directive_hit_count(
+                                lanlan_name,
+                                _mini_game_invite_surface_text(
+                                    _render_mini_game_invite_line(
+                                        chosen_game_type,
+                                        _break_invite_lang,
+                                        master_name_current,
+                                        selected_story=selected_theater,
+                                    ),
+                                    selected_theater,
                                 ),
-                                selected_theater,
-                            ),
-                        ):
+                            )
+                            if gi_prompt is not None
+                            else 0
+                        )
+                        if _invite_hits:
+                            # Count only, never the term or the story text.
+                            logger.info(
+                                "[%s] work-break game invite skipped by user ban-topic "
+                                "directive (%d term(s) matched)",
+                                lanlan_name,
+                                _invite_hits,
+                            )
                             print(
                                 f"[{lanlan_name}] 休息+游戏邀请的游戏/故事命中用户明确要求回避的话题，"
                                 "改发普通提醒"

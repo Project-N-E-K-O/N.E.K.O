@@ -467,6 +467,11 @@ def _mini_game_invite_surface_text(
     the public opening the user would step into: its background and the
     author's invitation. Both invite channels (standalone and the work-break
     combo) check the same text.
+
+    The background is matched in full (up to ~2000 chars), so a ban on a
+    common word can skip a story that only mentions it in passing. That is
+    the intended side: a skipped invite costs one round (the next round picks
+    another random story), while a missed one walks the user into the topic.
     """
     parts = [fallback_line or ""]
     for key in ("title", "background", "invitation"):

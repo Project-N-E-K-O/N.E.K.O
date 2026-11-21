@@ -346,7 +346,9 @@ async def test_break_reminder_prompts_carry_the_directive_block(monkeypatch):
     """Soft constraint: every break-reminder prompt, rewrite included, gets
     the same ban-topic block Phase 2 gets."""
     manager = _install_directives(monkeypatch, ["股票"])
-    manager.render_prompt_block.return_value = "\n[BAN-BLOCK]"
+    manager.render_prompt_block.side_effect = (
+        lambda name, lang: f"\n[BAN-BLOCK:{name}:{lang}]"
+    )
     mgr, config_manager, corpus, _record = _break_harness(
         monkeypatch,
         _FakeStreamingLlm("记得起来喝水休息一下。"),
@@ -378,9 +380,10 @@ async def test_break_reminder_prompts_carry_the_directive_block(monkeypatch):
     result = await _deliver_break(mgr, config_manager)
 
     assert result.delivered_text == "先望望远处，让眼睛放松一会儿吧。"
+    # Same character key and prompt language as the Phase 2 injection.
     assert seen == [
-        "Generate one reminder.\n[BAN-BLOCK]",
-        "Generate one reminder.\n[BAN-BLOCK]",
+        "Generate one reminder.\n[BAN-BLOCK:Neko:zh]",
+        "Generate one reminder.\n[BAN-BLOCK:Neko:zh]",
     ]
 
 
