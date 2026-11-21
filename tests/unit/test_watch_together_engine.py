@@ -462,3 +462,16 @@ async def test_failure_while_assembling_a_window_does_not_report_the_previous_re
     with pytest.raises(FileNotFoundError):
         await instance.prepare({'id': 'job'}, 'BV1GJ411x7h7', 'cat')
     assert instance.last_vision_request is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('key,expected', [('raw-key', ('raw-key',)), ('', ()), (None, ())])
+async def test_vision_config_keeps_the_key_only_for_redaction(tmp_path, key, expected):
+    from types import SimpleNamespace
+    from main_logic.watch_together.engine import Engine
+    instance = Engine(tmp_path, None, 'cat')
+    instance._cm = SimpleNamespace(get_model_api_config=lambda _: {
+        'api_key': key, 'is_custom': True, 'model': 'vision-1', 'base_url': 'http://localhost:8000'})
+    await instance.vision_config()
+    assert instance.diagnostic_secrets == expected
+    assert key is None or not key or key not in str(instance.vision_endpoint)

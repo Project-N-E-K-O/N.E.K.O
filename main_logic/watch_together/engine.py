@@ -510,6 +510,8 @@ class Engine:
         # Structural diagnostics read by the preparation failure handler.
         self.vision_endpoint = None
         self.last_vision_request = None
+        # Configured credentials masked out of recorded error messages; never persisted.
+        self.diagnostic_secrets = ()
 
     @property
     def cm(self):
@@ -521,6 +523,8 @@ class Engine:
     async def vision_config(self):
         cfg = await vision_model_config(self.cm)
         self.vision_endpoint = {"host": endpoint_host(cfg.get("base_url")), "model": cfg.get("model")}
+        api_key = cfg.get("api_key")
+        self.diagnostic_secrets = (api_key,) if isinstance(api_key, str) and api_key else ()
         return cfg
 
     async def llm(self, content, job):

@@ -4,9 +4,9 @@ import json
 import os
 import re
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import quote
 
-from .engine import Engine, SpeechCueTooLarge
+from .engine import Engine, SpeechCueTooLarge, endpoint_host
 from . import media
 from .library import application_library
 from .telemetry import count
@@ -21,6 +21,9 @@ MAX_CAUSE_MESSAGE_CHARS = 200
 _REDACTION_INPUT_CHARS = 2000
 _DATA_URL = re.compile(r"\bdata:[^\s,]{0,100},\S*", re.IGNORECASE)
 _SECRET_PATTERNS = (
+    # h11 / httpx reject a malformed header with only its raw value in the
+    # message (e.g. a key with stray whitespace), so no header name labels it.
+    (re.compile(r"\b(Illegal header (?:value|name))\b[^\r\n]*", re.IGNORECASE), r"\1 ***"),
     (re.compile(r"\b(Authorization['\"]?\s*[:=]\s*['\"]?)(?:[A-Za-z]+\s+)?[^\s'\",;}]+", re.IGNORECASE), r"\1***"),
     (re.compile(r"\bBearer\s+[^\s'\",;}]+", re.IGNORECASE), "Bearer ***"),
     (re.compile(r"\bsk-[A-Za-z0-9_\-]+"), "sk-***"),
@@ -37,33 +40,52 @@ _URL = re.compile(r"\b([A-Za-z][A-Za-z0-9+.\-]{0,15})://[^\s'\"<>]+")
 
 
 def _url_origin(match):
-    try:
-        host = urlparse(match.group(0)).hostname
-    except ValueError:
-        host = None
-    return f"{match.group(1)}://{host or '?'}"
+    return f"{match.group(1)}://{endpoint_host(match.group(0)) or '?'}"
 
 
-def redact_error_message(message) -> str:
-    """Keep an exception message useful for diagnosis without credentials, URL paths or home directory."""
+def _secret_variants(secrets):
+    """Configured credentials as they may appear in messages, longest first."""
+    variants = set()
+    for secret in secrets or ():
+        if isinstance(secret, str):
+            # Short values (``none``, ``local``) would mask ordinary words.
+            for value in (secret, secret.strip()):
+                # Also as a bytes/str repr escapes it and as a URL encodes it.
+                forms = (value, repr(value)[1:-1], repr(value.encode("utf-8", "replace"))[2:-1], quote(value, safe=""))
+                variants.update(form for form in forms if len(form.strip()) >= 8)
+    return sorted(variants, key=len, reverse=True)
+
+
+def redact_error_message(message, secrets=()) -> str:
+    """Keep an exception message useful for diagnosis without credentials, URL paths or home directory.
+
+    ``secrets`` are configured credentials, masked wherever they appear:
+    pattern rules cannot recognise an unlabelled raw key.
+    """
+    text = str(message)
+    # Before truncating, so a length cut can never leave half a key behind.
+    for secret in _secret_variants(secrets):
+        text = text.replace(secret, "***")
     # Lone surrogates (non-UTF-8 file names) would break the UTF-8 timeline write.
-    text = str(message)[:_REDACTION_INPUT_CHARS].encode("utf-8", "backslashreplace").decode("utf-8")
+    text = text[:_REDACTION_INPUT_CHARS].encode("utf-8", "backslashreplace").decode("utf-8")
     text = _DATA_URL.sub("data:***", text)
     for pattern, replacement in _SECRET_PATTERNS:
         text = pattern.sub(replacement, text)
-    # URLs keep only scheme and host: paths and queries may carry keys or IDs.
+    # URLs keep only scheme and host[:port]: paths and queries may carry keys or IDs.
     text = _URL.sub(_url_origin, text)
-    # OSError messages carry local paths (Windows ones repr-escaped); users
-    # paste these logs into public issues.
+    # OSError messages carry local paths (Windows ones repr-escaped, or with
+    # forward slashes as ffmpeg prints them); users paste these logs into
+    # public issues.
     home = os.path.expanduser("~")
     if len(home) > 1:
-        text = text.replace(home.replace("\\", "\\\\"), "~").replace(home, "~")
+        for form in (home.replace("\\", "\\\\"), home, home.replace("\\", "/")):
+            text = text.replace(form, "~")
     if len(text) > MAX_CAUSE_MESSAGE_CHARS:
         text = text[:MAX_CAUSE_MESSAGE_CHARS] + "…"
     return text
 
 
-def _error_layer(exc) -> dict:
+def _error_layer(exc, secrets=()) -> dict:
     errno = getattr(exc, "errno", None)
     layer = {"type": type(exc).__name__,
              "errno": errno if isinstance(errno, int) and not isinstance(errno, bool) else None}
@@ -72,17 +94,20 @@ def _error_layer(exc) -> dict:
         # Provider status errors embed the response body, which may echo
         # request content; keep only the status and the provider error code.
         code = getattr(exc, "code", None)
-        layer.update(status_code=status, code=redact_error_message(code)[:64] if isinstance(code, str) else None,
+        # Some OpenAI-compatible services use numeric codes (e.g. 1301).
+        if isinstance(code, int) and not isinstance(code, bool):
+            code = str(code)
+        layer.update(status_code=status, code=redact_error_message(code, secrets)[:64] if isinstance(code, str) else None,
                      message=None)
         return layer
     try:
-        layer["message"] = redact_error_message(exc)
+        layer["message"] = redact_error_message(exc, secrets)
     except Exception:
         layer["message"] = None
     return layer
 
 
-def error_cause_chain(exc, limit=MAX_CAUSE_DEPTH):
+def error_cause_chain(exc, limit=MAX_CAUSE_DEPTH, secrets=()):
     """Describe the exception and up to ``limit - 1`` underlying causes.
 
     Provider SDKs wrap transport failures (for example an httpx ReadError with
@@ -92,7 +117,7 @@ def error_cause_chain(exc, limit=MAX_CAUSE_DEPTH):
     chain, seen = [], set()
     while isinstance(exc, BaseException) and len(chain) < limit and id(exc) not in seen:
         seen.add(id(exc))
-        chain.append(_error_layer(exc))
+        chain.append(_error_layer(exc, secrets))
         # Explicit None checks: exceptions may define __len__/__bool__. Honour
         # ``raise ... from None``: a context hidden on purpose stays hidden
         # (the openai SDK raises status errors that way over httpx's error).
@@ -107,12 +132,14 @@ def error_cause_chain(exc, limit=MAX_CAUSE_DEPTH):
 
 def preparation_error_detail(exc, engine=None) -> dict:
     """Structural failure detail: no prompt, danmaku, model output or frame data."""
-    detail = {"chain": error_cause_chain(exc)}
+    secrets = getattr(engine, "diagnostic_secrets", None)
+    secrets = tuple(secrets) if isinstance(secrets, (tuple, list)) else ()
+    detail = {"chain": error_cause_chain(exc, secrets=secrets)}
     endpoint = getattr(engine, "vision_endpoint", None)
     if isinstance(endpoint, dict):
         host, model = endpoint.get("host"), endpoint.get("model")
         detail.update(vision_host=host if isinstance(host, str) else None,
-                      vision_model=redact_error_message(model)[:100] if isinstance(model, str) else None)
+                      vision_model=redact_error_message(model, secrets)[:100] if isinstance(model, str) else None)
     request = getattr(engine, "last_vision_request", None)
     if isinstance(request, dict):
         detail["last_vision_request"] = dict(request)

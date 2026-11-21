@@ -1,3 +1,4 @@
+import json
 import asyncio
 from types import SimpleNamespace
 
@@ -585,3 +586,80 @@ async def test_surrogate_in_failure_detail_still_prints_and_persists(tmp_path, m
     saved = json.loads((tmp_path / 'preparations' / result['id'] / 'timeline.json').read_text(encoding='utf-8'))
     assert saved['error_detail']['chain'][0]['message'] == 'decoded name frame-\\udcff.jpg'
     assert 'Watch preparation failed: RuntimeError' in capsys.readouterr().out
+
+
+def test_illegal_header_value_errors_hide_the_raw_value():
+    import h11
+    with pytest.raises(h11.LocalProtocolError) as caught:
+        h11.Request(method='POST', target='/v1', headers=[('Host', 'x'), ('x-api-key', ' private-credential ')])
+    [layer] = preparation.error_cause_chain(caught.value)
+    assert layer == {'type': 'LocalProtocolError', 'errno': None, 'message': 'Illegal header value ***'}
+
+
+def test_configured_credentials_are_masked_anywhere_before_truncation():
+    key = ' plain-credential-1234 '
+    # The stripped key, glued to other characters, as transports often print it.
+    assert preparation.redact_error_message("value b'plain-credential-1234'", secrets=(key,)) == "value b'***'"
+    tail = preparation.redact_error_message('handshake failed for' + key + 'end', secrets=(key,))
+    assert tail == 'handshake failed for***end'
+    # A key straddling the length cap is masked before the cut, never left in part.
+    cut = preparation.redact_error_message('y' * 190 + key.strip() + 'z' * 50, secrets=(key,))
+    assert cut == 'y' * 190 + '***' + 'z' * 7 + '…'
+    # Short placeholder keys would mask ordinary words, so they are ignored.
+    assert preparation.redact_error_message('local none', secrets=('local', 'none')) == 'local none'
+
+
+@pytest.mark.asyncio
+async def test_failure_detail_masks_the_engine_credentials(tmp_path, monkeypatch):
+    class Engine:
+        def __init__(self, *args, **kwargs):
+            self.diagnostic_secrets = ('raw-vision-key-777',)
+            self.vision_endpoint = {'host': 'api.example.test:8443', 'model': 'm'}
+        async def vision_config(self):
+            return {}
+        async def prepare(self, *args, **kwargs):
+            raise RuntimeError("Illegal  stuff b'raw-vision-key-777'")
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    detail = preparation.jobs[result['id']]['error_detail']
+    assert detail['chain'][0]['message'] == "Illegal  stuff b'***'"
+    assert 'diagnostic_secrets' not in json.dumps(detail) and 'raw-vision-key' not in json.dumps(detail)
+
+
+def test_numeric_provider_error_codes_are_kept():
+    import httpx
+    import openai
+    response = httpx.Response(400, request=httpx.Request('POST', 'https://api.example.test/v1'), json={})
+    exc = openai.APIStatusError('Error code: 400', response=response, body=None)
+    exc.code = 1301
+    assert preparation.error_cause_chain(exc)[0]['code'] == '1301'
+    exc.code = True
+    assert preparation.error_cause_chain(exc)[0]['code'] is None
+
+
+def test_message_urls_keep_port_and_ipv6_brackets():
+    assert preparation.redact_error_message('GET http://[::1]:8000/v1/x failed') == 'GET http://[::1]:8000 failed'
+    assert preparation.redact_error_message('proxy https://p.example.test:3128/a?b=c') == 'proxy https://p.example.test:3128'
+
+
+def test_forward_slash_windows_home_is_hidden(monkeypatch):
+    monkeypatch.setattr(preparation.os.path, 'expanduser', lambda _path: 'C:\\Users\\bob')
+    assert preparation.redact_error_message('ffmpeg: C:/Users/bob/Videos/a.mp4: No such file') == \
+        'ffmpeg: ~/Videos/a.mp4: No such file'
+
+
+@pytest.mark.parametrize('render', [
+    lambda key: repr(key.encode('utf-8')),
+    lambda key: repr(key),
+    lambda key: __import__('urllib.parse').parse.quote(key, safe=''),
+])
+def test_configured_credentials_are_masked_in_escaped_forms(render):
+    key = 'caf\u00e9\\cred/+=1234'
+    message = preparation.redact_error_message('sent ' + render(key) + ' end', secrets=(key,))
+    assert 'cred' not in message and '1234' not in message
