@@ -5923,6 +5923,38 @@ class TaskAgentSpace:
 
         return await self._read(work)
 
+    async def set_project_workdir(self, name: str, workdir: str) -> Project | None:
+        """Write where a project's files are, as the user asks. Returns the project, or None for one that is not there.
+
+        Its record and its line in the index of the space (which says
+        where its files are). Not for an archived project: that is named
+        with its year, and nothing works in it. Whether the directory is
+        one a task agent may work in, and whether anything is at work in
+        the project, is for the caller to see to (``NekoClawHost.set_project_workdir``).
+        """
+        safe_segment(name, "project")
+
+        def work() -> Project | None:
+            paths = self._paths()
+            directory = paths.project_dir(name)
+            if not directory.is_dir():
+                return None
+            project, known = self._project_to_change(directory)
+            if not known:
+                return None
+            changed = replace(project, workdir=workdir)
+            self._put_project(directory, changed)
+            if name != DEFAULT_PROJECT:
+                try:
+                    line, target = self._project_line(changed)
+                    self._index_set(paths.index(None), line, target)
+                except OSError:
+                    # The project works there all the same; its line says the old place till it is written again.
+                    logger.warning("a project's working directory was changed, but its line in the index was not", exc_info=True)
+            return changed
+
+        return await self._write(work)
+
     def _project_line(self, project: Project) -> tuple[str, str]:
         paths = self._paths()
         target = f"projects/{project.name}/{paths.INDEX_NAME}"

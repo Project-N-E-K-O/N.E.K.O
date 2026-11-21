@@ -5769,3 +5769,67 @@ async def test_with_summing_up_idle_sessions_switched_off_for_the_model_no_sessi
     await wait_until(lambda: len(export.requests) == 6, what="the request that sums it up")
     await _idle_work_over(host)
     assert (await host.ledger.get_session(first.id)).compacted_at is not None
+
+
+async def test_the_user_changes_where_a_project_works_and_the_next_commission_starts_there(hosts, tmp_path):
+    """Its record, its line in the index and its own session say the new place; nothing is moved."""
+    from nekoclaw.host.service import ProjectBusy
+
+    release, wait = _gate()
+    export = ScriptedLLM([[wait, *_report("ready", "export added")], _report("ready", "columns added")])
+    host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}))
+    await host.space.touch_project("Budget app")
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "working")
+    old = (await host.ledger.get_session(first.id)).workdir
+    (Path(old) / "notes.txt").write_text("kept", encoding="utf-8")
+    new = tmp_path / "code" / "budget-app"
+    new.mkdir(parents=True)
+
+    # Not while something is at work in it: that goes on where it began.
+    with pytest.raises(ProjectBusy, match="at_work"):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.space.get_project("Budget app")).workdir != str(new)
+    release.set()
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+
+    changed = await host.set_project_workdir("Budget app", str(new))
+    assert changed["workdir"] == str(new) and changed["name"] == "Budget app"
+    assert (await host.space.get_project("Budget app")).workdir == str(new)
+    assert f"files in {new}" in await host.space.read_index()
+    assert (await host.ledger.get_session(first.id)).workdir == str(new)
+    # What was in the old place stays there.
+    assert (Path(old) / "notes.txt").read_text(encoding="utf-8") == "kept"
+
+    second = (await _dispatch(host, "add two columns to the export of the budget app")).commissions[0]
+    await wait_status(host, second.id, "done")
+    assert (await host.ledger.get(second.id)).session_id == first.id
+    assert (await host.ledger.get(second.id)).workdir == str(new)
+
+
+async def test_a_directory_that_will_not_do_and_a_project_that_is_not_there_change_nothing(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app", workdir=str(tmp_path))
+    own = host.paths.root()
+    own.mkdir(parents=True, exist_ok=True)
+    for directory, code in (
+        ("code/budget-app", "not_absolute"),
+        ("", "not_absolute"),
+        (str(tmp_path / "missing"), "not_a_directory"),
+        # Where the host keeps the ledger and the task agent space, anything inside it, and anything that holds it.
+        (str(own), "host_directory"),
+        (str(host.paths.space().root), "host_directory"),
+        (str(own.parent), "host_directory"),
+    ):
+        Path(directory).mkdir(parents=True, exist_ok=True) if code == "host_directory" else None
+        with pytest.raises(ValueError, match=code):
+            await host.set_project_workdir("Budget app", directory)
+    assert (await host.space.get_project("Budget app")).workdir == str(tmp_path)
+
+    elsewhere = tmp_path.parent / f"{tmp_path.name}-elsewhere"
+    elsewhere.mkdir()
+    with pytest.raises(LookupError):
+        await host.set_project_workdir("No such project", str(elsewhere))
+    with pytest.raises(ValueError):
+        await host.set_project_workdir("../outside", str(elsewhere))

@@ -608,3 +608,73 @@ async def test_summing_up_idle_sessions_is_switched_off_and_on_from_the_page(con
     for not_a_switch in ("off", 0, None):
         bad = await client.post("/console/window", headers=HEADERS, json={"idle_compact_on": not_a_switch})
         assert bad.status_code == 400 and bad.json()["detail"]["code"] == "bad_flag"
+
+
+async def test_the_page_changes_where_a_project_works_and_is_told_why_when_it_cannot(console, tmp_path, monkeypatch):
+    client, host, _ = console
+    await host.space.touch_project("Ledger tool")
+    elsewhere = tmp_path.parent / f"{tmp_path.name}-code"
+    elsewhere.mkdir()
+
+    changed = await client.post(
+        "/console/space/projects/workdir", headers=HEADERS, json={"project": "Ledger tool", "workdir": str(elsewhere)},
+    )
+    assert changed.status_code == 200 and changed.json()["project"]["workdir"] == str(elsewhere)
+    assert (await host.space.get_project("Ledger tool")).workdir == str(elsewhere)
+
+    for payload, status, code in (
+        ({"project": "Ledger tool", "workdir": "relative/path"}, 400, "not_absolute"),
+        ({"project": "Ledger tool", "workdir": str(tmp_path / "missing")}, 400, "not_a_directory"),
+        ({"project": "Ledger tool", "workdir": str(host.paths.root().parent)}, 400, "host_directory"),
+        ({"project": "Ledger tool", "workdir": 3}, 400, "bad_name"),
+        ({"workdir": str(elsewhere)}, 400, "bad_name"),
+        ({"project": "../outside", "workdir": str(elsewhere)}, 400, "bad_name"),
+        ({"project": "No such project", "workdir": str(elsewhere)}, 404, "no_project"),
+    ):
+        refused = await client.post("/console/space/projects/workdir", headers=HEADERS, json=payload)
+        assert (refused.status_code, refused.json()["detail"]["code"]) == (status, code), payload
+    assert (await host.space.get_project("Ledger tool")).workdir == str(elsewhere)
+
+    async def at_work(project: str, lanlan_name: Any = None) -> str:
+        return "at_work"
+
+    monkeypatch.setattr(host, "_project_busy", at_work)
+    again = tmp_path.parent / f"{tmp_path.name}-again"
+    again.mkdir()
+    busy = await client.post(
+        "/console/space/projects/workdir", headers=HEADERS, json={"project": "Ledger tool", "workdir": str(again)},
+    )
+    assert busy.status_code == 409 and busy.json()["detail"] == {"code": "project_busy", "reason": "at_work"}
+    assert (await host.space.get_project("Ledger tool")).workdir == str(elsewhere)
+
+
+async def test_the_dialog_for_choosing_a_folder_gives_what_was_chosen_and_changes_nothing(tmp_path):
+    host = make_host(tmp_path, None, dsh=Installation())
+    await host.space.touch_project("Ledger tool", workdir=str(tmp_path))
+    asked: list[str] = []
+    answer: list[Any] = [str(tmp_path / "code")]
+
+    def pick(start: str) -> str | None:
+        asked.append(start)
+        if isinstance(answer[0], Exception):
+            raise answer[0]
+        return answer[0]
+
+    async def get_host() -> Any:
+        return host
+
+    app = FastAPI()
+    app.include_router(build_console_router(get_host, lambda: TOKEN, pick_directory=pick))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://agent.test") as client:
+        assert (await client.post("/console/space/pick-directory")).status_code == 403
+        chosen = await client.post("/console/space/pick-directory", headers=HEADERS, json={"start": str(tmp_path)})
+        assert chosen.json() == {"success": True, "path": str(tmp_path / "code")} and asked == [str(tmp_path)]
+        # Closed without choosing; and a start that is no path is not passed on as one.
+        answer[0] = None
+        closed = await client.post("/console/space/pick-directory", headers=HEADERS, json={"start": 3})
+        assert closed.json() == {"success": True, "cancelled": True} and asked[-1] == ""
+        answer[0] = RuntimeError("no dialog on this machine")
+        failed = await client.post("/console/space/pick-directory", headers=HEADERS)
+        assert failed.status_code == 500 and failed.json()["detail"] == {"code": "picker_unavailable"}
+    assert (await host.space.get_project("Ledger tool")).workdir == str(tmp_path)
+    await host.shutdown()

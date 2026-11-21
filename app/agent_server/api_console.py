@@ -110,6 +110,7 @@ def build_console_router(
     token: Callable[[], str],
     *,
     open_directory: Callable[[Path], None] | None = None,
+    pick_directory: Callable[[str], str | None] | None = None,
     switches: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     read_browser: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     write_browser: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
@@ -118,7 +119,9 @@ def build_console_router(
 
     ``token`` returns what ``X-CSRF-Token`` has to be. ``open_directory``
     shows a directory in the system's file manager (``utils.native_directory``
-    by default). ``switches`` returns where the switches of the agent
+    by default); ``pick_directory`` shows the system's dialog for choosing
+    a folder, starting at the directory it is given, and returns what was
+    chosen or None when the user closed it. ``switches`` returns where the switches of the agent
     process stand; ``read_browser`` and ``write_browser`` are its routes for
     the browser settings. Without them those routes answer 404: a host on
     its own has no switches.
@@ -396,6 +399,59 @@ def build_console_router(
         host = await get_host()
         projects = await space_call(host.space.list_projects())
         return {"success": True, "projects": [project.to_json() for project in projects]}
+
+    @router.post("/space/pick-directory")
+    async def choose_directory(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Show the system's dialog for choosing a folder, on the computer the application runs on.
+
+        Returns ``path``, or ``cancelled`` when the user closed the dialog.
+        Nothing is changed by it: what is chosen is sent back by the page
+        with whatever it is for.
+        """
+        start = (payload or {}).get("start")
+        picker = pick_directory
+        if picker is None:
+            from utils import native_directory
+
+            def picker(start_path: str) -> str | None:
+                try:
+                    return native_directory.pick_directory(start_path=start_path)
+                except native_directory.DirectoryPickerCancelled:
+                    return None
+
+        try:
+            chosen = await asyncio.to_thread(picker, start if isinstance(start, str) else "")
+        except Exception as exc:  # noqa: BLE001 - NativeDirectoryError: no dialog can be shown here
+            logger.warning("the dialog for choosing a folder could not be shown (exc_type=%s)", type(exc).__name__)
+            raise _refuse(500, "picker_unavailable") from None
+        if not chosen:
+            return {"success": True, "cancelled": True}
+        return {"success": True, "path": str(chosen)}
+
+    @router.post("/space/projects/workdir")
+    async def set_project_workdir(payload: dict[str, Any]) -> dict[str, Any]:
+        """Change where the task agents of a project work. Nothing is moved; the next commission starts there."""
+        payload = payload or {}
+        project, _ = scope(payload.get("project"))
+        workdir = payload.get("workdir")
+        if project is None or not isinstance(workdir, str):
+            raise _refuse(400, "bad_name")
+        host = await get_host()
+        try:
+            changed = await host.set_project_workdir(project, workdir)
+        except LookupError:
+            raise _refuse(404, "no_project") from None
+        except ValueError as exc:
+            code = str(exc)
+            if code not in ("not_absolute", "not_a_directory", "host_directory"):
+                # A name that is no name of a directory (``safe_segment``).
+                code = "bad_name"
+            raise _refuse(400, code) from None
+        except RuntimeError as exc:
+            if type(exc).__name__ != "ProjectBusy":
+                raise
+            raise _refuse(409, "project_busy", reason=str(exc)) from None
+        return {"success": True, "project": changed}
 
     @router.get("/space/rules")
     async def read_rules(project: str | None = None) -> dict[str, Any]:

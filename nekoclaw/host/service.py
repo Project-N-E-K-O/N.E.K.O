@@ -48,6 +48,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -99,6 +100,10 @@ async def configured_task_agent_model() -> dict[str, Any] | None:
         "api_key": config.get("api_key"),
         "provider_type": config.get("provider_type"),
     }
+
+
+class ProjectBusy(RuntimeError):
+    """Something is at work in a project, so where it works cannot be changed now. Its text is why (a code)."""
 
 
 class NekoClawHost:
@@ -590,6 +595,68 @@ class NekoClawHost:
         window = await self.model_window()
         assert window is not None
         return window
+
+    async def _project_busy(self, project: str, lanlan_name: str | None = None) -> str | None:
+        """Return why a project's working directory cannot be changed now, or None when it can.
+
+        ``"at_work"`` while a session of the project is open in a runtime
+        with a run under way, waiting for the user or being summed up, or
+        has a commission that is queued, at work or waiting: what is under
+        way goes on where it began. Whoever adds another way for a project
+        to be in the middle of something (a session writing in a copy of
+        the directory, a copy not brought back yet) adds it here.
+        """
+        rows = await self.ledger.find_sessions(lanlan_name=lanlan_name, project=project, limit=500)
+        for row in rows:
+            if row.session.status in ("running", "waiting", "compacting"):
+                return "at_work"
+            if any(commission.status in ("queued", "working", "waiting_user") for commission in row.commissions):
+                return "at_work"
+        return None
+
+    async def set_project_workdir(self, project: str, workdir: str, *, lanlan_name: str | None = None) -> dict[str, Any]:
+        """Change where the task agents of a project work, as the user asks; returns the project as a page shows it.
+
+        ``workdir`` is a directory that is there, given whole (not relative
+        to anything), and not one the host keeps its own things in. The
+        project's record and the sessions of the project that are its own
+        (not the ones a task agent started, which work where they were
+        sent) are written: the next commission starts there, and is told
+        that the directory is another. Nothing is moved; what was in the
+        old directory stays there.
+
+        Raises ``LookupError`` for a project that is not there (or is
+        archived), ``ValueError`` with a code for a directory that will not
+        do (``not_absolute``, ``not_a_directory``, ``host_directory``), and
+        ``ProjectBusy`` while something is at work in the project.
+        """
+        from nekoclaw.runtime.permissions import is_inside
+
+        if not isinstance(workdir, str) or not workdir.strip() or not os.path.isabs(workdir):
+            raise ValueError("not_absolute")
+        wanted = Path(workdir)
+
+        def looked_at() -> tuple[bool, Path, Path]:
+            return wanted.is_dir(), Path(os.path.realpath(wanted)), Path(os.path.realpath(self.paths.root()))
+
+        is_directory, actual, own = await asyncio.to_thread(looked_at)
+        if not is_directory:
+            raise ValueError("not_a_directory")
+        if is_inside(actual, own) or is_inside(own, actual):
+            # The ledger, the permissions, the task agent space: not a place to work in, nor one that holds them.
+            raise ValueError("host_directory")
+        if await self.space.get_project(project) is None:
+            raise LookupError(project)
+        busy = await self._project_busy(project, lanlan_name)
+        if busy is not None:
+            raise ProjectBusy(busy)
+        changed = await self.space.set_project_workdir(project, str(wanted))
+        if changed is None:
+            raise LookupError(project)
+        rows = await self.ledger.find_sessions(lanlan_name=lanlan_name, project=project, kind="project", limit=500)
+        for row in rows:
+            await self.ledger.update_session(row.session.id, workdir=str(wanted))
+        return changed.to_json()
 
     def places(self) -> list[dict[str, Any]]:
         """Return where the host keeps what, for showing it: ``key`` and ``path``, in the order shown."""
