@@ -50,15 +50,84 @@ Existing plugins without declarations continue to work.
 
 ## Storage and management API
 
-The version-1 document contains `slots` keyed by host-generated stable IDs and
-`bindings` keyed by plugin ID, then usage ID. Each binding points to one slot ID.
-A slot contains `name`, `protocol` (`openai_chat` or `anthropic_messages`),
+The version-1 document contains `slots` keyed by host-generated stable IDs,
+`bindings` keyed by plugin ID, then usage ID, and a `seed_version` recording
+which default-slot seeding generation has been applied. Each binding points to one slot ID.
+A slot contains `name`, `source`, `protocol` (`openai_chat` or `anthropic_messages`),
 `base_url`, `model`, `api_key`, `capabilities`, `defaults`, `timeout_seconds`, and
 an optional `fallback_slot_id`. Defaults validate temperature against the selected protocol (0–1 for Anthropic,
 0–2 for OpenAI Chat), including on protocol changes. Defaults currently accept `temperature` and
 `max_output_tokens` (1–1,000,000, matching the request limit). These fields
 configure subsequent execution; saving does not make a model request or prove
 provider capabilities.
+
+### Host-follow slots
+
+`source` is `manual` (the default, preserving existing documents) or
+`host_follow`. A host-follow slot sets `host_api` to `assist` or `core` and
+stores no `base_url`, `model` or `api_key`; those belong to the main app's
+`core_config.json`. At call time the gateway resolves the slot through
+`get_model_api_config('conversation')` (assist) or `('realtime')` (core) and
+materializes an executable snapshot, so main-app provider, key and custom-API
+changes apply to the next request without notification hooks. Anthropic
+providers resolve to the `anthropic_messages` protocol automatically.
+
+An unconfigured main-app API returns `host_api_not_configured` (409). Most
+realtime core providers use WebSocket endpoints, which cannot serve chat
+requests; those return `host_api_unsupported` (409) rather than silently
+substituting the assist API. A host-follow slot's default temperature is
+limited to the protocol intersection (0–1) at save time, because the main app
+may resolve to Anthropic at any moment; the editor enforces the same limit.
+Temperature compatibility is judged on the effective request value: an
+explicit valid override works even when a legacy document carries a higher
+default, and only a request that actually exceeds the resolved protocol's
+range fails with `model_defaults_incompatible` (400) before any upstream
+request. Slot views include a read-only `host_status` summary (configured
+flag, resolved model, protocol, free-tier flag, or an error code with an
+actionable message) that never contains credentials. Connection tests resolve
+host-follow slots the same way.
+
+A host-follow fallback slot stays unresolved until a fallback actually runs,
+so an unusable backup (for example a WebSocket core) cannot reject a healthy
+primary. Fallback resolution errors are final and never cascade further.
+
+When an attempt resolves to the built-in free credentials (`free-access`), it
+consumes one unit of the shared free daily quota with source
+`plugin:<plugin_id>:<usage_id>` immediately before each upstream send —
+primary attempts, host-follow fallback attempts, internal stream re-sends and
+connection-test probes alike, each judged on the exact credential snapshot it
+will send. The reservation runs only after the request passed validation, so a
+locally rejected request (HTTP 400, no upstream send) consumes nothing. Exhaustion
+returns `agent_quota_exceeded` (429); because the attempt was rejected before
+any content reached the plugin, a configured fallback slot (for example the
+user's paid manual slot) still serves the call. This metering is independent
+of which Agent model the main app uses: a paid Agent model does not exempt
+free-tier plugin calls. User-supplied keys, whether in manual slots or a paid
+main-app API, are never metered.
+
+After a committed install, `notify_install_committed` binds still-unbound
+declared usages to a shared host-follow assist slot (reused across plugins,
+`text` + `streaming` capabilities) on a background thread, never on the event
+loop. Only usages the user has never bound or unbound are auto-bound: a
+recorded binding version marks prior user intent, so an explicit unbind
+survives updates and reinstalls. Existing bindings are never overwritten;
+usages the shared slot cannot serve stay unbound for explicit user choice.
+Auto-bind failures only log a warning and never fail the install. Note that a
+freshly installed plugin can therefore call the main app's assist API —
+including a paid user key, which is not metered — without further setup;
+unbinding a usage in the manager opts it out permanently.
+
+Two default host-follow slots — "Host assist API" (assist) and "Host core API"
+(core), both `text` + `streaming` — are seeded so the panel is usable without
+manual setup. Seeding runs best-effort at plugin-server startup and lazily on
+the first slot list or install commit, under the store's write transaction;
+during a read-only maintenance window the list still serves the existing
+document and seeding retries later. Seed IDs are deterministic and the
+document records a `seed_version`, so seeding happens exactly once: a deleted
+default is never resurrected — including by a later install's auto-bind — and
+a host API the user already covers with their own host-follow slot is not
+duplicated. The core default reports `host_api_unsupported` until the main
+app's core API is an HTTP chat endpoint; that is expected, not an error.
 
 All endpoints are served by the plugin HTTP app under `/api/model-config` and
 use its existing management access policy.

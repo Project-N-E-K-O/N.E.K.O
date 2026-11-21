@@ -807,3 +807,97 @@ def test_observation_detaches_counters_and_rejects_malformed_replacements():
         observation.observe(replacement, reported=True)
         assert observation.usage == {**USAGE, "prompt_tokens_details": {"cached_tokens": 4}}
         assert observation.usage_status == "partial"
+
+
+async def test_stream_options_retry_reserves_quota_again_via_before_send():
+    bodies = []
+    reservations = []
+
+    async def upstream(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "stream_options" in body:
+            return httpx.Response(400, json={"error": {"message": "unsupported"}})
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=ByteStream(event_bytes(openai_events()[:-1], done=True)))
+
+    async def before_send():
+        reservations.append(len(bodies))
+
+    gateway, _ = gateway_for(upstream)
+    parts = [part async for part in gateway.stream(make_slot(), request_body(stream=True), before_send=before_send)]
+    assert parts[-1] == b"data: [DONE]\n\n"
+    # The hook runs right before each real send: the first one and the retry.
+    assert reservations == [0, 1]
+    assert ["stream_options" in body for body in bodies] == [True, False]
+
+
+async def test_stream_options_retry_rejected_when_quota_exhausted():
+    bodies = []
+
+    async def upstream(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "stream_options" in body:
+            return httpx.Response(400, json={"error": {"message": "unsupported"}})
+        pytest.fail("the exhausted retry must never reach upstream")
+
+    reservations = []
+
+    async def before_send():
+        reservations.append(len(bodies))
+        if len(reservations) > 1:
+            raise ModelGatewayError("agent_quota_exceeded", "Free agent daily quota exceeded (500/500)", 429)
+
+    gateway, _ = gateway_for(upstream)
+    with pytest.raises(ModelGatewayError) as error:
+        _ = [part async for part in gateway.stream(make_slot(), request_body(stream=True), before_send=before_send)]
+    assert error.value.code == "agent_quota_exceeded"
+    assert len(bodies) == 1  # only the first send happened
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_invalid_request_never_reaches_before_send(streaming):
+    async def upstream(request):
+        pytest.fail("an invalid request must never reach upstream")
+
+    reservations = []
+
+    async def before_send():
+        reservations.append(True)
+
+    gateway, _ = gateway_for(upstream)
+    invalid = request_body(messages=[], stream=streaming)
+    with pytest.raises(ModelGatewayError) as error:
+        if streaming:
+            _ = [part async for part in gateway.stream(make_slot(), invalid, before_send=before_send)]
+        else:
+            await gateway.complete(make_slot(), invalid, before_send=before_send)
+    assert error.value.code == "invalid_request"
+    # Locally rejected requests must not reserve the shared free quota.
+    assert reservations == []
+
+
+@pytest.mark.parametrize("endpoint,user_agent", [
+    ("https://api.kimi.com/coding", "claude-code/0.1.0"),
+    ("https://api.kimi.com/coding/", "claude-code/0.1.0"),
+    ("https://api.anthropic.com", None),
+])
+def test_anthropic_headers_match_main_app_user_agent(endpoint, user_agent):
+    # Not named base_url: that collides with pytest-base-url's session fixture.
+    from plugin.server.application.model_gateway_service import _headers
+
+    headers = _headers(make_slot("anthropic_messages", base_url=endpoint))
+    if user_agent is None:
+        assert headers["User-Agent"] != "claude-code/0.1.0"
+    else:
+        # Kimi Code rejects other clients; the main app sends the same UA.
+        assert headers["User-Agent"] == user_agent
+    assert headers["x-api-key"] == SECRET
+
+
+def test_openai_headers_never_borrow_the_kimi_code_user_agent():
+    from plugin.server.application.model_gateway_service import _headers
+
+    headers = _headers(make_slot(base_url="https://api.kimi.com/coding"))
+    assert headers["User-Agent"] != "claude-code/0.1.0"

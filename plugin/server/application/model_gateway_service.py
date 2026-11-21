@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import anyio
@@ -24,6 +24,7 @@ from plugin.server.model_gateway.observation import AttemptObservation
 from plugin.server.model_gateway.request import prepare_chat_request
 from plugin.server.model_gateway.transport import decode_object, encode_sse, iter_sse_data, read_json_response
 from utils.http_client import ensure_user_agent
+from utils.llm_client.anthropic_client import _is_kimi_code_anthropic_base_url
 from plugin.utils.http_imports import ensure_httpx, load_httpx
 
 
@@ -47,6 +48,10 @@ def _headers(slot: ModelSlot) -> dict[str, str]:
     headers = ensure_user_agent({"Accept": "application/json, text/event-stream", "Content-Type": "application/json"})
     if slot.protocol == "anthropic_messages":
         headers["anthropic-version"] = "2023-06-01"
+        # Kimi Code rejects other clients; the main app's factory sends the
+        # same UA (utils/llm_client/factory.py).
+        if _is_kimi_code_anthropic_base_url(slot.base_url):
+            headers["User-Agent"] = "claude-code/0.1.0"
         if slot.api_key:
             headers["x-api-key"] = slot.api_key
     elif slot.api_key:
@@ -156,10 +161,17 @@ class ModelGatewayService:
                 finally:
                     await client.aclose()
 
-    async def complete(self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None) -> dict:
+    async def complete(
+        self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None,
+        before_send: Callable[[], Awaitable[None]] | None = None,
+    ) -> dict:
         httpx = await ensure_httpx()
         slot = slot.model_copy(deep=True)
         model_alias, payload, headers, _ = await asyncio.to_thread(_prepare, slot, body, streaming=False)
+        if before_send is not None:
+            # Only a validated request that is about to be sent reserves quota;
+            # locally rejected requests must not consume the shared allowance.
+            await before_send()
         try:
             async with self._request(slot, payload, headers, observation) as response:
                 result = await read_json_response(response)
@@ -172,7 +184,10 @@ class ModelGatewayService:
         except httpx.HTTPError as exc:
             raise ModelGatewayError("upstream_connection_error", "Could not complete the model provider request", 502) from exc
 
-    async def stream(self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None) -> AsyncIterator[bytes]:
+    async def stream(
+        self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None,
+        before_send: Callable[[], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[bytes]:
         httpx = await ensure_httpx()
         slot = slot.model_copy(deep=True)
         endpoint = _endpoint(slot)
@@ -190,6 +205,9 @@ class ModelGatewayService:
         can_retry_without_options = not is_anthropic and not include_usage and not options_unsupported
         saw_done = False
         completed = False
+        if before_send is not None:
+            # Reserve only after validation succeeded, right before the send.
+            await before_send()
         try:
             for retrying in (False, True):
                 connected = False
@@ -232,6 +250,10 @@ class ModelGatewayService:
                 _, payload, headers, _ = await asyncio.to_thread(
                     _prepare, slot, body, streaming=True, inject_stream_usage=False,
                 )
+                if before_send is not None:
+                    # The retry is a second real upstream send with the same
+                    # free credentials; it must reserve quota again or fail.
+                    await before_send()
             yield b"data: [DONE]\n\n"
         except httpx.TimeoutException as exc:
             raise ModelGatewayError("upstream_timeout", "Model provider stream timed out", 504) from exc

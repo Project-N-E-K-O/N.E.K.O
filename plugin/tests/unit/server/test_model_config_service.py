@@ -9,6 +9,7 @@ import pytest
 from plugin.config.schema import PluginModelRequirementSchema
 from plugin.server.application.model_config_service import (
     ModelConfigService,
+    host_slot_seed_id,
     load_model_requirements,
 )
 from plugin.server.domain.errors import ServerDomainError
@@ -37,7 +38,19 @@ class TempConfigManager:
 
 
 @pytest.fixture
-def config_env(tmp_path, monkeypatch):
+def host_api_unconfigured(monkeypatch):
+    """Keep host_status resolution deterministic without touching real config."""
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            return {}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+
+
+@pytest.fixture
+def config_env(tmp_path, monkeypatch, host_api_unconfigured):
     import utils.cloudsave_runtime as cloudsave
 
     cm = TempConfigManager(tmp_path)
@@ -76,11 +89,25 @@ def slot_payload(**updates):
     }
 
 
-def test_missing_config_is_empty_and_read_does_not_write(config_env):
+def test_first_list_seeds_default_host_slots_and_read_stays_read(config_env):
     cm, service, _ = config_env
-    assert service.list_slots() == {"schema_version": 1, "slots": []}
-    assert not cm.get_runtime_config_path(CONFIG_FILENAME).exists()
-    assert not cm.transactions
+    listed = service.list_slots()
+    assert listed["schema_version"] == 1
+    seeded = {slot["id"]: slot for slot in listed["slots"]}
+    assert set(seeded) == {host_slot_seed_id("assist"), host_slot_seed_id("core")}
+    for slot in seeded.values():
+        assert slot["source"] == "host_follow"
+        assert slot["base_url"] == slot["model"] == slot["api_key"] == ""
+        assert slot["capabilities"] == ["text", "streaming"]
+        assert slot["host_status"]["configured"] is False
+        assert slot["host_status"]["error_code"] == "host_api_not_configured"
+    assert seeded[host_slot_seed_id("assist")]["host_api"] == "assist"
+    assert seeded[host_slot_seed_id("core")]["host_api"] == "core"
+    assert cm.get_runtime_config_path(CONFIG_FILENAME).exists()
+    # Seeding is a one-time write; later lists never touch the store again.
+    writes = len(cm.transactions)
+    assert service.list_slots() == listed
+    assert len(cm.transactions) == writes
     assert service.get_bindings("legacy")["ready"] is True
 
 
@@ -190,7 +217,9 @@ def test_delete_requires_explicit_unbind_and_stale_binding_can_be_cleaned(config
     service.delete_binding("alpha", "analysis", 1)
     service.delete_slot(slot_id)
     assert service.store.read().bindings == {}
-    assert service.list_slots()["slots"] == []
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {
+        host_slot_seed_id("assist"), host_slot_seed_id("core"),
+    }
 
 
 def test_fallback_references_cannot_dangle_cycle_or_lose_capabilities(config_env):
@@ -316,7 +345,9 @@ def test_store_with_real_config_manager_and_write_transaction(tmp_path, monkeypa
         fresh.delete_slot("not-a-slot")
     assert error.value.code == "MODEL_SLOT_NOT_FOUND"
     fresh.delete_slot(slot_id)
-    assert fresh.list_slots()["slots"] == []
+    assert {slot["id"] for slot in fresh.list_slots()["slots"]} == {
+        host_slot_seed_id("assist"), host_slot_seed_id("core"),
+    }
 
 
 @pytest.mark.parametrize("key,preview", [
@@ -325,13 +356,14 @@ def test_store_with_real_config_manager_and_write_transaction(tmp_path, monkeypa
     ("short", "******"),
     ("", ""),
 ])
-def test_slot_returns_only_masked_preview(config_env, key, preview):
+def test_slot_returns_only_masked_preview(config_env, key, preview, host_api_unconfigured):
     _, service, _ = config_env
     created = service.create_slot(slot_payload(api_key=key))
     assert created["api_key_preview"] == preview
     assert created["api_key"] == (SECRET_MASK if key else "")
     assert service.get_slot(created["id"])["api_key_preview"] == preview
-    assert service.list_slots()["slots"][0]["api_key_preview"] == preview
+    listed = next(slot for slot in service.list_slots()["slots"] if slot["id"] == created["id"])
+    assert listed["api_key_preview"] == preview
     if key:
         service.update_slot(created["id"], {"name": "Renamed"})
         assert service.store.read().slots[created["id"]].api_key == key
@@ -346,10 +378,441 @@ def test_output_default_limit_is_validated_before_saving(config_env):
     with pytest.raises(ServerDomainError) as error:
         service.create_slot(slot_payload(defaults={"max_output_tokens": MAX_OUTPUT_TOKENS + 1}))
     assert error.value.code == "MODEL_SLOT_INVALID"
-    assert service.list_slots()["slots"] == []
+    assert all(slot["source"] == "host_follow" for slot in service.list_slots()["slots"])
     created = service.create_slot(slot_payload(defaults={"max_output_tokens": MAX_OUTPUT_TOKENS}))
     with pytest.raises(ServerDomainError):
         service.update_slot(created["id"], {"defaults": {"max_output_tokens": MAX_OUTPUT_TOKENS + 1}})
     slot = service.store.read().slots[created["id"]]
     prepared = prepare_chat_request(slot, {"model": "analysis", "messages": [{"role": "user", "content": "Hi"}]})
     assert prepared["max_completion_tokens"] == MAX_OUTPUT_TOKENS
+
+
+def host_payload(**updates):
+    return {"name": "Host assist", "source": "host_follow", "host_api": "assist", **updates}
+
+
+def test_host_follow_slot_stores_no_credentials(config_env, monkeypatch):
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            return {"model": "host-model", "base_url": "https://host.test/v1", "api_key": "sk-host"}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    _, service, _ = config_env
+    created = service.create_slot(host_payload())
+    assert created["source"] == "host_follow"
+    assert created["api_key"] == ""
+    assert created["host_status"] == {"configured": True, "model": "host-model", "protocol": "openai_chat", "free": False}
+    stored = service.store.read().slots[created["id"]]
+    assert stored.base_url == stored.model == stored.api_key == ""
+    assert "sk-host" not in json.dumps(service.list_slots())
+
+
+def test_host_follow_slot_rejects_stored_endpoint_or_key(config_env):
+    _, service, _ = config_env
+    for updates in ({"base_url": "https://x.test/v1"}, {"model": "m"}, {"api_key": "k"}, {"host_api": None}):
+        with pytest.raises(ServerDomainError) as error:
+            service.create_slot(host_payload(**updates))
+        assert error.value.code == "MODEL_SLOT_INVALID"
+    with pytest.raises(ServerDomainError):
+        service.create_slot(slot_payload(host_api="assist"))
+
+
+def test_switching_sources_clears_inapplicable_fields(config_env):
+    _, service, _ = config_env
+    manual_id = service.create_slot(slot_payload())["id"]
+    switched = service.update_slot(manual_id, {"source": "host_follow", "host_api": "assist"})
+    assert switched["base_url"] == switched["model"] == ""
+    assert switched["api_key"] == ""
+    back = service.update_slot(manual_id, {
+        "source": "manual", "protocol": "openai_chat",
+        "base_url": "https://new.test/v1", "model": "new-model", "api_key": "new-key",
+    })
+    assert back["host_api"] is None
+    assert back["model"] == "new-model"
+    with pytest.raises(ServerDomainError):
+        service.update_slot(manual_id, {"source": "manual", "base_url": "", "model": ""})
+
+
+def test_manual_endpoint_change_still_requires_key_update(config_env):
+    _, service, _ = config_env
+    slot_id = service.create_slot(slot_payload())["id"]
+    with pytest.raises(ServerDomainError) as error:
+        service.update_slot(slot_id, {"base_url": "https://other.test/v1"})
+    assert error.value.code == "MODEL_CREDENTIAL_UPDATE_REQUIRED"
+
+
+def test_ensure_host_follow_binding_creates_shared_slot_and_binds_compatible_usages(config_env):
+    cm, service, declarations = config_env
+    declarations["beta"]["vision"] = PluginModelRequirementSchema(label="Vision", capabilities=["image_input"])
+    first = service.ensure_host_follow_binding("beta")
+    assert first["bound"] == ["analysis"]
+    slot_id = first["slot_id"]
+    assert service.get_bindings("beta")["bindings"] == {"analysis": slot_id}
+    assert service.get_bindings("beta")["requirements"]["vision"]["status"] == "unbound"
+    # A second plugin reuses the same shared slot; existing bindings are untouched.
+    service.set_binding("beta", "analysis", service.create_slot(slot_payload())["id"], 1)
+    second = service.ensure_host_follow_binding("alpha")
+    assert second["slot_id"] == slot_id
+    assert second["bound"] == []  # alpha requires image_input, the shared slot is text+streaming
+    assert service.get_bindings("beta")["bindings"]["analysis"] != slot_id
+    # The two seeded defaults plus the manual slot beta was rebound to.
+    assert len(service.list_slots()["slots"]) == 3
+
+
+def test_ensure_host_follow_binding_is_idempotent_and_skips_undeclared_plugins(config_env):
+    _, service, _ = config_env
+    assert service.ensure_host_follow_binding("legacy") == {"bound": [], "slot_id": None}
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {
+        host_slot_seed_id("assist"), host_slot_seed_id("core"),
+    }
+    first = service.ensure_host_follow_binding("beta")
+    again = service.ensure_host_follow_binding("beta")
+    assert again == {"bound": [], "slot_id": first["slot_id"]}
+    assert len(service.list_slots()["slots"]) == 2
+    version = service.get_bindings("beta")["requirements"]["analysis"]["version"]
+    assert version == 1
+
+
+def test_deleted_default_slots_are_not_resurrected(config_env):
+    _, service, _ = config_env
+    service.list_slots()
+    service.delete_slot(host_slot_seed_id("core"))
+    remaining = {slot["id"] for slot in service.list_slots()["slots"]}
+    assert remaining == {host_slot_seed_id("assist")}
+    # A later install must not resurrect the deleted default either.
+    service.ensure_host_follow_binding("beta")
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == remaining
+
+
+def test_install_before_first_list_seeds_defaults_and_binds_shared_assist(config_env):
+    _, service, _ = config_env
+    result = service.ensure_host_follow_binding("beta")
+    assert result["slot_id"] == host_slot_seed_id("assist")
+    assert result["bound"] == ["analysis"]
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {
+        host_slot_seed_id("assist"), host_slot_seed_id("core"),
+    }
+    assert service.get_bindings("beta")["bindings"] == {"analysis": host_slot_seed_id("assist")}
+
+
+def test_existing_assist_slot_is_reused_without_duplicate_seed(config_env):
+    _, service, _ = config_env
+    manual_assist = service.create_slot(host_payload(name="My own assist"))["id"]
+    result = service.ensure_host_follow_binding("beta")
+    assert result["slot_id"] == manual_assist
+    slots = {slot["id"]: slot for slot in service.list_slots()["slots"]}
+    assert host_slot_seed_id("assist") not in slots  # no duplicate assist slot
+    assert host_slot_seed_id("core") in slots
+    assert service.get_bindings("beta")["bindings"] == {"analysis": manual_assist}
+
+
+def test_ensure_default_slots_is_idempotent_and_never_raises(config_env, monkeypatch):
+    cm, service, _ = config_env
+    assert service.ensure_default_slots() == {"seeded": True}
+    assert service.ensure_default_slots() == {"seeded": False}
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {
+        host_slot_seed_id("assist"), host_slot_seed_id("core"),
+    }
+    # A read-only storage window must degrade to lazy seeding, not raise.
+    import utils.cloudsave_runtime as cloudsave
+
+    fresh = ModelConfigService(ModelConfigStore(TempConfigManager(cm.config_dir.parent / "other")))
+
+    @contextmanager
+    def blocked(*args, **kwargs):
+        raise cloudsave.MaintenanceModeError("maintenance_readonly")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(cloudsave, "cloudsave_writable_transaction", blocked)
+    assert fresh.ensure_default_slots() == {"seeded": False}
+
+
+def test_concurrent_first_lists_seed_exactly_once(config_env):
+    cm, _, _ = config_env
+
+    def list_slots(_index):
+        return ModelConfigService(ModelConfigStore(cm)).list_slots()
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        results = list(executor.map(list_slots, range(12)))
+    expected = {host_slot_seed_id("assist"), host_slot_seed_id("core")}
+    for result in results:
+        assert {slot["id"] for slot in result["slots"]} == expected
+    assert set(ModelConfigStore(cm).read().slots) == expected
+
+
+def test_deleted_assist_default_is_not_recreated_by_later_install(config_env):
+    _, service, _ = config_env
+    service.list_slots()
+    service.delete_slot(host_slot_seed_id("assist"))
+    result = service.ensure_host_follow_binding("beta")
+    assert result == {"bound": [], "slot_id": None}
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {host_slot_seed_id("core")}
+    assert service.get_bindings("beta")["bindings"] == {}
+
+
+def test_list_slots_during_maintenance_serves_existing_document(config_env, monkeypatch):
+    import utils.cloudsave_runtime as cloudsave
+
+    cm, service, _ = config_env
+    # An older document with a manual slot but no seed generation recorded.
+    cm.config_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(cm.get_runtime_config_path(CONFIG_FILENAME), {
+        "schema_version": 1,
+        "slots": {"slot_" + "d" * 32: {
+            "name": "Legacy manual", "protocol": "openai_chat",
+            "base_url": "https://legacy.test/v1", "model": "legacy-model", "api_key": "legacy-key",
+        }},
+        "bindings": {}, "binding_versions": {},
+    })
+
+    @contextmanager
+    def writable(manager, **kwargs):
+        yield
+
+    @contextmanager
+    def blocked(*args, **kwargs):
+        raise cloudsave.MaintenanceModeError("maintenance_readonly")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(cloudsave, "cloudsave_writable_transaction", blocked)
+    listed = service.list_slots()
+    assert [slot["name"] for slot in listed["slots"]] == ["Legacy manual"]
+    # Seeding retries once writes are possible again.
+    monkeypatch.setattr(cloudsave, "cloudsave_writable_transaction", writable)
+    assert {slot["name"] for slot in service.list_slots()["slots"]} == {
+        "Legacy manual", "Host assist API", "Host core API",
+    }
+
+
+def test_explicit_unbind_survives_reinstall_auto_bind(config_env):
+    _, service, _ = config_env
+    first = service.ensure_host_follow_binding("beta")
+    assert first["bound"] == ["analysis"]
+    version = service.get_bindings("beta")["requirements"]["analysis"]["version"]
+    service.delete_binding("beta", "analysis", version)
+    # A later update/reinstall must not silently re-bind the usage the user
+    # explicitly unbound (it may point at the user's paid main-app key).
+    again = service.ensure_host_follow_binding("beta")
+    assert again == {"bound": [], "slot_id": first["slot_id"]}
+    assert service.get_bindings("beta")["bindings"] == {}
+
+
+@pytest.fixture
+def autobind_env(monkeypatch, tmp_path):
+    """Isolate the operation file lock and stub registry-based manifest reads."""
+    from plugin.server.application.plugins import capability_analysis_service as module
+
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "operation.lock"))
+    monkeypatch.setattr(module.analysis_service, "installed", lambda path: None)
+    return module
+
+
+@pytest.mark.host_model_autobind
+def test_install_hook_auto_bind_reads_manifest_under_operation_lock(monkeypatch, tmp_path, autobind_env):
+    import threading
+    from contextlib import contextmanager
+
+    module = autobind_env
+    events: list[str] = []
+    done = threading.Event()
+
+    @contextmanager
+    def fake_lock(stop):
+        events.append("lock")
+        try:
+            yield
+        finally:
+            events.append("unlock")
+
+    def fake_load(plugin_id):
+        events.append("read")
+        return {"analysis": object()}
+
+    def fake_bind(plugin_id, requirements):
+        events.append("bind")
+        done.set()
+
+    monkeypatch.setattr(module, "hold_plugin_operation_file_lock", fake_lock)
+    monkeypatch.setattr(module, "_load_auto_bind_requirements", fake_load)
+    monkeypatch.setattr(module, "_auto_bind_host_models", fake_bind)
+    module.notify_install_committed({
+        "install": {"installed_plugins": [{"target_dir": str(tmp_path), "target_plugin_id": "probe"}]},
+    })
+    assert done.wait(5)
+    # The manifest is read inside the lock; the config write happens after it.
+    assert events == ["lock", "read", "unlock", "bind"]
+
+
+def test_ensure_host_follow_binding_uses_preloaded_requirements(config_env):
+    _, service, declarations = config_env
+    preloaded = declarations["beta"]
+    calls = []
+    service.requirements_loader = lambda plugin_id: calls.append(plugin_id) or {}
+    # Preloaded declarations (read under the operation lock) skip the loader.
+    result = service.ensure_host_follow_binding("beta", requirements=preloaded)
+    assert calls == []
+    assert result["bound"] == ["analysis"]
+
+
+@pytest.mark.host_model_autobind
+def test_install_hook_auto_bind_runs_off_the_calling_thread(monkeypatch, autobind_env):
+    import threading
+
+    module = autobind_env
+    caller_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+    done = threading.Event()
+    monkeypatch.setattr(module, "_load_auto_bind_requirements", lambda plugin_id: {})
+
+    def fake_bind(plugin_id, requirements):
+        seen[plugin_id] = threading.get_ident()
+        done.set()
+
+    monkeypatch.setattr(module, "_auto_bind_host_models", fake_bind)
+    monkeypatch.setattr(module.analysis_service, "installed", lambda path: None)
+    module.notify_install_committed({
+        "install": {"installed_plugins": [{"target_dir": "/tmp/x", "target_plugin_id": "probe"}]},
+    })
+    assert done.wait(5), "auto-bind thread did not run"
+    assert seen["probe"] != caller_thread
+
+
+@pytest.mark.host_model_autobind
+def test_install_hook_auto_bind_failure_is_swallowed(monkeypatch, autobind_env):
+    import threading
+
+    module = autobind_env
+    done = threading.Event()
+    monkeypatch.setattr(module, "_load_auto_bind_requirements", lambda plugin_id: {})
+
+    def boom(plugin_id, requirements):
+        done.set()
+        raise RuntimeError("bind failed")
+
+    monkeypatch.setattr(module, "_auto_bind_host_models", boom)
+    monkeypatch.setattr(module.analysis_service, "installed", lambda path: None)
+    result = module.notify_install_committed({
+        "install": {"installed_plugins": [{"target_dir": "/tmp/x", "target_plugin_id": "probe"}]},
+    })
+    assert result["install"]["installed_plugins"][0]["target_plugin_id"] == "probe"
+    assert done.wait(5)
+
+
+def test_host_follow_save_rejects_temperature_above_protocol_intersection(config_env):
+    _, service, _ = config_env
+    # A successful save must never produce a slot that fails every call once
+    # the main app resolves to Anthropic: >1 is rejected at save time.
+    with pytest.raises(ServerDomainError) as error:
+        service.create_slot(host_payload(defaults={"temperature": 1.5}))
+    assert error.value.code == "MODEL_SLOT_INVALID"
+    created = service.create_slot(host_payload(defaults={"temperature": 1.0}))
+    with pytest.raises(ServerDomainError) as error:
+        service.update_slot(created["id"], {"defaults": {"temperature": 2}})
+    assert error.value.code == "MODEL_SLOT_INVALID"
+    # Manual OpenAI slots keep their own 0–2 range.
+    manual = service.create_slot(slot_payload(defaults={"temperature": 1.5}))
+    assert manual["defaults"]["temperature"] == 1.5
+
+
+def test_legacy_high_temperature_document_stays_readable_and_updatable(config_env):
+    cm, service, _ = config_env
+    slot_id = "slot_" + "e" * 32
+    cm.config_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(cm.get_runtime_config_path(CONFIG_FILENAME), {
+        "schema_version": 1, "seed_version": 1,
+        "slots": {slot_id: {
+            "name": "Legacy host", "source": "host_follow", "host_api": "assist",
+            "defaults": {"temperature": 1.5},
+        }},
+        "bindings": {}, "binding_versions": {},
+    })
+    # Reading must not reject the whole document over an unused legacy default.
+    listed = service.list_slots()
+    legacy = next(slot for slot in listed["slots"] if slot["id"] == slot_id)
+    assert legacy["defaults"]["temperature"] == 1.5
+    # An unrelated edit preserves the untouched legacy value.
+    renamed = service.update_slot(slot_id, {"name": "Renamed legacy"})
+    assert renamed["defaults"]["temperature"] == 1.5
+    assert service.store.read().slots[slot_id].defaults.temperature == 1.5
+    # Explicitly changing the default enforces the save-time intersection.
+    with pytest.raises(ServerDomainError) as error:
+        service.update_slot(slot_id, {"defaults": {"temperature": 1.8}})
+    assert error.value.code == "MODEL_SLOT_INVALID"
+    fixed = service.update_slot(slot_id, {"defaults": {"temperature": 0.7}})
+    assert fixed["defaults"]["temperature"] == 0.7
+
+
+@pytest.mark.host_model_autobind
+def test_install_hook_auto_bind_uses_manifest_id_over_directory_name(monkeypatch, tmp_path, autobind_env):
+    import threading
+
+    module = autobind_env
+    (tmp_path / "plugin.toml").write_text('[plugin]\nid = "declared_id"\n', encoding="utf-8")
+    seen: dict[str, str] = {}
+    done = threading.Event()
+
+    def fake_bind(plugin_id, requirements):
+        seen["id"] = plugin_id
+        done.set()
+
+    monkeypatch.setattr(module, "_auto_bind_host_models", fake_bind)
+    module.notify_install_committed({
+        "install": {"installed_plugins": [{"target_dir": str(tmp_path), "target_plugin_id": "directory_name"}]},
+    })
+    assert done.wait(5)
+    assert seen["id"] == "declared_id"
+
+
+@pytest.mark.host_model_autobind
+def test_install_hook_auto_bind_falls_back_to_directory_id_without_manifest(monkeypatch, tmp_path, autobind_env):
+    import threading
+
+    module = autobind_env
+    seen: dict[str, str] = {}
+    done = threading.Event()
+    monkeypatch.setattr(module, "_load_auto_bind_requirements", lambda plugin_id: {})
+
+    def fake_bind(plugin_id, requirements):
+        seen["id"] = plugin_id
+        done.set()
+
+    monkeypatch.setattr(module, "_auto_bind_host_models", fake_bind)
+    module.notify_install_committed({
+        "install": {"installed_plugins": [{"target_dir": str(tmp_path), "target_plugin_id": "directory_name"}]},
+    })
+    assert done.wait(5)
+    assert seen["id"] == "directory_name"
+
+
+@pytest.mark.host_model_autobind
+def test_install_hook_auto_bind_pins_installed_manifest_for_unregistered_plugin(monkeypatch, tmp_path, autobind_env):
+    import threading
+
+    module = autobind_env
+
+    # Directory name differs from the manifest id, and the registry does not
+    # know this install: only the pinned manifest path can resolve it.
+    install_dir = tmp_path / "demo_custom"
+    install_dir.mkdir()
+    (install_dir / "plugin.toml").write_text(
+        '[plugin]\nid = "demo"\n[plugin.models.analysis]\nlabel = "Analysis"\n', encoding="utf-8",
+    )
+    seen: dict[str, object] = {}
+    done = threading.Event()
+
+    def fake_bind(plugin_id, requirements):
+        seen["id"] = plugin_id
+        seen["usages"] = sorted(requirements)
+        done.set()
+
+    monkeypatch.setattr(module, "_auto_bind_host_models", fake_bind)
+    module.notify_install_committed({
+        "install": {"installed_plugins": [{"target_dir": str(install_dir), "target_plugin_id": "demo_custom"}]},
+    })
+    assert done.wait(5)
+    assert seen["id"] == "demo"
+    # Declarations come from the pinned manifest, read in the locked phase.
+    assert seen["usages"] == ["analysis"]

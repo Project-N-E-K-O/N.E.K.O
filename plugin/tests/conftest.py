@@ -145,6 +145,24 @@ def isolated_plugin_consent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 
 @pytest.fixture(autouse=True)
+def _no_background_host_model_autobind(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """Keep the install hook's auto-bind thread out of unrelated tests.
+
+    The daemon thread reads the freshly installed plugin directory; tests that
+    rename or remove that directory right after install() would race it
+    (Windows: WinError 5 on open handles). Tests exercising auto-bind itself
+    opt out with @pytest.mark.host_model_autobind.
+    """
+    if request.node.get_closest_marker("host_model_autobind"):
+        return
+    from plugin.server.application.plugins import capability_analysis_service
+
+    monkeypatch.setattr(
+        capability_analysis_service, "_auto_bind_host_models_safe", lambda *_a, **_k: None
+    )
+
+
+@pytest.fixture(autouse=True)
 def _clear_leaked_running_loop(request: pytest.FixtureRequest):
     """Temporarily clear any running event loop leaked by Playwright's greenlet
     so that sync tests see a clean ``asyncio.get_running_loop() → RuntimeError``

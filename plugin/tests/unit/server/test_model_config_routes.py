@@ -53,10 +53,18 @@ class TemporaryConfigManager:
 @pytest.fixture
 def model_setup(tmp_path, monkeypatch):
     from utils import cloudsave_runtime
+    import utils.config_manager as config_manager
 
     monkeypatch.setattr(
         cloudsave_runtime, "cloudsave_writable_transaction", lambda *_args, **_kwargs: nullcontext()
     )
+
+    class UnconfiguredHost:
+        def get_model_api_config(self, model_type):
+            return {}
+
+    # Seeded host-follow slots resolve host_status; keep it off live config.
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: UnconfiguredHost())
     cm = TemporaryConfigManager(tmp_path)
     requirements_threads = []
 
@@ -97,7 +105,10 @@ async def test_crud_preserves_credentials_and_main_configuration(model_client, m
 
     response = await model_client.get(f"{PREFIX}/slots")
     assert response.status_code == 200
-    assert response.json() == {"schema_version": 1, "slots": []}
+    seeded = response.json()["slots"]
+    assert response.json()["schema_version"] == 1
+    assert {slot["name"] for slot in seeded} == {"Host assist API", "Host core API"}
+    assert all(slot["source"] == "host_follow" for slot in seeded)
 
     created = await create_slot(model_client)
     assert created["api_key"] == SECRET_MASK
@@ -115,10 +126,11 @@ async def test_crud_preserves_credentials_and_main_configuration(model_client, m
     fetched = await model_client.get(f"{PREFIX}/slots/{slot_id}")
     listed = await model_client.get(f"{PREFIX}/slots")
     assert fetched.json() == updated.json()
-    assert listed.json()["slots"] == [updated.json()]
+    assert listed.json()["slots"] == seeded + [updated.json()]
     stored = json.loads((cm.root / CONFIG_FILENAME).read_text(encoding="utf-8"))
     assert stored["slots"][slot_id]["api_key"] == SECRET
-    assert cm.saved_files == [CONFIG_FILENAME, CONFIG_FILENAME]
+    # One seeding write, then the explicit create and rename.
+    assert cm.saved_files == [CONFIG_FILENAME, CONFIG_FILENAME, CONFIG_FILENAME]
     assert core_path.read_bytes() == core_data
 
 
@@ -187,7 +199,7 @@ async def test_invalid_slot_fields_are_rejected_without_echoing_secrets(model_cl
     assert response.json()["detail"]["code"] == "MODEL_SLOT_INVALID"
     assert SECRET not in response.text
     listed = await model_client.get(f"{PREFIX}/slots")
-    assert listed.json()["slots"] == []
+    assert all(slot["source"] == "host_follow" for slot in listed.json()["slots"])
 
 
 @pytest.mark.parametrize("payload", [{}, {"slot_id": 12}, {"slot_id": "slot_x", "api_key": SECRET}])

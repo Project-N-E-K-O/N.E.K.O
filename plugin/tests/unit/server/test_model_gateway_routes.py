@@ -924,3 +924,366 @@ async def test_gateway_shutdown_bounds_blocked_usage_flush(setup_gateway, monkey
             release_recording.set()
             await asyncio.gather(request, *([closing] if closing is not None else []), return_exceptions=True)
             await executor.aclose()
+
+
+HOST_SLOT_ID = "slot_" + "b" * 32
+
+
+def bind_host_slot(setup_gateway, **slot_updates):
+    fields = {
+        "name": "Host assist", "source": "host_follow", "host_api": "assist",
+        "capabilities": ["text", "streaming"],
+    }
+    fields.update(slot_updates)
+    setup_gateway.config.slots[HOST_SLOT_ID] = ModelSlot(**fields)
+    setup_gateway.config.bindings["alpha"]["analysis"] = HOST_SLOT_ID
+
+
+def patch_host_config(monkeypatch, config):
+    import utils.config_manager as config_manager
+
+    consumed = []
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            assert model_type == "conversation"
+            return dict(config)
+
+        async def aget_model_api_config(self, model_type):
+            return self.get_model_api_config(model_type)
+
+        async def aconsume_free_daily_quota(self, source="", units=1):
+            consumed.append(source)
+            return True, {"used": len(consumed), "limit": 500}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    return consumed
+
+
+async def test_host_follow_slot_resolves_main_app_credentials(http_client, setup_gateway, monkeypatch):
+    bind_host_slot(setup_gateway)
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1",
+        "api_key": SECRET, "provider_type": "openai_compatible",
+    })
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "hello"
+    assert consumed == []  # a paid main-app key is not metered
+    assert setup_gateway.config.slots[HOST_SLOT_ID].api_key == ""  # nothing copied into plugin storage
+
+
+async def test_host_follow_free_tier_consumes_agent_quota(http_client, setup_gateway, monkeypatch):
+    bind_host_slot(setup_gateway)
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access",
+    })
+
+    async def free_upstream(request):
+        assert request.headers["authorization"] == "Bearer free-access"
+        return httpx.Response(200, json=reply())
+
+    setup_gateway.upstream.handler = free_upstream
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 200
+    assert consumed == ["plugin:alpha:analysis"]
+
+
+async def test_host_follow_free_quota_exhaustion_rejects_before_upstream(http_client, setup_gateway, monkeypatch):
+    bind_host_slot(setup_gateway)
+    patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access",
+    })
+    import utils.config_manager as config_manager
+
+    class ExhaustedManager:
+        def get_model_api_config(self, model_type):
+            return {"model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access"}
+
+        async def aget_model_api_config(self, model_type):
+            return self.get_model_api_config(model_type)
+
+        async def aconsume_free_daily_quota(self, source="", units=1):
+            return False, {"used": 500, "limit": 500}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: ExhaustedManager())
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "agent_quota_exceeded"
+    assert setup_gateway.calls == []
+
+
+async def test_host_follow_unconfigured_main_api_fails_without_upstream(http_client, setup_gateway, monkeypatch):
+    bind_host_slot(setup_gateway)
+    patch_host_config(monkeypatch, {"model": "", "base_url": "", "api_key": ""})
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "host_api_not_configured"
+    assert setup_gateway.calls == []
+
+
+async def test_host_follow_websocket_core_is_rejected(http_client, setup_gateway, monkeypatch):
+    bind_host_slot(setup_gateway, host_api="core")
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            assert model_type == "realtime"
+            return {"model": "real-model", "base_url": "wss://realtime.test/core", "api_key": "k"}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "host_api_unsupported"
+    assert setup_gateway.calls == []
+
+
+async def test_unusable_host_fallback_does_not_reject_healthy_primary(http_client, setup_gateway, monkeypatch):
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            assert model_type == "realtime"
+            return {"model": "real-model", "base_url": "wss://realtime.test/core", "api_key": "k"}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    unusable = "slot_" + "c" * 32
+    setup_gateway.config.slots[unusable] = ModelSlot(
+        name="Host core API", source="host_follow", host_api="core",
+        capabilities=["text", "image_input", "streaming"],
+    )
+    setup_gateway.config.slots[SLOT_ID].fallback_slot_id = unusable
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    # The wss backup is never resolved because the manual primary succeeds.
+    assert response.status_code == 200
+    assert len(setup_gateway.calls) == 1
+
+
+async def test_free_host_fallback_consumes_quota_after_paid_primary_fails(http_client, setup_gateway, monkeypatch):
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access",
+    })
+    # Keep the binding on the paid manual primary; the free host slot is only
+    # its fallback (bind_host_slot would rebind the usage to the host slot).
+    setup_gateway.config.slots[HOST_SLOT_ID] = ModelSlot(
+        name="Host assist", source="host_follow", host_api="assist",
+        capabilities=["text", "image_input", "streaming"],
+    )
+    setup_gateway.config.slots[SLOT_ID].fallback_slot_id = HOST_SLOT_ID
+    seen_auth = []
+
+    async def failing_primary(request):
+        seen_auth.append(request.headers["authorization"])
+        if request.headers["authorization"] == "Bearer " + SECRET:
+            return httpx.Response(500, json={"error": "boom"})
+        assert request.headers["authorization"] == "Bearer free-access"
+        return httpx.Response(200, json=reply())
+
+    setup_gateway.upstream.handler = failing_primary
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 200
+    # The paid primary ran (and failed) first; only the free fallback is metered.
+    assert seen_auth[0] == "Bearer " + SECRET
+    assert "Bearer free-access" in seen_auth
+    assert consumed == ["plugin:alpha:analysis"]
+    assert [a["slot_id"] for a in setup_gateway.records[0]["attempts"]][-1] == HOST_SLOT_ID
+
+
+async def test_free_host_fallback_quota_exhaustion_is_final(http_client, setup_gateway, monkeypatch):
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            return {"model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access"}
+
+        async def aconsume_free_daily_quota(self, source="", units=1):
+            return False, {"used": 500, "limit": 500}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    # Binding stays on the paid manual primary; the free host slot is its fallback.
+    setup_gateway.config.slots[HOST_SLOT_ID] = ModelSlot(
+        name="Host assist", source="host_follow", host_api="assist",
+        capabilities=["text", "image_input", "streaming"],
+    )
+    setup_gateway.config.slots[SLOT_ID].fallback_slot_id = HOST_SLOT_ID
+    seen_auth = []
+
+    async def failing_primary(request):
+        seen_auth.append(request.headers["authorization"])
+        if request.headers["authorization"] == "Bearer " + SECRET:
+            return httpx.Response(500, json={"error": "boom"})
+        return httpx.Response(200, json=reply())
+
+    setup_gateway.upstream.handler = failing_primary
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "agent_quota_exceeded"
+    # The paid primary ran upstream (and failed); the exhausted free fallback
+    # was rejected before any request of its own.
+    assert seen_auth and set(seen_auth) == {"Bearer " + SECRET}
+    attempts = setup_gateway.records[0]["attempts"]
+    assert attempts[0]["slot_id"] == SLOT_ID
+    assert attempts[0]["upstream_started"] is True
+    assert attempts[-1]["slot_id"] == HOST_SLOT_ID
+    assert attempts[-1]["upstream_started"] is False
+    assert attempts[-1]["error_code"] == "agent_quota_exceeded"
+
+
+async def test_anthropic_host_legacy_default_rejected_only_when_effective(http_client, setup_gateway, monkeypatch):
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1",
+        "api_key": "free-access", "provider_type": "anthropic",
+    })
+    # Saving rejects >1 now; simulate a legacy document that still carries it.
+    bind_host_slot(setup_gateway, defaults={"temperature": 1.0})
+    object.__setattr__(setup_gateway.config.slots[HOST_SLOT_ID].defaults, "temperature", 1.5)
+
+    async def anthropic_upstream(request):
+        payload = json.loads(request.content)
+        assert payload["temperature"] == 0.5
+        return httpx.Response(200, json={
+            "id": "msg-1", "type": "message", "role": "assistant", "model": "real-model",
+            "content": [{"type": "text", "text": "hello"}], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 6, "output_tokens": 1},
+        })
+
+    setup_gateway.upstream.handler = anthropic_upstream
+    # An explicit valid override must succeed despite the unused legacy default.
+    ok = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body(temperature=0.5))
+    assert ok.status_code == 200, ok.text
+    assert consumed == ["plugin:alpha:analysis"]
+    # Omitting temperature falls back to the legacy default and is rejected
+    # before any upstream request. Quota is reserved only after validation,
+    # so the locally rejected request does not consume the shared allowance.
+    calls_before = len(setup_gateway.calls)
+    bad = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert bad.status_code == 400
+    assert bad.json()["error"]["code"] == "model_defaults_incompatible"
+    assert len(setup_gateway.calls) == calls_before
+    assert consumed == ["plugin:alpha:analysis"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_free_host_invalid_request_does_not_consume_quota(http_client, setup_gateway, monkeypatch, stream):
+    bind_host_slot(setup_gateway)
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access",
+    })
+    # Declared usage alias, but an empty message list fails request validation.
+    response = await http_client.post(
+        PREFIX + "/chat/completions", headers=auth(setup_gateway),
+        json=body(messages=[], stream=stream),
+    )
+    assert response.status_code == 400
+    assert setup_gateway.calls == []
+    assert consumed == []
+
+
+async def test_legacy_high_default_document_reads_and_explicit_temperature_calls(http_client, setup_gateway, monkeypatch):
+    # A document written before the save-time intersection limit must remain
+    # readable end to end, and an explicit valid temperature must still work.
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1",
+        "api_key": "free-access", "provider_type": "anthropic",
+    })
+    bind_host_slot(setup_gateway, defaults={"temperature": 1.0})
+    object.__setattr__(setup_gateway.config.slots[HOST_SLOT_ID].defaults, "temperature", 1.5)
+
+    async def anthropic_upstream(request):
+        assert json.loads(request.content)["temperature"] == 0.5
+        return httpx.Response(200, json={
+            "id": "msg-1", "type": "message", "role": "assistant", "model": "real-model",
+            "content": [{"type": "text", "text": "hello"}], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 6, "output_tokens": 1},
+        })
+
+    setup_gateway.upstream.handler = anthropic_upstream
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body(temperature=0.5))
+    assert response.status_code == 200, response.text
+    assert consumed == ["plugin:alpha:analysis"]
+
+
+async def test_exhausted_free_primary_falls_back_to_paid_manual_backup(http_client, setup_gateway, monkeypatch):
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            return {"model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access"}
+
+        async def aconsume_free_daily_quota(self, source="", units=1):
+            return False, {"used": 500, "limit": 500}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    # The default auto-bind shape: usage bound to the free host slot, with the
+    # user's paid manual slot configured as its backup for exactly this case.
+    bind_host_slot(setup_gateway)
+    setup_gateway.config.slots[HOST_SLOT_ID].fallback_slot_id = SLOT_ID
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 200, response.text
+    # Only the paid backup reached upstream; the exhausted primary sent nothing.
+    assert len(setup_gateway.calls) == 1
+    attempts = setup_gateway.records[0]["attempts"]
+    assert attempts[0]["slot_id"] == HOST_SLOT_ID
+    assert attempts[0]["upstream_started"] is False
+    assert attempts[0]["error_code"] == "agent_quota_exceeded"
+    assert attempts[-1]["slot_id"] == SLOT_ID
+    assert attempts[-1]["status"] == "success"
+
+
+async def test_legacy_disk_document_reads_through_real_store_and_explicit_temperature_calls(
+    http_client, setup_gateway, monkeypatch, tmp_path,
+):
+    # Full path: a pre-limit document on disk -> real ModelConfigStore.read()
+    # (whole-document validation) -> gateway call with an explicit temperature.
+    from contextlib import contextmanager
+
+    import utils.cloudsave_runtime as cloudsave
+    from plugin.server.infrastructure.model_config_store import CONFIG_FILENAME, ModelConfigStore
+    from utils.file_utils import atomic_write_json
+
+    class DiskConfigManager:
+        def get_runtime_config_path(self, filename):
+            return tmp_path / filename
+
+        def save_json_config(self, filename, data):
+            atomic_write_json(tmp_path / filename, data)
+
+    atomic_write_json(tmp_path / CONFIG_FILENAME, {
+        "schema_version": 1, "seed_version": 1,
+        "slots": {
+            HOST_SLOT_ID: {
+                "name": "Legacy host", "source": "host_follow", "host_api": "assist",
+                "capabilities": ["text", "streaming"],
+                "defaults": {"temperature": 1.5},
+            },
+        },
+        "bindings": {"alpha": {"analysis": HOST_SLOT_ID}},
+        "binding_versions": {"alpha": {"analysis": 1}},
+    })
+
+    @contextmanager
+    def writable(*_args, **_kwargs):
+        yield
+
+    monkeypatch.setattr(cloudsave, "cloudsave_writable_transaction", writable)
+    store = ModelConfigStore(DiskConfigManager())
+    monkeypatch.setattr(routes, "config_store", store)
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1",
+        "api_key": "free-access", "provider_type": "anthropic",
+    })
+
+    async def anthropic_upstream(request):
+        assert json.loads(request.content)["temperature"] == 0.5
+        return httpx.Response(200, json={
+            "id": "msg-1", "type": "message", "role": "assistant", "model": "real-model",
+            "content": [{"type": "text", "text": "hello"}], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 6, "output_tokens": 1},
+        })
+
+    setup_gateway.upstream.handler = anthropic_upstream
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body(temperature=0.5))
+    assert response.status_code == 200, response.text
+    assert consumed == ["plugin:alpha:analysis"]
+    # The legacy default survived the call untouched on disk.
+    assert store.read().slots[HOST_SLOT_ID].defaults.temperature == 1.5
