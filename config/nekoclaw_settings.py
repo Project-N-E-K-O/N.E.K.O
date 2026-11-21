@@ -159,7 +159,14 @@ QUERY_RECENT_SECONDS = 24 * 3600.0
 FOLLOW_UP_RECENT_SECONDS = 24 * 3600.0
 """How long after a commission a task agent worked on is over a sentence that
 adds to it still goes on with it, in its session. A sentence about something
-longer ago is a commission of its own (unless its project takes it)."""
+longer ago is a commission of its own (unless its project takes it).
+
+This is how far the guess by words reaches, not how long a session lives
+(``SESSION_SINGLE_LIFETIME_DAYS``): a sentence that only says it adds something
+is about "the one commission that ended lately", and with a longer time there
+is hardly ever just one. A longer time also takes more sentences for follow-ups
+that were not meant as such. A session that is over (above) is not gone on with
+by this either, whatever this is set to."""
 
 FOLLOW_UP_MIN_OVERLAP = 0.25
 """Least share of a sentence's own words that must occur in a commission that
@@ -481,37 +488,60 @@ this many, the most recent first, within this many tokens."""
 
 # -- summing up a session nothing is at work in -------------------------------
 
-TASK_AGENT_IDLE_COMPACT_ENABLED = False
+TASK_AGENT_IDLE_COMPACT_ENABLED = True
 """Whether the host sums up the conversation of a session that has been idle
 for a while (below), so that the commission that comes next sends a summary
-instead of all of it. Off: it is one more model request for each time, and
-what it saves depends on the provider and on whether anything comes next;
-see the design, section 17."""
+instead of all of it. On since 2026-11-21 (the owner's decision): it is one
+more model request each time, and what it saves depends on the provider and
+on whether anything comes next; see the design, section 17.2."""
 
-TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS = 3600.0
-"""How long after its last commission ended a session is summed up. Longer
-than providers keep the head of a request in their cache: summed up while
-that is kept, the next commission would lose what it could have read from
-the cache for a tenth of the price."""
+TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS = 24 * 60.0
+"""How long after its last commission ended a session is summed up, unless
+the user set another time for the model
+(``ModelCapabilityStore.set_idle_compact_after``): 24 minutes. Longer than
+providers keep the head of a request in their cache: summed up while that is
+kept, the next commission would lose what it could have read from the cache
+for a tenth of the price."""
+
+TASK_AGENT_IDLE_COMPACT_AFTER_MIN_SECONDS = 60.0
+TASK_AGENT_IDLE_COMPACT_AFTER_MAX_SECONDS = 30 * 24 * 3600.0
+"""The shortest and the longest time the user may set it to. A shorter time
+would sum a session up between two sentences of the same talk."""
 
 TASK_AGENT_IDLE_COMPACT_MIN_TOKENS = 100_000
 """How long a session's conversation has to be, as of its last request, for
 it to be summed up while idle. A shorter one costs more to sum up than its
 next requests save."""
 
-TASK_AGENT_IDLE_COMPACT_MIN_GAP_SECONDS = 6 * 3600.0
-"""Least time between two times the same session is summed up while idle."""
-
-TASK_AGENT_IDLE_COMPACTS_PER_DAY = 6
-"""Most times within 24 hours the host tells an idle session to sum itself
-up, all sessions together: each is one model request of up to the length
-of a whole conversation. Counted when the session is told to, whatever
-becomes of the summary; those on their way to it count as well."""
+TASK_AGENT_IDLE_COMPACT_MAX_FAILURES = 3
+"""How many summings up of a session in a row may fail to make a whole
+summary (the request failed, came back empty or cut off by its length, or
+the model went for a tool) before the host stops summing that session up by
+itself. Until then a failed one is not tried again at once: the next time is
+when another commission has ended in the session. A summary made, while idle
+or in the course of a commission, ends the count. Kept in memory: a host
+that is started again counts from none."""
 
 TASK_AGENT_IDLE_COMPACT_SECONDS = 300.0
 """How long one such summing up may take, the session being opened for it
 included; cut short after that, and when a commission is to be worked on in
 the session."""
+
+# -- how long a session of one commission lives --------------------------------
+
+SESSION_SINGLE_LIFETIME_DAYS = 7
+"""How long after its last commission ended a session of kind ``single`` (a
+commission that belongs to no project, with what followed it up) can still be
+gone on with: for this many days. From the day after that it is over: no note
+is handed to it, no one asks it anything, it is not woken, a commission of it
+that got stuck is not taken up again, and it is not summed up. What was said
+in it stays until the old sessions are removed
+(``SPACE_TRANSCRIPT_KEPT_SECONDS``) and ``read_session`` reads it. A session
+with a commission under way (at work, queued, waiting for the user, resting)
+is not over, whatever its age. Sessions of a project do not end this way, nor
+do the ones a task agent started for part of its work, or copies
+(``Ledger.session_alive``). Counted from when a commission in the session last
+changed its status, which is when the last one ended."""
 
 DEFERRED_COMMISSION_SECONDS = 3600.0
 """How long a deferred plugin result may stay open before the commission fails."""
