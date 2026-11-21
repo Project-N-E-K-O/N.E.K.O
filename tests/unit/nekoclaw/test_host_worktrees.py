@@ -1721,6 +1721,9 @@ async def test_cancelled_while_the_start_moves_on_puts_the_start_back(
         ("*.txt -merge\n", {"merge.default": "binary"}, True),
         ("*.txt merge=union\n", {"merge.union.driver": "cat %A"}, False),
         ("", {"merge.default": "union", "merge.union.driver": "cat %A"}, False),
+        # A driver with a name and no command: git stops the merge.
+        ("*.txt merge=demo\n", {"merge.demo.name": "Demo"}, False),
+        ("", {"merge.default": "demo", "merge.demo.name": "Demo"}, False),
     ],
     ids=[
         "attribute",
@@ -1731,6 +1734,8 @@ async def test_cancelled_while_the_start_moves_on_puts_the_start_back(
         "built-in",
         "union-overridden",
         "default-overridden",
+        "attribute-name-only",
+        "default-name-only",
     ],
 )
 async def test_probe_merge_drivers(
@@ -2271,6 +2276,9 @@ async def test_a_driver_name_that_is_not_utf8_does_not_break_probing(repo: Path,
 
 # -- review round 10 ------------------------------------------------------------
 
+# The interpreter itself: on Windows a virtual environment's python.exe is a
+# launcher that runs it as a child, which would change the tree under test.
+PYTHON = getattr(sys, "_base_executable", sys.executable)
 HOLDS_PIPES = (
     "import subprocess, sys, time\n"
     "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
@@ -2284,7 +2292,7 @@ def spawn_one_that_holds_its_pipes(monkeypatch: Any) -> list[Any]:
     spawn = asyncio.create_subprocess_exec
 
     async def holding(*command: Any, **kwargs: Any) -> Any:
-        process = await spawn(sys.executable, "-c", HOLDS_PIPES, **kwargs)
+        process = await spawn(PYTHON, "-c", HOLDS_PIPES, **kwargs)
         started.append(process)
         return process
 
@@ -2371,3 +2379,40 @@ async def test_stopping_git_is_not_cut_short_by_another_cancellation(
     with pytest.raises(asyncio.CancelledError):
         await running
     assert started[0].returncode is not None  # killed and reaped all the same
+
+
+async def test_a_reaped_process_is_not_killed_by_its_old_id(monkeypatch: Any) -> None:
+    # Its id may belong to another process by now: nothing is killed by it.
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "pass", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    await process.communicate()
+    killed = []
+    monkeypatch.setattr(worktrees, "_kill_tree", killed.append)
+    await worktrees._stop(process)
+    assert killed == []
+
+
+async def test_killing_the_tree_takes_what_git_started(monkeypatch: Any) -> None:
+    process = await asyncio.create_subprocess_exec(
+        PYTHON,
+        "-c",
+        HOLDS_PIPES,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        **({} if WINDOWS else {"start_new_session": True}),
+    )
+    import psutil
+
+    parent = psutil.Process(process.pid)
+    children: list[Any] = []
+    for _ in range(200):
+        children = parent.children(recursive=True)
+        if any("sleep(30)" in " ".join(child.cmdline()) for child in children):
+            break
+        await asyncio.sleep(0.05)
+    assert any("sleep(30)" in " ".join(child.cmdline()) for child in children)
+    await asyncio.to_thread(worktrees._kill_tree, process.pid)
+    await asyncio.wait_for(process.communicate(), 10)  # its pipes close: nothing holds them now
+    gone = await asyncio.to_thread(psutil.wait_procs, children, 10)
+    assert not gone[1]

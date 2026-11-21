@@ -359,8 +359,9 @@ class WorktreeManager:
     """Makes, lands and removes worktrees; one per host.
 
     Snapshots, landings and every change to a repository's worktrees are
-    done one at a time per repository (a lock per repository root, on the
-    event loop the manager is used on).
+    done one at a time per repository (a lock per repository, kept by this
+    manager on the event loop it is used on). Two managers, or two
+    processes, do not wait for each other: one host has one manager.
     """
 
     def __init__(self, git: str = "git") -> None:
@@ -776,11 +777,11 @@ class WorktreeManager:
         # git runs a program only for a name a driver is configured for (one
         # configured under a built-in name is found before git's own); for any
         # other name it merges as text.
-        configured = await self._git(root, "config", "--get-regexp", r"^merge\..*\.driver$", check=False)
-        theirs = {
-            line.split(" ", 1)[0][len("merge.") : -len(".driver")].encode("utf-8", "surrogateescape")
-            for line in configured.lines()
-        }
+        # Any merge.<name>.<key> makes <name> a driver of the user's, even one
+        # with no command (git then stops the merge rather than merge as text).
+        configured = await self._git(root, "config", "--get-regexp", r"^merge\..+\.[^.]+$", check=False)
+        keys = [line.split(" ", 1)[0] for line in configured.lines()]
+        theirs = {key[len("merge.") : key.rindex(".")].encode("utf-8", "surrogateescape") for key in keys}
         default = await self._git(root, "config", "--get", "merge.default", check=False)
         driver = default.stdout.strip()
         if driver in theirs:
@@ -1342,7 +1343,9 @@ async def _stop(process: asyncio.subprocess.Process) -> None:
     """
 
     async def finish() -> None:
-        await asyncio.to_thread(_kill_tree, process.pid)
+        # Only while it is not reaped is its process id surely still its own.
+        if process.returncode is None:
+            await asyncio.to_thread(_kill_tree, process.pid)
         with contextlib.suppress(ProcessLookupError):
             process.kill()
         try:
@@ -1358,19 +1361,26 @@ async def _stop(process: asyncio.subprocess.Process) -> None:
 
 
 def _kill_tree(pid: int) -> None:
-    """Kill a process and every process it started (its process group; on Windows, its tree)."""
-    if sys.platform == "win32":
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(pid)],
-                capture_output=True,
-                timeout=settings.WORKTREE_GIT_STOP_SECONDS,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                check=False,
-            )
+    """Kill a process and every process it started.
+
+    On POSIX its process group (git is started as one); on Windows its
+    descendants, found by psutil, which leaves out a process whose id was
+    reused. Called only for a process not reaped yet.
+    """
+    if sys.platform != "win32":
+        with contextlib.suppress(OSError):
+            os.killpg(pid, signal.SIGKILL)  # type: ignore[attr-defined]
         return
-    with contextlib.suppress(OSError):
-        os.killpg(pid, signal.SIGKILL)  # type: ignore[attr-defined]
+    import psutil
+
+    try:
+        parent = psutil.Process(pid)
+        family = [*parent.children(recursive=True), parent]
+    except psutil.Error:
+        return
+    for member in family:
+        with contextlib.suppress(psutil.Error):
+            member.kill()
 
 
 # -- file system helpers, run in a worker thread --------------------------------
