@@ -6,6 +6,7 @@ the next plugin request without any notification hook.
 """
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from plugin.server.domain.model_config import HOST_API_MODEL_TYPES, ModelSlot
@@ -87,6 +88,56 @@ def client_headers(protocol: str, base_url: str) -> dict[str, str]:
     if protocol == "anthropic_messages" and _is_kimi_code_anthropic_base_url(base_url):
         return {"User-Agent": "claude-code/0.1.0"}
     return {}
+
+
+def adapt_host_follow_request(slot: ModelSlot, request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    """Shape a host-follow OpenAI request the way the main app sends it.
+
+    The main app adapts every task agent call per provider/model; a slot that
+    follows the same model must send the same request or plugin calls run with
+    thinking on, ignore their output cap and miss the prompt cache. Mirrors
+    ``nekoclaw/dsh/forward.py:prepare_request`` (itself a mirror of
+    ``utils.llm_client.ChatOpenAI``):
+
+    - the output budget moves to the field the endpoint honours
+      (``get_token_limit_field``), value unchanged;
+    - the task agent extra_body (``get_agent_extra_body`` +
+      ``rewrite_router_reasoning``) is merged in, never overriding a field the
+      request already carries;
+    - provider cache headers (``get_cache_kwargs``) are returned for the send.
+
+    Manual slots and the Messages protocol pass through unchanged. The result
+    is deterministic, so the stream_options retry re-derives the same request.
+    """
+    if slot.source != "host_follow" or slot.protocol != "openai_chat":
+        return request, {}
+    from config.providers import (
+        get_agent_extra_body,
+        get_cache_kwargs,
+        get_token_limit_field,
+        rewrite_router_reasoning,
+    )
+
+    base_url = slot.base_url
+    adapted = dict(request)
+    budget_field = get_token_limit_field(base_url)
+    for field in ("max_completion_tokens", "max_tokens"):
+        # prepare_chat_request guarantees at most one budget field is present.
+        if field in adapted and field != budget_field:
+            adapted[budget_field] = adapted.pop(field)
+    extra = get_agent_extra_body(slot.model, base_url) or None
+    extra, effort = rewrite_router_reasoning(base_url, slot.model, extra)
+    if effort is not None:
+        adapted.setdefault("reasoning_effort", effort)
+    for key, value in (extra or {}).items():
+        # Explicit plugin parameters (and validated core fields) win.
+        if key not in adapted:
+            adapted[key] = copy.deepcopy(value)
+    headers = {
+        str(name): str(value)
+        for name, value in (get_cache_kwargs(base_url).get("default_headers") or {}).items()
+    }
+    return adapted, headers
 
 
 def is_free_host_key(api_key: str) -> bool:

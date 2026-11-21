@@ -79,6 +79,18 @@ materializes an executable snapshot, so main-app provider, key and custom-API
 changes apply to the next request without notification hooks. Anthropic
 providers resolve to the `anthropic_messages` protocol automatically.
 
+A host-follow OpenAI-protocol request is shaped the way the main app sends
+the same task agent model (`adapt_host_follow_request` in
+`plugin/server/infrastructure/host_model_slots.py`, mirroring
+`nekoclaw/dsh/forward.py:prepare_request`): the output budget moves to the
+field the endpoint honours (`config.providers.get_token_limit_field`, e.g.
+`max_tokens` for DeepSeek and GLM, value unchanged); the task agent
+`extra_body` (`get_agent_extra_body` + `rewrite_router_reasoning`, e.g.
+thinking off) is merged in without overriding any field the request already
+carries; and provider cache headers from `get_cache_kwargs` are added. The
+stream_options retry re-derives the same request. Manual slots and the
+Messages protocol are sent unadapted.
+
 An unconfigured main-app tier returns `host_api_not_configured` (409); a
 followed tier whose address is not HTTP(S) returns `host_api_unsupported`
 (409) rather than silently substituting another tier. A host-follow slot's default temperature is

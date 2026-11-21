@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     import httpx
 
 from plugin.server.domain.model_config import ModelSlot
-from plugin.server.infrastructure.host_model_slots import client_headers
+from plugin.server.infrastructure.host_model_slots import adapt_host_follow_request, client_headers
 from plugin.server.model_gateway import anthropic, openai
 from plugin.server.model_gateway.errors import ModelGatewayError, upstream_error
 from plugin.server.model_gateway.observation import AttemptObservation
@@ -98,6 +98,8 @@ def _prepare(
     """Validate, convert and encode once, off the HTTP event loop."""
     httpx = load_httpx()
     request = prepare_chat_request(slot, body)
+    # Host-follow slots send what the main app sends for the same model.
+    request, provider_headers = adapt_host_follow_request(slot, request)
     try:
         httpx.URL(_endpoint(slot))
     except (httpx.InvalidURL, ValueError, UnicodeError) as exc:
@@ -119,7 +121,12 @@ def _prepare(
         raise ModelGatewayError("invalid_request", "Request is not valid UTF-8 JSON") from exc
     if len(encoded) > MAX_REQUEST_BYTES:
         raise ModelGatewayError("request_too_large", "Model request exceeded the size limit", 413)
-    return body["model"], encoded, _headers(slot), include_usage
+    headers = _headers(slot)
+    for name, value in provider_headers.items():
+        # Provider headers never replace credentials or the content headers.
+        if name.lower() not in {key.lower() for key in headers}:
+            headers[name] = value
+    return body["model"], encoded, headers, include_usage
 
 
 class ModelGatewayService:
