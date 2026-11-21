@@ -36,6 +36,8 @@ def _gif_frame_count(raw: bytes) -> int:
     while offset < len(raw):
         marker = raw[offset]
         offset += 1
+        if marker == 0:
+            continue  # Tolerate zero padding between complete GIF blocks.
         if marker == 0x3b:
             if count:
                 return count
@@ -55,6 +57,9 @@ def _gif_frame_count(raw: bytes) -> int:
         packed = raw[offset + 8]
         offset += 9 + (3 * (1 << ((packed & 7) + 1)) if packed & 0x80 else 0)
         offset = skip_blocks(offset + 1)  # LZW minimum code size, then image data.
+    else:
+        if count:
+            return count  # Some encoders omit the trailer after complete frames.
     raise ValueError('invalid_stage_gif')
 
 

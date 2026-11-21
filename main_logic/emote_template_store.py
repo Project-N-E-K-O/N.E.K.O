@@ -133,11 +133,17 @@ class EmoteTemplateArchiveStore:
         textures_dir = self._entry_dir(key) / TEXTURES_DIR
         if not textures_dir.is_dir():
             return []
-        return [
-            "/".join(path.relative_to(textures_dir).parts)
-            for path in sorted(textures_dir.rglob("*"))
-            if path.is_file()
-        ]
+        paths = []
+        for path in sorted(textures_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            relative = "/".join(path.relative_to(textures_dir).parts)
+            try:
+                normalize_texture_path(relative)
+            except EmoteTemplateStoreError:
+                continue  # OS metadata and interrupted writes are not textures.
+            paths.append(relative)
+        return paths
 
     def list(self) -> list[dict]:
         """List saved copies and their actual byte sizes measured from the filesystem."""

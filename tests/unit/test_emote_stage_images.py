@@ -23,6 +23,21 @@ def test_decodes_bounded_frames_and_preserves_their_timing():
         assert sheet.getpixel((24, 8)) == (0, 0, 255, 255)
 
 
+@pytest.mark.parametrize('trailer', [b'', b'\x00\x00\x3b', b'\x00\x00'])
+def test_accepts_complete_frames_with_missing_trailer_or_zero_padding(trailer):
+    raw = _gif()
+    assert raw[-1:] == b'\x3b'
+    expected = decode_stage_gif(raw, 64)
+    actual = decode_stage_gif(raw[:-1] + trailer, 64)
+    assert actual == expected
+
+
+def test_still_rejects_truncated_frame_data():
+    raw = _gif()
+    with pytest.raises(ValueError, match='invalid_stage_gif'):
+        decode_stage_gif(raw[:-4], 64)
+
+
 def test_rejects_a_later_frame_expanding_the_canvas_before_opening_pillow(monkeypatch):
     raw = bytearray(_gif())
     descriptor = raw.rfind(b'\x2c\x00\x00\x00\x00\x10\x00\x10\x00')

@@ -154,6 +154,18 @@ def test_texture_merge_rejects_case_conflicts_without_losing_existing_files(stor
     assert store.archive_path('case').read_bytes() == _zip()
 
 
+@pytest.mark.parametrize('stray_path', ['Thumbs.db', 'StageImages/tmpXXXX', 'WardrobeSprites/part.png.tmp'])
+def test_unrelated_texture_directory_files_do_not_block_appending(store, stray_path):
+    store.save('with-cache', _zip(), [('StageImages/one.png', b'first')])
+    stray = store._entry_dir('with-cache') / 'textures' / stray_path
+    stray.parent.mkdir(parents=True, exist_ok=True)
+    stray.write_bytes(b'cache')
+    store.save_textures('with-cache', [('StageImages/two.png', b'second')])
+    assert store.texture_paths('with-cache') == ['StageImages/one.png', 'StageImages/two.png']
+    assert store.texture_path('with-cache', 'StageImages/two.png').read_bytes() == b'second'
+    assert stray.read_bytes() == b'cache'
+
+
 @pytest.mark.parametrize('limit', ['count', 'bytes'])
 def test_texture_merge_checks_the_combined_saved_inventory(store, monkeypatch, limit):
     store.save('quota', _zip(), [('StageImages/one.png', b'1234')])
