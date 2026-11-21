@@ -73,7 +73,8 @@ def win(monkeypatch):
         package.system_presence_windows = previous
 
 
-def _unlocked_session_info(module, flags):
+def _session_info_query(module, flags):
+    """Fake WTSQuerySessionInformationW; the closure keeps ``info`` alive for the pointer it hands out."""
     info = module.WTSINFOEXW()
     info.Level = 1
     info.Data.Level1.SessionFlags = flags
@@ -83,12 +84,12 @@ def _unlocked_session_info(module, flags):
         size_ref._obj.value = ctypes.sizeof(info)
         return 1
 
-    return info, query
+    return query
 
 
 def test_registration_order_and_cleanup(win):
     module, calls, impl = win
-    info, impl["WTSQuerySessionInformationW"] = _unlocked_session_info(module, module.WTS_SESSIONSTATE_UNLOCK)
+    impl["WTSQuerySessionInformationW"] = _session_info_query(module, module.WTS_SESSIONSTATE_UNLOCK)
     state = sp.SystemPresenceState()
     module._Watcher(state)._run()
 
@@ -112,8 +113,7 @@ def test_registration_order_and_cleanup(win):
 @pytest.mark.parametrize("flags, expected", [(0, True), (1, False), (-1, None)])
 def test_initial_lock_query_decoding(win, flags, expected):
     module, _calls, impl = win
-    info, query = _unlocked_session_info(module, flags)
-    impl["WTSQuerySessionInformationW"] = query
+    impl["WTSQuerySessionInformationW"] = _session_info_query(module, flags)
     wtsapi32 = ctypes.WinDLL("wtsapi32")
     assert module.query_session_locked(wtsapi32) is expected
 
