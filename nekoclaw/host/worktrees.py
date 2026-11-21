@@ -49,6 +49,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -104,9 +105,6 @@ _IN_PROGRESS = (
 
 # Environment variables that would point git at another repository, index or
 # configuration than the one asked for.
-# The merge drivers git has itself; any other is a program the user configured.
-_BUILT_IN_MERGE = frozenset({b"unspecified", b"set", b"unset", b"text", b"binary", b"union"})
-
 _REDIRECTING_ENV = frozenset(
     {
         "GIT_DIR",
@@ -465,6 +463,13 @@ class WorktreeManager:
         target = await asyncio.to_thread(_absolute, Path(path))
         worktree_id = _worktree_id(target)
         registered = any(_same_path(known, target) for known in await self._registered(found.repo_root))
+        if not registered:
+            # Its registration may have gone with a removal git gave up half
+            # way; its .git file still says whose it is.
+            common = Path(
+                (await self._git(found.repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0]
+            )
+            registered = await asyncio.to_thread(_points_into, target, common)
         if not registered or not await asyncio.to_thread(target.is_dir):
             raise WorktreeError(f"{target} is not a worktree of {found.repo_root}")
         start = await self._resolve_commit(found.repo_root, _start_ref(worktree_id))
@@ -761,23 +766,24 @@ class WorktreeManager:
         """Return why git would run a program the user configured on these paths, or None.
 
         That is a content filter (``filter`` attribute: Git LFS, git-crypt,
-        ...) or a merge driver other than git's own (``merge`` attribute, or
-        ``merge.default``). A snapshot, a merge or a checkout would run it;
+        ...) or a merge driver configured as a program (``merge`` attribute,
+        or ``merge.default``, naming a ``merge.<name>.driver``). A snapshot, a merge or a checkout would run it;
         the host does not run the user's programs, and what one makes in a
         worktree need not match the project. With ``source`` the attributes
         are read from that tree, as a checkout of it would. Returns a reason
         key and what it applies to.
         """
-        # A driver configured under a built-in name is found before git's own.
+        # git runs a program only for a name a driver is configured for (one
+        # configured under a built-in name is found before git's own); for any
+        # other name it merges as text.
         configured = await self._git(root, "config", "--get-regexp", r"^merge\..*\.driver$", check=False)
-        theirs = {line.split(" ", 1)[0][len("merge.") : -len(".driver")].encode("utf-8", "surrogateescape") for line in configured.lines()}
-
-        def users(value: bytes) -> bool:
-            return value not in _BUILT_IN_MERGE or value in theirs
-
+        theirs = {
+            line.split(" ", 1)[0][len("merge.") : -len(".driver")].encode("utf-8", "surrogateescape")
+            for line in configured.lines()
+        }
         default = await self._git(root, "config", "--get", "merge.default", check=False)
         driver = default.stdout.strip()
-        if driver and users(driver):
+        if driver in theirs:
             return MERGE_DRIVERS, f"merge.default is {_decode(driver)}"
         checked = await self._git(
             root,
@@ -795,7 +801,7 @@ class WorktreeManager:
             path, attribute, value = fields[index : index + 3]
             if attribute == b"filter" and value not in (b"unspecified", b"unset"):
                 return CONTENT_FILTERS, f"{_decode(path)} goes through a content filter (Git LFS, git-crypt, ...)"
-            if attribute == b"merge" and users(value):
+            if attribute == b"merge" and value in theirs:
                 return MERGE_DRIVERS, f"{_decode(path)} is merged by the program {_decode(value)}"
         return None
 
@@ -1224,7 +1230,10 @@ class WorktreeManager:
             GIT_NO_LAZY_FETCH="1",
         )
         environment.update(env or {})
-        extra = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+        # A group of its own, so that what git starts can be killed with it.
+        extra: dict[str, object] = (
+            {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {"start_new_session": True}
+        )
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=None if cwd is None else str(cwd),
@@ -1325,11 +1334,38 @@ async def _settle(future: asyncio.Future) -> bool:  # type: ignore[type-arg]
 
 
 async def _stop(process: asyncio.subprocess.Process) -> None:
-    """Kill ``process`` and read what is left of its output, which is what lets it be reaped, to the end."""
+    """Kill ``process`` and what it started, then read what is left of its output (which lets it be reaped).
+
+    Done even when cancelled meanwhile, but for ``WORKTREE_GIT_STOP_SECONDS``
+    at most: a process that still holds the pipes then is left behind.
+    """
+    await _to_the_end(asyncio.to_thread(_kill_tree, process.pid))
     with contextlib.suppress(ProcessLookupError):
         process.kill()
-    with contextlib.suppress(Exception):
-        await _to_the_end(process.communicate())
+    try:
+        await _to_the_end(asyncio.wait_for(process.communicate(), settings.WORKTREE_GIT_STOP_SECONDS))
+    except Exception:
+        # Left behind: its pipes are let go of rather than waited on. The
+        # transport is not public on Process, but closing it is what does it.
+        transport = getattr(process, "_transport", None)
+        if transport is not None:
+            transport.close()
+
+
+def _kill_tree(pid: int) -> None:
+    """Kill a process and every process it started (its process group; on Windows, its tree)."""
+    if sys.platform == "win32":
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                capture_output=True,
+                timeout=settings.WORKTREE_GIT_STOP_SECONDS,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                check=False,
+            )
+        return
+    with contextlib.suppress(OSError):
+        os.killpg(pid, signal.SIGKILL)  # type: ignore[attr-defined]
 
 
 # -- file system helpers, run in a worker thread --------------------------------

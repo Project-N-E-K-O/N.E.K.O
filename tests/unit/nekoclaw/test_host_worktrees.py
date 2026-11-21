@@ -1712,14 +1712,26 @@ async def test_cancelled_while_the_start_moves_on_puts_the_start_back(
 @pytest.mark.parametrize(
     ("attributes", "config", "usable"),
     [
-        ("*.txt merge=ours-driver\n", {}, False),
-        ("", {"merge.default": "ours-driver"}, False),
+        ("*.txt merge=ours-driver\n", {"merge.ours-driver.driver": "cat %A"}, False),
+        ("", {"merge.default": "ours-driver", "merge.ours-driver.driver": "cat %A"}, False),
+        # Named but not configured here: git merges these as text.
+        ("*.txt merge=ours-driver\n", {}, True),
+        ("", {"merge.default": "ours-driver"}, True),
         ("*.txt merge=union\n", {}, True),
         ("*.txt -merge\n", {"merge.default": "binary"}, True),
         ("*.txt merge=union\n", {"merge.union.driver": "cat %A"}, False),
         ("", {"merge.default": "union", "merge.union.driver": "cat %A"}, False),
     ],
-    ids=["attribute", "default", "union", "built-in", "union-overridden", "default-overridden"],
+    ids=[
+        "attribute",
+        "default",
+        "attribute-unconfigured",
+        "default-unconfigured",
+        "union",
+        "built-in",
+        "union-overridden",
+        "default-overridden",
+    ],
 )
 async def test_probe_merge_drivers(
     repo: Path, manager: WorktreeManager, attributes: str, config: dict[str, str], usable: bool
@@ -2255,3 +2267,79 @@ async def test_a_driver_name_that_is_not_utf8_does_not_break_probing(repo: Path,
     config = repo / ".git" / "config"
     config.write_bytes(config.read_bytes() + b'[merge "odd\xff"]\n\tdriver = cat %A\n')
     assert (await manager.probe(repo)).usable
+
+
+# -- review round 10 ------------------------------------------------------------
+
+HOLDS_PIPES = (
+    "import subprocess, sys, time\n"
+    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+    "time.sleep(100)\n"
+)
+
+
+def spawn_one_that_holds_its_pipes(monkeypatch: Any) -> list[Any]:
+    """Whatever git command is asked for, start a process whose child keeps its pipes open."""
+    started: list[Any] = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def holding(*command: Any, **kwargs: Any) -> Any:
+        process = await spawn(sys.executable, "-c", HOLDS_PIPES, **kwargs)
+        started.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", holding)
+    return started
+
+
+async def test_a_timeout_is_not_held_up_by_what_git_started(
+    repo: Path, manager: WorktreeManager, monkeypatch: Any
+) -> None:
+    spawn_one_that_holds_its_pipes(monkeypatch)
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_GIT_WORK_SECONDS", 1.0)
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_GIT_STOP_SECONDS", 20.0)
+    began = asyncio.get_running_loop().time()
+    with pytest.raises(worktrees.GitError):
+        await manager._git(repo, "status")
+    # What it started was killed with it: no waiting for its pipes at all.
+    assert asyncio.get_running_loop().time() - began < 8
+
+
+async def test_the_wait_after_killing_has_an_end(repo: Path, manager: WorktreeManager, monkeypatch: Any) -> None:
+    started = spawn_one_that_holds_its_pipes(monkeypatch)
+    monkeypatch.setattr(worktrees, "_kill_tree", lambda pid: None)  # as if a child got away
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_GIT_WORK_SECONDS", 1.0)
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_GIT_STOP_SECONDS", 1.0)
+    began = asyncio.get_running_loop().time()
+    with pytest.raises(worktrees.GitError):
+        await manager._git(repo, "status")
+    assert asyncio.get_running_loop().time() - began < 8
+    assert started[0]._transport.is_closing()  # its pipes let go of, not left open
+
+
+async def test_a_cancellation_is_not_held_up_by_what_git_started(
+    repo: Path, manager: WorktreeManager, monkeypatch: Any
+) -> None:
+    started = spawn_one_that_holds_its_pipes(monkeypatch)
+    running = asyncio.ensure_future(manager._git(repo, "status"))
+    while not started:
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(0.5)
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_GIT_STOP_SECONDS", 20.0)
+    began = asyncio.get_running_loop().time()
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert asyncio.get_running_loop().time() - began < 8
+
+
+async def test_a_worktree_whose_registration_went_can_be_opened_and_removed(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    await asyncio.to_thread(shutil.rmtree, _fs(repo / ".git" / "worktrees"))  # git gave up half way
+    restarted = WorktreeManager()
+    found = await restarted.open(repo, tree.path)
+    assert found.id == "w1" and found.start == tree.start
+    await restarted.remove(found)
+    assert not exists(tree.path) and git(repo, "for-each-ref", REF_PREFIX) == ""

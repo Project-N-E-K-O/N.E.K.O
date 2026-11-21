@@ -591,6 +591,12 @@ or every file (a snapshot, making or removing a worktree, a merge, writing
 the merged changes). Seconds for a repository of a few thousand files; this
 is for slow disks, scanners and much larger repositories."""
 
+WORKTREE_GIT_STOP_SECONDS = 5.0
+"""How long a git command that ran out of time, or was cancelled, is given to
+be gone after it and every process it started were killed. Its lock on the
+repository is held meanwhile, so this is short; past it the process is left
+behind and the host goes on."""
+
 # ---------------------------------------------------------------------------
 # Sessions writing to one another, and being woken
 # ---------------------------------------------------------------------------
