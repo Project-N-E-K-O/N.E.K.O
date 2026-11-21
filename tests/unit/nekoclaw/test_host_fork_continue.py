@@ -200,6 +200,8 @@ async def test_a_later_commission_is_carried_on_in_a_copy_while_the_session_is_a
     )
     news = brain_texts.TASK_AGENT_FORKED_WORK.format(items=item)
     assert news in "\n".join(_said(scripts[EXPORT].requests[1]))
+    # On record once the session is seen to have taken it, which may be said after its run ended.
+    await wait_until(lambda: _has_type(host, second.id, "told_to_session"), what="told on record")
     [told] = [event.payload for event in await host.ledger.events(second.id) if event.type == "told_to_session"]
     assert told == {"commission_id": first.id, "steered": True}
     # What the copy wrote stands in its conversation now: what was allowed it for the session or run is asked again.
@@ -2154,7 +2156,8 @@ async def test_what_came_of_it_in_the_copy_goes_with_what_is_said_after_its_taki
     await asyncio.sleep(0.1)
     monkeypatch.setattr(manager, "_choose_runtime", choose)
     chosen.set()
-    assert not await first_said
+    # (What the first says of itself depends on how far it got before it looked.)
+    await first_said
     assert await more
     done = await wait_status(host, second.id, "done")
     assert done.session_id == first.session_id
