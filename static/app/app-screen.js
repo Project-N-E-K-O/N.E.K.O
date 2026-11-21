@@ -1602,22 +1602,7 @@
         var msg = { action: 'stream_data', data: dataUrl, input_type: input_type, live_share: true };
         // 仅屏幕分享可能包含 Avatar；移动相机拍的是现实画面，无 Avatar
         if (input_type === 'screen') {
-            var captureType;
-            if (typeof explicitCaptureType !== 'undefined') {
-                // 单帧路径的画面可能来自缓存流 / 原生帧 / 后端整屏兜底，三者互相回退。
-                // 发送时的 S.screenCaptureStream / S.selectedScreenSourceId 描述的是
-                // 「本会话配置抓什么」，不是「这一帧抓到了什么」，推不出来。
-                captureType = explicitCaptureType;
-            } else if (sourceId) {
-                // 原生帧按显式源判定。
-                captureType = detectScreenshotCaptureType(null, sourceId);
-            } else {
-                // 有前端流时按流/已选源判定；两者都没有时按全屏处理，
-                // 持续屏幕分享不会再进入后端整屏截图轮询。
-                captureType = S.screenCaptureStream
-                    ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
-                    : 'screen';
-            }
+            var captureType = resolveStreamFrameCaptureType(sourceId, explicitCaptureType);
             var avatarPos = getAvatarScreenPosition(captureType);
             if (avatarPos) {
                 msg.avatar_position = avatarPos;
@@ -1626,6 +1611,67 @@
         return msg;
     }
     mod.buildStreamDataMessage = buildStreamDataMessage;
+
+    /**
+     * 屏幕帧的画面来源（Avatar 标注和聊天区遮罩共用同一判据）。
+     * @param {string|null|undefined} sourceId 原生帧的显式源 ID
+     * @param {'screen'|'viewport'|null|undefined} explicitCaptureType 见 buildStreamDataMessage
+     */
+    function resolveStreamFrameCaptureType(sourceId, explicitCaptureType) {
+        if (typeof explicitCaptureType !== 'undefined') {
+            // 单帧路径的画面可能来自缓存流 / 原生帧 / 后端整屏兜底，三者互相回退。
+            // 发送时的 S.screenCaptureStream / S.selectedScreenSourceId 描述的是
+            // 「本会话配置抓什么」，不是「这一帧抓到了什么」，推不出来。
+            return explicitCaptureType;
+        }
+        if (sourceId) {
+            // 原生帧按显式源判定。
+            return detectScreenshotCaptureType(null, sourceId);
+        }
+        // 有前端流时按流/已选源判定；两者都没有时按全屏处理，
+        // 持续屏幕分享不会再进入后端整屏截图轮询。
+        return S.screenCaptureStream
+            ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
+            : 'screen';
+    }
+
+    // ======================== self-UI mask (#3474) ========================
+    // 遮罩实现在 app-capture-mask.js；模块缺失时按「拿不到区域」处理（原样发送，等同改动前）。
+    function beginScreenFrameMaskSession(inputType, hint) {
+        if (inputType !== 'screen') return null;
+        var mask = window.appCaptureMask;
+        if (!mask || typeof mask.beginMaskSession !== 'function') return null;
+        try { return mask.beginMaskSession(hint); } catch (e) { return null; }
+    }
+    mod.beginScreenFrameMaskSession = beginScreenFrameMaskSession;
+
+    /**
+     * 持续屏幕分享、原生屏幕分享、语音期间视觉心跳共用的发送前一步：
+     * 先把这一帧里 N.E.K.O 自己的聊天记录 / 选项区遮住，再构造 stream_data。
+     * 画面来源在 await 之前钉住，避免遮罩期间换源导致 Avatar 标注按新源解释旧帧。
+     *
+     * @param {{sourceId?: string|null, via?: string, session?: object}} [maskOptions]
+     * @returns {Promise<object|null>} 要发送的消息；null 表示这一帧不发
+     */
+    async function buildMaskedStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType, maskOptions) {
+        if (input_type !== 'screen') {
+            return buildStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType);
+        }
+        var captureType = resolveStreamFrameCaptureType(sourceId, explicitCaptureType);
+        var opts = maskOptions || {};
+        var maskedDataUrl = dataUrl;
+        var mask = window.appCaptureMask;
+        if (mask && typeof mask.maskFrameForModel === 'function') {
+            maskedDataUrl = await mask.maskFrameForModel(dataUrl, {
+                captureType: captureType,
+                sourceId: opts.sourceId || sourceId || null,
+                via: opts.via || (sourceId ? 'native' : 'stream')
+            }, opts.session);
+        }
+        if (!maskedDataUrl) return null;
+        return buildStreamDataMessage(maskedDataUrl, input_type, sourceId, captureType);
+    }
+    mod.buildMaskedStreamDataMessage = buildMaskedStreamDataMessage;
 
     function getLiveVisionStreamBlockedReason(inputType) {
         if (inputType !== 'screen' && inputType !== 'camera') {
@@ -1712,9 +1758,20 @@
                     return;
                 }
                 if (!isCurrentStream()) return;
+                // 同一帧的源 ID 在抓帧时钉住；截图前后各取一次遮罩区域（#3474）。
+                var frameSourceId = S.selectedScreenSourceId || null;
+                var maskSession = beginScreenFrameMaskSession(input_type, { sourceId: frameSourceId, via: 'stream' });
                 var frame = captureCanvasFrame(video, 0.8);
                 if (frame && frame.dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                    S.socket.send(JSON.stringify(buildStreamDataMessage(frame.dataUrl, input_type)));
+                    var frameMessage = await buildMaskedStreamDataMessage(
+                        frame.dataUrl, input_type, undefined, undefined,
+                        { sourceId: frameSourceId, via: 'stream', session: maskSession }
+                    );
+                    // 遮罩期间可能停止 / 换源 / 断线：旧帧不能落到新会话里。
+                    if (!frameMessage || !isCurrentStream()) return;
+                    if (!canSendLiveVisionStreamFrame(input_type)) return;
+                    if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+                    S.socket.send(JSON.stringify(frameMessage));
 
                     // 刷新最后使用时间，防止活跃屏幕分享被误释放
                     if (isCurrentStream()) {
@@ -1779,6 +1836,7 @@
                 await stopScreenSharing(true);
                 return false;
             }
+            var maskSession = beginScreenFrameMaskSession(inputType, { sourceId: sourceId, via: 'native' });
             var result = await window.captureDesktopSourceWithTimeout(
                 provider,
                 'captureSourceAsDataUrl',
@@ -1811,10 +1869,15 @@
             if (!streamDataUrl) {
                 throw new Error('Native screen capture image conversion failed');
             }
+            // 遮住聊天记录 / 选项区后才发（#3474）；遮罩是异步的，回来后重新确认会话仍有效。
+            var nativeMessage = await buildMaskedStreamDataMessage(
+                streamDataUrl, inputType, sourceId, undefined,
+                { sourceId: sourceId, via: 'native', session: maskSession }
+            );
+            if (!isCurrentNativeCapture()) return false;
+            if (!nativeMessage) return true;
             if (canSendLiveVisionStreamFrame(inputType) && isCaptureSocketOpen()) {
-                captureSocket.send(JSON.stringify(
-                    buildStreamDataMessage(streamDataUrl, inputType, sourceId)
-                ));
+                captureSocket.send(JSON.stringify(nativeMessage));
             } else if (isCurrentNativeCapture()) {
                 stopScreening();
                 return false;
