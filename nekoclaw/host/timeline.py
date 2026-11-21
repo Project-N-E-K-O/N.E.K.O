@@ -527,9 +527,10 @@ def read_waits(
             # user: one that rests, or is queued itself, let it go.
             if holder is not None and (holder["status"] == "queued" or holder["resting_since"] is not None):
                 holder = None
-        since = max(
-            [row["created_at"], *(item[1] for item in (last_status, last_queued) if item is not None)]
-        )
+        # Since the last of the two that was written (not the latest time:
+        # the clock may have gone back), or since it was filed.
+        last = max((item for item in (last_status, last_queued) if item is not None), key=lambda item: item[0], default=None)
+        since = last[1] if last is not None else row["created_at"]
         if holder is not None:
             target = {**_session(holder["session_id"], holder["id"]), "project": holder["project"]}
             waits.append(_wait("queue", row, target, since, cut(_text(holder["title"]))))

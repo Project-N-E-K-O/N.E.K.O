@@ -487,6 +487,32 @@ async def test_what_is_written_later_comes_after_even_with_an_earlier_time(ledge
     assert again["entries"] == [] and not again["more"]
 
 
+@pytest.mark.parametrize("size", [1, 2])
+async def test_pages_with_the_clock_going_back_give_each_entry_once(ledger, size):
+    main = await _session(ledger, "main")
+    other = await _session(ledger, "other")
+    sender = await _working(ledger, main)
+    expected = set()
+    # Written in turn, each later one at an earlier time than the one before.
+    for round_, offset in enumerate((0, -10, -20, 5, -30)):
+        tick(ledger, offset)
+        await ledger.append_event(sender.id, "told", {"text": f"event {round_}"})
+        tick(ledger, -1)
+        await _note(ledger, sender, other.id, f"note {round_}")
+        expected |= {f"event {round_}", f"note {round_}"}
+
+    seen: list[str] = []
+    after = None
+    while True:
+        page = await ledger.timeline(after=after, limit=size)
+        seen += [entry["text"] for entry in page["entries"] if entry["kind"] in ("told", "message")]
+        after = page["next"]
+        if not page["more"]:
+            break
+
+    assert sorted(seen) == sorted(expected)
+
+
 async def test_only_what_is_new_from_the_latest(ledger):
     await _mixed(ledger)
     page = await ledger.timeline(limit=0)
@@ -652,6 +678,20 @@ async def test_queued_behind_after_it_was_at_work_before(ledger):
     [wait] = await _waits(ledger)
 
     assert (wait["kind"], wait["target"]["commission_id"], wait["since"]) == ("queue", holder.id, 1001.0)
+
+
+async def test_queued_since_the_last_it_was_queued_though_the_clock_went_back(ledger):
+    main = await _session(ledger, "main")
+    queued = await _working(ledger, main)
+    tick(ledger, 100)
+    assert (await ledger.transition(queued.id, "queued")).applied
+    tick(ledger, -200)
+    await ledger.append_event(queued.id, "queued", {"ahead": 0})
+
+    [wait] = await _waits(ledger)
+
+    # The queued event was written last, at an earlier time than the status.
+    assert (wait["kind"], wait["since"]) == ("place", 900.0)
 
 
 async def test_queued_for_a_place(ledger):
