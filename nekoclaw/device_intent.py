@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Iterator
 
 from config.nekoclaw_settings import BUILTIN_GROUP_BROWSER, BUILTIN_GROUP_KEYBOARD_MOUSE, BUILTIN_GROUPS
 
@@ -67,10 +68,21 @@ _CODE_CONTEXT = re.compile(
     r"indentation|tabs? to spaces?)\b"
 )
 _FILE_OBJECT = re.compile(r"\b(?:files?|folders?)\b|文件夹|資料夾")
+# Only the object being opened can establish a local folder target. A folder
+# mentioned later as the destination of an attachment does not locate a click.
 _OPEN_FOLDER = re.compile(
-    r"^\s*(?:(?:请|請|帮我|幫我|先|再)\s*)*(?:打开|打開|进入|進入).*?(?:文件[夹夾]|資料夾)|"
-    r"^\s*(?:please\s+)?(?:open|enter|go\s+into)\s+.*?\bfolder\b"
+    r"^\s*(?:(?:(?:请|請|帮我|幫我|先|再)\s*)*"
+    r"(?:在(?:本地|本机|本機|桌面|文件(?:资源)?管理器|檔案(?:總管|管理器)|访达|訪達)[上中里裡]?\s*)?"
+    r"(?:打开|打開|进入|進入)|"
+    r"(?:please\s+)?(?:open|enter|go\s+into)\s+)(?P<target>.*?)(?=\band\b|[并並把将將]|保存|另存|$)"
 )
+_FOLDER_NAME = re.compile(r"文件[夹夾]|資料夾|\bfolder\b")
+_LOCAL_FOLDER = re.compile(
+    r"本地|本机|本機|文件管理器|檔案管理器|\b(?:local|file manager|this pc|my computer)\b|"
+    r"(?:(?<![a-z0-9_-])downloads|下载|下載)\s*(?:文件[夹夾]|資料夾|\bfolder\b)|"
+    r"(?:文件[夹夾]|資料夾|\bfolder\b)\s*downloads\b"
+)
+_LOCAL_PATH = re.compile(r"(?:[a-z]:[\\/]|\\\\[^\\\s]+\\|(?:~|\.{1,2})[\\/]|/(?:home|users|mnt|volumes)/)")
 _UPLOAD = re.compile(r"上[传傳]|\bupload(?:ing)?\b")
 _WEB_ACTION = re.compile(
     r"打开|打開|访问|訪問|浏览(?!器)|瀏覽(?!器)|刷新|切换|切換|关闭|關閉|查看|检查|檢查|阅读|閱讀|"
@@ -109,16 +121,31 @@ _DESKTOP_TARGET = re.compile(
     r"\b(?:desktop|taskbar|start menu|system tray|file explorer|finder)\b"
 )
 _SWITCH_TARGET = re.compile(r"切[换換][到至]|[转轉]到|回到|返回|\b(?:switch(?:\s+over)?|go\s+back|return)\s+to\b")
-_SWITCH_ACTION = re.compile(r"\band\b|[并並](?:且)?")
-_SWITCH_CONTEXT = re.compile(r"\b(?:in|inside|within|on|with|from|using)\b|[在于於]|[（(]")
+_JOINED_SWITCH = re.compile(r"\band\s+(?=switch(?:\s+over)?\s+to\b)|[并並](?:且)?(?=切[换換][到至])")
+_SWITCH_ACTION = re.compile(
+    r"\band\s+(?=(?:(?:double-|right-)?click|type|press|open|use)\b)|"
+    r"[并並](?:且)?(?=[点點双雙][击擊]|[输輸]入|打[开開]|按|截)"
+)
+_SWITCH_CONTEXT = re.compile(
+    r"\s+(?P<prep>in|inside|within|on|with|from|using)\s+(?=(?:the|this|that|my|current|browser|chrome|edge|firefox)\b)|"
+    r"(?:在|位[于於])(?=(?:当前|當前|这|這|该|該)|[^\s，,。()]+(?:[里裡内內]|之中))|[（(]"
+)
 # Match the destination of the switch. Settings and language names can be
 # capitalized just like an application, so a title-cased word is not evidence.
 _APP_TARGET = re.compile(
-    r"(?:应用|應用|程序|程式|窗口|視窗|\b(?:app|application|window))\s*$|"
-    r"^\s*(?:the\s+)?(?P<name>记事本|記事本|微信|notepad|wechat|(?:microsoft\s+)?(?:excel|word)|vs\s+code)"
-    r"\s*$"
+    r"(?:应用|應用|程序|程式|窗口|視窗|\b(?:app|application|window))(?:\s+now)?\s*$|"
+    r"^\s*(?:the\s+)?window\s+showing\b|"
+    r"^\s*(?:the\s+)?(?:记事本|記事本|微信|notepad|wechat|(?:microsoft\s+)?(?:excel|word)|vs\s+code)\s*$"
 )
 _JOINED_TYPING = re.compile(r"[并並](?:且)?[输輸]入|\band\s+type\b")
+
+
+def _action_clauses(text: str) -> Iterator[str]:
+    for clause in _CLAUSE.split(text):
+        if not _NON_ACTION.search(clause):
+            # Evaluate "click ... and switch to ..." in that order. A
+            # prohibition on the combined instruction applies to both actions.
+            yield from _JOINED_SWITCH.split(clause)
 
 
 def select_device_groups(text: str, *, browser_context: bool = False) -> tuple[str, ...]:
@@ -143,9 +170,7 @@ def classify_device_intent(
     text = _QUOTED.sub(lambda m: "https:// " if m[0][1:-1].strip() == "https://" else " ", text)
     groups: set[str] = set()
     web_context = browser_context
-    for clause in _CLAUSE.split(text):
-        if _NON_ACTION.search(clause):
-            continue
+    for clause in _action_clauses(text):
         # Words like page and tabs also name source files, modules and indentation.
         # In development tasks require an actual browser or address for web tools.
         without_files = _CODE_FILE.sub(" ", clause)
@@ -158,7 +183,8 @@ def classify_device_intent(
             # A location describes where the change happens. A coordinated
             # action has its own object, e.g. "and click the desktop icon".
             parts = _SWITCH_ACTION.split(clause[switch.end():], maxsplit=1)
-            target = _SWITCH_CONTEXT.split(parts[0], maxsplit=1)[0].rstrip()
+            location = _SWITCH_CONTEXT.search(parts[0])
+            target = parts[0][:location.start()].rstrip() if location else parts[0].rstrip()
             destination = _APP_TARGET.search(target)
             desktop = _DESKTOP_TARGET.search(target)
             desktop_target = bool(desktop and desktop.end() == len(target)) or (
@@ -169,11 +195,14 @@ def classify_device_intent(
             # A setting can still be changed "in the browser"; a named
             # destination instead establishes where the user is going.
             if destination or desktop_target:
-                surface = _CODE_FILE.sub(" ", remaining)
+                # A web app can run in a browser; moving from the browser
+                # instead names the old surface, not where this app runs.
+                web_object_text = parts[0] if location and location["prep"] != "from" else target
+                surface = _CODE_FILE.sub(" ", " ".join([web_object_text, *parts[1:]]))
         # "Code" in the app name is not a request to work on source code.
         code_text = clause
-        if destination and destination["name"]:
-            code_text = clause[:switch.end()] + clause[switch.end() + destination.end():]
+        if destination:
+            code_text = clause[:switch.end()] + clause[switch.end() + len(target):]
         code = without_files != clause or bool(_CODE_CONTEXT.search(code_text))
         explicit_web = bool(_EXPLICIT_WEB.search(surface))
         web_object = bool(_WEB_OBJECT.search(surface))
@@ -191,8 +220,14 @@ def classify_device_intent(
             next_browser_context = False
             if _JOINED_TYPING.search(clause[switch.end():]):
                 desktop_action = True
-        if not (explicit_web or web_object or code) and _OPEN_FOLDER.match(clause) and not _UPLOAD.search(clause):
-            desktop_action = True
+        if not (explicit_web or web_object or code) and (opened := _OPEN_FOLDER.match(clause)) and not _UPLOAD.search(clause):
+            target = opened["target"]
+            path = _LOCAL_PATH.search(target)
+            if path or _FOLDER_NAME.search(target):
+                if not web_context or path or _LOCAL_FOLDER.search(opened[0]) or _DESKTOP_TARGET.search(opened[0]):
+                    desktop_action = True
+                else:
+                    browser = True
         # File mentions (such as a page upload) do not change where a later
         # click lands. Clicking a file itself is handled in its own clause.
         if desktop_target or desktop_action or (not web_target and screenshot) or switches_away:

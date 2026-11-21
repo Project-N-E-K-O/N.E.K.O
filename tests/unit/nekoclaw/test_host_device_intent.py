@@ -222,11 +222,21 @@ def test_receipts_can_distinguish_unrelated_input_from_an_explicit_target():
     ("切换到记事本并输入你好", (DESKTOP,), False),
     ("打开 Downloads 文件夹，再双击 setup", (DESKTOP,), False),
     ("打开文件夹 Downloads，然后双击 setup", (DESKTOP,), False),
-    ("进入文件夹 Documents，然后双击草稿", (DESKTOP,), False),
+    ("进入本地文件夹 Documents，然后双击草稿", (DESKTOP,), False),
     ("打开 Downloads 文件夹", (DESKTOP,), False),
     ("Open the Downloads folder, then double-click setup", (DESKTOP,), False),
-    ("Open the folder Documents, then double-click draft", (DESKTOP,), False),
-    ("Enter my client reports folder, then double-click draft", (DESKTOP,), False),
+    ("Open the folder Documents in File Explorer, then double-click draft", (DESKTOP,), False),
+    ("在文件管理器中打开照片文件夹，然后点击草稿", (DESKTOP,), False),
+    ("Enter my local client reports folder, then double-click draft", (DESKTOP,), False),
+    (r"打开 C:\Users\me\Documents 文件夹，再双击草稿", (DESKTOP,), False),
+    ("Open the ~/Documents folder, then double-click draft", (DESKTOP,), False),
+    ("打开 https://pan.baidu.com，然后打开 照片 文件夹，再点击下载", (BROWSER,), True),
+    ("Open the Shared folder, then click the report", (BROWSER,), True),
+    ("Open the Shared folder", (BROWSER,), True),
+    ("进入文件夹 Documents，然后点击草稿", (BROWSER,), True),
+    ("Open the email and save the attachment to my folder, then click send", (BROWSER,), True),
+    ("打开邮件并把附件保存到我的文件夹，然后点击发送", (BROWSER,), True),
+    ("Open the email and save the attachment to my Downloads folder, then click send", (BROWSER,), True),
     ('请解释“打开文件夹 Documents”的意思', (), True),
     ("The instructions say to open the Documents folder.", (), True),
     ("Open the Documents folder in this code example.", (), True),
@@ -258,3 +268,29 @@ def test_clauses_select_all_needed_tools_but_last_target_locates_the_next_click(
 
     assert classify_device_intent(text) == (groups, focus)
     assert select_device_groups("Click OK, then click Save.", browser_context=focus) == ((BROWSER,) if focus else (DESKTOP,))
+
+
+@pytest.mark.parametrize(("instruction", "target"), [
+    ("切换到关于窗口，然后点击确定", DESKTOP),
+    ("切换到合并窗口，然后点击确定", DESKTOP),
+    ("Switch to the Find and Replace window, then click OK", DESKTOP),
+    ("Switch to the Notepad window now, then click OK", DESKTOP),
+    ("Switch to the window showing the report, then click OK", DESKTOP),
+    ("Switch to VS Code window, then click Save", DESKTOP),
+    ("点击桌面图标并切换到深色模式", DESKTOP),
+    ("Click the desktop icon and switch to dark mode", DESKTOP),
+    ("Switch to Word in the browser, then click Save", BROWSER),
+    ("Switch to Word from the browser, then click Save", DESKTOP),
+])
+def test_a_switch_keeps_its_destination_name_and_ordered_actions(instruction, target):
+    from nekoclaw.device_intent import classify_device_intent
+
+    groups, focus = classify_device_intent(instruction, browser_context=True)
+    assert groups == (target,)
+    assert select_device_groups("Click OK", browser_context=focus) == (target,)
+
+
+def test_a_prohibited_click_and_switch_leave_the_original_surface_in_place():
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent("不要点击桌面图标并切换到记事本", browser_context=True) == ((), True)
