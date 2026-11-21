@@ -657,8 +657,9 @@ async def _children_of(host: Any, commission_id: str) -> bool:
     return bool(await host.ledger.select(parent_id=commission_id))
 
 
-@pytest.mark.parametrize("deny", [True, False])
-async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word_of_the_users(hosts, tmp_path, deny):
+@pytest.mark.parametrize("revoke", [None, "while_starting", "after_loan"])
+async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word_of_the_users(hosts, tmp_path, revoke):
+    deny = revoke is not None
     # The asker's session was closed while it waited (an idle runtime closes idle sessions):
     # the answer takes it up again, and opens its next turn as no word of the user's either.
     from nekoclaw.host.task_agents import _Unsaid
@@ -677,7 +678,7 @@ async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word
 
     runtime.prompt = noting
     answer = _Unsaid('[answer from "build": completed] It is under dist/.', photos.id)
-    if deny:
+    if revoke == "while_starting":
         # The answer is already queued when the receiving runtime starts.
         start = runtime.start
 
@@ -686,6 +687,17 @@ async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word
             await start(spec)
 
         runtime.start = revoke_while_starting
+    elif revoke == "after_loan":
+        check = host.permissions.check
+
+        async def revoke_after_loan(owner, category, **kwargs):
+            decision = await check(owner, category, **kwargs)
+            if getattr(kwargs.get("scope"), "resource", None) == "receive_answer":
+                assert decision.allow and host.permissions.grant_active(decision.grant_id)
+                await host.permission_store.set_mode("outside_read", "deny")
+            return decision
+
+        host.permissions.check = revoke_after_loan
     assert await host.task_agents._wake_working(photos.id, answer, reason="an answer takes it up again") is True
     await wait_until(lambda: handed, what="it being taken up again")
     [(text, human)] = handed
@@ -780,7 +792,7 @@ async def test_explicit_runtime_refusal_settles_the_answer_and_retries_once(host
             await manager._handle({**error, "serial": sent[1][0]})
         else:
             await manager._handle({"type": "taken", "session_id": asker.session_id, "inputs": session.sent})
-            await asyncio.gather(*manager._control_settlements)
+        await asyncio.gather(*manager._control_settlements)
         assert await receipts() == ["failed", "failed" if second_refusal else "completed"]
         assert len(sent) == 2
     finally:

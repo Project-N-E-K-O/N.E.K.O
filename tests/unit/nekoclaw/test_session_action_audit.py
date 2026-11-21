@@ -220,6 +220,138 @@ async def test_native_controls_reserve_and_settle_only_their_own_call(env, monke
         manager._held_by.pop(sender.id)
 
 
+async def test_failed_send_restores_the_idle_run_before_writing_its_receipt(env, monkeypatch):
+    from types import SimpleNamespace
+    from nekoclaw.host.task_agents import _Unsaid
+
+    host, (source, sender), _ = env
+    manager = host.task_agents
+    session = manager._sessions[source.id] = _Session(source.id, session_id=sender.id, run_ended=True)
+    finish = call_audit.finish_call
+    observed = []
+
+    async def refused(*args, **kwargs):
+        raise OSError("refused")
+
+    async def observe(record, status):
+        if status == "failed":
+            observed.append(session.run_ended)
+        await finish(record, status)
+
+    monkeypatch.setattr(call_audit, "finish_call", observe)
+    with pytest.raises(OSError, match="refused"):
+        await manager._send_text(SimpleNamespace(steer=refused), session, "steer", _Unsaid("answer", source.id))
+    assert observed == [True]
+
+
+async def test_a_blocked_refusal_write_does_not_hold_the_runtime_event_pump(env, monkeypatch):
+    from nekoclaw.host.task_agents import _Unsaid
+
+    host, (source, sender), _ = env
+    manager = host.task_agents
+    session = manager._sessions[source.id] = _Session(source.id, session_id=sender.id)
+    manager._held_by[sender.id] = source.id
+    parts = [_Unsaid("answer", source.id)]
+    async with manager._answer_delivery(session, parts) as render:
+        assert render(parts) == "answer"
+    session.sent = 1
+    session.numbered[1] = 1
+    writing, release = asyncio.Event(), asyncio.Event()
+    finish = call_audit.finish_call
+
+    async def blocked(record, status):
+        writing.set()
+        await release.wait()
+        await finish(record, status)
+
+    monkeypatch.setattr(call_audit, "finish_call", blocked)
+    event = {"type": "error", "session_id": sender.id, "command": "steer", "serial": 1}
+    handling = asyncio.create_task(manager._handle(event))
+    try:
+        await asyncio.wait_for(writing.wait(), timeout=5)
+        done, _ = await asyncio.wait([handling], timeout=0.2)
+        assert done
+    finally:
+        release.set()
+        await handling
+        await asyncio.gather(*manager._control_settlements)
+    assert (await trace(host, source))[-1]["status"] == "failed"
+
+
+async def test_shutdown_attempts_each_unused_copy_after_a_cleanup_failure(env, monkeypatch):
+    host, (_, sender), (_, recipient) = env
+    manager = host.task_agents
+    manager._unused_ask_copies = {s.id: s for s in (sender, recipient)}
+    attempted = []
+
+    async def discard(copy):
+        attempted.append(copy.id)
+        if copy.id == sender.id:
+            raise OSError("fixture write failure")
+
+    monkeypatch.setattr(manager, "_discard_copy", discard)
+    await manager.shutdown()
+    assert attempted == [sender.id, recipient.id]
+
+
+async def test_session_read_loan_survives_prompt_mode_changes_and_never_revives_after_deny(env):
+    from nekoclaw.host.permissions import GrantScope, SessionActionScope
+
+    host, (source, _), _ = env
+    await host.permission_store.set_mode("outside_read", "allow")
+    peer = SessionActionScope("host:session", "read_session", source.id)
+    ordinary = GrantScope("test", "file")
+    async def borrow(scope):
+        decision = await host.permissions.check(source.id, "outside_read", scope=scope, hold_once=True)
+        assert decision.allow and decision.grant_id
+        return decision.grant_id
+
+    session_loan, ordinary_loan = await borrow(peer), await borrow(ordinary)
+    for mode in ("first_ask", "always_ask"):
+        await host.permission_store.set_mode("outside_read", mode)
+        assert host.permissions.grant_active(session_loan)
+        assert not host.permissions.grant_active(ordinary_loan)
+    await host.permission_store.set_mode("outside_read", "deny")
+    assert not host.permissions.grant_active(session_loan)
+    await host.permission_store.set_mode("outside_read", "allow")
+    assert not host.permissions.grant_active(session_loan)
+    assert host.permissions.grant_active(await borrow(peer))
+
+
+async def test_unknown_answer_authority_is_not_reported_as_a_user_setting(env, monkeypatch):
+    from nekoclaw.host.permissions import DENIED_NO_ANSWER, PermissionDecision
+    from nekoclaw.host.task_agents import _Unsaid
+
+    host, (source, sender), _ = env
+    session = _Session(source.id, session_id=sender.id)
+    parts = [_Unsaid("private", source.id)]
+
+    async def unknown(*args, **kwargs):
+        return PermissionDecision(False, DENIED_NO_ANSWER)
+
+    monkeypatch.setattr(host.permissions, "check", unknown)
+    async with host.task_agents._answer_delivery(session, parts) as render:
+        assert render(parts) == "the session answer could not be authorized for delivery"
+    assert (await trace(host, source))[-1]["status"] == "denied"
+
+
+async def test_shutdown_drains_control_results_before_cancelling_unfinished_calls(env):
+    host, (source, sender), _ = env
+    manager = host.task_agents
+    manager._sessions[source.id] = _Session(source.id, session_id=sender.id)
+    manager._held_by[sender.id] = source.id
+    for tool in ("todo_write", "get_goal", "update_goal"):
+        assert (await manager._callbacks().call(sender.id, "task_control_begin", {"tool": tool, "call_id": tool}))["allow"]
+    for tool, failed in (("todo_write", False), ("get_goal", True)):
+        manager._events.put_nowait({"type": "tool_end", "session_id": sender.id, "tool_call_id": tool, "is_error": failed})
+    manager._owe_what_is_left()
+    manager._discard(source.id)
+    await asyncio.gather(*manager._control_settlements)
+    assert {r["target"]: r["status"] for r in (await trace(host, source))[1:]} == {
+        "todo_write": "completed", "get_goal": "failed", "update_goal": "cancelled",
+    }
+
+
 async def test_shutdown_waits_for_outstanding_control_cancellation(env, monkeypatch):
     host, (source, sender), _ = env
     manager = host.task_agents

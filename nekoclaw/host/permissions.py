@@ -190,6 +190,7 @@ class PermissionStore:
         # it was based on changed meanwhile.
         self._version = 0
         self._revisions: dict[tuple[str, str | None], int] = {}
+        self._session_read_denied_at = 0
         self._lock = asyncio.Lock()
 
     def _path(self) -> Path:
@@ -284,6 +285,11 @@ class PermissionStore:
             return self._revisions.get((name, slot), 0)
         return self._revisions.get((name, None), 0)
 
+    def loan_revision(self, slot: tuple[str, str | None], scope: GrantScope) -> int:
+        if slot[0] == "outside_read" and isinstance(scope, SessionActionScope):
+            return self._session_read_denied_at
+        return self.revision(*slot)
+
     async def set_mode(
         self, category: str, mode: str, key: str | None = None, *, expected_version: int | None = None,
         expected_revision: int | None = None,
@@ -320,6 +326,8 @@ class PermissionStore:
             else:
                 self._categories[name] = mode
             self._version += 1
+            if name == "outside_read" and mode == "deny" and previous != "deny":
+                self._session_read_denied_at = self._version
             # Managed transfers still ask per recipient under an "allow" setting.
             ceiling = _MODE_RANK["first_ask"] if name == "managed_delivery" else _MODE_RANK["allow"]
             tighter = min(_MODE_RANK[mode], ceiling) < min(_MODE_RANK[previous], ceiling)
@@ -611,7 +619,7 @@ class PermissionGate:
         """Last synchronous check before crossing a host-owned boundary."""
         loan = self._loans.get(grant_id) if grant_id else None
         return bool(
-            loan and loan.scope.registered() and self._store.revision(*loan.slot) == loan.revision
+            loan and loan.scope.registered() and self._store.loan_revision(loan.slot, loan.scope) == loan.revision
             and (loan.parent_id is None or loan.parent_id in self._loans)
         )
 
@@ -652,7 +660,7 @@ class PermissionGate:
         self, owner: str, root: str, slot: tuple[str, str | None], scope: GrantScope, lifetime: str,
         parent_id: str | None = None, branch: tuple[str, ...] = (),
     ) -> str:
-        loan = _Loan(uuid.uuid4().hex, owner, root, slot, scope, self._store.revision(*slot), lifetime, parent_id, branch)
+        loan = _Loan(uuid.uuid4().hex, owner, root, slot, scope, self._store.loan_revision(slot, scope), lifetime, parent_id, branch)
         self._loans[loan.id] = loan
         if lifetime != "once":
             self._shared[(owner, slot, scope)] = loan

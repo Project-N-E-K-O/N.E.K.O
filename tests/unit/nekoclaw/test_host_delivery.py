@@ -654,6 +654,16 @@ async def test_discovery_uses_the_processing_principal_and_inherited_scopes(env)
     host.delivery.register(faulty)
     assert faulty.identity not in {item.identity for item in host.delivery.discover(timer, WORK)}
 
+    for broken_mode in (False, True):
+        def partial_policy(_sender, *, one_way):
+            if one_way == broken_mode:
+                raise RuntimeError("private policy failure")
+            return True
+
+        faulty.permits = partial_policy
+        entry, = [entry for entry in host.delivery.discover(timer, WORK) if entry.identity == faulty.identity]
+        assert (entry.can_trigger, entry.can_call) == (not broken_mode, broken_mode)
+
     async def discover(ref, arguments):
         entries = {item.identity for item in host.delivery.discover(reader, PUBLIC)}
         assert public_only.identity not in entries and reader.identity in entries

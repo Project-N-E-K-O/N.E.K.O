@@ -2718,6 +2718,8 @@ class TaskAgentManager:
             yield "\n\n".join
             return
 
+        unavailable = "the session answer could not be authorized for delivery"
+
         def withheld(texts: list[str], notice: str = DENIED_BY_SETTINGS) -> str:
             return "\n\n".join(notice if isinstance(part, _Unsaid) else part for part in texts)
 
@@ -2744,7 +2746,7 @@ class TaskAgentManager:
                 if record is not None:
                     record.status, record.reason = "failed", "delivery_unavailable"
                 logger.warning("could not register answer delivery (%s)", type(exc).__name__)
-                yield lambda texts, **_: withheld(texts, "the session answer could not be authorized for delivery")
+                yield lambda texts, **_: withheld(texts, unavailable)
                 return
             grant = decision.grant_id
             stack.callback(self._permissions.release_grant, grant)
@@ -2758,6 +2760,8 @@ class TaskAgentManager:
                     session.answer_receipts[session.sent + 1] = (record, texts[0] if steer else None)
                     return "\n\n".join(texts)
                 record.status = "denied"
+                if not decision.allow and decision.reason != DENIED_BY_SETTINGS:
+                    return withheld(texts, unavailable)
                 return withheld(texts)
 
             # A prompt can start a new task. It must not inherit this delivery as
@@ -2833,12 +2837,12 @@ class TaskAgentManager:
             # By its own number: another text may have been sent meanwhile.
             failed = session.answer_receipts.pop(session.numbered.get(serial), None)
             _withdraw(session, serial)
-            if failed is not None:
-                await call_audit.finish_call(failed[0], "failed")
             if opening:
                 session.opening_sent = False
             if woke:
                 session.run_ended = True
+            if failed is not None:
+                await call_audit.finish_call(failed[0], "failed")
             raise
         return True
 
@@ -2885,6 +2889,13 @@ class TaskAgentManager:
         settlement = asyncio.create_task(call_audit.finish_call(record, status))
         self._control_settlements.add(settlement)
         settlement.add_done_callback(self._control_settlements.discard)
+
+    def _finish_control_event(self, session: _Session, event: dict[str, Any]) -> None:
+        pending = session.control_calls.pop(str(event.get("tool_call_id", "")), None)
+        if pending is not None:
+            record, grant = pending
+            self._permissions.release_grant(grant)
+            self._settle_call_soon(record, "failed" if event["is_error"] else "completed")
 
     def _close_answer_receipts(self, session: _Session) -> None:
         for record, _ in session.answer_receipts.values():
@@ -3184,13 +3195,9 @@ class TaskAgentManager:
             refused_answer = _refused_answer(session, event)
             refused = _refusal(session, event)
             if refused_answer is not None:
-                await call_audit.finish_call(refused_answer[0], "failed")
+                self._settle_call_soon(refused_answer[0], "failed")
         if kind == "tool_end" and session.control_calls:
-            pending = session.control_calls.pop(str(event["tool_call_id"]), None)
-            if pending is not None:
-                record, grant = pending
-                self._permissions.release_grant(grant)
-                await call_audit.finish_call(record, "failed" if event["is_error"] else "completed")
+            self._finish_control_event(session, event)
         if session.untaken_answer is not None and _shows_work_taken(event, session.sent):
             session.untaken_answer = None
         if kind == "taken":
@@ -8031,7 +8038,7 @@ class TaskAgentManager:
         self._held_by.clear()
         unused_copies, self._unused_ask_copies = self._unused_ask_copies, {}
         for copy in unused_copies.values():
-            await self._discard_copy(copy)
+            await recorded("unused question copy " + copy.id, lambda copy=copy: self._discard_copy(copy))
         self._unsubscribe()
         # And once more, now that no run ends any more: the sessions that
         # were closed above ended their turns meanwhile, and one whose word
@@ -8096,6 +8103,8 @@ class TaskAgentManager:
                         self._turns_owed.append((session.commission_id, *told, wakes, sorted(self._unconfirmed)))
                     else:
                         session.took.setdefault(number, []).extend(wakes)
+            elif event.get("type") == "tool_end":
+                self._finish_control_event(session, event)
             elif event.get("type") == "ended":
                 self._owe_end(session, event)
         for session in list(self._sessions.values()):

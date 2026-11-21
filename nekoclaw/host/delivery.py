@@ -169,13 +169,20 @@ class ManagedDelivery:
             try:
                 if not recipient.accepts(scopes):
                     continue
-                trigger = recipient.permits(sender.identity, one_way=True)
-                call = recipient.permits(sender.identity, one_way=False)
             except Exception:
                 continue  # A native rule's error may contain data unavailable to this sender.
+            trigger = self._permits_mode(recipient, sender.identity, one_way=True)
+            call = self._permits_mode(recipient, sender.identity, one_way=False)
             if (trigger or call) and self._connected(sender, recipient):
                 entries.append(Entry(identity, trigger, call))
         return tuple(entries)
+
+    @staticmethod
+    def _permits_mode(recipient: DeliveryAdapter, sender: str, *, one_way: bool) -> bool:
+        try:
+            return recipient.permits(sender, one_way=one_way)
+        except Exception:
+            return False
 
     def unregister(self, adapter: DeliveryAdapter) -> None:
         if self._adapters.get(adapter.identity) is adapter:
