@@ -284,8 +284,8 @@ def _build_ranked_web_prompt(
     """Render eligible links in rank order and reserve space for live context.
 
     Formatted-only records are checked against the profile like linked
-    candidates. A source whose every record is excluded is marked with
-    ``preference_exhausted`` so the caller can still run an evidence pass.
+    candidates. A source whose every record or link is excluded is marked
+    with ``preference_exhausted`` so the caller can still run an evidence pass.
     """
     from utils.tokenize import truncate_to_tokens
 
@@ -309,6 +309,15 @@ def _build_ranked_web_prompt(
                 labels.get(mode, mode),
                 [truncate_to_tokens(record, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS) for record in records],
             ))
+    if profile is not None:
+        # Linked candidates are dropped silently during ranking; flag a
+        # source whose every link is excluded so evidence can still lift it.
+        for mode in modes:
+            links = (sources.get(mode) or {}).get("links") or []
+            if links and all(
+                profile.score(mode, profile.match(mode, link)) is None for link in links
+            ):
+                sources[mode]["preference_exhausted"] = True
     fallback = _merge_phase1_parts_within_token_budget(
         [(f"--- {label} ---", records[:1]) for label, records in context_parts],
         max_tokens=PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS,

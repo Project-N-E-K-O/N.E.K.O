@@ -135,6 +135,12 @@ class SyncedChatInterest:
 
 
 def parse_synced_chat_interests(payload: object, now: int) -> list[SyncedChatInterest]:
+    """Parse an account snapshot, skipping entries this client cannot trust.
+
+    Import is additive (INSERT OR IGNORE), so a skipped entry is simply not
+    imported this cycle. Rejecting the whole snapshot instead would keep the
+    sync retrying forever on one clock-skewed or newer-version entry.
+    """
     if not isinstance(payload, list) or len(payload) > SYNC_SNAPSHOT_LIMIT:
         raise ValueError("invalid_chat_interests")
     events = []
@@ -142,7 +148,7 @@ def parse_synced_chat_interests(payload: object, now: int) -> list[SyncedChatInt
     required = set(fields)
     for value in payload:
         if not isinstance(value, dict) or set(value) - {"game"} != required:
-            raise ValueError("invalid_chat_interest")
+            continue
         event_id, feature, scope, kind, direction, at = (value[key] for key in fields)
         game = value.get("game", False)
         if (
@@ -161,7 +167,7 @@ def parse_synced_chat_interests(payload: object, now: int) -> list[SyncedChatInt
             or not 0 <= at <= now + 300
             or type(game) is not bool
         ):
-            raise ValueError("invalid_chat_interest")
+            continue
         events.append(
             SyncedChatInterest(
                 PreferenceEvent(event_id, feature, scope, kind, direction, at),

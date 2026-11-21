@@ -122,6 +122,37 @@ def test_formatted_only_source_marks_exhaustion_when_every_record_is_excluded():
     assert sources["personal"]["preference_exhausted"] is True
 
 
+@pytest.mark.parametrize("scope", ["video", "all"])
+def test_linked_source_marks_exhaustion_when_every_link_is_excluded(monkeypatch, scope):
+    monkeypatch.setattr(candidate_selection, "_should_skip_source", lambda _key: False)
+    videos = [
+        link("A woodworking tour", "https://www.youtube.com/watch?v=A234567890A", "YouTube"),
+        link("A bread recipe", "https://www.youtube.com/watch?v=B234567890B", "YouTube"),
+    ]
+    sources = {"video": {"links": videos, "formatted_content": ""}}
+    prompt, links, _, _ = service._build_ranked_web_prompt(
+        ["video"], sources,
+        profile=Profile(exclusions={(scope, "youtube")}),
+        source_weights={"video": 1.0},
+        language="en",
+    )
+    assert prompt == ""
+    assert not links
+    assert sources["video"]["preference_exhausted"] is True
+
+
+def test_cooled_links_do_not_count_as_preference_exhaustion(monkeypatch):
+    monkeypatch.setattr(candidate_selection, "_should_skip_source", lambda _key: True)
+    sources = {"video": {"links": [link("A bread recipe", "https://example.test/v")]}}
+    service._build_ranked_web_prompt(
+        ["video"], sources,
+        profile=Profile(exclusions={("all", "politics")}),
+        source_weights={"video": 1.0},
+        language="en",
+    )
+    assert not sources["video"].get("preference_exhausted")
+
+
 def test_cooldown_cannot_reenter_the_prompt_as_formatted_hot_feed(monkeypatch):
     monkeypatch.setattr(candidate_selection, "_should_skip_source", lambda _key: True)
     content = link("已推过的内容", "https://example.test/item")

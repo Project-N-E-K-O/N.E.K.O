@@ -534,6 +534,68 @@ async def test_sync_drains_upload_backlog_before_merging_account_snapshot(
 
 
 @pytest.mark.asyncio
+async def test_sync_imports_valid_snapshot_entries_and_skips_untrusted_ones(
+    tmp_path,
+    monkeypatch,
+    privacy_settings_path,
+):
+    now = int(time())
+    origin = "https://preferences-community.example.test"
+    saved = {
+        "base_url": origin,
+        "local_user_id": "account",
+        "access_token": "synthetic",
+    }
+    owner = owner_from_snapshot(saved)
+    store = RecommendationStore(tmp_path / "recommendations.sqlite3")
+    local = PreferenceEvent("a" * 64, "蛙泳换气", "all", "explicit", 1, now)
+    store.save_preferences(
+        owner["key"], [local], permissions={local.id: SearchPermission(True)},
+    )
+    remote = PreferenceEvent("e" * 64, "夜景摄影", "all", "explicit", 1, now)
+    skewed = PreferenceEvent("d" * 64, "独立解谜", "all", "explicit", 1, now + 3600)
+    newer_shape = {**asdict(remote), "id": "c" * 64, "feature": "机械键盘", "weight": 2}
+
+    def handle(request):
+        return httpx.Response(
+            200,
+            json={
+                "version": 1,
+                "revision": "f" * 64,
+                "events": [asdict(skewed), newer_shape, asdict(remote)],
+            },
+        )
+
+    @contextmanager
+    def attribution():
+        yield owner
+
+    monkeypatch.setattr(
+        preferences, "ais_privacy_mode_enabled", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(
+        "services.proactive_feedback.runtime.fetch_public_search_words",
+        AsyncMock(return_value=frozenset()),
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        runtime = ProactiveFeedbackRuntime(
+            store,
+            client=client,
+            chat_interest_origin=origin,
+            snapshot_provider=lambda: saved,
+            fenced_snapshot_provider=lambda: saved,
+            attribution_context=attribution,
+        )
+        await runtime._sync_chat_interests()
+    assert store.pending_chat_interests(owner) == []
+    assert store.local_preferences(owner).profile.features("news") == {
+        "蛙泳换气",
+        "夜景摄影",
+    }
+    assert runtime._chat_interest_revision == (owner["key"], "f" * 64)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("legacy_server", [False, True])
 async def test_account_candidates_use_verse_without_sending_interests(
     monkeypatch, legacy_server

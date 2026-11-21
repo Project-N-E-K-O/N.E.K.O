@@ -2268,7 +2268,12 @@ async def fetch_neko_community_feed(
             "User-Agent": XHH_USER_AGENT,
         }
         query: dict[str, Any] = {"cursor": None, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
-        requires_account = recommendations is not None and not recommendations.allows_guest_community
+        # Proactive rounds for a signed-in or unidentified session never fall
+        # back to the anonymous feed, so guest cards never stand in for
+        # account-ranked recommendations. The cost is
+        # that a missing, rejected or legacy (no local_user_id) session skips
+        # community for the round instead of showing guest cards.
+        requires_account =recommendations is not None and not recommendations.allows_guest_community
         access_token = ""
         if community_bearer_transport_allowed(feed_api):
             if recommendations is None:
