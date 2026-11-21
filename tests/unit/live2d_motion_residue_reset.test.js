@@ -61,6 +61,11 @@ async function fixture() {
         f.core.loadParameters();
     };
     f.frames = (count, options) => { for (let i = 0; i < count; i++) f.frame(1000 / 30, options); };
+    // 推帧直到条件成立，带上限：回归导致条件永远不成立时明确失败，而不是卡住测试进程。
+    f.framesUntil = (done, label, max = 120) => {
+        for (let i = 0; i < max && !done(); i++) f.frame();
+        assert.ok(done(), `${label} within ${max} frames`);
+    };
     f.playToEnd = async (options) => {
         assert.equal(await f.model.motion('PreviewAll', 0, 3), true);
         f.frames(20, options);
@@ -206,7 +211,7 @@ test('a motion taking over a saved parameter mid-fade composes the saved offset 
         f.apply({ ParamArmLA01: 4 });
         const index = f.core.getParameterIndex('ParamArmLA01');
         assert.equal(await f.model.motion('PreviewAll', 0, 3), true);
-        while (f.native.queueManager._motions.length > 0) f.frame();
+        f.framesUntil(() => f.native.queueManager._motions.length === 0, 'the motion queue empties');
         f.frames(2);
         assert.equal(f.manager._isMotionResidueFading(index), true, 'the residue is fading');
         const beforeTakeover = f.value('ParamArmLA01');
@@ -248,7 +253,7 @@ test('a motion starting on the frame right after a saved-parameter fade ends com
     try {
         f.apply({ ParamArmLA01: 4 });
         await f.playToEnd();
-        while (f.manager._motionResidueFade.touched.size > 0) f.frame();
+        f.framesUntil(() => f.manager._motionResidueFade.touched.size === 0, 'the residue fade finishes');
         assert.equal(f.value('ParamArmLA01'), 4);
         assert.equal(await f.model.motion('PreviewAll', 1, 3), true);
         const values = [];
@@ -282,7 +287,7 @@ test('a runtime write after the overlay removal wins over the held fade value', 
         f.manager._mouseTrackingEnabled = false;
         f.manager._updateRandomLookAt = () => {};
         assert.equal(await f.model.motion('PreviewAll', 0, 3), true);
-        while (f.native.queueManager._motions.length > 0) f.frame();
+        f.framesUntil(() => f.native.queueManager._motions.length === 0, 'the motion queue empties');
         f.frame();
         assert.equal(f.manager._isMotionResidueFading(index), true);
         // 去叠加之后、写保存值之前的运行时写入（随机视线所在位置）。
@@ -350,8 +355,8 @@ test('an expression smooth reset does not re-add a residue fade that finished be
     try {
         const index = f.core.getParameterIndex('ParamArmLA01');
         assert.equal(await f.model.motion('PreviewAll', 0, 3), true);
-        while (f.native.queueManager._motions.length > 0) f.frame();
-        while (!f.manager._isMotionResidueFading(index)) f.frame();
+        f.framesUntil(() => f.native.queueManager._motions.length === 0, 'the motion queue empties');
+        f.framesUntil(() => f.manager._isMotionResidueFading(index), 'the residue fade starts');
         const start = f.runtime.context.clock;
         while (f.runtime.context.clock - start < 250) f.frame(25);
         assert.equal(f.manager._isMotionResidueFading(index), true);
