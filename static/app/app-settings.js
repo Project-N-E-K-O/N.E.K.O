@@ -1194,6 +1194,36 @@
         }
     }
 
+    // Whether a server-merge snapshot's value for `key` (the key is in
+    // meta.serverAuthoritativeKeys and meta.serverRevision is set) is older
+    // than what this window already holds: an older server revision, an
+    // explicit local write the server has not confirmed yet, or one it
+    // confirmed at a later revision. The storage listener drops such values;
+    // sharedSwitchRevokedElsewhere uses the same rule.
+    function _serverSnapshotIsOlderForKey(meta, key) {
+        const localToken = _knownSharedKeyWrites[key];
+        const mergeToken = meta.knownKeyWrites[key];
+        let confirmedRevision = localToken
+            && Number.isInteger(localToken.confirmedRevision)
+            ? localToken.confirmedRevision
+            : null;
+        if (_sharedWriteTokensEqual(localToken, mergeToken)
+            && Number.isInteger(mergeToken.confirmedRevision)) {
+            confirmedRevision = Math.max(
+                Number.isInteger(confirmedRevision) ? confirmedRevision : 0,
+                mergeToken.confirmedRevision
+            );
+        }
+        const localServerRevision = _knownServerKeyRevisions[key];
+        return !!((Number.isInteger(_conversationSettingsRevision)
+                && meta.serverRevision < _conversationSettingsRevision)
+            || (localToken && !Number.isInteger(confirmedRevision))
+            || (Number.isInteger(confirmedRevision)
+                && meta.serverRevision < confirmedRevision)
+            || (Number.isInteger(localServerRevision)
+                && meta.serverRevision < localServerRevision));
+    }
+
     // Another window may have turned a shared switch off (for screen consent:
     // turned privacy mode on) before its storage event reached this window.
     // Returns that write's token, or null.
@@ -1235,12 +1265,28 @@
         return _unseenSharedRevocationToken('proactiveVisionEnabled');
     }
 
-    // Whether another window explicitly turned this shared boolean setting off
-    // and this window has not received that write yet. A stale "false" copied
-    // along in an unrelated save does not count.
+    // Whether another window turned this shared boolean setting off and this
+    // window has not received that write yet: an explicit write carrying the
+    // key's newer write token, or a server value another window merged (the
+    // key is server-authoritative in that snapshot and not older than what
+    // this window holds, the storage listener's rule). A stale "false" copied
+    // along in an unrelated save is neither and does not count.
     function sharedSwitchRevokedElsewhere(key) {
         if (_SHARED_SETTINGS_KEYS.indexOf(key) === -1) return false;
-        return !!_unseenSharedRevocationToken(key);
+        if (_unseenSharedRevocationToken(key)) return true;
+        let stored = null;
+        try {
+            const raw = localStorage.getItem('project_neko_settings');
+            stored = raw ? JSON.parse(raw) : null;
+        } catch (_) {
+            return false;
+        }
+        if (!stored || stored[key] !== false) return false;
+        const meta = _readSharedWriteMeta(stored);
+        if (!meta || meta.writerId === _SHARED_WRITER_ID) return false;
+        if (!Number.isInteger(meta.serverRevision)
+            || meta.serverAuthoritativeKeys.indexOf(key) === -1) return false;
+        return !_serverSnapshotIsOlderForKey(meta, key);
     }
 
     // Live screen consent this window reports to the backend and acts on
@@ -2801,36 +2847,7 @@
                         Number.isInteger(meta.serverRevision)
                         && meta.serverAuthoritativeKeys.indexOf(key) !== -1;
                     if (serverAuthoritative) {
-                        let confirmedRevision = localToken
-                            && Number.isInteger(localToken.confirmedRevision)
-                            ? localToken.confirmedRevision
-                            : null;
-                        if (_sharedWriteTokensEqual(localToken, mergeToken)
-                            && Number.isInteger(
-                                mergeToken.confirmedRevision
-                            )) {
-                            confirmedRevision = Math.max(
-                                Number.isInteger(confirmedRevision)
-                                    ? confirmedRevision
-                                    : 0,
-                                mergeToken.confirmedRevision
-                            );
-                        }
-                        const localServerRevision =
-                            _knownServerKeyRevisions[key];
-                        const serverSnapshotIsOlder =
-                            (Number.isInteger(_conversationSettingsRevision)
-                                && meta.serverRevision
-                                    < _conversationSettingsRevision)
-                            || (localToken
-                                && !Number.isInteger(confirmedRevision))
-                            || (Number.isInteger(confirmedRevision)
-                                && meta.serverRevision
-                                    < confirmedRevision)
-                            || (Number.isInteger(localServerRevision)
-                                && meta.serverRevision
-                                    < localServerRevision);
-                        if (serverSnapshotIsOlder) {
+                        if (_serverSnapshotIsOlderForKey(meta, key)) {
                             if (incoming === settings) {
                                 incoming = Object.assign({}, settings);
                             }

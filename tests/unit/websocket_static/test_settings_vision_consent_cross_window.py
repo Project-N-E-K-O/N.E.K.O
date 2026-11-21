@@ -517,6 +517,62 @@ _HARNESS = textwrap.dedent(
         'D adopts C\\'s ' + key + ' and may trigger');
     }
 
+    // The other side of staleSwitchCopy: an "off" that came from the server
+    // (another device) is a real switch-off even though the window that merged
+    // it wrote no fresh per-key token. A window opened later merges it in its
+    // boot GET and writes a server-merge snapshot; C must stop triggering
+    // before that storage event arrives.
+    async function serverSwitchOff(key) {
+      const otherModes = ['proactiveNewsChatEnabled', 'proactiveCommunityChatEnabled',
+        'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled', 'proactiveMusicEnabled',
+        'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled', 'proactiveTheaterInviteEnabled'];
+      const c = makeWindow('C');
+      await settle();
+      c.deliver();
+      c.S.proactiveChatEnabled = true;
+      c.S.proactiveVisionChatEnabled = true;
+      c.S.proactiveVisionEnabled = true;
+      for (const other of otherModes) c.S[other] = false;
+      // A second, non-vision mode keeps proactiveChatEnabled from being
+      // answered by the vision-only branch.
+      if (key === 'proactiveChatEnabled') c.S.proactiveNewsChatEnabled = true;
+      c.mod.saveSettings();
+      await settle();
+      assert(c.P.canTriggerProactively() === true, 'precondition: C may trigger');
+      assert(serverSettings[key] === true, 'precondition: the server has ' + key + ' on');
+      // Another device turns the switch off on the server.
+      serverSettings = Object.assign({}, serverSettings, { [key]: false });
+      serverRevision += 1;
+      const e = makeWindow('E');
+      await settle();
+      const merged = JSON.parse(store.get('project_neko_settings'));
+      const meta = merged._sharedWriteMeta;
+      assert(merged[key] === false && meta.writerId !== undefined
+        && meta.changedKeys.indexOf(key) === -1
+        && (meta.serverAuthoritativeKeys || []).indexOf(key) !== -1,
+        'precondition: E wrote a server-merge snapshot with ' + key + ' off: ' + JSON.stringify(meta));
+      assert(c.S[key] === true, 'precondition: C has not received it');
+      assert(c.P.canTriggerProactively() === false,
+        'a server-backed ' + key + ' "off" stops C\\'s triggers before the event arrives');
+      c.deliver();
+      await settle();
+      assert(c.S[key] === false && c.P.canTriggerProactively() === false, 'C applies it');
+      // C turns it back on and that save lands on the server. E's merge
+      // snapshot, written again late (an older server revision), is not a
+      // switch-off any more.
+      const oldMergeSnapshot = store.get('project_neko_settings');
+      e.holdPosts = true;
+      c.S[key] = true;
+      c.mod.saveSettings();
+      await settle();
+      assert(serverSettings[key] === true, 'precondition: C\\'s re-enable reached the server');
+      store.set('project_neko_settings', oldMergeSnapshot);
+      assert(JSON.parse(store.get('project_neko_settings'))[key] === false,
+        'precondition: the old server-merge "off" is back in localStorage');
+      assert(c.P.canTriggerProactively() === true,
+        'an older server-merge ' + key + ' "off" does not stop C');
+    }
+
     async function main() {
       if (__MODE__ === 'single') {
         await singleWindow();
@@ -526,6 +582,12 @@ _HARNESS = textwrap.dedent(
       }
       if (__MODE__ === 'baseline') {
         await receivedValueNotResent();
+        console.log('HARNESS_OK');
+        process.exitCode = 0;
+        return;
+      }
+      if (typeof __MODE__ === 'string' && __MODE__.indexOf('server:') === 0) {
+        await serverSwitchOff(__MODE__.slice('server:'.length));
         console.log('HARNESS_OK');
         process.exitCode = 0;
         return;
@@ -880,6 +942,20 @@ def test_stale_switch_copy_does_not_stop_proactive_triggers_harness(key):
     result = _run("stale:" + key)
     assert result.returncode == 0, (
         f"stale {key} copy harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["proactiveChatEnabled", "proactiveVisionChatEnabled", "proactiveVisionEnabled"],
+)
+def test_server_switch_off_stops_proactive_triggers_harness(key):
+    result = _run("server:" + key)
+    assert result.returncode == 0, (
+        f"server {key} switch-off harness failed\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
