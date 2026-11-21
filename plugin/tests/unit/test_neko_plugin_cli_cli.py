@@ -1216,6 +1216,8 @@ def test_validate_plugin_dir_ui_permissions_match_runtime(tmp_path: Path) -> Non
     assert permission_warnings(sorted(PERMISSIONS)) == []
     # The runtime strips surrounding whitespace before looking the name up.
     assert permission_warnings([" document:parse "]) == []
+    # A blank entry gets only the existing non-empty error, not a second warning.
+    assert permission_warnings([" "]) == []
     assert permission_warnings(["state:read", "files:write"]) == [
         "[plugin.ui].panel[0].permissions[1] is not a recognized permission: files:write"
     ]

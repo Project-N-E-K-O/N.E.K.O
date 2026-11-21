@@ -1024,8 +1024,9 @@ def _check_ui_surface(plugin_dir: Path, value: object, label: str, issues: list[
         _check_string_list(permissions, f"{label}.permissions", issues, required=False)
         if isinstance(permissions, list):
             # Same set and stripping the runtime uses, so check cannot drift from it.
+            # Blank entries already got the non-empty error from _check_string_list.
             for index, permission in enumerate(permissions):
-                if isinstance(permission, str) and permission.strip() not in UI_PERMISSIONS:
+                if isinstance(permission, str) and permission.strip() and permission.strip() not in UI_PERMISSIONS:
                     issues.append(("warning", f"{label}.permissions[{index}] is not a recognized permission: {permission}"))
     _check_optional_bool(value, "available", f"{label}.available", issues)
 
