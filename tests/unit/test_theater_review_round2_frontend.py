@@ -629,6 +629,6 @@ def test_ordinary_text_drop_and_avatar_entries_share_the_theater_guard():
     drop = source[drop_start:source.index("return sendTextPayload(prompt", drop_start)]
     assert drop.index("isOrdinaryChatBlockedByTheater()") < drop.index("prepareAvatarDropTextMode()")
 
-    avatar_start = source.index("async function sendAvatarInteractionPayload(payload)")
+    avatar_start = source.index("async function sendAvatarInteractionPayload(payload")
     avatar = source[avatar_start:source.index("mod.avatarInteractionContract", avatar_start)]
     assert avatar.index("isOrdinaryChatBlockedByTheater()") < avatar.index("S.socket.send(")

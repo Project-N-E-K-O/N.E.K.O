@@ -1051,9 +1051,9 @@ class VRMInteraction {
                 if (this.dragMode === 'pan') {
                     this._rememberPanDragPointer(e);
                     this._rememberDragHintPanPointer(e);
-                    // 点一下（没拖动）给个原地颤动的即时反馈
+                    // 点一下（没拖动）给个原地颤动的即时反馈；连点逐级加大、第 4 下生气
                     if (window.NekoAvatarClickShake?.isTap(clickShakeTap, e)) {
-                        window.NekoAvatarClickShake.play(canvas);
+                        window.NekoAvatarClickShake.tap(canvas);
                     }
                 }
                 await this._endDrag();
