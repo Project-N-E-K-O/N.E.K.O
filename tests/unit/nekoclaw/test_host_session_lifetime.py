@@ -218,6 +218,11 @@ async def test_a_session_that_looks_old_is_looked_at_again_with_what_is_under_wa
     await ledger.update(again.id, session_id=session.id)
     await ledger.transition(again.id, "working")
     assert await ledger.session_alive(stale)
+    # And one that went to work in it and was over by then: the session was last active just now.
+    await ledger.transition(again.id, "done")
+    assert await ledger.session_alive(stale)
+    ledger.clock.now += LIFETIME + 1.0
+    assert not await ledger.session_alive(await ledger.get_session(session.id))
 
 
 async def test_a_summary_made_leaves_the_length_of_the_conversation_unknown_until_a_request_says(ledger):
@@ -244,7 +249,7 @@ async def test_a_summary_made_leaves_the_length_of_the_conversation_unknown_unti
 # ---------------------------------------------------------------------------
 
 
-async def _two_sessions(hosts, tmp_path, monkeypatch, *, days: float = 8.0):
+async def _two_sessions(hosts, tmp_path, monkeypatch, *, days: float = 8.0, **host_kwargs):
     """A session of one commission and one of a project, both over; ``days`` pass; and a commission at work elsewhere."""
     release, wait = _gate()
     scripts = {
@@ -252,7 +257,7 @@ async def _two_sessions(hosts, tmp_path, monkeypatch, *, days: float = 8.0):
         _k("sort the budget"): ScriptedLLM([_report("ready", "sorted")]),
         _k("build the site"): ScriptedLLM([[wait, *_report("ready", "built")]]),
     }
-    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), **host_kwargs)
     await host.space.touch_project("Budget app")
     single = await wait_status(host, (await _dispatch(host, "paint the fence")).commission_id, "done")
     project = await wait_status(host, (await _dispatch(host, "sort the budget in the budget app")).commission_id, "done")
@@ -321,8 +326,17 @@ async def test_the_same_session_is_written_to_and_listed_as_open_on_the_seventh_
 
 
 async def test_a_note_that_comes_due_after_the_session_ended_is_dropped_and_starts_nothing(hosts, tmp_path, monkeypatch):
-    host, single, _project, sender, release = await _two_sessions(hosts, tmp_path, monkeypatch)
+    counted: list[str] = []
+
+    async def meter(commission_id: str) -> bool:
+        counted.append(commission_id)
+        return True
+
+    host, single, _project, sender, release = await _two_sessions(
+        hosts, tmp_path, monkeypatch, task_agent_meter=meter
+    )
     before = await host.ledger.select(session_id=single.session_id)
+    counted_before = len(counted)
     # Written to the ledger as it was while the session was alive (the ledger itself takes any note).
     from nekoclaw.host.ledger import MessageLimits
 
@@ -345,6 +359,8 @@ async def test_a_note_that_comes_due_after_the_session_ended_is_dropped_and_star
     # No commission was filed for it, and nothing started.
     assert await host.ledger.select(session_id=single.session_id) == before
     assert host.task_agents._held_by.get(single.session_id) is None
+    # Nothing of the daily quota was spent on it: it is turned away before a request is counted.
+    assert len(counted) == counted_before
     host.brain.drop_pending_dispatches()
     release.set()
 

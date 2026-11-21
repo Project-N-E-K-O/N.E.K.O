@@ -1782,6 +1782,12 @@ async def test_a_session_of_one_commission_is_summed_up_like_one_of_a_project_un
     monkeypatch.setattr(host.ledger, "_clock", lambda: real() + 8 * 86_400.0)
     assert await manager._idle_compact(single.id) is False
     assert len(weather.requests) == 5 and manager._idle_compact_failures == {}
+    # Not even set to be looked at again when the time it was given is longer than that: a look that
+    # is early by the ledger is given another timer for a session that goes on, and none for this one.
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 10 * 86_400.0)
+    assert await manager._idle_compact(single.id, manager._idle_stops) is False
+    assert single.id not in manager._idle_timers
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
     assert await manager._idle_compact(project.id) is True
     assert len(export.requests) == 6
 
