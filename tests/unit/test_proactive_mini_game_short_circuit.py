@@ -560,16 +560,17 @@ async def test_work_break_combo_skipped_when_invited_game_is_banned(
     run.push_options.assert_not_awaited()
 
 
+@pytest.mark.parametrize("repeat", (False, True), ids=("ban", "repeat"))
 @pytest.mark.parametrize(
-    ("blocked_channel", "label"),
+    ("dropped_channel", "label"),
     (("work_break", "work-break reminder"), ("work_break_game_invite", "work-break game invite")),
 )
 @pytest.mark.asyncio
 async def test_work_break_combo_block_message_names_the_dropped_reminder(
-    monkeypatch, tmp_path: Path, blocked_channel, label,
+    monkeypatch, tmp_path: Path, dropped_channel, label, repeat,
 ) -> None:
-    """After falling back, a ban on the plain reminder is reported as the
-    plain reminder being blocked, not the game invite."""
+    """After falling back, a plain reminder dropped by a ban or by repeat
+    suppression is reported as the plain reminder, not the game invite."""
     from main_logic.proactive_chat import break_reminders
 
     run = await _run_work_break_round(
@@ -577,10 +578,12 @@ async def test_work_break_combo_block_message_names_the_dropped_reminder(
         tmp_path,
         delivered_channel=None,
         result=break_reminders.BreakReminderDeliveryResult(
-            directive_blocked=True, blocked_channel=blocked_channel,
+            directive_blocked=not repeat, repeat_suppressed=repeat,
+            dropped_channel=dropped_channel,
         ),
     )
 
     assert run.body["action"] == "pass"
-    assert run.body["message"] == f"{label} blocked by user ban-topic directive"
+    verdict = "suppressed as repeated" if repeat else "blocked by user ban-topic directive"
+    assert run.body["message"] == f"{label} {verdict}"
     run.tracker.mark_work_break_used.assert_called_once_with()

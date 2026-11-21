@@ -1224,6 +1224,7 @@ async def handle_proactive_chat(
 
             # Rendered up front: the combo branch falls back to it in the same
             # turn when its draft hits a user ban-topic directive.
+            _plain_break_channel = "work_break"
             wb_prompt, wb_seed = _render_work_break_prompt(
                 pending=water_pending,
                 master_name=master_name_current,
@@ -1277,7 +1278,7 @@ async def handle_proactive_chat(
                     channel="work_break_game_invite",
                     lang=_break_lang,
                     round_id=lifecycle.screenshot_request_id,
-                    directive_fallback=(wb_system_prompt, "work_break"),
+                    directive_fallback=(wb_system_prompt, _plain_break_channel),
                 )
                 delivered_text = reminder_delivery.delivered_text
                 if reminder_delivery.consumes_source:
@@ -1290,14 +1291,14 @@ async def handle_proactive_chat(
                         ProactiveChatResult(
                             body=_suppressed_break_reminder_body(
                                 reminder_delivery,
-                                # Blocked after falling back: the plain reminder was dropped.
+                                # Dropped after falling back: the plain reminder, not the invite.
                                 "work-break reminder"
-                                if reminder_delivery.blocked_channel == "work_break"
+                                if reminder_delivery.dropped_channel == _plain_break_channel
                                 else "work-break game invite",
                             )
                         )
                     )
-                if delivered_text and reminder_delivery.delivered_channel == "work_break":
+                if delivered_text and reminder_delivery.delivered_channel == _plain_break_channel:
                     # The invite hit a ban and the plain reminder went out instead.
                     return await _end_work_break_delivered()
                 if delivered_text:

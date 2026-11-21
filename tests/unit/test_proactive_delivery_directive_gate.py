@@ -497,13 +497,41 @@ async def test_combo_reminder_fallback_that_also_hits_is_consumed(monkeypatch):
     assert result.directive_blocked is True
     assert result.consumes_source is True
     # The plain reminder is what got dropped; the caller reports it as such.
-    assert result.blocked_channel == "work_break"
+    assert result.dropped_channel == "work_break"
     # Bounded at two calls: no third attempt after the fallback hits.
     assert break_reminders.create_chat_llm_async.await_count == 2
     mgr.feed_tts_chunk.assert_not_awaited()
     mgr.finish_proactive_delivery.assert_not_awaited()
     mgr.handle_new_message.assert_awaited_once_with()
     corpus.score_unanswered_proactive_draft.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rewrite", ["[PASS]", "记得起来喝水休息一下吧。"], ids=["pass", "still-repeats"])
+async def test_repeat_suppressed_fallback_reports_dropped_channel(monkeypatch, rewrite):
+    """After a fallback, repeat suppression drops the plain reminder; the
+    result names it so the caller does not report the game invite."""
+    import memory.anti_repeat as anti_repeat_module
+
+    _install_directives(monkeypatch, ["游戏"])
+    mgr, config_manager, corpus, _record = _break_harness(
+        monkeypatch,
+        _FakeStreamingLlm("休息一下，一起玩个小游戏吧？"),
+        _FakeStreamingLlm("记得起来喝水休息一下。"),
+        _FakeRegenLlm(rewrite),
+        initial_repeats=True,
+    )
+    repeating = anti_repeat_module.UnansweredProactiveRepeatSignal(
+        triggered=True, match_count=2, considered_count=2,
+        best_similarity=0.9, repeated_terms=("喝水休息",),
+    )
+    corpus.score_unanswered_proactive_draft.side_effect = [repeating, repeating]
+
+    result = await _deliver_combo(mgr, config_manager)
+
+    assert result.repeat_suppressed is True
+    assert result.dropped_channel == "work_break"
+    mgr.feed_tts_chunk.assert_not_awaited()
 
 
 @pytest.mark.parametrize("label", ["anti-slack reminder", "work-break reminder"])
@@ -583,6 +611,10 @@ async def test_mini_game_invite_ban_falls_through_without_claiming(
     _install_directives(monkeypatch, ["足球"])
     skip_log = MagicMock()
     monkeypatch.setattr(invites.logger, "info", skip_log)
+    # The delivery-block helper logs through its own module logger.
+    from main_logic.proactive_chat import directive_gate
+    gate_log = MagicMock()
+    monkeypatch.setattr(directive_gate.logger, "info", gate_log)
     mgr = _invite_mgr()
 
     out = await _attempt_invite(mgr)
@@ -591,7 +623,7 @@ async def test_mini_game_invite_ban_falls_through_without_claiming(
     # the round goes on and may well speak.
     messages = [call.args[0] for call in skip_log.call_args_list]
     assert any("mini-game invite skipped" in m for m in messages)
-    assert not any("delivery blocked" in m for m in messages)
+    gate_log.assert_not_called()
     # None hands the round back to the normal pipeline instead of ending it,
     # so a ban on games cannot silence the force-first branch forever.
     assert out is None
@@ -710,9 +742,12 @@ async def test_theater_invite_clean_story_is_composed_and_delivered(
 # ---------------------------------------------------------------------------
 
 
-# Either form of the shared gate: the delivery block, or its bare hit count
-# where a hit only skips an optional invite and the round goes on.
-_GATES = {"_proactive_delivery_directive_block", "_proactive_delivery_directive_hit_count"}
+_GATE = "_proactive_delivery_directive_block"
+# The only function allowed to gate with the bare hit count: a hit there skips
+# an optional invite and the round continues as ordinary chat. Everything else,
+# including any new channel, must call the delivery block itself.
+_HIT_COUNT_ALLOWED = {"mini_game_invite.py:_attempt_mini_game_invite_delivery"}
+_HIT_COUNT = "_proactive_delivery_directive_hit_count"
 
 
 def test_every_proactive_feed_is_preceded_by_the_gate():
@@ -731,7 +766,10 @@ def test_every_proactive_feed_is_preceded_by_the_gate():
                     feed_lines.append(sub.lineno)
                 elif isinstance(sub, ast.Constant) and sub.value == "feed_tts_chunk":
                     feed_lines.append(sub.lineno)
-                elif isinstance(sub, ast.Name) and sub.id in _GATES:
+                elif isinstance(sub, ast.Name) and (
+                    sub.id == _GATE
+                    or (sub.id == _HIT_COUNT and f"{path.name}:{node.name}" in _HIT_COUNT_ALLOWED)
+                ):
                     gate_lines.append(sub.lineno)
             if not feed_lines:
                 continue

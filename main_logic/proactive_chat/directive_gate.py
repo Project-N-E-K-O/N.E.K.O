@@ -17,12 +17,18 @@
 
 Every text proactive channel ends in the same ``feed_tts_chunk`` →
 ``finish_proactive_delivery`` pair: the normal Phase 2 commit, the break
-reminders and the mini-game invite. Those channels assemble their own text and
-some attach cards, so a gate on the Phase 2 draft alone misses both the
-early-returning channels and any banned term that only appears in a card
-title (#3013 R1 / R2). This gate scans the whole user-visible payload — the
-line plus the visible text of every attached card — and every channel calls it
-before its line can be spoken.
+reminders, the mini-game invite and the postgame bubble. Those channels
+assemble their own text and some attach cards, so a gate on the Phase 2 draft
+alone misses both the early-returning channels and any banned term that only
+appears in a card title (#3013 R1 / R2). This gate scans the whole
+user-visible payload — the line plus the visible text of every attached card —
+and every channel checks it before its line can be spoken.
+
+Two entry points share one matcher: ``_proactive_delivery_directive_block``
+drops a delivery and releases its claimed turn; the bare hit count is for
+callers that react differently to a hit — the mini-game invite, which skips
+the invite and lets the round continue as ordinary chat, and the break
+reminder's switch to its fallback draft.
 
 A hit drops the whole delivery, the same as the Phase 2 output gate: the line
 usually points at the card ("look at this"), so removing only the card would
@@ -100,9 +106,8 @@ async def _proactive_delivery_directive_block(
 ) -> dict[str, Any] | None:
     """Return a pass body when the delivery hits a ban, otherwise None.
 
-    On a hit, a turn this round already claimed is released the same way the
-    Phase 2 output gate releases it. Pass ``proactive_sid=None`` when nothing
-    has been claimed yet.
+    On a hit, the turn this round claimed is released the same way the
+    Phase 2 output gate releases it, if the round still owns it.
 
     ⚠️ Logs carry the match count and channel only, never the term or the
     line: banned topics are among the most sensitive things a user says.

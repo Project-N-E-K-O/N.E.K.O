@@ -66,9 +66,10 @@ class BreakReminderDeliveryResult:
     repeat_suppressed: bool = False
     directive_blocked: bool = False
     delivered_channel: str | None = None
-    # Channel of the draft a ban blocked: with a fallback, the plain reminder
-    # rather than the channel the caller asked for.
-    blocked_channel: str | None = None
+    # Channel of the draft that was dropped (ban hit or repeat suppression):
+    # after a fallback, the plain reminder rather than the channel the caller
+    # asked for.
+    dropped_channel: str | None = None
 
     @property
     def consumes_source(self) -> bool:
@@ -517,7 +518,7 @@ async def _deliver_break_reminder_via_llm(
         text=text,
         channel=channel,
     ) is not None:
-        return BreakReminderDeliveryResult(directive_blocked=True, blocked_channel=channel)
+        return BreakReminderDeliveryResult(directive_blocked=True, dropped_channel=channel)
 
     anti_repeat_corpus = None
     unanswered_repeat_signal = None
@@ -627,7 +628,7 @@ async def _deliver_break_reminder_via_llm(
             record_break_repeat_effect("break_reminder_suppressed")
             if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
-            return BreakReminderDeliveryResult(repeat_suppressed=True)
+            return BreakReminderDeliveryResult(repeat_suppressed=True, dropped_channel=channel)
         if not cleaned or count_tokens(cleaned) > PHASE2_OUTPUT_MAX_TOKENS:
             record_break_repeat_effect("regen_failed")
             if _proactive_turn_still_owned(mgr, proactive_sid):
@@ -644,7 +645,7 @@ async def _deliver_break_reminder_via_llm(
             text=cleaned,
             channel=channel,
         ) is not None:
-            return BreakReminderDeliveryResult(directive_blocked=True, blocked_channel=channel)
+            return BreakReminderDeliveryResult(directive_blocked=True, dropped_channel=channel)
 
         regen_signal = _score_unanswered_break_reminder(
             corpus=anti_repeat_corpus,
@@ -667,7 +668,7 @@ async def _deliver_break_reminder_via_llm(
             )
             if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
-            return BreakReminderDeliveryResult(repeat_suppressed=True)
+            return BreakReminderDeliveryResult(repeat_suppressed=True, dropped_channel=channel)
         record_break_repeat_effect("regen_guard_passed")
         text = cleaned
 
