@@ -175,6 +175,8 @@ function loadVmdUploadHandler({ listBefore, listAfter, uploadResponse }) {
         mmdAnimationSelect: select,
         mmdAnimationSelectBtn: null,
         uploadMmdAnimationBtn: null,
+        // Disabled by default in templates/model_manager.html.
+        playMmdAnimationBtn: { disabled: true },
         isMmdAnimationUploading: false,
         isMmdAnimationPlaying: false,
         mmdAnimationFileUpload: {
@@ -198,6 +200,7 @@ function loadVmdUploadHandler({ listBefore, listAfter, uploadResponse }) {
     return {
         select,
         buttonTextUpdates,
+        playButton: sandbox.playMmdAnimationBtn,
         loadInitialList: () => sandbox.helpers.loadMMDAnimations(),
         upload: filename => changeHandler({ target: { files: [{ name: filename }] } }),
     };
@@ -220,6 +223,8 @@ for (const filename of NAMES) {
 
         assert.equal(page.select.value, `/user_mmd/animation/${filename}`);
         assert.equal(page.buttonTextUpdates.at(-1), `/user_mmd/animation/${filename}`);
+        // The play button starts disabled (nothing previewed yet) and must be usable now.
+        assert.equal(page.playButton.disabled, false);
     });
 }
 
@@ -239,4 +244,34 @@ test('upload handler restores the previous selection when the upload is not list
 
     assert.equal(page.select.value, previous.url);
     assert.equal(page.buttonTextUpdates.at(-1), previous.url);
+    // Fallback path keeps the play button state it had before the upload.
+    assert.equal(page.playButton.disabled, true);
 });
+
+const NORMALIZATION_CASES = [
+    // HFS+ lists names decomposed while the upload result keeps the browser's NFC.
+    { label: 'list NFD, upload NFC', listForm: 'NFD', uploadForm: 'NFC' },
+    // Some browsers on macOS send decomposed names; the list may hold the composed form.
+    { label: 'list NFC, upload NFD', listForm: 'NFC', uploadForm: 'NFD' },
+];
+
+for (const { label, listForm, uploadForm } of NORMALIZATION_CASES) {
+    test(`upload handler matches across Unicode normalization (${label})`, async () => {
+        const base = 'café 待机.vmd';
+        const listed = base.normalize(listForm);
+        const uploaded = base.normalize(uploadForm);
+        assert.notEqual(listed, uploaded);
+        const page = loadVmdUploadHandler({
+            listBefore: { success: true, animations: [] },
+            listAfter: { success: true, animations: [listEntry('/user_mmd/animation', listed)] },
+            uploadResponse: uploadResult(uploaded),
+        });
+        await page.loadInitialList();
+
+        await page.upload(uploaded);
+
+        // The option keeps the listed (on-disk) spelling so loading requests the real file.
+        assert.equal(page.select.value, `/user_mmd/animation/${listed}`);
+        assert.equal(page.playButton.disabled, false);
+    });
+}

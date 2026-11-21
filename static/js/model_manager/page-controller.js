@@ -4503,13 +4503,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     // file_path is built from the same raw file name as the list URL that
     // loadMMDAnimations() stores in option.value (escaping happens only at
     // load time), so an exact string match is unambiguous even when a
-    // built-in animation shares the file name.
+    // built-in animation shares the file name. Both sides are compared in NFC
+    // because some file systems (HFS+) list non-ASCII names decomposed (NFD).
     function findUploadedMMDAnimationOption(options, uploadResult) {
         const filePath = uploadResult && typeof uploadResult.file_path === 'string'
-            ? uploadResult.file_path
+            ? uploadResult.file_path.normalize('NFC')
             : '';
         if (!filePath) return null;
-        return Array.from(options || []).find(opt => opt && opt.value === filePath) || null;
+        return Array.from(options || []).find(opt => (
+            opt && typeof opt.value === 'string' && opt.value.normalize('NFC') === filePath
+        )) || null;
     }
 
     async function loadMMDAnimations() {
@@ -8318,6 +8321,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         
                         if (newOption) {
                             mmdAnimationSelect.value = newOption.value;
+                            // Selecting without a change event keeps the upload from auto-playing,
+                            // so enable the play button here; it plays the selected value.
+                            if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
                         } else if (savedAnimUrl) {
                             const optionExists = Array.from(mmdAnimationSelect.options).some(opt => opt.value === savedAnimUrl);
                             if (optionExists) {
