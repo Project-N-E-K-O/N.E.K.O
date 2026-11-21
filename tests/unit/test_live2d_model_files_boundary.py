@@ -168,10 +168,25 @@ def test_subdir_link_leaving_model_dir_is_not_entered_even_if_config_links_back(
     assert live2d_router._locate_model_config(str(item_dir)) == (None, None, None)
 
 
-def test_skipped_entry_is_logged(monkeypatch, tmp_path, outside, caplog):
+@pytest.fixture
+def router_logs_reach_caplog(monkeypatch):
+    """Let caplog see live2d_router records even after setup_logging stopped propagation.
+
+    Same approach as ``arbiter_logs_reach_caplog`` in conftest.py: importing
+    ``app.main_server`` elsewhere in the session runs ``setup_logging``, which turns
+    off propagation under ``N.E.K.O`` while caplog only listens on root.
+    """
+    logger = live2d_router.logger
+    while logger is not None:
+        monkeypatch.setattr(logger, "propagate", True)
+        logger = logger.parent
+
+
+def test_skipped_entry_is_logged(monkeypatch, tmp_path, outside, caplog, router_logs_reach_caplog):
     model_dir = tmp_path / "user_live2d" / "m"
     _build_model(model_dir, outside)
-    with caplog.at_level("INFO"):
+    # Set the router logger itself to INFO: NEKO_LOG_LEVEL may have raised its parent's level.
+    with caplog.at_level("INFO", logger=live2d_router.logger.name):
         _by_name(monkeypatch, model_dir)
     assert any("out_dir" in r.getMessage() for r in caplog.records)
 
