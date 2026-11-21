@@ -5570,8 +5570,8 @@ const ConnectivityManager = {
             const sameKeyAsAssist = assistProbeKey !== null
                 && assistResult.providerKey === config.provider_key
                 && assistProbeKey === (config.api_key || '');
-            // Key 不同：页面上记下的地域属于别的 Key，不带端点，后端按服务商主地址判断。
-            if (!sameKeyAsAssist) return runOne([cacheId, { ...config, url: '' }]);
+            // Key 不同：不借用辅助 API 这一轮刚解析出的地域，保留决策槽位开测前自己的端点。
+            if (!sameKeyAsAssist) return runOne([cacheId, config]);
             const pInfo = getProviderInfo(config.provider_key);
             const resolvedUrl = getProviderOpenrouterUrl(config.provider_key, pInfo);
             return runOne([cacheId, resolvedUrl ? { ...config, url: resolvedUrl } : config]);
