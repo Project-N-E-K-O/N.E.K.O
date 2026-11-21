@@ -775,6 +775,12 @@ Live2DManager.prototype._getSavedParameterResetTargets = function(coreModel) {
             if (!Number.isFinite(numeric)) continue;
             const index = live2dResolveResetParameterIndex(this, coreModel, key);
             if (index < 0) continue;
+            // 保存参数层刻意不应用的保存值（眨眼、嘴部、可见性、运行时呼吸）不作复位目标，回退到 moc 默认值。
+            if (typeof this._isRuntimeManagedSavedParameter === 'function') {
+                let resolvedId = null;
+                try { resolvedId = this._resolveModelParameterKey(coreModel, key)?.resolvedId || null; } catch (_) {}
+                if (this._isRuntimeManagedSavedParameter(coreModel, [key, resolvedId])) continue;
+            }
             const isIndexKey = /^(?:param_)?\d+$/.test(String(key));
             if (targets.has(index) && isIndexKey && !fromIndexKey.get(index)) continue;
             targets.set(index, numeric);
@@ -829,6 +835,13 @@ Live2DManager.prototype._getCurrentMotionResidueFade = function() {
     if (!state || this.currentModel !== state.model || state.model.internalModel !== state.internalModel
         || state.internalModel.coreModel !== state.coreModel) return null;
     return state;
+};
+
+Live2DManager.prototype._releaseMotionResidueParameter = function(index) {
+    const state = this._getCurrentMotionResidueFade();
+    if (!state) return;
+    state.fades.delete(index);
+    state.touched.delete(index);
 };
 
 Live2DManager.prototype._isMotionResidueFading = function(index) {

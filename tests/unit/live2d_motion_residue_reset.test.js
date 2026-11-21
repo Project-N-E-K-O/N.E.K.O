@@ -223,6 +223,76 @@ test('a motion taking over a saved parameter mid-fade composes the saved offset 
     } finally { f.release(); }
 });
 
+test('an immediate reset to the saved value is not composed with the saved offset again', async () => {
+    const f = await fixture();
+    try {
+        f.apply({ ParamArmLA01: 4 });
+        assert.equal(await f.model.motion('PreviewAll', 0, 3), true);
+        f.frames(10);
+        f.native.stopAllMotions();
+        f.manager._setActiveMotionParamIds(['ParamArmLA01']);
+        f.manager._resetActiveMotionParameters({ preserveExpression: true });
+        assert.equal(f.value('ParamArmLA01'), 4);
+        const values = [];
+        for (let i = 0; i < 12; i++) {
+            f.frame();
+            values.push(f.value('ParamArmLA01'));
+        }
+        assert.ok(values.every(value => value <= 4 + 1e-4), `never above the saved value: ${values.map(v => v.toFixed(2)).join(' ')}`);
+        assert.equal(values[values.length - 1], 4);
+    } finally { f.release(); }
+});
+
+test('a motion starting on the frame right after a saved-parameter fade ends composes the offset once', async () => {
+    const f = await fixture();
+    try {
+        f.apply({ ParamArmLA01: 4 });
+        await f.playToEnd();
+        while (f.manager._motionResidueFade.touched.size > 0) f.frame();
+        assert.equal(f.value('ParamArmLA01'), 4);
+        assert.equal(await f.model.motion('PreviewAll', 1, 3), true);
+        const values = [];
+        for (let i = 0; i < 4; i++) {
+            f.frame();
+            values.push(f.value('ParamArmLA01'));
+        }
+        assert.ok(values[0] < 4.5, `the first take-over frame starts from the saved value: ${values.map(v => v.toFixed(3)).join(' ')}`);
+    } finally { f.release(); }
+});
+
+test('saved values the saved-parameter layer deliberately ignores are not used as reset targets', async () => {
+    const f = await fixture();
+    try {
+        f.manager.savedModelParameters = { ParamEyeLOpen: 0, ParamA: 0.5, ParamArmLA01: 4 };
+        f.manager._shouldApplySavedParams = true;
+        const target = id => f.manager._resolveParameterResetTarget(f.core, f.core.getParameterIndex(id));
+        assert.equal(target('ParamEyeLOpen'), f.defaultOf('ParamEyeLOpen'), 'eye blink: a captured closed-eye value is not replayed');
+        assert.equal(target('ParamA'), f.defaultOf('ParamA'), 'mouth');
+        assert.equal(target('ParamArmLA01'), 4);
+        assert.equal(f.manager._isRuntimeManagedSavedParameter(f.core, ['ParamOpacity']), true, 'visibility');
+        assert.equal(f.manager._isRuntimeManagedSavedParameter(f.core, ['ParamVisibility']), true, 'visibility');
+    } finally { f.release(); }
+});
+
+test('a runtime write after the overlay removal wins over the held fade value', async () => {
+    const f = await fixture();
+    try {
+        f.apply({ ParamArmLA01: 4 });
+        const index = f.core.getParameterIndex('ParamArmLA01');
+        f.manager._mouseTrackingEnabled = false;
+        f.manager._updateRandomLookAt = () => {};
+        assert.equal(await f.model.motion('PreviewAll', 0, 3), true);
+        while (f.native.queueManager._motions.length > 0) f.frame();
+        f.frame();
+        assert.equal(f.manager._isMotionResidueFading(index), true);
+        // 去叠加之后、写保存值之前的运行时写入（随机视线所在位置）。
+        f.manager._updateRandomLookAt = () => f.core.setParameterValueById('ParamArmLA01', 7);
+        f.frame();
+        assert.equal(f.value('ParamArmLA01'), 7, 'the held fade value does not overwrite the runtime write');
+        assert.equal(f.manager._isMotionResidueFading(index), false, 'the fade lets go of the parameter');
+    } finally { f.release(); }
+});
+
 test('the saved-parameter layer stops deferring when the fade layer is not running', async () => {
     const f = await fixture();
     try {

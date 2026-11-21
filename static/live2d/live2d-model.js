@@ -1849,6 +1849,20 @@ Live2DManager.prototype._forceEyeBlinkOpen = function(coreModel) {
     }
 };
 
+// 保存参数层刻意不应用的保存值：眨眼、嘴部、可见性、运行时呼吸。动作残留复位取目标值时共用。
+Live2DManager.prototype._isRuntimeManagedSavedParameter = function(coreModel, ids, runtimeBreathParamIds) {
+    const list = (ids || []).filter(Boolean).map(String);
+    if (list.length === 0) return true;
+    const mouthParams = window.LIPSYNC_PARAMS
+        || ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+    const breathIds = runtimeBreathParamIds
+        || new Set(typeof this._resolveRuntimeBreathParams === 'function' ? this._resolveRuntimeBreathParams(coreModel) : []);
+    return list.some(id => this._isEyeBlinkParamId(id))
+        || list.some(id => mouthParams.includes(id))
+        || list.some(id => id === 'ParamOpacity' || id === 'ParamVisibility')
+        || list.some(id => breathIds.has(id));
+};
+
 Live2DManager.prototype._isEyeBlinkParamId = function(paramId) {
     if (!paramId) return false;
     const id = String(paramId);
@@ -3020,7 +3034,6 @@ Live2DManager.prototype.installMouthOverride = function() {
     // 振幅写入与保存外观保护是两种职责，不能通过删除公共列表的嘴形来合并。
     const runtimeMouthParams = window.LIPSYNC_PARAMS || ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
     const lipSyncParams = window.LIPSYNC_AMPLITUDE_PARAMS || runtimeMouthParams.filter(id => id !== 'ParamMouthForm');
-    const visibilityParams = ['ParamOpacity', 'ParamVisibility'];
     
     // 缓存参数索引，避免每帧查询
     const mouthParamIndices = {};
@@ -3060,11 +3073,7 @@ Live2DManager.prototype.installMouthOverride = function() {
     const isRuntimeBreathParamId = (id) => runtimeBreathParamIds.has(id);
     const isRuntimeManagedSavedParam = (entry) => {
         if (!entry) return true;
-        const ids = [entry.id, entry.resolvedId].filter(Boolean);
-        return ids.some(id => this._isEyeBlinkParamId(id)) ||
-            ids.some(id => runtimeMouthParams.includes(id)) ||
-            ids.some(id => visibilityParams.includes(id)) ||
-            ids.some(isRuntimeBreathParamId);
+        return this._isRuntimeManagedSavedParameter(coreModel, [entry.id, entry.resolvedId], runtimeBreathParamIds);
     };
     const isPersistentSavedParam = (entry, persistentIds) => {
         if (!entry || !persistentIds) return false;
@@ -3157,19 +3166,30 @@ Live2DManager.prototype.installMouthOverride = function() {
             if (!this._clickFadeState && (this._parameterConfigRevision || 0) === savedParameterRevision) {
                 for (const entry of savedParamEntries) {
                     entry.residueHeldValue = undefined;
+                    entry.overlayRemoved = false;
                     if (entry.offset === 0 || isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
                     try {
                         // 动作残留淡出层正在写的值已含保存偏移：照样去掉偏移给 SDK 混合，
-                        // 并记下原值；本帧没有动作接手时原样写回，淡出层不会误判为外部写入。
+                        // 并记下原值；本帧没有别的写入时原样写回，淡出层不会误判为外部写入。
                         if (residueWrapperAlive && this._getMotionResidueParameterState(entry.idx) === 'fading') {
                             const heldValue = coreModel.getParameterValueByIndex(entry.idx);
-                            entry.residueHeldValue = heldValue;
                             coreModel.setParameterValueByIndex(entry.idx, heldValue - entry.offset);
+                            entry.residueHeldValue = heldValue;
+                            entry.residueRemovedValue = coreModel.getParameterValueByIndex(entry.idx);
                             continue;
                         }
                         const currentValue = coreModel.getParameterValueByIndex(entry.idx);
+                        if (entry.residueFading) {
+                            // 淡出刚结束且停在保存值：按稳态记账，本帧照常去叠加，新动作接手也只叠一次偏移。
+                            entry.residueFading = false;
+                            if (currentValue === Math.fround(entry.value)) {
+                                entry.appliedValue = currentValue;
+                                entry.motionValue = entry.defaultValue;
+                            }
+                        }
                         if (currentValue === entry.appliedValue || currentValue === Math.fround(entry.appliedValue)) {
                             coreModel.setParameterValueByIndex(entry.idx, entry.motionValue);
+                            entry.overlayRemoved = true;
                         }
                     } catch (_) {}
                 }
@@ -3369,14 +3389,27 @@ Live2DManager.prototype.installMouthOverride = function() {
                                 ? null : this._getMotionResidueParameterState(entry.idx);
                             if (residueState === 'fading') {
                                 // 动作残留淡出层正把它平滑拉回保存值：恢复它上一帧写的原值，本帧不抢写。
+                                // 去叠加之后若有别的运行时写入（如随机视线），保留新值并让淡出层放手。
                                 if (entry.residueHeldValue !== undefined) {
-                                    coreModel.setParameterValueByIndex(entry.idx, entry.residueHeldValue);
+                                    if (currentVal === entry.residueRemovedValue) {
+                                        coreModel.setParameterValueByIndex(entry.idx, entry.residueHeldValue);
+                                        entry.residueFading = true;
+                                    } else {
+                                        entry.residueFading = false;
+                                        if (typeof this._releaseMotionResidueParameter === 'function') {
+                                            this._releaseMotionResidueParameter(entry.idx);
+                                        }
+                                    }
                                     entry.residueHeldValue = undefined;
                                 }
                                 continue;
                             }
                             entry.residueHeldValue = undefined;
-                            if (motionWrittenParamIndices.has(entry.idx) || residueState === 'handoff') {
+                            // 交接帧只在本帧确实去掉了我们的叠加时才重新叠加；参数已被即时复位成
+                            // 含偏移的保存值时按普通帧写，避免偏移叠两次。
+                            const handoffComposes = residueState === 'handoff'
+                                && (entry.offset === 0 || entry.overlayRemoved === true);
+                            if (motionWrittenParamIndices.has(entry.idx) || handoffComposes) {
                                 // 动作刚放手的交接帧保持动作末值加偏移，淡出从这里开始，不跳变。
                                 entry.motionValue = currentVal;
                                 coreModel.setParameterValueByIndex(entry.idx, currentVal + offset);
