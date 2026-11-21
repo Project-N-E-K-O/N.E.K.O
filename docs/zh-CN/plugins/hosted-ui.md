@@ -112,7 +112,7 @@ permissions = ["state:read"]
 from plugin.sdk.plugin import (
     NekoPluginBase,  # 默认插件基类。
     neko_plugin,     # 默认插件发现装饰器。
-    plugin_entry,    # 默认后端 entry，也是 LLM 可见工具。
+    plugin_entry,    # 默认后端 entry，Agent 和其他插件也能调用。
     ui,              # Hosted UI 装饰器：context 和 action。
     tr,              # 推荐：声明插件本地 i18n 引用。
     Ok,              # 推荐：成功结果辅助函数。
@@ -146,7 +146,7 @@ class MyPlugin(NekoPluginBase):
         id="refresh_item",
         name=tr("entries.refresh.name", default="Refresh Item"),
         description=tr("entries.refresh.description", default="Refresh an item."),
-        # 推荐：schema 会用于表单、参数提示和 LLM 工具元数据。
+        # 推荐：schema 用于表单和校验提示，也会发布给调用方。
         input_schema={
             "type": "object",
             "properties": {
@@ -157,7 +157,7 @@ class MyPlugin(NekoPluginBase):
             },
             "required": ["item_id"],
         },
-        # 可选：告诉 LLM 侧重点关注哪些返回字段。
+        # 可选：读取结果的模型能看到的返回字段。
         llm_result_fields=["message"],
     )
     async def refresh_item(self, item_id: str, **_):
@@ -168,7 +168,8 @@ class MyPlugin(NekoPluginBase):
 
 - `@ui.context(id="dashboard")` 的返回值会进入 `props.state`。
 - `@ui.action(...)` 会把某个后端 entry 暴露为 UI 动作。
-- `@plugin_entry(...)` 仍然是后端可调用入口，也是 LLM 可见工具元数据。
+- `@plugin_entry(...)` 仍然是后端可调用入口，Agent 和其他插件也能调用它。它不是主对话模型的工具，见[选择 `@plugin_entry` 还是 `@llm_tool`](/zh-CN/plugins/tool-calling#choosing-an-entry-type)。
+- `llm_result_fields` 限定读取结果的模型能看到哪些返回字段，见[控制 AI 看到的返回内容](./entries#controlling-what-the-ai-sees)。
 - `tr(...)` 声明插件本地 i18n key，并提供英文默认值。
 - `refresh_context=True` 表示动作成功后自动刷新上下文。
 
@@ -285,6 +286,8 @@ tr("actions.refresh.label", default="Refresh")
 self.i18n.t("messages.done", default="Done")
 ```
 
+`self.i18n.t(...)` 不跟随查看者的语言：不传 `locale=` 时使用插件的 `default_locale`，然后是它的基础语言（例如 `fr-CA` 的 `fr`），再然后是 `en`，最后是 `default` 参数或键名。需要按每个用户语言显示的文本，请放在 `tr(...)` 声明里（由宿主按用户解析），或用 TSX 的 `props.t(...)`。
+
 ```tsx
 // TSX 运行时：所有可见 UI 文本优先用 props.t(...)。
 props.t("panel.subtitle")
@@ -372,6 +375,8 @@ type HostedApi = {
   ```toml
   permissions = ["state:read", "document:parse"]
   ```
+
+  `neko-plugin check` 目前仍会警告 `document:parse` 不是可识别的 UI 权限（[#3809](https://github.com/Project-N-E-K-O/N.E.K.O/issues/3809)）。运行时接受这个权限；该警告不会让检查失败，可以忽略。
 
   请在真实用户操作的事件处理器中直接调用，例如文件输入框的 `onChange`、点击或拖放。Hosted UI 运行时会把这些处理器内的同步调用标记为用户发起；先执行无关异步工作、再调用会被拒绝。
 - `api.refresh()` 重新拉取 context 并重新渲染。

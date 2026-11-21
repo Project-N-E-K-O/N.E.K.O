@@ -81,7 +81,7 @@ GitHub で、次の名前の空の公開リポジトリを作成します：
 n.e.k.o_plugin_hello_world
 ```
 
-命名規則は `n.e.k.o_plugin_<プラグイン ID>` です。プラグインディレクトリにはすでに必要なファイルがあるため、リポジトリ作成時に GitHub で README、`.gitignore`、License を追加しないでください。
+推奨される命名規則は `n.e.k.o_plugin_<プラグイン ID>` です。名前が異なる場合、`neko-plugin check -r --market-release` は warning を出すだけです。プラグインディレクトリにはすでに必要なファイルがあるため、リポジトリ作成時に GitHub で README、`.gitignore`、License を追加しないでください。
 
 次にプラグインディレクトリに移動し、ソースを commit して push します：
 
@@ -337,4 +337,4 @@ check
 
 このチュートリアルでは、プラグインディレクトリ自体に `.git/` があり、標準の `verify.yml` と `release.yml` があることを前提にしています。現在のクイックスタートにある `neko-plugin init` で作成したプラグインは、すでにこの条件を満たしています。
 
-既存のプラグインが外側の N.E.K.O リポジトリだけで管理され、プラグインディレクトリ自身に `.git/` がない場合、現在の `publish` は停止します。このようなディレクトリを公開可能なプラグインリポジトリへ自動変換するコマンドは、現在の CLI にはありません。ディレクトリのコピー、パッケージの import、シンボリックリンクで公開フローを代用しないでください。
+既存のプラグインが外側の N.E.K.O リポジトリだけで管理され、プラグインディレクトリ自身に `.git/` がない場合、現在の `publish` は停止します。このディレクトリは `neko-plugin setup-repo <plugin> --git --github-actions` で変換できます（`--remote <url>` を付けると `origin` も設定します）。プラグイン専用の Git リポジトリと標準ワークフローが作成されます。既存の `.github/workflows/release.yml` はそのまま残ります。その後 `publish` がリリースワークフローが最新でないと報告した場合は、`neko-plugin setup-repo <plugin> --upgrade-github-actions --dry-run` で確認してから、`--dry-run` を外して実行してください。`neko-plugin create-repo <plugin>` を使うと `gh` で GitHub リポジトリを作成できます。ディレクトリのコピー、パッケージの import、シンボリックリンクで公開フローを代用しないでください。

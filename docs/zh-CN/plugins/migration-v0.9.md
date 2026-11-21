@@ -34,7 +34,7 @@ class MyPlugin(NekoPluginBase):
         return Ok({"status": "done"})
 ```
 
-Extension 没有兼容垫片。删除 `type = "extension"` 和 `[plugin.host]` 后，要么把 Router 模块移入原宿主并调用 `self.include_router(router)`，要么把它改造成普通 `NekoPluginBase` 包。从 `plugin.sdk.extension` 的导入应改为 `plugin.sdk.plugin` 中对应的公共符号。`PluginRouter` 只继续用于普通 Plugin 内部的代码组织。
+Extension 没有兼容垫片。删除 `type = "extension"` 和 `[plugin.host]` 后，要么把 Router 模块移入原宿主，把 router 类列进宿主的 `__routers__`，并调用 `self.include_router(router)`，要么把它改造成普通 `NekoPluginBase` 包。从 `plugin.sdk.extension` 的导入应改为 `plugin.sdk.plugin` 中对应的公共符号。`PluginRouter` 只继续用于普通 Plugin 内部的代码组织。
 
 ## Result 导入
 
@@ -84,14 +84,14 @@ watcher.start()
 
 ## Memory
 
-旧 SDK `MemoryClient` 混淆了两种不同概念。当前受支持的替代能力是读取宿主的近期用户上下文快照：
+旧 SDK `MemoryClient` 混淆了两种不同概念。近期用户上下文来自宿主的快照：
 
 ```python
 # 读取一个 bucket 的最近记录
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-这些记录是有容量上限、只驻留内存且 TTL 为一小时的用户话语事件，并不是角色持久化的事实、反思或人格。通过 `self.bus.memory` 读取记录和使用其类型化记录的能力仍然保留；删除的是高层 `self.memory` 属性以及旧 SDK/runtime 的 `MemoryClient` 门面（现在从 `plugin.sdk.plugin` 导出的 `MemoryClient` 是另一个更新的检索客户端）。`ctx.query_memory(...)` 执行与内置 `recall_memory` 工具相同的混合召回，并以渲染好的文本返回命中结果（没有匹配时为空字符串）。需要结构化命中时，请使用 `MemoryClient(self.ctx).search(target=MemoryTarget.private(...), query=...)`，它返回 `Ok` / `Err`。
+这些记录是有容量上限、只驻留内存且 TTL 为一小时的用户话语事件，并不是角色持久化的事实、反思或人格。通过 `self.bus.memory` 读取记录和使用其类型化记录的能力仍然保留；删除的是高层 `self.memory` 属性以及旧 SDK/runtime 的 `MemoryClient` 门面（现在从 `plugin.sdk.plugin` 导出的 `MemoryClient` 是另一个更新的检索客户端）。`ctx.query_memory(...)` 执行与内置 `recall_memory` 工具相同的混合召回，并以渲染好的文本返回命中结果（没有匹配时为空字符串）。需要结构化命中时，请使用 `MemoryClient(self.ctx).search(target=MemoryTarget.private(...), query=...)`，它返回 `Ok` / `Err`。`MemoryClient` 还有 `get_persona(target=...)`，只支持 `private` 目标，其他目标返回 `CAPABILITY_UNAVAILABLE`。能力策略开启时（`NEKO_PLUGIN_CAPABILITY_POLICY` 不是 `off`），宿主会把到达宿主的这些记忆调用按 `memory.read` 能力的使用来判定，但只为策略会拒绝的调用、以及被标记为疑似转手调用的调用写 `decision` 审计记录（相同结果每分钟最多记一条）；其他获准的调用最多只在所属入口调用结束时写入的 `allow_summary` 汇总记录里计数。所以这份审计记录不是逐次访问记录。记忆内容是用户的隐私数据，不要写进日志。
 
 ## `push_message` v2
 

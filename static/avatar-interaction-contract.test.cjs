@@ -649,6 +649,30 @@ test('avatar interaction host sends without owning model emotion state', async (
   assert.deepEqual(appliedEmotions, []);
 });
 
+test('avatar interaction host re-checks validity after the reconnect wait and frees the gate when stale', async () => {
+  let valid = true;
+  const harness = createLifecycleHarness({
+    ensureWebSocketOpen: async () => {
+      valid = false;
+    },
+  });
+
+  assert.equal(
+    await harness.appButtons.sendAvatarInteractionPayload(interactionPayload('stale-1'), {
+      isStillValid: () => valid,
+    }),
+    false,
+  );
+  assert.equal(harness.sent.length, 0, 'a stale interaction must not reach the socket');
+
+  // 被丢弃的那条不占发送闸门，也不挂着延迟文本：下一条立刻能发
+  assert.equal(
+    await harness.appButtons.sendAvatarInteractionPayload(interactionPayload('stale-2')),
+    true,
+  );
+  assert.deepEqual(harness.sent.map(item => item.interaction_id), ['stale-2']);
+});
+
 test('rps reuses the established pending-turn and ack gate', async () => {
   const harness = createLifecycleHarness();
   const round = interactionId => ({
