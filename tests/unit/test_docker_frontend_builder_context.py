@@ -70,6 +70,19 @@ TEST_DIRS = {"e2e", "__tests__", "tests"}
 # followed. The comment lexer treats `/` after any other `)` as division (only
 # `if` / `while` / `for` / `with` heads are tracked). A tsconfig `include`
 # inherited through `extends` is not applied.
+# Also approximate (rare forms; listed rather than handled):
+#  - a template literal nested inside `${ }` that contains `/*` (e.g.
+#    `a${x ? `/*` : ''}`) opens a fake block comment and can hide later imports;
+#  - tsconfig `files` / `include` paths outside the project are required for
+#    plugin-manager too, although its `vite build` does not read them
+#    (over-reports); for react-neko-chat those outside files are only checked
+#    as paths, their own imports are not scanned;
+#  - `/// <reference path>` counts for plugin-manager as well (over-reports) and
+#    is matched before comments are stripped, so such a line inside `/** */`
+#    also counts;
+#  - a project tsconfig without `files` / `include` is treated as `**/*` even
+#    when it is only an `extends` base, and that scan also picks up .js / .css /
+#    .html under e.g. public/ or scripts/ (tsc itself only compiles TS files).
 # On the Dockerfile side (_builder_copies / _covered): only two-argument
 # `COPY <src> <dst>` is understood -- JSON-form `COPY ["a", "b"]`, multi-source
 # COPY and ADD are ignored, and .dockerignore / `COPY --exclude` are not taken
@@ -118,7 +131,7 @@ LINE_COMMENT_STYLES = {"scss", "sass", "less"}
 VUE_SRC = re.compile(r"""\bsrc\s*=\s*(['"])(?P<spec>\.\.?/[^'"]+)\1""")
 
 # A `/` starts a regex literal (not division) after these characters or keywords.
-_REGEX_AFTER_CHARS = set("(,=:[!&|?{};+-*%~^")
+_REGEX_AFTER_CHARS = set("(,=:[!&|?{};+-*%~^>")  # `>` covers `=>`
 _REGEX_AFTER_WORDS = {
     "return", "typeof", "case", "do", "else", "in", "of", "new", "delete",
     "void", "throw", "yield", "await", "instanceof",
@@ -279,7 +292,9 @@ def _text_specifiers(text: str, suffix: str, include_type_imports: bool) -> list
         specs: list[str] = []
         # compiler-sfc ignores commented-out blocks
         text = _blank_sfc_comments(text)
-        for block in VUE_SELF_CLOSING.finditer(text):
+        # self-closing tags only count outside <script>/<style> bodies
+        top_level = VUE_BLOCK.sub(lambda m: _blank(m.group(0)), text)
+        for block in VUE_SELF_CLOSING.finditer(top_level):
             specs += [_strip_query(m.group("spec")) for m in VUE_SRC.finditer(block.group("attrs"))]
         for block in VUE_BLOCK.finditer(text):
             # <style src="..."> / <script src="..."> pull in an external file
@@ -642,6 +657,10 @@ def test_frontend_builder_copies_every_cross_project_import(dockerfile, frontend
         ("if (ready) /[/*]/.test(value);\nimport m from '../m'", ["../m"]),
         ("while (x) /\\/\\//.exec(y)\nimport m2 from '../m2'", ["../m2"]),
         ("const a = (b) / 2; // '\nimport n from '../n'", ["../n"]),
+        # 箭头函数 => 后面也是正则
+        ("const f = (s) => /[/*]/.test(s);\nimport a from '../a'\nconst g = 1 /* x */", ["../a"]),
+        ("const f = (s) => /^\\/*/.test(s);\nimport a2 from '../a2'\n/* x */", ["../a2"]),
+        ("const h = a > /b/.source.length; import a3 from '../a3'", ["../a3"]),
         # 反过来：注释里的引号 / 反引号不能开出字符串
         ("/* ` */ import l from '../l'", ["../l"]),
     ],
@@ -760,6 +779,9 @@ def test_in_project_helpers_and_tsconfig_inputs_are_followed(tmp_path, monkeypat
 
 
 def test_review_round_edge_cases(tmp_path, monkeypatch):
+    # script 字符串里的自闭合 <style src /> 只是示例，不算依赖
+    example = "<script>\nconst e = '<style src=\"../../../shared/example.css\" />'\n</script>\n"
+    assert _text_specifiers(example, ".vue", False) == []
     # script 字符串里的 <!-- / --> 不能吞掉中间的 import
     vue = "<script setup>\nconst a = '<!--'\nimport x from '../../../shared/x.js'\nconst b = '-->'\n</script>\n"
     assert _text_specifiers(vue, ".vue", False) == ["../../../shared/x.js"]
