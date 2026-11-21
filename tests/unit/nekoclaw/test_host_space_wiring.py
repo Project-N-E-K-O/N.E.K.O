@@ -110,8 +110,16 @@ async def test_an_empty_space_adds_nothing_to_a_task_agents_instructions(hosts, 
     # for word, and says nothing of the commission, which is the message that opens it. What
     # is the session's own (where it works) comes after it, and ends it: the language it
     # answers in is named in the message that opens the commission.
+    # After that, for a session that may start task agents, the presets it may start them
+    # with (``test_host_presets.py`` has what the list says); a session of one commission is
+    # told nothing of a role of its own.
+    from config.prompts.prompts_nekoclaw_presets import PRESET_ROSTER_INTRO
+
     own = TASK_AGENT_BRIEF_GATEWAY_NOTE + "\n\n" + TASK_AGENT_SESSION_FRAME.format(lanlan_name="Lan")
-    assert own + "\n\nWorking directory: " in system
+    assert own + "\n\n" + PRESET_ROSTER_INTRO + "\n- worker: " in system
+    presets = system.split(PRESET_ROSTER_INTRO + "\n", 1)[1].split("\n\n", 1)
+    assert [line.split(":", 1)[0] for line in presets[0].splitlines()] == ["- worker", "- scout", "- inspector", "- planner"]
+    assert presets[1].startswith("Working directory: ")
     assert system.rsplit("\n\n", 1)[-1].startswith("Working directory: ")
     assert "sort the photos" not in system and "in English" not in system
     opening = llm.requests[0][-1]["content"]

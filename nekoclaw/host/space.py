@@ -76,7 +76,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 
-from nekoclaw.host.ledger import Commission
+from nekoclaw.host.ledger import CARD_AUTHORS, Commission
 from nekoclaw.host.paths import DEFAULT_PROJECT, SpacePaths, safe_segment
 
 logger = logging.getLogger(__name__)
@@ -201,6 +201,11 @@ class Project:
     description: str = ""
     # Where its files are: the working directory of the commission it began with.
     workdir: str | None = None
+    # Who wrote ``description`` (``ledger.CARD_AUTHORS``): whoever made the
+    # project, the review of one of its commissions, or the user, whose
+    # words no review writes over (``TaskAgentSpace.describe_project``).
+    # Empty while there is none, and in a record written before this.
+    description_by: str = ""
     status: str = PROJECT_ACTIVE
     created_at: float = 0.0
     # When a commission was last filed under it; what archiving goes by.
@@ -5805,6 +5810,7 @@ class TaskAgentSpace:
             name=str(data.get("name") or directory.name) if archive_year is not None else directory.name,
             description=_one_line(data.get("description")),
             workdir=str(data["workdir"]) if isinstance(data.get("workdir"), str) and data["workdir"] else None,
+            description_by=str(data["description_by"]) if data.get("description_by") in CARD_AUTHORS else "",
             status=PROJECT_ARCHIVED if archive_year is not None else PROJECT_ACTIVE,
             created_at=number("created_at"),
             last_commission_at=number("last_commission_at"),
@@ -5939,11 +5945,13 @@ class TaskAgentSpace:
         workdir: str | None = None,
         at: float | None = None,
         count: bool = True,
+        description_by: str = "creator",
     ) -> Project:
         """Return the project of a name, making it when it is not there.
 
         With ``count`` a commission is counted for it and its idle time
-        starts anew.
+        starts anew. ``description`` is for a project that has none, and
+        ``description_by`` says who wrote it.
         """
         from config.nekoclaw_settings import SPACE_PROJECT_DESCRIPTION_MAX_TOKENS
 
@@ -5955,10 +5963,12 @@ class TaskAgentSpace:
         project, known = self._project_to_change(directory)
         if not known:
             project = Project(name=name, created_at=now)
+        given = "" if project.description else _cut(_one_line(redact(description)), SPACE_PROJECT_DESCRIPTION_MAX_TOKENS)
         project = replace(
             project,
             name=name,
-            description=project.description or _cut(_one_line(redact(description)), SPACE_PROJECT_DESCRIPTION_MAX_TOKENS),
+            description=project.description or given,
+            description_by=description_by if given else project.description_by,
             workdir=project.workdir or workdir,
             created_at=project.created_at or now,
             last_commission_at=max(project.last_commission_at, now) if count else project.last_commission_at,
@@ -6099,8 +6109,12 @@ class TaskAgentSpace:
         at: float | None = None,
         unless_archived: bool = False,
         unless_new: bool = False,
+        description_by: str = "creator",
     ) -> Project | None:
         """Return the project of a name for a commission filed under it now.
+
+        ``description`` is for a project that has none yet, and
+        ``description_by`` says who wrote it (``Project.description_by``).
 
         A project of the name, however the name is spelled, is used; one
         that is not there is made, or, with ``unless_new``, not made and
@@ -6116,7 +6130,9 @@ class TaskAgentSpace:
             wanted = normalize_name(name)
             active = next((item for item in self._active_projects() if normalize_name(item.name) == wanted), None)
             if active is not None:
-                return self._ensure_project(active.name, description=description, workdir=workdir, at=at)
+                return self._ensure_project(
+                    active.name, description=description, workdir=workdir, at=at, description_by=description_by
+                )
             archived = self._archived_of(name)
             if archived is not None:
                 if unless_archived:
@@ -6124,7 +6140,52 @@ class TaskAgentSpace:
                 return self._ensure_project(self._restore(archived).name, at=at)
             if unless_new:
                 return None
-            return self._ensure_project(name, description=description, workdir=workdir, at=at)
+            return self._ensure_project(
+                name, description=description, workdir=workdir, at=at, description_by=description_by
+            )
+
+        return await self._write(work)
+
+    async def describe_project(self, name: str, description: str, *, by: str) -> Project | None:
+        """Write what a project is for, and who says so; returns the project, or None when nothing was written.
+
+        ``by`` is one of ``ledger.CARD_AUTHORS``. What the user wrote is
+        the user's: only ``by="user"`` writes over it. Nothing is written
+        for a project that is not there (archived ones are not brought
+        back for this), for ``_daily``, for an empty description, or when
+        the project's record cannot be read. Its line in the index of all
+        projects is written anew with it.
+        """
+        from config.nekoclaw_settings import SPACE_PROJECT_DESCRIPTION_MAX_TOKENS
+
+        if by not in CARD_AUTHORS:
+            raise ValueError(f"unknown author of a description {by!r}")
+        safe_segment(name, "project")
+        text = _cut(_one_line(redact(description)), SPACE_PROJECT_DESCRIPTION_MAX_TOKENS)
+        if not text or name == DEFAULT_PROJECT:
+            return None
+
+        def work() -> Project | None:
+            paths = self._paths()
+            directory = paths.project_dir(name)
+            if not directory.is_dir():
+                return None
+            try:
+                project, known = self._project_to_change(directory)
+            except OSError:
+                logger.warning("the file of a project cannot be read; what it is for is left as it is")
+                return None
+            if not known or (project.description_by == "user" and by != "user"):
+                return None
+            changed = replace(project, description=text, description_by=by)
+            self._put_project(directory, changed)
+            try:
+                line, target = self._project_line(changed)
+                self._index_set(paths.index(None), line, target)
+            except OSError:
+                # The record has it; the line follows the next time it is written.
+                logger.warning("the line of a project in the index of the space was not changed", exc_info=True)
+            return changed
 
         return await self._write(work)
 

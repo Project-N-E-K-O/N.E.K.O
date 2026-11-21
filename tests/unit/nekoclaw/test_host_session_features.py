@@ -1122,8 +1122,10 @@ def _words(count: int, prefix: str) -> str:
 
 
 async def _small_window() -> dict[str, Any]:
-    # A window small enough that a few long answers are something to sum up.
-    return {"model": "fake-model", "api_key": "test-key", "context_window": 16_000, "max_output_tokens": 2_000}
+    # A window small enough that a few long answers are something to sum up, and large enough
+    # that they are not summed up before the test asks for it: the session of a project is told
+    # of its role and of the presets, some 500 tokens the window has to hold besides.
+    return {"model": "fake-model", "api_key": "test-key", "context_window": 17_000, "max_output_tokens": 2_000}
 
 
 def _long_work(summary: str, context: int = 9_000) -> list[list[Any]]:

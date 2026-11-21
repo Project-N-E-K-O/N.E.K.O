@@ -22,7 +22,9 @@
   a session takes several, one after the other: the session of a project
   takes every commission filed under it. See ``Session``. What the model
   requests of a session used is added up with the session and with the
-  commission worked on in it (``Ledger.add_usage``).
+  commission worked on in it (``Ledger.add_usage``). A session has a preset
+  and a card (its title, what it takes, a summary), written through
+  ``Ledger.write_card`` alone.
 * ``events``      - what happened to a commission, in order; the commission
   board replays it.
 * ``outbox``      - reports for the main server. A report is written here
@@ -121,6 +123,16 @@ LIVE_SESSION_STATUSES: frozenset[str] = frozenset({"idle", "running", "waiting",
 # "child": of a task agent that another task agent started. "fork": made
 # from another session by copying what was said in it (``forked_from``).
 SESSION_KINDS: tuple[str, ...] = ("project", "single", "child", "fork")
+# The preset a session has when whoever makes it names none, by its kind
+# (``templates.py`` has what each preset is). A copy has one that is no
+# template: it is opened as the session it was copied from, and reads only.
+PRESET_OF_KIND: dict[str, str] = {"project": "boss", "single": "general", "child": "worker", "fork": "shadow"}
+# Who wrote a line of a session's card: whoever made the session, the review
+# of a commission worked on in it, or the user. Empty for a line nobody wrote.
+CARD_AUTHORS: tuple[str, ...] = ("creator", "review", "user")
+# The lines of a card, each with a column of its own that says who wrote it
+# (``<line>_by``).
+CARD_FIELDS: tuple[str, ...] = ("title", "duty", "summary")
 
 # "session": filed for a session that another session wrote to while no
 # commission was under way in it; what was written is what it is about.
@@ -152,8 +164,12 @@ COMMISSION_OVER_REASON = "its commission is over"
 HOST_ENDED_REASON = "the host process ended before this finished"
 
 # (5: the notes sessions write to one another and what a session asked to be
-# woken for have tables of their own, and a commission may rest.)
-_SCHEMA_VERSION = 6
+# woken for have tables of their own, and a commission may rest. 7: a session
+# has a preset and a card.)
+_SCHEMA_VERSION = 7
+# The first version in which a session has a preset: the sessions of a ledger
+# of an earlier one are given theirs by their kind.
+_PRESETS_SINCE_VERSION = 7
 # The first version in which a commission is worked on in a session that is a
 # row of its own; a ledger of an earlier one has its commissions given theirs.
 _SESSIONS_SINCE_VERSION = 3
@@ -241,7 +257,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     tokens_out INTEGER NOT NULL DEFAULT 0,
     tokens_cache_read INTEGER NOT NULL DEFAULT 0,
     tokens_cache_write INTEGER NOT NULL DEFAULT 0,
-    context_tokens INTEGER NOT NULL DEFAULT 0
+    context_tokens INTEGER NOT NULL DEFAULT 0,
+    preset TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    title_by TEXT NOT NULL DEFAULT '',
+    duty TEXT NOT NULL DEFAULT '',
+    duty_by TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    summary_by TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS sessions_by_name ON sessions (lanlan_name, name);
 CREATE INDEX IF NOT EXISTS sessions_by_project ON sessions (lanlan_name, project, kind);
@@ -496,6 +519,21 @@ class Session:
     # How long its conversation was as of its last request, with what every
     # request begins with: what the next one sends, about.
     context_tokens: int = 0
+    # Which preset it was made with (``templates.py``): what it may do and
+    # what it is told of its role. Set when the session is made, by its kind
+    # unless one is named (``PRESET_OF_KIND``), and never changed.
+    preset: str = ""
+    # Its card, for whoever shows the sessions: a short title (empty until
+    # somebody writes one; the name of the preset is shown meanwhile), what
+    # kind of work it takes, and what it has done so far. Each with who
+    # wrote it (``CARD_AUTHORS``; empty while the line is). Written by
+    # ``Ledger.write_card`` only: what the user wrote stays the user's.
+    title: str = ""
+    title_by: str = ""
+    duty: str = ""
+    duty_by: str = ""
+    summary: str = ""
+    summary_by: str = ""
 
     @property
     def tokens(self) -> int:
@@ -513,14 +551,41 @@ _ADDED_SESSION_COLUMNS: tuple[tuple[str, str], ...] = (
     ("tokens_cache_read", "INTEGER NOT NULL DEFAULT 0"),
     ("tokens_cache_write", "INTEGER NOT NULL DEFAULT 0"),
     ("context_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    ("preset", "TEXT NOT NULL DEFAULT ''"),
+    ("title", "TEXT NOT NULL DEFAULT ''"),
+    ("title_by", "TEXT NOT NULL DEFAULT ''"),
+    ("duty", "TEXT NOT NULL DEFAULT ''"),
+    ("duty_by", "TEXT NOT NULL DEFAULT ''"),
+    ("summary", "TEXT NOT NULL DEFAULT ''"),
+    ("summary_by", "TEXT NOT NULL DEFAULT ''"),
 )
+# The columns of a session's card: its lines, and who wrote each.
+_CARD_COLUMNS: frozenset[str] = frozenset(CARD_FIELDS) | {f"{name}_by" for name in CARD_FIELDS}
 # Columns ``update_session`` may write. What was used is written by
-# ``add_usage``, and where a copy was made from when it is made.
+# ``add_usage``, and where a copy was made from when it is made. A session's
+# preset is set when it is made and stays; its card is written by
+# ``write_card``, which keeps what the user wrote.
 _SESSION_UPDATABLE: frozenset[str] = (
     frozenset(_SESSION_COLUMNS)
-    - {"id", "lanlan_name", "kind", "created_at", "forked_from", "forked_at", "context_tokens"}
+    - {"id", "lanlan_name", "kind", "created_at", "forked_from", "forked_at", "context_tokens", "preset"}
     - frozenset(_USAGE_COLUMNS)
+    - _CARD_COLUMNS
 )
+# How long the name of a preset may be: that of a template (``templates.py``).
+_PRESET_NAME_MAX = 64
+
+
+def _card_line(name: str, value: Any) -> str:
+    """Return a line of a card as it is kept: on one line, within the cap of that line."""
+    from config import nekoclaw_settings as settings
+    from utils.tokenize import truncate_to_tokens
+
+    caps = {
+        "title": settings.CARD_TITLE_MAX_TOKENS,
+        "duty": settings.CARD_DUTY_MAX_TOKENS,
+        "summary": settings.CARD_SUMMARY_MAX_TOKENS,
+    }
+    return truncate_to_tokens(" ".join(str(value or "").split()), caps[name])
 
 
 @dataclass(frozen=True, slots=True)
@@ -664,6 +729,24 @@ class SessionRow:
 
     session: Session
     commissions: tuple[Commission, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BoardRows:
+    """What the board of sessions is put together from, read in one go; see ``Ledger.board_rows``."""
+
+    # The sessions on the board: those of projects, then those of one
+    # commission, then the task agents and the copies of both.
+    sessions: tuple[Session, ...]
+    # By session: the commission in hand there, if one is under way.
+    in_hand: dict[str, Commission]
+    # By commission in hand: what its latest tool calls were given
+    # (``tool_start`` events), the newest first.
+    tool_calls: dict[str, tuple[dict[str, Any], ...]]
+    # By project: how many of its commissions were done since the day began.
+    done_today: dict[str, int]
+    # How many rows this ledger had written when these were read (``changes``).
+    changes: int
 
 
 # Told about a commission that was filed (``previous`` None) or whose status
@@ -897,6 +980,12 @@ class Ledger:
                 # is given one when it is taken up, its project's if it has
                 # a project, which a session under its own id would not be.
                 self._give_sessions(conn)
+            if version < _PRESETS_SINCE_VERSION:
+                # The sessions a build without presets made: each has the
+                # one its kind has. (One made above has it already.) Before
+                # the version is written, so one cut off here is made again.
+                for kind, preset in PRESET_OF_KIND.items():
+                    conn.execute("UPDATE sessions SET preset = ? WHERE kind = ? AND preset = ''", (preset, kind))
             conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
             # Where the file stands, before this process writes to it.
             high = conn.execute(
@@ -1554,6 +1643,7 @@ class Ledger:
         row: dict[str, Any] = {name: None for name in _SESSION_COLUMNS}
         row.update(id=new_session_id(), kind="single", status="closed", created_at=now, last_active_at=now)
         row.update({name: 0 for name in (*_USAGE_COLUMNS, "context_tokens")})
+        row.update({name: "" for name in ("preset", *_CARD_COLUMNS)})
         row.update(values)
         if row["status"] not in SESSION_STATUSES:
             raise ValueError(f"unknown session status {row['status']!r}")
@@ -1561,6 +1651,18 @@ class Ledger:
             raise ValueError(f"unknown session kind {row['kind']!r}")
         if not row["lanlan_name"]:
             raise ValueError("a session belongs to a character")
+        # Every session has a preset: its kind's, unless one is named.
+        preset = row["preset"] or PRESET_OF_KIND[row["kind"]]
+        if not isinstance(preset, str) or preset != preset.strip() or len(preset) > _PRESET_NAME_MAX:
+            raise ValueError(f"a preset is named by a short word, not {preset!r}")
+        row["preset"] = preset
+        for name in CARD_FIELDS:
+            row[name] = _card_line(name, row[name])
+            by = row[f"{name}_by"] or ""
+            if by and by not in CARD_AUTHORS:
+                raise ValueError(f"unknown author of a card line {by!r}")
+            # Written by whoever makes the session, unless it says who did.
+            row[f"{name}_by"] = (by or "creator") if row[name] else ""
         row["name"] = self._free_name(conn, row["lanlan_name"], row["name"])
         columns = ", ".join(_SESSION_COLUMNS)
         marks = ", ".join("?" for _ in _SESSION_COLUMNS)
@@ -1570,7 +1672,16 @@ class Ledger:
         return session
 
     async def create_session(self, **values: Any) -> Session:
-        """Make a session. ``name`` is what it is to be called; a name that is taken gets a number."""
+        """Make a session. ``name`` is what it is to be called; a name that is taken gets a number.
+
+        ``values`` are columns of ``Session``. Of its card: ``preset``
+        (its kind's when left out, ``PRESET_OF_KIND``), ``title``, ``duty``
+        and ``summary``, each cut to its cap, and ``title_by``, ``duty_by``
+        and ``summary_by`` (``CARD_AUTHORS``), which say who wrote the line
+        and are ``"creator"`` for a line given without one. A line the
+        user wrote (``"user"``) is not written over by a review later
+        (``write_card``).
+        """
         unknown = set(values) - set(_SESSION_COLUMNS)
         if unknown:
             raise ValueError(f"unknown session fields: {sorted(unknown)}")
@@ -1617,9 +1728,20 @@ class Ledger:
         conn.execute("UPDATE commissions SET session_id = ? WHERE id = ?", (session_id, commission_id))
 
     async def give_session(
-        self, commission_id: str, *, kind: str, name: Any, parent_id: str | None = None
+        self,
+        commission_id: str,
+        *,
+        kind: str,
+        name: Any,
+        parent_id: str | None = None,
+        preset: str | None = None,
+        duty: Any = None,
     ) -> tuple[Commission, Session]:
         """Give a commission the session it is worked on in, and return both.
+
+        ``preset`` and ``duty`` (what it takes, the first line of its card,
+        put down as written by whoever made it) are for a session that is
+        made here; one that is there already keeps its own.
 
         One that has a session keeps it. Otherwise, for ``kind``
         ``"project"``, it gets the session of its project for its
@@ -1666,6 +1788,8 @@ class Ledger:
                         "kind": kind,
                         "project": commission.project,
                         "parent_id": parent_id,
+                        "preset": preset or "",
+                        "duty": duty or "",
                     },
                 )
             if commission.session_id != session.id:
@@ -1699,6 +1823,173 @@ class Ledger:
                 assignments = ", ".join(f"{name} = ?" for name in changes)
                 conn.execute(f"UPDATE sessions SET {assignments} WHERE id = ?", [*changes.values(), session_id])
             return _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
+
+        return await self.run(work)
+
+    async def write_card(self, session_id: str, *, by: str, **lines: Any) -> tuple[Session | None, tuple[str, ...]]:
+        """Write lines of a session's card; returns the session and which lines were written.
+
+        ``lines`` are ``title``, ``duty`` and ``summary`` (``CARD_FIELDS``);
+        ``by`` says who writes (``CARD_AUTHORS``). A line the user wrote is
+        the user's: only ``by="user"`` writes over it, and whatever else
+        is given for it is dropped, with the other lines still written. A
+        line given as None is left alone; an empty one empties the line
+        (and it has no author then). Read and written in one go.
+        """
+        if by not in CARD_AUTHORS:
+            raise ValueError(f"unknown author of a card line {by!r}")
+        unknown = set(lines) - set(CARD_FIELDS)
+        if unknown:
+            raise ValueError(f"unknown card lines: {sorted(unknown)}")
+        wanted = {name: _card_line(name, value) for name, value in lines.items() if value is not None}
+
+        def work(conn: sqlite3.Connection) -> tuple[Session | None, tuple[str, ...]]:
+            current = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
+            if current is None:
+                return None, ()
+            changes: dict[str, Any] = {}
+            written: list[str] = []
+            for name, value in wanted.items():
+                if getattr(current, f"{name}_by") == "user" and by != "user":
+                    continue
+                changes[name] = value
+                changes[f"{name}_by"] = by if value else ""
+                written.append(name)
+            if changes:
+                assignments = ", ".join(f"{name} = ?" for name in changes)
+                conn.execute(f"UPDATE sessions SET {assignments} WHERE id = ?", [*changes.values(), session_id])
+            kept = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
+            return kept, tuple(written)
+
+        return await self.run(work)
+
+    async def changes(self) -> int:
+        """Return how many rows this ledger has written since it was opened.
+
+        Goes up with every write and with nothing else: two reads that
+        give the same number saw the same ledger. Counted by the
+        connection itself; asking costs no query. Together with
+        ``instance`` it says so across a restart as well.
+        """
+        return await self.run(lambda conn: conn.total_changes)
+
+    async def board_rows(
+        self,
+        *,
+        lanlan_name: str | None = None,
+        project: str | None = None,
+        recent_since: float,
+        child_since: float,
+        day_start: float,
+        loose_max: int,
+        children_max: int,
+        events_each: int,
+    ) -> BoardRows:
+        """Return the sessions that are on the board, each with the commission in hand and its latest tool calls.
+
+        Not every session there ever was: the session of every project
+        (of ``project`` alone, when one is named); the sessions of one
+        commission in which one is under way or which were in use since
+        ``recent_since``, ``loose_max`` of them at most and none when a
+        project is named; under each of these the task agents it started
+        whose starting commission is under way or changed since
+        ``child_since`` (``children_max`` at most, the ones last in use),
+        and its copies that are open or have a commission under way.
+        ``lanlan_name`` leaves one character's.
+
+        The commission in hand is the one under way in the session: the
+        one at work or waiting for the user before one that rests, and
+        that before one that waits for its turn. Of its events the latest
+        ``events_each`` are read, and the tool calls among them handed
+        back; no more of the events table is looked at. ``done_today``
+        counts her own commissions that were done since ``day_start``,
+        by project. One transaction: what is handed back fits together.
+        """
+        under_way = sorted(UNDER_WAY_STATUSES)
+        marks = ", ".join("?" for _ in under_way)
+        live = sorted(LIVE_SESSION_STATUSES)
+        who = " AND lanlan_name = ?" if lanlan_name is not None else ""
+        whose = [lanlan_name] if lanlan_name is not None else []
+
+        def chunks(items: list[str], size: int = 400) -> Iterable[list[str]]:
+            for start in range(0, len(items), size):
+                yield items[start : start + size]
+
+        def rank(item: Commission) -> int:
+            if item.status == "queued":
+                return 2
+            return 1 if item.resting else 0
+
+        def work(conn: sqlite3.Connection) -> BoardRows:
+            def sessions_of(sql: str, params: list[Any]) -> list[Session]:
+                return [item for item in (_session(row) for row in conn.execute(sql, params).fetchall()) if item]
+
+            sql = f"SELECT * FROM sessions WHERE kind = 'project'{who}"
+            params: list[Any] = list(whose)
+            if project is not None:
+                sql += " AND project = ?"
+                params.append(project)
+            leads = sessions_of(sql + " ORDER BY last_active_at DESC, rowid DESC", params)
+            if project is None:
+                leads += sessions_of(
+                    "SELECT * FROM (SELECT sessions.*, sessions.rowid AS number, EXISTS (SELECT 1 FROM commissions "
+                    f"WHERE commissions.session_id = sessions.id AND commissions.status IN ({marks})) AS under_way "
+                    f"FROM sessions WHERE kind = 'single'{who}) WHERE under_way OR last_active_at >= ? "
+                    "ORDER BY under_way DESC, last_active_at DESC, number DESC LIMIT ?",
+                    [*under_way, *whose, recent_since, int(loose_max)],
+                )
+            helpers: list[Session] = []
+            shown: dict[str, int] = {}
+            for some in chunks([item.id for item in leads]):
+                holes = ", ".join("?" for _ in some)
+                started = sessions_of(
+                    "SELECT s.* FROM sessions s JOIN commissions c ON c.id = s.id JOIN commissions p ON p.id = c.parent_id "
+                    f"WHERE s.kind = 'child' AND s.parent_id IN ({holes}) AND (p.status IN ({marks}) OR p.updated_at >= ?) "
+                    "ORDER BY s.last_active_at DESC, s.rowid DESC",
+                    [*some, *under_way, child_since],
+                )
+                for item in started:
+                    count = shown.get(item.parent_id or "", 0)
+                    if count < children_max:
+                        shown[item.parent_id or ""] = count + 1
+                        helpers.append(item)
+                helpers += sessions_of(
+                    f"SELECT s.* FROM sessions s WHERE s.kind = 'fork' AND s.forked_from IN ({holes}) AND ("
+                    f"s.status IN ({', '.join('?' for _ in live)}) OR EXISTS (SELECT 1 FROM commissions c "
+                    f"WHERE c.session_id = s.id AND c.status IN ({marks}))) ORDER BY s.last_active_at DESC, s.rowid DESC",
+                    [*some, *live, *under_way],
+                )
+            found = [*leads, *helpers]
+            in_hand: dict[str, Commission] = {}
+            tool_calls: dict[str, tuple[dict[str, Any], ...]] = {}
+            for session in found:
+                rows = conn.execute(
+                    f"SELECT * FROM commissions WHERE session_id = ? AND status IN ({marks}) ORDER BY created_at, rowid",
+                    [session.id, *under_way],
+                ).fetchall()
+                under = [item for item in (_commission(row) for row in rows) if item]
+                if not under:
+                    continue
+                commission = min(under, key=rank)
+                in_hand[session.id] = commission
+                calls = conn.execute(
+                    "SELECT payload FROM (SELECT seq, type, payload FROM events WHERE commission_id = ? "
+                    "ORDER BY seq DESC LIMIT ?) WHERE type = 'tool_start' ORDER BY seq DESC",
+                    (commission.id, int(events_each)),
+                ).fetchall()
+                tool_calls[commission.id] = tuple(_load(row["payload"]) for row in calls)
+            done = conn.execute(
+                "SELECT project, COUNT(*) AS done FROM commissions WHERE status = 'done' AND parent_id IS NULL "
+                f"AND project IS NOT NULL AND ended_at >= ?{who} GROUP BY project",
+                [day_start, *whose],
+            ).fetchall()
+            return BoardRows(
+                sessions=tuple(found),
+                in_hand=in_hand,
+                tool_calls=tool_calls,
+                done_today={row["project"]: int(row["done"]) for row in done},
+                changes=conn.total_changes,
+            )
 
         return await self.run(work)
 

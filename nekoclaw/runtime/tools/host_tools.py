@@ -156,16 +156,16 @@ def build_host_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
             prompt = str(args["prompt"])
             if not prompt.strip():
                 raise ToolError("prompt must be a non-empty string")
-            reply = await ask_host(
-                "subagent_start",
-                {
-                    "description": str(args["description"]),
-                    "prompt": prompt,
-                    "name": name,
-                    "cwd": str(ctx.resolve(str(args["cwd"]))) if args.get("cwd") else None,
-                },
-                call,
-            )
+            payload = {
+                "description": str(args["description"]),
+                "prompt": prompt,
+                "name": name,
+                "cwd": str(ctx.resolve(str(args["cwd"]))) if args.get("cwd") else None,
+            }
+            if args.get("preset"):
+                # Which preset it is started with; the host knows which there are.
+                payload["preset"] = str(args["preset"]).strip()
+            reply = await ask_host("subagent_start", payload, call)
             started = reply.get("name")
             if not isinstance(started, str) or not started:
                 raise ToolError("the host did not return a name for the subagent")

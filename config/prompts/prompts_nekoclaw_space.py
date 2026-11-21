@@ -26,6 +26,13 @@ agent's instructions (design section 8.7). The language the review and the
 entries are written in is the commission's, named in the prompt.
 """
 
+from config.prompts.prompts_nekoclaw_presets import (
+    CARD_DESCRIPTION_GUIDE,
+    CARD_DUTY_GUIDE,
+    CARD_SUMMARY_GUIDE,
+    CARD_TITLE_GUIDE,
+)
+
 # ---------------------------------------------------------------------------
 # Appended to a task agent's instructions. Nothing of this is added while the
 # space holds nothing for the commission.
@@ -103,7 +110,10 @@ SPACE_EVIDENCE_NOT_COUNTED = " Not counted as evidence: {paths}."
 
 # ---------------------------------------------------------------------------
 # The review of a finished commission. One call writes the review, names the
-# entries worth keeping and says which project the commission belongs to.
+# entries worth keeping, says which project the commission belongs to, and
+# writes the card of the session it was worked on in anew (its title, what
+# it takes, a summary, what its project is for), in the words both calls
+# that write a card are told of its lines (``prompts_nekoclaw_presets.py``).
 # The opening words are what the free tier recognises a request by.
 # ---------------------------------------------------------------------------
 
@@ -119,7 +129,7 @@ TASK_AGENT_REVIEW_SYSTEM_PROMPT = (
     "Return ONLY a JSON object, no other text:\n"
     '{{"review": "...", "entries": [{{"title": "...", "description": "...", "type": "lesson", '
     '"scope": "project", "content": "...", "evidence": ["..."]}}], "project": "", '
-    '"project_description": ""}}\n'
+    '"project_description": "", "card": {{"title": "", "duty": "", "summary": "", "description": ""}}}}\n'
     "review: three to six sentences, 250 words at most, and no longer than it takes. One sentence on "
     "what was asked and how it ended; the rest on what went wrong, cost time or led nowhere, and what "
     "would have saved time, not on steps that went as planned. Only what the account shows; do not "
@@ -144,7 +154,19 @@ TASK_AGENT_REVIEW_SYSTEM_PROMPT = (
     "work's name: the name of a known project when it belongs to one, otherwise a short, specific name "
     "as the user would call it, and one line about it in project_description. An errand that is over "
     "when it is done is not a project.\n"
-    "Write the review, the entries and project_description in {language}."
+    "card: the card of the task agent session this commission was worked on in, as the user sees it "
+    "in a list of task agents. You are shown the card as it stands. Write each line anew in the light "
+    'of this commission, keeping what still holds, and give "" for a line you would leave as it is. '
+    + CARD_TITLE_GUIDE
+    + " "
+    + CARD_DUTY_GUIDE
+    + " "
+    + CARD_SUMMARY_GUIDE
+    + " "
+    + CARD_DESCRIPTION_GUIDE
+    + ' Only for a commission that is filed under a project, and "" when what the card has still '
+    "says it.\n"
+    "Write the review, the entries, project_description and the card in {language}."
 )
 
 # Rendered with str.format; every value is cut to its own cap before.
@@ -153,7 +175,8 @@ TASK_AGENT_REVIEW_USER_TEMPLATE = (
     "What the user said: {user_text}\n"
     "Ended as: {status}\n"
     "Result: {result}\n"
-    "Project: {project}\n\n"
+    "Project: {project}\n"
+    "Card of its session now:\n{card}\n\n"
     "What the task agent did:\n{process}\n\n"
     "Already filed during the commission:\n{filed}\n\n"
     "Known projects:\n{projects}\n\n"
@@ -164,6 +187,12 @@ TASK_AGENT_REVIEW_USER_TEMPLATE = (
 # Marks the part of the account that was left out, between its beginning and its end.
 TASK_AGENT_REVIEW_PROCESS_GAP = "[... {count} steps left out ...]"
 TASK_AGENT_REVIEW_NOTHING = "(none)"
+# The card as the review is shown it. Rendered with str.format; a line
+# nobody wrote reads as TASK_AGENT_REVIEW_NOTHING.
+TASK_AGENT_REVIEW_CARD = "title: {title}\nduty: {duty}\nsummary: {summary}\ndescription: {description}"
+# In place of the card, for a commission whose session has none to write (it
+# was worked on in a copy of a session).
+TASK_AGENT_REVIEW_NO_CARD = "(it has none: leave the lines of card empty)"
 
 # ---------------------------------------------------------------------------
 # The summary of a project that is archived.

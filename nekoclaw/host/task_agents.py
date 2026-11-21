@@ -161,6 +161,9 @@ _ASK_NOT_ASKED_REASON = "not asked after all"
 # waiting to be woken. The same holds for a copy of a session that answers a
 # question (``_cb_session_ask``), which is started under the one that asked.
 _CHILD_DISABLED_TOOLS = ("subagent", "message_session", "schedule_wake", "ask_session")
+# How many copies of copies are followed back to the session they began with,
+# to open a copy by that one's preset.
+_COPY_CHAIN_MAX = 8
 # How long what is to be handed to a session waits for that session's
 # runtime to have closed it, when it is closing this moment.
 _CLOSING_RETRY_SECONDS = 1.0
@@ -966,6 +969,15 @@ class TaskAgentManager:
         self._registry = registry
         self._reporter = reporter
         self._paths = paths
+        # The presets sessions are opened by: the built-in ones and the
+        # user's template files (``templates.py``). Reads the disk; asked
+        # in a thread.
+        from nekoclaw.host.templates import TemplateStore
+
+        self.templates = TemplateStore(paths.space)
+        # The preset a task agent named for one it started, until that one
+        # is given its session (``_cb_subagent_start``, ``_give_session``).
+        self._presets_wanted: dict[str, str] = {}
         self._model_config = model_config
         self._gateway = gateway
         self._enabled = enabled
@@ -1658,10 +1670,14 @@ class TaskAgentManager:
         from config.nekoclaw_settings import TASK_AGENT_SESSION_NAME_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
+        wanted = self._presets_wanted.pop(commission.id, None)
         if commission.session_id:
             self._session_of[commission.id] = commission.session_id
             return commission
         commission = await self._file_under_project(commission)
+        # What the session takes, as the first line of its card says until
+        # a review writes a better one: what it was made for. No model is
+        # asked. (A session that is there already keeps its card.)
         if commission.parent_id is not None:
             parent = await self._ledger.get(commission.parent_id)
             parent_session = await self._ledger.get_session(parent.session_id) if parent is not None else None
@@ -1671,22 +1687,77 @@ class TaskAgentManager:
                 kind="child",
                 name=f"{lead}/{commission.name or commission.id}",
                 parent_id=parent_session.id if parent_session is not None else None,
+                # The one its starter named; a worker when it named none.
+                preset=wanted,
+                duty=commission.title,
             )
         elif commission.project and commission.project != DEFAULT_PROJECT:
             commission, session = await self._ledger.give_session(
-                commission.id, kind="project", name=commission.project
+                commission.id,
+                kind="project",
+                name=commission.project,
+                duty=await self._project_about(commission.project) or commission.title,
             )
         else:
             commission, session = await self._ledger.give_session(
                 commission.id,
                 kind="single",
                 name=truncate_to_tokens(commission.title, TASK_AGENT_SESSION_NAME_MAX_TOKENS),
+                duty=commission.title,
             )
         self._session_of[commission.id] = session.id
         return commission
 
-    def _base_instructions(self, commission: Commission, *, with_gateway: bool) -> str:
+    async def _project_about(self, project: str) -> str:
+        """Return what a project is for, as its record says; empty when it says nothing or cannot be read."""
+        try:
+            found = await self._space.get_project(project)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the session is made all the same, with its first commission's title
+            logger.warning("reading what a project is for failed", exc_info=True)
+            return ""
+        return found.description if found is not None else ""
+
+    async def _template_of(self, kept: Session) -> Any:
+        """Return the template a session is opened by (``templates.Template``); raises when its preset cannot be used.
+
+        A copy is opened as the session it was copied from (and without
+        the tools every copy is without, ``_spec``): its preset is no
+        template. One whose template cannot be used is not opened by
+        another in its place: what it would then be allowed is not what
+        its user set down.
+        """
+        from config.prompts.prompts_nekoclaw_presets import PRESET_UNUSABLE
+        from nekoclaw.host.templates import SHADOW, TemplateError, builtin_templates
+
+        source = kept
+        for _ in range(_COPY_CHAIN_MAX):
+            if source.kind != "fork" or not source.forked_from:
+                break
+            origin = await self._ledger.get_session(source.forked_from)
+            if origin is None:
+                break
+            source = origin
+        if source.kind == "fork" or source.preset == SHADOW:
+            # A copy whose origin is not on record any more: nothing to take
+            # after. It has what every copy has, and no role of its own.
+            return builtin_templates()["general"]
+        try:
+            return await asyncio.to_thread(self.templates.resolve, source.preset, source.project)
+        except TemplateError as exc:
+            raise RuntimeError(PRESET_UNUSABLE.format(name=source.preset, reason=exc)) from exc
+
+    def _base_instructions(
+        self, commission: Commission, *, with_gateway: bool, template: Any = None, roster: tuple[Any, ...] = ()
+    ) -> str:
         """Return what the host adds to the system prompt of the session a commission is worked on in.
+
+        ``template`` is the preset the session is opened by and ``roster``
+        the presets it can start task agents with (``_roster``): after
+        what every session is told come the list of those, for a session
+        that may start task agents, and then what its own preset says of
+        its role.
 
         Nothing of the commission itself: a session takes several, and its
         system prompt is kept as it was first opened with (the runtime
@@ -1702,8 +1773,10 @@ class TaskAgentManager:
         (The runtime puts what it says itself of one session, its working
         directory, behind all of this: ``runtime/prompt.py``.)
         """
-        from config.nekoclaw_settings import TASK_AGENT_BRIEF_MAX_TOKENS
+        from config.nekoclaw_settings import TASK_AGENT_SESSION_INSTRUCTIONS_MAX_TOKENS
         from config.prompts import prompts_nekoclaw_brain as texts
+        from config.prompts import prompts_nekoclaw_presets as presets
+        from nekoclaw.host.templates import model_name
         from utils.tokenize import truncate_to_tokens
 
         parts = [texts.TASK_AGENT_BRIEF_GATEWAY_NOTE] if with_gateway else []
@@ -1711,7 +1784,33 @@ class TaskAgentManager:
             parts.append(texts.TASK_AGENT_CHILD_FRAME)
         else:
             parts.append(texts.TASK_AGENT_SESSION_FRAME.format(lanlan_name=commission.lanlan_name))
-        return truncate_to_tokens("\n\n".join(parts), TASK_AGENT_BRIEF_MAX_TOKENS)
+        if roster:
+            lines = [
+                presets.PRESET_ROSTER_LINE.format(name=model_name(item.name), description=item.description)
+                for item in roster
+            ]
+            parts.append("\n".join([presets.PRESET_ROSTER_INTRO, *lines]))
+        if template is not None and template.body:
+            parts.append(template.body)
+        return truncate_to_tokens("\n\n".join(parts), TASK_AGENT_SESSION_INSTRUCTIONS_MAX_TOKENS)
+
+    async def _roster(self, commission: Commission, kept: Session, template: Any) -> tuple[Any, ...]:
+        """Return the presets a session is told it can start task agents with; none for one that starts none.
+
+        By what the session is, not by the tools this one start leaves it:
+        a copy is told what the session it was copied from is told. A list
+        that cannot be read leaves the session without one: it starts
+        workers, as before there were presets.
+        """
+        if commission.parent_id is not None or not template.delegates:
+            return ()
+        try:
+            return tuple(await asyncio.to_thread(self.templates.roster, kept.project))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - it starts all the same
+            logger.warning("listing the presets for a session failed", exc_info=True)
+            return ()
 
     def note_filed(self, commission: Commission) -> None:
         """Keep what she and the user said just before a commission that was filed this moment.
@@ -2270,7 +2369,9 @@ class TaskAgentManager:
             )
 
         async def open_if_authorized(runtime, spec) -> bool:
-            brief = await self._space_brief(commission, receiving)
+            # A preset without memory is told nothing of the space: it works
+            # with what it is handed and nothing that was noted before.
+            brief = await self._space_brief(commission, receiving) if template.remembers else ""
             if self._closed or self._sessions.get(commission_id) is not session:
                 return False
             if session.closing or (session.stands is not None and session.stands.status in ENDED_STATUSES):
@@ -2327,6 +2428,9 @@ class TaskAgentManager:
             if kept is None:
                 raise RuntimeError("the session of the commission is not on record")
             session.cleared_before = kept.status == "cleared"
+            # What the session may do and is told of its role. One whose
+            # preset cannot be used fails here, with the reason.
+            template = await self._template_of(kept)
             if (
                 kept.kind == "fork"
                 and kept.forked_from
@@ -2412,8 +2516,9 @@ class TaskAgentManager:
                     commission.id,
                     candidate_plugin_ids=self._candidates.get(commission.id, ()),
                     supports_images=model.supports_images,
-                    # A copy of a session changes nothing, whichever way.
-                    reads_only=kept.kind == "fork",
+                    # A copy of a session changes nothing, whichever way; nor
+                    # does a session whose preset is without the tool that calls.
+                    reads_only=kept.kind == "fork" or template.calls_nothing,
                     first_turn_groups=groups,
                 )
                 gateway_spec = GatewaySpec(
@@ -2444,6 +2549,7 @@ class TaskAgentManager:
             # opening brief can reserve a call against the new run.
             spec = await self._spec(
                 commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec,
+                template=template,
             )
             # On record with the session from here on: a later commission of
             # it is opened in the same place. (That the session is at work
@@ -2711,9 +2817,15 @@ class TaskAgentManager:
 
     async def _spec(
         self, commission: Commission, kept: Session, model: Any, *, workdir: str, session_dir: str, gateway: Any,
-        idle_compaction: bool = False,
+        idle_compaction: bool = False, template: Any = None,
     ) -> Any:
         """Return what a runtime is given to open a session with, for the commission that is worked on in it.
+
+        ``template`` is the preset the session is opened by (``_template_of``;
+        looked up here when it is not given): the tools it withholds are
+        withheld besides those below, its sessions make no more requests
+        in one run than it allows, and what it says of the role is in the
+        instructions.
 
         ``kept`` is the session as the ledger has it. One that was made
         from another by copying what was said in it is opened without the
@@ -2742,14 +2854,24 @@ class TaskAgentManager:
         withheld = set(_CHILD_DISABLED_TOOLS) if commission.parent_id is not None else set()
         if kept.kind == "fork":
             withheld.update(TASK_AGENT_FORK_WITHHELD_TOOLS)
-        # A copy that answers a question makes no more requests than this.
-        limits = RuntimeLimits(max_turns=SESSION_ASK_MAX_REQUESTS) if commission.source == "ask" else RuntimeLimits()
+        if template is None:
+            template = await self._template_of(kept)
+        withheld.update(template.withheld())
+        # A copy that answers a question makes no more requests than this,
+        # and no session more than its preset allows.
+        most = [SESSION_ASK_MAX_REQUESTS] if commission.source == "ask" else []
+        if template.max_requests is not None:
+            most.append(template.max_requests)
+        limits = RuntimeLimits(max_turns=min(most)) if most else RuntimeLimits()
+        roster = await self._roster(commission, kept, template)
         return TaskAgentSpec(
             session_id=kept.id,
             workdir=workdir,
             session_dir=session_dir,
             model=model,
-            instructions=self._base_instructions(commission, with_gateway=gateway is not None),
+            instructions=self._base_instructions(
+                commission, with_gateway=gateway is not None, template=template, roster=roster
+            ),
             idle_compaction=idle_compaction,
             top_level=commission.parent_id is None,
             disabled_tools=sorted(withheld),
@@ -6045,6 +6167,7 @@ class TaskAgentManager:
         if parent.parent_id is not None:
             raise RuntimeError("a child task agent cannot start further task agents")
         workdir = await self._child_workdir(parent, payload.get("cwd"))
+        preset = await self._preset_wanted(parent, payload.get("preset"))
         async with self._naming_members:
             # Read and filed with no other member of the team named between
             # (a question it asks is named under the same hold): one started
@@ -6072,20 +6195,56 @@ class TaskAgentManager:
                 conversation_id=parent.conversation_id,
                 lang=parent.lang,
             )
+            if preset is not None:
+                # For when it is given its session, on the way to its start.
+                self._presets_wanted[child.id] = preset
         # A stop of the parent sets its status before it looks for children,
         # so a child filed after that look is caught here, and one filed
         # before it is stopped by the stop itself.
         current = await self._ledger.get(parent.id)
         if current is None or current.status not in ("working", "waiting_user"):
+            self._presets_wanted.pop(child.id, None)
             await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
             raise RuntimeError("the commission was stopped; no task agent is started")
-        await self._ledger.append_event(parent.id, "subagent_started", {"name": name, "commission_id": child.id})
+        started = {"name": name, "commission_id": child.id}
+        if preset is not None:
+            started["preset"] = preset
+        await self._ledger.append_event(parent.id, "subagent_started", started)
         # It starts now or not at all (see ``_NO_PLACE_REASON``); the parent
         # is told so and can do that part itself. Its result comes back to the
         # parent as a message.
-        if not await self.submit(child, candidate_plugin_ids=self._candidates.get(parent.id, ()), wait=False):
+        try:
+            placed = await self.submit(child, candidate_plugin_ids=self._candidates.get(parent.id, ()), wait=False)
+        finally:
+            # Taken when it was given its session; not kept for one that never was.
+            self._presets_wanted.pop(child.id, None)
+        if not placed:
             raise RuntimeError(f"{_NO_PLACE_REASON}; do this part yourself")
         return {"name": name}
+
+    async def _preset_wanted(self, parent: Commission, named: Any) -> str | None:
+        """Return the preset a task agent names for one it starts, or None when it names none; raises for one that cannot be used.
+
+        By the name a model reads (``templates.model_name``) or the
+        preset's own. Only one a task agent can be started with: not the
+        lead of a project, nor a session of its own. The error lists the
+        ones that can.
+        """
+        from config.prompts.prompts_nekoclaw_presets import PRESET_UNKNOWN, PRESET_UNUSABLE
+        from nekoclaw.host.templates import NOT_FOR_CHILDREN, model_name
+
+        if named is None or named == "":
+            return None
+        wanted = str(named).strip()
+        listed = await asyncio.to_thread(self.templates.listing, parent.project)
+        for item in listed:
+            if item.name in NOT_FOR_CHILDREN or wanted not in (item.name, model_name(item.name)):
+                continue
+            if item.template is None:
+                raise RuntimeError(PRESET_UNUSABLE.format(name=wanted, reason=item.error))
+            return item.name
+        names = ", ".join(model_name(item.name) for item in listed if item.valid and item.name not in NOT_FOR_CHILDREN)
+        raise RuntimeError(PRESET_UNKNOWN.format(name=wanted, names=names))
 
     def session_dir_of(self, session: Any) -> Any:
         """Return where a session is kept (``session`` is a ``ledger.Session``). Blocking; see ``_session_dir_of``."""
@@ -6789,6 +6948,7 @@ class TaskAgentManager:
         self, session_id: str, payload: dict[str, Any], action: _SessionAction | None = None,
     ) -> dict[str, Any]:
         from config.nekoclaw_settings import (
+            CARD_DUTY_MAX_TOKENS,
             SESSION_LIST_COMMISSIONS,
             SESSION_LIST_LOOKED_AT,
             SESSION_LIST_ROW_MAX_TOKENS,
@@ -6796,6 +6956,7 @@ class TaskAgentManager:
         )
         from config.prompts import prompts_nekoclaw_sessions as words
         from nekoclaw.host.selection import similarity
+        from nekoclaw.host.templates import model_name
         from utils.tokenize import truncate_to_tokens
 
         caller = await self._caller(session_id)
@@ -6842,6 +7003,10 @@ class TaskAgentManager:
                 id=session.id[:8],
                 whose=await self._whose(session, caller.lanlan_name),
                 project=session.project or words.SESSION_LIST_NO_PROJECT,
+                # Which preset it is, and what its card says it takes: what
+                # a task agent that looks for whom to ask goes by.
+                preset=model_name(session.preset),
+                duty=truncate_to_tokens(session.duty, CARD_DUTY_MAX_TOKENS) or words.SESSION_LIST_NO_DUTY,
                 state=await self._state_of(session),
                 title=row.commissions[0].title if row.commissions else words.SESSION_LIST_NO_COMMISSION,
                 active=_clock_time(session.last_active_at),

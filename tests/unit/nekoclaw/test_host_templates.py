@@ -1,0 +1,455 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""The presets of sessions: the built-in ones, and the user's template files."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from nekoclaw.host.paths import DEFAULT_PROJECT, SpacePaths
+from nekoclaw.host.templates import (
+    NOT_FOR_CHILDREN,
+    PRESETS,
+    READ_ONLY_WITHHELD,
+    SHADOW,
+    Template,
+    TemplateError,
+    TemplateStore,
+    builtin_templates,
+    known_tools,
+    model_name,
+    parse_template,
+)
+
+FRONT = "---\nname: {name}\ndescription: {description}\n{more}---\n{body}"
+
+
+def _text(name: str = "doc-writer", description: str = "When documents are to be written.", more: str = "", body: str = "") -> str:
+    return FRONT.format(name=name, description=description, more=more, body=body)
+
+
+def _parse(more: str = "", *, name: str = "doc-writer", file: str | None = None, **values: str) -> Template:
+    return parse_template(_text(name=name, more=more, **values), name=file or name, source="global")
+
+
+@pytest.fixture
+def space(tmp_path: Path) -> SpacePaths:
+    return SpacePaths(tmp_path / "task_agent_space")
+
+
+def _put(space: SpacePaths, text: str, *, name: str = "doc-writer", project: str | None = None) -> Path:
+    directory = space.templates_dir(project)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.md"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+# ---------------------------------------------------------------------------
+# The built-in presets
+# ---------------------------------------------------------------------------
+
+
+def test_the_six_built_in_presets_are_there_under_the_keys_the_interface_draws_them_by():
+    builtin = builtin_templates()
+
+    assert tuple(builtin) == PRESETS == ("boss", "worker", "scout", "inspector", "planner", "general")
+    assert all(item.source == "builtin" and item.avatar == name and item.label == "" for name, item in builtin.items())
+    # A copy has a preset of its own, which is no template.
+    assert SHADOW == "shadow" and SHADOW not in builtin
+
+
+def test_the_lead_a_session_of_its_own_and_a_worker_are_opened_with_everything():
+    builtin = builtin_templates()
+
+    for name in ("boss", "general", "worker"):
+        item = builtin[name]
+        assert item.withheld() == frozenset()
+        assert (item.read_only, item.writes, item.memory) == (False, "inherit", "project")
+        assert item.delegates and item.remembers and not item.calls_nothing and item.max_requests is None
+    # A session of its own is told nothing of a role: it is as it always was.
+    assert builtin["general"].body == ""
+    # Whose model each uses by default: the task agents', or that of whoever started it.
+    assert [builtin[name].model for name in PRESETS] == ["agent", "inherit", "inherit", "inherit", "inherit", "agent"]
+
+
+@pytest.mark.parametrize("name", ["scout", "planner"])
+def test_a_scout_and_a_planner_read_only(name):
+    item = builtin_templates()[name]
+
+    assert item.read_only and item.writes == "none" and item.memory == "project"
+    assert item.withheld() == frozenset(
+        {"write", "edit", "bash", "pwsh", "capability_call", "note_lesson", "subagent"}
+    ) == frozenset(READ_ONLY_WITHHELD)
+    # The gateway calls nothing for it, and it starts no task agents.
+    assert item.calls_nothing and not item.delegates
+
+
+def test_an_inspector_runs_commands_and_writes_nothing_and_has_no_memory():
+    item = builtin_templates()["inspector"]
+
+    assert item.withheld() == frozenset({"write", "edit", "capability_call", "note_lesson", "subagent"})
+    # It has checks to run.
+    assert not {"bash", "pwsh"} & item.withheld()
+    assert (item.read_only, item.writes, item.memory) == (False, "none", "none")
+    assert not item.remembers and item.calls_nothing and not item.delegates
+
+
+def test_what_the_built_in_presets_say_is_within_the_caps_of_a_template():
+    from config import nekoclaw_settings as settings
+    from utils.tokenize import count_tokens
+
+    builtin = builtin_templates()
+
+    for item in builtin.values():
+        assert 0 < count_tokens(item.description) <= settings.TEMPLATE_DESCRIPTION_MAX_TOKENS
+        assert count_tokens(item.body) <= settings.TEMPLATE_BODY_MAX_TOKENS
+    assert sum(count_tokens(item.description) for item in builtin.values()) <= settings.TEMPLATE_DESCRIPTIONS_TOTAL_MAX_TOKENS
+    # Every tool a built-in preset withholds is a tool.
+    assert all(item.withheld() <= known_tools() for item in builtin.values())
+
+
+def test_each_role_says_what_it_is_for_what_it_hands_back_and_what_it_does_not_do():
+    bodies = {name: item.body for name, item in builtin_templates().items()}
+
+    for name in ("worker", "scout", "inspector", "planner"):
+        assert bodies[name].startswith(f"Your role: {name}.")
+        assert "Hand back" in bodies[name]
+    assert bodies["boss"].startswith("Your role: lead of this project.")
+    # The inspector gets the task and the change, checks by itself, and repairs nothing.
+    inspector = bodies["inspector"]
+    assert "what was to be done and what was changed" in inspector
+    assert "run the checks yourself" in inspector and "do not repair" in inspector
+    # The lead is told when a part is worth handing out, and to whom.
+    boss = bodies["boss"]
+    for word in ("scout", "inspector", "planner", "truly independent", "change the same files"):
+        assert word in boss
+    # Nothing of teams yet.
+    assert "team" not in boss
+
+
+def test_a_model_reads_the_lead_and_a_copy_by_english_names():
+    assert [model_name(name) for name in (*PRESETS, SHADOW)] == [
+        "lead", "worker", "scout", "inspector", "planner", "general", "copy",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# A template file
+# ---------------------------------------------------------------------------
+
+
+def test_a_template_file_is_read_with_all_its_fields():
+    made = _parse(
+        "withhold: [bash, web_fetch]\nwrites: none\nmemory: none\nmodel: agent\nmax_requests: 12\n"
+        "avatar: scout\nlabel: 文档猫\n",
+        body="\nYou write documents.\n\nKeep them short.\n",
+    )
+
+    assert made == Template(
+        name="doc-writer",
+        description="When documents are to be written.",
+        body="You write documents.\n\nKeep them short.",
+        withhold=("bash", "web_fetch"),
+        read_only=False,
+        writes="none",
+        memory="none",
+        model="agent",
+        max_requests=12,
+        avatar="scout",
+        label="文档猫",
+        source="global",
+    )
+    assert made.withheld() == frozenset({"bash", "web_fetch", "write", "edit", "note_lesson"})
+
+
+def test_a_template_that_says_no_more_than_it_must_is_like_a_worker():
+    made = _parse()
+
+    assert (made.withhold, made.read_only, made.writes, made.memory, made.model) == ((), False, "inherit", "project", "inherit")
+    assert (made.max_requests, made.avatar, made.label, made.body) == (None, "general", "", "")
+    assert made.withheld() == frozenset()
+
+
+def test_withheld_tools_may_be_given_on_one_line_as_other_agents_files_have_them():
+    assert _parse("withhold: bash, pwsh ,\n").withhold == ("bash", "pwsh")
+
+
+def test_read_only_alone_means_it_writes_nowhere():
+    made = _parse("read_only: true\n")
+
+    assert (made.read_only, made.writes) == (True, "none")
+    assert made.withheld() == frozenset(READ_ONLY_WITHHELD)
+
+
+@pytest.mark.parametrize(
+    ("text", "said"),
+    [
+        ("name: doc-writer\ndescription: x\n", "does not begin with front matter"),
+        ("---\nname: doc-writer\ndescription: x\n", "front matter is not closed"),
+        ("---\nname: [unclosed\n---\n", "not valid YAML"),
+        ("---\n- name\n- description\n---\n", "not a set of fields"),
+    ],
+)
+def test_a_file_that_is_no_template_says_so(text, said):
+    with pytest.raises(TemplateError, match=said):
+        parse_template(text, name="doc-writer", source="global")
+
+
+@pytest.mark.parametrize(
+    ("more", "said"),
+    [
+        # A template only takes away: no model's name, address or key, nor anything unknown.
+        ("base_url: http://127.0.0.1:1234/v1\n", "unknown fields: base_url"),
+        ("api_key: sk-1\ntools: [bash]\n", "unknown fields: api_key, tools"),
+        ("lifetime: lasting\n", "unknown fields: lifetime"),
+        ("model: gpt-9\n", "model is one of agent, inherit, not 'gpt-9'"),
+        ("model: [agent]\n", "model is one of agent, inherit"),
+        ("withhold: [bsh]\n", "withhold names no tool: bsh"),
+        ("withhold: 3\n", "withhold is a list of tool names"),
+        ("withhold: [bash, 3]\n", "withhold is a list of tool names"),
+        ("withhold: [report]\n", "report cannot be withheld"),
+        ("read_only: yes please\n", "read_only is true or false"),
+        ("read_only: 1\n", "read_only is true or false"),
+        ("writes: tree\n", "writes: tree .* is not available yet"),
+        ("writes: everywhere\n", "writes is one of inherit, none"),
+        ("read_only: true\nwrites: inherit\n", "read_only is true and writes is not none"),
+        ("memory: own\n", "memory is one of project, none"),
+        ("max_requests: 0\n", "max_requests is a whole number from 1 to 500"),
+        ("max_requests: 501\n", "max_requests is a whole number"),
+        ("max_requests: true\n", "max_requests is a whole number"),
+        ("max_requests: many\n", "max_requests is a whole number"),
+        ("avatar: dragon\n", "avatar is one of boss, worker, scout, inspector, planner, general"),
+        ("avatar: shadow\n", "avatar is one of"),
+        ("label: [a, b]\n", "label is a text"),
+        ("label: " + "很长的名字 " * 20 + "\n", "label is longer than 20 tokens"),
+    ],
+)
+def test_a_field_that_is_wrong_is_an_error_and_never_passed_over(more, said):
+    with pytest.raises(TemplateError, match=said):
+        _parse(more)
+
+
+def test_a_template_needs_a_name_that_is_its_files_and_a_description():
+    with pytest.raises(TemplateError, match="name is 'other'; it has to be the name of the file, 'doc-writer'"):
+        _parse(name="other", file="doc-writer")
+    with pytest.raises(TemplateError, match="name is None"):
+        parse_template("---\ndescription: x\n---\n", name="doc-writer", source="global")
+    for wrong in ("Doc", "1doc", "doc_writer", "d" * 33, SHADOW):
+        with pytest.raises(TemplateError, match="a template is named in lower-case letters"):
+            _parse(name=wrong)
+    with pytest.raises(TemplateError, match="description is missing"):
+        parse_template("---\nname: doc-writer\n---\n", name="doc-writer", source="global")
+    with pytest.raises(TemplateError, match="description is missing"):
+        _parse(description="''")
+
+
+def test_a_text_over_its_cap_is_an_error_and_not_cut():
+    from config import nekoclaw_settings as settings
+
+    with pytest.raises(TemplateError, match=f"description is longer than {settings.TEMPLATE_DESCRIPTION_MAX_TOKENS} tokens"):
+        _parse(description="when " * 200)
+    with pytest.raises(TemplateError, match=f"longer than {settings.TEMPLATE_BODY_MAX_TOKENS} tokens"):
+        _parse(body="role " * 2000)
+    # At the caps it is taken.
+    assert _parse(description="when " * 99, body="role " * 790).body
+
+
+# ---------------------------------------------------------------------------
+# Which template a name means
+# ---------------------------------------------------------------------------
+
+
+def test_without_files_the_built_in_presets_are_all_there_is(space):
+    store = TemplateStore(lambda: space)
+
+    listed = store.listing()
+
+    assert [(item.name, item.source, item.valid, item.error) for item in listed] == [
+        (name, "builtin", True, "") for name in PRESETS
+    ]
+    assert store.resolve("scout") == builtin_templates()["scout"]
+    with pytest.raises(TemplateError, match="no template of that name"):
+        store.resolve("doc-writer")
+    # A session of no project, and one of the project commissions without one are filed under.
+    assert store.listing(DEFAULT_PROJECT) == listed
+
+
+def test_the_projects_template_is_used_before_the_users_and_that_before_the_built_in_one(space):
+    store = TemplateStore(lambda: space)
+    _put(space, _text(name="scout", description="The user's scout."), name="scout")
+    _put(space, _text(description="The user's writer."))
+    _put(space, _text(description="The project's writer."), project="ledger-app")
+    _put(space, _text(name="planner", description="The project's planner."), name="planner", project="ledger-app")
+
+    everywhere = {item.name: item for item in store.listing()}
+    here = {item.name: item for item in store.listing("ledger-app")}
+
+    assert (everywhere["scout"].source, everywhere["scout"].template.description) == ("global", "The user's scout.")
+    assert (everywhere["doc-writer"].source, everywhere["planner"].source) == ("global", "builtin")
+    assert (here["doc-writer"].source, here["doc-writer"].template.description) == ("project", "The project's writer.")
+    assert (here["planner"].source, here["scout"].source, here["worker"].source) == ("project", "global", "builtin")
+    # The built-in ones first, in their order, then the others by name.
+    assert [item.name for item in store.listing("ledger-app")] == [*PRESETS, "doc-writer"]
+    # The user's scout is what a scout is from now on: it was not made read only.
+    assert store.resolve("scout", "ledger-app").withheld() == frozenset()
+    # Another project goes by the user's.
+    assert store.resolve("doc-writer", "other").description == "The user's writer."
+
+
+def test_a_wrong_file_is_listed_with_what_is_wrong_and_takes_nothing_else_down(space):
+    store = TemplateStore(lambda: space)
+    _put(space, _text(more="tools: [bash]\n"))
+    _put(space, "no front matter", name="notes")
+    _put(space, _text(name="reviewer"), name="reviewer")
+    (space.templates_dir() / "bytes.md").write_bytes(b"---\nname: bytes\ndescription: \xff\xfe\n---\n")
+    (space.templates_dir() / "README.txt").write_text("not a template", encoding="utf-8")
+
+    listed = {item.name: item for item in store.listing()}
+
+    assert set(listed) == {*PRESETS, "doc-writer", "notes", "reviewer", "bytes"}
+    assert (listed["doc-writer"].valid, listed["doc-writer"].error) == (False, "unknown fields: tools")
+    assert "does not begin with front matter" in listed["notes"].error
+    assert "cannot be read (UnicodeDecodeError)" in listed["bytes"].error
+    assert listed["reviewer"].valid and all(listed[name].valid for name in PRESETS)
+    assert listed["doc-writer"].to_json() == {
+        "name": "doc-writer", "label": "", "description": "", "avatar": "general", "source": "global",
+        "read_only": None, "writes": None, "memory": None, "model": None, "valid": False,
+        "error": "unknown fields: tools",
+    }
+    with pytest.raises(TemplateError, match="unknown fields: tools"):
+        store.resolve("doc-writer")
+
+
+def test_a_wrong_file_stands_in_the_way_of_the_template_it_would_have_replaced(space):
+    # Its user meant to narrow the preset: a session of it is not opened with the built-in one instead.
+    store = TemplateStore(lambda: space)
+    _put(space, _text(name="scout", more="withhold: [bsh]\n"), name="scout", project="ledger-app")
+
+    with pytest.raises(TemplateError, match="withhold names no tool: bsh"):
+        store.resolve("scout", "ledger-app")
+    # Elsewhere a scout is what it was.
+    assert store.resolve("scout") == builtin_templates()["scout"]
+    assert store.resolve("scout", "other") == builtin_templates()["scout"]
+
+
+def test_a_file_too_large_and_files_past_the_most_a_folder_may_hold_are_errors(space, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.TEMPLATE_FILES_MAX", 2)
+    monkeypatch.setattr("config.nekoclaw_settings.TEMPLATE_FILE_MAX_BYTES", 200)
+    store = TemplateStore(lambda: space)
+    _put(space, _text(name="a-one"), name="a-one")
+    _put(space, _text(name="b-two", body="x" * 300), name="b-two")
+    _put(space, _text(name="c-three"), name="c-three")
+
+    listed = {item.name: item for item in store.listing()}
+
+    assert listed["a-one"].valid
+    assert listed["b-two"].error == "the file is larger than 200 bytes"
+    assert listed["c-three"].error == "more than 2 template files in one folder"
+
+
+def test_the_sentences_of_all_templates_together_have_a_cap_and_the_one_past_it_is_wrong(space, monkeypatch):
+    from utils.tokenize import count_tokens
+
+    builtin = sum(count_tokens(item.description) for item in builtin_templates().values())
+    one = "Used when the thing in question is to be done as it says here."
+    monkeypatch.setattr(
+        "config.nekoclaw_settings.TEMPLATE_DESCRIPTIONS_TOTAL_MAX_TOKENS", builtin + 2 * count_tokens(one)
+    )
+    store = TemplateStore(lambda: space)
+    for name in ("a-one", "b-two"):
+        _put(space, _text(name=name, description=one), name=name)
+    _put(space, _text(name="c-three", description=one), name="c-three", project="ledger-app")
+
+    listed = {item.name: item for item in store.listing("ledger-app")}
+
+    # The built-in ones are counted first, then the user's, then the project's.
+    assert all(listed[name].valid for name in (*PRESETS, "a-one", "b-two"))
+    assert "together are longer than" in listed["c-three"].error
+    # Without the project's the others fit.
+    assert all(item.valid for item in store.listing())
+
+
+def test_what_was_read_is_kept_until_a_file_changes(space, monkeypatch):
+    import nekoclaw.host.templates as module
+
+    store = TemplateStore(lambda: space)
+    path = _put(space, _text(description="First."))
+    reads: list[str] = []
+    real = module.parse_template
+
+    def counted(text: str, **kwargs: str) -> Template:
+        reads.append(kwargs["name"])
+        return real(text, **kwargs)
+
+    monkeypatch.setattr(module, "parse_template", counted)
+
+    assert store.resolve("doc-writer").description == "First."
+    assert store.resolve("doc-writer").description == "First."
+    assert reads == ["doc-writer"]
+    before = store.signature()
+    path.write_text(_text(description="Second, and longer."), encoding="utf-8")
+
+    assert store.signature() != before
+    assert store.resolve("doc-writer").description == "Second, and longer."
+    assert reads == ["doc-writer", "doc-writer"]
+    path.unlink()
+    with pytest.raises(TemplateError):
+        store.resolve("doc-writer")
+
+
+def test_a_task_agent_is_started_with_any_template_but_the_lead_and_a_session_of_its_own(space):
+    store = TemplateStore(lambda: space)
+    _put(space, _text())
+    _put(space, _text(name="broken", more="nope: 1\n"), name="broken")
+
+    assert NOT_FOR_CHILDREN == {"boss", "general"}
+    assert [item.name for item in store.roster()] == ["worker", "scout", "inspector", "planner", "doc-writer"]
+
+
+def test_the_project_of_commissions_without_one_has_no_templates_of_its_own(space):
+    store = TemplateStore(lambda: space)
+    _put(space, _text())
+    _put(space, _text(name="stray"), name="stray", project=DEFAULT_PROJECT)
+
+    # A session of no project goes by the user's templates and nothing else, however it is asked for.
+    assert [item.name for item in store.listing(DEFAULT_PROJECT)] == [*PRESETS, "doc-writer"]
+    assert store.signature(DEFAULT_PROJECT) == store.signature(None)
+    assert store.signature(None)[1] == () and store.signature("ledger-app")[1] == ()
+
+
+def test_a_file_that_goes_away_while_the_folder_is_looked_at_is_passed_over(space, monkeypatch):
+    store = TemplateStore(lambda: space)
+    _put(space, _text())
+    gone = _put(space, _text(name="gone"), name="gone")
+    real = Path.stat
+
+    def stat(self: Path, **kwargs: object) -> object:
+        if self.name == gone.name:
+            raise FileNotFoundError(self)
+        return real(self, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+
+    assert [name for name, _date, _size in store.signature()[0]] == ["doc-writer.md"]
+
+
+def test_a_project_whose_name_is_no_folder_name_goes_by_the_users_templates(space):
+    store = TemplateStore(lambda: space)
+    _put(space, _text())
+
+    assert [item.name for item in store.listing("../elsewhere")] == [*PRESETS, "doc-writer"]

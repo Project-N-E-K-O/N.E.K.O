@@ -2401,3 +2401,71 @@ owner 2026-11-21 定的方向：同一个项目里后来的委托，在主线会
 - 交回的那一下用户正好又说了话（副本正在关），这句话按「委托没在办」处理，不并进交回的那一轮。
 - 同一条回复里先 `report` 办完/卡住、后调写类工具的（调用按顺序执行，报告先到）：委托按报告结束，写没做。要处理得等整条回复的调用都登记完再结算报告，运行时没有这个结算点；模型通常最后才报告，没有做。
 - 每个主线最多 3 个副本只管新做的副本：在已有副本里接着办（等回话后接着、对办完的接着说）不看这个数，照样受全局 10 个位置的限制。
+
+### 17.7 落地说明（职能预设、卡片、看板数据）
+
+owner 2026-11-21 到 11-22 定的方向：同一个项目里可以有多个会话并行，每个会话有一种职能预设和一张卡片，界面首页按项目分群显示使魔。这一节是这批改动的第一步：预设、卡片、给界面的数据。支线、工作副本、按职能换模型、组队都不在这一步。下面标「暂定」的是先按推荐做的，等 owner 定（见 PR 描述「要 owner 定的」）。
+
+**职能预设**（`nekoclaw/host/templates.py`，角色说明在 `config/prompts/prompts_nekoclaw_presets.py`）
+
+- 内置六种（暂定的名单），键是界面取形象用的，给模型看的名字是英文：`boss`（模型读作 lead，项目的主线）、`worker`、`scout`、`inspector`、`planner`、`general`。另有 `shadow` 是副本的职能值，不是模板。
+- 每个会话建的时候定职能，记在台账 `sessions.preset`，之后不变：项目会话 `boss`，单件会话 `general`，子使魔默认 `worker`，副本 `shadow`。没有点名时按种类取（`PRESET_OF_KIND`），所以分叉那段代码不用改。
+- 能力只用现成的两样：收起工具（`TaskAgentSpec.disabled_tools`）和只读的网关令牌（`Grant.reads_only`）。
+
+| 职能 | 收起的工具 | 网关令牌 | 使魔空间 |
+|---|---|---|---|
+| `boss`、`general` | 无（和以前的主线、单件会话一样） | 能调用 | 带 |
+| `worker` | 只有子使魔本来就没有的四个（和以前一样） | 能调用 | 带 |
+| `scout`、`planner` | `write`、`edit`、`bash`、`pwsh`、`capability_call`、`note_lesson`、`subagent` | 只读 | 带 |
+| `inspector`（暂定：管验收） | `write`、`edit`、`capability_call`、`note_lesson`、`subagent`；留着 `bash` / `pwsh` | 只读 | 不带 |
+
+- 只要收起了 `capability_call`，网关令牌就发成只读的：在 dsh 里拦调用的是令牌，不是工具清单。
+- 副本照它复制的那个会话的预设来开（一路找回最初的会话，最多 8 层），再去掉每个副本都没有的工具；原会话查不到了就按 `general`。
+- 预设对应的模板已经用不了时（文件后来被改错了），这个会话的委托开工失败并写明原因，不拿别的预设顶上。
+- 系统提示：宿主给的那一段原样不动，后面先接可用预设的清单（只给能派子使魔的会话；每个预设一行，名字加「什么时候用」），再接这个会话自己的角色说明（`general` 没有）。上限另设一个 `TASK_AGENT_SESSION_INSTRUCTIONS_MAX_TOKENS`（3600；各部分都写满约 2700）。`boss` 的角色说明里写了什么时候把一块活派出去：几次工具调用能做完的不拆，前后有依赖的不拆，要改同一批文件的不拆，真正互不相干、每块都不小的才拆；这次不写组队。
+- `subagent` 工具多一个可选参数 `preset`。dsh 里的 `subagent` 用的是宿主的同一份定义（宿主工具是给 dsh 的一个服务），所以两种运行时都能点职能。点了不认识的、或者 `boss` / `general`，回错并列出能用的；点了写错的模板，回错并带原因。点的职能记在 `subagent_started` 事件里。
+
+**用户模板**
+
+- 一个 Markdown 文件一个模板，开头 YAML、正文是角色说明；放使魔空间的 `templates/*.md`（所有项目）和 `projects/<项目>/templates/*.md`（这个项目）；文件名就是模板名（小写字母、数字、连字符）。同名时项目的盖过全局的，全局的盖过内置的。
+- 字段：`name`、`description`（什么时候用，不超过 100 token）、正文（不超过 800 token）、`withhold`、`read_only`、`writes`（`inherit` / `none`；`tree` 报「还不能用」）、`memory`（`project` / `none`）、`model`（`agent` / `inherit`，只解析和保存）、`max_requests`、`avatar`（内置形象的键）、`label`。
+- 只能收窄：没有放地址、密钥、具体模型的字段。不认识的字段、写错的值、超长的文字一律是错误，带原因列在 `templates()` 里；`withhold` 里不是工具名的也是错误（写错一个字就等于没收），`report` 不许收。所有模板的 `description` 合计不超过 1500 token，超出的那个算错（先算内置的，再全局的，再项目的）。
+- 写错的文件照样占着它的名字，不退回被它盖住的那个（已自行定、可推翻）：用户是想把这个预设收窄，退回去等于悄悄放宽。
+- 读过的结果留着，目录里的文件变了（名字、时间、大小）才重读。
+
+**卡片**（台账 `sessions` 表加七列，版本号 6 → 7）
+
+- `preset`、`title`（头衔）、`duty`（负责什么）、`summary`（摘要），后三项各带一个 `*_by`（`creator` / `review` / `user`）。上限 16 / 60 / 160 token，在台账里截。老台账打开时补列，已有的行按种类补 `preset`；不做别的兼容。
+- 建的时候：`title` 空着（界面这时显示职能的名字）；`duty` 项目会话用项目简介、没有就用第一件委托的标题，单件会话用那件委托的标题，子使魔用派它时的 `description`；都记 `creator`。
+- 只有 `Ledger.write_card` 能写卡片：`*_by` 是 `user` 的项只有 `by="user"` 才改得动。`update_session` 写不了卡片和 `preset`。
+- 项目简介沿用 `project.json` 的 `description`，多一个 `description_by`，由 `TaskAgentSpace.describe_project` 写，同样不盖用户写的。
+- `list_sessions` 每行多了职能和负责什么（行上限 80 → 140）。
+
+**复盘顺带写卡片**（暂定：卡片都由复盘写，会话自己不写，`report` 不加参数）
+
+- 还是那一次模型调用。输入里多一段卡片现在的样子（最多 300 token），提示词多一段卡片各项怎么写；输出多一段 `card`：`title`、`duty`、`summary`、`description`（项目简介）。给空的项不动。
+- 写回时记 `review`，用户改过的项不盖。在副本里办的委托不写卡片，提示词里告诉模型这一件没有卡片可写。
+- `card` 没有、不是对象、里面的值不是文字、答复在卡片中间被截断：都只是不写卡片，原来的复盘照样留下。写卡片时出错也一样。
+- 上限：输入 7000 → 7600，输出 1500 → 1900（各项写满是 1531，留两成半）。任务说明里写的是 7500 / 1800，量出来不够，按 owner「上限别卡到刚好」放的。
+
+**`draft_session`**（`nekoclaw/host/drafts.py`）
+
+- 用户新建使魔时「帮我填」：一次 summary 模型调用（`TIER_SESSION_DRAFT`），回 `{name, title, preset, duty, description, rules}`。卡片各项的说明和复盘用的是同一段文字。
+- 只看用户写的话和所选目录里前 60 个条目的名字和大小，不打开文件。`preset` 只会是全局可用的模板之一，答别的就取 `boss`。`name` 里不能做目录名的字符会去掉。
+- 输入上限 2000 token，输出 500，45 秒超时。失败抛 `DraftError`，带原因键：`empty`、`no_model`、`timeout`、`failed`、`unreadable`、`incomplete`；不回半截表单。不建任何东西。
+
+**`board()` 和 `templates()`**（`nekoclaw/host/board.py`；只有方法，路由归界面）
+
+- `board(project=None, lanlan_name=None, known_revision=None)` 回 `{revision, projects: [{name, description, description_by, workdir, archived, done_today, members}], loose}`，卡片的字段见模块开头的说明。`team`、`tree` 现在一律是空，`model` 只给模型名。
+- 状态五种，说的是会话此刻的样子：`compacting`（在整理）、`waiting_user`（手上那件在等用户）、`working`（手上那件在办）、`idle`（开着没活）、`asleep`（没有运行时开着它）。歇着（等自己定的时间）和排队的会话归 `asleep`，区别看 `commission.status`（`resting` / `queued`）。
+- `doing` 现拼、不调模型：手上那件委托的标题，它最近一次 `todo_write` 里 `in_progress` 的那条，最近一步的工具名加对象（路径只留末两段）。只读这件委托最近 80 条事件。
+- 列哪些会话：每个项目的主线都列；单件会话只列有委托在办的和最近 3 天用过的，最多 30 个；子使魔只列起它的那件委托在办或 10 分钟内有过变动的，每个会话下最多 8 个；副本只列开着的或手上有委托的；一个项目最多 24 张卡；归档的项目最多 20 个。数都在 `config/nekoclaw_settings.py`（`BOARD_*`）。
+- `revision` 是整份看板内容的摘要，内容一样它就一样。带着 `known_revision` 来问时先看便宜的标记（台账连接的写入计数、项目记录和模板文件的时间大小），都没动就直接回「没变」；动了才重拼一遍再比。标记看不到的变化（比如设置里换了模型）最多 10 秒后被看到。
+- `templates(project=None)` 列出可用的预设，写错的带 `valid: false` 和原因。
+
+**没做、以后**
+
+- 按职能换模型（`model` 现在只存不用）、支线和工作副本（`writes: tree`）、组队（`team`）、时间线。
+- `open_session`、改项目工作目录、路由和页面由界面那边做。
+- 归档项目的会话照样留在台账里，看板上只列最近归档的 20 个项目；更早的不列。
+- 界面上用户改卡片的入口还没有（方法有了：`write_card(by="user")`、`describe_project(by="user")`）。

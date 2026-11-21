@@ -67,6 +67,11 @@ implementation does):
   The implementation matches with Python's ``re`` line by line; it does not
   bundle ripgrep.
 
+One addition: ``subagent`` has an optional ``preset`` parameter, which names
+the preset the task agent is started with (``nekoclaw/host/templates.py``).
+dsh's sessions are offered this definition too (the host's tools are a
+service to dsh), so it holds in both runtimes.
+
 Only tools the built-in runtime implements are listed. ``NEKOCLAW_TOOL_SCHEMAS``
 holds this project's own tools: ``report`` and ``note_lesson``, and the four
 that reach other sessions (``list_sessions``, ``read_session``,
@@ -595,6 +600,14 @@ DSH_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                         'create: lower-case letters, digits, and hyphens, starting with a '
                         'letter, at most 32 characters; lead is reserved for the root agent. '
                         'Omitted names default to agent-1, agent-2, and so on.'
+                    ),
+                },
+                'preset': {
+                    'type': 'string',
+                    'description': (
+                        'Optional. Which kind of subagent to start, by a name from the list of '
+                        'presets in your instructions; it sets what the subagent can do. Omitted, '
+                        'it is a worker.'
                     ),
                 },
                 'prompt': {

@@ -127,7 +127,10 @@ class SpacePaths:
         │                        too, in no index
         ├─ notes.json            what the user removed (so it is not kept again)
         ├─ state.json            when the space was last tidied
+        ├─ templates/*.md        the user's templates of sessions, for every
+        │                        project (``templates.py``)
         ├─ projects/<project>/
+        │   ├─ templates/*.md    the project's own templates
         │   ├─ project.json      name, description, working directory, dates
         │   ├─ AGENTS.md         the project's own rules, written by the user
         │   ├─ MEMORY.md         the project's index
@@ -149,6 +152,7 @@ class SpacePaths:
     PROJECT_FILE = "project.json"
     SUMMARY_NAME = "SUMMARY.md"
     NOTES_FILE = "notes.json"
+    TEMPLATES_DIR = "templates"
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
@@ -180,6 +184,10 @@ class SpacePaths:
 
     def memory_dir(self, project: str | None = None) -> Path:
         return self.scope_dir(project) / self.MEMORY_DIR
+
+    def templates_dir(self, project: str | None = None) -> Path:
+        """Return where the user keeps templates of sessions: for every project, or for one (``templates.py``)."""
+        return self.scope_dir(project) / self.TEMPLATES_DIR
 
     def notes_file(self, project: str | None = None) -> Path:
         """Return where it is remembered which entries the user removed. Pending entries are files in ``memory_dir``."""
