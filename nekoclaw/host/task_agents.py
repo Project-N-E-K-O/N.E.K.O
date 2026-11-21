@@ -8318,11 +8318,8 @@ class TaskAgentManager:
         if verdict is None:
             logger.info("commission %s waits for its session: whether it is a side question was not told", commission_id)
             return False
-        if self._said_meanwhile(commission_id) != added:
-            # More was said to it while that was asked, which goes with it:
-            # not what was told about. It waits for its session.
-            logger.info("commission %s waits for its session: more was said to it while it was looked at", commission_id)
-            return False
+        # Kept with what was said to it meanwhile, as it was asked: what is
+        # said to it after that is looked at by ``_still_side_question``.
         if commission.status not in ENDED_STATUSES:
             self._side_said[commission_id] = (words, added, verdict)
         if not verdict:

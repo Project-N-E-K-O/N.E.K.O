@@ -1611,8 +1611,11 @@ async def test_a_copy_that_cannot_be_put_on_record_goes_back_behind_one_handed_b
     ledger = host.ledger
     append = ledger.append_event
 
+    refused: list[str] = []
+
     async def failing(commission_id: str, kind: str, payload: Any = None) -> Any:
         if kind == "carried_on_in_copy":
+            refused.append(commission_id)
             raise RuntimeError("the ledger is busy")
         return await append(commission_id, kind, payload)
 
@@ -1620,6 +1623,8 @@ async def test_a_copy_that_cannot_be_put_on_record_goes_back_behind_one_handed_b
     later = await _dispatch(host, FILES)
     await wait_until(lambda: later.id in host.task_agents._queue, what="the later one back in the queue")
     await _decided(host)
+    # It was copied, and came back for its record could not be written.
+    assert refused == [later.id]
     # Handed over first, the one handed back goes first.
     assert list(host.task_agents._queue) == [handed.id, later.id]
     release.set()
@@ -1873,6 +1878,9 @@ async def test_more_said_to_it_while_it_is_told_to_be_a_side_question_keeps_it_w
     answer.set()
     await _decided(host)
     assert "carried_on_in_copy" not in await _types(host, second.id)
+    if when == "judged":
+        # Not copied at all: that is looked at before a copy is made.
+        assert copies == []
     assert (await host.ledger.get(second.id)).status == "queued"
     release.set()
     done = await wait_status(host, second.id, "done")
