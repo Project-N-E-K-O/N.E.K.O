@@ -235,6 +235,7 @@ class _Session:
     closing: asyncio.Future[None] | None = None
     # Tool calls dsh announced: id -> (name as dsh has it, arguments).
     tool_calls: dict[str, tuple[str, Any]] = field(default_factory=dict)
+    prompt_calls: set[str] = field(default_factory=set)
     # Permission requests being decided right now.
     asks: set[asyncio.Task[Any]] = field(default_factory=set)
     # Set whenever a text is queued; ``wait_agent`` waits on it.
@@ -760,6 +761,8 @@ class DshRuntime:
             name = str(update.get("title") or "")
             arguments = update.get("rawInput")
             session.tool_calls[call_id] = (name, arguments)
+            if session.in_turn:
+                session.prompt_calls.add(call_id)
             self._emit(
                 session,
                 protocol.ToolStartEvent(
@@ -776,6 +779,7 @@ class DshRuntime:
             call_id = str(update.get("toolCallId") or "")
             # Over: nothing is asked about it any more, and what it was
             # called with (a whole file, for a write) need not be kept.
+            session.prompt_calls.discard(call_id)
             name = session.tool_calls.pop(call_id, ("", None))[0]
             parts = []
             for item in update.get("content") or []:
@@ -1430,6 +1434,9 @@ class DshRuntime:
                         # is handed anything from here on. (The answers its
                         # calls were handed are settled below all the same.)
                         session.in_turn = False
+                        for call_id in session.prompt_calls:
+                            session.tool_calls.pop(call_id, None)
+                        session.prompt_calls.clear()
                         session.turns += 1
                 except AcpClosed:
                     # The process is gone; that is announced where it was noticed.
@@ -1495,7 +1502,6 @@ class DshRuntime:
             session.runs += 1
         if session.closing is not None or self._sessions.get(session.id) is not session:
             return
-        session.tool_calls.clear()
         if session.aborting and reason == "completed":
             # Stopped between two turns, or before the first one was sent.
             reason = "aborted"

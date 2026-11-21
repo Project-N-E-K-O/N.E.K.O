@@ -311,6 +311,8 @@ class _Session:
     update_names: dict[str, str] = field(default_factory=dict)
     # Locally allocated audit references for native todo/goal events of this run.
     control_calls: dict[str, tuple[call_audit.Call, str]] = field(default_factory=dict)
+    # Input number -> pending audit and (for a stand-alone steer) its original envelope.
+    answer_receipts: dict[int, tuple[call_audit.Call, _Unsaid | None]] = field(default_factory=dict)
     # Set while a host callback waits for the user's answer.
     question: asyncio.Future[dict[str, Any]] | None = None
     # Done the moment the answer to that question is in, before whoever
@@ -493,13 +495,22 @@ def _withdraw(session: _Session, serial: Any) -> list[int]:
         for key in [key for key, value in session.numbered.items() if value == number]:
             del session.numbered[key]
     wakes = session.handed.pop(number, None) or []
-    for later in sorted(key for key in session.handed if key > number):
-        session.handed[later - 1] = session.handed.pop(later)
+    for pending in (session.handed, session.answer_receipts):
+        for later in sorted(key for key in pending if key > number):
+            pending[later - 1] = pending.pop(later)
     for key, value in session.numbered.items():
         if value > number:
             session.numbered[key] = value - 1
     session.sent -= 1
     return wakes
+
+
+def _refused_answer(session: _Session, event: dict[str, Any]):
+    if not session.answer_receipts or event.get("command") not in ("prompt", "steer", "follow_up"):
+        return None
+    serial = _number(event.get("serial"))
+    number = session.numbered.get(serial) if serial is not None else session.sent
+    return session.answer_receipts.pop(number, None)
 
 
 def _refusal(session: _Session, event: dict[str, Any]) -> list[int]:
@@ -546,6 +557,7 @@ class _Unsaid(str):
     def __new__(cls, text: str, recipient: str) -> "_Unsaid":
         answer = super().__new__(cls, text)
         answer.recipient = recipient
+        answer.retried = False
         return answer
 
 
@@ -932,6 +944,7 @@ class TaskAgentManager:
         # to be about a commission, and why the next commission of a session
         # waits for the one before it.
         self._held_by: dict[str, str] = {}
+        self._unused_ask_copies: dict[str, Session] = {}
         # Text passed on to a commission that has not started yet.
         self._notes: dict[str, list[str]] = {}
         # What a start given up for the quota was to send, kept for the
@@ -1477,6 +1490,8 @@ class TaskAgentManager:
         # Started as a task of its own: whoever handed the commission over may
         # be cancelled (the host shutting down), and a session half set up
         # would then belong to nobody.
+        if commission.source == "ask" and still_wanted is not None:
+            return await asyncio.shield(self._spawn(self._launch(commission.id, still_wanted=still_wanted)))
         await asyncio.shield(self._spawn(self._launch(commission.id)))
         return True
 
@@ -2060,8 +2075,19 @@ class TaskAgentManager:
         if session is None:
             return False
 
+        run_active = self._permissions.current_run(commission_id)
+
         def unwanted() -> bool:
             return still_wanted is not None and not still_wanted()
+
+        async def open_if_authorized(runtime, spec) -> bool:
+            if not run_active() or unwanted():
+                await self._ledger.transition(commission_id, "cancelled", reason=DENIED_BY_SETTINGS)
+                self._discard(commission_id)
+                return False
+            await runtime.start(spec)
+            session.opened_in_runtime = True
+            return True
 
         # The sentence this start was given is the user's from the outset:
         # a failure while it is set up keeps it too.
@@ -2266,8 +2292,8 @@ class TaskAgentManager:
                 return [*parts, *notes], opens
 
             text, opens = first_message(runtime_name)
-            await runtime.start(spec)
-            session.opened_in_runtime = True
+            if not await open_if_authorized(runtime, spec):
+                return False
             if runtime_name == RUNTIME_DSH and session.session_id not in runtime.session_ids:
                 # dsh was made ready and still opened no session. It says
                 # why in an event, which is on its way and is where the
@@ -2283,8 +2309,8 @@ class TaskAgentManager:
                 text, opens = first_message(runtime_name)
                 await self._ledger.update(commission.id, runtime=runtime_name)
                 await self._ledger.update_session(session.session_id, runtime=runtime_name)
-                await runtime.start(spec)
-                session.opened_in_runtime = True
+                if not await open_if_authorized(runtime, spec):
+                    return False
             if runtime_name == RUNTIME_DSH and begun_in == RUNTIME_DSH and not runtime.resumed(session.session_id):
                 # dsh is noted to have the session, and could not take it up
                 # (its log is gone, say): it began a new one, in which
@@ -2298,7 +2324,7 @@ class TaskAgentManager:
                 current = await self._ledger.get(commission.id)
                 if self._sessions.get(commission.id) is not session or current is None or current.status != "working":
                     return True
-                if unwanted():
+                if not run_active() or unwanted():
                     # Everything was stopped while its status was being
                     # written: the stop looked at a commission that was
                     # over, and this one is at work with nothing to end it.
@@ -2672,8 +2698,15 @@ class TaskAgentManager:
             stack.enter_context(call_audit.commission_entry())
             record = None
             try:
-                record = await stack.enter_async_context(call_audit.call(self._ledger, owner, "session_action", "receive_answer"))
+                record = await call_audit.start_call(self._ledger, owner, "session_action", "receive_answer")
+                record.status = "cancelled"
                 record.scope_ref = session.session_id
+
+                async def settle_unsubmitted():
+                    if record.status != "running":
+                        await call_audit.finish_call(record, record.status)
+
+                stack.push_async_callback(settle_unsubmitted)
                 decision = await self._permissions.check(
                     owner, "outside_read", scope=SessionActionScope("host:session", "receive_answer", owner), hold_once=True,
                 )
@@ -2681,28 +2714,25 @@ class TaskAgentManager:
                 if record is not None:
                     record.status, record.reason = "failed", "delivery_unavailable"
                 logger.warning("could not register answer delivery (%s)", type(exc).__name__)
-                with call_audit.commission_entry():
-                    yield lambda texts: withheld(texts, "the session answer could not be authorized for delivery")
+                yield lambda texts, **_: withheld(texts, "the session answer could not be authorized for delivery")
                 return
             grant = decision.grant_id
             stack.callback(self._permissions.release_grant, grant)
             record.grant_id = self._permissions.authorization_ref(grant)
-            record.status = "cancelled"  # A stopped opening can leave without handing anything over.
-
-            def render(texts: list[str]) -> str:
+            def render(texts: list[str], *, steer: bool = False) -> str:
                 if (
                     decision.allow and live() and self._permissions.grant_active(grant)
                     and all(part.recipient == owner for part in texts if isinstance(part, _Unsaid))
                 ):
-                    record.status = "completed"
+                    record.status = "running"  # The runtime's taken or refusal event settles the row.
+                    session.answer_receipts[session.sent + 1] = (record, texts[0] if steer else None)
                     return "\n\n".join(texts)
                 record.status = "denied"
                 return withheld(texts)
 
             # A prompt can start a new task. It must not inherit this delivery as
             # the audit parent of everything the recipient does afterwards.
-            with call_audit.commission_entry():
-                yield render
+            yield render
 
     async def _send_text(
         self,
@@ -2745,7 +2775,7 @@ class TaskAgentManager:
                     live() and self._sessions.get(session.commission_id) is session and not session.closing
                     and (session.stands is None or session.stands.status not in ENDED_STATUSES)
                 ):
-                    return await self._send_text(runtime, session, command, render([text]), opening=opening, wakes=wakes, human=False)
+                    return await self._send_text(runtime, session, command, render([text], steer=command == "steer"), opening=opening, wakes=wakes, human=False)
             return False
         said = {} if human else {"human": False}
         riding = list(wakes if wakes is not None else getattr(text, "wakes", ()))
@@ -2771,7 +2801,10 @@ class TaskAgentManager:
                 await getattr(runtime, command)(session.session_id, text, serial=serial, **said)
         except BaseException:
             # By its own number: another text may have been sent meanwhile.
+            failed = session.answer_receipts.pop(session.numbered.get(serial), None)
             _withdraw(session, serial)
+            if failed is not None:
+                await call_audit.finish_call(failed[0], "failed")
             if opening:
                 session.opening_sent = False
             if woke:
@@ -2815,10 +2848,18 @@ class TaskAgentManager:
         if session is not None:
             for record, grant in session.control_calls.values():
                 self._permissions.release_grant(grant)
-                settlement = asyncio.create_task(call_audit.finish_call(record, "cancelled"))
-                self._control_settlements.add(settlement)
-                settlement.add_done_callback(self._control_settlements.discard)
+                self._settle_call_soon(record, "cancelled")
             session.control_calls.clear()
+
+    def _settle_call_soon(self, record: call_audit.Call, status: str) -> None:
+        settlement = asyncio.create_task(call_audit.finish_call(record, status))
+        self._control_settlements.add(settlement)
+        settlement.add_done_callback(self._control_settlements.discard)
+
+    def _close_answer_receipts(self, session: _Session) -> None:
+        for record, _ in session.answer_receipts.values():
+            self._settle_call_soon(record, "cancelled")
+        session.answer_receipts.clear()
 
     def _discard(self, commission_id: str) -> None:
         """Give a commission's place back: its session is not, or no longer, open in a runtime for it.
@@ -2828,6 +2869,8 @@ class TaskAgentManager:
         """
         self._cancel_control_calls(commission_id)
         session = self._sessions.pop(commission_id, None)
+        if session is not None:
+            self._close_answer_receipts(session)
         self._candidates.pop(commission_id, None)
         self._excerpts.pop(commission_id, None)
         self._drop_search_ruling(commission_id)
@@ -2886,9 +2929,11 @@ class TaskAgentManager:
         self._kick_waker()
         # What its requests used that the ledger did not take is tried again.
         self._settle_usage_of(session_id)
-        # Nothing is at work in it from here on: when that lasts, and the
-        # host is set to, its conversation is summed up.
-        self._schedule_idle_compact(session_id)
+        unused_copy = self._unused_ask_copies.pop(session_id, None)
+        if unused_copy is not None:
+            await self._discard_copy(unused_copy)
+        else:
+            self._schedule_idle_compact(session_id)
 
     def _settle_hold_of(self, commission_id: str) -> None:
         """Have the hold on a commission's session looked at again, if it holds one.
@@ -2952,6 +2997,8 @@ class TaskAgentManager:
             # with it, and so do its candidate plugins. It goes on holding
             # its session.
             self._cancel_control_calls(commission_id)
+            if session is not None:
+                self._close_answer_receipts(session)
             self._sessions.pop(commission_id, None)
             if self._gateway is not None:
                 self._gateway.revoke(commission_id)
@@ -3094,6 +3141,7 @@ class TaskAgentManager:
             # Process-level messages, and events of sessions already released.
             return
         refused: list[int] = []
+        refused_answer = None
         if kind == "ended":
             # In hand from here on, before anything is awaited (the first
             # of the writes below may be the one that does not answer):
@@ -3103,7 +3151,10 @@ class TaskAgentManager:
             # Out of the count from here on, likewise: stopped at a write
             # below as the host shuts down, what the runtime says next to
             # be taken would be taken for the text it refused.
+            refused_answer = _refused_answer(session, event)
             refused = _refusal(session, event)
+            if refused_answer is not None:
+                await call_audit.finish_call(refused_answer[0], "failed")
         if kind == "tool_end" and session.control_calls:
             pending = session.control_calls.pop(str(event["tool_call_id"]), None)
             if pending is not None:
@@ -3185,6 +3236,11 @@ class TaskAgentManager:
             await self._on_ended(session, event)
         elif kind == "error":
             await self._on_error(session, event, refused)
+            if refused_answer is not None:
+                envelope = refused_answer[1]
+                if envelope is not None and not envelope.retried and not self._closed:
+                    envelope.retried = True
+                    self._spawn(self._wake_closed_parent(session.commission_id, envelope))
         elif kind == "model_capability":
             await self._on_model_capability(session, event)
         elif kind == "compacted":
@@ -3858,6 +3914,9 @@ class TaskAgentManager:
             return
         # Taken, so it is not refused any more.
         _not_refused(session, number)
+        receipt = session.answer_receipts.pop(number, None)
+        if receipt is not None:
+            self._settle_call_soon(receipt[0], "completed")
         wakes = session.handed.pop(number, None)
         if not wakes:
             return
@@ -6602,8 +6661,10 @@ class TaskAgentManager:
                 )
                 if action is not None:
                     action.require()
-                if await self.submit(child, wait=False):
+                if await self.submit(child, wait=False, still_wanted=action.active if action is not None else None):
                     return ""
+                if action is not None:
+                    action.require()
                 # Not started, and failed by ``submit``: no place was free
                 # (it was taken while the copy was made), the host is
                 # shutting down, or the copy could not be given to it. Whoever
@@ -6665,6 +6726,9 @@ class TaskAgentManager:
         import shutil
 
         if not self.hold_files(copy.id):
+            if copy.id in self._held_by:
+                # A rejected ask can already be closing in the runtime.
+                self._unused_ask_copies[copy.id] = copy
             return
         try:
             target = copy.session_dir
@@ -7931,11 +7995,13 @@ class TaskAgentManager:
         self._owe_what_is_left()
         for commission_id in list(self._sessions):
             self._discard(commission_id)
-        # Discarding a session with a native control still in flight schedules
-        # its cancellation write. Let it finish while the ledger is open.
+        # Let pending control and delivery receipts settle while the ledger is open.
         if self._control_settlements:
             await asyncio.wait(list(self._control_settlements), timeout=_SHUTDOWN_START_WAIT_SECONDS)
         self._held_by.clear()
+        unused_copies, self._unused_ask_copies = self._unused_ask_copies, {}
+        for copy in unused_copies.values():
+            await self._discard_copy(copy)
         self._unsubscribe()
         # And once more, now that no run ends any more: the sessions that
         # were closed above ended their turns meanwhile, and one whose word
@@ -7982,8 +8048,14 @@ class TaskAgentManager:
                 # that what is said to be taken next is taken for the right
                 # one. What the refused text brought stays on record as on
                 # its way, which the next process puts right.
+                receipt = _refused_answer(session, event)
+                if receipt is not None:
+                    self._settle_call_soon(receipt[0], "failed")
                 _refusal(session, event)
             elif event.get("type") == "taken" and number is not None:
+                receipt = session.answer_receipts.pop(number, None)
+                if receipt is not None:
+                    self._settle_call_soon(receipt[0], "completed")
                 wakes = session.handed.pop(number, None)
                 if wakes:
                     self._unconfirmed.update(wakes)

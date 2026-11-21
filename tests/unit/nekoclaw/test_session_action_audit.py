@@ -160,6 +160,10 @@ async def test_the_runtime_receiving_an_answer_starts_its_own_calls(env):
     rows = {r["target"]: r for r in await trace(host, source)}
     assert rows["receive_answer"]["parent_call_id"] == rows["next_tool"]["parent_call_id"] == source.id
     assert rows["producer_continues"]["parent_call_id"] == producer.call_id
+    assert rows["receive_answer"]["status"] == "running"
+    await host.task_agents._on_taken(session, {"inputs": 1})
+    await asyncio.gather(*host.task_agents._control_settlements)
+    assert next(r for r in await trace(host, source) if r["target"] == "receive_answer")["status"] == "completed"
 
 
 @pytest.mark.parametrize("change", ["revoke", "different_recipient"])

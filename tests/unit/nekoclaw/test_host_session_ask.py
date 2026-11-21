@@ -744,6 +744,117 @@ async def test_delayed_answer_follows_its_still_working_commission(hosts, tmp_pa
         await sending
 
 
+@pytest.mark.parametrize("second_refusal", [False, True])
+async def test_explicit_runtime_refusal_settles_the_answer_and_retries_once(hosts, tmp_path, monkeypatch, second_refusal):
+    release, model = _held()
+    scripts = {BUILD: model}
+    host = _host(hosts, tmp_path, scripts)
+    asker = await _asker_at_work(host, scripts)
+    manager = host.task_agents
+    session = manager._sessions[asker.id]
+    child, _ = await host.ledger.create(
+        lanlan_name="Lan", title="question", dispatch_text="question", source="ask", route="task_agent",
+        parent_id=asker.id, name="ask-1",
+    )
+    sent = []
+
+    async def steer(session_id, text, *, serial, human):
+        assert not human
+        sent.append((serial, text))
+
+    async def receipts():
+        rows = await host.ledger.run(lambda db: call_audit.read_trace(db, asker.id, now=0))
+        return [r["status"] for r in rows if r["target"] == "receive_answer"]
+
+    monkeypatch.setattr(session.runtime, "steer", steer)
+    try:
+        await manager._tell_parent(child, "completed", "example answer")
+        assert len(sent) == 1 and await receipts() == ["running"]
+        error = {"type": "error", "session_id": asker.session_id, "command": "steer", "message": "busy"}
+        await manager._handle({**error, "serial": sent[0][0] + 100})
+        assert await receipts() == ["running"]
+        await manager._handle({**error, "serial": sent[0][0]})
+        await wait_until(lambda: len(sent) == 2, what="one redelivery of the refused answer")
+        assert sent[0][1] == sent[1][1] and "example answer" in sent[1][1]
+        if second_refusal:
+            await manager._handle({**error, "serial": sent[1][0]})
+        else:
+            await manager._handle({"type": "taken", "session_id": asker.session_id, "inputs": session.sent})
+            await asyncio.gather(*manager._control_settlements)
+        assert await receipts() == ["failed", "failed" if second_refusal else "completed"]
+        assert len(sent) == 2
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("when", ["before_open", "during_open"])
+async def test_opening_an_ask_copy_rechecks_its_parent_loan(hosts, tmp_path, monkeypatch, when):
+    release, held = _held()
+    scripts = {BUILD: held, PHOTOS: _photos(), QUESTION: ScriptedLLM([[say("unused"), finish()]])}
+    host = _host(hosts, tmp_path, scripts)
+    photos = await _at_rest(host, scripts)
+    await host.ledger.update_session(photos.session_id, name="photos")
+    asker = await _asker_at_work(host, scripts)
+    manager = host.task_agents
+    runtime = manager._runtimes.builtin()
+    opened = []
+    spec_for, start = manager._spec, runtime.start
+
+    async def spec(*args, **kwargs):
+        result = await spec_for(*args, **kwargs)
+        if when == "before_open":
+            await host.permission_store.set_mode("outside_read", "deny")
+        return result
+
+    async def opening(spec):
+        opened.append(spec.session_id)
+        await start(spec)
+        if when == "during_open":
+            await host.permission_store.set_mode("outside_read", "deny")
+
+    monkeypatch.setattr(manager, "_spec", spec)
+    monkeypatch.setattr(runtime, "start", opening)
+    try:
+        with pytest.raises(RuntimeError):
+            await manager._callbacks().call(asker.session_id, "session_ask", {"session": "photos", "question": QUESTION})
+        child, = await host.ledger.select(parent_id=asker.id)
+        assert child.status in ("failed", "cancelled")
+        assert opened == ([child.session_id] if when == "during_open" else [])
+        assert not scripts[QUESTION].requests
+        assert await host.ledger.run(lambda db: db.execute("SELECT status FROM messages WHERE kind='ask'").fetchone()[0]) == "void"
+
+        async def cleared():
+            copy = await host.ledger.get_session(child.session_id)
+            return copy.status == "cleared" and not Path(copy.session_dir).exists()
+
+        await wait_until(cleared, what="unused question copy removed")
+    finally:
+        release.set()
+
+
+async def test_ended_run_cannot_hand_prepared_instructions_to_runtime(hosts, tmp_path, monkeypatch):
+    scripts = {BUILD: ScriptedLLM([[say("unused"), finish()]])}
+    host = _host(hosts, tmp_path, scripts)
+    manager = host.task_agents
+    prepare = manager._spec
+    runtime = manager._runtimes.builtin()
+    opened = []
+
+    async def prepared(commission, *args, **kwargs):
+        spec = await prepare(commission, *args, **kwargs)
+        host.permissions.end_run(commission.id)
+        return spec
+
+    async def start(spec):
+        opened.append(spec)
+
+    monkeypatch.setattr(manager, "_spec", prepared)
+    monkeypatch.setattr(runtime, "start", start)
+    receipt = await _dispatch(host, BUILD)
+    await wait_status(host, receipt.commission_id, "cancelled")
+    assert not opened and not scripts[BUILD].requests
+
+
 async def test_with_the_clock_set_back_the_wait_is_until_enough_of_the_hour_is_old(ledger):
     # Written, the clock moved on, written again, and set back: more than the hour allows are
     # in it. Asked again once the first of them is an hour old, as many as allowed would still
