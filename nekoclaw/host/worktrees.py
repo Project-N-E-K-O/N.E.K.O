@@ -577,7 +577,7 @@ class WorktreeManager:
                 if putting.exception() is not None:
                     error.add_note(f"putting the worktree back failed: {putting.exception()}")
                 if cancelled and not isinstance(error, asyncio.CancelledError):
-                    raise asyncio.CancelledError from error
+                    raise _cancelled_after(error) from error
                 raise
         return replace(worktree, start=conflict.current)
 
@@ -1033,7 +1033,7 @@ class WorktreeManager:
                     keep = True
                     error.add_note(f"not put back: {', '.join(putting.result())}; their copies are in {backup}")
                 if cancelled and not isinstance(error, asyncio.CancelledError):
-                    raise asyncio.CancelledError from error
+                    raise _cancelled_after(error) from error
                 raise
             restoring = asyncio.ensure_future(asyncio.to_thread(_restore, root, saved))
             cancelled = await _settle(restoring)
@@ -1322,6 +1322,14 @@ def _count(raw: bytes) -> int | None:
 
 def _failure(what: str, stderr: bytes) -> str:
     return f"{what}: {stderr.decode('utf-8', 'replace').strip()[:500]}"
+
+
+def _cancelled_after(error: BaseException) -> asyncio.CancelledError:
+    """Return the cancellation to raise in place of ``error``, carrying its notes (what was not put back)."""
+    stopped = asyncio.CancelledError()
+    for note in getattr(error, "__notes__", ()):
+        stopped.add_note(note)
+    return stopped
 
 
 async def _to_the_end(awaitable):  # type: ignore[no-untyped-def]

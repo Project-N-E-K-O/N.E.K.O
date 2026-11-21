@@ -2492,3 +2492,33 @@ async def test_preparing_does_not_overwrite_an_ignored_file_of_the_worktree(
     assert read(tree.path / "debug.log") == b"the worktree's own, ignored\n"
     assert read(tree.path / "a.txt") == b"worktree\n"
     assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == tree.start
+
+
+async def test_a_cancellation_while_putting_back_carries_what_went_wrong(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "worktree\n")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    original = manager._git
+    putting_back = asyncio.Event()
+
+    async def failing_both_ways(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:1] == ("checkout",) and args[-1] == conflict.result:
+            putting_back.set()
+            await asyncio.sleep(0.5)  # cancelled meanwhile, and goes on
+            return worktrees._Run(1, b"", b"a file is held")
+        if args[:1] == ("checkout",):
+            raise worktrees.GitError(args, 1, b"unable to write a.txt")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", failing_both_ways)
+    preparing = asyncio.ensure_future(manager.prepare_conflicts(tree, conflict))
+    await asyncio.wait_for(putting_back.wait(), 30)
+    preparing.cancel()
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await preparing
+    notes = " ".join(getattr(raised.value, "__notes__", []))
+    assert "could not be put back" in notes and "a file is held" in notes
+    assert isinstance(raised.value.__cause__, worktrees.GitError)
