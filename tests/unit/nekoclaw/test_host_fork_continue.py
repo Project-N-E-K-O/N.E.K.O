@@ -2116,3 +2116,50 @@ async def test_what_came_of_it_in_the_copy_is_told_once_however_much_is_said_whi
     head = brain_texts.TASK_AGENT_TAKEN_UP_FROM_COPY.split("{session}")[0]
     assert said.count(head) == 1
     assert "look under data/" in said and "and in docs/ as well" in said
+
+
+async def test_what_came_of_it_in_the_copy_goes_with_what_is_said_after_its_taking_up_was_called_off(hosts, tmp_path, monkeypatch):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        FILES: ScriptedLLM(
+            [
+                [call("report", {"status": "blocked", "summary": "tables.py is not there"}, "call-b"), finish("tool_calls")],
+                _report("found it in data/tables.py", "call-r"),
+            ]
+        ),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    manager = host.task_agents
+    first = await _export_at_work(host, scripts)
+    second = await _dispatch(host, FILES)
+    stuck = await wait_status(host, second.id, "blocked")
+    release.set()
+    await wait_status(host, first.id, "done")
+    choose = manager._choose_runtime
+    choosing, chosen = asyncio.Event(), asyncio.Event()
+
+    async def slow(*args: Any, **kwargs: Any) -> Any:
+        choosing.set()
+        await chosen.wait()
+        return await choose(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "_choose_runtime", slow)
+    wanted = [True]
+    first_said = asyncio.ensure_future(manager.tell(second.id, "try the docs folder", still_wanted=lambda: wanted[0]))
+    await asyncio.wait_for(choosing.wait(), 10)
+    # Everything stopped while it is made ready; then the user says more.
+    wanted[0] = False
+    more = asyncio.ensure_future(manager.tell(second.id, "look under data/"))
+    await asyncio.sleep(0.1)
+    monkeypatch.setattr(manager, "_choose_runtime", choose)
+    chosen.set()
+    assert not await first_said
+    assert await more
+    done = await wait_status(host, second.id, "done")
+    assert done.session_id == first.session_id
+    said = "\n".join(_said(scripts[FILES].requests[1]))
+    head = brain_texts.TASK_AGENT_TAKEN_UP_FROM_COPY.split("{nonce}")[0].format(status="blocked", session=stuck.session_id[:8])
+    assert head in said and "\n    tables.py is not there\n" in said
+    assert "look under data/" in said
+

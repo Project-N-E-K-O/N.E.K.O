@@ -5434,6 +5434,14 @@ class TaskAgentManager:
                 return False
             if still_wanted is not None and not still_wanted():
                 return False
+            called_off = self._called_off(commission_id)
+            if called_off is not None:
+                # A taking up that was called off (everything was stopped
+                # after it began) gives up once it gets to look, and takes
+                # back what it was to bring: this is said once that is
+                # through, and brings that itself (``_back_from_copy``).
+                await asyncio.wait([called_off])
+                return await self.tell(commission_id, text, still_wanted=still_wanted)
             # One that ended in a copy carried it on in is taken up in the
             # session itself, told what came of it in the copy.
             from_copy = await self._back_from_copy(commission)
