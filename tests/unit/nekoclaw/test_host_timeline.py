@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import Any
 
 import pytest
@@ -602,15 +603,34 @@ async def test_one_put_under_a_project_after_it_was_read_past_reaches_the_projec
     commission = await _file(ledger, daily, "add a CSV export", project=None)
     page = await ledger.timeline(project="alpha", limit=100)
     assert page["entries"] == []
-    # As ``TaskAgentManager._file_under_project`` does it: the project, then the note.
-    await ledger.update(commission.id, project="alpha")
-    await ledger.append_event(commission.id, "filed_under_project", {"project": "alpha"})
+    filed = await ledger.file_under_project(commission.id, "alpha", workdir="D:/work/alpha")
+    assert (filed.project, filed.workdir) == ("alpha", "D:/work/alpha")
 
     later = await ledger.timeline(project="alpha", after=page["next"], limit=100)
 
     [entry] = later["entries"]
     assert (entry["kind"], entry["text"], entry["detail"]) == ("filed_under_project", "add a CSV export", {"project": "alpha"})
     assert entry["commission_id"] == commission.id and entry["project"] == "alpha"
+
+
+async def test_putting_under_a_project_is_on_record_whole_or_not_at_all(ledger, monkeypatch):
+    daily = await _session(ledger, "daily", project=None)
+    commission = await _file(ledger, daily, "add a CSV export", project=None, workdir="D:/own")
+
+    def broken(*_args: Any) -> int:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(ledger, "_event", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        await ledger.file_under_project(commission.id, "alpha")
+    monkeypatch.undo()
+
+    assert (await ledger.get(commission.id)).project is None
+    assert await ledger.file_under_project("no-such-commission", "alpha") is None
+    assert await ledger.events("no-such-commission") == []
+    kept = await ledger.file_under_project(commission.id, "alpha")
+    assert (kept.project, kept.workdir) == ("alpha", "D:/own")
+    assert [event.type for event in await ledger.events(commission.id)][-1] == "filed_under_project"
 
 
 async def test_a_filtered_page_read_to_the_end_moves_past_what_it_passed_over(ledger):

@@ -1542,6 +1542,28 @@ class Ledger:
 
         return await self.run(work)
 
+    async def file_under_project(self, commission_id: str, project: str, *, workdir: str | None = None) -> Commission | None:
+        """Put a commission filed with no project under one, and note it, in one transaction.
+
+        Noted as an event of its own (``filed_under_project``): whoever
+        read what happened in the project and passed over its filing, as
+        it was no project's then, finds this after where it read up to.
+        Both are on record, or neither. None for an unknown commission.
+        """
+
+        def work(conn: sqlite3.Connection) -> Commission | None:
+            changes: dict[str, Any] = {"project": project, "updated_at": self._clock()}
+            if workdir is not None:
+                changes["workdir"] = workdir
+            assignments = ", ".join(f"{name} = ?" for name in changes)
+            moved = conn.execute(f"UPDATE commissions SET {assignments} WHERE id = ?", [*changes.values(), commission_id])
+            if not moved.rowcount:
+                return None
+            self._event(conn, commission_id, "filed_under_project", {"project": project})
+            return _commission(conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone())
+
+        return await self.run(work)
+
     # -- sessions ---------------------------------------------------------
 
     @staticmethod

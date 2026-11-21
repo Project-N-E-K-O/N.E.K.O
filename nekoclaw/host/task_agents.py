@@ -2517,28 +2517,19 @@ class TaskAgentManager:
             project = await self._space.assign_project(commission)
             if project is None:
                 return commission
-            values: dict[str, Any] = {"project": project.name}
+            workdir = None
             if not commission.workdir and project.workdir:
                 from pathlib import Path
 
                 if await asyncio.to_thread(Path(project.workdir).is_dir):
-                    values["workdir"] = project.workdir
-            filed = await self._ledger.update(commission.id, **values) or commission
+                    workdir = project.workdir
+            # The project and the note of it together (``Ledger.file_under_project``).
+            return await self._ledger.file_under_project(commission.id, project.name, workdir=workdir) or commission
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - it is one of the commissions that belong to no project
             logger.warning("filing a commission under a project failed", exc_info=True)
             return commission
-        try:
-            # Noted after it is the project's, as a row of its own: one that
-            # reads what happened in the project and passed over its filing
-            # (no project yet then) finds this after where it read up to.
-            await self._ledger.append_event(commission.id, "filed_under_project", {"project": project.name})
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - the note is for the record; it is the project's all the same
-            logger.warning("noting that commission %s was filed under a project failed", commission.id, exc_info=True)
-        return filed
 
     async def _launch(
         self, commission_id: str, *, prompt: str | None = None, still_wanted: Callable[[], bool] | None = None
