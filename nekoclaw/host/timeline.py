@@ -54,7 +54,6 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Callable
 from typing import Any
 
 # Kinds of timeline entries. More are added later; a reader passes over
@@ -111,6 +110,8 @@ _MESSAGE_KINDS: dict[str, str] = {"note": "message", "done": "done_notice", "ask
 _UNDER_WAY: tuple[str, ...] = ("queued", "working", "waiting_user")
 _CURSOR = re.compile(r"e(\d+)\.m(\d+)")
 _EVENTS, _MESSAGES = 0, 1
+# The largest number SQLite gives a row.
+_LARGEST_ROW = 2**63 - 1
 
 
 def cursor(events: int, messages: int) -> str:
@@ -125,7 +126,10 @@ def parse_cursor(value: str | None) -> tuple[int, int]:
     found = _CURSOR.fullmatch(str(value))
     if found is None:
         raise ValueError(f"not a timeline cursor: {value!r}")
-    return int(found.group(1)), int(found.group(2))
+    events, messages = int(found.group(1)), int(found.group(2))
+    if max(events, messages) > _LARGEST_ROW:
+        raise ValueError(f"not a timeline cursor: {value!r}")
+    return events, messages
 
 
 def _load(text: Any) -> dict[str, Any]:
@@ -373,7 +377,6 @@ def read_timeline(
     lanlan_name: str | None,
     after: str | None,
     limit: int,
-    cut: Callable[[str], str] = lambda text: text,
 ) -> dict[str, Any]:
     """Return a page of the timeline after the cursor ``after``; see the module.
 
@@ -382,8 +385,8 @@ def read_timeline(
     ``more`` says whether one with entries is there now; ``latest`` stands
     after everything on record now, for a reader that wants only what
     comes from here on. Each entry has its own ``cursor``: the page after
-    it starts with the entry that follows it. ``cut`` shortens each
-    entry's text.
+    it starts with the entry that follows it. Texts are as recorded: the
+    caller shortens them, off the ledger's thread.
     """
     if limit < 0:
         raise ValueError("limit must not be negative")
@@ -426,7 +429,6 @@ def read_timeline(
         else:
             message_after = int(row["number"])
             entry = _message_entry(row)
-        entry["text"] = cut(entry["text"])
         entries.append({"cursor": cursor(event_after, message_after), **entry})
     used_events = len(event_rows)
     used_messages = len(taken) - used_events
@@ -494,12 +496,12 @@ def read_waits(
     project: str | None,
     lanlan_name: str | None,
     limit: int,
-    cut: Callable[[str], str] = lambda text: text,
 ) -> dict[str, Any]:
     """Return who waits for whom now; see the module.
 
     ``{"waits": [...], "more": bool}``, the longest waiting first, at most
-    ``limit`` of them; ``more`` says some were left out.
+    ``limit`` of them; ``more`` says some were left out. Texts are as
+    recorded, as in ``read_timeline``.
     """
     marks = ", ".join("?" for _ in _UNDER_WAY)
     under_way = conn.execute(
@@ -533,14 +535,14 @@ def read_waits(
         since = last[1] if last is not None else row["created_at"]
         if holder is not None:
             target = {**_session(holder["session_id"], holder["id"]), "project": holder["project"]}
-            waits.append(_wait("queue", row, target, since, cut(_text(holder["title"]))))
+            waits.append(_wait("queue", row, target, since, _text(holder["title"])))
         else:
             waits.append(_wait("place", row, {"type": "place", "session_id": None, "commission_id": None}, since, ""))
     for commission_id in asking:
         row = by_id[commission_id]
         asked, question_kind = question_text(row["pending_question"])
         since = status_of[commission_id][1] if commission_id in status_of else row["created_at"]
-        waits.append(_wait("user", row, dict(_USER), since, cut(asked), question_kind=question_kind))
+        waits.append(_wait("user", row, dict(_USER), since, asked, question_kind=question_kind))
 
     copies: set[str] = {row["session_id"] for row in under_way if row["source"] == "ask" and row["session_id"]}
     ids = sorted(copies)
@@ -553,12 +555,12 @@ def read_waits(
         if row["source"] == "ask":
             target = {**_session(forked_from.get(row["session_id"])), "project": row["project"]}
             waits.append(
-                _wait("ask", parent, target, row["created_at"], cut(_text(row["dispatch_text"])), copy_session_id=row["session_id"])
+                _wait("ask", parent, target, row["created_at"], _text(row["dispatch_text"]), copy_session_id=row["session_id"])
             )
         else:
             # A task agent started by another one (only those and questions have a parent).
             target = {**_session(row["session_id"], row["id"]), "project": row["project"]}
-            waits.append(_wait("child", parent, target, row["created_at"], cut(_text(row["title"]))))
+            waits.append(_wait("child", parent, target, row["created_at"], _text(row["title"])))
 
     notes = conn.execute(
         "SELECT m.id, m.from_session, m.from_commission, m.to_session, m.delivered_to, m.body, m.created_at, "
@@ -573,7 +575,7 @@ def read_waits(
             continue
         target = {**_session(note["to_session"], note["delivered_to"]), "project": note["to_project"]}
         waits.append(
-            _wait("notice", sender, target, note["created_at"], cut(_text(note["body"])), message_id=note["id"], expires_at=note["due_at"])
+            _wait("notice", sender, target, note["created_at"], _text(note["body"]), message_id=note["id"], expires_at=note["due_at"])
         )
 
     if project is not None:

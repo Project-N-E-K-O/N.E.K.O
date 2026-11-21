@@ -3240,13 +3240,14 @@ class Ledger:
         lanlan_name: str | None = None,
         after: str | None = None,
         limit: int,
-        cut: Callable[[str], str] = lambda text: text,
     ) -> dict[str, Any]:
-        """Return a page of what happened, in order; ``timeline.read_timeline``. Reads only."""
+        """Return a page of what happened, in order; ``timeline.read_timeline``. Reads only.
+
+        Texts are as recorded: shortening them here would hold the ledger's
+        one thread, and every write waiting on it, for each of them.
+        """
         return await self.run(
-            lambda conn: read_timeline(
-                conn, project=project, lanlan_name=lanlan_name, after=after, limit=limit, cut=cut
-            )
+            lambda conn: read_timeline(conn, project=project, lanlan_name=lanlan_name, after=after, limit=limit)
         )
 
     async def waits(
@@ -3255,12 +3256,9 @@ class Ledger:
         project: str | None = None,
         lanlan_name: str | None = None,
         limit: int,
-        cut: Callable[[str], str] = lambda text: text,
     ) -> dict[str, Any]:
-        """Return who waits for whom now; ``timeline.read_waits``. Reads only."""
-        return await self.run(
-            lambda conn: read_waits(conn, project=project, lanlan_name=lanlan_name, limit=limit, cut=cut)
-        )
+        """Return who waits for whom now; ``timeline.read_waits``. Reads only; texts as recorded."""
+        return await self.run(lambda conn: read_waits(conn, project=project, lanlan_name=lanlan_name, limit=limit))
 
     # -- outbox -----------------------------------------------------------
 

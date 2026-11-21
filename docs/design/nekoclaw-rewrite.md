@@ -2408,7 +2408,7 @@ owner 要的面板参考了 Antigravity 的 Swarm：成员之间的线（做完�
 
 **时间线的条目**
 
-每条：`cursor`（从这条之后接着读）、`at`（时间）、`kind`（种类）、`lanlan_name`、`project`、`session_id`、`commission_id`（这件事是谁的）、`peer`（对方：`{"type": "session" | "user", "session_id", "commission_id"}`，没有对方是 `null`）、`text`（一句话，按 token 截到 `TIMELINE_TEXT_MAX_TOKENS`）、`detail`（按种类固定的几个小字段）。`session_id` 是委托现在所在的会话（进了副本又交回的，读的时候在哪就是哪）。
+每条：`cursor`（从这条之后接着读）、`at`（时间）、`kind`（种类）、`lanlan_name`、`project`、`session_id`、`commission_id`（这件事是谁的）、`peer`（对方：`{"type": "session" | "user", "session_id", "commission_id"}`，没有对方是 `null`）、`text`（一句话，按 token 截到 `TIMELINE_TEXT_MAX_TOKENS`；截字在宿主一层、另一个线程上做，台账那一层给原文，免得一千条长消息的截字占着台账唯一的线程、把写入都卡住）、`detail`（按种类固定的几个小字段）。`session_id` 是委托现在所在的会话（进了副本又交回的，读的时候在哪就是哪）。
 
 | 种类 | 从哪来 | `text` | `peer` | `detail` |
 |---|---|---|---|---|
@@ -2444,7 +2444,7 @@ owner 要的面板参考了 Antigravity 的 Swarm：成员之间的线（做完�
 
 一页的取法：两张表各从自己的编号往后按编号顺序取（只取要显示的种类、按项目和角色筛过的），再按时间把两个队头归并（同一时刻先事件后消息，同一张表里按编号），取够 `limit` 条为止。每条的 `cursor` 是归并到它为止两张表各读到的编号；整页的 `next` 是最后一条的游标。下一页从这两个编号往后接着取，所以不会重复也不会漏，跟时间准不准无关（时钟往回拨了，后写的照样排在后面）。一张表在这一页里读到了头，`next` 里它那一半直接跳到读的那一刻的最大编号，下一页不再扫那些被筛掉的行。另给 `latest`（现在台账里的最后），界面只要「这之后新的」就从它开始；`more` 说现在后面还有没有。
 
-翻页的上限：默认一页 200 条（`TIMELINE_PAGE_ROWS`），最多 1000 条（`TIMELINE_PAGE_MAX_ROWS`），要更多也只给这么多。不是游标的字符串报 `ValueError`。
+翻页的上限：默认一页 200 条（`TIMELINE_PAGE_ROWS`），最少 1 条，最多 1000 条（`TIMELINE_PAGE_MAX_ROWS`），超出的按边界给。不是游标的字符串（包括数字超过 SQLite 行号上限的）报 `ValueError`。
 
 **按项目、按角色**
 
@@ -2459,7 +2459,7 @@ owner 要的面板参考了 Antigravity 的 Swarm：成员之间的线（做完�
 | `queue` 排在同一个会话的另一件后面 | 委托在排队，最后一条 `queued` 事件带 `behind`、之后状态没再变过，`behind` 那件还占着会话（在跑且没歇着，或在等用户回话；歇着的、自己又排回队的都不占） | 那件委托和它的会话 | 排进去的时候 | — |
 | `place` 等空位 | 委托在排队，不是上面那种 | `place` | 最后一次排进去（或立的时候） | — |
 | `user` 等用户回话 | 委托 `waiting_user` | 用户 | 最后一次改状态的时候 | `question_kind` |
-| `notice` 等消息的办完通知 | 消息订了办完通知、还没通知、没作废、「等不到」的唤醒还没到点，发的委托还在办 | 收的会话（交到的委托） | 发的时候 | `message_id`、`expires_at` |
+| `notice` 等消息的办完通知 | 消息订了办完通知、还没通知、没作废、「等不到」的唤醒还没触发（宿主停过、唤醒还没轮到时，过了 `expires_at` 也算，直到它真正触发），发的委托还在办 | 收的会话（交到的委托） | 发的时候 | `message_id`、`expires_at` |
 | `child` 父使魔等子使魔 | 子使魔的委托还在办（排队、在跑、等回话），父委托也还在办 | 子使魔 | 子使魔立的时候 | — |
 | `ask` 问了一句还没回 | 问一句的副本委托还在办，问的那件也还在办 | 被问的会话（副本是从它分出来的） | 立的时候 | `copy_session_id` |
 

@@ -561,6 +561,10 @@ async def test_cursors_are_checked(ledger):
         await ledger.timeline(limit=-1)
     assert parse_cursor(None) == parse_cursor("") == (0, 0)
     assert parse_cursor(cursor(12, 3)) == (12, 3)
+    assert parse_cursor(f"e{2**63 - 1}.m0") == (2**63 - 1, 0)
+    for too_large in (f"e{2**63}.m0", f"e0.m{2**63}"):
+        with pytest.raises(ValueError):
+            await ledger.timeline(after=too_large, limit=5)
     page = await ledger.timeline(after="e999.m999", limit=5)
     assert page["entries"] == [] and page["next"] == "e999.m999"
 
@@ -942,6 +946,10 @@ async def test_the_host_cuts_texts_and_pages(tmp_path, monkeypatch):
         page = await host.timeline()
         assert [entry["kind"] for entry in page["entries"]] == ["filed", "started"] and page["more"]
         assert 0 < len(page["entries"][0]["text"]) < 30
+        # The ledger gives the texts as recorded: they are cut off its thread.
+        assert (await host.ledger.timeline(limit=1))["entries"][0]["text"] == long
+        assert len((await host.timeline(limit=0))["entries"]) == 1
+        assert len((await host.timeline(limit=-5))["entries"]) == 1
         assert len((await host.timeline(limit=50))["entries"]) == 3
         assert (await host.timeline(project="nowhere"))["entries"] == []
         assert len((await host.timeline(lanlan_name="Lan", after=page["next"], limit=100))["entries"]) == 3
@@ -971,5 +979,6 @@ async def test_the_host_cuts_the_texts_of_waits(tmp_path, monkeypatch):
         [wait] = (await host.waits())["waits"]
 
         assert wait["kind"] == "user" and 0 < len(wait["text"]) < 30
+        assert (await host.ledger.waits(limit=5))["waits"][0]["text"] == " ".join(["word"] * 50)
     finally:
         await host.shutdown()
