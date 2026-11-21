@@ -59,6 +59,7 @@ calls* — RFC §3.4 stays unchanged in shape.
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -637,21 +638,25 @@ class MemoryRecallReranker:
         # The id-keyed indirection prevents the LLM from inventing
         # ids that aren't in the candidate set.
         from config import (
+            DECISION_STATE_MAX_TOKENS,
             RECALL_PER_CANDIDATE_MAX_TOKENS,
             RECALL_CANDIDATES_TOTAL_MAX_TOKENS,
         )
-        from utils.tokenize import truncate_to_tokens
+        from utils.tokenize import count_tokens, truncate_to_tokens
         cand_lines = []
+        cand_entries: list[tuple[str, str]] = []
         id_to_obs: dict[str, dict] = {}
         for c in candidates:
             cid = c.get('id') or c.get('raw_id')
-            if not cid:
+            if not cid or cid in id_to_obs:
                 continue
             id_to_obs[cid] = c
             score = c.get('score', 0.0)
             # Truncate each candidate text to RECALL_PER_CANDIDATE_MAX_TOKENS.
             txt = truncate_to_tokens(c.get('text', '') or '', RECALL_PER_CANDIDATE_MAX_TOKENS)
-            cand_lines.append(f"[{cid}] (score={score:.2f}) {txt}")
+            line = f"[{cid}] (score={score:.2f}) {txt}"
+            cand_lines.append(line)
+            cand_entries.append((cid, line))
         if not cand_lines:
             return []
 
@@ -668,6 +673,122 @@ class MemoryRecallReranker:
         )
 
         set_call_type("memory_recall_rerank")
+        decision_config: dict | None = None
+        try:
+            decision_config = await config_manager.aget_model_api_config('decision')
+        except Exception:
+            decision_config = None
+
+        from utils.decision_client import (
+            DecisionClient,
+            ScoreQuestion,
+            is_native_decision_protocol,
+        )
+
+        # Fast path: native zero-output Decisions API (e.g. Qwen decision-model-preview,
+        # Gemini gemini-decision-1, OpenAI gpt-6-luna, OpenRouter Decisions). Evaluates
+        # bounded candidates in one parallel forward pass (~150-250ms, 0 output tokens)
+        # and falls through to the `summary` chat-LLM rerank path on any error or cooldown.
+        if (
+            isinstance(decision_config, dict)
+            and is_native_decision_protocol(decision_config.get('decision_protocol'))
+            and decision_config.get('model')
+        ):
+            try:
+                # Cap the native query portion so state_header never consumes the
+                # entire DECISION_STATE_MAX_TOKENS budget; summary chat fallback
+                # continues to use the original query_text.
+                native_query_budget = max(256, DECISION_STATE_MAX_TOKENS // 4)
+                native_query_text = truncate_to_tokens(query_text, native_query_budget)
+                state_header = f"Query:\n{native_query_text}\n\nCandidates:\n"
+                header_tokens = count_tokens(state_header)
+                avail_tokens = max(
+                    1,
+                    DECISION_STATE_MAX_TOKENS - header_tokens - 64,
+                )
+                native_lines: list[str] = []
+                native_candidate_ids: list[str] = []
+                used_tokens = 0
+                for cid, line in cand_entries:
+                    line_tokens = count_tokens(line) + 1
+                    if used_tokens + line_tokens > avail_tokens:
+                        if not native_lines:
+                            native_lines.append(truncate_to_tokens(line, avail_tokens))
+                            native_candidate_ids.append(cid)
+                        break
+                    native_lines.append(line)
+                    native_candidate_ids.append(cid)
+                    used_tokens += line_tokens
+
+                state_text = state_header + "\n".join(native_lines)
+                questions = {
+                    cid: ScoreQuestion(
+                        instructions=(
+                            f"Rate how relevant memory candidate [{cid}] is for answering or "
+                            "supporting the Query above. Higher evidence score in parentheses "
+                            "indicates stronger user confirmation."
+                        ),
+                        levels=(
+                            "irrelevant",
+                            "weakly_relevant",
+                            "relevant",
+                            "highly_relevant",
+                        ),
+                    )
+                    for cid in native_candidate_ids
+                }
+                dec_client = DecisionClient(config_manager=config_manager)
+                # Keep native decision total latency tightly capped (2.0s; typical
+                # native latency is ~150-250ms) so upstream's ~5s query_memory budget
+                # still leaves room for the summary chat fallback on timeout. Outer
+                # wait_for (2.2s) gives DecisionClient's inner 2.0s timeout priority
+                # so transient timeouts reliably trigger the 60s cooldown cache.
+                dec_resp = await asyncio.wait_for(
+                    dec_client.decide(
+                        state=state_text,
+                        questions=questions,
+                        config=decision_config,
+                        timeout=2.0,
+                        allow_fallback=False,
+                        respect_cooldown=True,
+                        call_type="memory_recall_rerank",
+                    ),
+                    timeout=2.2,
+                )
+                if dec_resp.answers:
+                    scored_rows: list[tuple[float, int, str]] = []
+                    for idx, cid in enumerate(native_candidate_ids):
+                        ans = dec_resp.answers.get(cid)
+                        if ans is not None and ans.score_norm is not None:
+                            scored_rows.append((float(ans.score_norm), idx, cid))
+                    if scored_rows:
+                        scored_rows.sort(key=lambda item: (-item[0], item[1]))
+                        ranked_native: list[dict] = []
+                        seen_native: set[str] = set()
+                        for _score, _idx, cid in scored_rows:
+                            ranked_native.append(id_to_obs[cid])
+                            seen_native.add(cid)
+                            if len(ranked_native) >= budget:
+                                break
+                        if len(ranked_native) < budget:
+                            for c in candidates:
+                                cid = c.get('id') or c.get('raw_id')
+                                if cid in seen_native or not cid:
+                                    continue
+                                ranked_native.append(c)
+                                seen_native.add(cid)
+                                if len(ranked_native) >= budget:
+                                    break
+                        return ranked_native
+            except Exception as exc:
+                logger.warning(
+                    "[MemoryRecall] native decision rerank failed (%s); falling back to summary chat LLM",
+                    type(exc).__name__,
+                )
+
+        # Non-native providers and native fallback always keep the established `summary`
+        # tier for chat-LLM reranking (matching project tier policy and avoiding silent
+        # model downgrades when the user has not configured a native decision provider).
         api_config = await config_manager.aget_model_api_config('summary')
         # timeout=8: recall runs in query_memory, whose upstream plugin/core/context.py
         # defaults to 5 s. Local 8 s allows connection/one failure; timeout raises
