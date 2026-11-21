@@ -10,6 +10,8 @@ import re
 import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from pydantic import TypeAdapter, ValidationError
+
 from plugin._types.entry_metadata import (
     ENTRY_CONTRACT_BOOL_FIELDS,
     ENTRY_CONTRACT_FIELDS,
@@ -20,6 +22,7 @@ from plugin._types.plugin_types import (
     format_plugin_type_choice_error,
     format_removed_plugin_host,
 )
+from plugin.config.schema import PluginModelRequirementSchema, PluginModelUsageId
 from plugin.core.entry_points import plugin_package_matches_directory
 from plugin.sdk.shared.core.push_message_schema import (
     LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS,
@@ -93,49 +96,19 @@ _PERSIST_MODE_MIGRATION_HINT = {
 }
 
 
-# Type errors for [plugin.models]; {label} is the plugin.toml path of the value.
-_MODELS_TYPE_ERRORS = {
-    "table": {
-        "en": "{label} must be a table",
-        "zh-CN": "{label} 必须是表（table）",
-        "zh-TW": "{label} 必須是表（table）",
-        "ja": "{label} はテーブル（table）にしてください",
-        "ko": "{label}은(는) 테이블(table)이어야 합니다",
-        "ru": "{label} должно быть таблицей (table)",
-        "es": "{label} debe ser una tabla (table)",
-        "pt": "{label} deve ser uma tabela (table)",
-    },
-    "string": {
-        "en": "{label} must be a string",
-        "zh-CN": "{label} 必须是字符串",
-        "zh-TW": "{label} 必須是字串",
-        "ja": "{label} は文字列にしてください",
-        "ko": "{label}은(는) 문자열이어야 합니다",
-        "ru": "{label} должно быть строкой",
-        "es": "{label} debe ser una cadena de texto",
-        "pt": "{label} deve ser uma string",
-    },
-    "boolean": {
-        "en": "{label} must be a boolean (true or false)",
-        "zh-CN": "{label} 必须是布尔值（true 或 false）",
-        "zh-TW": "{label} 必須是布林值（true 或 false）",
-        "ja": "{label} は真偽値（true または false）にしてください",
-        "ko": "{label}은(는) 불리언 값(true 또는 false)이어야 합니다",
-        "ru": "{label} должно быть логическим значением (true или false)",
-        "es": "{label} debe ser un booleano (true o false)",
-        "pt": "{label} deve ser um booleano (true ou false)",
-    },
-    "string_list": {
-        "en": "{label} must be a list of strings",
-        "zh-CN": "{label} 必须是字符串列表",
-        "zh-TW": "{label} 必須是字串清單",
-        "ja": "{label} は文字列のリストにしてください",
-        "ko": "{label}은(는) 문자열 목록이어야 합니다",
-        "ru": "{label} должно быть списком строк",
-        "es": "{label} debe ser una lista de cadenas de texto",
-        "pt": "{label} deve ser uma lista de strings",
-    },
+# [plugin.models.*] entries the server's model schema rejects; {label} is the
+# plugin.toml path and {detail} the schema's own (English) reason.
+_MODELS_REJECTED = {
+    "en": "{label} is rejected by the plugin model schema: {detail}",
+    "zh-CN": "{label} 不符合插件模型声明的格式，服务端会拒绝：{detail}",
+    "zh-TW": "{label} 不符合外掛模型宣告的格式，伺服器端會拒絕：{detail}",
+    "ja": "{label} はプラグインのモデル宣言の形式に合わず、サーバーに拒否されます：{detail}",
+    "ko": "{label}은(는) 플러그인 모델 선언 형식에 맞지 않아 서버에서 거부됩니다: {detail}",
+    "ru": "{label} не соответствует схеме объявления моделей плагина и будет отклонено сервером: {detail}",
+    "es": "{label} no cumple el esquema de declaración de modelos del plugin y el servidor lo rechazará: {detail}",
+    "pt": "{label} não segue o esquema de declaração de modelos do plugin e será rejeitado pelo servidor: {detail}",
 }
+_PLUGIN_MODELS_ADAPTER = TypeAdapter(dict[PluginModelUsageId, PluginModelRequirementSchema])
 
 
 def _format_multilingual(texts: dict[str, str], *, head: str | None = None) -> str:
@@ -578,33 +551,29 @@ def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
         issues.append(("error", _format_multilingual(_DATABASE_NAME_INVALID)))
 
 
-def _models_type_error(kind: str, label: str) -> tuple[str, str]:
-    texts = {locale: text.format(label=label) for locale, text in _MODELS_TYPE_ERRORS[kind].items()}
-    return ("error", _format_multilingual(texts))
+def _models_error_label(loc: tuple[object, ...]) -> str:
+    if not loc:
+        return "[plugin.models]"
+    label = f"[plugin.models.{loc[0]}]"
+    if loc[1:] == ("[key]",):
+        return f"{label} (usage id)"
+    for part in loc[1:]:
+        label += f"[{part}]" if isinstance(part, int) else f".{part}"
+    return label
 
 
 def _check_models_table(value: object, issues: list[tuple[str, str]]) -> None:
-    """Check ``[plugin.models.*]`` types: the declarations the server reads as model requirements."""
+    """Check ``[plugin.models.*]`` with the same schema the server reads model requirements with."""
     if value is None:
         return
-    if not isinstance(value, dict):
-        issues.append(_models_type_error("table", "[plugin.models]"))
-        return
-    for usage_id, requirement in value.items():
-        label = f"[plugin.models.{usage_id}]"
-        if not isinstance(requirement, dict):
-            issues.append(_models_type_error("table", label))
-            continue
-        for key in ("label", "description"):
-            if key in requirement and not isinstance(requirement[key], str):
-                issues.append(_models_type_error("string", f"{label}.{key}"))
-        if "required" in requirement and not isinstance(requirement["required"], bool):
-            issues.append(_models_type_error("boolean", f"{label}.required"))
-        capabilities = requirement.get("capabilities")
-        if "capabilities" in requirement and (
-            not isinstance(capabilities, list) or not all(isinstance(item, str) for item in capabilities)
-        ):
-            issues.append(_models_type_error("string_list", f"{label}.capabilities"))
+    try:
+        _PLUGIN_MODELS_ADAPTER.validate_python(value)
+    except ValidationError as exc:
+        for error in exc.errors(include_url=False, include_input=False):
+            label = _models_error_label(tuple(error.get("loc", ())))
+            detail = str(error.get("msg", ""))
+            texts = {locale: text.format(label=label, detail=detail) for locale, text in _MODELS_REJECTED.items()}
+            issues.append(("error", _format_multilingual(texts)))
 
 
 def _check_shared_table(value: object, issues: list[tuple[str, str]]) -> None:

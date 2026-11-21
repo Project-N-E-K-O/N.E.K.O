@@ -854,9 +854,10 @@ def _resolve_persist_mode(instance: object, effective_cfg: object) -> str:
     """Return the state persist mode for a plugin instance.
 
     Order: a valid ``[plugin_state].persist_mode`` wins, including an explicit
-    ``"off"``. Otherwise start from the instance default (``__persist_mode__``,
-    then ``__freeze_mode__``, then ``"off"``); when that is ``"off"``, a valid
-    legacy ``[plugin_checkpoint].freeze_mode`` still applies.
+    ``"off"``. Otherwise start from the instance default: ``__persist_mode__``
+    (``NekoPluginBase`` defines it as ``"off"``, so ``__freeze_mode__`` is only
+    read for objects without that attribute), else ``"off"``. When that default
+    is ``"off"``, a valid legacy ``[plugin_checkpoint].freeze_mode`` still applies.
     """
     from plugin.sdk.shared.storage.state import PluginStatePersistence
 

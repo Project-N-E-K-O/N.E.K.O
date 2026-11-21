@@ -3,18 +3,33 @@ from __future__ import annotations
 import pytest
 
 from plugin.core.host import _resolve_persist_mode
+from plugin.sdk.shared.core.base import NekoPluginBase
 from plugin.sdk.shared.storage.state import PluginStatePersistence
 
 
-class _Plugin:
+class _BasePlugin(NekoPluginBase):
     pass
 
 
-class _AutoPlugin:
+class _AutoBasePlugin(NekoPluginBase):
     __persist_mode__ = "auto"
 
 
-class _LegacyFreezePlugin:
+class _FreezeModeBasePlugin(NekoPluginBase):
+    __freeze_mode__ = "manual"
+
+
+def _Plugin() -> NekoPluginBase:
+    # Real plugins subclass NekoPluginBase; skip __init__, which needs a host context.
+    return object.__new__(_BasePlugin)
+
+
+def _AutoPlugin() -> NekoPluginBase:
+    return object.__new__(_AutoBasePlugin)
+
+
+class _NonBaseFreezePlugin:
+    # Objects without __persist_mode__ fall back to __freeze_mode__.
     __freeze_mode__ = "manual"
 
 
@@ -40,7 +55,9 @@ class _LegacyFreezePlugin:
         (_AutoPlugin(), {}, "auto"),
         (_AutoPlugin(), {"plugin_checkpoint": {"freeze_mode": "off"}}, "auto"),
         (_AutoPlugin(), {"plugin_state": {"persist_mode": "off"}}, "off"),
-        (_LegacyFreezePlugin(), {}, "manual"),
+        (_NonBaseFreezePlugin(), {}, "manual"),
+        # NekoPluginBase defines __persist_mode__ = "off", so __freeze_mode__ is not read there.
+        (object.__new__(_FreezeModeBasePlugin), {}, "off"),
         # Non-table sections are ignored.
         (_Plugin(), {"plugin_state": "off", "plugin_checkpoint": {"freeze_mode": "auto"}}, "auto"),
         (_Plugin(), {"plugin_checkpoint": "auto"}, "off"),

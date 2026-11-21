@@ -3033,23 +3033,49 @@ def test_validate_plugin_dir_accepts_plugin_models_tables(tmp_path: Path) -> Non
     assert not any("models" in message for _level, message in issues)
 
 
+_MODELS_REJECTED_SUFFIX = " is rejected by the plugin model schema: "
+
+
+def _models_errors(issues: list[tuple[str, str]]) -> dict[str, str]:
+    """Map each [plugin.models] error's label to its full message."""
+    return {
+        message.split("\n")[0].split(_MODELS_REJECTED_SUFFIX)[0]: message
+        for level, message in issues
+        if level == "error" and _MODELS_REJECTED_SUFFIX in message.split("\n")[0]
+    }
+
+
 @pytest.mark.parametrize(
-    ("extra", "head"),
+    ("extra", "label"),
     [
-        ("[plugin.models]\nsummary = \"text\"", "[plugin.models.summary] must be a table"),
-        ("[plugin.models.summary]\nlabel = 1", "[plugin.models.summary].label must be a string"),
-        ("[plugin.models.summary]\nlabel = \"S\"\ndescription = []", "[plugin.models.summary].description must be a string"),
-        ("[plugin.models.summary]\nlabel = \"S\"\nrequired = \"false\"", "[plugin.models.summary].required must be a boolean (true or false)"),
-        ("[plugin.models.summary]\nlabel = \"S\"\ncapabilities = \"text\"", "[plugin.models.summary].capabilities must be a list of strings"),
-        ("[plugin.models.summary]\nlabel = \"S\"\ncapabilities = [\"text\", 1]", "[plugin.models.summary].capabilities must be a list of strings"),
+        ("[plugin.models]\nsummary = \"text\"", "[plugin.models.summary]"),
+        ("[plugin.models.summary]\nlabel = 1", "[plugin.models.summary].label"),
+        ("[plugin.models.summary]\nlabel = \"S\"\ndescription = []", "[plugin.models.summary].description"),
+        ("[plugin.models.summary]\nlabel = \"S\"\nrequired = \"false\"", "[plugin.models.summary].required"),
+        ("[plugin.models.summary]\nlabel = \"S\"\ncapabilities = \"text\"", "[plugin.models.summary].capabilities"),
+        ("[plugin.models.summary]\nlabel = \"S\"\ncapabilities = [\"text\", 1]", "[plugin.models.summary].capabilities[1]"),
+        # Rejected by the server schema beyond plain types.
+        ("[plugin.models.summary]\nlabel = \"S\"\nrequried = false", "[plugin.models.summary].requried"),
+        ("[plugin.models.summary]\ndescription = \"no label\"", "[plugin.models.summary].label"),
+        ("[plugin.models.summary]\nlabel = \"\"", "[plugin.models.summary].label"),
+        ("[plugin.models.summary]\nlabel = \" S \"", "[plugin.models.summary].label"),
+        ("[plugin.models.summary]\nlabel = \"S\"\ncapabilities = [\"vision\"]", "[plugin.models.summary].capabilities[0]"),
+        ("[plugin.models.summary]\nlabel = \"S\"\ncapabilities = [\"text\", \"text\"]", "[plugin.models.summary].capabilities"),
+        ("[plugin.models.Summary]\nlabel = \"S\"", "[plugin.models.Summary] (usage id)"),
+        ("[plugin.models.\"my-model\"]\nlabel = \"S\"", "[plugin.models.my-model] (usage id)"),
+        (f"[plugin.models.{'a' * 65}]\nlabel = \"S\"", f"[plugin.models.{'a' * 65}] (usage id)"),
     ],
 )
-def test_validate_plugin_dir_rejects_wrong_plugin_models_types(tmp_path: Path, extra: str, head: str) -> None:
+def test_validate_plugin_dir_rejects_what_the_plugin_model_schema_rejects(
+    tmp_path: Path, extra: str, label: str
+) -> None:
     issues = _validate_with_extra_toml(tmp_path, extra)
 
-    (message,) = [m for level, m in issues if level == "error" and m.split("\n")[0] == head]
-    lines = message.split("\n")
+    errors = _models_errors(issues)
+    assert list(errors) == [label]
+    lines = errors[label].split("\n")
     assert [line.strip().split(": ", 1)[0] for line in lines[1:]] == ["zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt"]
+    assert all(label in line for line in lines)
     assert not any("is not a recognized" in m and "models" in m for _level, m in issues)
 
 
@@ -3063,7 +3089,7 @@ def test_validate_plugin_dir_rejects_non_table_plugin_models(tmp_path: Path) -> 
 
     issues = validate_plugin_dir(plugin_dir, strict=True)
 
-    assert any(level == "error" and m.split("\n")[0] == "[plugin.models] must be a table" for level, m in issues)
+    assert list(_models_errors(issues)) == ["[plugin.models]"]
 
 
 def test_validate_plugin_dir_accepts_plugin_database_table(tmp_path: Path) -> None:
