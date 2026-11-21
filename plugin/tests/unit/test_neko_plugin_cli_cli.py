@@ -2207,8 +2207,13 @@ def test_suggested_setup_repo_fix_falls_back_to_the_id_without_a_directory() -> 
 def test_suggested_git_init_fix_quotes_the_plugin_directory(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
     parent: str,
 ) -> None:
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+    # Keep git from finding a repository that happens to enclose tmp_path.
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     plugin_dir = _make_plugin_dir(tmp_path / parent, "no_repo")
 
     assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
@@ -2227,7 +2232,7 @@ def test_suggested_git_init_fix_quotes_the_plugin_directory(
     subprocess.run([*arguments[:3], "init", "-q"], check=True)
 
     capsys.readouterr()
-    neko_plugin_cli.main(["check", str(plugin_dir)])
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
     assert "does not have its own git repository" not in capsys.readouterr().out
 
 
@@ -2896,8 +2901,10 @@ def test_check_skips_git_for_an_init_plugin_in_the_builtin_root(
     capsys: pytest.CaptureFixture[str],
     monkeypatch,
 ) -> None:
-    # init leaves a git repository in plugin/plugins/<id>; that root is still
-    # treated as a CI mount, so check must not claim the repository is missing.
+    # init leaves a git repository in plugin/plugins/<id>; git checks still
+    # skip that root, so check must not claim the repository is missing.
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
     root = tmp_path / "neko"
     monkeypatch.setattr(neko_plugin_cli, "resolve_default_paths", lambda: CliDefaults(
         root / "plugin", root / "target", root / "plugin/plugins", root / "profiles",
@@ -2911,7 +2918,7 @@ def test_check_skips_git_for_an_init_plugin_in_the_builtin_root(
     out = capsys.readouterr().out
     assert "does not have its own git repository" not in out
     assert "git init" not in out
-    assert "[WARNING] plugins under plugin/plugins are treated as CI mounts; git checks are skipped here" in out
+    assert "[WARNING] git checks are skipped for plugins in the built-in plugins root (plugin/plugins)" in out
 
 
 def test_release_check_enforces_market_plugin_id_without_market_release(

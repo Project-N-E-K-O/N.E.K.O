@@ -224,16 +224,16 @@ def _diagnose_repository(plugin_dir: Path, *, defaults: CliDefaults, release: bo
         return [("warning", "git executable not found")]
 
     if _is_builtin_source_plugin_dir(plugin_dir, defaults):
-        # _repository_root treats this root as a CI mount even when the
-        # plugin carries its own .git (as init leaves it), so say what is
-        # skipped instead of claiming there is no repository.
+        # _repository_root skips this root (CI mounts, first-party plugins)
+        # even when the plugin carries its own .git (as init leaves it), so
+        # say what is skipped instead of claiming there is no repository.
         return [
             (
                 "warning",
                 _tri(
-                    "plugins under plugin/plugins are treated as CI mounts; git checks are skipped here",
-                    "plugin/plugins 下的插件按 CI 挂载处理，这里跳过 Git 检查",
-                    "plugin/plugins 配下のプラグインは CI マウントとして扱われるため、ここでは Git チェックを省略します",
+                    "git checks are skipped for plugins in the built-in plugins root (plugin/plugins)",
+                    "内置插件目录（plugin/plugins）下的插件不做 Git 检查",
+                    "組み込みプラグインディレクトリ（plugin/plugins）配下のプラグインでは Git チェックを省略します",
                 ),
             )
         ]

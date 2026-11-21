@@ -1249,7 +1249,8 @@ def test_publish_github_stops_before_tag_when_release_workflow_is_not_standard(
     assert _run_git(remote, "tag", "--list") == ""
     error = capsys.readouterr().err
     assert "standard release workflow is not current" in error
-    assert "setup-repo" in error
+    target = publish_cmd.release_cmd._plugin_dir_argument(plugin_dir, "")
+    assert f"neko-plugin setup-repo {target} --upgrade-github-actions" in error
 
 
 def test_publish_can_resume_when_remote_tag_already_points_to_head(

@@ -9,12 +9,36 @@ from pathlib import Path
 
 import pytest
 
-from plugin.neko_plugin_cli.commands import init_cmd
+from plugin.neko_plugin_cli.commands import init_cmd, release_cmd
 from plugin.neko_plugin_cli.paths import CliDefaults
+
+
+def _quoted(plugin_dir: Path) -> str:
+    """The plugin directory as the printed git commands quote it."""
+    return release_cmd._plugin_dir_argument(plugin_dir, "")
 
 pytestmark = pytest.mark.plugin_unit
 
 MANUAL = init_cmd.MANUAL_FALLBACK_EXIT
+
+
+@pytest.mark.skipif(release_cmd._WINDOWS_SHELL, reason="POSIX shell quoting")
+def test_git_command_quotes_the_directory_for_a_posix_shell() -> None:
+    # Plain double quotes would still let the shell expand $HOME.
+    assert init_cmd._git_command(Path("/work/my $HOME (copy)"), "init -b main") == (
+        "git -C '/work/my $HOME (copy)' init -b main"
+    )
+
+
+def test_git_command_quotes_the_directory_for_windows_shells(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+    assert init_cmd._git_command(Path(r"C:\work\my plugin"), "init -b main") == (
+        'git -C "C:\\work\\my plugin" init -b main'
+    )
+    # No quoting keeps %VAR% literal in cmd, so the user fills in the path.
+    assert init_cmd._git_command(Path(r"C:\work\%K%\demo"), "init -b main") == (
+        'git -C "<plugin directory>" init -b main'
+    )
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -91,9 +115,9 @@ def test_manual_steps_when_gh_is_unavailable(tmp_path, monkeypatch, capsys):
     # The manual path names the expected repository and git commands that
     # work on the plugin's own repository.
     assert "n.e.k.o_plugin_demo_repo" in out
-    assert f'git -C "{plugin_dir}" init -b main' in out
-    assert f'git -C "{plugin_dir}" remote add origin <repository-url>' in out
-    assert f'git -C "{plugin_dir}" push -u origin main' in out
+    assert f'git -C {_quoted(plugin_dir)} init -b main' in out
+    assert f'git -C {_quoted(plugin_dir)} remote add origin <repository-url>' in out
+    assert f'git -C {_quoted(plugin_dir)} push -u origin main' in out
     assert "setup-repo" not in out
 
 
@@ -108,8 +132,8 @@ def test_manual_steps_for_a_committed_repo_only_wire_and_push(tmp_path, monkeypa
     out = capsys.readouterr().out
     assert "init -b main" not in out
     assert "commit -m" not in out
-    assert f'git -C "{plugin_dir}" remote add origin <repository-url>' in out
-    assert f'git -C "{plugin_dir}" push -u origin trunk' in out
+    assert f'git -C {_quoted(plugin_dir)} remote add origin <repository-url>' in out
+    assert f'git -C {_quoted(plugin_dir)} push -u origin trunk' in out
 
 
 def test_manual_steps_when_gh_is_not_signed_in(tmp_path, monkeypatch, capsys):
@@ -188,7 +212,7 @@ def test_happy_path_creates_the_repository_and_wires_origin(tmp_path, monkeypatc
     assert "octocat/n.e.k.o_plugin_demo_repo" in out
     assert "[OK]" in out
     # create-repo does not push; it names the push publish needs next.
-    assert f'git -C "{plugin_dir}" push -u origin main' in out
+    assert f'git -C {_quoted(plugin_dir)} push -u origin main' in out
 
 
 def test_explicit_owner_and_private_are_passed_to_gh(tmp_path, monkeypatch):
@@ -260,7 +284,7 @@ def test_a_taken_name_that_is_the_callers_empty_repo_is_wired_as_origin(tmp_path
     assert _git(plugin_dir, "remote", "get-url", "origin") == url
     out = capsys.readouterr().out
     assert "reusing your existing empty repository" in out
-    assert f'git -C "{plugin_dir}" push -u origin main' in out
+    assert f'git -C {_quoted(plugin_dir)} push -u origin main' in out
 
 
 @pytest.mark.parametrize(
@@ -324,4 +348,4 @@ def test_setup_repo_remote_on_an_existing_repo_names_the_working_command(tmp_pat
     with pytest.raises(RuntimeError) as exc_info:
         init_cmd._preflight_git_request(plugin_dir, initialize_git=True, remote=url)
 
-    assert f'git -C "{plugin_dir}" remote add origin {url}' in str(exc_info.value)
+    assert f'git -C {_quoted(plugin_dir)} remote add origin {url}' in str(exc_info.value)

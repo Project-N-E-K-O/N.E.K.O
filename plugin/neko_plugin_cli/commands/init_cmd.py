@@ -19,6 +19,7 @@ from ..templates import agent_kit
 from ..templates.generator import PluginSpec, generate_repo_support_files
 from ..core.plugin_source import load_plugin_source
 from ..core.project import create_project
+from . import release_cmd
 from ._resolve import parse_github_repository_remote
 
 _MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -518,7 +519,7 @@ def _existing_origin_url(plugin_dir: Path) -> str | None:
 
 
 def _git_command(plugin_dir: Path, arguments: str) -> str:
-    return f'git -C "{plugin_dir}" {arguments}'
+    return f"git -C {release_cmd._plugin_dir_argument(plugin_dir, '')} {arguments}"
 
 
 def _current_branch(plugin_dir: Path) -> str:

@@ -149,13 +149,15 @@ def _release_blockers(local: LocalStatus) -> list[str]:
             "the git working tree has uncommitted changes: " + ", ".join(state.dirty_paths)
         )
     reasons.extend(_push_blockers(state))
+    from plugin.neko_plugin_cli.commands.release_cmd import _plugin_dir_argument
     from plugin.neko_plugin_cli.repo_action_migration import ActionFileStatus
 
     workflow = local.actions.get(_RELEASE_WORKFLOW)
     if workflow != ActionFileStatus.CURRENT:
         reasons.append(
             f"the standard release workflow {_RELEASE_WORKFLOW} is {workflow or 'missing'}; "
-            f"run neko-plugin setup-repo {local.source_dir} --upgrade-github-actions"
+            f"run neko-plugin setup-repo {_plugin_dir_argument(local.source_dir, '')} "
+            "--upgrade-github-actions"
         )
     if state.tag_exists and state.tag_at_head is False:
         reasons.append(

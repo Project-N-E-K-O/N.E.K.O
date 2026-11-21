@@ -501,6 +501,19 @@ def test_the_gate_requires_the_current_release_workflow(monkeypatch, tmp_path):
     assert "--upgrade-github-actions" in caught.value.message
 
 
+def test_the_release_workflow_hint_quotes_the_source_directory(monkeypatch, tmp_path):
+    from plugin.neko_plugin_cli.commands.release_cmd import _plugin_dir_argument
+
+    source_dir = tmp_path / "my plugins"
+    source_dir.mkdir()
+    _ready_gate(monkeypatch, source_dir, actions={".github/workflows/release.yml": "UPGRADE"})
+    with pytest.raises(ServerDomainError) as caught:
+        tasks._local_gate("p", "github_and_market")
+    target = _plugin_dir_argument(source_dir, "")
+    assert target != str(source_dir)
+    assert f"run neko-plugin setup-repo {target} --upgrade-github-actions" in caught.value.message
+
+
 @pytest.mark.parametrize(
     ("remote", "expected"),
     [
