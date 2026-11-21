@@ -579,6 +579,16 @@ async def test_what_the_task_agents_it_started_use_is_the_commissions_own_and_th
 ):
     monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
     release, wait = _gate()
+
+    async def once_the_one_that_started_it_has_gone_on() -> None:
+        # The task agent it started is to be the one that asks. Whichever of the
+        # two comes to a next request first once the line is crossed asks, and
+        # the other waits for that answer: had the one that started it come to
+        # its second request only after this request was counted (on a slow
+        # machine), it would have asked, and the task agent it started would wait.
+        # So this request is made once that one has gone on with less used.
+        await wait_until(lambda: len(scripts["sort the photos"].requests) == 2, what="the second request of the one that started it")
+
     scripts = {
         "sort the photos": ScriptedLLM(
             [
@@ -590,7 +600,12 @@ async def test_what_the_task_agents_it_started_use_is_the_commissions_own_and_th
         ),
         "count the jpgs": ScriptedLLM(
             [
-                [call("glob", {"pattern": "*.jpg"}), _used(800, 10), finish("tool_calls")],
+                [
+                    once_the_one_that_started_it_has_gone_on,
+                    call("glob", {"pattern": "*.jpg"}),
+                    _used(800, 10),
+                    finish("tool_calls"),
+                ],
                 [call("report", {"status": "blocked", "summary": "counted 12 of them"}, "call-2"), _used(100, 5), finish("tool_calls")],
             ]
         ),
