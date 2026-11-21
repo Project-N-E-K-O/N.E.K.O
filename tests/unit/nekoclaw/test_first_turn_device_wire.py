@@ -144,6 +144,8 @@ async def test_builtin_queued_device_instructions_survive_summary_then_overflow_
 
 @pytest.mark.parametrize(("initial_task", "follow_up", "human", "click", "browser"), [
     ("Open the browser.", "Switch to Notepad", True, "Click OK", False),
+    ("Open the browser.", "Switch to Excel", True, "Click OK", False),
+    ("打开浏览器", "切换到 Excel", True, "点击确定", False),
     ("Open the browser.", "Switch to Notepad", False, "Click OK", True),
     ("Open the browser.", "回到桌面", True, "Click OK", False),
     ("Take a desktop screenshot. Open the browser.", "Summarize the file.", True, "upload the file, then click submit", True),

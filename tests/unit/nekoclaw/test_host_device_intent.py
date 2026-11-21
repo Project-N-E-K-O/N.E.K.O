@@ -147,6 +147,8 @@ def test_an_earlier_browser_only_disambiguates_an_unqualified_click(text, expect
 
 @pytest.mark.parametrize(("text", "focus"), [
     ("Switch to Notepad", False), ("切换到记事本", False),
+    ("Switch to Excel", False), ("切换到 Excel", False), ("Switch to Microsoft Excel", False),
+    ("switch to dark mode", True),
     ("Summarize the file.", True), ("Don't switch to Notepad", True),
     ('Translate "Switch to Notepad"', True),
 ])
@@ -176,6 +178,13 @@ def test_browser_focus_follows_explicit_surface_changes(instruction, groups, foc
 
     assert classify_device_intent(instruction, browser_context=True) == (groups, focus)
     assert select_device_groups("Click OK", browser_context=focus) == ((BROWSER,) if focus else (DESKTOP,))
+
+
+@pytest.mark.parametrize("instruction", ["Switch to the Excel tab", "返回 Excel 网页标签", "Return to the browser tab"])
+def test_named_tab_selects_the_browser_even_after_switching_to_an_app(instruction):
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent(instruction, browser_context=False) == ((BROWSER,), True)
 
 
 @pytest.mark.parametrize(("text", "groups", "focus"), [

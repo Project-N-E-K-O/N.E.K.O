@@ -41,7 +41,8 @@ _QUOTED = re.compile(
 _CLAUSE = re.compile(
     r"[，,。；;！？!?\n]|\.(?:\s+|$)|\b(?:but|then|instead|however)\b|(?=\bwithout\b)|"
     r"\band\s+(?=(?:describe|translate|explain)\b)|[并並](?=描述|翻译|翻譯|解释|解釋)|"
-    r"但是|不过|不過|然后|然後|接着|接著|改为|改為|改用|再(?=打开|打開|点击|點擊|截|按|用)"
+    r"但是|不过|不過|然后|然後|接着|接著|改为|改為|改用|再(?=打开|打開|点击|點擊|截|按|用)",
+    re.I,
 )
 # A mention in prose, code, help or a prohibition is a poor reason to load
 # the group. A subsequent affirmative instruction gets its own clause.
@@ -105,6 +106,11 @@ _DESKTOP_TARGET = re.compile(
 )
 _SWITCH_TARGET = re.compile(r"切[换換][到至]|[转轉]到|回到|返回|\b(?:switch(?: over)?|go back|return) to\b")
 _APP_TARGET = re.compile(r"记事本|記事本|应用|應用|程序|程式|窗口|視窗|\b(?:notepad|app|application|window)\b")
+# An explicit switch to a bare product name, e.g. "Switch to Excel" or
+# "切换到 Microsoft Excel". A return/navigation verb alone is not an app switch.
+_SWITCH_TO_NAME = re.compile(
+    r"(?i:\bswitch(?: over)? to\s+|切[换換][到至]\s*)[A-Z][A-Za-z0-9+-]*(?: +[A-Z][A-Za-z0-9+-]*)*\s*$"
+)
 
 
 def select_device_groups(text: str, *, browser_context: bool = False) -> tuple[str, ...]:
@@ -122,12 +128,13 @@ def classify_device_intent(
     A switch away from the browser can change the target without needing a tool.
     """
     next_browser_context = browser_context
-    text = unicodedata.normalize("NFKC", text).casefold()
+    text = unicodedata.normalize("NFKC", text)
     text = _URL.sub("https:// ", text)
     text = _QUOTED.sub(lambda m: "https:// " if m[0][1:-1].strip() == "https://" else " ", text)
     groups: set[str] = set()
     web_context = browser_context
-    for clause in _CLAUSE.split(text):
+    for original in _CLAUSE.split(text):
+        clause = original.casefold()
         if _NON_ACTION.search(clause):
             continue
         # Words like page and tabs also name source files, modules and indentation.
@@ -140,14 +147,15 @@ def classify_device_intent(
         web_target = explicit_web or (web_object and not code and not file_object)
         screenshot = bool(_SCREENSHOT_ACTION.search(clause))
         click = bool(_CLICK.search(without_files))
-        web_action = _WEB_ACTION.search(without_files) or (not code and _WEB_USE.search(without_files))
+        switch = _SWITCH_TARGET.search(clause)
+        web_action = switch or _WEB_ACTION.search(without_files) or (not code and _WEB_USE.search(without_files))
         browser = bool(web_target and (screenshot or click or web_action)) or bool(
             _OTHER_WEB.search(clause)
         )
         desktop_target = bool(_DESKTOP_TARGET.search(clause))
         desktop_action = bool(_DESKTOP_ACTION.search(clause))
         switches_away = (
-            not web_target and bool(_SWITCH_TARGET.search(clause)) and (desktop_target or bool(_APP_TARGET.search(clause)))
+            not web_target and switch and (desktop_target or _APP_TARGET.search(clause) or _SWITCH_TO_NAME.search(original))
         )
         if switches_away and not code:
             next_browser_context = False

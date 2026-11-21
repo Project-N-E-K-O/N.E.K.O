@@ -349,7 +349,7 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
                 assert browser not in seen[-1][2] and computer not in seen[-1][2]
                 if scenario == "switch_app":
                     before = len(list_calls)
-                    await turn("Switch to Notepad")
+                    await turn("Switch to Excel")
                     assert browser not in seen[-1][2] and computer not in seen[-1][2]
                     assert len(list_calls) == before
                     await turn("Click OK")
