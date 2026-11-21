@@ -1071,3 +1071,43 @@ async def test_a_copy_that_cannot_be_put_on_record_goes_back_ahead_of_those_queu
     release.set()
     assert (await wait_status(host, second.id, "done")).session_id == first.session_id
     await wait_status(host, later.id, "done")
+
+
+
+async def test_two_copies_that_cannot_be_put_on_record_go_back_in_the_order_they_were_handed_over(
+    hosts, tmp_path, monkeypatch
+):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        FILES: ScriptedLLM([_report("tables.py")]),
+        "list the reports": ScriptedLLM([_report("reports")]),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    first = await _export_at_work(host, scripts)
+    ledger = host.ledger
+    append = ledger.append_event
+    writing: list[str] = []
+    go_on: dict[str, asyncio.Event] = {}
+
+    async def failing(commission_id: str, kind: str, payload: Any) -> Any:
+        if kind == "carried_on_in_copy":
+            writing.append(commission_id)
+            go_on[commission_id] = asyncio.Event()
+            await go_on[commission_id].wait()
+            raise RuntimeError("the ledger is busy")
+        return await append(commission_id, kind, payload)
+
+    monkeypatch.setattr(ledger, "append_event", failing)
+    earlier = await _dispatch(host, FILES)
+    later = await _dispatch(host, "list the reports")
+    await wait_until(lambda: len(writing) == 2, what="both being put on record")
+    # The earlier one fails first and goes back; then the later one.
+    go_on[earlier.id].set()
+    await wait_until(lambda: earlier.id in host.task_agents._queue, what="the earlier one back in the queue")
+    go_on[later.id].set()
+    await wait_until(lambda: later.id in host.task_agents._queue, what="the later one back in the queue")
+    assert list(host.task_agents._queue) == [earlier.id, later.id]
+    release.set()
+    assert (await wait_status(host, earlier.id, "done")).session_id == first.session_id
+    await wait_status(host, later.id, "done")

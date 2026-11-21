@@ -449,9 +449,13 @@ copy found, and waits for it there as it would have. One that rests does not
 hold its session, so nothing waits behind it in the first place."""
 
 TASK_AGENT_FORK_CONTINUE_MAX_PER_SESSION = 3
-"""How many commissions are worked on in copies of one session at once. Each
-takes a place among the task agents at work like any other; one that finds
-no place free waits for the session itself."""
+"""How many commissions may be carried on in copies of one session at once,
+looked at when a copy is to be made for one: past it, the next waits for the
+session itself. Each takes a place among the task agents at work like any
+other; one that finds no place free waits too. Not a limit on what is at work
+in copies made before: a commission taken up again in its copy (the user
+answered it, or said more of one that is done there) is, and counts against
+the places of all task agents only."""
 
 TASK_AGENT_FORK_CONTINUE_HOT_SECONDS = 300.0
 """A session whose last model request was made this recently has the head of
