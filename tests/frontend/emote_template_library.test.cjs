@@ -136,6 +136,36 @@ test('存得下就丢图救回来，真存不下就如实抛错', () => {
         '救不回来时要抛错，让调用方只留当前条目，而不是悄悄写一半');
 });
 
+test('quota eviction preserves an older current template and its saved session', () => {
+    const current = entry('current', {
+        lastUsedAt: 1,
+        session: { groups: [{ name: 'saved group', notes: 'c'.repeat(2000) }] },
+    });
+    const newer = entry('newer', {
+        lastUsedAt: 3,
+        session: { groups: [{ name: 'another group', notes: 'n'.repeat(2000) }] },
+    });
+    const store = { ...library.emptyStore(), currentKey: current.key, entries: [newer, current] };
+    const budget = JSON.stringify({ ...store, entries: [current] }).length;
+    const saved = library.parse(library.serialize(store, budget));
+    assert.deepEqual(saved.entries.map(item => item.key), ['current']);
+    assert.equal(saved.currentKey, 'current');
+    assert.deepEqual(saved.entries[0].session.groups, current.session.groups);
+    assert.equal(store.entries.length, 2, 'eviction must not mutate the original store');
+});
+
+test('quota eviction removes the least recently used non-current entry first', () => {
+    const entries = ['recent', 'oldest', 'current'].map((key, index) => entry(key, {
+        lastUsedAt: [3, 1, 2][index],
+        session: { groups: [{ name: key, notes: 'x'.repeat(2000) }] },
+    }));
+    const store = { ...library.emptyStore(), currentKey: 'current', entries };
+    const budget = JSON.stringify({ ...store, entries: [entries[0], entries[2]] }).length;
+    const saved = library.shrinkToFit(store, budget);
+    assert.deepEqual(saved.entries.map(item => item.key), ['recent', 'current']);
+    assert.equal(store.entries.length, 3);
+});
+
 test('读回来的库坏了一部分也只丢坏的那条', () => {
     const storage = fakeStorage();
     library.save(storage, library.upsert(library.emptyStore(), entry('good')));

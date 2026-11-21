@@ -6,6 +6,7 @@ template, keeping ring and ghost behavior covered by browser tests.
 
 from __future__ import annotations
 
+import pytest
 from playwright.sync_api import Page
 
 SETUP = """() => {
@@ -85,6 +86,27 @@ def test_releasing_early_cancels_and_removes_the_ring(page: Page, running_server
     assert calls == [["cancel", "release"]], calls
     assert page.evaluate("() => document.querySelectorAll('.pack-hold-ring').length") == 0, \
         "取消后圆环要消失，不能留在屏幕上"
+
+
+@pytest.mark.parametrize("ending", ["release", "pointercancel", "cancel"])
+def test_finishing_ring_can_be_cancelled_before_drag_starts(page: Page, running_server: str, ending: str) -> None:
+    _open(page, running_server)
+    x, y = _centre(page)
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.wait_for_function("Boolean(document.querySelector('.pack-hold-ring.is-full'))")
+    if ending == "release":
+        page.mouse.up()
+    elif ending == "pointercancel":
+        page.evaluate("window.dispatchEvent(new PointerEvent('pointercancel'))")
+    else:
+        page.evaluate("window.__CTRL.cancel()")
+    page.wait_for_timeout(250)
+    reason = "release" if ending == "release" else "abort"
+    assert page.evaluate("window.__CALLS") == [["cancel", reason]]
+    assert page.evaluate("window.__CTRL.isHeld()") is False
+    assert page.locator('.pack-hold-ring').count() == 0
+    page.mouse.up()
 
 
 def test_moving_before_the_hold_completes_is_not_a_drag(page: Page, running_server: str) -> None:

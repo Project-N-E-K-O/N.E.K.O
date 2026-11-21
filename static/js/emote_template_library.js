@@ -208,7 +208,18 @@
             )),
         };
         if (size(next) <= budget) return next;
-        next = { ...next, entries: [...next.entries].slice(0, 1) };
+        next = { ...next, entries: [...next.entries] };
+        while (next.entries.length > 1 && size(next) > budget) {
+            let oldest = -1;
+            next.entries.forEach((entry, index) => {
+                if (entry.key === next.currentKey) return;
+                if (oldest < 0 || (entry.lastUsedAt || 0) < (next.entries[oldest].lastUsedAt || 0)) {
+                    oldest = index;
+                }
+            });
+            if (oldest < 0) break;
+            next.entries.splice(oldest, 1);
+        }
         if (size(next) <= budget) return next;
         // 最后一级：连当前条目的缩略图也丢
         next = { ...next, entries: next.entries.map((entry) => ({ ...entry, thumb: '' })) };

@@ -57,6 +57,7 @@ from utils.image_generation.config import supports_image_edit
 from utils.image_generation.transport import read_generated_image
 from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import llm_call_context
+from .local_access import is_direct_loopback_request
 from .shared_state import get_config_manager
 
 
@@ -78,6 +79,7 @@ _BUILTIN_USER_TEXTURE_PREFIXES = ("StageImages/", _WARDROBE_SPRITES)
 _wardrobe_generation_lock = asyncio.Lock()
 _wardrobe_library_lock = asyncio.Lock()
 _builtin_storage_lock = asyncio.Lock()
+_library_storage_lock = asyncio.Lock()
 
 
 def _builtin_template_directory() -> Path:
@@ -163,7 +165,9 @@ async def import_spine_template(file: UploadFile = File(...), model_path: str = 
 
     try:
         content = await _read_upload(file)
-        package = inspect_spine_zip(content, filename=file.filename or "", model_path=model_path, atlas_path=atlas_path)
+        package = await asyncio.to_thread(
+            inspect_spine_zip, content, filename=file.filename or "", model_path=model_path, atlas_path=atlas_path,
+        )
     except EmoteTemplatePackageError as exc:
         return JSONResponse(
             status_code=400,
@@ -523,12 +527,24 @@ async def list_template_library():
         store = _archive_store()
     except EmoteTemplateStoreError as exc:
         return _store_error(exc, status=500)
-    entries = store.list()
+    async with _library_storage_lock:
+        entries = await asyncio.to_thread(store.list)
     return {
         "success": True,
         "entries": entries,
         "totalBytes": sum(entry["bytes"] for entry in entries),
     }
+
+
+def _save_template_copy(store, key, archive, filename, model_path, atlas_path, has_textures):
+    """Validate, repack and persist an archive away from the server event loop."""
+    package = inspect_spine_zip(archive, filename=filename, model_path=model_path, atlas_path=atlas_path)
+    if key != package["id"] or has_textures:
+        raise EmoteTemplateStoreError("资源包标识无效；模型贴图必须包含在 ZIP 内")
+    archive = spine_resource_archive(archive, package)
+    # Reimporting an immutable content ID preserves user-authored session images.
+    blobs = [(path, store.texture_path(key, path).read_bytes()) for path in store.texture_paths(key)] if store.has(key) else []
+    return store.save(key, archive, blobs, filename=filename)
 
 
 @router.post("/library/archive")
@@ -543,14 +559,10 @@ async def save_template_library_archive(
     try:
         store = _archive_store()
         archive = await _read_upload(file)
-        package = inspect_spine_zip(archive, filename=file.filename or "", model_path=model_path, atlas_path=atlas_path)
-        if key != package["id"] or textures:
-            raise EmoteTemplateStoreError("资源包标识无效；模型贴图必须包含在 ZIP 内")
-        archive = spine_resource_archive(archive, package)
-        # A content ID is immutable: reimporting the same model preserves
-        # user-authored session images stored alongside its source archive.
-        blobs = [(path, store.texture_path(key, path).read_bytes()) for path in store.texture_paths(key)] if store.has(key) else []
-        entry = store.save(key, archive, blobs, filename=file.filename or "")
+        async with _library_storage_lock:
+            entry = await asyncio.to_thread(
+                _save_template_copy, store, key, archive, file.filename or "", model_path, atlas_path, bool(textures),
+            )
     except (EmoteTemplateStoreError, EmoteTemplatePackageError) as exc:
         return _store_error(exc)
     finally:
@@ -568,11 +580,12 @@ async def open_template_library_archive(key: str = Query(...)):
                 content = await asyncio.to_thread(_builtin_archive_for_editor)
             name = _BUILTIN_FILENAME
         else:
-            store = _archive_store()
-            path = store.archive_path(key)
-            name = store.archive_name(key)
-            with path.open("rb") as stream:
-                content = stream.read(MAX_ARCHIVE_BYTES + 1)
+            async with _library_storage_lock:
+                store = _archive_store()
+                path = store.archive_path(key)
+                name = store.archive_name(key)
+                with path.open("rb") as stream:
+                    content = stream.read(MAX_ARCHIVE_BYTES + 1)
         if len(content) > MAX_ARCHIVE_BYTES:
             raise EmoteTemplateStoreError("已保存的模板包超过大小上限")
     except (EmoteTemplateStoreError, EmoteTemplatePackageError, WardrobeError, OSError) as exc:
@@ -592,8 +605,9 @@ async def list_template_library_textures(key: str = Query(...)):
             async with _builtin_storage_lock:
                 paths = [path for path in store.texture_paths(key) if path.startswith(_BUILTIN_USER_TEXTURE_PREFIXES)]
         else:
-            store.archive_path(key)
-            paths = store.texture_paths(key)
+            async with _library_storage_lock:
+                store.archive_path(key)
+                paths = store.texture_paths(key)
     except EmoteTemplateStoreError as exc:
         return _store_error(exc, status=404)
     return JSONResponse(content={"success": True, "paths": paths})
@@ -626,7 +640,8 @@ async def merge_template_library_textures(
                         store.save(key, archive, blobs, filename=_BUILTIN_FILENAME)
                     result = {"key": key, "textures": store.texture_paths(key)}
         else:
-            result = store.save_textures(key, blobs)
+            async with _library_storage_lock:
+                result = await asyncio.to_thread(store.save_textures, key, blobs)
     except (EmoteTemplateStoreError, EmoteTemplatePackageError, OSError) as exc:
         return _store_error(exc, status=404 if "还没有本地副本" in str(exc) else 400)
     finally:
@@ -651,8 +666,9 @@ async def remove_template_library_texture(
                 for path in (texture_paths or []):
                     store.remove_texture(key, path)
         else:
-            for path in (texture_paths or []):
-                store.remove_texture(key, path)
+            async with _library_storage_lock:
+                for path in (texture_paths or []):
+                    store.remove_texture(key, path)
     except EmoteTemplateStoreError as exc:
         return _store_error(exc, status=404)
     return JSONResponse(content={"success": True})
@@ -690,7 +706,8 @@ async def delete_template_library_archive(key: str = Query(...)):
     if key == _BUILTIN_KEY:
         return _store_error(EmoteTemplateStoreError("内置模板不可删除"), status=403)
     try:
-        result = _archive_store().delete(key)
+        async with _library_storage_lock:
+            result = await asyncio.to_thread(_archive_store().delete, key)
     except EmoteTemplateStoreError as exc:
         return _store_error(exc, status=500)
     return JSONResponse(content={"success": True, **result})
@@ -713,8 +730,11 @@ class ExportZipBody(BaseModel):
 
 
 def _reject_unscoped_export(request: Request) -> JSONResponse | None:
-    # 自定义头让跨站表单写不进来；本页 fetch 会带上。
-    if request.headers.get(_EXPORT_HEADER) != "1":
+    # The header blocks cross-site forms; authenticated remote sessions still
+    # cannot grant write access to arbitrary paths on the backend machine.
+    if (request.headers.get(_EXPORT_HEADER) != "1"
+            or request.scope.get("neko.instance_identity")
+            or not is_direct_loopback_request(request)):
         return JSONResponse(status_code=403, content={"success": False, "error": "拒绝写入"})
     return None
 

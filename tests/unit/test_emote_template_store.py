@@ -141,7 +141,7 @@ def client(tmp_path: Path, monkeypatch):
         router_module, "_archive_store",
         lambda: EmoteTemplateArchiveStore(tmp_path / "emote_templates"),
     )
-    return TestClient(app)
+    return TestClient(app, client=("127.0.0.1", 40000))
 
 
 def test_router_roundtrip_uses_our_names_and_self_contained_zip(client, tmp_path, monkeypatch):
@@ -658,6 +658,72 @@ def test_remove_texture_deletes_the_file(store):
 
 
 _EXPORT_HEADER = {"X-Neko-Emote-Export": "1"}
+
+
+@pytest.mark.parametrize("peer,identity", [("198.51.100.10", None), ("127.0.0.1", "remote-session")])
+@pytest.mark.parametrize("operation", ["folder", "file", "zip"])
+def test_export_rejects_remote_peers_and_authenticated_remote_sessions(client, tmp_path, peer, identity, operation):
+    from fastapi.testclient import TestClient
+
+    folder = tmp_path / "existing"
+    folder.mkdir()
+    target = folder / "existing.png"
+    target.write_bytes(b"original")
+
+    async def remote_app(scope, receive, send):
+        if identity:
+            scope["neko.instance_identity"] = identity
+        await client.app(scope, receive, send)
+
+    with TestClient(remote_app, client=(peer, 40001)) as remote:
+        payload = {"directory": str(tmp_path), "folder": "existing"}
+        if operation == "zip":
+            payload.update(names=["existing.png"], zip_name="existing.zip")
+        if operation == "file":
+            response = remote.post(
+                "/api/emote-maker/export/file", headers=_EXPORT_HEADER,
+                data={**payload, "name": "existing.png"},
+                files={"file": ("existing.png", b"replacement", "image/png")},
+            )
+        else:
+            response = remote.post(f"/api/emote-maker/export/{operation}", headers=_EXPORT_HEADER, json=payload)
+    assert response.status_code == 403
+    assert target.read_bytes() == b"original"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["existing"]
+
+
+@pytest.mark.parametrize("operation", ["import", "library/archive"])
+def test_archive_processing_runs_outside_the_event_loop(client, monkeypatch, operation):
+    import asyncio
+    import main_routers.emote_template_router as routes
+    from tests.emote_fixtures import spine_zip
+
+    archive = spine_zip()
+    key = routes.inspect_spine_zip(archive)["id"]
+    calls = []
+
+    def track(name, function):
+        def checked(*args, **kwargs):
+            try:
+                asyncio.get_running_loop()
+                on_event_loop = True
+            except RuntimeError:
+                on_event_loop = False
+            calls.append((name, on_event_loop))
+            return function(*args, **kwargs)
+        return checked
+
+    monkeypatch.setattr(routes, "inspect_spine_zip", track("inspect", routes.inspect_spine_zip))
+    monkeypatch.setattr(routes, "spine_resource_archive", track("repack", routes.spine_resource_archive))
+    monkeypatch.setattr(EmoteTemplateArchiveStore, "save", track("save", EmoteTemplateArchiveStore.save))
+    response = client.post(
+        f"/api/emote-maker/{operation}", params={"key": key},
+        files={"file": ("template.zip", archive, "application/zip")},
+    )
+    assert response.status_code == 200, response.text
+    expected = ["inspect"] if operation == "import" else ["inspect", "repack", "save"]
+    assert [name for name, _ in calls] == expected
+    assert not any(on_event_loop for _, on_event_loop in calls)
 
 
 def test_export_folder_file_and_zip_land_beside_each_other(client, tmp_path: Path):

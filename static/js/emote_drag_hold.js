@@ -43,6 +43,7 @@
         let ringAppearTimer = 0;
         let frame = 0;
         let ring = null;
+        let held = false;
         let finished = false;
 
         if (event.pointerType === 'mouse' && event.button !== 0) {
@@ -66,16 +67,26 @@
             window.removeEventListener('dragstart', killNativeDrag, true);
         };
         const move = (moveEvent) => {
-            if (Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) > MOVE_SLOP) {
+            if (!held && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) > MOVE_SLOP) {
                 cancel();
                 return;
             }
             if (ring) positionRing(ring, moveEvent.clientX, moveEvent.clientY);
             latest = moveEvent;
         };
-        const up = () => { detach(); hideRing(ring); ring = null; cancelledBy('release'); };
+        const up = () => {
+            if (finished) return;
+            finished = true;
+            held = false;
+            detach();
+            hideRing(ring);
+            ring = null;
+            cancelledBy('release');
+        };
         const cancel = () => {
             if (finished) return;
+            finished = true;
+            held = false;
             detach();
             hideRing(ring);
             ring = null;
@@ -84,10 +95,12 @@
 
         timer = window.setTimeout(() => {
             if (finished) return;
-            finished = true;
-            detach();
+            held = true;
             // 先让圆环"咔"一下再开始拖：没有这一步，长按到点这件事只有数字在动
             completeRing(ring, () => {
+                if (finished) return;
+                finished = true;
+                detach();
                 ring = null;
                 done({ clientX: latest.clientX, clientY: latest.clientY });
             });
@@ -102,7 +115,7 @@
         window.addEventListener('pointermove', move, true);
         window.addEventListener('pointerup', up, true);
         window.addEventListener('pointercancel', cancel, true);
-        return { cancel, isHeld: () => finished };
+        return { cancel, isHeld: () => held };
     }
 
     function createRing(x, y, holdMs, appearedAfter) {
