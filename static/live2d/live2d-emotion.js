@@ -701,6 +701,24 @@ function live2dReadMotionCurveParameterIds(motion) {
     return ids;
 }
 
+// 曲线参数 ID → 参数索引，按「动作 + 模型」缓存，避免每帧对每条曲线查一次索引。
+const live2dMotionCurveParameterIndexes = new WeakMap();
+function live2dReadMotionCurveParameterIndexes(motion, coreModel, count) {
+    const ids = live2dReadMotionCurveParameterIds(motion);
+    if (!ids) return null;
+    const cached = live2dMotionCurveParameterIndexes.get(motion);
+    if (cached && cached.coreModel === coreModel && cached.count === count) return cached.pairs;
+    const pairs = [];
+    for (const id of ids) {
+        let index = -1;
+        try { index = coreModel.getParameterIndex(id); } catch (_) {}
+        if (!Number.isInteger(index) || index < 0 || index >= count) continue;
+        pairs.push([index, id]);
+    }
+    live2dMotionCurveParameterIndexes.set(motion, { coreModel, count, pairs });
+    return pairs;
+}
+
 function live2dResolveResetParameterIndex(manager, coreModel, paramId) {
     if (!coreModel || paramId === undefined || paramId === null) return -1;
     const count = typeof coreModel.getParameterCount === 'function' ? coreModel.getParameterCount() : 0;
@@ -911,12 +929,9 @@ Live2DManager.prototype._updateMotionResidueFade = function(state = this._motion
     const active = new Set();
     for (const entry of entries) {
         if (!entry || (typeof entry.isFinished === 'function' && entry.isFinished())) continue;
-        const ids = live2dReadMotionCurveParameterIds(entry._motion);
-        if (!ids) continue;
-        for (const id of ids) {
-            let index = -1;
-            try { index = coreModel.getParameterIndex(id); } catch (_) {}
-            if (!Number.isInteger(index) || index < 0 || index >= count) continue;
+        const curves = live2dReadMotionCurveParameterIndexes(entry._motion, coreModel, count);
+        if (!curves) continue;
+        for (const [index, id] of curves) {
             active.add(index);
             state.touched.set(index, id);
             state.fades.delete(index);
@@ -1931,7 +1946,10 @@ Live2DManager.prototype._playMotionNow = async function(emotion, options = {}) {
         && this._isCurrentMotionTimerGeneration(motionTimerGuardGeneration)
         && (!admittedOperation || this._activeActionMotionOperation === admittedOperation)
     );
+    let paramIdsFromLoadedMotion = false;
     const clearTrackedMotionParamsIfCurrent = () => {
+        // 参数列表已直接从 SDK 已加载的动作读到时，fetch 只用来取时长，失败也不清。
+        if (paramIdsFromLoadedMotion) return;
         if (
             isCurrentPlayMotionInvocation()
             && this.currentModel === motionParamTrackModel
@@ -1969,7 +1987,10 @@ Live2DManager.prototype._playMotionNow = async function(emotion, options = {}) {
                             && !this._isMotionResidueResetSuspended()) {
                             const loadedParamIds = this._getLoadedMotionParameterIds(
                                 runtimeChoice.group, runtimeChoice.index, motionParamTrackModel);
-                            if (loadedParamIds) this._setActiveMotionParamIds(loadedParamIds);
+                            if (loadedParamIds) {
+                                this._setActiveMotionParamIds(loadedParamIds);
+                                paramIdsFromLoadedMotion = true;
+                            }
                         }
 
                         // 获取motion的实际持续时间

@@ -3167,7 +3167,12 @@ Live2DManager.prototype.installMouthOverride = function() {
                 for (const entry of savedParamEntries) {
                     entry.residueHeldValue = undefined;
                     entry.overlayRemoved = false;
-                    if (entry.offset === 0 || isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
+                    entry.residueFrameStartValue = undefined;
+                    if (isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
+                    if (entry.offset === 0) {
+                        try { entry.residueFrameStartValue = coreModel.getParameterValueByIndex(entry.idx); } catch (_) {}
+                        continue;
+                    }
                     try {
                         // 动作残留淡出层正在写的值已含保存偏移：照样去掉偏移给 SDK 混合，
                         // 并记下原值；本帧没有别的写入时原样写回，淡出层不会误判为外部写入。
@@ -3191,6 +3196,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                             coreModel.setParameterValueByIndex(entry.idx, entry.motionValue);
                             entry.overlayRemoved = true;
                         }
+                        entry.residueFrameStartValue = coreModel.getParameterValueByIndex(entry.idx);
                     } catch (_) {}
                 }
             }
@@ -3405,10 +3411,12 @@ Live2DManager.prototype.installMouthOverride = function() {
                                 continue;
                             }
                             entry.residueHeldValue = undefined;
-                            // 交接帧只在本帧确实去掉了我们的叠加时才重新叠加；参数已被即时复位成
-                            // 含偏移的保存值时按普通帧写，避免偏移叠两次。
+                            // 交接帧只在本帧确实去掉了我们的叠加、且之后没有别的写入方（随机视线等）
+                            // 改过它时才重新叠加；否则按普通帧写，避免偏移叠两次或叠到别人的值上。
                             const handoffComposes = residueState === 'handoff'
-                                && (entry.offset === 0 || entry.overlayRemoved === true);
+                                && (entry.offset === 0 || entry.overlayRemoved === true)
+                                && entry.residueFrameStartValue !== undefined
+                                && currentVal === entry.residueFrameStartValue;
                             if (motionWrittenParamIndices.has(entry.idx) || handoffComposes) {
                                 // 动作刚放手的交接帧保持动作末值加偏移，淡出从这里开始，不跳变。
                                 entry.motionValue = currentVal;

@@ -293,6 +293,37 @@ test('a runtime write after the overlay removal wins over the held fade value', 
     } finally { f.release(); }
 });
 
+test('the hand-off frame does not compose the saved offset onto a random look-at write', async () => {
+    const f = await fixture();
+    try {
+        f.apply({ ParamAngleX: 3 });
+        f.manager._mouseTrackingEnabled = false;
+        let lookAt = 1.2;
+        f.manager._updateRandomLookAt = () => { lookAt += 0.05; f.core.setParameterValueById('ParamAngleX', lookAt); };
+        f.frames(13);
+        assert.equal(f.value('ParamAngleX'), 3, 'the saved layer holds the value over the look-at write');
+        f.manager._queueMotionResidueReset(['ParamAngleX']);
+        const values = [];
+        for (let i = 0; i < 6; i++) {
+            f.frame();
+            values.push(f.value('ParamAngleX'));
+        }
+        assert.ok(values.every(value => value >= 1.2 - 1e-4 && value <= 3 + 1e-4),
+            `stays between the look-at value and the saved value: ${values.map(v => v.toFixed(3)).join(' ')}`);
+        assert.equal(values[values.length - 1], 3);
+    } finally { f.release(); }
+});
+
+test('a failed duration fetch keeps the parameter ids read from the loaded SDK motion', async () => {
+    const f = await fixture();
+    try {
+        f.runtime.context.fetch = async () => { throw new Error('offline'); };
+        assert.equal(await f.manager.playMotion('PreviewAll'), true);
+        const ids = f.manager._activeMotionParamIds;
+        assert.ok(ids && ids.has('ParamArmLA01'), 'ids read synchronously from the SDK motion survive the fetch failure');
+    } finally { f.release(); }
+});
+
 test('the saved-parameter layer stops deferring when the fade layer is not running', async () => {
     const f = await fixture();
     try {
