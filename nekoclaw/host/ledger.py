@@ -1436,7 +1436,7 @@ class Ledger:
             [*changes.values(), commission_id],
         )
         moved: dict[str, Any] = {"from": current.status, "to": status, "reason": reason}
-        if status == "waiting_user":
+        if status == "waiting_user" and changes.get("pending_question"):
             # What it asks, kept with the move: the commission keeps its
             # question only while it waits, and a replay shows it after.
             # Never what it would do or with what (``question_text``).

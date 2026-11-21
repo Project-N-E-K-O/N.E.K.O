@@ -143,7 +143,7 @@ def parse_cursor(value: str | None) -> tuple[int, int]:
 def _load(text: Any) -> dict[str, Any]:
     try:
         value = json.loads(text)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return {}
     return value if isinstance(value, dict) else {}
 
@@ -207,7 +207,11 @@ def _event_rows(
         f"WHERE e.rowid > ? AND e.type IN ({types}) "
         # A question one session asks another is told by its message.
         "AND NOT (e.type = 'subagent_started' AND "
-        "CASE WHEN json_valid(e.payload) THEN json_extract(e.payload, '$.asks') END IS NOT NULL)"
+        "CASE WHEN json_valid(e.payload) THEN json_extract(e.payload, '$.asks') END IS NOT NULL) "
+        # Back to waiting for the user with nothing asked: an answer that was
+        # not taken is being handed over again (``_answer_untaken``).
+        "AND NOT COALESCE(e.type = 'status' AND CASE WHEN json_valid(e.payload) THEN "
+        "json_extract(e.payload, '$.to') = 'waiting_user' AND json_type(e.payload, '$.question') IS NULL END, 0)"
         f"{where} ORDER BY e.rowid LIMIT ?",
         [after, *_EVENT_TYPES, *values, count],
     ).fetchall()
@@ -355,7 +359,7 @@ def _wake_ids(payload: dict[str, Any]) -> list[int]:
     items = payload.get("wake_ids")
     if not isinstance(items, list):
         return []
-    return [item for item in items if isinstance(item, int) and not isinstance(item, bool)]
+    return [item for item in items if isinstance(item, int) and not isinstance(item, bool) and 0 < item <= _LARGEST_ROW]
 
 
 def _message_entry(row: sqlite3.Row) -> dict[str, Any]:
@@ -443,27 +447,20 @@ def read_timeline(
     }
 
 
-def _since_status(conn: sqlite3.Connection, ids: list[str]) -> dict[str, tuple[int, float]]:
-    """Return the number and time of the last status event of each of these commissions."""
+def _last_of(conn: sqlite3.Connection, ids: list[str], kind: str) -> dict[str, tuple[int, float]]:
+    """Return the number and time of the last event of a kind of each of these commissions.
+
+    The events of each are gone through once, for the last number, and
+    that row is then read by its key.
+    """
     marks = ", ".join("?" for _ in ids)
     rows = conn.execute(
-        "SELECT commission_id, seq, ts FROM events e WHERE type = 'status' AND commission_id IN "
-        f"({marks}) AND seq = (SELECT MAX(seq) FROM events WHERE commission_id = e.commission_id "
-        "AND type = 'status')",
-        ids,
+        "SELECT e.commission_id, e.seq, e.ts FROM (SELECT commission_id, MAX(seq) AS seq FROM events "
+        f"WHERE type = ? AND commission_id IN ({marks}) GROUP BY commission_id) last "
+        "JOIN events e ON e.commission_id = last.commission_id AND e.seq = last.seq",
+        [kind, *ids],
     ).fetchall()
     return {row["commission_id"]: (int(row["seq"]), float(row["ts"])) for row in rows}
-
-
-def _last_queued(conn: sqlite3.Connection, ids: list[str]) -> dict[str, tuple[int, float, dict[str, Any]]]:
-    marks = ", ".join("?" for _ in ids)
-    rows = conn.execute(
-        "SELECT commission_id, seq, ts, payload FROM events e WHERE type = 'queued' AND commission_id IN "
-        f"({marks}) AND seq = (SELECT MAX(seq) FROM events WHERE commission_id = e.commission_id "
-        "AND type = 'queued')",
-        ids,
-    ).fetchall()
-    return {row["commission_id"]: (int(row["seq"]), float(row["ts"]), _load(row["payload"])) for row in rows}
 
 
 def _wait(
@@ -499,6 +496,8 @@ def read_waits(
     ``limit`` of them; ``more`` says some were left out. Texts are as
     recorded, as in ``read_timeline``.
     """
+    if limit < 0:
+        raise ValueError("limit must not be negative")
     marks = ", ".join("?" for _ in _UNDER_WAY)
     under_way = conn.execute(
         "SELECT id, session_id, lanlan_name, project, status, resting_since, parent_id, source, title, "
@@ -509,22 +508,23 @@ def read_waits(
     waits: list[dict[str, Any]] = []
 
     queued = [row["id"] for row in under_way if row["status"] == "queued"]
-    asking = [row["id"] for row in under_way if row["status"] == "waiting_user"]
-    status_of = _since_status(conn, queued + asking)
-    queued_of = _last_queued(conn, queued)
+    # Back to waiting for the user with nothing asked is an answer that was
+    # not taken being handed over again: nobody is asked anything.
+    asking = [row["id"] for row in under_way if row["status"] == "waiting_user" and row["pending_question"]]
+    status_of = _last_of(conn, queued + asking, "status")
+    queued_of = _last_of(conn, queued, "queued")
+    # Who keeps each session now: a commission worked on in it, or waiting
+    # for the user there. One that rests, or is queued itself, let it go.
+    # (Whom one was queued behind may be over, and another took the session.)
+    holders: dict[str, list[sqlite3.Row]] = {}
+    for row in under_way:
+        if row["session_id"] and row["status"] != "queued" and row["resting_since"] is None:
+            holders.setdefault(row["session_id"], []).append(row)
     for commission_id in queued:
         row = by_id[commission_id]
         last_status = status_of.get(commission_id)
         last_queued = queued_of.get(commission_id)
-        holder = None
-        # Behind whom it was queued, unless its status moved since.
-        if last_queued is not None and (last_status is None or last_queued[0] > last_status[0]):
-            behind = last_queued[2].get("behind")
-            holder = by_id.get(behind) if isinstance(behind, str) else None
-            # It keeps the session only while it is worked on or waits for the
-            # user: one that rests, or is queued itself, let it go.
-            if holder is not None and (holder["status"] == "queued" or holder["resting_since"] is not None):
-                holder = None
+        holder = min(holders.get(row["session_id"], []), key=lambda item: (item["created_at"], item["id"]), default=None)
         # Since the last of the two that was written (not the latest time:
         # the clock may have gone back), or since it was filed.
         last = max((item for item in (last_status, last_queued) if item is not None), key=lambda item: item[0], default=None)

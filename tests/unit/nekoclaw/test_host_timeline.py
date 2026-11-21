@@ -20,6 +20,7 @@ import json
 from typing import Any
 
 import pytest
+from utils.tokenize import count_tokens
 
 from nekoclaw.host.ledger import Ledger, MessageLimits
 from nekoclaw.host.timeline import TIMELINE_KINDS, WAIT_KINDS, cursor, parse_cursor, question_text
@@ -208,14 +209,31 @@ async def test_every_question_asked_is_shown_and_no_more_than_what_it_asks(ledge
     assert SECRET not in json.dumps(moves)
 
 
-async def test_a_wait_for_the_user_with_no_question_shows_none(ledger):
+async def test_back_to_waiting_for_the_user_with_nothing_asked_is_no_question(ledger):
+    # As ``_answer_untaken`` hands an answer that was not taken over again.
     main = await _session(ledger, "main")
     commission = await _working(ledger, main)
     assert (await ledger.transition(commission.id, "waiting_user")).applied
 
-    [asked] = _of(await _all(ledger), "asked_user")
+    assert _of(await _all(ledger), "asked_user") == []
+    assert await _waits(ledger) == []
+    [move] = [event.payload for event in await ledger.events(commission.id) if event.type == "status"][-1:]
+    assert move == {"from": "working", "to": "waiting_user", "reason": ""}
+    assert (await ledger.transition(commission.id, "working")).applied
+    assert _of(await _all(ledger), "started")[-1]["detail"] == {"from": "waiting_user"}
 
+
+async def test_a_question_too_deep_to_read_still_moves_the_commission(ledger):
+    main = await _session(ledger, "main")
+    commission = await _working(ledger, main)
+    deep = "[" * 100_000 + "]" * 100_000
+
+    assert (await ledger.transition(commission.id, "waiting_user", pending_question=deep)).applied
+
+    [asked] = _of(await _all(ledger), "asked_user")
     assert (asked["text"], asked["detail"]) == ("", {"question_kind": ""})
+    [wait] = await _waits(ledger)
+    assert (wait["kind"], wait["text"]) == ("user", "")
 
 
 async def test_a_question_of_several_shows_the_first(ledger):
@@ -396,7 +414,7 @@ async def test_every_kind_is_in_the_list_and_steps_are_left_out(ledger):
         await ledger.append_event(commission.id, kind, payload)
     await ledger.append_event(commission.id, "created", {"title": "x", "extra": SECRET})
     await ledger.append_event(commission.id, "queued", {"ahead": 1, "behind": 7, "args": SECRET})
-    await ledger.append_event(commission.id, "woken", {"wake_ids": [True, "3", 999]})
+    await ledger.append_event(commission.id, "woken", {"wake_ids": [True, "3", 999, 0, -1, 2**63]})
 
     entries = await _all(ledger)
 
@@ -424,6 +442,7 @@ async def test_a_malformed_record_does_not_stop_the_timeline(ledger):
     commission = await _working(ledger, main)
     await _raw_event(ledger, commission.id, "subagent_started", "not json")
     await _raw_event(ledger, commission.id, "told", "[1]")
+    await _raw_event(ledger, commission.id, "status", "not json")
     await ledger.append_event(commission.id, "told", {"text": 5})
     await ledger.append_event(commission.id, "subagent_started", {"name": ["x"], "commission_id": [1]})
     await ledger.append_event(commission.id, "queued", {"ahead": True, "behind": [1]})
@@ -443,6 +462,8 @@ async def test_a_malformed_record_does_not_stop_the_timeline(ledger):
     first, second = _of(entries, "child_started")
     assert first["peer"] == second["peer"] == nobody and second["text"] == ""
     assert [entry["text"] for entry in _of(entries, "told")] == ["", ""]
+    [unreadable] = _of(entries, "ended")
+    assert unreadable["detail"] == {"outcome": ""}
     assert [entry["detail"]["ahead"] for entry in _of(entries, "queued")] == [None, None]
     assert [entry["peer"] for entry in _of(entries, "queued")] == [None, None]
     [into] = _of(entries, "into_copy")
@@ -479,13 +500,16 @@ async def test_pages_of_any_size_add_up_to_the_whole(ledger, size):
 
     paged: list[dict[str, Any]] = []
     after = None
-    while True:
+    for _ in range(len(whole) + 2):
         page = await ledger.timeline(after=after, limit=size)
         assert len(page["entries"]) <= size
+        assert page["next"] != after
         paged += page["entries"]
         after = page["next"]
         if not page["more"]:
             break
+    else:
+        pytest.fail("the pages did not come to an end")
 
     # The same entries; a cursor may stand further on where a table was read
     # to its end (past rows not shown), and goes on the same.
@@ -545,12 +569,15 @@ async def test_pages_with_the_clock_going_back_give_each_entry_once(ledger, size
 
     seen: list[str] = []
     after = None
-    while True:
+    for _ in range(40):
         page = await ledger.timeline(after=after, limit=size)
+        assert page["next"] != after
         seen += [entry["text"] for entry in page["entries"] if entry["kind"] in ("told", "message")]
         after = page["next"]
         if not page["more"]:
             break
+    else:
+        pytest.fail("the pages did not come to an end")
 
     assert sorted(seen) == sorted(expected)
 
@@ -768,7 +795,7 @@ async def test_queued_for_a_place(ledger):
     assert wait["target"] == {"type": "place", "session_id": None, "commission_id": None}
 
 
-async def test_queued_again_after_it_was_queued_behind_waits_for_a_place(ledger):
+async def test_queued_again_waits_for_whoever_keeps_its_session(ledger):
     main = await _session(ledger, "main")
     holder = await _working(ledger, main, "first")
     queued = await _file(ledger, main, "second")
@@ -780,7 +807,45 @@ async def test_queued_again_after_it_was_queued_behind_waits_for_a_place(ledger)
 
     [wait] = await _waits(ledger)
 
-    assert (wait["kind"], wait["since"]) == ("place", 1002.0)
+    assert (wait["kind"], wait["target"]["commission_id"], wait["since"]) == ("queue", holder.id, 1002.0)
+
+
+async def test_queued_behind_one_that_is_over_waits_for_the_one_that_took_the_session(ledger):
+    main = await _session(ledger, "main")
+    first = await _working(ledger, main, "first")
+    second = await _file(ledger, main, "second")
+    third = await _file(ledger, main, "third")
+    for queued in (second, third):
+        await ledger.append_event(queued.id, "queued", {"ahead": 0, "behind": first.id})
+    assert (await ledger.transition(first.id, "done")).applied
+    assert (await ledger.transition(second.id, "working")).applied
+
+    [wait] = await _waits(ledger)
+
+    assert (wait["kind"], wait["waiter"]["commission_id"]) == ("queue", third.id)
+    assert (wait["target"]["commission_id"], wait["text"]) == (second.id, "second")
+
+
+async def test_commissions_with_no_session_keep_none_for_one_another(ledger):
+    main = await _session(ledger, "main")
+    await _working(ledger, main, "working", session_id=None)
+    queued = await _file(ledger, main, "queued", session_id=None)
+
+    [wait] = await _waits(ledger)
+
+    assert (wait["kind"], wait["waiter"]["commission_id"]) == ("place", queued.id)
+
+
+async def test_a_session_kept_by_two_is_waited_for_on_the_first_that_took_it(ledger):
+    main = await _session(ledger, "main")
+    earlier = await _working(ledger, main, "earlier", id="b-earlier")
+    tick(ledger)
+    await _working(ledger, main, "later", id="a-later")
+    queued = await _file(ledger, main, "next")
+
+    [wait] = await _waits(ledger)
+
+    assert (wait["waiter"]["commission_id"], wait["target"]["commission_id"]) == (queued.id, earlier.id)
 
 
 def test_what_a_question_asks():
@@ -957,14 +1022,17 @@ async def test_waits_kept_to_a_project_or_character_longest_first_and_capped(led
 
     assert [(item["kind"], item["waiter"]["commission_id"]) for item in waits] == [
         ("user", asking.id),
-        ("place", early.id),
+        ("queue", early.id),
         ("place", late.id),
     ]
     assert [item["waiter"]["commission_id"] for item in await _waits(ledger, project="alpha")] == [late.id]
     assert [item["waiter"]["commission_id"] for item in await _waits(ledger, lanlan_name="Mio")] == [asking.id, early.id]
     assert await _waits(ledger, lanlan_name="Mio", project="alpha") == []
+    with pytest.raises(ValueError):
+        await ledger.waits(limit=-1)
+    assert (await ledger.waits(limit=0)) == {"waits": [], "more": True}
     capped = await ledger.waits(limit=2)
-    assert capped["more"] and [item["kind"] for item in capped["waits"]] == ["user", "place"]
+    assert capped["more"] and [item["kind"] for item in capped["waits"]] == ["user", "queue"]
     assert set(WAIT_KINDS) == {"queue", "place", "user", "notice", "child", "ask"}
 
 
@@ -978,7 +1046,7 @@ async def test_waits_at_one_time_are_in_the_order_of_their_kinds(ledger):
 
     waits = await _waits(ledger)
 
-    assert [item["kind"] for item in waits] == ["place", "child"]
+    assert [item["kind"] for item in waits] == ["queue", "child"]
     assert waits[0]["waiter"]["commission_id"] == queued.id
 
 
@@ -1007,7 +1075,7 @@ async def test_the_host_cuts_texts_and_pages(tmp_path, monkeypatch):
 
         page = await host.timeline()
         assert [entry["kind"] for entry in page["entries"]] == ["filed", "started"] and page["more"]
-        assert 0 < len(page["entries"][0]["text"]) < 30
+        assert 0 < count_tokens(page["entries"][0]["text"]) <= 3
         # The ledger gives the texts as recorded: they are cut off its thread.
         assert (await host.ledger.timeline(limit=1))["entries"][0]["text"] == long
         assert len((await host.timeline(limit=0))["entries"]) == 1
@@ -1040,7 +1108,7 @@ async def test_the_host_cuts_the_texts_of_waits(tmp_path, monkeypatch):
 
         [wait] = (await host.waits())["waits"]
 
-        assert wait["kind"] == "user" and 0 < len(wait["text"]) < 30
+        assert wait["kind"] == "user" and 0 < count_tokens(wait["text"]) <= 3
         assert (await host.ledger.waits(limit=5))["waits"][0]["text"] == " ".join(["word"] * 50)
     finally:
         await host.shutdown()
