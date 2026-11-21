@@ -237,7 +237,7 @@
                         <label class="select-row" for="export-resolution"><span data-i18n="emoteMaker.exportResolution">分辨率</span><select id="export-resolution"><option value="128">128 × 128</option><option value="240" selected>240 × 240</option><option value="320">320 × 320</option><option value="480">480 × 480</option><option value="512">512 × 512</option><option id="export-resolution-1024" value="1024" hidden>1024 × 1024</option></select></label>
                         <label class="select-row" for="export-fps"><span data-i18n="emoteMaker.exportFps">帧率</span><select id="export-fps"><option value="8">8 fps</option><option value="10">10 fps</option><option value="12">12 fps</option><option value="15">15 fps</option><option value="20" selected>20 fps</option><option value="24">24 fps</option><option value="30">30 fps</option><option value="48">48 fps</option><option value="60">60 fps</option></select></label>
                         <label class="select-row"><span data-i18n="emoteMaker.transparentBackground">透明背景</span><input id="transparent-background" type="checkbox" checked></label>
-                        
+
                     </section>
 
                     <!-- 批量导出：攒"要导出的那几张"并一次出 zip。平时收起，别长期占着一整栏。 -->
@@ -278,7 +278,7 @@
                         </div>
 
                         <label class="select-row" for="pack-name"><span class="select-row-label"><span data-i18n="emoteMaker.packNameLabel">形象包名称</span><button type="button" class="tip-help" data-tip-key="emoteMaker.packNameHint" data-i18n-aria="emoteMaker.packNameHint" aria-label="提示">?</button></span><input id="pack-name" type="text" maxlength="48" autocomplete="off" spellcheck="false"></label>
-                        
+
                         <label class="select-row" for="pack-format"><span data-i18n="emoteMaker.packFormatLabel">包格式</span><select id="pack-format"><option value="flat" data-i18n="emoteMaker.packFormatFlat">平铺（GIF，通用兼容）</option><option value="layered" data-i18n="emoteMaker.packFormatLayered">分层（多状态，可驱动）</option></select></label>
                         <label class="select-row" for="pack-priority"><span class="select-row-label"><span data-i18n="emoteMaker.packPriorityLabel">状态优先级</span><button type="button" class="tip-help" data-tip-key="emoteMaker.packPriorityHint" data-i18n-aria="emoteMaker.packPriorityHint" aria-label="提示">?</button></span><select id="pack-priority"><option value="talking" data-i18n="emoteMaker.packPriorityTalking">说话优先（情绪等话说完）</option><option value="emotion" data-i18n="emoteMaker.packPriorityEmotion">情绪优先（说话不覆盖）</option></select></label>
                         <p class="panel-note" id="pack-status" role="status" aria-live="polite"></p>

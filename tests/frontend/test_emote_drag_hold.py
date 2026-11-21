@@ -365,4 +365,3 @@ def test_the_click_guard_starts_counting_at_release(page: Page, running_server: 
     assert verdict["stillArmed"] is True, "还在手里就不该因为时间到而放行"
     assert verdict["justAfterRelease"] is True, verdict
     assert verdict["afterWindow"] is False, "过了窗口要能正常点击"
-
