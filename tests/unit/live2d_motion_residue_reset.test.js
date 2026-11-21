@@ -17,6 +17,14 @@ const RESIDUE_MOTION = {
     }))
 };
 
+// 淡入 500ms 的接手动作：只驱动 ParamArmLA01，第一帧混合权重接近 0。
+const SLOW_TAKEOVER_MOTION = {
+    Version: 3,
+    Meta: { Duration: 2, Fps: 30, FadeInTime: 0.5, FadeOutTime: 0, Loop: false, AreBeziersRestricted: true,
+        CurveCount: 1, TotalSegmentCount: 1, TotalPointCount: 2, UserDataCount: 0, TotalUserDataSize: 0 },
+    Curves: [{ Target: 'Parameter', Id: 'ParamArmLA01', FadeInTime: 0.5, FadeOutTime: 0, Segments: [0, 20, 0, 2, 20] }]
+};
+
 async function fixture() {
     const runtime = await loadRuntime();
     runtime.context.document.body.classList.remove = () => {};
@@ -25,9 +33,9 @@ async function fixture() {
     const f = createMao(runtime), api = runtime.context.PIXI.live2d;
     const settings = new api.Cubism4ModelSettings({ ...f.settings, url: 'http://localhost/mao/model.model3.json',
         FileReferences: { ...f.settings.FileReferences,
-            Motions: { PreviewAll: [{ File: 'residue.motion3.json' }] }, Expressions: [] } });
+            Motions: { PreviewAll: [{ File: 'residue.motion3.json' }, { File: 'slow.motion3.json' }] }, Expressions: [] } });
     const native = new api.Cubism4MotionManager(settings, { motionPreload: api.MotionPreloadStrategy.NONE });
-    native._loadMotion = async () => runtime.sdk.Motion.create(RESIDUE_MOTION);
+    native._loadMotion = async (group, index) => runtime.sdk.Motion.create(index === 1 ? SLOW_TAKEOVER_MOTION : RESIDUE_MOTION);
     const events = new EventEmitter();
     Object.assign(f.model.internalModel, { motionManager: native, events,
         on: events.on.bind(events), off: events.off.bind(events) });
@@ -189,6 +197,29 @@ test('a named saved key wins over a param_N alias of the same parameter, as in t
         }
         f.manager.savedModelParameters = { [`param_${index}`]: 4 };
         assert.equal(f.manager._resolveParameterResetTarget(f.core, index), 4, 'an index-only key is still honoured');
+    } finally { f.release(); }
+});
+
+test('a motion taking over a saved parameter mid-fade composes the saved offset only once', async () => {
+    const f = await fixture();
+    try {
+        f.apply({ ParamArmLA01: 4 });
+        const index = f.core.getParameterIndex('ParamArmLA01');
+        assert.equal(await f.model.motion('PreviewAll', 0, 3), true);
+        while (f.native.queueManager._motions.length > 0) f.frame();
+        f.frames(2);
+        assert.equal(f.manager._isMotionResidueFading(index), true, 'the residue is fading');
+        const beforeTakeover = f.value('ParamArmLA01');
+        assert.equal(await f.model.motion('PreviewAll', 1, 3), true);
+        const values = [];
+        for (let i = 0; i < 20; i++) {
+            f.frame();
+            values.push(f.value('ParamArmLA01'));
+        }
+        assert.ok(Math.abs(values[0] - beforeTakeover) < 1.5,
+            `the first take-over frame does not jump by the saved offset: ${beforeTakeover.toFixed(2)} -> ${values.slice(0, 4).map(v => v.toFixed(2)).join(' ')}`);
+        assert.ok(values[values.length - 1] > 22 && values[values.length - 1] < 25,
+            'once faded in, the new motion value carries the saved offset exactly once');
     } finally { f.release(); }
 });
 

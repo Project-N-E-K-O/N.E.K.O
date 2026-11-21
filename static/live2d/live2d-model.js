@@ -3156,10 +3156,17 @@ Live2DManager.prototype.installMouthOverride = function() {
                 && this._beginMotionResidueWrapperFrame();
             if (!this._clickFadeState && (this._parameterConfigRevision || 0) === savedParameterRevision) {
                 for (const entry of savedParamEntries) {
+                    entry.residueHeldValue = undefined;
                     if (entry.offset === 0 || isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
-                    // 动作残留淡出层正在写的参数，它的当前值不是我们上一帧的叠加，不能去叠加。
-                    if (residueWrapperAlive && this._getMotionResidueParameterState(entry.idx) === 'fading') continue;
                     try {
+                        // 动作残留淡出层正在写的值已含保存偏移：照样去掉偏移给 SDK 混合，
+                        // 并记下原值；本帧没有动作接手时原样写回，淡出层不会误判为外部写入。
+                        if (residueWrapperAlive && this._getMotionResidueParameterState(entry.idx) === 'fading') {
+                            const heldValue = coreModel.getParameterValueByIndex(entry.idx);
+                            entry.residueHeldValue = heldValue;
+                            coreModel.setParameterValueByIndex(entry.idx, heldValue - entry.offset);
+                            continue;
+                        }
                         const currentValue = coreModel.getParameterValueByIndex(entry.idx);
                         if (currentValue === entry.appliedValue || currentValue === Math.fround(entry.appliedValue)) {
                             coreModel.setParameterValueByIndex(entry.idx, entry.motionValue);
@@ -3361,9 +3368,14 @@ Live2DManager.prototype.installMouthOverride = function() {
                                 || typeof this._getMotionResidueParameterState !== 'function'
                                 ? null : this._getMotionResidueParameterState(entry.idx);
                             if (residueState === 'fading') {
-                                // 动作残留淡出层正把它平滑拉回保存值，本帧不抢写。
+                                // 动作残留淡出层正把它平滑拉回保存值：恢复它上一帧写的原值，本帧不抢写。
+                                if (entry.residueHeldValue !== undefined) {
+                                    coreModel.setParameterValueByIndex(entry.idx, entry.residueHeldValue);
+                                    entry.residueHeldValue = undefined;
+                                }
                                 continue;
                             }
+                            entry.residueHeldValue = undefined;
                             if (motionWrittenParamIndices.has(entry.idx) || residueState === 'handoff') {
                                 // 动作刚放手的交接帧保持动作末值加偏移，淡出从这里开始，不跳变。
                                 entry.motionValue = currentVal;
