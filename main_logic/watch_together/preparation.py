@@ -4,7 +4,7 @@ import json
 import os
 import re
 import uuid
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from .engine import Engine, SpeechCueTooLarge, endpoint_host
 from . import media
@@ -36,24 +36,40 @@ _SECRET_PATTERNS = (
     (re.compile(r"\b([A-Za-z_\-]{0,32}(?:key|token|secret|password|cookie)['\"]?\s*[:=]\s*)"
                 r"(?:'[^']*'?|\"[^\"]*\"?|[^\s&'\",;}]+)", re.IGNORECASE), r"\1***"),
 )
-_URL = re.compile(r"\b([A-Za-z][A-Za-z0-9+.\-]{0,15})://[^\s'\"<>]+")
+# A URL does not end on sentence punctuation (``…to http://127.0.0.1:7890.``).
+_URL = re.compile(r"\b([A-Za-z][A-Za-z0-9+.\-]{0,15})://[^\s'\"<>]*[^\s'\"<>.,;:!?)\]}]")
+_SHORT_SECRET_CHARS = 8
 
 
 def _url_origin(match):
-    return f"{match.group(1)}://{endpoint_host(match.group(0)) or '?'}"
+    url = match.group(0)
+    host = endpoint_host(url)
+    if host is None:
+        # An unreadable port must not cost the host name as well.
+        try:
+            host = urlparse(url).hostname
+        except ValueError:
+            host = None
+    return f"{match.group(1)}://{host or '?'}"
 
 
 def _secret_variants(secrets):
-    """Configured credentials as they may appear in messages, longest first."""
-    variants = set()
+    """Configured credentials as they may appear in messages, longest first.
+
+    Returns ``(substrings, words)``: long forms are masked anywhere; a short
+    key (common on local compatible services) only as a whole word, so it
+    does not cut ordinary words apart.
+    """
+    variants, words = set(), set()
     for secret in secrets or ():
         if isinstance(secret, str):
-            # Short values (``none``, ``local``) would mask ordinary words.
             for value in (secret, secret.strip()):
                 # Also as a bytes/str repr escapes it and as a URL encodes it.
                 forms = (value, repr(value)[1:-1], repr(value.encode("utf-8", "replace"))[2:-1], quote(value, safe=""))
-                variants.update(form for form in forms if len(form.strip()) >= 8)
-    return sorted(variants, key=len, reverse=True)
+                variants.update(form for form in forms if len(form.strip()) >= _SHORT_SECRET_CHARS)
+            if 0 < len(secret.strip()) < _SHORT_SECRET_CHARS:
+                words.add(secret.strip())
+    return sorted(variants, key=len, reverse=True), sorted(words, key=len, reverse=True)
 
 
 def redact_error_message(message, secrets=()) -> str:
@@ -64,8 +80,11 @@ def redact_error_message(message, secrets=()) -> str:
     """
     text = str(message)
     # Before truncating, so a length cut can never leave half a key behind.
-    for secret in _secret_variants(secrets):
+    substrings, words = _secret_variants(secrets)
+    for secret in substrings:
         text = text.replace(secret, "***")
+    for word in words:
+        text = re.sub(rf"(?<![\w\-]){re.escape(word)}(?![\w\-])", "***", text)
     # Lone surrogates (non-UTF-8 file names) would break the UTF-8 timeline write.
     text = text[:_REDACTION_INPUT_CHARS].encode("utf-8", "backslashreplace").decode("utf-8")
     text = _DATA_URL.sub("data:***", text)
@@ -135,14 +154,16 @@ def preparation_error_detail(exc, engine=None) -> dict:
     secrets = getattr(engine, "diagnostic_secrets", None)
     secrets = tuple(secrets) if isinstance(secrets, (tuple, list)) else ()
     detail = {"chain": error_cause_chain(exc, secrets=secrets)}
-    endpoint = getattr(engine, "vision_endpoint", None)
-    if isinstance(endpoint, dict):
-        host, model = endpoint.get("host"), endpoint.get("model")
-        detail.update(vision_host=host if isinstance(host, str) else None,
-                      vision_model=redact_error_message(model, secrets)[:100] if isinstance(model, str) else None)
     request = getattr(engine, "last_vision_request", None)
+    endpoint = getattr(engine, "vision_endpoint", None)
+    # Only a failure with a vision request in flight is about the vision
+    # endpoint; speech or download failures must not read as one.
     if isinstance(request, dict):
         detail["last_vision_request"] = dict(request)
+        if isinstance(endpoint, dict):
+            host, model = endpoint.get("host"), endpoint.get("model")
+            detail.update(vision_host=host if isinstance(host, str) else None,
+                          vision_model=redact_error_message(model, secrets)[:100] if isinstance(model, str) else None)
     return detail
 
 
@@ -277,7 +298,14 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
                 # Keep staged artifacts for recovery, but give polling clients a
                 # terminal state even when the history transaction never commits.
                 job.update(status="error", stage="Saving preparation failed", stage_key="saveFailed", error=type(exc).__name__)
-                print(f"Watch preparation persistence failed: {type(exc).__name__}")
+                # The detail must describe this failure, not an earlier preparation error.
+                try:
+                    job["error_detail"] = preparation_error_detail(exc)
+                except Exception as detail_error:
+                    job["error_detail"] = {"chain": [{"type": type(exc).__name__}],
+                                           "detail_error": type(detail_error).__name__}
+                print(f"Watch preparation persistence failed: {type(exc).__name__} "
+                      f"{json.dumps(job['error_detail'], default=str)}")
             finally:
                 job["persistence_complete"] = True
                 count("watch_together_prepared", source="discovery" if automatic else "manual",

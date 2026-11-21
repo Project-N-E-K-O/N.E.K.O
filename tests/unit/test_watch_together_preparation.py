@@ -509,11 +509,11 @@ async def test_failure_detail_errors_still_end_the_job(tmp_path, monkeypatch):
 
 
 def test_endpoint_fields_are_typed_and_bounded():
-    engine = SimpleNamespace(vision_endpoint={'host': 5, 'model': 'm-sk-abc ' + 'x' * 300}, last_vision_request=None)
+    engine = SimpleNamespace(vision_endpoint={'host': 5, 'model': 'm-sk-abc ' + 'x' * 300}, last_vision_request={})
     detail = preparation.preparation_error_detail(ValueError('x'), engine)
     assert detail['vision_host'] is None
     assert len(detail['vision_model']) <= 100
-    assert 'last_vision_request' not in detail
+    assert detail['last_vision_request'] == {}
 
 
 def test_cause_chain_ignores_exception_truthiness():
@@ -562,7 +562,6 @@ def test_lone_surrogates_do_not_break_utf8_output():
 
 @pytest.mark.asyncio
 async def test_surrogate_in_failure_detail_still_prints_and_persists(tmp_path, monkeypatch, capsys):
-    import json
     class Engine:
         def __init__(self, root, *args, **kwargs):
             self.root = root
@@ -605,8 +604,9 @@ def test_configured_credentials_are_masked_anywhere_before_truncation():
     # A key straddling the length cap is masked before the cut, never left in part.
     cut = preparation.redact_error_message('y' * 190 + key.strip() + 'z' * 50, secrets=(key,))
     assert cut == 'y' * 190 + '***' + 'z' * 7 + '…'
-    # Short placeholder keys would mask ordinary words, so they are ignored.
-    assert preparation.redact_error_message('local none', secrets=('local', 'none')) == 'local none'
+    # Short keys are masked only as whole words.
+    assert preparation.redact_error_message('abc12 b\'abc12\' xabc12 abc12-x localhost', secrets=('abc12', 'local')) == \
+        "*** b'***' xabc12 abc12-x localhost"
 
 
 @pytest.mark.asyncio
@@ -656,10 +656,55 @@ def test_forward_slash_windows_home_is_hidden(monkeypatch):
 
 @pytest.mark.parametrize('render', [
     lambda key: repr(key.encode('utf-8')),
-    lambda key: repr(key),
+    repr,
     lambda key: __import__('urllib.parse').parse.quote(key, safe=''),
 ])
 def test_configured_credentials_are_masked_in_escaped_forms(render):
     key = 'caf\u00e9\\cred/+=1234'
     message = preparation.redact_error_message('sent ' + render(key) + ' end', secrets=(key,))
     assert 'cred' not in message and '1234' not in message
+
+
+@pytest.mark.parametrize('raw,expected', [
+    ('Failed to connect to http://localhost:8000.', 'Failed to connect to http://localhost:8000.'),
+    ('(https://api.x.com:443) bad', '(https://api.x.com:443) bad'),
+    ('proxy http://127.0.0.1:7890/v1?key=x, retry', 'proxy http://127.0.0.1:7890, retry'),
+    ('bad port http://host:99999999/v1 end', 'bad port http://host end'),
+])
+def test_message_urls_survive_trailing_punctuation_and_bad_ports(raw, expected):
+    assert preparation.redact_error_message(raw) == expected
+
+
+def test_vision_endpoint_is_reported_only_with_a_vision_request():
+    endpoint = {'host': 'api.example.test', 'model': 'vision-1'}
+    speech = SimpleNamespace(vision_endpoint=endpoint, last_vision_request=None)
+    assert preparation.preparation_error_detail(RuntimeError('tts'), speech) == {
+        'chain': [{'type': 'RuntimeError', 'errno': None, 'message': 'tts'}]}
+    vision = SimpleNamespace(vision_endpoint=endpoint, last_vision_request={'images': 1})
+    detail = preparation.preparation_error_detail(RuntimeError('net'), vision)
+    assert detail['vision_host'] == 'api.example.test' and detail['last_vision_request'] == {'images': 1}
+
+
+@pytest.mark.asyncio
+async def test_save_failure_replaces_the_earlier_failure_detail(tmp_path, monkeypatch):
+    class Engine:
+        def __init__(self, root, *args, **kwargs):
+            self.root = root
+        async def vision_config(self):
+            return {}
+        async def prepare(self, job, *args, **kwargs):
+            (self.root / job['id']).mkdir(parents=True)
+            raise RuntimeError('preparation broke')
+    def fail_import(*args, **kwargs):
+        raise OSError(28, 'No space left on device')
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path, import_sources=fail_import))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    job = preparation.jobs[result['id']]
+    assert job['stage_key'] == 'saveFailed' and job['error'] == 'OSError'
+    assert job['error_detail'] == {'chain': [{'type': 'OSError', 'errno': 28, 'message': '[Errno 28] No space left on device'}]}
