@@ -1617,8 +1617,9 @@ def get_user_models():
             vrm_dir = config_mgr.vrm_dir
             if vrm_dir.exists():
                 for vrm_file in vrm_dir.iterdir():
-                    # Any letter case, like the VRM upload check ('Foo.VRM').
-                    if vrm_file.suffix.lower() != '.vrm':
+                    # Any letter case, like the VRM upload check ('Foo.VRM'); folders
+                    # and dangling links are skipped as in the VRM model list.
+                    if vrm_file.suffix.lower() != '.vrm' or not vrm_file.is_file():
                         continue
                     user_models.append({
                         'name': vrm_file.stem,

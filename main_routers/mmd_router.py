@@ -68,13 +68,14 @@ RESERVED_DIRS = {'animation', 'emotion_config'}
 
 
 def _iter_model_files(root: Path):
-    """Yield paths under ``root`` with a model extension, in any letter case.
+    """Yield model files under ``root``, matching the extension in any letter case.
 
     The upload checks accept ``Foo.PMX``; ``rglob('*.pmx')`` is case-sensitive on
-    Linux, so scanning by pattern would lose such files.
+    Linux, so scanning by pattern would lose such files. Folders named like a
+    model (``old.PMX/``) and dangling links are not model files.
     """
     for path in root.rglob('*'):
-        if path.suffix.lower() in ALLOWED_MODEL_EXTENSIONS:
+        if path.suffix.lower() in ALLOWED_MODEL_EXTENSIONS and path.is_file():
             yield path
 
 
@@ -610,7 +611,7 @@ async def get_mmd_models():
                     "filename": model_file.name,
                     "url": url,
                     "rel_path": rel_path.as_posix(),
-                    "type": model_file.suffix.lstrip('.'),
+                    "type": model_file.suffix.lower().lstrip('.'),
                     "size": model_file.stat().st_size,
                     "location": "project"
                 })
@@ -624,7 +625,7 @@ async def get_mmd_models():
                     continue
                 try:
                     rel_path = model_file.relative_to(mmd_dir)
-                    if rel_path.parts and rel_path.parts[0] in RESERVED_DIRS:
+                    if rel_path.parts and rel_path.parts[0].lower() in RESERVED_DIRS:
                         continue
                 except (ValueError, IndexError):
                     continue
@@ -644,7 +645,7 @@ async def get_mmd_models():
                     "filename": model_file.name,
                     "url": url,
                     "rel_path": rel_path.as_posix(),
-                    "type": model_file.suffix.lstrip('.'),
+                    "type": model_file.suffix.lower().lstrip('.'),
                     "size": model_file.stat().st_size,
                     "location": "user"
                 })
@@ -652,7 +653,7 @@ async def get_mmd_models():
             # Find incomplete top-level model directories lacking PMX/PMD.
             # Usually failed-import residue; list so users can delete.
             for item in mmd_dir.iterdir():
-                if item.is_dir() and item.name not in RESERVED_DIRS and item.name not in found_top_dirs:
+                if item.is_dir() and item.name.lower() not in RESERVED_DIRS and item.name not in found_top_dirs:
                     if not is_utf8_text(item.name):
                         skipped += 1
                         continue
@@ -697,7 +698,7 @@ async def get_mmd_models():
                                 "filename": model_file.name,
                                 "url": url,
                                 "rel_path": rel_path.as_posix(),
-                                "type": model_file.suffix.lstrip('.'),
+                                "type": model_file.suffix.lower().lstrip('.'),
                                 "size": model_file.stat().st_size,
                                 "location": "steam_workshop",
                                 "source": "steam_workshop",

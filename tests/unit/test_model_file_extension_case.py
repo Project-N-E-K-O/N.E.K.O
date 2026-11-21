@@ -158,6 +158,47 @@ def test_mmd_models_with_any_extension_case_are_listed(mmd_app):
     # Folders whose only model has an upper-case extension are not import residue.
     assert not by_url["/user_mmd/Upper/UPPER.PMX"].get("broken")
     assert not by_url["/user_mmd/Mixed/Mixed.Pmd"].get("broken")
+    # The type is reported in lower case whatever the file name says.
+    assert {by_url[url]["type"] for url in by_url if url != "/user_mmd/Textures"} == {"pmx", "pmd"}
+
+
+def test_mmd_models_treat_reserved_folders_in_any_case_as_reserved(mmd_app):
+    # Import and delete compare reserved folder names in lower case; the list must too,
+    # otherwise it offers entries that delete then refuses.
+    (mmd_app.mmd_dir / "Animation").mkdir()
+    (mmd_app.mmd_dir / "Animation" / "stray.pmx").write_bytes(b"pmx")
+    (mmd_app.mmd_dir / "Emotion_Config").mkdir()
+    (mmd_app.mmd_dir / "Good").mkdir()
+    (mmd_app.mmd_dir / "Good" / "Good.pmx").write_bytes(b"pmx")
+
+    with TestClient(mmd_app.app) as client:
+        models = client.get("/api/model/mmd/models").json()["models"]
+
+    assert [model["url"] for model in models] == ["/user_mmd/Good/Good.pmx"]
+
+
+def test_folders_named_like_models_are_not_models(mmd_app):
+    # A leftover folder holding only a directory called 'old.PMX' is import residue.
+    (mmd_app.mmd_dir / "Miku" / "old.PMX").mkdir(parents=True)
+    (mmd_app.mmd_dir / "Residue" / "old.PMX").mkdir(parents=True)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("Miku/Miku.pmx", b"pmx")
+
+    with TestClient(mmd_app.app) as client:
+        models = client.get("/api/model/mmd/models").json()["models"]
+        assert {model["url"] for model in models if model.get("broken")} == {
+            "/user_mmd/Miku", "/user_mmd/Residue",
+        }
+        # The residue folder can be deleted by its path...
+        deleted = client.request("DELETE", "/api/model/mmd/model", json={"url": "/user_mmd/Residue"})
+        assert deleted.status_code == 200, deleted.text
+        assert not (mmd_app.mmd_dir / "Residue").exists()
+        # ...and re-importing over it replaces it.
+        response = client.post("/api/model/mmd/upload_zip",
+                               files={"file": ("Miku.zip", buffer.getvalue(), "application/zip")})
+        assert response.status_code == 200, response.text
+        assert response.json()["model_url"] == "/user_mmd/Miku/Miku.pmx"
 
 
 def test_mmd_zip_with_upper_case_model_extension_is_imported(mmd_app):
@@ -228,6 +269,7 @@ def test_live2d_user_models_list_vrm_files_with_any_extension_case(tmp_path, mon
     _require_case_sensitive_fs(tmp_path)
     for name in ["lower.vrm", "UPPER.VRM", "Mixed.Vrm", "notes.txt"]:
         (vrm_dir / name).write_bytes(b"glTF")
+    (vrm_dir / "Folder.VRM").mkdir()  # not a model file
     config = SimpleNamespace(live2d_dir=live2d_dir, readable_live2d_dir=None, vrm_dir=vrm_dir,
                              ensure_live2d_directory=lambda: True, ensure_vrm_directory=lambda: True)
     monkeypatch.setattr(live2d_router, "get_config_manager", lambda: config)
