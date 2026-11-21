@@ -36,6 +36,14 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
+        path: 'familiars/runtime',
+        name: 'FamiliarRuntime',
+        component: () => import('@/views/FamiliarRuntime.vue'),
+        meta: {
+          titleKey: 'power.runtime.title'
+        }
+      },
+      {
         path: 'model-api',
         name: 'ModelApi',
         component: () => import('@/views/ModelApi.vue'),

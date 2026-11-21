@@ -3,6 +3,7 @@ import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
 import { authoringMessages } from '../authoring'
+import { powerMessages } from '../power'
 
 /**
  * Pacote de idioma português
@@ -13,6 +14,7 @@ export default {
   marketFeedback: marketFeedbackMessages['pt'],
   modelApi: modelApiMessages['pt'],
   modelBindings: modelBindingsMessages['pt'],
+  power: powerMessages['pt'],
   common: {
     chooseLanguage: "Escolher idioma",
     surfaceLanguagePending: "O idioma da aplicação mudou. O painel mantém o idioma para preservar o trabalho não guardado.",

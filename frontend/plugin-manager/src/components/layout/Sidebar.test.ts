@@ -148,11 +148,11 @@ describe('Sidebar navigation', () => {
     mounted.unmount()
   })
 
-  it('保留七个主入口顺序与路径，折叠后详情页仍标记插件管理为当前页', async () => {
+  it('保留主入口顺序与路径，折叠后详情页仍标记插件管理为当前页', async () => {
     routeState.path = '/plugins/demo'
     const mounted = await mountSidebar()
-    expect(Array.from(mounted.container.querySelectorAll('[data-to]')).slice(0, 7).map((element) => element.getAttribute('data-to'))).toEqual([
-      '/', '/plugins', '/knowledge', '/model-api', '/runs', '/logs/_server', '/workbench',
+    expect(Array.from(mounted.container.querySelectorAll('[data-to]')).slice(0, 8).map((element) => element.getAttribute('data-to'))).toEqual([
+      '/', '/familiars/runtime', '/plugins', '/knowledge', '/model-api', '/runs', '/logs/_server', '/workbench',
     ])
     expect(getByRole(mounted.container, 'button', { name: 'nav.plugins' }).getAttribute('aria-current')).toBe('page')
     getByRole(mounted.container, 'button', { name: 'nav.collapseSidebar' }).click()

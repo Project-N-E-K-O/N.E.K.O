@@ -3,6 +3,7 @@ import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
 import { authoringMessages } from '../authoring'
+import { powerMessages } from '../power'
 
 /**
  * English language pack
@@ -13,6 +14,7 @@ export default {
   marketFeedback: marketFeedbackMessages['en-US'],
   modelApi: modelApiMessages['en-US'],
   modelBindings: modelBindingsMessages['en-US'],
+  power: powerMessages['en-US'],
   common: {
     chooseLanguage: "Choose language",
     surfaceLanguagePending: "App language changed. This panel keeps its language to preserve unsaved work.",

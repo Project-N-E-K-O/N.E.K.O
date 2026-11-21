@@ -3,6 +3,7 @@ import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
 import { authoringMessages } from '../authoring'
+import { powerMessages } from '../power'
 
 /**
  * 한국어 언어 팩
@@ -13,6 +14,7 @@ export default {
   marketFeedback: marketFeedbackMessages['ko'],
   modelApi: modelApiMessages['ko'],
   modelBindings: modelBindingsMessages['ko'],
+  power: powerMessages['ko'],
   common: {
     chooseLanguage: "언어 선택",
     surfaceLanguagePending: "앱 언어가 변경되었습니다. 저장하지 않은 내용을 보호하기 위해 패널 언어를 유지합니다.",

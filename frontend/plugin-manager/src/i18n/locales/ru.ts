@@ -3,6 +3,7 @@ import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
 import { authoringMessages } from '../authoring'
+import { powerMessages } from '../power'
 
 /**
  * Русский языковой пакет
@@ -13,6 +14,7 @@ export default {
   marketFeedback: marketFeedbackMessages['ru'],
   modelApi: modelApiMessages['ru'],
   modelBindings: modelBindingsMessages['ru'],
+  power: powerMessages['ru'],
   common: {
     chooseLanguage: "Выбрать язык",
     surfaceLanguagePending: "Язык приложения изменён. Язык панели сохранён, чтобы не потерять несохранённые данные.",
