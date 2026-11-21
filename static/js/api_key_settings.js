@@ -5318,7 +5318,10 @@ const ConnectivityManager = {
                         body.model = model;
                     }
                     if (provider_scope === 'decision' && BAILIAN_WORKSPACE_ID_FIELDS[provider_key]) {
-                        body.workspace_id = getBailianWorkspaceIdForProvider(provider_key);
+                        // 批量检测在收集配置时已记下 ID 快照（与缓存键一致）；单独检测时取当前值。
+                        body.workspace_id = typeof params.workspace_id === 'string'
+                            ? params.workspace_id
+                            : getBailianWorkspaceIdForProvider(provider_key);
                         // 带上 Key 实际解析到的聊天端点（如国际版落在美国地域），
                         // 后端按运行时同一规则判断能否走业务空间专属域名。
                         if (url) body.url = url;
@@ -5493,6 +5496,10 @@ const ConnectivityManager = {
                         voice_id: customResult.voiceId || '',
                         provider_type: customResult.providerType, sub_type: customResult.subType || '', is_free: isFree
                     };
+                    if (customResult.providerScope === 'decision' && BAILIAN_WORKSPACE_ID_FIELDS[customResult.providerKey]) {
+                        // 与 cacheId 里的业务空间 ID 同一份快照，检测期间改了输入框也不会串到别的缓存。
+                        keyConfigs[customCacheId].workspace_id = getBailianWorkspaceIdForProvider(customResult.providerKey);
+                    }
                 }
             });
         }
@@ -5556,8 +5563,15 @@ const ConnectivityManager = {
         };
         const entries = Object.entries(keyConfigs);
         const firstWave = entries.filter(([, config]) => !isBailianDecision(config)).map(runOne);
+        // 地域按 Key 定：只有和辅助 API 用同一把 Key 时，才沿用它刚解析出的地域端点。
+        const assistProbeKey = assistResult.providerKey && !assistResult.secretMasked ? (assistResult.key || '') : null;
         const deferredWave = entries.filter(([, config]) => isBailianDecision(config)).map(async ([cacheId, config]) => {
             await Promise.allSettled(firstWave);
+            const sameKeyAsAssist = assistProbeKey !== null
+                && assistResult.providerKey === config.provider_key
+                && assistProbeKey === (config.api_key || '');
+            // Key 不同：页面上记下的地域属于别的 Key，不带端点，后端按服务商主地址判断。
+            if (!sameKeyAsAssist) return runOne([cacheId, { ...config, url: '' }]);
             const pInfo = getProviderInfo(config.provider_key);
             const resolvedUrl = getProviderOpenrouterUrl(config.provider_key, pInfo);
             return runOne([cacheId, resolvedUrl ? { ...config, url: resolvedUrl } : config]);

@@ -1917,10 +1917,21 @@ async def test_memory_recall_falls_back_when_one_batch_has_no_valid_scores():
     cm.aget_model_api_config = AsyncMock(side_effect=lambda tier: decision_cfg if tier == "decision" else summary_cfg)
     candidates = [{"id": f"m{i}", "text": f"fact {i}", "score": float(20 - i)} for i in range(20)]
 
+    import asyncio
+
+    slow_cancelled = asyncio.Event()
+
     async def _decide(self, *, state, questions, **kwargs):
         # First batch (m0..m15): every question refused -> no answers at all.
         if "m0" in questions:
             return DecisionResponse(answers={}, model="decision-model-preview", protocol="systemone")
+        # The other batch is slow: it must be cancelled as soon as the empty batch
+        # returns, not awaited to completion.
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            slow_cancelled.set()
+            raise
         return DecisionResponse(
             answers={qid: DecisionAnswer(question_type="score", value=3.0, score_norm=1.0) for qid in questions},
             model="decision-model-preview",
@@ -1944,5 +1955,6 @@ async def test_memory_recall_falls_back_when_one_batch_has_no_valid_scores():
             lang="en",
         )
     # Summary chat rerank decided the order, not the half-scored native pass.
+    assert slow_cancelled.is_set()
     assert mock_create.await_count == 1
     assert [r["id"] for r in ranked] == ["m0", "m1"]

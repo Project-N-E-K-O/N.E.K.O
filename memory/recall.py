@@ -740,7 +740,7 @@ class MemoryRecallReranker:
                 ]
                 dec_client = DecisionClient(config_manager=config_manager)
 
-                def _batch_call(batch_ids: list[str]):
+                async def _batch_call(batch_ids: list[str]):
                     batch_state = state_header + "\n".join(line_by_cid[cid] for cid in batch_ids)
                     batch_questions = {
                         cid: ScoreQuestion(
@@ -758,7 +758,7 @@ class MemoryRecallReranker:
                         )
                         for cid in batch_ids
                     }
-                    return dec_client.decide(
+                    batch_resp = await dec_client.decide(
                         state=batch_state,
                         questions=batch_questions,
                         config=decision_config,
@@ -767,6 +767,18 @@ class MemoryRecallReranker:
                         respect_cooldown=True,
                         call_type="memory_recall_rerank",
                     )
+                    # A batch with no usable score (e.g. every question refused)
+                    # fails the whole pass right away, like a single unsplit request
+                    # would; raising here lets the sibling batches be cancelled now
+                    # instead of after they finish.
+                    batch_answers = batch_resp.answers or {}
+                    if not any(
+                        batch_answers.get(cid) is not None
+                        and batch_answers[cid].score_norm is not None
+                        for cid in batch_ids
+                    ):
+                        raise RuntimeError("native decision batch returned no valid scores")
+                    return batch_answers
 
                 # Keep native decision total latency tightly capped (2.0s; typical
                 # native latency is ~150-250ms) so upstream's ~5s query_memory budget
@@ -786,17 +798,7 @@ class MemoryRecallReranker:
                     if pending_batches:
                         await asyncio.gather(*pending_batches, return_exceptions=True)
                 native_answers: dict = {}
-                for batch_ids, batch_resp in zip(batches, batch_responses):
-                    batch_answers = batch_resp.answers or {}
-                    # A batch with no usable score (e.g. every question refused)
-                    # fails the whole pass, like a single unsplit request would;
-                    # otherwise its candidates would sink below every scored one.
-                    if not any(
-                        batch_answers.get(cid) is not None
-                        and batch_answers[cid].score_norm is not None
-                        for cid in batch_ids
-                    ):
-                        raise RuntimeError("native decision batch returned no valid scores")
+                for batch_answers in batch_responses:
                     native_answers.update(batch_answers)
                 if native_answers:
                     scored_rows: list[tuple[float, int, str]] = []
