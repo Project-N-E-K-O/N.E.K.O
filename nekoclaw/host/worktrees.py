@@ -510,9 +510,15 @@ class WorktreeManager:
             now = await self._snapshot(worktree.path, "nekoclaw: worktree result", start)
             if now.tree != conflict.result_tree:
                 raise WorktreeError("the worktree changed after the merge was tried; merge again")
+            listed = await self._git(worktree.path, "ls-tree", "-r", "-z", "--name-only", conflict.merged_tree)
+            names = [name for name in listed.stdout.split(b"\0") if name]
+            # A filter and a file it applies to may meet only in the merge; a
+            # checkout would run it.
+            programs = await self._programs(worktree.path, names, source=conflict.merged_tree)
+            if programs:
+                raise WorktreeUnavailable(*programs)
             if now.skipped:
-                listed = await self._git(worktree.path, "ls-tree", "-r", "-z", "--name-only", conflict.merged_tree)
-                paths = [_decode(name) for name in listed.stdout.split(b"\0") if name]
+                paths = [_decode(name) for name in names]
                 hit = [name for name in now.skipped if any(_overlap(path, name.rstrip("/")) for path in paths)]
                 if hit:
                     raise WorktreeError(
@@ -617,8 +623,15 @@ class WorktreeManager:
                     report.failed.append((path, str(error)))
                     continue
                 report.removed.append(path.name)
+            common = Path((await self._git(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0])
             for worktree_id in await self._ref_ids(repo_root):
                 if worktree_id in known_ids or worktree_id in registered_ids:
+                    continue
+                left_over = base / worktree_id
+                if await asyncio.to_thread(_points_into, left_over, common):
+                    # Its registration went (a removal git gave up half way),
+                    # its directory did not: the ref is how it is found again.
+                    report.failed.append((left_over, "its registration is gone but its directory is not; remove it"))
                     continue
                 try:
                     await self._delete_refs(repo_root, worktree_id)
@@ -755,9 +768,16 @@ class WorktreeManager:
         are read from that tree, as a checkout of it would. Returns a reason
         key and what it applies to.
         """
+        # A driver configured under a built-in name is found before git's own.
+        configured = await self._git(root, "config", "--get-regexp", r"^merge\..*\.driver$", check=False)
+        theirs = {line.split(" ", 1)[0][len("merge.") : -len(".driver")].encode() for line in configured.lines()}
+
+        def users(value: bytes) -> bool:
+            return value not in _BUILT_IN_MERGE or value in theirs
+
         default = await self._git(root, "config", "--get", "merge.default", check=False)
         driver = default.stdout.strip()
-        if driver and driver not in _BUILT_IN_MERGE:
+        if driver and users(driver):
             return MERGE_DRIVERS, f"merge.default is {_decode(driver)}"
         checked = await self._git(
             root,
@@ -775,7 +795,7 @@ class WorktreeManager:
             path, attribute, value = fields[index : index + 3]
             if attribute == b"filter" and value not in (b"unspecified", b"unset"):
                 return CONTENT_FILTERS, f"{_decode(path)} goes through a content filter (Git LFS, git-crypt, ...)"
-            if attribute == b"merge" and value not in _BUILT_IN_MERGE:
+            if attribute == b"merge" and users(value):
                 return MERGE_DRIVERS, f"{_decode(path)} is merged by the program {_decode(value)}"
         return None
 
@@ -1427,6 +1447,8 @@ def _points_into(path: Path, common_dir: Path) -> bool:
     if not text.startswith("gitdir:"):
         return False
     pointed = Path(text[len("gitdir:") :].strip())
+    if not pointed.is_absolute():  # relative to where the .git file is
+        pointed = path / pointed
     return _same_path(pointed.parent, common_dir / "worktrees")
 
 
@@ -1440,7 +1462,10 @@ def _drop_registration(common_dir: Path, path: Path) -> None:
             pointed = (entry / "gitdir").read_text(encoding="utf-8").strip()
         except OSError:
             continue
-        if _same_path(Path(pointed).parent, path):
+        where = Path(pointed)
+        if not where.is_absolute():  # relative to the registration
+            where = entry / where
+        if _same_path(where.parent, path):
             _remove_tree(entry)
 
 
@@ -1469,7 +1494,7 @@ def _back_up(root: Path, names: list[str], backup: Path) -> list[_Saved]:
             made.append(_relative(parent, root) or "")
             parent = parent.parent
         saved.append(_Saved(name, None, tuple(made)))
-    (backup / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
+    (backup / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     return saved
 
 

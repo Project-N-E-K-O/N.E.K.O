@@ -1716,8 +1716,10 @@ async def test_cancelled_while_the_start_moves_on_puts_the_start_back(
         ("", {"merge.default": "ours-driver"}, False),
         ("*.txt merge=union\n", {}, True),
         ("*.txt -merge\n", {"merge.default": "binary"}, True),
+        ("*.txt merge=union\n", {"merge.union.driver": "cat %A"}, False),
+        ("", {"merge.default": "union", "merge.union.driver": "cat %A"}, False),
     ],
-    ids=["attribute", "default", "union", "built-in"],
+    ids=["attribute", "default", "union", "built-in", "union-overridden", "default-overridden"],
 )
 async def test_probe_merge_drivers(
     repo: Path, manager: WorktreeManager, attributes: str, config: dict[str, str], usable: bool
@@ -1972,7 +1974,8 @@ async def test_putting_back_after_a_failed_write_is_not_cut_short(
     started = threading.Event()
     slow_restore(monkeypatch, started)
     landing = asyncio.ensure_future(manager.merge_back(tree))
-    await asyncio.to_thread(started.wait, 30)
+    assert await asyncio.to_thread(started.wait, 30)  # written, failed, putting back
+    assert read(repo / "a.txt") == b"merged\n"
     landing.cancel()
     with pytest.raises(asyncio.CancelledError):
         await landing
@@ -2003,7 +2006,7 @@ async def test_a_second_cancellation_does_not_keep_the_start_from_going_back(
     landing = asyncio.ensure_future(manager.merge_back(tree))
     await asyncio.wait_for(moved.wait(), 30)
     landing.cancel()  # the first: putting back begins
-    await asyncio.to_thread(started.wait, 30)
+    assert await asyncio.to_thread(started.wait, 30)
     landing.cancel()  # the second, while putting back
     with pytest.raises(asyncio.CancelledError):
         await landing
@@ -2152,7 +2155,7 @@ async def test_cancelled_while_putting_back_says_what_could_not_be(
     monkeypatch.setattr(manager, "_apply", then_fail)
     monkeypatch.setattr(worktrees, "_restore_one", slow_and_stuck_on_b)
     landing = asyncio.ensure_future(manager.merge_back(tree))
-    await asyncio.to_thread(started.wait, 30)
+    assert await asyncio.to_thread(started.wait, 30)
     landing.cancel()
     with pytest.raises(asyncio.CancelledError) as raised:
         await landing
@@ -2169,3 +2172,64 @@ def test_worktree_names_are_not_devices(name: str) -> None:
 
     with pytest.raises(ValueError):
         worktree_name(name)
+
+
+# -- review round 9 -------------------------------------------------------------
+
+
+async def test_preparing_does_not_check_out_a_filter_met_in_the_merge(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "worktree\n")
+    write(tree.path / "sample.dat", "data\n")
+    write(repo / "a.txt", "project\n")
+    write(repo / ".gitattributes", "*.dat filter=crypt\n")
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    before = digest(tree.path)
+    with pytest.raises(WorktreeUnavailable) as raised:
+        await manager.prepare_conflicts(tree, conflict)
+    assert raised.value.reason == CONTENT_FILTERS
+    assert digest(tree.path) == before
+
+
+async def test_reconcile_keeps_the_ref_of_a_directory_whose_registration_went(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    await asyncio.to_thread(shutil.rmtree, _fs(repo / ".git" / "worktrees"))  # git gave up half way
+    git(repo, "update-ref", f"{REF_PREFIX}orphan/start", "HEAD")
+    report = await manager.reconcile(repo, base, [])
+    assert [path.name for path, _why in report.failed] == ["w1"]
+    assert report.refs_removed == ["orphan"]
+    assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == tree.start
+    await manager.remove(tree)
+    assert not exists(tree.path) and git(repo, "for-each-ref", REF_PREFIX) == ""
+
+
+async def test_a_relative_git_file_is_read_from_where_it_is(
+    repo: Path, manager: WorktreeManager, base: Path, tmp_path: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    admin = repo / ".git" / "worktrees" / "w1"
+    relative = os.path.relpath(admin, tree.path).replace(os.sep, "/")
+    os.remove(tree.path / ".git")  # hidden on Windows: not written over
+    (tree.path / ".git").write_text(f"gitdir: {relative}\n", encoding="utf-8")
+    await asyncio.to_thread(shutil.rmtree, _fs(repo / ".git" / "worktrees"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    await manager.remove(tree)
+    assert not exists(tree.path) and git(repo, "for-each-ref", REF_PREFIX) == ""
+
+
+def test_a_relative_registration_is_matched_from_where_it_is(tmp_path: Path) -> None:
+    common = tmp_path / "repo" / ".git"
+    entry = common / "worktrees" / "w1"
+    entry.mkdir(parents=True)
+    path = tmp_path / "wt" / "w1"
+    path.mkdir(parents=True)
+    (entry / "gitdir").write_text(os.path.relpath(path / ".git", entry).replace(os.sep, "/") + "\n", encoding="utf-8")
+    worktrees._drop_registration(common, path)
+    assert not entry.exists()
