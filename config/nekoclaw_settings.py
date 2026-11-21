@@ -967,8 +967,18 @@ beyond it stay reachable through the gateway's search tool."""
 
 # Explicit device tasks start with the matching tools; set 0 to keep discovery-only routing.
 FIRST_TURN_DEVICE_TOOLS = os.getenv("NEKOCLAW_FIRST_TURN_DEVICE_TOOLS", "1").strip().lower() in {"1", "true", "yes", "on"}
+# Each group name is also its permission category and exclusive device lease.
+BUILTIN_GROUP_KEYBOARD_MOUSE = "keyboard_mouse"
+BUILTIN_GROUP_BROWSER = "browser"
+BUILTIN_GROUPS: tuple[str, ...] = (BUILTIN_GROUP_KEYBOARD_MOUSE, BUILTIN_GROUP_BROWSER)
+
 GATEWAY_COMMISSION_TOOL_META_KEY = "nekoclaw/commissionTool"
 """MCP metadata marking tools declared for this commission only."""
+# The group of a commission tool, or the groups needed by a fresh user
+# instruction in tools/list. Internal MCP metadata, never model input.
+GATEWAY_DEVICE_INTENT_META_KEY = "nekoclaw/deviceIntent"
+# Two successful summaries with no intervening ordinary model request or device call.
+GATEWAY_IDLE_DEVICE_CYCLE_META_KEY = "nekoclaw/idleDeviceCycle"
 
 GATEWAY_TOOL_DESCRIPTION_MAX_TOKENS = 200
 """Cap on one tool description served by the gateway."""

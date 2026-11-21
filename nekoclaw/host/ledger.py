@@ -3033,14 +3033,20 @@ class Ledger:
 
         return await self.run(work)
 
+    async def first_event_at(self, commission_id: str, kind: str) -> float | None:
+        """Time when this commission first recorded an event of the requested kind."""
+        def work(conn: sqlite3.Connection) -> float | None:
+            row = conn.execute(
+                "SELECT ts FROM events WHERE commission_id = ? AND type = ? ORDER BY seq LIMIT 1",
+                (commission_id, kind),
+            ).fetchone()
+            return row["ts"] if row is not None else None
+
+        return await self.run(work)
+
     async def has_event(self, commission_id: str, kind: str) -> bool:
         """Return whether a commission has an event of a kind."""
-        return await self.run(
-            lambda conn: conn.execute(
-                "SELECT 1 FROM events WHERE commission_id = ? AND type = ? LIMIT 1", (commission_id, kind)
-            ).fetchone()
-            is not None
-        )
+        return await self.first_event_at(commission_id, kind) is not None
 
     async def events(self, commission_id: str, *, after: int = 0, limit: int = 500) -> list[LedgerEvent]:
         def work(conn: sqlite3.Connection) -> list[LedgerEvent]:

@@ -1169,8 +1169,13 @@ async def test_a_commission_that_lost_its_session_id_finds_the_session_of_its_id
 async def test_an_event_of_a_kind_is_looked_for_in_one_commission(ledger):
     first = await _file(ledger, title="first")
     second = await _file(ledger, title="second")
+    ledger.clock.now = 1010.0
+    await ledger.append_event(first.id, "opened", {})
+    ledger.clock.now = 1020.0
     await ledger.append_event(first.id, "opened", {})
 
+    assert await ledger.first_event_at(first.id, "opened") == 1010.0
+    assert await ledger.first_event_at(second.id, "opened") is None
     assert await ledger.has_event(first.id, "opened") is True
     assert await ledger.has_event(first.id, "closed") is False
     assert await ledger.has_event(second.id, "opened") is False
