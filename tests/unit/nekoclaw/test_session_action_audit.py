@@ -234,7 +234,7 @@ async def test_native_controls_reserve_and_settle_only_their_own_call(env, monke
                 "type": "tool_end", "session_id": sender.id, "tool_call_id": name,
                 "tool_name": name, "is_error": name == "todo_write", "text": "private local state",
             })
-        manager._run_over(source.id)
+        await manager._run_over(source.id)
         await asyncio.gather(*manager._control_settlements)
         rows = (await trace(host, source))[1:]
         assert {r["target"]: r["status"] for r in rows} == {

@@ -822,7 +822,7 @@ async def test_delayed_answer_follows_its_still_working_commission(hosts, tmp_pa
     try:
         await asyncio.wait_for(entered.wait(), 5)
         if change == "next_run":
-            host.task_agents._run_over(asker.id)
+            await host.task_agents._run_over(asker.id)
             assert host.permissions.current_run(asker.id)()
         if change == "closing":
             wait_model.set()

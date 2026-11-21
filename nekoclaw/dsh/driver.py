@@ -125,6 +125,7 @@ class _Process:
     token: str
     free_slots: list[int]
     native_device_schemas: bool = False
+    stock_execution: bool = False
     guard_ready: asyncio.Event = field(default_factory=asyncio.Event)
     sessions: dict[str, "_Session"] = field(default_factory=dict)
     # dsh session id -> session.
@@ -236,6 +237,12 @@ class _Session:
     closing: asyncio.Future[None] | None = None
     # Tool calls dsh announced: id -> (name as dsh has it, arguments).
     tool_calls: dict[str, tuple[str, Any]] = field(default_factory=dict)
+    execution_receipts: dict[str, str | None] = field(default_factory=dict)
+    finished_sources: dict[str, str] = field(default_factory=dict)
+    kept_calls: set[str] = field(default_factory=set)
+    job_origins: dict[str, str] = field(default_factory=dict)
+    listed_jobs: dict[str, list[str]] = field(default_factory=dict)
+    audit_writes: set[asyncio.Task] = field(default_factory=set)
     prompt_calls: set[str] = field(default_factory=set)
     # Permission requests being decided right now.
     asks: set[asyncio.Task[Any]] = field(default_factory=set)
@@ -398,7 +405,7 @@ class DshRuntime:
             on_local_reply=self._on_local_reply,
             on_window=self._on_window,
         )
-        self._endpoint = LocalEndpoint(forwarder=self._forwarder, tools=self._tools, device_view=self._device_view)
+        self._endpoint = LocalEndpoint(forwarder=self._forwarder, tools=self._tools, device_view=self._device_view, retained_output=self._retained_output)
         self._sessions: dict[str, _Session] = {}
         self._processes: dict[Shape, _Process] = {}
         self._process_lock = asyncio.Lock()
@@ -637,7 +644,8 @@ class DshRuntime:
 
         def prepare() -> tuple[Path, Path]:
             patch = profile.build_patch(
-                shape=shape, endpoint=model_url, slots=DSH_SESSION_SLOTS, home=launch.home
+                shape=shape, endpoint=model_url, slots=DSH_SESSION_SLOTS, home=launch.home,
+                managed_execution="native_execution_action" in self._host.capabilities,
             )
             return profile.write_profile(launch.home, patch, tag=_shape_tag(shape)), profile.start_directory(launch.home)
 
@@ -695,10 +703,11 @@ class DshRuntime:
                 raise DshUnavailable("dsh did not load the permission guard") from exc
             from config.nekoclaw_settings import FIRST_TURN_DEVICE_TOOLS
 
-            if not FIRST_TURN_DEVICE_TOOLS:
+            if FIRST_TURN_DEVICE_TOOLS or {"native_execution_action", "decide_permission"}.intersection(self._host.capabilities):
+                process.stock_execution = await asyncio.to_thread(profile.uses_stock_tool_presentation, launch.home)
+                process.native_device_schemas = process.native_device_schemas and FIRST_TURN_DEVICE_TOOLS and process.stock_execution
+            else:
                 process.native_device_schemas = False
-            elif process.native_device_schemas:
-                process.native_device_schemas = await asyncio.to_thread(profile.uses_stock_tool_presentation, launch.home)
         except BaseException as exc:
             process.retiring = True
             await asyncio.shield(connection.close(DSH_CLOSE_SECONDS))
@@ -857,6 +866,44 @@ class DshRuntime:
             # called with (a whole file, for a write) need not be kept.
             session.prompt_calls.discard(call_id)
             name = session.tool_calls.pop(call_id, ("", None))[0]
+            from nekoclaw.runtime.execution import JOB_TOOLS
+
+            requested = call_id in session.execution_receipts
+            receipt = session.execution_receipts.pop(call_id, None)
+            session.listed_jobs.pop(call_id, None)
+            finished = session.finished_sources.pop(call_id, None)
+            kept = call_id in session.kept_calls
+            session.kept_calls.discard(call_id)
+            outcome = None
+            if receipt is not None:
+                # The source guard never confirmed delivery (native refusal or a stopped call).
+                outcome = {"phase": "finish", "receipt": receipt, "status": "cancelled"}
+            elif finished and not kept:
+                outcome = {"phase": "release", "receipt": finished}
+            elif (not requested and status == "failed" and name in (*profile.GATED_TOOLS, *JOB_TOOLS)
+                  and "native_execution_action" in self._host.capabilities):
+                # Rejected by dsh before it even asked ACP. ACP reports only failure.
+                outcome = {"phase": "native_failure", "tool": name}
+            callback = "native_execution_action"
+            offer = self._tools.offer(session.id)
+            if offer:
+                offer.preparing_fetches.pop(call_id, None)
+            prepared = offer.prepared_fetches.pop(call_id, None) if offer else None
+            if prepared is not None:
+                callback = "execution_action"
+                outcome = {"phase": "finish", "receipt": prepared[1], "status": "cancelled"}
+            if outcome is not None:
+                async def close_record():
+                    from config.nekoclaw_settings import DSH_CLOSE_SECONDS
+
+                    try:
+                        await asyncio.wait_for(self._host.call(session.id, callback, outcome), DSH_CLOSE_SECONDS)
+                    except Exception as exc:  # The native effect has already happened.
+                        logger.warning("closing a dsh action record failed (%s)", type(exc).__name__)
+
+                write = asyncio.create_task(close_record())
+                session.audit_writes.add(write)
+                write.add_done_callback(session.audit_writes.discard)
             parts = []
             for item in update.get("content") or []:
                 inner = item.get("content") if isinstance(item, dict) else None
@@ -873,6 +920,91 @@ class DshRuntime:
                 ),
             )
 
+    async def _retained_output(self, token: str, request: dict[str, Any]) -> dict[str, Any]:
+        from nekoclaw.runtime.tools.base import ToolError
+        from nekoclaw.runtime.tools.protected_outputs import OUTPUT_SCOPE, OutputScope
+
+        process = next((p for p in self._processes.values() if p.token == token), None)
+        if not isinstance(request.get("session"), str) or not isinstance(request.get("call"), str):
+            raise ValueError()
+        session = process.by_dsh_id.get(request["session"]) if process else None
+        if not session or session.closing or session.aborting:
+            raise ValueError()
+        offer = self._tools.offer(session.id)
+        call_id = request.get("call")
+        if not offer or not offer.output_context or call_id not in session.tool_calls:
+            raise ValueError()
+        context = offer.output_context
+        spill = context.spill
+        tool, args = session.tool_calls[call_id]
+        if request.get("action") == "fetch":
+            from config.prompts.prompts_nekoclaw_dsh import HOST_TOOL_PREFIX
+
+            if tool != HOST_TOOL_PREFIX + "web_fetch" or not isinstance(args, dict):
+                raise ValueError()
+            return await self._tools.fetch(session.id, call_id, args, offer)
+        receipt = session.execution_receipts.get(call_id) or session.finished_sources.get(call_id)
+        if not receipt or not isinstance(args, dict):
+            raise ValueError()
+        action = request.get("action")
+        if action == "save_job":
+            # Unacknowledged batches can outlive the read that collected them.
+            # Keep them under the job's command source, as with its native ring.
+            if tool != "job_output" or not session.execution_receipts.get(call_id):
+                raise ValueError()
+            receipt = session.job_origins.get(str(args.get("job_id", "")).strip())
+            if not receipt:
+                raise ValueError()
+        output_scope = OutputScope(receipt)
+        binding = OUTPUT_SCOPE.set(output_scope)
+        try:
+            if action == "list" and tool == "job_list":
+                return {"ids": session.listed_jobs.get(call_id, [])}
+            if action == "job" and tool in {"bash", "pwsh"}:
+                job_id = request.get("text")
+                if not isinstance(job_id, str) or not job_id or len(job_id) > 192:
+                    raise ValueError()
+                session.job_origins[job_id] = receipt
+                session.kept_calls.add(call_id)
+                return {}
+            if action in {"save", "save_job"}:
+                content = request.get("text")
+                prefix = None
+                if action == "save_job":
+                    if not isinstance(content, dict):
+                        raise ValueError()
+                    prior = content.get("prefix")
+                    if prior is not None:
+                        prefix = spill.protected.get(Path(prior)) if isinstance(prior, str) else None
+                        if prefix is None or prefix.origin != receipt:
+                            raise ValueError()
+                    content = content.get("delta")
+                if not isinstance(content, str):
+                    raise ValueError()
+                path = await asyncio.to_thread(spill.save, tool, content)
+                if path is not None and prefix is not None:
+                    spill.protected[path].prepend(prefix)
+                if path is None:
+                    raise OSError()
+                if action == "save":
+                    session.kept_calls.add(call_id)
+                return {"path": str(path)}
+            if action != "read" or tool not in offer.readers or not session.execution_receipts.get(call_id):
+                raise ValueError()
+            path = context.resolve(str(args.get("file_path") or args.get("path") or "."))
+            output = spill.protected.get(path)
+            if output is None:
+                return {}
+            try:
+                result = await offer.readers[tool].execute(call_id, args)
+            except ToolError as exc:
+                return {"error": str(exc)}
+            return {"text": result.text}
+        finally:
+            if output_scope.retained and action != "save_job":
+                session.kept_calls.add(call_id)
+            OUTPUT_SCOPE.reset(binding)
+
     async def _on_request(self, process: _Process, method: str, params: dict[str, Any]) -> dict[str, Any] | None:
         if method != "session/request_permission":
             raise AcpError(-32601, f"{method} is not supported")
@@ -885,6 +1017,49 @@ class DshRuntime:
             for option in options if isinstance(option, dict)
             and isinstance(option.get("optionId"), str) and isinstance(option.get("kind"), str)
         } if isinstance(options, list) else set()
+        if (session and ("allow-once", "allow_once") in offered and call_id.startswith("nekoclaw-exec/")
+                and call_id not in session.tool_calls and "native_execution_action" in self._host.capabilities):
+            _, phase, original = call_id.split("/", 2) if call_id.count("/") >= 2 else ("", "", "")
+            receipt = session.execution_receipts.get(original)
+            if not receipt or original not in session.tool_calls:
+                return _REJECT
+            if phase in ("direct", "nested"):
+                if phase == "nested":
+                    return _REJECT
+                if session.aborting or session.closing is not None:
+                    return _REJECT
+                reply = await self._host.call(session.id, "native_execution_action", {"phase": "check", "receipt": receipt})
+                if session.aborting or session.closing is not None or session.execution_receipts.get(original) != receipt:
+                    return _REJECT
+                return _ALLOW if reply.get("allow") is True else _REJECT
+            if phase not in ("completed", "failed"):
+                return _REJECT
+            status = "cancelled" if session.aborting or session.closing is not None else phase
+            session.execution_receipts[original] = None
+            try:
+                reply = await self._host.call(session.id, "native_execution_action", {
+                    "phase": "finish", "receipt": receipt, "status": status, "retain_source": True,
+                    **({"started_job": True} if session.tool_calls[original][0] in {"bash", "pwsh"}
+                       and receipt in session.job_origins.values() else {}),
+                })
+            except Exception as exc:
+                # Keep the receipt for the terminal ACP event's cancellation.
+                if original in session.tool_calls:
+                    session.execution_receipts[original] = receipt
+                logger.warning("finishing a dsh action failed (%s)", type(exc).__name__)
+                return _REJECT
+            if status == "cancelled":
+                return _REJECT
+            if session.aborting or session.closing is not None:
+                # A stop during the host write abandons even an already
+                # closed source. ACP need not send another terminal update.
+                await self._host.call(session.id, "native_execution_action", {"phase": "release", "receipt": receipt})
+                session.kept_calls.discard(original)
+                return _REJECT
+            if reply.get("allow") is True:
+                session.finished_sources[original] = receipt
+                return _ALLOW
+            return _REJECT
         control_check = call_id.startswith(profile.CONTROL_CHECK_PREFIX)
         if control_check:
             # The native tool's own approval uses the original ID and policy.
@@ -918,7 +1093,7 @@ class DshRuntime:
                     payload["refused"] = True
                 reply = await self._host.call(session.id, "task_control_begin", payload)
                 return _ALLOW if eligible and reply.get("allow") is True else _REJECT
-            return _ALLOW if await self._decide(session, *session.tool_calls[call_id]) else _REJECT
+            return _ALLOW if await self._decide(session, *session.tool_calls[call_id], call_id=call_id) else _REJECT
         except asyncio.CancelledError:
             if session.aborting or session.closing is not None:
                 # The run was stopped while the user was being asked.
@@ -930,7 +1105,7 @@ class DshRuntime:
         finally:
             session.asks.discard(task)
 
-    async def _decide(self, session: _Session, name: str, arguments: Any) -> bool:
+    async def _decide(self, session: _Session, name: str, arguments: Any, *, call_id: str = "") -> bool:
         """Return whether the host allows one call of a dsh tool."""
         from nekoclaw.runtime.permissions import classify, default_permission_decision
 
@@ -939,6 +1114,9 @@ class DshRuntime:
         process = session.process
         given = arguments if isinstance(arguments, dict) else {}
         gateway_prefix = f"mcp__{profile.GATEWAY_SERVICE}__"
+        if (name == HOST_TOOL_PREFIX + "web_fetch" and "execution_action" in self._host.capabilities
+                and "native_execution_action" in self._host.capabilities):
+            return await self._tools.prepare_fetch(session.id, call_id, given)
         if name in profile.GATED_TOOLS:
             if not _well_formed(name, arguments):
                 return False
@@ -947,6 +1125,8 @@ class DshRuntime:
             readable = (profile.session_spill_dir(process.home, session.dsh_id),) if process is not None else ()
             request = classify(name, given, Path(session.spec.workdir), readable=readable)
             payload = {**request.to_json(), "default": default_permission_decision(request)}
+            if process is not None and process.stock_execution:
+                payload["private_route"] = True
         elif name.startswith(HOST_TOOL_PREFIX):
             # One of the host's own tools the guard asks about
             # (``profile.ASKED_HOST_TOOLS``): the host asks the user now what
@@ -977,6 +1157,38 @@ class DshRuntime:
                 "workdir": session.spec.workdir,
                 "default": "ask",
             }
+        from nekoclaw.runtime.execution import JOB_TOOLS, resource_ref
+
+        if name in (*profile.GATED_TOOLS, *JOB_TOOLS) and "native_execution_action" in self._host.capabilities:
+            if not call_id or call_id.startswith("nekoclaw-exec/") or call_id in session.execution_receipts:
+                return False
+            session.execution_receipts[call_id] = None
+            classified = classify(name, given, Path(session.spec.workdir))
+            offer = self._tools.offer(session.id)
+            saved = (offer.output_context.spill.protected.get(Path(classified.path))
+                     if offer and offer.output_context and classified.path else None)
+            if saved is not None:
+                payload["category"] = "workdir_files"
+            origins = [saved.origin] if saved else []
+            if name == "job_list":
+                origins.extend(session.job_origins.values())
+            elif name in {"job_output", "job_kill"}:
+                job_id = str(given.get("job_id", "")).strip()
+                origins.append(session.job_origins.get(job_id, "unknown-native-job"))
+            reply = await self._host.call(session.id, "native_execution_action", {
+                **{key: value for key, value in payload.items() if key != "arguments"}, "phase": "begin",
+                "scope_ref": await asyncio.to_thread(resource_ref, classified, given),
+                "private_route": bool(process and process.stock_execution),
+                **({"origins": origins} if origins else {}),
+            })
+            receipt = reply.get("receipt")
+            if reply.get("allow") is not True or not isinstance(receipt, str) or not receipt:
+                return False
+            if name == "job_list":
+                permitted = set(reply.get("origins", []))
+                session.listed_jobs[call_id] = [job for job, origin in session.job_origins.items() if origin in permitted]
+            session.execution_receipts[call_id] = receipt
+            return True
         if "decide_permission" not in self._host.capabilities:
             return payload["default"] == "allow"
         reply = await self._host.call(session.id, "decide_permission", payload)
@@ -1550,8 +1762,18 @@ class DshRuntime:
                         # is handed anything from here on. (The answers its
                         # calls were handed are settled below all the same.)
                         session.in_turn = False
+                        # An automatic goal round can start while this prompt settles.
+                        # Only discard the receipts of calls announced by this prompt.
+                        offer = self._tools.offer(session.id) if self._sessions.get(session.id) is session else None
                         for call_id in session.prompt_calls:
                             session.tool_calls.pop(call_id, None)
+                            session.execution_receipts.pop(call_id, None)
+                            session.finished_sources.pop(call_id, None)
+                            session.kept_calls.discard(call_id)
+                            session.listed_jobs.pop(call_id, None)
+                            if offer:
+                                offer.preparing_fetches.pop(call_id, None)
+                                offer.prepared_fetches.pop(call_id, None)
                         session.prompt_calls.clear()
                         session.turns += 1
                 except AcpClosed:
@@ -1615,10 +1837,12 @@ class DshRuntime:
                     reason = "aborted"
                     break
         finally:
-            session.run = None
-            # Over: a call of it that is still waiting is not taken for
-            # one of the run that starts next.
-            session.runs += 1
+            try:
+                if session.audit_writes:
+                    await asyncio.gather(*session.audit_writes)
+            finally:
+                session.runs += 1
+                session.run = None
         if session.closing is not None or self._sessions.get(session.id) is not session:
             return
         if session.aborting and reason == "completed":

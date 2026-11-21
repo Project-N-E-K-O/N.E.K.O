@@ -89,9 +89,11 @@ class OutputBuffer:
         max_bytes: int,
         reserve_spill: Callable[[], Path | None],
         max_spill_bytes: int = MAX_SPILL_BYTES,
+        protected=None,
     ) -> None:
         self._max_bytes = max_bytes
         self._reserve_spill = reserve_spill
+        self._protected = protected
         self._max_spill_bytes = max_spill_bytes
         self._lock = threading.Lock()
         self._tail = bytearray()
@@ -122,7 +124,7 @@ class OutputBuffer:
         if path is None:
             return
         try:
-            self._spill_file = open(path, "wb")
+            self._spill_file = (self._protected or {}).get(path) or open(path, "wb")
         except OSError:
             self._spill_file = None
             return
@@ -145,7 +147,8 @@ class OutputBuffer:
     def _close_spill(self) -> None:
         if self._spill_file is not None:
             try:
-                self._spill_file.close()
+                if self.spill_path not in (self._protected or {}):
+                    self._spill_file.close()
             except OSError:
                 pass
             self._spill_file = None
@@ -159,7 +162,8 @@ class OutputBuffer:
         with self._lock:
             if self._spill_file is not None:
                 try:
-                    self._spill_file.flush()
+                    if self.spill_path not in (self._protected or {}):
+                        self._spill_file.flush()
                 except OSError:
                     pass
 

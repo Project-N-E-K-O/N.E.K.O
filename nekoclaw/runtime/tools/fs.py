@@ -69,7 +69,11 @@ def build_read_window(
 ) -> ReadWindow:
     """Select the lines one ``read`` call returns."""
     selected: list[tuple[int, str]] = []
-    used = 0
+    total = len(lines)
+    # Reserve the wrapper and a continuation footer with the largest possible
+    # end line. The empty numbered row also accounts for the footer separator.
+    envelope = ReadWindow(offset, [(total, "")], total, True)
+    used = len(format_read_output(display, envelope).encode("utf-8"))
     truncated = False
     for number, raw in enumerate(lines, start=1):
         if number < offset:
@@ -79,13 +83,12 @@ def build_read_window(
         text = raw
         if len(text) > max_line_length:
             text = f"{text[:max_line_length]}... (line truncated to {max_line_length} chars)"
-        size = len(text.encode("utf-8", errors="replace")) + (1 if selected else 0)
+        size = len(f"{number}: {text}".encode("utf-8", errors="replace")) + (1 if selected else 0)
         if used + size > max_bytes:
             truncated = True
             break
         used += size
         selected.append((number, text))
-    total = len(lines)
     if not truncated and offset > total and not (total == 0 and offset == 1):
         raise ToolError(f'offset {offset} is out of range for "{display}" ({total} lines)')
     return ReadWindow(offset=offset, lines=selected, total_lines=total, truncated_by_bytes=truncated)
@@ -113,15 +116,25 @@ def format_read_output(display: str, window: ReadWindow) -> str:
     return f"<path>{display}</path>\n<type>file</type>\n<content>\n{body}\n</content>"
 
 
-def read_file(path: Path, *, offset: int, limit: int) -> str:
+def read_file(path: Path, *, offset: int, limit: int, protected=None) -> str:
     """Blocking implementation of ``read``."""
-    display = str(path)
-    raw = textio.read_bytes(path, verb="read", display=display, max_bytes=FILE_MAX_BYTES)
+    display = str(path).encode("utf-8", errors="backslashreplace").decode("utf-8")
+    hint = f'Use grep with a keyword to read "{display}" in sections (limit {READ_MAX_BYTES} bytes).'
+    if protected is not None:
+        with protected.reader() as handle:
+            raw = handle.read(READ_MAX_BYTES + 1)
+    else:
+        raw = textio.read_bytes(path, verb="read", display=display, max_bytes=READ_MAX_BYTES, limit_message=hint)
+    if len(raw) > READ_MAX_BYTES:
+        raise ToolError(hint)
     text, _fmt = textio.decode_text(raw, verb="read", display=display)
     window = build_read_window(
         textio.split_lines(text), offset=offset, limit=limit, display=display
     )
-    return format_read_output(display, window)
+    rendered = format_read_output(display, window)
+    if len(rendered.encode("utf-8")) > READ_MAX_BYTES:
+        raise ToolError(hint)
+    return rendered
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +304,7 @@ def build_fs_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> list
             raise ToolError("limit must be greater than or equal to 1")
         if limit > READ_LIMIT:
             raise ToolError(f"limit must be less than or equal to {READ_LIMIT}")
-        return await asyncio.to_thread(read_file, path, offset=offset, limit=limit)
+        return await asyncio.to_thread(read_file, path, offset=offset, limit=limit, protected=ctx.spill.protected.get(path))
 
     async def write(args: dict[str, Any], call: ToolCallInfo) -> str:
         del call
