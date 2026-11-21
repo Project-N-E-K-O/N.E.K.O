@@ -74,9 +74,11 @@ def official_required(repo):
     if repo_identity(url) != repo_identity(OFFICIAL_URL):
         raise ValueError(
             f"origin is not the configured official repository: {url}\n"
-            "Accepted forms: https://github.com/Project-N-E-K-O/N.E.K.O(.git), "
-            "git@github.com:Project-N-E-K-O/N.E.K.O(.git), "
-            "ssh://git@github.com/Project-N-E-K-O/N.E.K.O(.git).\n"
+            "Accepted forms (with or without .git): "
+            "https://github.com[:443]/Project-N-E-K-O/N.E.K.O, "
+            "ssh://[user@]github.com[:22]/Project-N-E-K-O/N.E.K.O "
+            "(also git+ssh:// and ssh+git://), "
+            "[user@]github.com:Project-N-E-K-O/N.E.K.O.\n"
             "If this checkout should follow the official repository, run:\n"
             f"  git remote set-url origin {OFFICIAL_URL}\n"
             "Transport rewrites such as url.<base>.insteadOf keep working."
@@ -102,8 +104,13 @@ def repo_identity(url):
     """
     # Parsers disagree on backslashes, whitespace (including leading or
     # trailing), percent escapes and stray "@" in the authority; refuse such
-    # URLs instead of guessing which host Git contacts.
-    if _AMBIGUOUS_URL_CHARS.search(url):
+    # URLs instead of guessing which host Git contacts. Non-ASCII text is
+    # refused so case folding cannot map look-alikes (e.g. U+212A) to ASCII.
+    if not url.isascii() or _AMBIGUOUS_URL_CHARS.search(url):
+        return None
+    # Git keeps even an empty "?" or "#" in the requested path, so the
+    # parsed identity would not be what Git asks the server for.
+    if "?" in url or "#" in url:
         return None
     if "://" in url:
         try:
@@ -113,8 +120,6 @@ def repo_identity(url):
             return None
         default_port = _URL_SCHEME_PORTS.get(parts.scheme)
         if default_port is None or port not in (None, default_port):
-            return None
-        if parts.query or parts.fragment:
             return None
         if parts.netloc.count("@") > 1:
             return None

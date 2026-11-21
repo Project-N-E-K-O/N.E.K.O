@@ -300,6 +300,9 @@ MimeType=x-scheme-handler/neko;
 """
     desktop_file.write_text(desktop_content)
 
+    # Update the desktop database first (optional refresh) so the cache sees
+    # the new .desktop file even if setting the default handler fails.
+    _run_optional(["update-desktop-database", str(desktop_dir)])
     # Register the MIME type.
     if not _run_required(
         ["xdg-mime", "default", desktop_file.name, "x-scheme-handler/neko"],
@@ -308,8 +311,6 @@ MimeType=x-scheme-handler/neko;
         print("[FAIL] neko:// protocol was not registered (Linux)")
         print(f"     Desktop file left at: {desktop_file}")
         return False
-    # Update the desktop database (optional refresh).
-    _run_optional(["update-desktop-database", str(desktop_dir)])
 
     print(f"[OK] Registered neko:// protocol (Linux)")
     print(f"     Desktop file: {desktop_file}")

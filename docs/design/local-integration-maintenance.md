@@ -4,11 +4,12 @@
 without replacing the checkout, automatically stashing changes, or publishing
 anything. It has no user-specific paths or account settings. It requires Python
 3.11, Git, and the official repository configured as `origin`, either as
-`https://github.com/Project-N-E-K-O/N.E.K.O.git` or in an equivalent SSH form
-(`git@github.com:Project-N-E-K-O/N.E.K.O.git`,
-`ssh://git@github.com/Project-N-E-K-O/N.E.K.O.git`); Git transport rewrites such
-as `insteadOf` are also supported. build/verify also use
-the existing Node and uv toolchains. Run it from a checkout, not an installed app.
+`https://github.com/Project-N-E-K-O/N.E.K.O.git` or in an equivalent SSH form:
+scp-like `[user@]github.com:Project-N-E-K-O/N.E.K.O.git`, or
+`ssh://[user@]github.com/Project-N-E-K-O/N.E.K.O.git` (also `git+ssh://` and
+`ssh+git://`). The `.git` suffix is optional and only the default ports (443
+for HTTPS, 22 for SSH) are accepted. Git transport rewrites such as `insteadOf`
+are also supported. Build/verify also use the existing Node and uv toolchains. Run it from a checkout, not an installed app.
 
 Use a persistent `local/…` branch for personal changes and explicit file lists
 when committing. Keep credentials, conversations, model downloads, and generated

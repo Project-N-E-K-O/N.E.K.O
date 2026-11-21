@@ -619,6 +619,8 @@ class MaintenanceTests(unittest.TestCase):
             "ssh://git@github.com/Project-N-E-K-O/N.E.K.O.git",
             "ssh://git@github.com:22/Project-N-E-K-O/N.E.K.O",
             "git+ssh://git@github.com/Project-N-E-K-O/N.E.K.O.git",
+            "ssh+git://git@github.com/Project-N-E-K-O/N.E.K.O.git",
+            "https://github.com:443/Project-N-E-K-O/N.E.K.O.git",
         ):
             with self.subTest(url=url):
                 self.git("remote", "set-url", "origin", url)
@@ -649,6 +651,11 @@ class MaintenanceTests(unittest.TestCase):
             " https://github.com/Project-N-E-K-O/N.E.K.O.git",
             "https://github.com/Project-N-E-K-O/N.E.K.O.git ",
             "\tgit@github.com:Project-N-E-K-O/N.E.K.O.git",
+            "ssh://git@github.com/Project-N-E-K-O/N.E.K.O.git?",
+            "https://github.com/Project-N-E-K-O/N.E.K.O.git#",
+            "git@github.com:Project-N-E-K-O/N.E.K.O.git?",
+            "https://github.com/Project-N-E-K-O/N.E.\u212aO.git",
+            "git@github.com:Project-N-E-\u212a-O/N.E.K.O.git",
         ):
             with self.subTest(url=url):
                 self.git("remote", "set-url", "origin", url)

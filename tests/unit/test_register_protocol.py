@@ -123,8 +123,8 @@ def test_linux_register_runs_xdg_mime_and_optional_refresh(monkeypatch, tmp_path
 
     apps_dir = tmp_path / ".local" / "share" / "applications"
     assert calls == [
-        ["xdg-mime", "default", "neko-protocol-handler.desktop", "x-scheme-handler/neko"],
         ["update-desktop-database", str(apps_dir)],
+        ["xdg-mime", "default", "neko-protocol-handler.desktop", "x-scheme-handler/neko"],
     ]
 
 
@@ -190,16 +190,21 @@ def test_macos_register_fails_when_lsregister_fails(
 
 @pytest.mark.parametrize("system", ["Linux", "Darwin"])
 def test_cli_exits_nonzero_when_required_command_fails(
-    monkeypatch, tmp_path, system,
+    monkeypatch, tmp_path, capsys, system,
 ) -> None:
     import runpy
 
     monkeypatch.setattr(register_protocol.platform, "system", lambda: system)
     monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(sys, "argv", ["register_protocol.py"])
-    _fake_commands(monkeypatch, returncodes={"xdg-mime": 1, "lsregister": 1})
+    calls = _fake_commands(monkeypatch, returncodes={"xdg-mime": 1, "lsregister": 1})
 
     with pytest.raises(SystemExit) as exc_info:
         runpy.run_path(register_protocol.__file__, run_name="__main__")
 
     assert exc_info.value.code == 1
+    required = "xdg-mime" if system == "Linux" else "lsregister"
+    assert any(call[0].rsplit("/", 1)[-1] == required for call in calls)
+    out = capsys.readouterr().out
+    assert f"[FAIL] {required} exited with status 1" in out
+    assert "[OK]" not in out
