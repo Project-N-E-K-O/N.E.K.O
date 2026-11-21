@@ -770,7 +770,7 @@ class WorktreeManager:
         """
         # A driver configured under a built-in name is found before git's own.
         configured = await self._git(root, "config", "--get-regexp", r"^merge\..*\.driver$", check=False)
-        theirs = {line.split(" ", 1)[0][len("merge.") : -len(".driver")].encode() for line in configured.lines()}
+        theirs = {line.split(" ", 1)[0][len("merge.") : -len(".driver")].encode("utf-8", "surrogateescape") for line in configured.lines()}
 
         def users(value: bytes) -> bool:
             return value not in _BUILT_IN_MERGE or value in theirs
@@ -1441,7 +1441,7 @@ def _remove_tree(path: Path) -> None:
 def _points_into(path: Path, common_dir: Path) -> bool:
     """Return whether ``path`` holds a worktree of the repository whose git directory is ``common_dir``."""
     try:
-        text = (path / ".git").read_text(encoding="utf-8").strip()
+        text = (path / ".git").read_text(encoding="utf-8", errors="surrogateescape").strip()
     except OSError:
         return False
     if not text.startswith("gitdir:"):
@@ -1459,7 +1459,7 @@ def _drop_registration(common_dir: Path, path: Path) -> None:
         return
     for entry in admin.iterdir():
         try:
-            pointed = (entry / "gitdir").read_text(encoding="utf-8").strip()
+            pointed = (entry / "gitdir").read_text(encoding="utf-8", errors="surrogateescape").strip()
         except OSError:
             continue
         where = Path(pointed)

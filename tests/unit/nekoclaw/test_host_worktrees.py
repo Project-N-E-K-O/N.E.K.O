@@ -2233,3 +2233,22 @@ def test_a_relative_registration_is_matched_from_where_it_is(tmp_path: Path) -> 
     (entry / "gitdir").write_text(os.path.relpath(path / ".git", entry).replace(os.sep, "/") + "\n", encoding="utf-8")
     worktrees._drop_registration(common, path)
     assert not entry.exists()
+
+
+def test_pointers_that_are_not_utf8_are_not_ours(tmp_path: Path) -> None:
+    path = tmp_path / "wt" / "w1"
+    path.mkdir(parents=True)
+    (path / ".git").write_bytes(b"gitdir: /some/where\xff/worktrees/w1\n")
+    assert worktrees._points_into(path, tmp_path / "repo" / ".git") is False
+    common = tmp_path / "repo" / ".git"
+    entry = common / "worktrees" / "w1"
+    entry.mkdir(parents=True)
+    (entry / "gitdir").write_bytes(b"/else\xffwhere/.git\n")
+    worktrees._drop_registration(common, path)
+    assert entry.exists()
+
+
+async def test_a_driver_name_that_is_not_utf8_does_not_break_probing(repo: Path, manager: WorktreeManager) -> None:
+    config = repo / ".git" / "config"
+    config.write_bytes(config.read_bytes() + b'[merge "odd\xff"]\n\tdriver = cat %A\n')
+    assert (await manager.probe(repo)).usable
