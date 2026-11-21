@@ -1972,7 +1972,9 @@ async def test_a_session_that_waited_is_not_summed_up_when_the_task_model_is_ano
     export = ScriptedLLM([*_long_work("export added"), summary])
     current = {"model": "fake-model"}
 
-    async def model() -> dict[str, Any]:
+    async def model() -> dict[str, Any] | None:
+        if current["model"] is None:
+            return None
         return {"model": current["model"], "api_key": "test-key", "context_window": 16_000, "max_output_tokens": 2_000}
 
     host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=model)
@@ -1998,6 +2000,13 @@ async def test_a_session_that_waited_is_not_summed_up_when_the_task_model_is_ano
     assert manager._idle_compact_failures == {} and manager._idle_timers == {}
     session = await host.ledger.get_session(first.id)
     assert (session.status, session.compacted_at) == ("closed", None)
+
+    # No model configured (or none that can be read) when the wait would be set: nothing is set, since
+    # which provider it is waited under cannot be told, and the next one the user sets would get the session.
+    current["model"] = None
+    await manager._schedule_idle_compact(first.id)
+    assert first.id not in manager._idle_timers
+    current["model"] = "fake-model"
 
     # Waiting under the model that is configured when the time is up, it is summed up.
     await manager._schedule_idle_compact(first.id)

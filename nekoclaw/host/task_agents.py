@@ -7602,6 +7602,11 @@ class TaskAgentManager:
         if idle_for is None:
             idle_for = await self._idle_after()
             model = await self._task_model_key()
+            if model is None:
+                # No model is configured, or it cannot be read: which provider the
+                # wait is set under cannot be told, and a timer that checked nothing
+                # would send the session to whichever one the user sets next.
+                return
             # Looked at again after the wait: the session may have been taken
             # by a commission meanwhile (that drops its timer, and sets
             # another when it is over), everything stopped, or the host
