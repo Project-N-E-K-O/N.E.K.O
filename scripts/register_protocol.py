@@ -104,6 +104,8 @@ def _run_optional(args: list[str]) -> None:
             stderr=subprocess.DEVNULL,
         )
     except OSError:
+        # The refresh is optional: a missing or broken tool only delays the
+        # desktop's cache update and must not fail the registration.
         pass
 
 
