@@ -53,7 +53,11 @@
   before the work on one commission uses more than it may (``_cb_budget``);
 * makes a session from another by copying what was said in it
   (``fork_session``), and, when that is switched on, sums up the
-  conversation of a session that has been idle for long (``_idle_compact``).
+  conversation of a session that has been idle for long (``_idle_compact``);
+* lets a session of one commission (``single``) end once its last commission
+  has been over for ``SESSION_SINGLE_LIFETIME_DAYS`` days: nothing gives it
+  new work after that (``Ledger.session_alive``, asked wherever new work is
+  handed to a session).
 
 Status changes all go through ``Ledger.transition``. In particular a
 commission that was stopped is ``cancelled`` before its session is told to
@@ -165,10 +169,14 @@ _CLOSING_RETRY_SECONDS = 1.0
 # through whoever it helps.
 _ADDRESSED_KINDS = ("project", "single")
 _USAGE_REASON = "it used as many tokens as one commission may, and the user allowed no more"
-# The kinds of session the host sums up while they are idle: those that go
-# on being handed commissions. A session of one commission, or of a task
-# agent another started, is seldom opened again.
-_IDLE_COMPACT_KINDS = frozenset({"project"})
+# What a note or a wake that waits for a session is dropped with when the
+# session has ended (``Ledger.session_alive``); said to nobody, kept on record.
+_SESSION_ENDED_REASON = "its session has ended"
+# The kinds of session the host sums up while they are idle: all that can be
+# handed a commission again (a session of one commission as well as a
+# project's). Those of a task agent another one started, and copies, are
+# never summed up: they are done with when their part is.
+_IDLE_COMPACT_KINDS = frozenset({"project", "single"})
 # Added to what is left of the idle time when a timer came due a moment
 # before the ledger had the session idle for long enough: more than the
 # steps of a wall clock, so that the next look is not early again.
@@ -1033,15 +1041,13 @@ class TaskAgentManager:
         # whoever opened it, here, and to no commission.
         self._service: dict[str, asyncio.Queue[dict[str, Any]]] = {}
         # Idle sessions that are to be summed up, each with the timer that
-        # says when; those being summed up right now, each with its task;
-        # and when sessions were summed up while idle, for the daily limit.
+        # says when; those being summed up right now, each with its task.
         self._idle_timers: dict[str, asyncio.TimerHandle] = {}
         self._compacting: dict[str, asyncio.Task[Any]] = {}
-        self._idle_compacted_at: deque[float] = deque()
-        # Those that got past the daily limit and have not asked for their
-        # summary yet: counted with the ones above, so that sessions whose
-        # time comes together do not get past the limit side by side.
-        self._idle_compacts_under_way = 0
+        # How many times in a row the host asked a session to sum itself up
+        # and got no whole summary (``TASK_AGENT_IDLE_COMPACT_MAX_FAILURES``).
+        # In memory only: a host that is started again counts from none.
+        self._idle_compact_failures: dict[str, int] = {}
         # Sessions that are being given back after a summing up, each with
         # the task that does it.
         self._idle_over: dict[str, asyncio.Task[Any]] = {}
@@ -3011,7 +3017,7 @@ class TaskAgentManager:
         if unused_copy is not None:
             await self._discard_copy(unused_copy)
         else:
-            self._schedule_idle_compact(session_id)
+            await self._schedule_idle_compact(session_id)
 
     def _settle_hold_of(self, commission_id: str) -> None:
         """Have the hold on a commission's session looked at again, if it holds one.
@@ -3322,6 +3328,9 @@ class TaskAgentManager:
         elif kind == "model_capability":
             await self._on_model_capability(session, event)
         elif kind == "compacted":
+            # A summary made in the course of a commission ends the count
+            # of failed ones while idle (``_idle_compact_failures``).
+            self._idle_compact_failures.pop(session.session_id, None)
             await self._ledger.update_session(session.session_id, compacted_at=self._ledger._clock())
 
     async def _note_opened(self, session: _Session) -> None:
@@ -4838,7 +4847,14 @@ class TaskAgentManager:
             # Its session was closed while it waited (an idle runtime exits).
             return await self.answer(commission_id, text)
         if commission.status in ("blocked", "failed"):
-            # Take it up again where its transcript ends.
+            # Take it up again where its transcript ends: unless its session
+            # has ended (a session of one commission, over for long), which
+            # nothing is given to any more. What was said is then work of
+            # its own, as for a commission that was done.
+            if commission.session_id and not await self._ledger.session_alive(
+                await self._ledger.get_session(commission.session_id)
+            ):
+                return False
             if still_wanted is not None and not still_wanted():
                 return False
             await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
@@ -6053,6 +6069,13 @@ class TaskAgentManager:
         if target is None:
             await self._ledger.wakes_void(ids, "its session is not on record")
             return Handover("dropped")
+        if not await self._ledger.session_alive(target):
+            # Notes written to it, a time it set for itself that came when
+            # nothing was at work in it: nothing wakes or opens a session
+            # that has ended. (A commission that is under way in it keeps
+            # it alive, so what it set for itself does not come here.)
+            await self._ledger.wakes_void(ids, _SESSION_ENDED_REASON)
+            return Handover("dropped")
         if owner is not None:
             commission = await self._ledger.get(owner)
             if commission is None or commission.status in ENDED_STATUSES:
@@ -6348,6 +6371,10 @@ class TaskAgentManager:
         if current is None or current.status == "cleared":
             await self._ledger.wakes_void(ids, "its session's record was removed")
             return Handover("dropped")
+        if not await self._ledger.session_alive(current):
+            # Over while this waited (``hand_over`` looked before).
+            await self._ledger.wakes_void(ids, _SESSION_ENDED_REASON)
+            return Handover("dropped")
         if target.id in self._clearing:
             # Dropped the next time, should the removal go through.
             return Handover("held", _CLOSING_RETRY_SECONDS)
@@ -6500,7 +6527,9 @@ class TaskAgentManager:
             pending = await self._ledger.wakes_pending(commission_id=resting.id)
             if pending:
                 return words["resting"].format(time=_clock_time(pending[0].due_at))
-        return words["cleared"] if session.status == "cleared" else words["closed"]
+        if session.status == "cleared":
+            return words["cleared"]
+        return words["closed"] if await self._ledger.session_alive(session) else words["ended"]
 
     async def _cb_session_list(
         self, session_id: str, payload: dict[str, Any], action: _SessionAction | None = None,
@@ -6688,6 +6717,10 @@ class TaskAgentManager:
             raise RuntimeError(refusals["child"].format(name=target.name))
         if target.status == "cleared":
             raise RuntimeError(refusals["cleared"].format(name=target.name))
+        if not await self._ledger.session_alive(target):
+            raise RuntimeError(
+                refusals["ended"].format(name=target.name, days=settings.SESSION_SINGLE_LIFETIME_DAYS)
+            )
         body = str(payload.get("message") or "").strip()
         tokens = await acount_tokens(body)
         if tokens > settings.SESSION_MESSAGE_MAX_TOKENS:
@@ -6827,6 +6860,10 @@ class TaskAgentManager:
             raise RuntimeError(refusals["child"].format(name=target.name))
         if target.status == "cleared":
             raise RuntimeError(refusals["cleared"].format(name=target.name))
+        if not await self._ledger.session_alive(target):
+            raise RuntimeError(
+                refusals["ended"].format(name=target.name, days=settings.SESSION_SINGLE_LIFETIME_DAYS)
+            )
         if target.runtime == RUNTIME_DSH:
             raise RuntimeError(refusals["dsh"].format(name=target.name))
         if not await self._ledger.select(session_id=target.id, statuses=_STILL_WORKING, limit=1):
@@ -7683,17 +7720,73 @@ class TaskAgentManager:
         if timer is not None:
             timer.cancel()
 
-    def _schedule_idle_compact(self, session_id: str, *, after: float | None = None) -> None:
-        """Have a session summed up once nothing has been at work in it for ``TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS``.
+    async def _idle_after(self) -> float:
+        """Return how long a session is idle before it is summed up, in seconds.
+
+        What the user set for the task agent model, else the setting
+        (``ModelCapabilityStore.idle_compact_after``).
+        """
+        from config.nekoclaw_settings import TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS
+
+        if self._model_capabilities is not None:
+            try:
+                config = await self._model_config()
+                if config and config.get("model"):
+                    return float(
+                        await self._model_capabilities.idle_compact_after(config.get("base_url"), config.get("model"))
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - not knowing is the same as nothing set
+                logger.warning("looking up how long a session is idle before it is summed up failed", exc_info=True)
+        return float(TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS)
+
+    @staticmethod
+    def _model_key_of(config: dict[str, Any] | None) -> str | None:
+        """Return the key (address and name) of the model a configuration names; None when it names none."""
+        from nekoclaw.host.model_capabilities import model_key
+
+        if not config or not config.get("model"):
+            return None
+        return model_key(config.get("base_url"), config.get("model"))
+
+    async def _task_model_key(self) -> str | None:
+        """Return the key of the task agent model as it is configured now; None when that cannot be told."""
+        try:
+            return self._model_key_of(await self._model_config())
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - not knowing is the same as no model
+            logger.warning("looking up the task agent model failed", exc_info=True)
+            return None
+
+    async def _schedule_idle_compact(
+        self,
+        session_id: str,
+        *,
+        after: float | None = None,
+        idle_for: float | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Have a session summed up once nothing has been at work in it for the time the user set (``_idle_after``).
 
         Only while that is switched on (``TASK_AGENT_IDLE_COMPACT_ENABLED``).
         Whether it is worth it for this session is looked at when the
         time has come. A commission that takes the session before then
-        drops the timer. ``after`` is how long from now, when that is
-        not the whole time (the time had come by the timer, and not yet
-        by what the ledger has of the session: ``_idle_compact``).
+        drops the timer. ``idle_for`` is how long the session has to have
+        been idle, read now when it is not given: the timer keeps it, and
+        looks at the session by it when it comes due, whatever the user sets
+        meanwhile (the next session that is let go gets the new time).
+        ``model`` is the key of the task agent model the wait was set under
+        (read now when ``idle_for`` is): the timer keeps it, and nothing is
+        summed up when the model is another by the time it comes due (the
+        user moved to another provider: what was said in the session is not
+        sent there without the user going on with it). In memory only.
+        ``after`` is how long from now, when that is not the whole time (the
+        time had come by the timer, and not yet by what the ledger has of the
+        session: ``_idle_compact``).
         """
-        from config.nekoclaw_settings import TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS, TASK_AGENT_IDLE_COMPACT_ENABLED
+        from config.nekoclaw_settings import TASK_AGENT_IDLE_COMPACT_ENABLED
 
         self._drop_idle_timer(session_id)
         if not TASK_AGENT_IDLE_COMPACT_ENABLED or self._closed:
@@ -7704,15 +7797,36 @@ class TaskAgentManager:
             # no request for it by itself (``drop_idle_work``).
             return
         stops = self._idle_stops
+        if idle_for is None:
+            idle_for = await self._idle_after()
+            model = await self._task_model_key()
+            if model is None:
+                # No model is configured, or it cannot be read: which provider the
+                # wait is set under cannot be told, and a timer that checked nothing
+                # would send the session to whichever one the user sets next.
+                return
+            # Looked at again after the wait: the session may have been taken
+            # by a commission meanwhile (that drops its timer, and sets
+            # another when it is over), everything stopped, or the host
+            # shut down. And another look at the same session may have set
+            # a timer in the meantime: it is replaced.
+            if (
+                self._closed
+                or stops != self._idle_stops
+                or session_id in self._idle_stopped
+                or not self._idle_now(session_id)
+            ):
+                return
+            self._drop_idle_timer(session_id)
+        if after is None:
+            after = idle_for
 
         def due() -> None:
             self._idle_timers.pop(session_id, None)
             if not self._closed:
-                self._spawn(self._idle_compact(session_id, stops))
+                self._spawn(self._idle_compact(session_id, stops, idle_for, model))
 
-        self._idle_timers[session_id] = asyncio.get_running_loop().call_later(
-            max(0.0, float(TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS if after is None else after)), due
-        )
+        self._idle_timers[session_id] = asyncio.get_running_loop().call_later(max(0.0, float(after)), due)
 
     def drop_idle_work(self) -> None:
         """Give up everything the host was going to do by itself in idle sessions, and what it is doing there now.
@@ -7788,28 +7902,26 @@ class TaskAgentManager:
             await asyncio.wait([over], timeout=max(0.0, until - loop.time()))
         return self._compacting.get(session_id) is not task
 
-    def _idle_compact_allowed(self, kept: Session | None, now: float) -> bool:
-        """Whether a session, as the ledger has it, is to be summed up while idle: by its kind, its length and the limits."""
-        from config.nekoclaw_settings import (
-            TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS,
-            TASK_AGENT_IDLE_COMPACT_MIN_GAP_SECONDS,
-            TASK_AGENT_IDLE_COMPACT_MIN_TOKENS,
-            TASK_AGENT_IDLE_COMPACTS_PER_DAY,
-        )
+    def _idle_compact_allowed(self, kept: Session | None, now: float, after: float) -> bool:
+        """Whether a session, as the ledger has it, is to be summed up while idle: by its kind, its length and its failures.
+
+        ``after`` is how long it has to have been idle (``_idle_after``).
+        That the session has not ended (``Ledger.session_alive``) is asked
+        by whoever calls this: that is read from the ledger.
+        """
+        from config.nekoclaw_settings import TASK_AGENT_IDLE_COMPACT_MAX_FAILURES, TASK_AGENT_IDLE_COMPACT_MIN_TOKENS
 
         if kept is None or kept.status != "closed" or kept.kind not in _IDLE_COMPACT_KINDS:
             return False
         if kept.runtime != RUNTIME_BUILTIN or kept.context_tokens < TASK_AGENT_IDLE_COMPACT_MIN_TOKENS:
             # dsh sums up by itself; a short conversation costs more to sum up than it saves.
             return False
-        if now - kept.last_active_at < TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS:
+        if now - kept.last_active_at < after:
             return False
-        if kept.compacted_at is not None and now - kept.compacted_at < TASK_AGENT_IDLE_COMPACT_MIN_GAP_SECONDS:
-            return False
-        # Counted, not removed: this is also asked about a moment that has
-        # not come yet, and what is still within the day now stays on record.
-        within_the_day = sum(1 for at in self._idle_compacted_at if now - at < 24 * 3600.0)
-        return within_the_day + self._idle_compacts_under_way < TASK_AGENT_IDLE_COMPACTS_PER_DAY
+        # Summings up that got no whole summary, one after the other: no more
+        # by itself once it was tried that often, until a summary is made
+        # in the course of a commission.
+        return self._idle_compact_failures.get(kept.id, 0) < TASK_AGENT_IDLE_COMPACT_MAX_FAILURES
 
     def _is_switched_on(self) -> bool:
         """Whether NekoClaw is switched on, as far as this was told how to find out; a switch that cannot be read is off."""
@@ -7824,15 +7936,27 @@ class TaskAgentManager:
         """Whether nothing is at work in a session, or on its way to be, and nothing else has claimed it."""
         return not self._closed and not self._in_use(session_id)
 
-    async def _idle_compact(self, session_id: str, stops: int | None = None) -> bool:
+    async def _idle_compact(
+        self, session_id: str, stops: int | None = None, after: float | None = None, model: str | None = None
+    ) -> bool:
         """Sum up the conversation of a session nothing has been at work in for long. Returns whether it was summed up.
+
+        ``after`` is how long the session has to have been idle: the time
+        its timer was set for (``_schedule_idle_compact``), so that what the
+        user sets while a session waits does not change that wait; read now
+        when it is not given. ``model`` is the key of the task agent model the
+        wait was set under: with another one configured now, nothing is
+        asked of it (no failure is counted and no wait is set again), so that
+        what was said in the session does not go to a provider the user
+        moved to meanwhile without the user going on with it.
 
         One model request, of the length of the conversation at the most,
         made by the host itself: for no commission, so it is counted with
         the session alone, against the daily quota of the agent model as
         one request, and against no commission's limit. Not made when
         NekoClaw is switched off, when the quota is used up, or when the
-        session, by the time this gets to it, is in use or not worth it
+        session, by the time this gets to it, is in use, has ended
+        (``Ledger.session_alive``) or is not worth it
         (``_idle_compact_allowed``).
 
         The session is opened in the built-in runtime as a commission's
@@ -7842,12 +7966,18 @@ class TaskAgentManager:
         it meanwhile cuts this short (``_start``) and waits only for the
         runtime to let go: nothing of the conversation changes unless the
         summary was written.
+
+        There is no limit on how often or how many: what bounds it is that
+        a timer is only set once a commission has ended in the session,
+        that a session summed up holds nothing worth summing again until a
+        request says how long it has grown (``Ledger.end_compacting``), and
+        that one that got no whole summary (the request failed, came back
+        empty or cut off by its length, or the model went for a tool) is
+        not tried again by itself: the next time is when another
+        commission has ended in it, and after ``TASK_AGENT_IDLE_COMPACT_MAX_FAILURES``
+        such in a row not until it made a summary in the course of one.
         """
-        from config.nekoclaw_settings import (
-            TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS,
-            TASK_AGENT_IDLE_COMPACT_ENABLED,
-            TASK_AGENT_IDLE_COMPACT_SECONDS,
-        )
+        from config.nekoclaw_settings import TASK_AGENT_IDLE_COMPACT_ENABLED, TASK_AGENT_IDLE_COMPACT_SECONDS
         from nekoclaw.runtime.protocol import GatewaySpec
 
         if not TASK_AGENT_IDLE_COMPACT_ENABLED or not self._idle_now(session_id):
@@ -7867,16 +7997,22 @@ class TaskAgentManager:
         # What the gateway knows this opening of the session by: no
         # commission's name, so no commission's token is touched.
         grant = f"session:{session_id}"
-        marked = opened = compacted = counted = asked = False
-        # When the session was told to sum itself up: what the day's limit goes by.
-        asked_at = 0.0
+        marked = opened = compacted = asked = cut_short = False
         # Set when the timer brought this here a moment early: how long to wait still.
         too_early: float | None = None
-        now = self._ledger._clock()
         try:
+            if after is None:
+                after = await self._idle_after()
+            config = await self._model_config()
+            if model is not None and self._model_key_of(config) != model:
+                logger.info("the task agent model changed while session %s waited; it is not summed up", session_id)
+                return False
+            now = self._ledger._clock()
             kept = await self._ledger.get_session(session_id)
-            if kept is None or not self._idle_compact_allowed(kept, now):
-                if stops is not None and kept is not None:
+            # A session that has ended is not summed up, whatever else is so.
+            alive = await self._ledger.session_alive(kept, now)
+            if not alive or not self._idle_compact_allowed(kept, now, after):
+                if alive and stops is not None and kept is not None:
                     # A timer set when the session was let go runs by the
                     # loop's clock; how long the session has been idle is
                     # told by what the ledger wrote down, by the clock on
@@ -7891,15 +8027,11 @@ class TaskAgentManager:
                     # session would never be found idle for long enough.
                     # For the same reason a clock that reads ``up`` exactly
                     # is still early here.
-                    up = kept.last_active_at + float(TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS)
-                    if up >= now and self._idle_compact_allowed(kept, up + _IDLE_TIMER_MARGIN_SECONDS):
+                    up = kept.last_active_at + after
+                    if up >= now and self._idle_compact_allowed(kept, up + _IDLE_TIMER_MARGIN_SECONDS, after):
                         too_early = up - now
                 return False
-            # Counted from here on, before anything else is awaited.
-            self._idle_compacts_under_way += 1
-            counted = True
             last = await self._ledger.select(session_id=session_id, limit=1)
-            config = await self._model_config()
             if not last or not config or not config.get("model"):
                 return False
             commission = last[0]
@@ -7942,7 +8074,7 @@ class TaskAgentManager:
             await runtime.start(spec)
 
             async def summed_up() -> None:
-                nonlocal asked, asked_at, compacted
+                nonlocal asked, compacted
                 while True:
                     event = await events.get()
                     kind = event.get("type")
@@ -7965,7 +8097,6 @@ class TaskAgentManager:
                             # of a model, though the request was paid for.
                             return
                         asked = True
-                        asked_at = self._ledger._clock()
                         await runtime.compact(session_id)
                     elif kind == "usage":
                         await self._note_usage(session_id, None, event)
@@ -7983,18 +8114,14 @@ class TaskAgentManager:
             logger.warning("summing up idle session %s took too long; given up", session_id)
             return False
         except asyncio.CancelledError:
+            # Cut short by a commission, a stop of everything, or the host
+            # shutting down: that no summary was made is no failure of it.
+            cut_short = True
             raise
         except Exception:  # noqa: BLE001 - the session is as it was; the next commission goes on from that
             logger.warning("summing up idle session %s failed", session_id, exc_info=True)
             return False
         finally:
-            if counted:
-                self._idle_compacts_under_way -= 1
-                if asked or compacted:
-                    # The session was told to sum itself up: a request the
-                    # host made by itself, whatever became of it, and one
-                    # of those the day has a limit for. By when it was told.
-                    self._count_idle_compact(asked_at or self._ledger._clock())
             # Whatever became of it (also when a commission cut it short):
             # the runtime lets go of the session before anyone else has
             # it. In a task of its own, waited for here: cancelled while
@@ -8008,22 +8135,42 @@ class TaskAgentManager:
                 self._idle_compact_over(
                     session_id, task, runtime=runtime, events=events, opened=opened, grant=grant,
                     marked=marked, compacted=compacted, too_early=too_early, stops=stops,
+                    asked=asked, cut_short=cut_short, idle_for=after, model=model,
                 )
             )
             self._idle_over[session_id] = over
             await asyncio.shield(over)
 
-    def _count_idle_compact(self, told_at: float) -> None:
-        """Count a summing up the host asked for by itself against the day's limit; what is older than a day goes.
+    def _note_idle_compact_result(self, session_id: str, *, compacted: bool, asked: bool, cut_short: bool) -> None:
+        """Count a summing up of an idle session that was asked for and got no whole summary; a summary made ends the count.
 
-        A method of its own, and not a loop where it is called from: that
-        is a ``finally`` a ``return`` passes through, and a loop there
-        loses what was returned when the application is built (see
-        ``tests/unit/test_no_return_through_looping_finally.py``).
+        What counts as failed is that the host told the session to sum
+        itself up, and no summary came of it: the request failed, came back
+        empty or cut off by its length, the model went for a tool instead,
+        or it took too long. Not that it was not asked (the quota was used
+        up, NekoClaw was switched off, a commission took the session), nor
+        that it was cut short. A session is not tried again by itself after
+        a failure, until another commission has ended in it
+        (``_schedule_idle_compact`` is only called then), and, after
+        ``TASK_AGENT_IDLE_COMPACT_MAX_FAILURES`` in a row, not until a
+        summary is made in the course of one (``_handle``).
         """
-        while self._idle_compacted_at and told_at - self._idle_compacted_at[0] >= 24 * 3600.0:
-            self._idle_compacted_at.popleft()
-        self._idle_compacted_at.append(told_at)
+        if compacted:
+            self._idle_compact_failures.pop(session_id, None)
+        elif asked and not cut_short:
+            self._idle_compact_failures[session_id] = self._idle_compact_failures.get(session_id, 0) + 1
+
+    async def _length_is_stale(self, session_id: str) -> None:
+        """Have whatever was said of a session's length so far count as older than what is said from now on.
+
+        For a session that was summed up (``Ledger.end_compacting`` writes
+        its length as unknown): what a request made before the summary said
+        of it, and that is owed because the ledger could not take it then,
+        would be written afterwards as the newest and put the old length
+        back. The usage owed stays owed; only its length no longer counts.
+        """
+        async with self._usage_locks.setdefault(session_id, asyncio.Lock()):
+            self._context_written[session_id] = max(self._context_said, self._context_written.get(session_id, 0))
 
     async def _idle_compact_over(
         self,
@@ -8038,6 +8185,10 @@ class TaskAgentManager:
         compacted: bool,
         too_early: float | None,
         stops: int | None,
+        asked: bool = False,
+        cut_short: bool = False,
+        idle_for: float | None = None,
+        model: str | None = None,
     ) -> None:
         """Give a session back after the host had it to sum it up (``_idle_compact``).
 
@@ -8050,8 +8201,11 @@ class TaskAgentManager:
             if await self._end_service(session_id, runtime, events, opened):
                 # Said while the session was being closed.
                 compacted = True
+            self._note_idle_compact_result(session_id, compacted=compacted, asked=asked, cut_short=cut_short)
             if self._gateway is not None:
                 self._gateway.revoke(grant)
+            if marked and compacted:
+                await self._length_is_stale(session_id)
             if marked:
                 try:
                     await self._ledger.end_compacting(session_id, compacted=compacted)
@@ -8067,7 +8221,9 @@ class TaskAgentManager:
             if too_early is not None and stops == self._idle_stops and self._idle_now(session_id):
                 # A little more than what is left, so that it is not a
                 # moment early once more.
-                self._schedule_idle_compact(session_id, after=too_early + _IDLE_TIMER_MARGIN_SECONDS)
+                await self._schedule_idle_compact(
+                    session_id, after=too_early + _IDLE_TIMER_MARGIN_SECONDS, idle_for=idle_for, model=model
+                )
 
     async def _end_service(
         self, session_id: str, runtime: Any, events: "asyncio.Queue[dict[str, Any]]", opened: bool
