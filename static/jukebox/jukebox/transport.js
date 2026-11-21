@@ -18,12 +18,14 @@ function normalizeJukeboxBundledVrmIdleUrl(url) {
  * raw file names (uploads keep the original name, e.g. 'songs/Song #1.mp3'),
  * so '#', '?' and '%' must be escaped or the browser reads them as URL syntax
  * and both the HEAD preflight and playback request a truncated path.
- * Same rule as MMDCore.toRequestUrl / VRMAnimation.toRequestUrl: valid %XX
+ * Same rule as MMDCore.toRequestUrl / VRMAnimation.toRequestUrl (#3914): valid %XX
  * runs are decoded once first, so an already-escaped path is returned
  * unchanged (and those helpers leave this output unchanged too).
  * A value ending in a known extension is a file name throughout ('a?.mp3'
  * escapes the '?'); otherwise a '?' or '#' right after the last extension
  * starts a query / fragment and is kept as URL syntax ('x.vrma?v=1').
+ * Only the jukebox audio / action extensions are known; a suffix after any
+ * other extension is escaped into the name.
  * Trade-off: a file literally named with a valid escape (e.g. 'a%23b.mp3')
  * is read as that escape; such names did not load before this either.
  */
@@ -1270,8 +1272,8 @@ Object.assign(window.Jukebox, {
     }
   },
 
-  // Returns the request URL used by both the HEAD preflight and playback, so
-  // the two always ask for the same resource.
+  // Returns the request URL that both the HEAD preflight and playback use.
+  // The model loaders may still map it (e.g. a bundled .vrma to .vrma.gz).
   resolveJukeboxFileUrl: function(filePath) {
     const rawPath = String(filePath || '').trim();
     if (!rawPath) return '';
