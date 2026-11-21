@@ -1247,6 +1247,15 @@
                 booleanField: Object.freeze({ input: 'easterEgg', output: 'easter_egg' }),
                 roundChoice: false
             }),
+            // 不拿道具直接连点模型（static/avatar/avatar-click-shake.js）
+            tap: Object.freeze({
+                actions: Object.freeze({
+                    poke: Object.freeze(['normal', 'rapid', 'angry'])
+                }),
+                acceptsTouchZone: false,
+                booleanField: null,
+                roundChoice: false
+            }),
             rps: Object.freeze({
                 actions: Object.freeze({}),
                 acceptsTouchZone: false,
@@ -1856,7 +1865,10 @@
         return normalized;
     }
 
-    async function sendAvatarInteractionPayload(payload) {
+    // options.isStillValid（可选）：等待 WebSocket 重连后、真正发送前再确认一次这条互动是否还该发
+    // （例如等待期间已切换角色）。不传时行为不变。
+    async function sendAvatarInteractionPayload(payload, options) {
+        var isStillValid = options && typeof options.isStillValid === 'function' ? options.isStillValid : null;
         var normalized = normalizeAvatarInteractionPayload(payload);
         if (!normalized) {
             return false;
@@ -1886,6 +1898,13 @@
 
         try {
             await window.ensureWebSocketOpen();
+            if (isStillValid && !isStillValid()) {
+                console.debug('[AvatarInteraction] dropped stale interaction after reconnect wait:', normalized.interaction_id);
+                if (avatarInteractionTextContinuationState.interactionId === normalized.interaction_id) {
+                    releaseDeferredTextAfterAvatarInteraction();
+                }
+                return false;
+            }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) {
                 throw new Error('WEBSOCKET_NOT_CONNECTED');
             }
