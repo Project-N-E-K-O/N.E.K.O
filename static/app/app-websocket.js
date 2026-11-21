@@ -3005,6 +3005,17 @@
         // ---- onopen ----
         S.socket.onopen = function () {
             if (S.socket !== _thisSocket) return;
+            // session_ended_by_server latches suppressAssistantStreamUntilNextSession
+            // so late chunks of the ended session are dropped; only session_started
+            // used to clear it. A fresh socket (reconnect, or the character switch
+            // path that sets _pendingGreetingSwitch) can be served by a text session
+            // the backend reuses without sending session_started — e.g. the greeting
+            // on an existing OmniOfflineClient — so its replies would be dropped
+            // forever. Clear the latch here: the old socket's late frames are already
+            // rejected by the `S.socket !== _thisSocket` guard in onmessage, and on
+            // the same socket (no new onopen) the latch still holds until
+            // session_started.
+            S.suppressAssistantStreamUntilNextSession = false;
             if (window.nekoReplyTail) window.nekoReplyTail.reset();
             announceReplyTailCapability();
             if (window.appSettings) syncProactiveVisionConsent();
