@@ -20,7 +20,7 @@ def editor(page, running_server):
     hooks = """    window.reviewEditor = {
         state, importTemplateFile, persistTemplateToLibrary, getImportedScenes,
         queueStageCapture, captureGifFrames, bakePackJobs, produceGroupFile, currentLookDefaults,
-        importStageImages,
+        importStageImages, persistExportSettings,
         renderer: () => spineRenderer,
     };
 """
@@ -258,6 +258,25 @@ def test_reimport_keeps_the_latest_basic_assignments_and_exports_them(editor):
         editor.locator('#pack-export-btn').click()
     with zipfile.ZipFile(download.value.path()) as package:
         assert any(name.endswith('/talking.gif') for name in package.namelist()), package.namelist()
+
+
+def test_global_export_placement_survives_import_and_reopening(editor):
+    editor.evaluate("""() => {
+        Object.assign(reviewEditor.state,{packScale:1.5,packOffsetX:12,packOffsetY:-8,packMirror:true});
+        reviewEditor.persistExportSettings();
+    }""")
+    _import(editor, spine_zip())
+    placement = "({scale:reviewEditor.state.packScale,x:reviewEditor.state.packOffsetX,y:reviewEditor.state.packOffsetY,mirror:reviewEditor.state.packMirror})"
+    expected = {'scale':1.5,'x':12,'y':-8,'mirror':True}
+    assert editor.evaluate(placement) == expected
+    editor.wait_for_function("""async () => {
+        const key=JSON.parse(localStorage.getItem('neko-emote-maker-template-library')).currentKey;
+        return (await (await fetch('/api/emote-maker/library')).json()).entries.some(entry=>entry.key===key);
+    }""")
+    editor.reload(wait_until='networkidle')
+    editor.locator('.template-lib-card:not([data-template-built-in]) .template-lib-open').first.click()
+    editor.wait_for_function('Boolean(reviewEditor.renderer()?.loaded)')
+    assert editor.evaluate(placement) == expected
 
 
 def test_png_shot_exports_the_recorded_pose_instead_of_time_zero(editor):

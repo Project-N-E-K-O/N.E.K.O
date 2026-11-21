@@ -357,7 +357,13 @@ def test_group_actions_are_keyboard_accessible_and_escape_restores_row_focus(gro
     expect(group_page.locator(f'#batch-export-group-select-menu [data-value="{value}"]')).to_be_focused()
     group_page.keyboard.press('Delete')
     expect(group_page.locator('#emote-confirm')).to_be_visible()
+    expect(group_page.locator('#emote-confirm-ok')).to_be_focused()
+    group_page.keyboard.press('Tab')
+    expect(group_page.locator('#emote-confirm-cancel')).to_be_focused()
+    group_page.keyboard.press('Shift+Tab')
+    expect(group_page.locator('#emote-confirm-ok')).to_be_focused()
     group_page.locator('#emote-confirm-cancel').click()
+    expect(group_page.locator('#batch-export-group-select-trigger')).to_be_focused()
 
 
 def test_a_created_group_can_be_deleted(group_page: Page) -> None:

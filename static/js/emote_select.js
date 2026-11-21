@@ -88,9 +88,9 @@
                 event.preventDefault();
                 event.stopPropagation();
                 if (action === 'delete') {
-                    dispatchSelectAction(entry.select, { action: 'delete', value: opt.value });
                     closeMenu(entry);
                     triggerFocus(entry.trigger);
+                    dispatchSelectAction(entry.select, { action: 'delete', value: opt.value });
                     return;
                 }
                 beginInlineRename(entry, opt, label);

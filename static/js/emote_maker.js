@@ -68,7 +68,7 @@
     };
     const TEMPLATE_SESSION_DEFAULTS = Object.fromEntries([
         'colors', 'secondaryColor', 'colorMode', 'adjustments', 'adjustOverwrite',
-        'packScale', 'packOffsetX', 'packOffsetY', 'packMirror', 'packSceneIds',
+        'packSceneIds',
         'packName', 'packPriority', 'packFormat', 'nodeGraph',
         'animationProgress', 'animationSpeed', 'groups', 'shots', 'groupId',
     ].map((key) => [key, JSON.parse(JSON.stringify(state[key]))]));
@@ -6635,6 +6635,7 @@
                 resolve(window.confirm(text));
                 return;
             }
+            const previousFocus = document.activeElement;
             $('#emote-confirm-text').textContent = text;
             box.hidden = false;
             const ok = $('#emote-confirm-ok');
@@ -6644,17 +6645,24 @@
                 ok.removeEventListener('click', onOk);
                 cancel.removeEventListener('click', onCancel);
                 document.removeEventListener('keydown', onKey, true);
+                if (previousFocus?.isConnected) previousFocus.focus();
                 resolve(value);
             };
             const onOk = () => done(true);
             const onCancel = () => done(false);
             const onKey = (event) => {
                 if (event.key === 'Escape') {
+                    event.preventDefault();
                     event.stopPropagation();
                     done(false);
                 } else if (event.key === 'Enter') {
+                    event.preventDefault();
                     event.stopPropagation();
                     done(true);
+                } else if (event.key === 'Tab') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    (document.activeElement === ok ? cancel : ok).focus();
                 }
             };
             ok.addEventListener('click', onOk);

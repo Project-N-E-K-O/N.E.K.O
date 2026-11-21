@@ -81,7 +81,9 @@ class EmoteTemplateArchiveStore:
     def _recover_retired(self) -> None:
         """Recover a complete old copy if directory publication was interrupted."""
         with _replacement_lock:
-            for retired in sorted(self.root.glob('.retired-*')):
+            # Generated names include the retirement time. Prefer the newest
+            # candidate before removing older copies of the same key.
+            for retired in sorted(self.root.glob('.retired-*'), reverse=True):
                 if retired.is_symlink() or not retired.is_dir():
                     continue
                 meta = self._read_meta(retired)
@@ -93,6 +95,12 @@ class EmoteTemplateArchiveStore:
                         os.replace(retired, final)
                     except OSError as exc:
                         raise EmoteTemplateStoreError('模板副本恢复失败') from exc
+                elif ((final / ARCHIVE_NAME).is_file()
+                      and (self._read_meta(final) or {}).get('key') == meta['key']):
+                    try:
+                        shutil.rmtree(retired)
+                    except OSError as exc:
+                        raise EmoteTemplateStoreError('旧模板副本清理失败') from exc
 
     # ── 路径解析 ────────────────────────────────────────────────────────────
     def _entry_dir(self, key: str) -> Path:
@@ -313,11 +321,20 @@ class EmoteTemplateArchiveStore:
             target.unlink()
 
     def delete(self, key: str) -> dict:
-        entry_dir = self._entry_dir(key)
-        if not entry_dir.is_dir():
-            return {"key": str(key), "freedBytes": 0}
-        freed = _dir_size(entry_dir)
-        shutil.rmtree(entry_dir, ignore_errors=True)
-        if entry_dir.exists():
-            raise EmoteTemplateStoreError("副本删除未完成，请重试")
+        freed = 0
+        with _replacement_lock:
+            # Remove recovery candidates first, so a later constructor cannot
+            # resurrect this key even if deletion of the published copy stops.
+            targets = [retired for retired in self.root.glob('.retired-*')
+                       if retired.is_dir() and not retired.is_symlink()
+                       and (self._read_meta(retired) or {}).get('key') == str(key)]
+            targets.append(self._entry_dir(key))
+            for entry_dir in targets:
+                if not entry_dir.is_dir():
+                    continue
+                freed += _dir_size(entry_dir)
+                try:
+                    shutil.rmtree(entry_dir)
+                except OSError as exc:
+                    raise EmoteTemplateStoreError("副本删除未完成，请重试") from exc
         return {"key": str(key), "freedBytes": freed}

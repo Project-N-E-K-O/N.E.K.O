@@ -75,6 +75,25 @@ def test_replacing_a_shared_modified_source_preserves_the_target_transform(page,
     ]
 
 
+def test_appending_images_through_a_shared_modifier_keeps_existing_images(page, running_server):
+    _boot(page, running_server)
+    result = page.evaluate("""async () => {
+        NekoEmoteStateStage.setUserImages([{id:'one',label:'one'},{id:'two',label:'two'}]);
+        __STAGE.setGraph({schemaVersion:1,nodes:[
+            {id:'root',type:'source.default',params:{}},
+            {id:'mod',type:'mod.transform',params:{x:22,scale:1}},
+            {id:'a',type:'output.state',params:{stateKey:'idle_image'}},
+            {id:'b',type:'output.state',params:{stateKey:'talking_image'}},
+        ],links:[['root','mod'],['mod','a'],['mod','b']].map(([from,to])=>({from,to,fromSocket:'look',toSocket:'look'}))});
+        await __STAGE.assignImage('idle_image','one');
+        await __STAGE.assignImage('idle_image','two');
+        const graph=__STAGE.getGraph();
+        const source=state=>NekoEmoteNodeGraph.findSource(graph,graph.nodes.find(n=>n.params.stateKey===state).id,'source');
+        return {idle:source('idle_image').params.imageIds,talking:source('talking_image').type,count:graph.nodes.length};
+    }""")
+    assert result == {'idle':['one','two'],'talking':'source.default','count':6}
+
+
 def test_dispose_during_frame_loading_cannot_publish_a_late_graph(page, running_server):
     page.goto(running_server + '/emote_maker', wait_until='networkidle')
     page.evaluate(REVEAL)

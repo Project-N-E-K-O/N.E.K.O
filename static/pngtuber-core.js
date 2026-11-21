@@ -4853,6 +4853,7 @@
         setSpeaking(isSpeaking) {
             if (this._renderingPaused) {
                 this.isSpeaking = !!isSpeaking;
+                this.syncLayeredSpeechSlot();
                 if (!this.isSpeaking) this.flushPendingEmotion();
                 return;
             }

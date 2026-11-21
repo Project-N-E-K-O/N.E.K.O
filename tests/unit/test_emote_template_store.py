@@ -72,6 +72,35 @@ def test_reopening_store_recovers_a_copy_retired_before_publication(store):
     assert recovered.texture_path(key, 'StageImages/one.png').read_bytes() == b'original-image'
 
 
+@pytest.mark.parametrize('reopen_first', [False, True])
+def test_published_retired_copy_cannot_resurrect_after_delete(store, reopen_first):
+    key = 'published'
+    store.save(key, _zip('old'), [('StageImages/old.png', b'old-image')], filename='old.zip')
+    retired = store.root / '.retired-after-publish'
+    store._entry_dir(key).rename(retired)
+    store.save(key, _zip('new'), filename='new.zip')
+    assert retired.is_dir()
+    if reopen_first:
+        store = EmoteTemplateArchiveStore(store.root)
+        assert not retired.exists()
+        assert store.archive_path(key).read_bytes() == _zip('new')
+    assert store.delete(key)['freedBytes'] > 0
+    reopened = EmoteTemplateArchiveStore(store.root)
+    assert not reopened.has(key)
+    assert not retired.exists()
+
+
+def test_recovery_chooses_the_newest_candidate_before_retiring_old_copies(store):
+    key = 'recover-newest'
+    store.save(key, _zip('old'))
+    store._entry_dir(key).rename(store.root / '.retired-1000-old')
+    store.save(key, _zip('new'))
+    store._entry_dir(key).rename(store.root / '.retired-2000-new')
+    reopened = EmoteTemplateArchiveStore(store.root)
+    assert reopened.archive_path(key).read_bytes() == _zip('new')
+    assert not list(store.root.glob('.retired-*'))
+
+
 def test_texture_merge_rejects_case_conflicts_without_losing_existing_files(store):
     store.save('case', _zip(), [('StageImages/A.png', b'first')])
     with pytest.raises(EmoteTemplateStoreError, match='大小写冲突'):

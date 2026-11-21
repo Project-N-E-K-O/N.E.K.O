@@ -1253,9 +1253,7 @@
         function applyImageTo(node, imageId) {
             if (!node || !imageId) return;
             const id = String(imageId);
-            const upstreamLink = graph.links.find((link) => link.to === node.id);
-            const upstream = upstreamLink
-                ? graph.nodes.find((entry) => entry.id === upstreamLink.from) : null;
+            const upstream = model.findSource(graph, node.id, 'source');
             if (upstream && upstream.type === 'source.image') {
                 const ids = [...boundImageIds(upstream)];
                 if (ids.includes(id)) return;

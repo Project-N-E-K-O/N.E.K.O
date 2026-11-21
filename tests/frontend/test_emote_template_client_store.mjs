@@ -38,6 +38,68 @@ function namedStoredZip(rawName, utf8 = false) {
     return data;
 }
 
+function zip64Fixture() {
+    const data=fflate.zipSync({'one.json':encoder.encode('{"asset":1}'),'two.json':encoder.encode('{"asset":2}')},{level:0});
+    const end=data.length-22;
+    const before=new DataView(data.buffer,data.byteOffset,data.byteLength);
+    const output=new Uint8Array(data.length+76);
+    output.set(data.subarray(0,end));
+    output.set(data.subarray(end),end+76);
+    const view=new DataView(output.buffer);
+    view.setUint32(end,0x06064b50,true);
+    view.setUint32(end+4,44,true);
+    view.setUint16(end+12,45,true);
+    view.setUint16(end+14,45,true);
+    view.setUint32(end+24,before.getUint16(end+8,true),true);
+    view.setUint32(end+32,before.getUint16(end+10,true),true);
+    view.setUint32(end+40,before.getUint32(end+12,true),true);
+    view.setUint32(end+48,before.getUint32(end+16,true),true);
+    view.setUint32(end+56,0x07064b50,true);
+    view.setUint32(end+64,end,true);
+    view.setUint32(end+72,1,true);
+    view.setUint16(end+76+8,0xffff,true);
+    view.setUint16(end+76+10,0xffff,true);
+    view.setUint32(end+76+12,0xffffffff,true);
+    view.setUint32(end+76+16,0xffffffff,true);
+    return {output,view,record:end,locator:end+56,end:end+76};
+}
+
+test('keeps valid single-disk ZIP64 archives importable',async()=>{
+    const {output}=zip64Fixture();
+    const store=await ClientZipAssetStore.fromBytes(output);
+    assert.deepEqual(store.list(),['one.json','two.json']);
+    assert.equal(await store.open('two.json',{as:'text'}),'{"asset":2}');
+    store.release();
+});
+
+for(const [name,mutate] of [
+    ['EOCD counts',(v,r,l,e)=>v.setUint16(e+10,1,true)],
+    ['EOCD disk',(v,r,l,e)=>v.setUint16(e+4,1,true)],
+    ['EOCD directory disk',(v,r,l,e)=>v.setUint16(e+6,1,true)],
+    ['locator disk',(v,r,l)=>v.setUint32(l+4,1,true)],
+    ['locator total disks',(v,r,l)=>v.setUint32(l+16,2,true)],
+    ['ZIP64 disk',(v,r)=>v.setUint32(r+16,1,true)],
+    ['ZIP64 counts',(v,r)=>v.setUint32(r+24,1,true)],
+    ['second central record',(v,r)=>{
+        const first=v.getUint32(r+48,true);
+        const second=first+46+v.getUint16(first+28,true)+v.getUint16(first+30,true)+v.getUint16(first+32,true);
+        v.setUint32(second+20,0xffffffff,true);
+        v.setUint16(second+28,0xffff,true);
+    }],
+]){
+    test('rejects inconsistent '+name+' before invoking the vendor decoder',async()=>{
+        const {output,view,record,locator,end}=zip64Fixture();
+        mutate(view,record,locator,end);
+        let calls=0;
+        const original=fflate.unzipSync;
+        fflate.unzipSync=()=>{calls++;throw new Error('decoder must not run');};
+        try{
+            await assert.rejects(()=>ClientZipAssetStore.fromBytes(output),{code:'decode_failed'});
+            assert.equal(calls,0);
+        }finally{fflate.unzipSync=original;}
+    });
+}
+
 test('decodes GBK resource names exactly like the server', async () => {
     const raw = new Uint8Array([0xbd, 0xc7, 0xc9, 0xab, ...encoder.encode('.json')]);
     const store = await ClientZipAssetStore.fromBytes(namedStoredZip(raw));

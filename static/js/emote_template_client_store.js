@@ -96,21 +96,43 @@
         const minimum = Math.max(0, bytes.length - 65557);
         while (end >= minimum && view.getUint32(end, true) !== 0x06054b50) end -= 1;
         if (end < minimum) throw new ClientZipAssetStoreError('ZIP 目录无效', 'decode_failed');
-        let count = view.getUint16(end + 10, true);
+        if (view.getUint16(end + 4, true) || view.getUint16(end + 6, true)
+            || view.getUint16(end + 8, true) !== view.getUint16(end + 10, true)) {
+            throw new ClientZipAssetStoreError('ZIP 目录计数或磁盘编号无效', 'decode_failed');
+        }
+        let count = view.getUint16(end + 8, true); // Match the bundled decoder.
+        let size = view.getUint32(end + 12, true);
         let offset = view.getUint32(end + 16, true);
+        let directoryLimit = end;
         if (count === 0xffff || offset === 0xffffffff) {
             const locator = end - 20;
             if (locator < 0 || view.getUint32(locator, true) !== 0x07064b50
-                || view.getUint32(locator + 12, true) !== 0) {
+                || view.getUint32(locator + 4, true) !== 0
+                || view.getUint32(locator + 12, true) !== 0
+                || view.getUint32(locator + 16, true) !== 1) {
                 throw new ClientZipAssetStoreError('ZIP64 目录无效', 'decode_failed');
             }
             const record = view.getUint32(locator + 8, true);
-            if (record + 56 > bytes.length || view.getUint32(record, true) !== 0x06064b50
-                || view.getUint32(record + 36, true) !== 0 || view.getUint32(record + 52, true) !== 0) {
+            if (record + 56 > locator || view.getUint32(record, true) !== 0x06064b50
+                || view.getUint32(record + 8, true) !== 0 || view.getUint32(record + 4, true) < 44
+                || record + 12 + view.getUint32(record + 4, true) > locator
+                || view.getUint32(record + 16, true) !== 0 || view.getUint32(record + 20, true) !== 0
+                || view.getUint32(record + 28, true) !== 0 || view.getUint32(record + 36, true) !== 0
+                || view.getUint32(record + 44, true) !== 0 || view.getUint32(record + 52, true) !== 0
+                || view.getUint32(record + 24, true) !== view.getUint32(record + 32, true)
+                || (count !== 0xffff && count !== view.getUint32(record + 32, true))
+                || (offset !== 0xffffffff && offset !== view.getUint32(record + 48, true))
+                || (size !== 0xffffffff && size !== view.getUint32(record + 40, true))) {
                 throw new ClientZipAssetStoreError('ZIP64 目录超出上限', 'decode_failed');
             }
             count = view.getUint32(record + 32, true);
+            size = view.getUint32(record + 40, true);
             offset = view.getUint32(record + 48, true);
+            directoryLimit = record;
+        }
+        const directoryEnd = offset + size;
+        if (directoryEnd > directoryLimit) {
+            throw new ClientZipAssetStoreError('ZIP 目录超出范围', 'decode_failed');
         }
         if (count > MAX_ARCHIVE_ENTRIES) {
             throw new ClientZipAssetStoreError('ZIP 文件数超过上限（最多 5000 个）', 'too_many_entries');
@@ -122,14 +144,15 @@
             + '░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀'
             + 'αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■\u00a0';
         for (let index = 0; index < count; index += 1) {
-            if (offset + 46 > bytes.length || view.getUint32(offset, true) !== 0x02014b50) {
+            if (offset + 46 > directoryEnd || view.getUint32(offset, true) !== 0x02014b50
+                || view.getUint16(offset + 34, true) !== 0) {
                 throw new ClientZipAssetStoreError('ZIP 目录条目无效', 'decode_failed');
             }
             const flaggedUtf8 = Boolean(view.getUint16(offset + 8, true) & 0x800);
             const length = view.getUint16(offset + 28, true);
             const start = offset + 46;
             const next = start + length + view.getUint16(offset + 30, true) + view.getUint16(offset + 32, true);
-            if (next > bytes.length) throw new ClientZipAssetStoreError('ZIP 文件名无效', 'decode_failed');
+            if (next > directoryEnd) throw new ClientZipAssetStoreError('ZIP 文件名无效', 'decode_failed');
             const raw = bytes.subarray(start, start + length);
             const extraEnd = start + length + view.getUint16(offset + 30, true);
             const zip64Fields = [24, 20, 42].filter((field) => view.getUint32(offset + field, true) === 0xffffffff).length;

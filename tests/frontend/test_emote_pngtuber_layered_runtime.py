@@ -899,7 +899,7 @@ def test_speech_first_blocks_the_emotion_from_flat_mouth_beats(page, running_ser
         f"话说完没把攒下的情绪补上: {out['afterSpeech']}"
 
 
-@pytest.mark.parametrize("mode", ["legacy-emotion", "drag-before-speech", "paused-end", "hidden-end"])
+@pytest.mark.parametrize("mode", ["legacy-emotion", "drag-before-speech", "paused-end", "paused-no-emotion", "hidden-end"])
 def test_layered_speech_priority_lifecycle(page, running_server, mode):
     folder = "review-speech-" + mode
     states = [SLOT_STATES[0], SLOT_STATES[4]] if mode == "legacy-emotion" else SLOT_STATES
@@ -925,6 +925,12 @@ def test_layered_speech_priority_lifecycle(page, running_server, mode):
                     return {during, afterRelease: manager.layeredStateIndex};
                 }
                 manager.startSpeakingMouthAnimation();
+                if (mode === 'paused-no-emotion') {
+                    manager.pauseRendering();
+                    manager.setSpeaking(false);
+                    manager.resumeRendering();
+                    return {index:manager.layeredStateIndex,pending:manager.pendingEmotion,speaking:manager.isSpeaking};
+                }
                 manager.setEmotion('happy', {durationMs: 0});
                 if (mode === 'legacy-emotion') {
                     return {index: manager.layeredStateIndex, pending: manager.pendingEmotion};
@@ -942,6 +948,8 @@ def test_layered_speech_priority_lifecycle(page, running_server, mode):
             assert result == {"index": 1, "pending": None}
         elif mode == "drag-before-speech":
             assert result == {"during": 2, "afterRelease": 1}
+        elif mode == 'paused-no-emotion':
+            assert result == {'index':0,'pending':None,'speaking':False}
         else:
             assert result["wasPending"]
             assert result["pending"] is None
