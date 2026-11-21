@@ -583,13 +583,13 @@ WORKTREE_FREE_SPACE_FACTOR = 2.0
 a session then installs or builds in it comes on top of the checkout."""
 
 WORKTREE_GIT_QUERY_SECONDS = 30.0
-"""How long a git command that only reads (or writes one ref) may take."""
+"""How long git may take to say its version or what one name points to."""
 
 WORKTREE_GIT_WORK_SECONDS = 600.0
-"""How long a git command that goes through every file may take: a snapshot,
-making or removing a worktree, a merge, writing the merged changes. Seconds
-for a repository of a few thousand files; this is for slow disks and much
-larger repositories."""
+"""How long any other git command may take: most go through the whole index
+or every file (a snapshot, making or removing a worktree, a merge, writing
+the merged changes). Seconds for a repository of a few thousand files; this
+is for slow disks, scanners and much larger repositories."""
 
 # ---------------------------------------------------------------------------
 # Sessions writing to one another, and being woken

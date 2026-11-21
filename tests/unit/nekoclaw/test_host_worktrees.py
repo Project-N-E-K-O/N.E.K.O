@@ -28,6 +28,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +43,8 @@ from nekoclaw.host.worktrees import (
     GIT_MISSING,
     GIT_TOO_OLD,
     IGNORED_DIRECTORY,
-    LFS,
+    CONTENT_FILTERS,
+    NESTED_REPOSITORY,
     NOT_A_REPOSITORY,
     OPERATION_IN_PROGRESS,
     REF_PREFIX,
@@ -76,7 +78,8 @@ def _isolated_git(tmp_path: Path, monkeypatch: Any) -> None:
     empty.write_text("", encoding="utf-8")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", *USER):
+    # The same isolation the manager gives its own git calls.
+    for name in (*worktrees._REDIRECTING_ENV, *USER):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -312,14 +315,34 @@ async def test_probe_real_merge_in_progress(repo: Path, manager: WorktreeManager
     assert (await manager.probe(repo)).reason == OPERATION_IN_PROGRESS
 
 
-async def test_probe_lfs_attributes(repo: Path, manager: WorktreeManager) -> None:
-    write(repo / "assets" / ".gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n")
-    assert (await manager.probe(repo)).reason == LFS
+@pytest.mark.parametrize(
+    ("where", "line", "path"),
+    [
+        ("assets/.gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n", "assets/model.bin"),
+        (".gitattributes", "secret/** filter=git-crypt diff=git-crypt\n", "secret/key.txt"),
+        (".git/info/attributes", "*.psd filter=lfs\n", "art.psd"),
+    ],
+    ids=["lfs", "git-crypt", "info-attributes"],
+)
+async def test_probe_content_filters(repo: Path, manager: WorktreeManager, where: str, line: str, path: str) -> None:
+    write(repo / where, line)
+    write(repo / path, "content\n")
+    found = await manager.probe(repo)
+    assert found.reason == CONTENT_FILTERS and path in found.detail
 
 
-async def test_probe_lfs_directory(repo: Path, manager: WorktreeManager) -> None:
-    (repo / ".git" / "lfs").mkdir()
-    assert (await manager.probe(repo)).reason == LFS
+async def test_probe_content_filter_from_the_users_attributes_file(
+    repo: Path, manager: WorktreeManager, tmp_path: Path
+) -> None:
+    attributes = tmp_path / "global-attributes"
+    attributes.write_text("*.txt filter=anything\n", encoding="utf-8")
+    git(repo, "config", "core.attributesFile", attributes.as_posix())
+    assert (await manager.probe(repo)).reason == CONTENT_FILTERS
+
+
+async def test_probe_filter_unset_or_for_no_file(repo: Path, manager: WorktreeManager) -> None:
+    write(repo / ".gitattributes", "*.nothing-here filter=lfs\n*.txt -filter\n")
+    assert (await manager.probe(repo)).usable
 
 
 async def test_probe_attributes_without_lfs(repo: Path, manager: WorktreeManager) -> None:
@@ -781,7 +804,8 @@ async def test_project_in_a_subdirectory(repo: Path, manager: WorktreeManager, b
     assert [change.path for change in landed.files] == ["src/app.py"]
     assert read(repo / "src" / "app.py") == b"print('changed in the worktree')\n"
     assert read(repo / "README.md") == b"# changed outside the project directory\n"
-    assert await manager.open(repo / "src", tree.path) == tree
+    reopened = await manager.open(repo / "src", tree.path)
+    assert reopened == tree
 
 
 async def test_large_untracked_files_left_out(repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any) -> None:
@@ -1048,18 +1072,34 @@ async def test_reconcile(repo: Path, manager: WorktreeManager, base: Path, tmp_p
     assert again.removed == [] and [path.name for path in again.kept] == ["changed"]
 
 
-async def test_reconcile_keeps_a_worktree_without_its_ref(repo: Path, manager: WorktreeManager, base: Path) -> None:
+async def test_reconcile_leaves_a_worktree_without_its_ref_alone(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
     tree = await manager.create(repo, base / "w1")
     git(repo, "update-ref", "-d", f"{REF_PREFIX}w1/start")
     report = await manager.reconcile(repo, base, [])
-    assert [path.name for path in report.kept] == ["w1"] and exists(tree.path)
+    assert report.kept == [] and report.removed == [] and exists(tree.path / "a.txt")
+    assert "w1" in registered(repo)
 
 
 async def test_git_timeout_kills_the_command(repo: Path, manager: WorktreeManager, monkeypatch: Any) -> None:
-    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_GIT_QUERY_SECONDS", 0.001)
+    started = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def hanging(*command: Any, **kwargs: Any) -> Any:
+        # Whatever was asked, a process that would not finish by itself.
+        process = await spawn(sys.executable, "-c", "import time; time.sleep(60)", **kwargs)
+        started.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", hanging)
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_GIT_WORK_SECONDS", 0.5)
+    began = asyncio.get_running_loop().time()
     with pytest.raises(worktrees.GitError) as raised:
-        await manager._git(repo, "rev-parse", "HEAD")
+        await manager._git(repo, "status")
     assert raised.value.returncode is None
+    assert asyncio.get_running_loop().time() - began < 30
+    assert started and started[0].returncode is not None  # killed and waited for
 
 
 def test_long_path_form() -> None:
@@ -1078,9 +1118,40 @@ def test_worktree_handle() -> None:
     assert Worktree("w1", root, Path("/wt/w1"), "src/sub", "abc").workdir == Path("/wt/w1/src/sub")
 
 
-async def test_probe_lfs_in_info_attributes(repo: Path, manager: WorktreeManager) -> None:
-    write(repo / ".git" / "info" / "attributes", "*.psd filter=lfs\n")
-    assert (await manager.probe(repo)).reason == LFS
+def make_nested(path: Path) -> None:
+    path.mkdir(parents=True)
+    git(path, "init", "-q", "-b", "main")
+    write(path / "inside.txt", "a repository of its own\n")
+    git(path, "add", "-A")
+    git(path, "commit", "-q", "-m", "nested")
+
+
+async def test_probe_nested_repository(repo: Path, manager: WorktreeManager) -> None:
+    make_nested(repo / "vendor" / "lib")
+    found = await manager.probe(repo)
+    assert found.reason == NESTED_REPOSITORY and "vendor/lib/" in found.detail
+
+
+async def test_ignored_nested_repository_is_fine(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    make_nested(repo / "ignored" / "lib")
+    assert (await manager.probe(repo)).usable
+    tree = await manager.create(repo, base / "w1")
+    assert not exists(tree.path / "ignored")
+    assert not any(name.startswith("ignored/") for name in tree_files(repo, tree.start))
+
+
+async def test_repository_made_in_a_worktree_is_left_out_and_reported(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    make_nested(tree.path / "cloned")
+    write(tree.path / "a.txt", "changed too\n")
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed", landed.detail
+    assert landed.skipped == ("cloned/",)
+    assert [change.path for change in landed.files] == ["a.txt"]
+    assert not exists(repo / "cloned")
+    assert "cloned" not in tree_files(repo, landed.result)
 
 
 async def test_probe_work_tree_elsewhere(repo: Path, tmp_path: Path, manager: WorktreeManager) -> None:
@@ -1221,3 +1292,330 @@ async def test_snapshot_without_an_index_file(repo: Path, manager: WorktreeManag
     assert git(repo, "show", f"{shot.commit}:a.txt") == "changed\n"
     assert "b.txt" in tree_files(repo, shot.commit)
     assert not (repo / ".git" / "index").exists()
+
+
+# -- review round 1 -------------------------------------------------------------
+
+
+async def test_error_after_writing_began_puts_everything_back(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "merged\n")
+    write(tree.path / "fresh" / "new.txt", "new\n")
+    before = digest(repo)
+
+    async def failing(*args: Any) -> bool:
+        raise worktrees.GitError(["add"], 128, b"simulated")
+
+    monkeypatch.setattr(manager, "_reads_back", failing)
+    with pytest.raises(worktrees.GitError):
+        await manager.merge_back(tree)
+    assert digest(repo) == before
+    assert not exists(repo / "fresh")
+
+
+async def test_cancelled_after_writing_began_puts_everything_back(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "merged\n")
+    write(tree.path / "fresh" / "new.txt", "new\n")
+    before = digest(repo)
+    written = asyncio.Event()
+
+    async def slow(*args: Any) -> bool:
+        written.set()
+        await asyncio.sleep(30)
+        return True
+
+    monkeypatch.setattr(manager, "_reads_back", slow)
+    landing = asyncio.ensure_future(manager.merge_back(tree))
+    await asyncio.wait_for(written.wait(), 30)
+    assert read(repo / "a.txt") == b"merged\n"  # written, not checked yet
+    landing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await landing
+    assert digest(repo) == before
+    assert not exists(repo / "fresh")
+
+
+async def test_uninterrupted_finishes_then_passes_the_cancellation_on() -> None:
+    import threading
+    import time
+
+    started = threading.Event()
+    finished = []
+
+    def work(value: int) -> int:
+        started.set()
+        time.sleep(0.3)
+        finished.append(value)
+        return value
+
+    task = asyncio.ensure_future(worktrees._uninterrupted(work, 7))
+    await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finished == [7]
+    assert await worktrees._uninterrupted(work, 8) == 8
+
+
+async def test_large_files_made_in_a_worktree_count_as_changes(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_UNTRACKED_MAX_BYTES", 1000)
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "model.bin", b"M" * 2000)
+    assert await manager.has_changes(tree)
+    report = await manager.reconcile(repo, base, [])
+    assert [path.name for path in report.kept] == ["w1"] and exists(tree.path / "model.bin")
+
+
+def swap_file_and_directory(tree: Worktree) -> None:
+    shutil.rmtree(_fs(tree.path / "src"))
+    write(tree.path / "src", "now a file\n")
+    os.remove(tree.path / "b.txt")
+    write(tree.path / "b.txt" / "inside.txt", "now a directory\n")
+
+
+async def test_a_directory_becomes_a_file_and_back(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    await asyncio.to_thread(swap_file_and_directory, tree)
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed", landed.detail
+    assert read(repo / "src") == b"now a file\n"
+    assert read(repo / "b.txt" / "inside.txt") == b"now a directory\n"
+    assert digest(repo) == digest(tree.path)
+
+
+@pytest.mark.parametrize("written", [True, False], ids=["after-writing", "before-writing"])
+async def test_a_failed_swap_is_put_back(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any, written: bool
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    await asyncio.to_thread(swap_file_and_directory, tree)
+    before = digest(repo)
+    original = manager._apply
+
+    async def then_fail(root: Path, patch: bytes) -> Any:
+        if written:
+            await original(root, patch)
+        return worktrees._Run(1, b"", b"simulated")
+
+    monkeypatch.setattr(manager, "_apply", then_fail)
+    result = await manager.merge_back(tree)
+    assert result.status == "failed" and result.left_changed == ()
+    assert digest(repo) == before
+    assert (repo / "src").is_dir() and (repo / "b.txt").is_file()
+
+
+async def test_marks_cleared_without_losing_staged_files(
+    repo: Path, manager: WorktreeManager, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_UNTRACKED_MAX_BYTES", 1000)
+    write(repo / "forced.log", "staged although ignored\n")
+    git(repo, "add", "-f", "forced.log")
+    write(repo / "staged-big.bin", b"B" * 2000)
+    git(repo, "add", "staged-big.bin")
+    git(repo, "update-index", "--assume-unchanged", "a.txt")
+    write(repo / "a.txt", "changed behind the index\n")
+    shot = await manager.snapshot(repo)
+    names = tree_files(repo, shot.commit)
+    assert {"forced.log", "staged-big.bin"} <= names
+    assert shot.skipped == ()
+    assert git(repo, "show", f"{shot.commit}:a.txt") == "changed behind the index\n"
+    assert git(repo, "ls-files", "-v", "a.txt").startswith("h ")
+
+
+async def test_one_lock_for_all_checkouts_of_a_repository(
+    repo: Path, manager: WorktreeManager, base: Path, tmp_path: Path
+) -> None:
+    linked = tmp_path / "linked"
+    git(repo, "worktree", "add", "-q", "--detach", str(linked))
+    assert await manager._lock(repo) is await manager._lock(linked)
+    results = await asyncio.gather(
+        manager.create(repo, base / "same"), manager.create(linked, base / "same"), return_exceptions=True
+    )
+    made = [result for result in results if isinstance(result, Worktree)]
+    refused = [result for result in results if isinstance(result, WorktreeError)]
+    assert len(made) == 1 and len(refused) == 1
+    assert git(repo, "rev-parse", f"{REF_PREFIX}same/start").strip() == made[0].start
+    assert exists(made[0].path / "a.txt") and "same" in registered(repo)
+
+
+async def test_open_and_remove_only_what_is_registered(
+    repo: Path, manager: WorktreeManager, base: Path, tmp_path: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    stranger = tmp_path / "elsewhere" / "w1"
+    write(stranger / "keep.txt", "not a worktree\n")
+    with pytest.raises(WorktreeError):
+        await manager.open(repo, stranger)
+    await manager.remove(replace(tree, path=stranger))
+    assert read(stranger / "keep.txt") == b"not a worktree\n"
+    assert exists(tree.path / "a.txt")
+
+
+async def test_landed_work_is_no_longer_a_change(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    other = await manager.create(repo, base / "w2")
+    write(tree.path / "a.txt", "landed\n")
+    assert (await manager.merge_back(tree)).status == "landed"
+    assert not await manager.has_changes(tree)
+    write(tree.path / "b.txt", "after the landing\n")
+    assert await manager.has_changes(tree)
+    write(other.path / "a.txt", "landed\n")  # the same change, landed by the first already
+    assert (await manager.merge_back(other)).status == "unchanged"
+    report = await manager.reconcile(repo, base, [])
+    assert report.removed == ["w2"] and [path.name for path in report.kept] == ["w1"]
+
+
+async def test_remove_when_git_took_the_registration_and_gave_up(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    original = manager._git
+
+    async def half_done(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("worktree", "remove"):
+            await asyncio.to_thread(shutil.rmtree, _fs(repo / ".git" / "worktrees"))
+            return worktrees._Run(128, b"", b"could not remove everything")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", half_done)
+    await manager.remove(tree)
+    assert not exists(tree.path)
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+
+
+# -- review round 2 -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["release notes", "a.b", "x.lock", "-dash", "a" * 65])
+async def test_worktree_names_must_make_a_ref(repo: Path, manager: WorktreeManager, base: Path, name: str) -> None:
+    with pytest.raises(ValueError):
+        await manager.create(repo, base / name)
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+    assert (await manager.create(repo, base / "Ok_name-1")).id == "Ok_name-1"
+
+
+async def test_cancelled_right_after_the_ref_was_written(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    original = manager._git
+
+    async def cancelled_after(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        done = await original(cwd, *args, **kwargs)
+        if args[:1] == ("update-ref",) and len(args) == 3:
+            raise asyncio.CancelledError
+        return done
+
+    monkeypatch.setattr(manager, "_git", cancelled_after)
+    with pytest.raises(asyncio.CancelledError):
+        await manager.create(repo, base / "w1")
+    monkeypatch.setattr(manager, "_git", original)
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+    assert (await manager.create(repo, base / "w1")).id == "w1"
+
+
+async def test_two_repositories_making_at_one_target(manager: WorktreeManager, base: Path, tmp_path: Path) -> None:
+    first = make_repo(tmp_path / "first")
+    second = make_repo(tmp_path / "second", {"other.txt": "other\n"})
+    results = await asyncio.gather(
+        manager.create(first, base / "same"), manager.create(second, base / "same"), return_exceptions=True
+    )
+    made = [result for result in results if isinstance(result, Worktree)]
+    assert len(made) == 1 and sum(isinstance(result, WorktreeError) for result in results) == 1
+    assert exists(made[0].path / ("a.txt" if made[0].repo_root.name == "first" else "other.txt"))
+    assert "same" in registered(made[0].repo_root)
+
+
+async def test_prepare_conflicts_puts_the_worktree_back_when_the_ref_cannot_move(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "worktree\n")
+    write(tree.path / "extra.txt", "extra\n")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    before = digest(tree.path)
+    original = manager._git
+
+    async def ref_locked(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("update-ref", f"{REF_PREFIX}w1/start"):
+            raise worktrees.GitError(args, 128, b"cannot lock ref")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", ref_locked)
+    with pytest.raises(worktrees.GitError):
+        await manager.prepare_conflicts(tree, conflict)
+    monkeypatch.setattr(manager, "_git", original)
+    assert digest(tree.path) == before
+    assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == tree.start
+    prepared = await manager.prepare_conflicts(tree, conflict)
+    assert "<<<<<<<" in read(prepared.path / "a.txt").decode()
+
+
+async def test_the_main_checkout_is_never_taken_for_a_worktree(
+    repo: Path, manager: WorktreeManager, tmp_path: Path
+) -> None:
+    git(repo, "update-ref", f"{REF_PREFIX}repo/start", "HEAD")
+    before = digest(repo)
+    report = await manager.reconcile(repo, tmp_path, [])
+    assert report.removed == [] and report.kept == []
+    await manager.remove(Worktree("repo", repo, repo, "", git(repo, "rev-parse", "HEAD").strip()))
+    assert digest(repo) == before
+    with pytest.raises(WorktreeError):
+        await manager.open(repo, repo)
+
+
+async def test_probe_git_failing_later_on(repo: Path, manager: WorktreeManager) -> None:
+    (repo / ".git" / "index").write_bytes(b"not an index")
+    found = await manager.probe(repo)
+    assert found.reason == GIT_FAILED and found.repo_root is not None
+
+
+async def test_probe_partial_clone(repo: Path, manager: WorktreeManager) -> None:
+    git(repo, "config", "core.repositoryformatversion", "1")
+    git(repo, "config", "extensions.partialClone", "origin")
+    assert (await manager.probe(repo)).reason == worktrees.PARTIAL_CLONE
+
+
+async def test_pathspec_settings_from_the_environment_are_not_taken(
+    repo: Path, manager: WorktreeManager, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_UNTRACKED_MAX_BYTES", 1000)
+    write(repo / "big.bin", b"B" * 2000)
+    monkeypatch.setenv("GIT_LITERAL_PATHSPECS", "1")
+    shot = await manager.snapshot(repo)
+    assert shot.skipped == ("big.bin",) and "big.bin" not in tree_files(repo, shot.commit)
+
+
+# -- review round 3 -------------------------------------------------------------
+
+
+async def test_reconcile_goes_on_past_a_broken_worktree(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    broken = await manager.create(repo, base / "w1")
+    clean = await manager.create(repo, base / "w2")
+    os.remove(broken.path / ".git")
+    report = await manager.reconcile(repo, base, [])
+    assert report.removed == ["w2"] and not exists(clean.path)
+    assert [path.name for path, _why in report.failed] == ["w1"] and report.kept == []
+    assert exists(broken.path / "a.txt")
+
+
+async def test_patch_and_attribute_settings_from_the_environment_are_not_taken(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setenv("GIT_DIFF_OPTS", "--unified=0")
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "one\ntwo\nTHREE\nfour\nfive\n")
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed", landed.detail
+    write(repo / ".gitattributes", "*.txt filter=crypt\n")
+    monkeypatch.setenv("GIT_ATTR_SOURCE", "4b825dc642cb6eb9a060e54bf8d69288fbee4904")  # the empty tree
+    assert (await manager.probe(repo)).reason == CONTENT_FILTERS
