@@ -978,6 +978,27 @@ async def _deliver_postgame_text_bubble(
                     "reason": "route_superseded",
                     "llm_source": llm_result.get("llm_source") or {},
                 }
+            # Same ban-topic gate as every proactive text channel, on the
+            # line about to be spoken. Imported at call time like the other
+            # late imports in this function, keeping the proactive package
+            # out of router import time.
+            from main_logic.proactive_chat.directive_gate import (
+                _proactive_delivery_directive_block,
+            )
+            if await _proactive_delivery_directive_block(
+                mgr=mgr,
+                proactive_sid=proactive_sid,
+                lanlan_name=str(archive.get("lanlan_name") or ""),
+                text=line,
+                channel="postgame",
+            ) is not None:
+                return {
+                    "ok": True,
+                    "mode": "text",
+                    "action": "pass",
+                    "reason": "user_directive",
+                    "llm_source": llm_result.get("llm_source") or {},
+                }
             tts_fed = False
             feed_tts = getattr(mgr, "feed_tts_chunk", None)
             if callable(feed_tts):

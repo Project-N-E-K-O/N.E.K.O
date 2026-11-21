@@ -34,6 +34,7 @@ from .contracts import (
     _proactive_pass_body,
 )
 from .decisions import build_proactive_response
+from .directive_gate import _proactive_delivery_directive_block
 from .mini_game_invite import _mini_game_invite_count_post_response_chat
 from .music_recommendation import _append_music_recommendations
 from .state import (
@@ -289,6 +290,22 @@ async def _commit_proactive_delivery(
     else:
         delivered_tag = "CHAT"
         is_music_used = False
+
+    # Ban-topic gate on the full visible payload: the line plus every card
+    # that will be shown with it. Must run before the TTS feed below.
+    directive_block = await _proactive_delivery_directive_block(
+        mgr=mgr,
+        proactive_sid=proactive_sid,
+        lanlan_name=lanlan_name,
+        text=response_text,
+        source_links=source_links,
+        channel="phase2",
+    )
+    if directive_block is not None:
+        return DeliveryCommit(
+            result=ProactiveChatResult(body=directive_block),
+            delivery=None,
+        )
 
     action_note = build_proactive_action_note(
         primary_channel=primary_channel,

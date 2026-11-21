@@ -104,7 +104,7 @@ def test_repeat_suppressed_break_reminder_consumes_pending_source(
 
 def test_all_break_reminder_branches_consume_repeat_suppression() -> None:
     source = inspect.getsource(service.handle_proactive_chat)
-    assert source.count("if reminder_delivery.repeat_suppressed:") == 3
+    assert source.count("if reminder_delivery.consumes_source:") == 3
     assert source.count("_consume_repeat_suppressed_break_reminder(") == 3
 
 
