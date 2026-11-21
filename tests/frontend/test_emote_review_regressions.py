@@ -113,17 +113,20 @@ def test_single_png_download_starts_while_capture_controls_are_locked(editor):
 @pytest.mark.parametrize(('pack_format', 'fps', 'start', 'seconds', 'expected_frames'), [
     ('flat', 8, 0, .2, 2), ('layered', 8, 0, .2, 2),
     ('flat', 8, 0, .3, 3), ('layered', 8, 0, .3, 3),
-    ('flat', 8, .09, .12, 3), ('layered', 8, .09, .12, 3),
-    ('flat', 30, .09, .12, 3), ('layered', 30, .09, .12, 3),
-    ('flat', 10, .2, .2, 2), ('flat', 30, .2, .2, 6),
+    ('flat', 8, .09, .12, 3), ('layered', 8, .09, .12, 12),
+    ('flat', 30, .09, .12, 3), ('layered', 30, .09, .12, 12),
+    ('flat', 8, .08, .15, 3), ('layered', 8, .08, .15, 15),
+    ('layered', 8, .0913, .1184, 120),
+    ('flat', 10, .2, .2, 2), ('flat', 30, .2, .2, 2),
     ('layered', 10, .2, .2, 2), ('layered', 30, .2, .2, 6),
-    ('flat', 30, .3, .1, 3),
-    ('flat', 60, 0, 1, 50), ('layered', 60, 0, 1, 60),
-    ('flat', 60, 0, .95, 47), ('layered', 60, 0, .95, 57),
+    ('flat', 30, .3, .1, 1),
+    ('flat', 60, 0, 1, 10), ('layered', 60, 0, 1, 60),
+    ('flat', 60, 0, .95, 10), ('layered', 60, 0, .95, 57),
 ], ids=[
     'flat-8-0-0.2', 'layered-8-0-0.2', 'flat-8-0-0.3', 'layered-8-0-0.3',
     'flat-8-0.09-0.12', 'layered-8-0.09-0.12',
     'flat-30-0.09-0.12', 'layered-30-0.09-0.12',
+    'flat-8-0.08-0.15', 'layered-8-0.08-0.15', 'layered-8-fine-window-budget',
     'flat-10-0.2-0.2', 'flat-30-0.2-0.2',
     'layered-10-0.2-0.2', 'layered-30-0.2-0.2', 'flat-30-0.3-0.1',
     'flat-60-0-1', 'layered-60-0-1', 'flat-60-0-0.95', 'layered-60-0-0.95',
@@ -164,6 +167,12 @@ def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, 
     yellow = palette[-1]
     wanted = [palette[index % len(palette)] for index in range(source_count)
               if index / 10 < start + seconds - 1e-9 and (index + 1) / 10 > start + 1e-9]
+    wanted_durations = {}
+    for index in range(source_count):
+        delay = max(0, min(start + seconds, (index + 1) / 10) - max(start, index / 10)) * 1000
+        color = palette[index % len(palette)]
+        if delay > 1e-6:
+            wanted_durations[color] = wanted_durations.get(color, 0) + delay
     if pack_format == 'flat':
         for name, duration, colors, count in (
             ('idle.gif', seconds * 1000, wanted, expected_frames),
@@ -171,14 +180,18 @@ def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, 
         ):
             with Image.open(io.BytesIO(files[name])) as image:
                 assert image.n_frames == count
-                observed, elapsed = [], 0
+                observed, elapsed, color_durations = [], 0, {}
                 for index in range(image.n_frames):
                     image.seek(index)
-                    observed.append(image.convert('RGB').getpixel((32, 32)))
-                    elapsed += image.info['duration']
+                    color = image.convert('RGB').getpixel((32, 32))
+                    observed.append(color)
+                    delay = image.info['duration']
+                    elapsed += delay
+                    color_durations[color] = color_durations.get(color, 0) + delay
                 assert elapsed == pytest.approx(duration, abs=1)
                 assert set(observed) == set(colors)
                 assert observed[0] == colors[0] and observed[-1] == colors[-1]
+                assert color_durations == pytest.approx(wanted_durations if name == 'idle.gif' else {yellow: 100}, abs=1)
     else:
         metadata = json.loads(files['metadata.json'])
         for layer in metadata['layers']:
@@ -195,6 +208,11 @@ def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, 
                 )) for index in range(state['frames'])]
             assert set(observed) == set(colors)
             assert observed[0] == colors[0] and observed[-1] == colors[-1]
+            frame_delay = 1000 / (state['animation_speed'] * 4)
+            color_durations = {color: observed.count(color) * frame_delay for color in set(observed)}
+            tolerance = frame_delay if expected_frames == 120 else 1e-6
+            assert color_durations == pytest.approx(
+                wanted_durations if layer['name'] == 'idle_image' else {yellow: 100}, abs=tolerance)
 
 
 @pytest.mark.parametrize('pack_format', ['flat', 'layered'])

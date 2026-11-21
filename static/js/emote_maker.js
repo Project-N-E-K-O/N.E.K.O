@@ -6065,10 +6065,27 @@
     function sampleStageImageTimeline(frames, fps, maxFrames, minFrames = 1) {
         if (!frames.length) return [];
         const duration = stageImageTimelineDuration(frames);
-        const count = Math.max(1, Math.min(maxFrames,
+        let count = Math.max(1, Math.min(maxFrames,
             Math.max(minFrames, Math.floor(duration * fps / 1000 + 1e-9))));
-        const delayMs = duration / count;
         const preserveAll = minFrames >= frames.length && count >= frames.length;
+        if (preserveAll) {
+            // Layered sheets have one fixed frame interval. Use a common tick
+            // for PNG slide boundaries, so a 10/100/10ms crop stays 1/10/1
+            // ticks instead of three equal-length slides. Bound fine-grained
+            // windows by the existing frame budget.
+            let divisor = 0;
+            let totalTicks = 0;
+            for (const frame of frames) {
+                let ticks = Math.max(1, Math.round(stageImageFrameDelay(frame) * 1000));
+                totalTicks += ticks;
+                while (ticks) [divisor, ticks] = [ticks, divisor % ticks];
+            }
+            const exactCount = totalTicks / divisor;
+            count = exactCount <= maxFrames
+                ? exactCount * Math.min(Math.floor(maxFrames / exactCount), Math.ceil(count / exactCount))
+                : maxFrames;
+        }
+        const delayMs = duration / count;
         let source = 0;
         let end = stageImageFrameDelay(frames[source]);
         return Array.from({ length: count }, (_, index) => {
@@ -6077,7 +6094,7 @@
             // slides. Timed GIFs can still be thinned to the requested FPS.
             const last = preserveAll ? Math.min(source + 1, frames.length - 1) : frames.length - 1;
             const required = preserveAll ? frames.length - (count - index) : 0;
-            while (source < last && (at >= end || source < required)) {
+            while (source < last && (at + (preserveAll ? 1e-9 : 0) >= end || source < required)) {
                 source += 1;
                 end += stageImageFrameDelay(frames[source]);
             }
@@ -7290,7 +7307,7 @@
                     const timeline = trimStageImageTimeline(decoded, job.imageStartAt || 0, job.imageSeconds || 0);
                     let frames = still ? timeline.slice(0, 1) : timeline;
                     let imageFps = fps;
-                    if (!still && (!timed || packFormat === 'layered' || frames.length > PACK_MAX_FRAMES)) {
+                    if (!still && (packFormat === 'layered' || frames.length > PACK_MAX_FRAMES)) {
                         frames = sampleStageImageTimeline(timeline, fps, PACK_MAX_FRAMES,
                             timed ? 1 : timeline.length);
                         imageFps = 1000 / frames[0].delayMs;
