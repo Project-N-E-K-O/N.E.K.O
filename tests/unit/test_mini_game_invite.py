@@ -1835,7 +1835,17 @@ def test_theater_invite_toggle_selects_independently(monkeypatch, games_enabled,
     assert selected == (expected[0] if expected else None)
 
 
-@pytest.mark.parametrize("game,topic", [("drawing_guess", "你画我猜"), ("air_basketball", "篮球")])
+@pytest.mark.parametrize(
+    "game,topic",
+    [
+        ("drawing_guess", "你画我猜"),
+        ("drawing_guess", "drawing"),
+        ("drawing_guess", "draw and guess"),
+        ("air_basketball", "篮球"),
+        ("air_basketball", "basketball"),
+        ("air_basketball", "air_basketball"),
+    ],
+)
 @pytest.mark.parametrize("scope", ["mini_game", "all"])
 def test_configured_game_ids_respect_topic_exclusions(monkeypatch, game, topic, scope):
     from utils.proactive_preferences.preference_model import Profile

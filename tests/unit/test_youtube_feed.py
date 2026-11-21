@@ -7,6 +7,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
+from main_logic.proactive_chat.decisions import build_proactive_response
 from main_routers.cookies_login_router import validate_platform_fields
 from main_routers.system_router.proactive_content import _log_video_content
 from main_routers.system_router.proactive_parsing import _extract_links_from_raw
@@ -547,6 +548,13 @@ def test_youtube_video_format_and_source_links():
     assert "【YouTube 推荐】" in formatted
     assert "Creator | 1K views" in formatted
     assert links == [{
+        "title": "A useful video",
+        "url": "https://www.youtube.com/watch?v=abc",
+        "source": "YouTube",
+        "local_author": "Creator",
+    }]
+    _, public_links = build_proactive_response("WEB", {"selected_web_link": links[0]})
+    assert public_links == [{
         "title": "A useful video",
         "url": "https://www.youtube.com/watch?v=abc",
         "source": "YouTube",

@@ -208,6 +208,7 @@ def matching_features(known: Iterable[str], candidate: Mapping) -> set[str]:
             "name",
             "artist",
             "author",
+            "local_author",
             "source",
             "summary",
             "description_hint",

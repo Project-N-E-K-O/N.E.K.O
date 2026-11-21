@@ -454,13 +454,18 @@ def _pick_mini_game_type(
     import random as _random
     if preferences and preferences.features("mini_game"):
         labels = {
-            "soccer": ["足球"], "badminton": ["羽毛球"], "drawing_guess": ["你画我猜", "绘画", "猜谜"],
+            "soccer": ["足球"], "badminton": ["羽毛球"],
+            "drawing_guess": ["你画我猜", "绘画", "猜谜", "draw and guess"],
             "air_basketball": ["篮球"],
             "watch-together": ["一起看视频"], "theater": ["剧场", "角色扮演"],
         }
         choices = []
         for game in candidates:
-            features = preferences.match("mini_game", {"name": game, "tags": labels.get(game, [])})
+            features = preferences.match("mini_game", {
+                "name": game,
+                "title": game.replace("_", " ").replace("-", " "),
+                "tags": labels.get(game, []),
+            })
             score = preferences.score("mini_game", features)
             if score is not None:
                 choices.append((score, game))

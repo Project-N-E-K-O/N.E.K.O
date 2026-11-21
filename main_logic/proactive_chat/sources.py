@@ -88,11 +88,12 @@ def _link_from_item(
     source: str,
 ) -> dict:
     # Candidate metadata stays internal until decisions.py emits a public link.
-    # Only adapters that explicitly mark their platform opt into carrying
-    # private metadata. Legacy sources such as YouTube must retain the old
-    # title/url/source-only contract instead of leaking feed-only fields into
-    # link extraction results.
+    # Platform adapters opt into carrying their full candidate metadata.
+    # Legacy YouTube entries carry only the author needed for local matching.
     link = dict(item) if item.get("platform") else {}
+    author = item.get("author")
+    if source == "YouTube" and isinstance(author, str) and author:
+        link["local_author"] = author
     link.update({"title": title, "url": url, "source": source})
     return link
 

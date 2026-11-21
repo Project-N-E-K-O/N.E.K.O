@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from config.prompts.prompts_proactive import build_unified_phase1_prompt
-from main_logic.proactive_chat import candidate_selection, service, state
+from main_logic.proactive_chat import candidate_selection, service, sources, state
 from main_logic.proactive_chat.generation import (
     _fetch_phase1_followups,
     _lookup_link_by_phase1_selection,
@@ -26,6 +26,27 @@ def test_local_meme_candidates_respect_persisted_exclusions(scope):
     second = {"title": "A dancing bird", "url": "https://example.test/bird"}
     profile = Profile({("meme", "bird"): 3}, {(scope, "cat")})
     assert service._eligible_meme_candidates([blocked, first, second], profile) == [first, second]
+
+
+@pytest.mark.parametrize("scope", ["video", "all"])
+def test_local_youtube_feed_respects_creator_exclusions(monkeypatch, scope):
+    monkeypatch.setattr(candidate_selection, "_should_skip_source", lambda _key: False)
+    blocked = link(
+        "A surprise challenge", "https://www.youtube.com/watch?v=A234567890A",
+        "YouTube", author="MrBeast Official",
+    )
+    allowed = link(
+        "A woodworking tour", "https://www.youtube.com/watch?v=B234567890B",
+        "YouTube", author="Workshop Weekly",
+    )
+    feed = {"region": "overseas", "video": {"videos": [blocked, allowed]}}
+    links = sources._extract_links_from_raw("video", feed)
+    selected = candidate_selection._select_phase1_links(
+        ["video"], {"video": {"links": links}}, total=2,
+        profile=Profile(exclusions={(scope, "mrbeast")}),
+    )
+
+    assert [item["url"] for item in selected] == [allowed["url"]]
 
 
 def test_ranked_prompt_keeps_a_strong_match_from_a_cooled_channel(monkeypatch):
