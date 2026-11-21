@@ -1751,7 +1751,9 @@ class DshRuntime:
                         # is handed anything from here on. (The answers its
                         # calls were handed are settled below all the same.)
                         session.in_turn = False
-                        offer = self._tools.offer(session.id)
+                        # An automatic goal round can start while this prompt settles.
+                        # Only discard the receipts of calls announced by this prompt.
+                        offer = self._tools.offer(session.id) if self._sessions.get(session.id) is session else None
                         for call_id in session.prompt_calls:
                             session.tool_calls.pop(call_id, None)
                             session.execution_receipts.pop(call_id, None)

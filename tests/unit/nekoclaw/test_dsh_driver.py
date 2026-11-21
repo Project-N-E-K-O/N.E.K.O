@@ -1083,6 +1083,44 @@ async def test_between_prompts_only_native_goal_terminal_updates_can_proceed(tmp
         assert bool(requests[-1].get("refused")) != allowed
 
 
+async def test_automatic_round_keeps_its_own_execution_receipt(tmp_path, dsh, monkeypatch):
+    phases = []
+
+    async def audit(session_id, payload):
+        phases.append(payload)
+        return {"allow": True, "receipt": "read-receipt"}
+
+    driver = dsh(HostCallbacks(native_execution_action=audit))
+    await driver.started(make_spec(tmp_path))
+    runtime = driver.runtime
+    session = runtime._sessions["s1"]
+
+    async def approve(call_id):
+        reply = await runtime._on_request(session.process, "session/request_permission", {
+            "sessionId": session.dsh_id,
+            "toolCall": {"toolCallId": call_id},
+            "options": [{"optionId": "allow-once", "kind": "allow_once"}],
+        })
+        return reply["outcome"].get("optionId")
+
+    original = runtime._note_briefed
+
+    async def announce(current):
+        assert not current.in_turn
+        runtime._on_notification(session.process, "session/update", {
+            "sessionId": session.dsh_id,
+            "update": {"sessionUpdate": "tool_call", "toolCallId": "auto-read", "title": "read",
+                       "rawInput": {"file_path": "note.txt"}},
+        })
+        assert await approve("auto-read") == "allow-once"
+        await original(current)
+
+    monkeypatch.setattr(runtime, "_note_briefed", announce)
+    await driver.run("s1", "finish the work")
+    assert await approve("nekoclaw-exec/direct/auto-read") == "allow-once"
+    assert phases[-1] == {"phase": "check", "receipt": "read-receipt"}
+
+
 async def test_native_goal_announced_while_host_turn_settles_survives_until_its_own_end(tmp_path, dsh, monkeypatch):
     async def allow(session_id, payload):
         assert payload["tool"] == "update_goal" and not payload.get("refused")
