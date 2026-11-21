@@ -143,3 +143,36 @@ def test_first_turn_device_groups(text, expected):
 ])
 def test_an_earlier_browser_only_disambiguates_an_unqualified_click(text, expected):
     assert select_device_groups(text, browser_context=True) == expected
+
+
+@pytest.mark.parametrize(("text", "focus"), [
+    ("Switch to Notepad", False), ("切换到记事本", False),
+    ("Summarize the file.", True), ("Don't switch to Notepad", True),
+    ('Translate "Switch to Notepad"', True),
+])
+def test_click_target_can_change_without_mounting_tools(text, focus):
+    from nekoclaw.device_intent import classify_device_intent
+
+    groups, next_focus = classify_device_intent(text, browser_context=True)
+    assert groups == () and next_focus is focus
+    assert select_device_groups("Click OK", browser_context=next_focus) == ((BROWSER,) if focus else (DESKTOP,))
+
+
+def test_unrelated_input_preserves_an_unknown_click_target_until_the_registry_answers():
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent("Continue.", browser_context=None) == ((), None)
+    assert classify_device_intent("Switch to Notepad", browser_context=None) == ((), False)
+
+
+@pytest.mark.parametrize(("text", "groups", "focus"), [
+    ("Open the browser, switch to Notepad, then click OK", (DESKTOP, BROWSER), False),
+    ("Take a desktop screenshot. Open the browser.", (DESKTOP, BROWSER), True),
+    ("打开浏览器，切换到记事本，再点击确定，然后点击保存", (DESKTOP, BROWSER), False),
+    ("Open the browser. Switch to Notepad.", (BROWSER,), False),
+])
+def test_clauses_select_all_needed_tools_but_last_target_locates_the_next_click(text, groups, focus):
+    from nekoclaw.device_intent import classify_device_intent
+
+    assert classify_device_intent(text) == (groups, focus)
+    assert select_device_groups("Click OK, then click Save.", browser_context=focus) == ((BROWSER,) if focus else (DESKTOP,))

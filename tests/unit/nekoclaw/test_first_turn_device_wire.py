@@ -142,6 +142,55 @@ async def test_builtin_queued_device_instructions_survive_summary_then_overflow_
         await host.shutdown()
 
 
+@pytest.mark.parametrize(("initial_task", "follow_up", "human", "browser"), [
+    ("Open the browser.", "Switch to Notepad", True, False),
+    ("Open the browser.", "Switch to Notepad", False, True),
+    ("Take a desktop screenshot. Open the browser.", "Summarize the file.", True, True),
+    ("Open the browser, switch to Notepad, then click OK.", "Summarize the file.", True, False),
+])
+async def test_builtin_click_after_a_separate_target_change(tmp_path, initial_task, follow_up, human, browser):
+    events = Recorder()
+    runtime = InProcessRuntime(events)
+    provider = BuiltinToolProvider(state=lambda group: (True, ""))
+    host = make_host(tmp_path, builtins=provider, plugins_enabled=lambda: False)
+    long_reply = " ".join(f"step{i}" for i in range(1_600))
+    replies = iter([long_reply] * 3 + ["## Current Work\nFinished the previous steps.", "Done.", "Done."])
+    try:
+        url = await host.gateway.start()
+        token = host.gateway.issue("wire", supports_images=True, first_turn_groups=("browser", "keyboard_mouse"))
+        with FakeOpenAIServer(lambda _: [sse_text(next(replies)), sse_finish()]) as server:
+            model = ModelConfig(model="local-fixture", base_url=server.base_url, api_key="test-only",
+                                auto_extra_body=False, supports_images=True, context_window=32_000, max_output_tokens=2_000)
+            spec = make_spec(tmp_path, model=model, gateway=GatewaySpec(url=url, token=token))
+            await runtime.start(spec)
+
+            async def prompt(text, **kwargs):
+                start = len(events.events)
+                await runtime.prompt(spec.session_id, text, **kwargs)
+                await events.wait_ended(spec.session_id, start=start)
+
+            await prompt("Start.", opening=True)
+            await prompt(initial_task)
+            await prompt("Summarize step two.")
+            start = len(events.events)
+            await runtime.compact(spec.session_id)
+            await events.wait_ended(spec.session_id, start=start)
+            assert len(events.of("compacted")) == 1
+            await prompt(follow_up, human=human)
+            await prompt("Click OK")
+            assert len(server.requests) == 6
+
+            def devices(request):
+                return {t["function"]["name"] for t in request["tools"]}.intersection({"computer", "browser_click"})
+
+            assert devices(server.requests[0]) == {"computer", "browser_click"}
+            assert devices(server.requests[-2]) == set()
+            assert devices(server.requests[-1]) == ({"browser_click"} if browser else {"computer"})
+    finally:
+        await runtime.shutdown()
+        await host.shutdown()
+
+
 @pytest.mark.parametrize("scenario", ["manual-explicit-intent", "manual-queued-intents", "automatic-rediscovery", "truncated-summary"])
 async def test_builtin_model_receives_folded_and_restored_browser_schema(tmp_path, monkeypatch, scenario):
     from utils.tokenize import count_tokens

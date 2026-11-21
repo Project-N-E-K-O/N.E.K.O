@@ -559,13 +559,22 @@ class DshRuntime:
         from nekoclaw.runtime.tools.gateway import GatewayClient
 
         process = next((p for p in self._processes.values() if p.token == token), None)
-        session = process.by_dsh_id.get(dsh_id) if process and process.native_device_schemas else None
-        if session is None or session.spec.gateway is None or session.closing is not None:
+        if process is None or process.retiring or not process.native_device_schemas:
+            return None
+        session = process.by_dsh_id.get(dsh_id)
+        if session is None or session.spec.gateway is None:
             return None
         gateway = session.spec.gateway
+
+        def still_current() -> bool:
+            return (not process.retiring and session.closing is None and self._sessions.get(session.id) is session
+                    and process.by_dsh_id.get(dsh_id) is session)
+
         # A timed-out local lookup may still be finishing when dsh retries.
         async with session.device_refresh_lock:
-            if epoch < session.device_epoch:
+            if not still_current():
+                return None
+            if epoch < session.device_epoch or (epoch > session.device_epoch and not refresh):
                 return session.visible_devices
             # A pre-step summary runs after input admission but before that input
             # reaches a model. Only an ordinary successful reply proves exposure.
@@ -586,8 +595,16 @@ class DshRuntime:
                 await client.list_tools(compactions=epoch, wanted=wanted, idle_device_cycle=idle_cycle)
             finally:
                 await client.aclose()
-            session.device_epoch = epoch
+            # A close, process exit or a replacement commission can finish while
+            # the loopback lookup is in flight. Only the live owner can report.
+            if not still_current():
+                return None
             session.visible_devices = sorted(client.commission_tools)
+            if epoch > session.device_epoch:
+                session.device_epoch = epoch
+                # Several successful summaries can coalesce before this lookup.
+                # A process-local epoch is not the session's lifetime count.
+                self._emit(session, protocol.CompactedEvent(session_id=session.id, count=None, tokens_before=None))
             return session.visible_devices
 
     async def _ensure_process(self, shape: Shape) -> _Process:
@@ -1231,7 +1248,7 @@ class DshRuntime:
         for text in texts:
             if not isinstance(text, _Given) or not text.device_instruction:
                 continue
-            from nekoclaw.device_intent import BUILTIN_GROUP_BROWSER, BUILTIN_GROUPS, select_device_groups
+            from nekoclaw.device_intent import BUILTIN_GROUP_BROWSER, BUILTIN_GROUPS, classify_device_intent
 
             registered = session.registered_device_groups
             if text.device_instruction == "opening":
@@ -1240,11 +1257,11 @@ class DshRuntime:
             else:
                 browser = session.device_browser_context
                 if browser is None:
+                    # Until registration, a neutral input leaves the default open:
+                    # the gateway may expose only the browser from a mixed dispatch.
                     browser = (registered == {BUILTIN_GROUP_BROWSER} if registered is not None
-                               else session.spec.gateway._browser_context is True)
-                groups = select_device_groups(text, browser_context=browser)
-                if groups:
-                    session.device_browser_context = groups == (BUILTIN_GROUP_BROWSER,)
+                               else session.spec.gateway._browser_context or None)
+                groups, session.device_browser_context = classify_device_intent(text, browser_context=browser)
             for group in groups:
                 if registered is None or group in registered:
                     session.device_intents[group] = max(text.number, session.device_intents.get(group, 0))

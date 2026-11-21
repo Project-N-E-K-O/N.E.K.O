@@ -438,10 +438,9 @@ class CompactedEvent(_SessionEvent):
     """The conversation was summed up; the session goes on from the summary."""
 
     type: Literal["compacted"] = "compacted"
-    # How often the conversation of this session has been summed up so far.
-    count: int = 0
-    # Size of the conversation before the summary, as the context manager counted it.
-    tokens_before: int = 0
+    # Lifetime count and pre-summary size, when the runtime measured them.
+    count: int | None = 0
+    tokens_before: int | None = 0
 
 
 # ``EndedEvent.error`` of a session whose runtime process went away. Nothing

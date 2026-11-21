@@ -2902,11 +2902,15 @@ class TaskAgentManager:
         if kind == "taken":
             await self._on_taken(session, event)
             return
-        if kind != "ended" and _shows_run_at_work(event):
+        # A dsh device-view acknowledgement comes from a model step for this
+        # commission. It can precede usage on a long opening prompt. Idle
+        # maintenance and a built-in snapshot catch-up do not acknowledge input.
+        working = _shows_run_at_work(event) or (kind == "compacted" and session.runtime_name == RUNTIME_DSH and session.sent > 0)
+        if kind != "ended" and working:
             # A run is under way, also one the session began by itself (a
             # background job of its own finished).
             session.idle = False
-        at_work = session.sent > 0 and _shows_run_at_work(event)
+        at_work = session.sent > 0 and working
         if at_work:
             session.carried = []
         if kind == "usage":

@@ -108,11 +108,24 @@ _SWITCH_TARGET = re.compile(r"切[换換][到至]|[转轉]到|\bswitch\s+(?:over
 
 def select_device_groups(text: str, *, browser_context: bool = False) -> tuple[str, ...]:
     """Classify this instruction; a previous browser target can locate an unqualified click."""
+    groups, _ = classify_device_intent(text, browser_context=browser_context)
+    return groups
+
+
+def classify_device_intent(
+    text: str, *, browser_context: bool | None = False,
+) -> tuple[tuple[str, ...], bool | None]:
+    """Return device groups and the click target for the next instruction.
+
+    When the initial surface is still unknown, unrelated input keeps it unknown.
+    A switch away from the browser can change the target without needing a tool.
+    """
+    next_browser_context = browser_context
     text = unicodedata.normalize("NFKC", text).casefold()
     text = _URL.sub("https:// ", text)
     text = _QUOTED.sub(lambda m: "https:// " if m[0][1:-1].strip() == "https://" else " ", text)
     groups: set[str] = set()
-    web_context = False
+    web_context = browser_context
     for clause in _CLAUSE.split(text):
         if _NON_ACTION.search(clause):
             continue
@@ -131,23 +144,29 @@ def select_device_groups(text: str, *, browser_context: bool = False) -> tuple[s
         )
         desktop_target = bool(_DESKTOP_TARGET.search(clause))
         desktop_action = bool(_DESKTOP_ACTION.search(clause))
+        switches_away = not web_target and bool(_SWITCH_TARGET.search(clause))
+        if switches_away and not code:
+            next_browser_context = False
         # An explicit device, a file or a screenshot can change the target
         # before a later click in the same instruction.
-        if browser_context and (
+        if (
             desktop_target or desktop_action or _FILE_OBJECT.search(clause)
-            or (not web_target and (screenshot or _SWITCH_TARGET.search(clause)))
+            or (not web_target and screenshot) or switches_away
         ):
-            browser_context = False
+            web_context = False
         web_context = web_context or explicit_web or browser
-        if click and (web_context or browser_context) and not desktop_target and not code:
+        if click and web_context and not desktop_target and not code:
             browser = True
         if browser:
             groups.add(BUILTIN_GROUP_BROWSER)
+            next_browser_context = True
         # An ambiguous web object can fall back to discovery. Do not turn a
         # page click or screenshot into input or capture on the real desktop.
         desktop_fallback = desktop_target or not (browser or web_object)
-        if desktop_action or (screenshot and desktop_fallback):
+        desktop_click = click and desktop_fallback and (desktop_target or not code)
+        if desktop_action or (screenshot and desktop_fallback) or desktop_click:
             groups.add(BUILTIN_GROUP_KEYBOARD_MOUSE)
-        if click and desktop_fallback and (desktop_target or not code):
-            groups.add(BUILTIN_GROUP_KEYBOARD_MOUSE)
-    return tuple(group for group in BUILTIN_GROUPS if group in groups)
+            next_browser_context = False
+            web_context = False
+    selected = tuple(group for group in BUILTIN_GROUPS if group in groups)
+    return selected, next_browser_context

@@ -1006,13 +1006,13 @@ class TaskAgentSession(SessionInbox):
                 self._human_in_run = True
                 gateway = self._gateway
                 if taken is not None and not opening and self._commission_tools and gateway.device_groups:
-                    from nekoclaw.device_intent import select_device_groups
+                    from nekoclaw.device_intent import classify_device_intent
 
                     # All steering messages drained together share the next
                     # reply. An earlier, answered batch contributes nothing.
-                    selected = select_device_groups(message.text, browser_context=self._browser_click_context)
-                    if selected:
-                        self._browser_click_context = selected == (BUILTIN_GROUP_BROWSER,)
+                    selected, self._browser_click_context = classify_device_intent(
+                        message.text, browser_context=self._browser_click_context
+                    )
                     requested = set(selected).intersection(gateway.device_groups.values())
                     self._unanswered_device_groups = tuple(sorted(requested.union(self._unanswered_device_groups)))
                     self._wanted_device_groups = self._unanswered_device_groups
