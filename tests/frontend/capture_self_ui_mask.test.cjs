@@ -622,3 +622,82 @@ test('native screen share: the stream_data frame is masked before it is sent', a
     assert.deepEqual(fillsOf(sent[0].data), [[300, 200, 600, 400]], 'native frame must be masked');
     assert.deepEqual(shell.calls[0], { version: 1, sourceId: 'screen:3:0', surface: 'source' });
 });
+
+// ---------------------------------------------------------------- C1 payload limits (shell validation)
+
+function assertValidShellPayload(payload) {
+    assert.equal(payload.version, 1);
+    assert.ok(payload.viewport.width > 0 && payload.viewport.height > 0);
+    assert.ok(payload.rects.length <= 16, `at most 16 rects, got ${payload.rects.length}`);
+    for (const r of payload.rects) {
+        for (const k of ['x', 'y', 'width', 'height']) {
+            assert.ok(Number.isFinite(r[k]) && r[k] >= 0, `${k}=${r[k]} must be finite and >= 0`);
+        }
+        assert.ok(r.width > 0 && r.height > 0);
+        assert.ok(r.x + r.width <= payload.viewport.width + 1e-9);
+        assert.ok(r.y + r.height <= payload.viewport.height + 1e-9);
+    }
+}
+
+test('reporter payload: regions crossing every viewport edge are clipped to non-negative, in-viewport rects', () => {
+    const { w } = makeWindow({
+        elements: [
+            makeElement({ x: -40, y: -30, w: 100, h: 100 }),     // top-left corner
+            makeElement({ x: 950, y: 750, w: 200, h: 200 }),     // bottom-right corner
+            makeElement({ x: -500, y: 100, w: 400, h: 50 }),     // fully off the left edge
+            makeElement({ x: 0, y: 0, w: 1000, h: 800 }),        // exactly the viewport
+            makeElement({ x: 2, y: 3, w: 4, h: 5 }),             // padding would go negative
+        ],
+    });
+    const payload = w.appCaptureMask.buildReportPayload(w.document, w);
+    assertValidShellPayload(payload);
+    assert.equal(payload.rects.length, 4, 'the fully off-screen element is dropped');
+    assert.deepEqual(JSON.parse(JSON.stringify(payload.rects[0])), { x: 0, y: 0, width: 68, height: 78 });
+    assert.deepEqual(JSON.parse(JSON.stringify(payload.rects[1])), { x: 942, y: 742, width: 58, height: 58 });
+});
+
+test('reporter payload: more than 16 regions are merged to at most 16 without uncovering any of them', () => {
+    const els = [];
+    for (let i = 0; i < 40; i++) els.push(makeElement({ x: 600 + (i % 2) * 10, y: 5 + i * 19, w: 250, h: 14 }));
+    const { w } = makeWindow({ elements: els });
+    const raw = w.appCaptureMask.collectLocalMaskRects(w.document, w);
+    assert.equal(raw.length, 40);
+    const payload = w.appCaptureMask.buildReportPayload(w.document, w);
+    assertValidShellPayload(payload);
+    assert.ok(payload.rects.length <= 16);
+    for (const r of raw) {
+        assert.ok(payload.rects.some((m) => m.x <= r.x + 1e-9 && m.y <= r.y + 1e-9
+            && m.x + m.width >= r.x + r.width - 1e-9 && m.y + m.height >= r.y + r.height - 1e-9),
+        'every original region is still covered');
+    }
+    // 16 or fewer are passed through untouched.
+    const few = [{ x: 1, y: 1, width: 2, height: 2 }, { x: 10, y: 10, width: 2, height: 2 }];
+    assert.deepEqual(JSON.parse(JSON.stringify(w.appCaptureMask.limitRectCount(few, 16))), few);
+});
+
+test('reporter: hidden window keeps reporting its layout; the browser path still treats a hidden tab as off screen', () => {
+    const { w } = makeWindow({ elements: chatElements({ galOpen: true }) });
+    w.document.visibilityState = 'hidden';
+    const payload = w.appCaptureMask.buildReportPayload(w.document, w);
+    assert.equal(payload.visible, false);
+    assert.equal(payload.rects.length, 2, 'rects reported while hidden so the shell has them on restore');
+    assert.equal(w.appCaptureMask.collectLocalMaskRects(w.document, w).length, 0);
+});
+
+test('reporter: reports once on start (new page after navigation) and again on resize', async () => {
+    const reports = [];
+    const listeners = {};
+    const { w } = makeWindow({ elements: [] });
+    w.addEventListener = (type, fn) => { listeners[type] = fn; };
+    w.nekoCaptureMask = { report: (p) => { reports.push(JSON.parse(JSON.stringify(p))); } };
+    w.appCaptureMask.startShellReporter(w, w.document);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(reports.length, 1, 'initial report even before the chat has mounted');
+    assert.deepEqual(reports[0].rects, []);
+    assert.equal(typeof listeners.resize, 'function');
+    w.innerWidth = 900;
+    listeners.resize();
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(reports.length, 2, 'viewport change is reported');
+    assert.equal(reports[1].viewport.width, 900);
+});

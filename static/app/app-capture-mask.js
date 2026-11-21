@@ -94,10 +94,13 @@
      * to the viewport. Elements that are absent, collapsed to zero size,
      * hidden or fully transparent produce nothing.
      */
-    function collectLocalMaskRects(doc, win) {
+    function collectLocalMaskRects(doc, win, options) {
         var rects = [];
         if (!doc || typeof doc.querySelectorAll !== 'function' || !win) return rects;
-        if (doc.visibilityState === 'hidden') return rects;
+        // A hidden tab is not on screen. The desktop-shell reporter passes
+        // includeHiddenDocument: the shell keeps the last report of a hidden
+        // window and uses it again as soon as the window is shown.
+        if (doc.visibilityState === 'hidden' && !(options && options.includeHiddenDocument)) return rects;
         var viewportW = Number(win.innerWidth) || 0;
         var viewportH = Number(win.innerHeight) || 0;
         if (viewportW <= 0 || viewportH <= 0) return rects;
@@ -441,13 +444,56 @@
     var REPORT_THROTTLE_MS = 150;
     var REPORT_RECHECK_MS = 1000;
 
+    // The shell rejects a report with more than this many rects (and then
+    // treats the window as unknown), so larger sets are merged first.
+    var REPORT_MAX_RECTS = 16;
+
+    function unionRect(a, b) {
+        var left = Math.min(a.x, b.x);
+        var top = Math.min(a.y, b.y);
+        var right = Math.max(a.x + a.width, b.x + b.width);
+        var bottom = Math.max(a.y + a.height, b.y + b.height);
+        return { x: left, y: top, width: right - left, height: bottom - top };
+    }
+
+    /**
+     * Merge rects until at most `max` remain, always merging the pair whose
+     * bounding box adds the least area. Merging only grows coverage, so no
+     * region that was marked becomes unmasked.
+     */
+    function limitRectCount(rects, max) {
+        var list = (rects || []).slice();
+        if (list.length <= max) return list;
+        if (list.length > 128) {
+            // Pathological counts: one bounding box keeps this O(n).
+            return [list.reduce(unionRect)];
+        }
+        while (list.length > max) {
+            var bestI = 0, bestJ = 1, bestCost = Infinity;
+            for (var i = 0; i < list.length; i++) {
+                for (var j = i + 1; j < list.length; j++) {
+                    var u = unionRect(list[i], list[j]);
+                    var cost = u.width * u.height
+                        - list[i].width * list[i].height
+                        - list[j].width * list[j].height;
+                    if (cost < bestCost) { bestCost = cost; bestI = i; bestJ = j; }
+                }
+            }
+            var merged = unionRect(list[bestI], list[bestJ]);
+            list.splice(bestJ, 1);
+            list[bestI] = merged;
+        }
+        return list;
+    }
+
     function buildReportPayload(doc, win) {
         var hidden = doc.visibilityState === 'hidden';
+        var rects = limitRectCount(collectLocalMaskRects(doc, win, { includeHiddenDocument: true }), REPORT_MAX_RECTS);
         return {
             version: CONTRACT_VERSION,
             visible: !hidden,
             viewport: { width: Number(win.innerWidth) || 0, height: Number(win.innerHeight) || 0 },
-            rects: hidden ? [] : collectLocalMaskRects(doc, win)
+            rects: rects
         };
     }
 
@@ -516,6 +562,8 @@
         maskFrameForModel: maskFrameForModel,
         decideWhenGeometryUnavailable: decideWhenGeometryUnavailable,
         buildReportPayload: buildReportPayload,
+        limitRectCount: limitRectCount,
+        REPORT_MAX_RECTS: REPORT_MAX_RECTS,
         startShellReporter: startShellReporter
     };
 })();
