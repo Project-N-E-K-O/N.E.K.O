@@ -850,6 +850,43 @@ async def _run_with_model_client_cleanup(ctx: PluginContext, awaitable: Any) -> 
                 logger.warning("[Plugin Process] Model client cleanup failed: {}", type(exc).__name__)
 
 
+def _resolve_persist_mode(instance: object, effective_cfg: object) -> str:
+    """Return the state persist mode for a plugin instance.
+
+    Order: a valid ``[plugin_state].persist_mode`` wins, including an explicit
+    ``"off"``. Otherwise start from the instance default (``__persist_mode__``,
+    then ``__freeze_mode__``, then ``"off"``); when that is ``"off"``, a valid
+    legacy ``[plugin_checkpoint].freeze_mode`` still applies.
+    """
+    from plugin.sdk.shared.storage.state import PluginStatePersistence
+
+    valid_persist_modes = PluginStatePersistence.VALID_PERSIST_MODES
+    persist_mode = getattr(instance, "__persist_mode__", None)
+    if persist_mode is None:
+        persist_mode = getattr(instance, "__freeze_mode__", "off")
+    if not isinstance(effective_cfg, dict):
+        return persist_mode
+
+    # New [plugin_state] settings; an explicit valid value is final.
+    state_cfg = effective_cfg.get("plugin_state")
+    if isinstance(state_cfg, dict):
+        cfg_persist_mode = state_cfg.get("persist_mode")
+        if cfg_persist_mode in valid_persist_modes:
+            logger.debug("[Plugin Process] persist_mode from effective config: {}", cfg_persist_mode)
+            return cfg_persist_mode
+
+    # Backward-compatible old [plugin_checkpoint] settings, only when
+    # [plugin_state] left persist_mode unset or invalid.
+    if persist_mode == "off":
+        checkpoint_cfg = effective_cfg.get("plugin_checkpoint")
+        if isinstance(checkpoint_cfg, dict):
+            cfg_freeze_mode = checkpoint_cfg.get("freeze_mode")
+            if cfg_freeze_mode in valid_persist_modes:
+                logger.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", cfg_freeze_mode)
+                return cfg_freeze_mode
+    return persist_mode
+
+
 def _plugin_process_runner(
     plugin_id: str,
     entry_point: str,
@@ -1028,32 +1065,8 @@ def _plugin_process_runner(
             except Exception as e:
                 logger.debug("[Plugin Process] Could not read startup config through SDK: {}", type(e).__name__)
 
-        # Configuration overrides instance defaults, preserving old checkpoint fallback order.
-        from plugin.sdk.shared.storage.state import PluginStatePersistence
-
-        valid_persist_modes = PluginStatePersistence.VALID_PERSIST_MODES
         freezable_keys = getattr(instance, "__freezable__", []) or []
-        persist_mode = getattr(instance, "__persist_mode__", None)
-        if persist_mode is None:
-            persist_mode = getattr(instance, "__freeze_mode__", "off")
-        try:
-            # New [plugin_state] settings.
-            state_cfg = effective_cfg.get("plugin_state", {})
-            if isinstance(state_cfg, dict):
-                cfg_persist_mode = state_cfg.get("persist_mode")
-                if cfg_persist_mode in valid_persist_modes:
-                    persist_mode = cfg_persist_mode
-                    logger.debug("[Plugin Process] persist_mode from effective config: {}", persist_mode)
-            # Backward-compatible old [plugin_checkpoint] settings.
-            if persist_mode == "off":
-                checkpoint_cfg = effective_cfg.get("plugin_checkpoint", {})
-                if isinstance(checkpoint_cfg, dict):
-                    cfg_freeze_mode = checkpoint_cfg.get("freeze_mode")
-                    if cfg_freeze_mode in valid_persist_modes:
-                        persist_mode = cfg_freeze_mode
-                        logger.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", persist_mode)
-        except Exception as e:
-            logger.debug("[Plugin Process] Could not read plugin_state from effective config: {}", e)
+        persist_mode = _resolve_persist_mode(instance, effective_cfg)
 
         # Mark restored frozen state for unfreeze lifecycle events.
         ctx._restored_from_freeze = False

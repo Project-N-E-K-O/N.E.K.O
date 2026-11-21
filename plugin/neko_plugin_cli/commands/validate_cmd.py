@@ -93,6 +93,51 @@ _PERSIST_MODE_MIGRATION_HINT = {
 }
 
 
+# Type errors for [plugin.models]; {label} is the plugin.toml path of the value.
+_MODELS_TYPE_ERRORS = {
+    "table": {
+        "en": "{label} must be a table",
+        "zh-CN": "{label} 必须是表（table）",
+        "zh-TW": "{label} 必須是表（table）",
+        "ja": "{label} はテーブル（table）にしてください",
+        "ko": "{label}은(는) 테이블(table)이어야 합니다",
+        "ru": "{label} должно быть таблицей (table)",
+        "es": "{label} debe ser una tabla (table)",
+        "pt": "{label} deve ser uma tabela (table)",
+    },
+    "string": {
+        "en": "{label} must be a string",
+        "zh-CN": "{label} 必须是字符串",
+        "zh-TW": "{label} 必須是字串",
+        "ja": "{label} は文字列にしてください",
+        "ko": "{label}은(는) 문자열이어야 합니다",
+        "ru": "{label} должно быть строкой",
+        "es": "{label} debe ser una cadena de texto",
+        "pt": "{label} deve ser uma string",
+    },
+    "boolean": {
+        "en": "{label} must be a boolean (true or false)",
+        "zh-CN": "{label} 必须是布尔值（true 或 false）",
+        "zh-TW": "{label} 必須是布林值（true 或 false）",
+        "ja": "{label} は真偽値（true または false）にしてください",
+        "ko": "{label}은(는) 불리언 값(true 또는 false)이어야 합니다",
+        "ru": "{label} должно быть логическим значением (true или false)",
+        "es": "{label} debe ser un booleano (true o false)",
+        "pt": "{label} deve ser um booleano (true ou false)",
+    },
+    "string_list": {
+        "en": "{label} must be a list of strings",
+        "zh-CN": "{label} 必须是字符串列表",
+        "zh-TW": "{label} 必須是字串清單",
+        "ja": "{label} は文字列のリストにしてください",
+        "ko": "{label}은(는) 문자열 목록이어야 합니다",
+        "ru": "{label} должно быть списком строк",
+        "es": "{label} debe ser una lista de cadenas de texto",
+        "pt": "{label} deve ser uma lista de strings",
+    },
+}
+
+
 def _format_multilingual(texts: dict[str, str], *, head: str | None = None) -> str:
     """One message in all locales.
 
@@ -254,6 +299,7 @@ def _check_plugin_toml_schema(
         "safety",
         "config_profiles",
         "database",
+        "models",
         "dependency",
         "dependencies",
         "previous_ids",
@@ -283,6 +329,7 @@ def _check_plugin_toml_schema(
     _check_sdk_table(plugin_table.get("sdk"), issues)
     _check_store_table(plugin_table.get("store"), issues)
     _check_database_table(plugin_table.get("database"), issues)
+    _check_models_table(plugin_table.get("models"), issues)
     _check_shared_table(plugin_table.get("shared"), issues)
     _check_i18n_table(plugin_dir, plugin_table.get("i18n"), issues)
     _check_install_table(plugin_dir, plugin_table.get("install"), issues)
@@ -529,6 +576,35 @@ def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
         valid = False
     if not valid:
         issues.append(("error", _format_multilingual(_DATABASE_NAME_INVALID)))
+
+
+def _models_type_error(kind: str, label: str) -> tuple[str, str]:
+    texts = {locale: text.format(label=label) for locale, text in _MODELS_TYPE_ERRORS[kind].items()}
+    return ("error", _format_multilingual(texts))
+
+
+def _check_models_table(value: object, issues: list[tuple[str, str]]) -> None:
+    """Check ``[plugin.models.*]`` types: the declarations the server reads as model requirements."""
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(_models_type_error("table", "[plugin.models]"))
+        return
+    for usage_id, requirement in value.items():
+        label = f"[plugin.models.{usage_id}]"
+        if not isinstance(requirement, dict):
+            issues.append(_models_type_error("table", label))
+            continue
+        for key in ("label", "description"):
+            if key in requirement and not isinstance(requirement[key], str):
+                issues.append(_models_type_error("string", f"{label}.{key}"))
+        if "required" in requirement and not isinstance(requirement["required"], bool):
+            issues.append(_models_type_error("boolean", f"{label}.required"))
+        capabilities = requirement.get("capabilities")
+        if "capabilities" in requirement and (
+            not isinstance(capabilities, list) or not all(isinstance(item, str) for item in capabilities)
+        ):
+            issues.append(_models_type_error("string_list", f"{label}.capabilities"))
 
 
 def _check_shared_table(value: object, issues: list[tuple[str, str]]) -> None:
