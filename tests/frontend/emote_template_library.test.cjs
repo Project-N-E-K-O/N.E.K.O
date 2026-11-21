@@ -47,22 +47,24 @@ test('认不出身份的模板拒绝入库，而不是挤成同一条', () => {
     assert.throws(() => library.makeEntry({}), { code: 'no_key' });
 });
 
-test('超出条数上限时按"最久没用"淘汰，不是按加入顺序', () => {
+test('thirteenth template preserves every saved session and only caps thumbnail caches', () => {
     let store = library.emptyStore();
     const now = Date.now();
-    // 先塞满
-    for (let i = 0; i < library.MAX_ENTRIES; i += 1) {
-        store = library.upsert(store, entry(`old-${i}`, { lastUsedAt: now - (i + 1) * 1000 }));
+    for (let i = 0; i < 12; i += 1) {
+        store = library.upsert(store, entry(`old-${i}`, { lastUsedAt: now - (i + 1) * 1000,
+            session: { groups: [{name: `group-${i}`}], packSceneIds: {idle_image: `scene-${i}`} } }));
     }
-    assert.equal(store.entries.length, library.MAX_ENTRIES);
-    // old-11 最久没用，但它刚被碰过 → 该走的是次久没用的 old-10，而不是加入最早的 old-0
-    store = library.touch(store, `old-${library.MAX_ENTRIES - 1}`);
+    assert.equal(store.entries.length, 12);
+    store = library.touch(store, 'old-11');
     store = library.upsert(store, entry('fresh'));
-    assert.equal(store.entries.length, library.MAX_ENTRIES, '容量不该超');
-    assert.ok(library.find(store, 'fresh'), '新条目要进来');
-    assert.ok(library.find(store, 'old-11'), '刚用过的不该被挤掉');
-    assert.ok(library.find(store, 'old-0'), '按加入顺序淘汰是错的：它其实是最常用的');
-    assert.equal(library.find(store, 'old-10'), null, '最久没用的那条该走');
+    const saved = library.parse(library.serialize(store));
+    assert.equal(saved.entries.length, 13);
+    assert.equal(saved.entries.filter(e => e.thumb).length, 12);
+    assert.equal(library.find(saved, 'old-10').thumb, '');
+    for (let i = 0; i < 12; i += 1) {
+        assert.deepEqual(library.find(saved, `old-${i}`).session.groups, [{name: `group-${i}`}]);
+        assert.equal(library.find(saved, `old-${i}`).session.packSceneIds.idle_image, `scene-${i}`);
+    }
 });
 
 test('更新同一条目时保留加入时间，只刷新会话', () => {
@@ -133,10 +135,10 @@ test('存得下就丢图救回来，真存不下就如实抛错', () => {
     assert.ok(current, '当前模板不该被丢掉');
     assert.ok(current.thumb.length > 0, '当前那条的缩略图应当保到最后');
     assert.throws(() => library.serialize(store, 64), { code: 'quota' },
-        '救不回来时要抛错，让调用方只留当前条目，而不是悄悄写一半');
+        '存不下时报告失败，不能悄悄丢掉其它模板');
 });
 
-test('quota eviction preserves an older current template and its saved session', () => {
+test('quota failure preserves every older session instead of saving a partial library', () => {
     const current = entry('current', {
         lastUsedAt: 1,
         session: { groups: [{ name: 'saved group', notes: 'c'.repeat(2000) }] },
@@ -147,11 +149,9 @@ test('quota eviction preserves an older current template and its saved session',
     });
     const store = { ...library.emptyStore(), currentKey: current.key, entries: [newer, current] };
     const budget = JSON.stringify({ ...store, entries: [current] }).length;
-    const saved = library.parse(library.serialize(store, budget));
-    assert.deepEqual(saved.entries.map(item => item.key), ['current']);
-    assert.equal(saved.currentKey, 'current');
-    assert.deepEqual(saved.entries[0].session.groups, current.session.groups);
-    assert.equal(store.entries.length, 2, 'eviction must not mutate the original store');
+    assert.throws(() => library.serialize(store, budget), { code: 'quota' });
+    assert.deepEqual(store.entries.map(item => item.key), ['newer', 'current']);
+    assert.deepEqual(store.entries[1].session.groups, current.session.groups);
 });
 
 test('current thumbnail is discarded before another template session is evicted', () => {
@@ -166,16 +166,36 @@ test('current thumbnail is discarded before another template session is evicted'
     assert.equal(saved.entries.find(e => e.key === 'other').session.groups[0].name, 'keep this group');
 });
 
-test('quota eviction removes the least recently used non-current entry first', () => {
+test('quota failure never removes the least recently used template', () => {
     const entries = ['recent', 'oldest', 'current'].map((key, index) => entry(key, {
         lastUsedAt: [3, 1, 2][index],
         session: { groups: [{ name: key, notes: 'x'.repeat(2000) }] },
     }));
     const store = { ...library.emptyStore(), currentKey: 'current', entries };
     const budget = JSON.stringify({ ...store, entries: [entries[0], entries[2]] }).length;
-    const saved = library.shrinkToFit(store, budget);
-    assert.deepEqual(saved.entries.map(item => item.key), ['recent', 'current']);
+    assert.equal(library.shrinkToFit(store, budget), null);
     assert.equal(store.entries.length, 3);
+});
+
+test('owned archives missing from an older recent cache regain cards without overwriting edits', () => {
+    const a = `spine-${'a'.repeat(64)}`, b = `spine-${'b'.repeat(64)}`;
+    const store = library.upsert(library.emptyStore(), entry(a, {session: {groups: [{name:'keep'}]}}));
+    const restored = library.restoreArchives(store, [{key:a,savedAt:1},{key:b,savedAt:2}]);
+    assert.equal(restored.entries.length, 2);
+    assert.equal(library.find(restored, a).session.groups[0].name, 'keep');
+    assert.equal(library.find(restored, b).lastUsedAt, 2);
+    assert.equal(store.entries.length, 1);
+    assert.equal(library.restoreArchives(restored, [{key:a},{key:b}]), restored);
+});
+
+test('failed oversized save leaves the previously persisted library untouched', () => {
+    const storage = fakeStorage();
+    let store = library.upsert(library.emptyStore(), entry('saved'));
+    library.save(storage, store);
+    const before = storage.getItem(library.STORAGE_KEY);
+    store = library.upsert(store, entry('too-large', {session: {groups: [{notes:'x'.repeat(library.BUDGET_CHARS * 2)}]}}));
+    assert.throws(() => library.save(storage, store), {code:'quota'});
+    assert.equal(storage.getItem(library.STORAGE_KEY), before);
 });
 
 test('读回来的库坏了一部分也只丢坏的那条', () => {

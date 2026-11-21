@@ -11,7 +11,7 @@ from tests.emote_fixtures import spine_zip
 
 
 @pytest.fixture
-def editor(page, running_server):
+def editor(page, running_server, emote_template_library_dir):
     page._review_errors = []
     page.on('console', lambda message: page._review_errors.append(message.text)
             if message.type in ('warning', 'error') else None)
@@ -57,6 +57,19 @@ def _two_skins():
             if entry.filename.endswith(".json"):
                 model = json.loads(content)
                 model["skins"].append({**model["skins"][0], "name": "alternate"})
+                content = json.dumps(model).encode()
+            target.writestr(entry, content)
+    return result.getvalue()
+
+
+def _different_starting_bounds():
+    result = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(spine_zip())) as source, zipfile.ZipFile(result, 'w') as target:
+        for entry in source.infolist():
+            content = source.read(entry)
+            if entry.filename.endswith('.json'):
+                model = json.loads(content)
+                model['animations']['idle1']['bones']['root']['scale'] = [{'x': 1, 'y': 3}]
                 content = json.dumps(model).encode()
             target.writestr(entry, content)
     return result.getvalue()
@@ -417,6 +430,98 @@ def test_batch_stop_becomes_available_when_folder_preparation_overlaps_a_capture
     assert editor.locator('#export-group-open-btn').is_enabled()
 
 
+@pytest.mark.parametrize('wait_at', ['picker', 'native-folder', 'browser-name', 'browser-folder'])
+def test_batch_preparation_cancels_when_the_selected_template_changes(editor, wait_at):
+    _import(editor, spine_zip(), 'A.zip')
+    downloads = []
+    editor.on('download', lambda download: downloads.append(download))
+    editor.evaluate('''waitAt => {
+        const q=reviewEditor, original=window.fetch;
+        q.state.exportFormat='png'; q.state.exportResolution=32;
+        window.reviewBatchWrites=0; window.reviewBatchReadbacks=0;
+        window.reviewCaptureHook=()=>{reviewBatchReadbacks+=1;};
+        const gate=()=>new Promise(resolve=>{window.reviewReleasePreparation=resolve;});
+        const file=()=>({createWritable:async()=>({write:async()=>{reviewBatchWrites+=1;},close:async()=>{}})});
+        const folder={getFileHandle:async()=>file()};
+        const parent={kind:'directory',entries:async function*(){if(waitAt==='browser-name') await gate();},
+            getDirectoryHandle:async()=>{if(waitAt==='browser-folder') await gate();return folder;},
+            getFileHandle:async()=>file()};
+        window.fetch=async (...args)=>{
+            if(String(args[0]).includes('/api/emote-maker/export/')){
+                if(String(args[0]).endsWith('/folder')) await gate();
+                if(String(args[0]).endsWith('/file')) reviewBatchWrites+=1;
+                return new Response(JSON.stringify({success:true,directory:'Z:/intercepted',folder:'A'}),
+                    {headers:{'Content-Type':'application/json'}});
+            }
+            return original(...args);
+        };
+        const picked=waitAt==='picker' ? gate().then(()=>null)
+            : Promise.resolve(waitAt==='native-folder' ? {kind:'path',path:'Z:/intercepted'} : parent);
+        const look=q.currentLookDefaults();look.transform.x=170;
+        const group={id:'A-group',name:'A-group',look,readOnly:false,
+            items:q.getImportedScenes().map(scene=>({kind:'scene',ref:scene.id}))};
+        window.reviewBatch=q.exportGroup(group,null,picked);
+    }''', wait_at)
+    editor.wait_for_function('Boolean(window.reviewReleasePreparation)')
+    _import(editor, spine_zip('other'), 'B.zip')
+    editor.evaluate('reviewEditor.state.adjustments.x=-35')
+    editor.evaluate('''async () => {reviewReleasePreparation();await reviewBatch;}''')
+    assert editor.evaluate('({reads:reviewBatchReadbacks,writes:reviewBatchWrites,x:reviewEditor.state.adjustments.x})') == {
+        'reads': 0, 'writes': 0, 'x': -35}
+    assert downloads == []
+    assert not editor.locator('.emote-maker-page').get_attribute('aria-busy')
+    assert editor.locator('#export-png-btn').is_enabled()
+
+
+def test_thirteenth_template_keeps_saved_edits_and_owned_archives_remain_accessible(editor):
+    _import(editor, _two_skins(), 'A.zip')
+    a_key = editor.evaluate('reviewEditor.currentTemplateKey()')
+    expected = editor.evaluate('''() => {
+        const q=reviewEditor, scenes=q.getImportedScenes();
+        const group=NekoEmoteGroupLibrary.makeGroup({name:'Saved A',look:q.currentLookDefaults(),
+            items:[{kind:'scene',ref:scenes[1].id}]});
+        q.state.groups=[group]; q.state.groupId=group.id;
+        q.state.packSceneIds={idle_image:scenes[0].id,talking_image:scenes[1].id};
+        q.state.templateSkins=[{group:'skin',value:'alternate'}];
+        q.state.adjustments={x:23,y:-8,rotation:31,scale:123};
+        q.persistTemplateToLibrary();
+        return {groups:q.state.groups,packSceneIds:q.state.packSceneIds,
+            skins:q.state.templateSkins,adjustments:q.state.adjustments};
+    }''')
+    other_keys = []
+    for index in range(12):
+        _import(editor, spine_zip(f'other-{index}'), f'B-{index}.zip')
+        other_keys.append(editor.evaluate('reviewEditor.currentTemplateKey()'))
+    assert editor.evaluate("JSON.parse(localStorage.getItem('neko-emote-maker-template-library')).entries.length") == 13
+    editor.wait_for_function('''async () => (await (await fetch('/api/emote-maker/library')).json()).entries.length === 13''')
+    editor.reload(wait_until='networkidle')
+    assert editor.locator('.template-lib-card:not([data-template-built-in])').count() == 13
+    editor.locator(f'[data-template-key="{a_key}"] .template-lib-open').click()
+    editor.wait_for_function('key => reviewEditor.currentTemplateKey()===key && Boolean(reviewEditor.renderer()?.loaded)', arg=a_key)
+    assert editor.evaluate('''() => {
+        const q=reviewEditor;return {groups:q.state.groups,packSceneIds:q.state.packSceneIds,
+            skins:q.state.templateSkins,adjustments:q.state.adjustments};
+    }''') == expected
+    # Model an entry evicted by the previous capped recent list; the owned ZIP remains.
+    orphan_key = other_keys[0]
+    editor.add_init_script('''(() => {
+        const key=__ORPHAN_KEY__;
+        const name='neko-emote-maker-template-library',store=JSON.parse(localStorage.getItem(name));
+        store.entries=store.entries.filter(entry=>entry.key!==key);
+        localStorage.setItem(name,JSON.stringify(store));
+    })();'''.replace('__ORPHAN_KEY__', json.dumps(orphan_key)))
+    editor.reload(wait_until='networkidle')
+    orphan = editor.locator(f'.template-lib-card[data-template-key="{orphan_key}"]')
+    orphan.wait_for(state='visible')
+    assert orphan.locator('.asset-card-label').inner_text() == orphan_key
+    orphan.locator('.template-lib-open').click()
+    editor.wait_for_function('key => reviewEditor.currentTemplateKey()===key && Boolean(reviewEditor.renderer()?.loaded)', arg=orphan_key)
+    orphan.locator('.template-lib-remove').click()
+    editor.locator('#emote-confirm-ok').click()
+    orphan.wait_for(state='detached')
+    assert editor.locator('.template-lib-card:not([data-template-built-in])').count() == 12
+
+
 @pytest.mark.parametrize('path', ['registry', 'import', 'reimport'])
 def test_template_activation_clears_the_previous_group_preview(editor, path):
     original = _two_skins()
@@ -614,7 +719,12 @@ def test_template_import_blocks_exports_and_keeps_resource_selection_usable(edit
         dialog.wait_for(state='visible')
         assert dialog.locator('.emote-confirm-cancel').is_enabled()
         if outcome == 'selection_choose':
-            dialog.locator('select').select_option('assets/other.json')
+            select = dialog.locator('select')
+            assert select.is_visible()
+            select.click()
+            editor.keyboard.press('ArrowDown')
+            editor.keyboard.press('Enter')
+            assert select.input_value() == 'assets/other.json'
             dialog.locator('.emote-confirm-ok').click()
         else:
             dialog.locator('.emote-confirm-cancel').click()
@@ -672,6 +782,79 @@ def test_stale_template_pack_jobs_are_discarded_before_applying_their_look(edito
         } finally {delete window.reviewCaptureHook;}
     }''', base64.b64encode(spine_zip('other')).decode('ascii'))
     assert result == {'count': 0, 'readbacks': 0, 'x': -35, 'skin': 'default', 'sameScene': True}
+
+
+@pytest.mark.parametrize('pack_format', ['flat', 'layered'])
+def test_package_plans_default_look_only_after_a_closed_stage_preview_finishes(editor, pack_format):
+    _import(editor, _different_starting_bounds())
+    result = editor.evaluate(r'''async format => {
+        const q=reviewEditor, scenes=q.getImportedScenes();
+        Object.assign(q.state,{selectedSceneId:scenes[0].id,animationId:scenes[0].animation.id,
+            animationPlaying:false,exportResolution:64,exportFps:10,packFormat:format,packMode:'graph'});
+        q.state.nodeGraph=NekoEmoteNodeGraph.normalizeGraph({schemaVersion:1,nodes:[
+            {id:'default',type:'source.default',params:{}},
+            {id:'idle',type:'output.state',params:{stateKey:'idle_image'}},
+        ],links:[{from:'default',to:'idle',fromSocket:'look',toSocket:'look'}]});
+        const pictures=pack=>{
+            if(!pack) throw new Error('pack did not build');
+            return pack.files.filter(f=>/\.(gif|png)$/.test(f.path))
+                .map(f=>({path:f.path,data:Array.from(f.data)}));
+        };
+        const baseline=pictures(await q.buildPngtuberPackage());
+        let release, pending, temporary=false, requested=false;
+        const barrier=q.queueStageCapture(Symbol(),2000,'barrier',()=>new Promise(r=>{release=r;}));
+        q.openStateStage();
+        const preview=q.captureStageSource(scenes[1].id,'full',1500);
+        window.reviewCaptureHook=()=>{
+            if(requested) return;
+            requested=true;
+            temporary=q.state.selectedSceneId===scenes[1].id;
+            queueMicrotask(()=>{
+                document.querySelector('.st-close').click();
+                pending=q.buildPngtuberPackage();
+            });
+        };
+        try {
+            release();
+            await Promise.all([barrier,preview]);
+            if(!pending) throw new Error('package request did not start');
+            const actual=pictures(await pending);
+            return {temporary,closed:!document.querySelector('.st-close'),count:actual.length,
+                equal:JSON.stringify(actual)===JSON.stringify(baseline),scene:q.state.selectedSceneId,
+                selected:scenes[0].id};
+        } finally {delete window.reviewCaptureHook;}
+    }''', pack_format)
+    assert result['temporary'] and result['closed']
+    assert result['count'] > 0
+    assert result['equal']
+    assert result['scene'] == result['selected']
+
+
+@pytest.mark.parametrize('path', ['registry', 'reimport'])
+def test_reactivation_preserves_framing_for_an_animation_with_different_starting_bounds(editor, path):
+    original = _different_starting_bounds()
+    _import(editor, original, 'A.zip')
+    result = editor.evaluate('''async ([path, aBytes, bBytes]) => {
+        const q=reviewEditor, key=q.currentTemplateKey(), scene=q.getImportedScenes()[1];
+        Object.assign(q.state,{selectedSceneId:scene.id,animationId:scene.animation.id,animationPlaying:false});
+        q.state.adjustments={x:10,y:-8,rotation:31,scale:80};
+        const before=(await q.captureGifFrames({scene,maxFrames:1,maxDimension:64}))[0];
+        const zoom=q.renderer().renderer.camera.zoom;
+        q.persistTemplateToLibrary();
+        const file=(encoded,name)=>new File([Uint8Array.from(atob(encoded),c=>c.charCodeAt(0))],name);
+        await q.importTemplateFile(file(bBytes,'B.zip'));
+        if(path==='registry'){
+            await q.applyTemplateFromRegistry(key);
+            while(!q.renderer()?.loaded) await new Promise(requestAnimationFrame);
+        }else await q.importTemplateFile(file(aBytes,'A.zip'));
+        const restored=q.state.animationId;
+        const after=(await q.captureGifFrames({scene:q.getImportedScenes()[1],maxFrames:1,maxDimension:64}))[0];
+        return {zoom,restoredZoom:q.renderer().renderer.camera.zoom,restored,
+            equal:before.data.length===after.data.length && before.data.every((value,i)=>value===after.data[i])};
+    }''', [path, base64.b64encode(original).decode('ascii'), base64.b64encode(spine_zip('other')).decode('ascii')])
+    assert result['restored'] == 'idle1'
+    assert result['restoredZoom'] == pytest.approx(result['zoom'])
+    assert result['equal']
 
 
 @pytest.mark.parametrize(('fmt', 'edge'), [('png', 512), ('png', 1024), ('gif', 512)])

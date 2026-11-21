@@ -798,6 +798,7 @@
             const text = document.createElement('p');
             text.textContent = t('emoteMaker.spineChooseResource');
             const select = document.createElement('select');
+            select.setAttribute('data-native-select', '');
             select.setAttribute('aria-label', text.textContent);
             select.append(new Option(t('emoteMaker.spineChooseResource'), ''),
                 ...payload.candidates.map((item) => new Option(item.path, item.path)));
@@ -820,6 +821,22 @@
         });
     }
 
+    async function createTemplateSpineRenderer(canvas, manifest, assetStore) {
+        const renderer = await window.NekoEmoteSpineRenderer.create({
+            canvas, manifest, assetStore, loop: true, renderOnLoad: false, fitPadding: 1.1,
+            imageLayers: wardrobeSpineLayers, matchTintPalette: true, highlightedPart: colorPartHighlight,
+        });
+        try {
+            // Fit the same first pose before restoring a saved animation/look.
+            // A partial render avoids caching the previous template's accessories.
+            renderer.render({ startSlot: 0 });
+            return renderer;
+        } catch (error) {
+            renderer.dispose();
+            throw error;
+        }
+    }
+
     async function activateNativeSpineRenderer() {
         const generation = ++spineRendererGeneration;
         disposeSpineRenderer();
@@ -830,18 +847,7 @@
         setCanvasMode(true);
         setTemplateImportStatus(t('emoteMaker.importingTemplate'));
         try {
-            const renderer = await api.create({
-                canvas: spineCanvas,
-                manifest: templatePackage,
-                assetStore: templateAssetStore,
-                animationName: state.animationId,
-                loop: true,
-                renderOnLoad: false,
-                fitPadding: 1.05,
-                imageLayers: wardrobeSpineLayers,
-                matchTintPalette: true,
-                highlightedPart: colorPartHighlight,
-            });
+            const renderer = await createTemplateSpineRenderer(spineCanvas, templatePackage, templateAssetStore);
             if (generation !== spineRendererGeneration || !templatePackage) {
                 renderer.dispose();
                 return;
@@ -4266,6 +4272,7 @@
     async function exportGroup(group, exportTrigger, directoryPick) {
         if (groupExportBusy) return;
         if (!group) return;
+        const generation = spineRendererGeneration;
         if (!hasSpineRenderer()) {
             // 没有运行时 captureGifFrames 只能给到当前画面 —— 宁可不导，也不下一个是
             // "每张都长一样"的包，那种东西看起来像成功了。
@@ -4274,7 +4281,7 @@
         }
         // 点击处已经把选择框打开了。这里再调一次只作为没经过那次点击的退路。
         const picked = await (directoryPick || requestExportDirectory());
-        if (picked === 'cancelled') return;
+        if (picked === 'cancelled' || generation !== spineRendererGeneration) return;
         const savingToFolder = Boolean(picked);
         const planned = planGroupExportFor(
             group,
@@ -4296,6 +4303,7 @@
                     picked.path,
                     groupLibrary.sanitizeFileName(group.name, 'group'),
                 );
+                if (generation !== spineRendererGeneration) return;
                 disk = { path: prepared.directory, folder: prepared.folder };
                 folderName = prepared.folder;
                 folder = disk;
@@ -4310,6 +4318,7 @@
                     picked,
                     groupLibrary.sanitizeFileName(group.name, 'group'),
                 );
+                if (generation !== spineRendererGeneration) return;
                 folder = await picked.getDirectoryHandle(folderName, { create: true });
             } catch (error) {
                 console.warn('[emote-maker] 创建导出文件夹失败', error);
@@ -4317,6 +4326,7 @@
                 plan = planGroupExportFor(group, groupLibrary.MAX_BATCH, format).plan;
             }
         }
+        if (generation !== spineRendererGeneration || groupExportBusy) return;
         groupExportBusy = true;
         groupExportAbort = false;
         setPackBusy(true);
@@ -4356,7 +4366,7 @@
                     files.forEach((file) => { entries[file.path] = file.data; });
                     return new Blob([window.fflate.zipSync(entries, { level: 6 })], { type: 'application/zip' });
                 },
-                shouldAbort: () => groupExportAbort,
+                shouldAbort: () => groupExportAbort || generation !== spineRendererGeneration,
                 onProgress: ({ done, total }) => setGroupExportStatus(
                     interpolate(t('emoteMaker.groupExporting'), { done, total })),
             });
@@ -4368,12 +4378,14 @@
             setPackBusy(false);
             setGroupExportStatus('');
             if (trigger && trigger.isConnected) trigger.textContent = triggerLabel;
-            state.adjustOverwrite = previousOverwrite;
-            state.selectedSceneId = previousSceneId;
-            state.animationId = previousAnimationId;
-            state.animationProgress = previousProgress;
-            state.animationPlaying = previousPlaying;
-            syncLiveCanvas({ autoplay: previousPlaying });
+            if (generation === spineRendererGeneration) {
+                state.adjustOverwrite = previousOverwrite;
+                state.selectedSceneId = previousSceneId;
+                state.animationId = previousAnimationId;
+                state.animationProgress = previousProgress;
+                state.animationPlaying = previousPlaying;
+                syncLiveCanvas({ autoplay: previousPlaying });
+            }
             renderAll();
         }
         if (!result) return;
@@ -6474,7 +6486,7 @@
             templateLibraryState = next;
             templateLibraryModule.save(localStorage, templateLibraryState);
         } catch (_) {
-            // 存不下只影响"下次库里还认得它"，不影响当前编辑。
+            showToast(t('emoteMaker.archiveSaveFailed'));
         }
     }
 
@@ -6550,7 +6562,18 @@
             const same = nextTotal === templateArchiveTotalBytes
                 && next.size === templateArchiveBytes.size
                 && [...next].every(([key, bytes]) => templateArchiveBytes.get(key) === bytes);
-            if (same) return;
+            const restored = templateLibraryModule.restoreArchives(templateLibraryState,
+                payload.entries.filter((entry) => !pendingTemplateRemovals.has(entry.key)));
+            const recovered = restored !== templateLibraryState;
+            if (recovered) {
+                templateLibraryState = restored;
+                try {
+                    templateLibraryModule.save(localStorage, templateLibraryState);
+                } catch (_) {
+                    showToast(t('emoteMaker.archiveSaveFailed'));
+                }
+            }
+            if (same && !recovered) return;
             templateArchiveBytes = next;
             templateArchiveTotalBytes = nextTotal;
             renderTemplateLibraryGrid();
@@ -7469,6 +7492,22 @@
     }
 
     async function buildPngtuberPackage() {
+        if (packBusy) return null;
+        setPackBusy(true);
+        try {
+            return await queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'export',
+                buildPngtuberPackageNow);
+        } catch (error) {
+            console.warn('[emote-maker] 形象包生成失败', error);
+            showToast(t('emoteMaker.packZipFailed'));
+            return null;
+        } finally {
+            setPackBusy(false);
+            renderAll();
+        }
+    }
+
+    async function buildPngtuberPackageNow() {
         const generation = spineRendererGeneration;
         const packFormat = state.packFormat;
         const packModule = window.NekoEmotePngtuberPack;
@@ -7476,15 +7515,13 @@
             showToast(t('emoteMaker.exportGifUnavailable'));
             return null;
         }
-        if (packBusy) return null;
         if (packFormat === 'layered' && !window.NekoEmotePngtuberLayered) {
             showToast(t('emoteMaker.packLayeredUnavailable'));
             return null;
         }
         // 图片槽位的字节在副本里，内存清单只在开表演台时恢复。刷新后直接导出
         // 而没开过抽屉的话，清单是空的——所有图片槽会被烘包静默跳过。
-        // 先起恢复不 await：setPackBusy 之前不能有让渡点，否则双击会导出两份；
-        // 真正等它落在烘包前。
+        // 规划和烘焙同属队列事务，默认外观只在旧预览恢复后读取。
         const stageImagesReady = restoreStageImages();
         const graph = currentBakeGraph();
         const model = window.NekoEmoteNodeGraph;
@@ -7569,10 +7606,10 @@
             };
         });
 
-        setPackBusy(true);
         try {
             await stageImagesReady;
-            const baked = await bakePackJobs(jobs, { format: packFormat, generation });
+            if (generation !== spineRendererGeneration) return null;
+            const baked = await bakePackJobsNow(jobs, { format: packFormat });
             if (!baked.length) {
                 showToast(t('emoteMaker.packZipFailed'));
                 return null;
@@ -7594,9 +7631,6 @@
             console.warn('[emote-maker] 形象包生成失败', error);
             showToast(t('emoteMaker.packZipFailed'));
             return null;
-        } finally {
-            setPackBusy(false);
-            renderAll();
         }
     }
 
@@ -8457,12 +8491,7 @@
             // store have passed validation, so a bad import is recoverable.
             if (!nextAssetStore) throw new Error(t('emoteMaker.spineZipRequired'));
             nextCanvas = spineCanvas.cloneNode(false);
-            nextRenderer = await window.NekoEmoteSpineRenderer.create({
-                canvas: nextCanvas, manifest: payload.package, assetStore: nextAssetStore,
-                loop: true, renderOnLoad: false, fitPadding: 1.1, imageLayers: wardrobeSpineLayers,
-                matchTintPalette: true,
-                highlightedPart: colorPartHighlight,
-            });
+            nextRenderer = await createTemplateSpineRenderer(nextCanvas, payload.package, nextAssetStore);
             const nextKey = templateLibraryModule?.entryKeyFor(payload.package);
             if (pendingTemplateRemovals.has(nextKey) || (restoreKey && (pendingTemplateRemovals.has(restoreKey)
                 || !findTemplateLibraryEntry(restoreKey)))) {

@@ -5,10 +5,12 @@ import json
 import re
 import zipfile
 from PIL import Image, ImageDraw
+import pytest
 from playwright.sync_api import Page, expect
 from tests.emote_fixtures import spine_zip
 
 LIBRARY_KEY = "neko-emote-maker-template-library"
+pytestmark = pytest.mark.usefixtures("emote_template_library_dir")
 
 
 def _open(page, server):

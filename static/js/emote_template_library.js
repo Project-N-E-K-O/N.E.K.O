@@ -1,13 +1,13 @@
 /*
- * 模板库：把"上次打开的那一个模板"扩成"最近用过的几个模板"。
+ * 模板库：保存所有模板的编辑记录，最近使用的模板另保留缩略图缓存。
  *
  * 只做数据，不碰 DOM、不读文件、不 import 任何页面脚本 —— 这样它能在 Node 里直接单测，
- * 也保证"存什么/淘汰什么"的规则只有一份实现。
+ * 也保证保存与缓存裁剪的规则只有一份实现。
  *
  * 为什么要限体积：库条目里带一张缩略图 dataURL，而 localStorage 的配额是整个源共享的
  * （约 5MB）。这个仓库里现有的写入全是 `try { setItem } catch { /* 忽略 *\/ }`，写爆了
  * 只会静默丢掉；库要是把配额吃干，连带把布局、导出设置一起挤掉，那比丢一张缩略图糟得多。
- * 所以这里主动限量，并且**先丢缩略图、再丢最久没用的条目**。
+ * 所以只裁剪可重建的缩略图；编辑记录存不下时报告失败，不淘汰其它模板。
  */
 (function (root, factory) {
     'use strict';
@@ -23,7 +23,7 @@
 
     const STORAGE_KEY = 'neko-emote-maker-template-library';
     const SCHEMA_VERSION = 1;
-    const MAX_ENTRIES = 12;
+    const MAX_THUMBNAILS = 12;
     // 96px 的 PNG dataURL 实测十几 KB；超过这个数就当没图，不占地方
     const MAX_THUMB_CHARS = 24 * 1024;
     // 整份 JSON 的软上限：给布局/导出设置留出余量
@@ -150,22 +150,27 @@
         return index >= 0 ? store.entries[index] : null;
     }
 
-    /** 插入或原地更新；同 key 保留 addedAt，越界的最久没用的先走。 */
+    /** 插入或原地更新；同 key 保留 addedAt，所有编辑记录都保留。 */
     function upsert(store, entry) {
-        const next = { ...emptyStore(), ...store };
+        const next = { ...emptyStore(), ...store, entries: [...(store.entries || [])] };
         const index = findIndex(next, entry.key);
         if (index >= 0) {
             next.entries[index] = { ...next.entries[index], ...entry, addedAt: next.entries[index].addedAt || entry.addedAt };
         } else {
             next.entries.unshift(entry);
         }
-        while (next.entries.length > MAX_ENTRIES) {
-            // 按"最久没碰"淘汰，而不是按加入顺序 —— 常用的那条不该被新来的挤掉
-            let oldest = 0;
-            next.entries.forEach((candidate, i) => {
-                if ((candidate.lastUsedAt || 0) < (next.entries[oldest].lastUsedAt || 0)) oldest = i;
-            });
-            next.entries.splice(oldest, 1);
+        return next;
+    }
+
+    /** 旧缓存曾淘汰过卡片时，仍让磁盘上归用户所有的副本可以重开或删除。 */
+    function restoreArchives(store, archives) {
+        let next = store;
+        for (const archive of archives || []) {
+            const key = text(archive.key);
+            if (!/^(?:spine-[0-9a-f]{64}|builtin:[a-z0-9]+(?:[.-][a-z0-9]+)*)$/.test(key)
+                || find(next, key)) continue;
+            next = upsert(next, makeEntry({ key, displayName: key,
+                addedAt: archive.savedAt, lastUsedAt: archive.savedAt }));
         }
         return next;
     }
@@ -193,11 +198,15 @@
     }
 
     /**
-     * 体积超预算时的降级顺序：先扔缩略图（能重画），再按最久没用扔整条。
-     * 返回 null 表示连这个都救不回来 —— 调用方应当只保留当前这一条。
+     * 只为最近的模板缓存缩略图，体积超预算时继续丢图，始终保留全部编辑记录。
+     * 返回 null 表示去掉全部缩略图后仍存不下，不写入残缺的库。
      */
     function shrinkToFit(store, budget = BUDGET_CHARS) {
-        let next = { ...emptyStore(), ...store };
+        const recent = new Set([...(store.entries || [])]
+            .sort((a, b) => (b.lastUsedAt || 0) - (a.lastUsedAt || 0))
+            .slice(0, MAX_THUMBNAILS).map((entry) => entry.key));
+        let next = { ...emptyStore(), ...store, entries: (store.entries || [])
+            .map((entry) => recent.has(entry.key) ? entry : ({ ...entry, thumb: '' })) };
         const size = (candidate) => JSON.stringify(candidate).length;
         if (size(next) <= budget) return next;
         // 缩略图是"好看"，不是"有用"：先牺牲它
@@ -207,19 +216,6 @@
         };
         if (size(next) <= budget) return next;
         next = { ...next, entries: next.entries.map((entry) => ({ ...entry, thumb: '' })) };
-        if (size(next) <= budget) return next;
-        next = { ...next, entries: [...next.entries] };
-        while (next.entries.length > 1 && size(next) > budget) {
-            let oldest = -1;
-            next.entries.forEach((entry, index) => {
-                if (entry.key === next.currentKey) return;
-                if (oldest < 0 || (entry.lastUsedAt || 0) < (next.entries[oldest].lastUsedAt || 0)) {
-                    oldest = index;
-                }
-            });
-            if (oldest < 0) break;
-            next.entries.splice(oldest, 1);
-        }
         if (size(next) <= budget) return next;
         return null;
     }
@@ -296,7 +292,7 @@
     return Object.freeze({
         STORAGE_KEY,
         SCHEMA_VERSION,
-        MAX_ENTRIES,
+        MAX_THUMBNAILS,
         MAX_THUMB_CHARS,
         BUDGET_CHARS,
         MAX_LABEL_CHARS,
@@ -310,6 +306,7 @@
         normalizeSession,
         find,
         upsert,
+        restoreArchives,
         remove,
         touch,
         markCurrent,
