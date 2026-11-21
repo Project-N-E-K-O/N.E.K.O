@@ -176,7 +176,7 @@ box-shadow:0 6px 14px rgba(23,167,255,.18)}
 height:100vh;
 min-height:0;
 display:grid;
-grid-template-rows:56px minmax(0,1fr);
+grid-template-rows:minmax(56px,auto) minmax(0,1fr);
 background:radial-gradient(circle at 8% 12%,rgba(75,212,253,.2),transparent 30%),linear-gradient(145deg,var(--theater-bg),var(--theater-panel-soft))}
 
 .theater-selector-shell [hidden]{
@@ -198,23 +198,16 @@ color:rgba(255,255,255,.94);
 background:rgba(7,82,137,.2);
 font-size:.74rem}
 
-/* 聚焦后在标题栏下完整显示状态，避免连接等待说明被窄屏省略号遮住。 */
-.theater-selector-shell .theater-status:focus{
-position:fixed;
-top:64px;
-left:12px;
-z-index:100;
-width:max-content;
-max-width:min(480px,calc(100vw - 24px));
-padding:10px 12px;
+/* The status is only focusable while its text is truncated (theater_selector.js toggles tabindex/title).
+   Mouse users get the title tooltip; keyboard focus wraps the full text in place inside the title bar,
+   which may grow taller and push the layout down instead of covering the story library. */
+.theater-selector-shell .theater-status[tabindex]:focus-visible{
+max-width:none;
 overflow:visible;
 white-space:normal;
-color:var(--theater-ink);
-background:var(--theater-panel);
-border-color:var(--theater-accent);
-box-shadow:var(--theater-shadow);
-outline:2px solid var(--theater-accent);
-outline-offset:2px}
+overflow-wrap:anywhere;
+outline:2px solid #fff;
+outline-offset:1px}
 
 .theater-selector-layout{
 min-height:0;
