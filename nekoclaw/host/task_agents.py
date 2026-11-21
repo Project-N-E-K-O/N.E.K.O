@@ -2168,7 +2168,9 @@ class TaskAgentManager:
                     self._handed_back_news.setdefault(main, []).append((waiting.id, copy_id))
                 return
             text = _Found(_forked_work_text(done, handed))
-            await self._ledger.append_event(holder, "told", {"text": text, "from_copies": True})
+            # On record as what it was told, under a type of its own: no
+            # word of the user's, which a review reads ``told`` for.
+            await self._ledger.append_event(holder, "told_of_copies", {"text": str(text)})
             await self._send_text(runtime, live, "steer", text)
             for item in done:
                 try:

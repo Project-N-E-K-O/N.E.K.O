@@ -173,6 +173,9 @@ async def test_a_later_commission_is_carried_on_in_a_copy_while_the_session_is_a
     assert news in "\n".join(_said(scripts[EXPORT].requests[1]))
     [told] = [event.payload for event in await host.ledger.events(second.id) if event.type == "told_to_session"]
     assert told == {"commission_id": first.id, "steered": True}
+    # On record as no word of the user's (a review reads ``told`` for those).
+    assert "told_of_copies" in await _types(host, first.id)
+    assert "told" not in await _types(host, first.id)
     # Not as the user's words, and only once: the next commission opened in it is not told again.
     third = await _dispatch(host, "add a chart")
     await wait_status(host, third.id, "done")
@@ -1319,13 +1322,16 @@ async def test_a_session_at_work_is_told_that_a_copy_handed_a_commission_back_to
     assert brain_texts.TASK_AGENT_FORKED_WORK.format(items=handed) in "\n".join(_said(scripts[EXPORT].requests[1]))
 
 
-async def test_a_commission_stuck_in_its_copy_is_taken_up_in_the_session_itself(hosts, tmp_path):
+@pytest.mark.parametrize(("report", "outcome"), [("blocked", "stuck"), ("failed", "failed")])
+async def test_a_commission_stuck_in_its_copy_is_told_of_and_taken_up_in_the_session_itself(hosts, tmp_path, report, outcome):
     release, wait = _gate()
     scripts = {
-        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        EXPORT: ScriptedLLM(
+            [[wait, call("glob", {"pattern": "*.py"}, "call-x"), finish("tool_calls")], _report("export added", "call-y")]
+        ),
         FILES: ScriptedLLM(
             [
-                [call("report", {"status": "blocked", "summary": "tables.py is not there"}, "call-b"), finish("tool_calls")],
+                [call("report", {"status": report, "summary": "tables.py is not there"}, "call-b"), finish("tool_calls")],
                 _report("found it in data/tables.py", "call-r"),
             ]
         ),
@@ -1333,11 +1339,17 @@ async def test_a_commission_stuck_in_its_copy_is_taken_up_in_the_session_itself(
     host = _host(hosts, tmp_path, scripts)
     first = await _export_at_work(host, scripts)
     second = await _dispatch(host, FILES)
-    stuck = await wait_status(host, second.id, "blocked")
+    stuck = await wait_status(host, second.id, report)
     copy_id = stuck.session_id
     assert (await host.ledger.get_session(copy_id)).kind == "fork"
+    await wait_until(lambda: host.task_agents._sessions[first.id].sent > 1, what="the session itself told of it")
     release.set()
     await wait_status(host, first.id, "done")
+    # Told of whatever came of it.
+    item = brain_texts.TASK_AGENT_FORKED_WORK_ITEM.format(
+        asked=_words(stuck), outcome=outcome, session=copy_id[:8], result="tables.py is not there"
+    )
+    assert item in "\n".join(_said(scripts[EXPORT].requests[1]))
     assert await host.task_agents.tell(second.id, "look under data/")
     done = await wait_status(host, second.id, "done")
     # Not gone on in the copy: in the session itself, told what came of it there.
@@ -1345,9 +1357,39 @@ async def test_a_commission_stuck_in_its_copy_is_taken_up_in_the_session_itself(
     [back] = [event.payload for event in await host.ledger.events(second.id) if event.type == "back_from_copy"]
     assert back == {"copy": copy_id, "to": first.session_id}
     said = "\n".join(_said(scripts[FILES].requests[1]))
-    head = brain_texts.TASK_AGENT_TAKEN_UP_FROM_COPY.split("{nonce}")[0].format(status="blocked", session=copy_id[:8])
+    head = brain_texts.TASK_AGENT_TAKEN_UP_FROM_COPY.split("{nonce}")[0].format(status=report, session=copy_id[:8])
     assert head in said and "\n    tables.py is not there\n" in said
     assert "look under data/" in said
+
+
+async def test_a_commission_handed_back_to_a_session_with_nothing_to_do_is_not_told_of_itself(hosts, tmp_path):
+    release, wait = _gate()
+    copy_release, copy_wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        RENAME: ScriptedLLM(
+            [
+                [copy_wait, call("write", {"file_path": "chart.py", "content": "x"}, "call-1"), finish("tool_calls")],
+                [say("It is in chart.py."), finish()],
+                [call("glob", {"pattern": "*.py"}, "call-g"), finish("tool_calls")],
+                _report("renamed", "call-3"),
+            ]
+        ),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    first = await _export_at_work(host, scripts)
+    second = await _dispatch(host, RENAME)
+    await wait_until(lambda: scripts[RENAME].requests, what="the copy at work")
+    release.set()
+    await wait_status(host, first.id, "done")
+    copy_release.set()
+    done = await wait_status(host, second.id, "done")
+    assert done.session_id == first.session_id
+    # Opened with what the copy found, and not told besides that it waits.
+    said = "\n".join(text for request in scripts[RENAME].requests[2:] for text in _said(request))
+    assert brain_texts.TASK_AGENT_FORK_HANDED_BACK.split("{tool}")[0] in said
+    assert brain_texts.TASK_AGENT_FORKED_WORK.split("{items}")[0] not in said
+    assert not host.task_agents._handed_back_news and not host.task_agents._copy_news
 
 
 def test_what_copies_did_is_said_within_the_limit_with_the_user_words_cut():
