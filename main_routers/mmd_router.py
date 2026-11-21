@@ -83,11 +83,12 @@ def _iter_model_files(root: Path):
         if path.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
             continue
         try:
-            if not path.is_file():
-                continue
+            is_file = path.is_file()
         except OSError:
-            pass
-        yield path
+            # Type unknown (e.g. EACCES): keep the path so the folder is not deleted.
+            is_file = True
+        if is_file:
+            yield path
 
 
 def safe_mmd_path(mmd_dir: Path, filename: str, subdir: str | None = None) -> tuple[Path | None, str]:
