@@ -53,6 +53,7 @@ from .contracts import (
     _proactive_chat_body,
     _proactive_pass_body,
 )
+from .directive_gate import _proactive_delivery_directive_block
 from .state import (
     _enter_proactive_phase2,
     _ensure_proactive_chat_totals_loaded,
@@ -598,6 +599,20 @@ async def _attempt_mini_game_invite_delivery(
         game_type, invite_lang, master_name, selected_story=selected_theater,
     )
     if not invite_text:
+        return None
+    # Ban-topic gate on the line, which can carry a theater story title. It
+    # runs before the turn is claimed, so there is nothing to release.
+    # ⚠️ A blocked invite falls through to the normal pipeline (None) rather
+    # than ending the round: the force-first branch retries the invite on
+    # every round until one is delivered, so ending the round here would
+    # silence proactive chat for as long as a ban like "games" stays active.
+    if await _proactive_delivery_directive_block(
+        mgr=mgr,
+        proactive_sid=None,
+        lanlan_name=lanlan_name,
+        text=invite_text,
+        channel="mini_game",
+    ) is not None:
         return None
 
     # Same round ownership as the main Phase 2 path: a retired HTTP task must

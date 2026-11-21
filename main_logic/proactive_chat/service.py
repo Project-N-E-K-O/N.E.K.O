@@ -58,6 +58,7 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_PASS_DISABLED,
     PROACTIVE_REASON_PASS_DUPLICATE,
     PROACTIVE_REASON_PASS_PRIVACY,
+    PROACTIVE_REASON_PASS_USER_DIRECTIVE,
     ProactiveChatCommand,
     ProactiveChatResult,
     _proactive_chat_body,
@@ -190,6 +191,24 @@ def _consume_repeat_suppressed_break_reminder(
             marker_name,
             mark_err,
         )
+
+
+def _suppressed_break_reminder_body(
+    reminder_delivery: Any,
+    label: str,
+) -> dict[str, Any]:
+    """Pass body for a break reminder whose source was deliberately consumed."""
+    if reminder_delivery.directive_blocked:
+        return _proactive_pass_body(
+            PROACTIVE_REASON_PASS_USER_DIRECTIVE,
+            message=f"{label} blocked by user ban-topic directive",
+        )
+    return {
+        "success": True,
+        "action": "pass",
+        "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
+        "message": f"{label} suppressed as repeated",
+    }
 
 
 _MEME_PROXY_CANDIDATE_CHECK_LIMIT = 3
@@ -1067,7 +1086,7 @@ async def handle_proactive_chat(
                     round_id=lifecycle.screenshot_request_id,
                 )
                 delivered_text = reminder_delivery.delivered_text
-                if reminder_delivery.repeat_suppressed:
+                if reminder_delivery.consumes_source:
                     _consume_repeat_suppressed_break_reminder(
                         mgr,
                         lanlan_name=lanlan_name,
@@ -1075,12 +1094,9 @@ async def handle_proactive_chat(
                     )
                     return await _end_proactive(
                         ProactiveChatResult(
-                            body={
-                                "success": True,
-                                "action": "pass",
-                                "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
-                                "message": "anti-slack reminder suppressed as repeated",
-                            }
+                            body=_suppressed_break_reminder_body(
+                                reminder_delivery, "anti-slack reminder",
+                            )
                         )
                     )
                 if delivered_text:
@@ -1186,7 +1202,7 @@ async def handle_proactive_chat(
                     round_id=lifecycle.screenshot_request_id,
                 )
                 delivered_text = reminder_delivery.delivered_text
-                if reminder_delivery.repeat_suppressed:
+                if reminder_delivery.consumes_source:
                     _consume_repeat_suppressed_break_reminder(
                         mgr,
                         lanlan_name=lanlan_name,
@@ -1194,12 +1210,9 @@ async def handle_proactive_chat(
                     )
                     return await _end_proactive(
                         ProactiveChatResult(
-                            body={
-                                "success": True,
-                                "action": "pass",
-                                "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
-                                "message": "work-break game invite suppressed as repeated",
-                            }
+                            body=_suppressed_break_reminder_body(
+                                reminder_delivery, "work-break game invite",
+                            )
                         )
                     )
                 if delivered_text:
@@ -1315,7 +1328,7 @@ async def handle_proactive_chat(
                 round_id=lifecycle.screenshot_request_id,
             )
             delivered_text = reminder_delivery.delivered_text
-            if reminder_delivery.repeat_suppressed:
+            if reminder_delivery.consumes_source:
                 _consume_repeat_suppressed_break_reminder(
                     mgr,
                     lanlan_name=lanlan_name,
@@ -1323,12 +1336,9 @@ async def handle_proactive_chat(
                 )
                 return await _end_proactive(
                     ProactiveChatResult(
-                        body={
-                            "success": True,
-                            "action": "pass",
-                            "reason_code": PROACTIVE_REASON_PASS_DUPLICATE,
-                            "message": "work-break reminder suppressed as repeated",
-                        }
+                        body=_suppressed_break_reminder_body(
+                            reminder_delivery, "work-break reminder",
+                        )
                     )
                 )
             if delivered_text:

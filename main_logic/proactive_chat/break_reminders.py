@@ -29,6 +29,9 @@ from config import (
 from config.prompts.prompts_activity import BREAK_REMINDER_REGEN_INSTRUCTION
 from config.prompts.prompts_proactive import BEGIN_GENERATE
 from config.prompts.prompts_sys import _loc
+from main_logic.proactive_chat.directive_gate import (
+    _proactive_delivery_directive_block,
+)
 from main_logic.proactive_chat.state import (
     _proactive_feed_rejected_for_takeover,
     _proactive_turn_still_owned,
@@ -59,6 +62,17 @@ class BreakReminderDeliveryResult:
     delivered_text: str | None = None
     proactive_sid: str | None = None
     repeat_suppressed: bool = False
+    directive_blocked: bool = False
+
+    @property
+    def consumes_source(self) -> bool:
+        """Whether the caller must consume the pending reminder source.
+
+        Both drops are deliberate verdicts on what the reminder would say, so
+        retrying next round would only spend another model call on the same
+        outcome while the must-fire branch keeps normal proactive chat out.
+        """
+        return self.repeat_suppressed or self.directive_blocked
 
 
 #   * Anti-slack — fired when state transitions focused_work → leisure
@@ -282,8 +296,10 @@ async def _deliver_break_reminder_via_llm(
 
     Returns a result with text/SID on success. ``repeat_suppressed`` is true
     when the long-window guard deliberately consumes a rejected rewrite
-    (explicit ``[PASS]`` or still-repetitive content); callers must consume
-    that reminder source instead of retrying it.
+    (explicit ``[PASS]`` or still-repetitive content); ``directive_blocked``
+    is true when the reminder hit a user ban-topic directive. In both cases
+    (``consumes_source``) callers must consume that reminder source instead
+    of retrying it.
     An empty default result means:
       * ``prepare_proactive_delivery`` rejection (user just spoke / WS offline /
         etc — leave the source pending alone, next round can retry)
@@ -443,6 +459,18 @@ async def _deliver_break_reminder_via_llm(
             await mgr.handle_new_message()
         return BreakReminderDeliveryResult()
 
+    # Ban-topic gate before the anti-repeat checks: their drops persist draft
+    # fragments, and a banned term must not reach that record either. Same
+    # order as the Phase 2 output gate.
+    if await _proactive_delivery_directive_block(
+        mgr=mgr,
+        proactive_sid=proactive_sid,
+        lanlan_name=lanlan_name,
+        text=text,
+        channel=channel,
+    ) is not None:
+        return BreakReminderDeliveryResult(directive_blocked=True)
+
     anti_repeat_corpus = None
     unanswered_repeat_signal = None
     try:
@@ -555,6 +583,18 @@ async def _deliver_break_reminder_via_llm(
             if _proactive_turn_still_owned(mgr, proactive_sid):
                 await mgr.handle_new_message()
             return BreakReminderDeliveryResult()
+
+        # A rewrite can introduce a banned term. No repeat-effect record here:
+        # the ban is a separate verdict, not a repetition outcome (same as the
+        # Phase 2 regen gate).
+        if await _proactive_delivery_directive_block(
+            mgr=mgr,
+            proactive_sid=proactive_sid,
+            lanlan_name=lanlan_name,
+            text=cleaned,
+            channel=channel,
+        ) is not None:
+            return BreakReminderDeliveryResult(directive_blocked=True)
 
         regen_signal = _score_unanswered_break_reminder(
             corpus=anti_repeat_corpus,
