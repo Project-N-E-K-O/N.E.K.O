@@ -1194,6 +1194,81 @@
         }
     }
 
+    // Another window may have turned privacy mode on before its storage event
+    // reached this window. Returns that revocation's write token, or null.
+    // Read-only. Only a revocation carrying the key's own write token counts
+    // (the explicit write, or the knownKeyWrites token that window's later
+    // unrelated saves keep carrying) and only when it is newer than what this
+    // window already holds -- the storage listener's per-key write-token
+    // comparison and its server-floor check. The listener's pending-key and
+    // server-merge revision rules are not repeated: in those races this may
+    // revoke where the listener would keep a pending value for a moment, and
+    // the revoking window's own event, arriving next, settles the same way.
+    // An incidental stale "false" another window copied along in an
+    // unrelated save is not a choice and is ignored.
+    function _unseenVisionRevocationToken() {
+        const key = 'proactiveVisionEnabled';
+        let stored = null;
+        try {
+            const raw = localStorage.getItem('project_neko_settings');
+            stored = raw ? JSON.parse(raw) : null;
+        } catch (_) {
+            return null;
+        }
+        if (!stored || stored[key] !== false) return null;
+        const meta = _readSharedWriteMeta(stored);
+        if (!meta || meta.writerId === _SHARED_WRITER_ID) return null;
+        const token = meta.changedKeys.indexOf(key) !== -1
+            ? meta
+            : meta.knownKeyWrites[key];
+        if (!_sharedWriteTokenOutranks(token, _knownSharedKeyWrites[key])) return null;
+        // Same server-floor check as the listener: a write the server has
+        // since superseded is not a pending revocation.
+        const keyToken = meta.knownKeyWrites[key];
+        if (keyToken && Number.isInteger(keyToken.confirmedRevision)
+            && Number.isInteger(_knownServerKeyRevisions[key])
+            && keyToken.confirmedRevision < _knownServerKeyRevisions[key]) return null;
+        return token;
+    }
+
+    // Live screen consent this window reports to the backend and acts on
+    // (settings save, cross-window sync, WebSocket reconnect): this window's
+    // value, overridden by an unseen revocation from another window. A failed
+    // local save does not change it: this window's own value is used. (If that
+    // save failed AND another window's newer revocation is stored, this
+    // reports "not allowed" even for a fresh local enable: the safe side.)
+    function visionConsentForBackend() {
+        if (S.proactiveVisionEnabled !== true) return S.proactiveVisionEnabled;
+        return !_unseenVisionRevocationToken();
+    }
+
+    // Saving this window's stale "allowed" copy would overwrite an unseen
+    // revocation in localStorage and the server body. Adopt it first, the way
+    // the storage listener will once the event arrives. A value this window
+    // changed since its last sync is newer intent and stays.
+    function _adoptUnseenVisionRevocation(value) {
+        const key = 'proactiveVisionEnabled';
+        if (value !== true) return value;
+        if (_settingsBaseline
+            && Object.prototype.hasOwnProperty.call(_settingsBaseline, key)
+            && _settingsBaseline[key] !== value) return value;
+        const token = _unseenVisionRevocationToken();
+        if (!token) return value;
+        _rememberSharedKeyWrites([key], token);
+        // Record it as a cross-window change, as the listener does, so a 412
+        // conflict merge keeps it instead of restoring the server's older
+        // "allowed" (see preservedKeys in syncSettingsToServer).
+        _noteCrossWindowMutations({ [key]: false }, [key]);
+        // Even when this window toggled the key before (it stays in the dirty
+        // set), the adopted value is another window's choice: roll the
+        // baseline so this save and the next do not claim it as this
+        // window's explicit write with a fresh write id.
+        if (_settingsBaseline) {
+            _settingsBaseline[key] = false;
+        }
+        return false;
+    }
+
     // Privacy mode, Proactive Chat and its Screen Share option together
     // decide whether the voice-call heartbeat may look at the screen. Run
     // after every save and every cross-window sync, like the privacy check.
@@ -1208,17 +1283,18 @@
     }
 
     function stopVisionAfterPrivacyEnabled() {
+        const consent = visionConsentForBackend();
         // Screenshots taken before a revocation must not ride a later request,
         // even if consent is re-enabled before that request is sent.
         if (window.appProactive && typeof window.appProactive.noteProactiveVisionConsent === 'function') {
-            window.appProactive.noteProactiveVisionConsent(S.proactiveVisionEnabled);
+            window.appProactive.noteProactiveVisionConsent(consent);
         }
         // Notify live work before the queued settings POST reaches disk. Reconnect
         // repeats this snapshot; enabling still needs persisted backend consent.
         if (window.appWebSocket && typeof window.appWebSocket.syncProactiveVisionConsent === 'function') {
-            window.appWebSocket.syncProactiveVisionConsent(S.proactiveVisionEnabled);
+            window.appWebSocket.syncProactiveVisionConsent(consent);
         }
-        if (S.proactiveVisionEnabled !== false) return;
+        if (consent !== false) return;
 
         try {
             if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
@@ -1644,9 +1720,11 @@
         const currentProactive = typeof window.proactiveChatEnabled !== 'undefined'
             ? window.proactiveChatEnabled
             : S.proactiveChatEnabled;
-        const currentVision = typeof window.proactiveVisionEnabled !== 'undefined'
-            ? window.proactiveVisionEnabled
-            : S.proactiveVisionEnabled;
+        const currentVision = _adoptUnseenVisionRevocation(
+            typeof window.proactiveVisionEnabled !== 'undefined'
+                ? window.proactiveVisionEnabled
+                : S.proactiveVisionEnabled
+        );
         const currentVisionChat = typeof window.proactiveVisionChatEnabled !== 'undefined'
             ? window.proactiveVisionChatEnabled
             : S.proactiveVisionChatEnabled;
@@ -3044,6 +3122,7 @@
     // ======================== 导出 ========================
 
     mod.saveSettings = saveSettings;
+    mod.visionConsentForBackend = visionConsentForBackend;
     mod.loadSettings = loadSettings;
     mod.syncSettingsToServer = syncSettingsToServer;
     mod.getConversationSettings = getConversationSettings;
