@@ -572,7 +572,13 @@
         // quiet window is ever longer than one base interval or the 60s floors.
         var baseMs = (Number(S.proactiveChatInterval) || 0) * 1000;
         var cap = Math.max(baseMs, SYSTEM_RETURN_QUIET_MS, SYSTEM_INACTIVE_RECHECK_MS);
-        return Math.min(remaining, cap);
+        if (remaining > cap) {
+            // Rebase the stored deadline too, otherwise every later tick would
+            // see a future deadline again and keep waiting.
+            _systemQuietUntil = Date.now() + cap;
+            remaining = cap;
+        }
+        return remaining;
     }
 
     function _systemQuietPending() {

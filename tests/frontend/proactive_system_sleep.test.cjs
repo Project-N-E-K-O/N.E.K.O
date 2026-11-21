@@ -492,6 +492,14 @@ test('clock set back after wake does not stretch the quiet window', async () => 
     clock.now -= 10 * 60 * 1000;          // time sync moves the clock back 10 min
     pet.window.scheduleProactiveChat();
     assert.ok(pet.scheduledDelay() <= 60000 + 1, `delay ${pet.scheduledDelay()} capped to the quiet floor`);
+    // The stored deadline must be rebased as well: the next tick really speaks.
+    const setBackAt = clock.now;
+    for (let i = 0; i < 5 && proactiveFetches(pet) === 0; i += 1) {
+        clock.now += pet.scheduledDelay();
+        await pet.fire();
+    }
+    assert.equal(proactiveFetches(pet), 1, 'speaks again after one capped quiet window');
+    assert.ok(clock.now - setBackAt <= 60000 + 1, `resumed after ${(clock.now - setBackAt) / 1000}s, not ~11 min`);
 });
 
 test('a tick firing a few ms before the quiet deadline still speaks', async () => {
