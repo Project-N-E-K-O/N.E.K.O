@@ -1214,6 +1214,8 @@ def test_validate_plugin_dir_ui_permissions_match_runtime(tmp_path: Path) -> Non
     # Every permission the runtime accepts (document:parse included) passes check.
     assert "document:parse" in PERMISSIONS
     assert permission_warnings(sorted(PERMISSIONS)) == []
+    # The runtime strips surrounding whitespace before looking the name up.
+    assert permission_warnings([" document:parse "]) == []
     assert permission_warnings(["state:read", "files:write"]) == [
         "[plugin.ui].panel[0].permissions[1] is not a recognized permission: files:write"
     ]

@@ -197,7 +197,7 @@ Use Markdown only for read-only quickstarts, docs, and reference text.
 
 ## Validation
 
-`neko-plugin check` verifies the manifest and that UI entry files exist (it currently warns about `document:parse` by mistake). It does not type-check Hosted TSX, render Markdown, or exercise the iframe. Without a checkout, ask the user to open the surface after Start/Reload and report the warnings it shows.
+`neko-plugin check` verifies the manifest and that UI entry files exist. It does not type-check Hosted TSX, render Markdown, or exercise the iframe. Without a checkout, ask the user to open the surface after Start/Reload and report the warnings it shows.
 
 ### Hosted TSX checks [checkout only]
 
