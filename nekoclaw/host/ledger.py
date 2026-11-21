@@ -3471,7 +3471,7 @@ class Ledger:
         Those a commission of the session's project was carried on in
         (``TaskAgentManager``): no task agent's, which leaves out the
         copies that answered a question (filed under the commission that
-        asked) as well. Done or stuck, with what came of them. One the
+        asked) as well. Done, stuck or failed, with what came of them. One the
         session was told of has a ``told_to_session`` event (written once
         the session took the message that told it).
         """
@@ -3480,7 +3480,7 @@ class Ledger:
             rows = conn.execute(
                 "SELECT commissions.* FROM commissions JOIN sessions ON sessions.id = commissions.session_id "
                 "WHERE sessions.forked_from = ? AND sessions.kind = 'fork' AND commissions.parent_id IS NULL "
-                "AND commissions.status IN ('done', 'blocked') "
+                "AND commissions.status IN ('done', 'blocked', 'failed') "
                 # In a copy made to carry a commission on in, not one made
                 # by other means.
                 f"AND {_CARRIED_IN.format(copy='sessions.id', source='sessions.forked_from')} "

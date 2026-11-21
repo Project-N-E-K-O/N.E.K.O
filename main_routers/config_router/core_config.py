@@ -29,6 +29,12 @@ from ..shared_state import get_session_manager, get_initialize_character_data
 from utils.file_utils import read_json_async
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.config_manager import ensure_default_yui_voice_for_free_api
+from utils.decision_client.workspace import (
+    InvalidWorkspaceIdError,
+    normalize_workspace_id,
+    safe_workspace_id,
+)
+from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS
 
 
 CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
@@ -50,6 +56,11 @@ CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyRequesty',
     'assistApiKeyOpper',
     'assistApiKeyAtlascloud',
+)
+
+# Bailian workspace IDs (core_config.json field names), one per provider region.
+CORE_CONFIG_WORKSPACE_ID_FIELDS = tuple(
+    file_field for file_field, _config_key in ASSIST_WORKSPACE_ID_FIELDS.values()
 )
 
 CORE_CONFIG_MODEL_API_KEY_FIELDS = tuple(
@@ -283,6 +294,11 @@ async def get_core_config_api():
             "assistApiKeyRequesty": core_cfg.get('assistApiKeyRequesty', ''),
             "assistApiKeyOpper": core_cfg.get('assistApiKeyOpper', ''),
             "assistApiKeyAtlascloud": core_cfg.get('assistApiKeyAtlascloud', ''),
+            # Bailian workspace IDs are not secrets; an invalid stored value reads as unset.
+            **{
+                file_field: safe_workspace_id(core_cfg.get(file_field, ''))
+                for file_field in CORE_CONFIG_WORKSPACE_ID_FIELDS
+            },
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
@@ -591,6 +607,18 @@ async def update_core_config(request: Request):
                 if not isinstance(data[field], str) or len(data[field]) > 200:
                     return {"success": False, "error": "INVALID_MANAGEMENT_CONFIG"}
                 core_cfg[field] = data[field].strip()
+        for field in CORE_CONFIG_WORKSPACE_ID_FIELDS:
+            if field in data:
+                # The ID becomes part of a hostname: reject anything that is not a
+                # single DNS label instead of trying to clean it up.
+                try:
+                    core_cfg[field] = normalize_workspace_id(data[field])
+                except InvalidWorkspaceIdError:
+                    return {
+                        "success": False,
+                        "error": "INVALID_WORKSPACE_ID",
+                        "field": field,
+                    }
         if 'openclawUrl' in data:
             # Frontend forms populate original saved values. If startup migration failed to persist (Windows antivirus may block
             # os.replace), this still receives old 8089; writing unchanged would persist the old port again,

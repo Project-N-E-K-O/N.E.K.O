@@ -583,6 +583,15 @@ in copies made before: a commission taken up again in its copy (the user
 answered it, or said more of one that is done there) is, and counts against
 the places of all task agents only."""
 
+TASK_AGENT_FORK_PENDING_QUESTION_MAX_TOKENS = 300
+"""How much of the question a project's session waits for the user to answer
+the message that opens a copy of it says (``TASK_AGENT_COPY_SESSION_WAITS``)."""
+
+SIDE_QUESTION_OUTPUT_MAX_TOKENS = 64
+"""What the small model may write when it is asked whether a commission is a
+side question (``LexicalDecisionModel.side_question``): one line of JSON, with
+room to spare."""
+
 TASK_AGENT_FORK_CONTINUE_HOT_SECONDS = 300.0
 """A session whose last model request was made this recently has the head of
 its requests in a provider's cache, most likely (Anthropic keeps it five
@@ -612,6 +621,9 @@ itself (as much as one note from another session)."""
 
 TASK_AGENT_FORKED_WORK_MAX_ITEMS = 5
 TASK_AGENT_FORKED_WORK_MAX_TOKENS = 600
+TASK_AGENT_FORKED_WORK_ASKED_MAX_TOKENS = 80
+"""How much of the user's words each commission a copy finished is quoted with,
+in what the session itself is told of it (``TASK_AGENT_FORKED_WORK_ITEM``)."""
 """What a session is told of the commissions copies of it finished while
 another was at work in it, with the next commission opened in it: at most
 this many, the most recent first, within this many tokens."""
