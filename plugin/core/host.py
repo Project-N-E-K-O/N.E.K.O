@@ -864,9 +864,10 @@ def _resolve_persist_mode(
     read for objects without that attribute), else ``"off"``. When that default
     is ``"off"``, a valid legacy ``[plugin_checkpoint].freeze_mode`` still applies.
 
-    An invalid instance default only logs a warning: it keeps its current
-    effect (not "auto", so no class-level auto persistence, yet not "off", so
-    explicit method-level persist settings still apply).
+    An invalid instance default only logs a warning, and only when it is the
+    value that takes effect: it keeps its current effect (not "auto", so no
+    class-level auto persistence, yet not "off", so explicit method-level
+    persist settings still apply).
     """
     from plugin.sdk.shared.storage.state import PluginStatePersistence
 
@@ -874,13 +875,24 @@ def _resolve_persist_mode(
     persist_mode = getattr(instance, "__persist_mode__", None)
     if persist_mode is None:
         persist_mode = getattr(instance, "__freeze_mode__", "off")
-    if persist_mode not in valid_persist_modes:
+    resolved = _resolve_configured_persist_mode(persist_mode, effective_cfg, valid_persist_modes, log)
+    if resolved is persist_mode and persist_mode not in valid_persist_modes:
         log.warning(
             "[Plugin Process] Plugin {} declares an invalid class persist mode {!r}; expected one of: {}",
             plugin_id,
             persist_mode,
             ", ".join(valid_persist_modes),
         )
+    return resolved
+
+
+def _resolve_configured_persist_mode(
+    persist_mode: Any,
+    effective_cfg: object,
+    valid_persist_modes: tuple[str, ...],
+    log: Any,
+) -> Any:
+    """Apply [plugin_state] and the legacy [plugin_checkpoint] on top of the instance default."""
     if not isinstance(effective_cfg, dict):
         return persist_mode
 
@@ -1083,7 +1095,12 @@ def _plugin_process_runner(
                 logger.debug("[Plugin Process] Could not read startup config through SDK: {}", type(e).__name__)
 
         freezable_keys = getattr(instance, "__freezable__", []) or []
-        persist_mode = _resolve_persist_mode(instance, effective_cfg, plugin_id, logger)
+        try:
+            persist_mode = _resolve_persist_mode(instance, effective_cfg, plugin_id, logger)
+        except Exception as e:
+            # Keep startup alive on odd class values, as the inline resolution did.
+            logger.warning("[Plugin Process] Could not resolve persist mode, using \"off\": {}", type(e).__name__)
+            persist_mode = "off"
 
         # Mark restored frozen state for unfreeze lifecycle events.
         ctx._restored_from_freeze = False

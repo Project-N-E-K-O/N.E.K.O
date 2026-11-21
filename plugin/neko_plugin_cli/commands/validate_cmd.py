@@ -554,7 +554,10 @@ def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
 def _models_error_label(loc: tuple[object, ...]) -> str:
     if not loc:
         return "[plugin.models]"
-    label = f"[plugin.models.{loc[0]}]"
+    usage_id = str(loc[0])
+    # Quote keys TOML would not accept bare, so "a.b" does not read as a nested table.
+    key = usage_id if re.fullmatch(r"[A-Za-z0-9_-]+", usage_id) else json.dumps(usage_id, ensure_ascii=False)
+    label = f"[plugin.models.{key}]"
     if loc[1:] == ("[key]",):
         return f"{label} (usage id)"
     for part in loc[1:]:

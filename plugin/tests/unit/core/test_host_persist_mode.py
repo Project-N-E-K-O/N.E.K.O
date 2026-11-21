@@ -110,3 +110,16 @@ def test_valid_class_persist_mode_does_not_warn() -> None:
 
     assert _resolve_persist_mode(_AutoPlugin(), {}, "demo_plugin", log) == "auto"
     assert log.warnings == []
+
+
+@pytest.mark.parametrize(
+    "effective_cfg",
+    [{"plugin_state": {"persist_mode": "manual"}}, {"plugin_state": {"persist_mode": "off"}}],
+)
+def test_invalid_class_persist_mode_overridden_by_config_does_not_warn(effective_cfg: dict) -> None:
+    log = _RecordingLog()
+
+    result = _resolve_persist_mode(object.__new__(_InvalidModeBasePlugin), effective_cfg, "demo_plugin", log)
+
+    assert result == effective_cfg["plugin_state"]["persist_mode"]
+    assert log.warnings == []

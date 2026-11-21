@@ -3063,6 +3063,8 @@ def _models_errors(issues: list[tuple[str, str]]) -> dict[str, str]:
         ("[plugin.models.summary]\nlabel = \"S\"\ncapabilities = [\"text\", \"text\"]", "[plugin.models.summary].capabilities"),
         ("[plugin.models.Summary]\nlabel = \"S\"", "[plugin.models.Summary] (usage id)"),
         ("[plugin.models.\"my-model\"]\nlabel = \"S\"", "[plugin.models.my-model] (usage id)"),
+        # A key TOML would not take bare is quoted, so it does not read as a nested table.
+        ("[plugin.models.\"a.b\"]\nlabel = \"S\"", '[plugin.models."a.b"] (usage id)'),
         (f"[plugin.models.{'a' * 65}]\nlabel = \"S\"", f"[plugin.models.{'a' * 65}] (usage id)"),
     ],
 )
