@@ -61,6 +61,29 @@ async def test_host_actions_record_actual_destinations_and_no_content(env):
     assert secret not in json.dumps(rows)
 
 
+async def test_ask_session_keeps_the_run_that_scheduled_its_handoff(env, monkeypatch):
+    host, (source, sender), (_, recipient) = env
+    manager = host.task_agents
+    spawn = manager._spawn
+    admitted = []
+
+    async def ask(sid, payload, action):
+        admitted.append(sid)
+        return {}
+
+    def switch_runs_before_starting(work):
+        host.permissions.end_run(source.id)
+        host.permissions.current_run(source.id)
+        return spawn(work)
+
+    monkeypatch.setattr(manager, "_cb_session_ask", ask)
+    monkeypatch.setattr(manager, "_spawn", switch_runs_before_starting)
+    with pytest.raises(RuntimeError, match="originating run has ended"):
+        await manager._callbacks().call(sender.id, "session_ask", {"session": recipient.id, "question": "status?"})
+    assert admitted == []
+    assert (await trace(host, source))[-1]["status"] == "denied"
+
+
 async def test_deny_reads_but_do_not_ask_for_an_intrinsic_session_action(env):
     host, (source, sender), (_, recipient) = env
     callbacks = host.task_agents._callbacks()

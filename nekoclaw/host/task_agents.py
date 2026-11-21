@@ -1242,6 +1242,7 @@ class TaskAgentManager:
         """Capture the caller before SQLite yields. A note does not carry this receipt."""
         async def invoke(session_id: str, payload: dict[str, Any]):
             commission_id = self._at_work_in(session_id)
+            live = self._permissions.current_run(commission_id)
 
             async def perform(action: _SessionAction):
                 if self._at_work_in(session_id) != commission_id:
@@ -1250,11 +1251,11 @@ class TaskAgentManager:
                 return await callback(session_id, payload, action)
 
             if tool != "ask_session":
-                return await self._perform_action(commission_id, tool, perform)
+                return await self._perform_action(commission_id, tool, perform, live)
             # Once filing has started, the handoff owns both the loan and the audit.
             # Losing the ACP waiter must neither cancel it nor keep the waiter blocked.
             handing_over = asyncio.Event()
-            work = self._spawn(self._perform_action(commission_id, tool, perform, handing_over))
+            work = self._spawn(self._perform_action(commission_id, tool, perform, live, handing_over))
             try:
                 return await asyncio.shield(work)
             except asyncio.CancelledError:
@@ -1266,9 +1267,9 @@ class TaskAgentManager:
         return invoke
 
     async def _perform_action(
-        self, commission_id: str, tool: str, perform, handing_over: asyncio.Event | None = None,
+        self, commission_id: str, tool: str, perform, live: Callable[[], bool],
+        handing_over: asyncio.Event | None = None,
     ):
-        live = self._permissions.current_run(commission_id)
         category = "outside_read" if tool in ("ask_session", "read_session") else "session_action"
         kind = "working_memory" if tool in ("space_brief", "note_lesson") else "session_action"
         scope = SessionActionScope("host:session", tool, commission_id)
@@ -1276,6 +1277,9 @@ class TaskAgentManager:
         grant = None
         try:
             async with call_audit.call(self._ledger, commission_id, kind, tool) as record:
+                if not live():
+                    record.status = "denied"
+                    raise RuntimeError("the originating run has ended")
                 decision = await self._permissions.check(commission_id, category, scope=scope, hold_once=True)
                 grant = decision.grant_id
                 record.grant_id = self._permissions.authorization_ref(grant)
@@ -1886,7 +1890,7 @@ class TaskAgentManager:
                 action.record.scope_ref = commission.session_id
                 return await self._space.brief(commission.project)
 
-            return await self._perform_action(commission.id, "space_brief", read)
+            return await self._perform_action(commission.id, "space_brief", read, self._permissions.current_run(commission.id))
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - it starts without what was kept
