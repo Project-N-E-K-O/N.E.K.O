@@ -28,6 +28,8 @@ def preferences_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "_get_active_preferences_path",
         lambda: str(path),
     )
+    monkeypatch.setattr(preferences, "_get_preferences_read_path", lambda: str(path))
+    monkeypatch.setattr(preferences, "_get_preferences_write_path", lambda: str(path))
     return path
 
 

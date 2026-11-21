@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import asdict
+from functools import partial
 
 import httpx
 from portalocker.exceptions import LockException
@@ -338,13 +339,14 @@ class ProactiveFeedbackRuntime:
         from utils.language_utils import get_global_language_full
         from utils.preferences import ais_privacy_mode_enabled
 
+        privacy_enabled = partial(ais_privacy_mode_enabled, strict=True)
         origin = self.chat_interest_origin
         if self.upload_paused or self._closing or not origin or not community_bearer_transport_allowed(origin):
             return
         try:
             saved = await self._snapshot()
             owner = host.owner_from_snapshot(saved)
-            if not owner["user_id"] or owner["community"] != origin or await ais_privacy_mode_enabled():
+            if not owner["user_id"] or owner["community"] != origin or await privacy_enabled():
                 return
             token = saved.get("access_token") if saved else None
             if not isinstance(token, str) or not token:
@@ -354,7 +356,7 @@ class ProactiveFeedbackRuntime:
 
             async def prepare_body():
                 nonlocal sent
-                if await ais_privacy_mode_enabled():
+                if await privacy_enabled():
                     return None
                 sent = await asyncio.to_thread(self.store.pending_chat_interests, owner, vocabulary)
                 query = {
@@ -369,7 +371,7 @@ class ProactiveFeedbackRuntime:
             try:
                 reply = await self._json_request(
                     "POST", "/api/users/me/chat-interests/sync", token, owner,
-                    prepare_body=prepare_body, pause_requested=ais_privacy_mode_enabled,
+                    prepare_body=prepare_body, pause_requested=privacy_enabled,
                     origin=origin, response_limit=1024 * 1024,
                 )
             except SyncFailure as exc:
@@ -384,7 +386,7 @@ class ProactiveFeedbackRuntime:
             ):
                 return
             received = parse_synced_chat_interests(reply.get("events"), int(time.time()))
-            if not await ais_privacy_mode_enabled():
+            if not await privacy_enabled():
                 # Importing a full account snapshot can evict old local rows.
                 # Drain any remaining eligible uploads before merging it.
                 if len(sent) == SYNC_BATCH_LIMIT:

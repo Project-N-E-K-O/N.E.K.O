@@ -31,6 +31,7 @@ def capture_chat_source_owner() -> str | None:
     try:
         owner = host.owner_from_snapshot(host.credentials.saved_session_snapshot())
         status, account_id = host.credentials.signed_in_account_state()
+        # Legacy authenticated sessions without an account ID cannot own evidence.
         if (status == "signed_out" and not owner["user_id"]) or (
             status == "signed_in" and account_id and account_id == owner["user_id"]
         ):

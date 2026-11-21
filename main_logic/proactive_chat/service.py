@@ -349,6 +349,15 @@ def _build_ranked_web_prompt(
     return merged, links, fallback_labels, fallback_records
 
 
+def _eligible_meme_candidates(candidates: list[dict], profile: Profile | None) -> list[dict]:
+    if profile is None:
+        return candidates
+    return [
+        candidate for candidate in candidates
+        if profile.score("meme", profile.match("meme", candidate)) is not None
+    ]
+
+
 def _open_threads_for_activity_state(
     activity_snapshot, fresh_open_threads
 ) -> list[str]:
@@ -2286,7 +2295,7 @@ async def handle_proactive_chat(
         # Assemble meme topics (iterate → deduplicate → one-image limit).
         # ============================================================
         if meme_content and meme_content.get("success") and meme_content.get("data"):
-            meme_data = meme_content.get("data", [])
+            meme_data = _eligible_meme_candidates(meme_content["data"], profile)
             if meme_data:
                 proxy_checked_count = 0
                 for candidate_meme in meme_data:

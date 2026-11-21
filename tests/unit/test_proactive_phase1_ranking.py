@@ -19,6 +19,15 @@ def link(title, url, source="B站", **fields):
     return {"title": title, "url": url, "source": source, **fields}
 
 
+@pytest.mark.parametrize("scope", ["meme", "all"])
+def test_local_meme_candidates_respect_persisted_exclusions(scope):
+    blocked = {"title": "Funny Cat Meme", "url": "https://example.test/cat"}
+    first = {"title": "A surprised dog", "url": "https://example.test/dog"}
+    second = {"title": "A dancing bird", "url": "https://example.test/bird"}
+    profile = Profile({("meme", "bird"): 3}, {(scope, "cat")})
+    assert service._eligible_meme_candidates([blocked, first, second], profile) == [first, second]
+
+
 def test_ranked_prompt_keeps_a_strong_match_from_a_cooled_channel(monkeypatch):
     monkeypatch.setattr(candidate_selection, "_should_skip_source", lambda _key: False)
     game = link(

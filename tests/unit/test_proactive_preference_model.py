@@ -181,6 +181,46 @@ def test_preference_pruning_cannot_restore_superseded_public_permission(tmp_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bad_settings", ["malformed", "unreadable"])
+async def test_chat_interest_sync_skips_unreadable_privacy_settings(tmp_path, monkeypatch, privacy_settings_path, bad_settings):
+    origin = "https://preferences-community.example.test"
+    saved = {"base_url": origin, "local_user_id": "account", "access_token": "synthetic"}
+    owner = owner_from_snapshot(saved)
+    store = RecommendationStore(tmp_path / "preferences.sqlite3")
+    event = PreferenceEvent("a" * 64, "蛙泳换气", "all", "inferred", 1, int(time()))
+    store.save_preferences(owner["key"], [event], permissions={event.id: SearchPermission(True)})
+    requests = []
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"version": 1, "revision": "e" * 64, "events": []})
+
+    @contextmanager
+    def attribution():
+        yield owner
+
+    if bad_settings == "malformed":
+        privacy_settings_path.write_text("{", encoding="utf-8")
+    else:
+        privacy_settings_path.mkdir()
+    monkeypatch.setattr("services.proactive_feedback.runtime.fetch_public_search_words", AsyncMock(return_value=frozenset()))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        runtime = ProactiveFeedbackRuntime(
+            store, client=client, chat_interest_origin=origin, snapshot_provider=lambda: saved,
+            fenced_snapshot_provider=lambda: saved, attribution_context=attribution,
+        )
+        await runtime._sync_chat_interests()
+        assert not requests
+        assert [item.event for item in store.pending_chat_interests(owner)] == [event]
+        if bad_settings == "malformed":
+            privacy_settings_path.unlink()
+        else:
+            privacy_settings_path.rmdir()
+        await runtime._sync_chat_interests()
+    assert [upload["events"] for upload in requests] == [[{**asdict(event), "game": False}]]
+
+
+@pytest.mark.asyncio
 async def test_chat_interest_sync_pauses_when_privacy_changes_during_batch_read(tmp_path, monkeypatch, privacy_settings_path):
     origin = "https://preferences-community.example.test"
     saved = {"base_url": origin, "local_user_id": "account", "access_token": "synthetic"}
@@ -200,7 +240,8 @@ async def test_chat_interest_sync_pauses_when_privacy_changes_during_batch_read(
             privacy_on = True
         return batch
 
-    async def privacy_mode():
+    async def privacy_mode(*, strict=False):
+        assert strict
         return privacy_on
 
     def handle(request):
