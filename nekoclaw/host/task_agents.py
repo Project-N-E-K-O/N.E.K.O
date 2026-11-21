@@ -163,6 +163,9 @@ _CHILD_DISABLED_TOOLS = ("subagent", "message_session", "schedule_wake", "ask_se
 # How many copies of copies are followed back to the session they began with,
 # to open a copy by that one's preset.
 _COPY_CHAIN_MAX = 8
+# Among how many of a commission's first events the preset it was started
+# with is looked for: it is put on record right after the one that files it.
+_PRESET_ON_RECORD_WITHIN = 8
 # How long what is to be handed to a session waits for that session's
 # runtime to have closed it, when it is closing this moment.
 _CLOSING_RETRY_SECONDS = 1.0
@@ -1046,9 +1049,6 @@ class TaskAgentManager:
         from nekoclaw.host.templates import TemplateStore
 
         self.templates = TemplateStore(paths.space)
-        # The preset a task agent named for one it started, until that one
-        # is given its session (``_cb_subagent_start``, ``_give_session``).
-        self._presets_wanted: dict[str, str] = {}
         self._model_config = model_config
         self._gateway = gateway
         self._enabled = enabled
@@ -1792,7 +1792,6 @@ class TaskAgentManager:
         from config.nekoclaw_settings import TASK_AGENT_SESSION_NAME_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
-        wanted = self._presets_wanted.pop(commission.id, None)
         if commission.session_id:
             self._session_of[commission.id] = commission.session_id
             return commission
@@ -1810,7 +1809,7 @@ class TaskAgentManager:
                 name=f"{lead}/{commission.name or commission.id}",
                 parent_id=parent_session.id if parent_session is not None else None,
                 # The one its starter named; a worker when it named none.
-                preset=wanted,
+                preset=await self._preset_chosen(commission.id),
                 duty=commission.title,
             )
         elif commission.project and commission.project != DEFAULT_PROJECT:
@@ -1829,6 +1828,20 @@ class TaskAgentManager:
             )
         self._session_of[commission.id] = session.id
         return commission
+
+    async def _preset_chosen(self, commission_id: str) -> str | None:
+        """Return the preset a task agent was started with by the one that started it; None when that one named none.
+
+        On record with its commission from the moment that was filed
+        (``_cb_subagent_start``), and read from there whenever it is given
+        its session: also when its start failed before it had one and it
+        is taken up again later, or by another host process. A task agent
+        that was to read only is not opened as a worker for that.
+        """
+        for event in await self._ledger.events(commission_id, limit=_PRESET_ON_RECORD_WITHIN):
+            if event.type == "preset":
+                return str(event.payload.get("preset") or "") or None
+        return None
 
     async def _project_about(self, project: str) -> str:
         """Return what a project is for, as its record says; empty when it says nothing or cannot be read."""
@@ -1850,7 +1863,7 @@ class TaskAgentManager:
         another in its place: what it would then be allowed is not what
         its user set down.
         """
-        from config.prompts.prompts_nekoclaw_presets import PRESET_UNUSABLE
+        from config.prompts.prompts_nekoclaw_presets import PRESET_COPIED_TOO_OFTEN, PRESET_UNUSABLE
         from nekoclaw.host.templates import SHADOW, TemplateError, builtin_templates
 
         source = kept
@@ -1861,6 +1874,12 @@ class TaskAgentManager:
             if origin is None:
                 break
             source = origin
+        else:
+            if source.kind == "fork" and source.forked_from:
+                # Still a copy of something after as many steps as are
+                # followed: the session it began with is there, and what
+                # its preset withholds is not dropped for not looking further.
+                raise RuntimeError(PRESET_COPIED_TOO_OFTEN.format(most=_COPY_CHAIN_MAX))
         if source.kind == "fork" or source.preset == SHADOW:
             # A copy whose origin is not on record any more: nothing to take
             # after. It has what every copy has, and no role of its own.
@@ -6663,16 +6682,16 @@ class TaskAgentManager:
                 workdir=workdir,
                 conversation_id=parent.conversation_id,
                 lang=parent.lang,
+                # Which preset it is to be opened by, on record with it from
+                # the start: read when it is given its session, now or at a
+                # later try (``_preset_chosen``).
+                events=[("preset", {"preset": preset})] if preset is not None else [],
             )
-            if preset is not None:
-                # For when it is given its session, on the way to its start.
-                self._presets_wanted[child.id] = preset
         # A stop of the parent sets its status before it looks for children,
         # so a child filed after that look is caught here, and one filed
         # before it is stopped by the stop itself.
         current = await self._ledger.get(parent.id)
         if current is None or current.status not in ("working", "waiting_user"):
-            self._presets_wanted.pop(child.id, None)
             await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
             raise RuntimeError("the commission was stopped; no task agent is started")
         started = {"name": name, "commission_id": child.id}
@@ -6682,12 +6701,7 @@ class TaskAgentManager:
         # It starts now or not at all (see ``_NO_PLACE_REASON``); the parent
         # is told so and can do that part itself. Its result comes back to the
         # parent as a message.
-        try:
-            placed = await self.submit(child, candidate_plugin_ids=self._candidates.get(parent.id, ()), wait=False)
-        finally:
-            # Taken when it was given its session; not kept for one that never was.
-            self._presets_wanted.pop(child.id, None)
-        if not placed:
+        if not await self.submit(child, candidate_plugin_ids=self._candidates.get(parent.id, ()), wait=False):
             raise RuntimeError(f"{_NO_PLACE_REASON}; do this part yourself")
         return {"name": name}
 

@@ -88,7 +88,8 @@ async def test_the_tools_are_the_built_in_runtimes_by_name_and_definition(tmp_pa
         assert tool["description"] == schemas[tool["name"]]["description"]
         if tool["name"] == "report":
             # As in the built-in runtime: a session of its own says what it takes with its report.
-            assert tool["inputSchema"]["properties"].pop("duty") == REPORT_DUTY_PARAMETER
+            added = tool["inputSchema"]["properties"].pop("duty")
+            assert added == REPORT_DUTY_PARAMETER
         assert tool["inputSchema"] == schemas[tool["name"]]["parameters"]
     # A task agent another one started is offered report as the catalog has it.
     _open(tools, tmp_path, "s2", top_level=False)

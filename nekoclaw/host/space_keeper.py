@@ -907,7 +907,12 @@ class SpaceKeeper:
             _kept, done = await self._ledger.write_card(session.id, by="review", **lines)
             written.extend(done)
         about = card.get("description")
-        if isinstance(about, str) and about.strip() and project != DEFAULT_PROJECT:
+        # Only of the project the commission was filed under from the start,
+        # which is the one whose description the model was shown. One the
+        # review itself files it under (``_target_project``) it saw nothing
+        # of: what it wrote would replace words it never read. (A project
+        # the review makes gets its description there.)
+        if isinstance(about, str) and about.strip() and commission.project == project:
             if await self._space.describe_project(project, about, by="review") is not None:
                 written.append("description")
         return written

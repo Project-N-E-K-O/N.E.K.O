@@ -1402,6 +1402,7 @@ class Ledger:
         *,
         unless: Callable[[list[Commission]], Commission | None] | None = None,
         source_message_ref: str | None = None,
+        events: Iterable[tuple[str, dict[str, Any]]] = (),
         **values: Any,
     ) -> tuple[Commission, bool]:
         """File a commission. Returns ``(commission, created)``.
@@ -1409,11 +1410,15 @@ class Ledger:
         ``unless`` is given the owner's active commissions and may return one
         of them; then nothing is filed and that one is returned with
         ``created`` False. Check and insert happen in one transaction, so two
-        dispatches of the same request cannot both be filed.
+        dispatches of the same request cannot both be filed. ``events`` are
+        put on record with the commission in that transaction, after the
+        one that says it was filed: what is to be known of it for as long
+        as it is there, whatever becomes of whoever filed it.
         """
         unknown = set(values) - set(_COMMISSION_COLUMNS)
         if unknown:
             raise ValueError(f"unknown commission fields: {sorted(unknown)}")
+        filed_with = [(str(kind), dict(payload)) for kind, payload in events]
 
         def work(conn: sqlite3.Connection) -> tuple[Commission, bool]:
             if unless is not None:
@@ -1421,7 +1426,10 @@ class Ledger:
                 existing = unless(active)
                 if existing is not None:
                     return existing, False
-            return self._insert(conn, values, source_message_ref=source_message_ref), True
+            made = self._insert(conn, values, source_message_ref=source_message_ref)
+            for kind, payload in filed_with:
+                self._event(conn, made.id, kind, payload)
+            return made, True
 
         commission, created = await self.run(work)
         if created:

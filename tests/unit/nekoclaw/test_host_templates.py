@@ -97,6 +97,8 @@ def test_a_scout_and_a_planner_read_only(name):
     ) == frozenset(READ_ONLY_WITHHELD)
     # The gateway calls nothing for it, and it starts no task agents.
     assert item.calls_nothing and not item.delegates
+    # Word to another session is not a way to write: where it has those tools, it keeps them.
+    assert not {"message_session", "ask_session", "schedule_wake"} & item.withheld()
 
 
 def test_an_inspector_runs_commands_and_writes_nothing_and_has_no_memory():
@@ -250,6 +252,11 @@ def test_a_file_that_is_no_template_says_so(text, said):
         ("avatar: shadow\n", "avatar is one of"),
         ("label: [a, b]\n", "label is a text"),
         ("label: " + "很长的名字 " * 20 + "\n", "label is longer than 20 tokens"),
+        # A field given twice: YAML would take the last without a word, and what the first withholds would be gone.
+        ("withhold: [bash]\nwithhold: []\n", "the field withhold is given twice"),
+        ("read_only: true\nlabel: x\nread_only: false\n", "the field read_only is given twice"),
+        # A value the parser cannot make anything of is the file's mistake, like any other.
+        ("label: 2026-13-01\n", r"not valid YAML \(ValueError\)"),
     ],
 )
 def test_a_field_that_is_wrong_is_an_error_and_never_passed_over(more, said):
@@ -420,6 +427,20 @@ def test_a_template_that_is_a_folder_is_a_template_that_is_wrong(space):
     assert listed["worker"].valid
 
 
+def test_a_file_whose_values_cannot_be_read_is_one_wrong_template_and_no_more(space):
+    store = TemplateStore(lambda: space)
+    _put(space, _text(description="2026-13-01"), name="dated")
+    _put(space, _text(name="twice", more="withhold: [bash]\nwithhold: []\n"), name="twice")
+    _put(space, _text())
+
+    listed = {item.name: item for item in store.listing()}
+
+    assert listed["dated"].error == "the front matter is not valid YAML (ValueError)"
+    assert listed["twice"].error == "the field withhold is given twice"
+    assert listed["doc-writer"].valid and all(listed[name].valid for name in PRESETS)
+    assert store.project_signature(DEFAULT_PROJECT) == () and store.project_signature(None) == ()
+
+
 def test_a_file_too_large_and_files_past_the_most_a_folder_may_hold_are_errors(space, monkeypatch):
     monkeypatch.setattr("config.nekoclaw_settings.TEMPLATE_FILES_MAX", 2)
     monkeypatch.setattr("config.nekoclaw_settings.TEMPLATE_FILE_MAX_BYTES", 200)
@@ -458,18 +479,15 @@ def test_the_sentences_of_all_templates_together_have_a_cap_and_the_one_past_it_
 
 
 def test_what_was_read_is_kept_until_a_file_changes(space, monkeypatch):
-    import nekoclaw.host.templates as module
-
     store = TemplateStore(lambda: space)
     path = _put(space, _text(description="First."))
     reads: list[str] = []
-    real = module.parse_template
 
     def counted(text: str, **kwargs: str) -> Template:
         reads.append(kwargs["name"])
-        return real(text, **kwargs)
+        return parse_template(text, **kwargs)
 
-    monkeypatch.setattr(module, "parse_template", counted)
+    monkeypatch.setattr("nekoclaw.host.templates.parse_template", counted)
 
     assert store.resolve("doc-writer").description == "First."
     assert store.resolve("doc-writer").description == "First."

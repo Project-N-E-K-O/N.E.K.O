@@ -284,6 +284,62 @@ async def test_an_inspector_runs_commands_writes_no_files_and_is_told_nothing_of
     assert builtin_templates()["inspector"].body in _system(inspected.child)
 
 
+async def test_the_preset_a_task_agent_was_started_with_is_on_record_with_it_and_outlasts_a_start_that_failed(
+    hosts, tmp_path, monkeypatch
+):
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM())
+    parent, _created = await host.ledger.create(
+        dispatch_text="check the tests", lanlan_name="Lan", title="check the tests", source="dispatch", route="task_agent",
+        workdir=str(tmp_path),
+    )
+    parent, _session = await host.ledger.give_session(parent.id, kind="single", name="check the tests")
+    await host.ledger.transition(parent.id, "working", reason="test")
+
+    # Its start comes to nothing before it is given a session (the ledger could not be written, say).
+    async def nowhere(*args: Any, **kwargs: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(host.task_agents, "submit", nowhere)
+    with pytest.raises(RuntimeError, match="do this part yourself"):
+        await host.task_agents._cb_subagent_start(parent.id, {"description": "look", "prompt": "Look.", "preset": "scout"})
+    with pytest.raises(RuntimeError, match="do this part yourself"):
+        await host.task_agents._cb_subagent_start(parent.id, {"description": "do", "prompt": "Do."})
+    scout, plain = await host.ledger.select(parent_id=parent.id, oldest_first=True)
+    assert (scout.session_id, plain.session_id) == (None, None)
+
+    # Which preset it was to have was put on record with it, right after it was filed; none for one that named none.
+    assert [(event.type, event.payload) for event in await host.ledger.events(scout.id)][:2] == [
+        ("created", {"source": "task_agent", "title": "look"}), ("preset", {"preset": "scout"}),
+    ]
+    assert [event.type for event in await host.ledger.events(plain.id)] == ["created"]
+
+    # Taken up again later, by another host process too, it is given its session as the scout it was to be,
+    # and not as a worker with tools that write.
+    await host.shutdown()
+    hosts.remove(host)
+    later = _host(hosts, tmp_path, lambda spec: ScriptedLLM())
+    scout = await later.task_agents._give_session(await later.ledger.get(scout.id))
+    plain = await later.task_agents._give_session(await later.ledger.get(plain.id))
+    assert (await later.ledger.get_session(scout.session_id)).preset == "scout"
+    assert (await later.ledger.get_session(plain.session_id)).preset == "worker"
+
+
+async def test_a_copy_of_a_copy_too_many_times_over_is_not_opened_without_the_preset_it_began_with(hosts, tmp_path):
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM())
+    origin = await host.ledger.create_session(lanlan_name="Lan", name="looks", kind="project", project="p", preset="scout")
+    chain = [origin]
+    for number in range(9):
+        chain.append(
+            await host.ledger.create_session(lanlan_name="Lan", name=f"copy {number}", kind="fork", forked_from=chain[-1].id)
+        )
+
+    # Eight copies deep it is still followed back to the scout it began with.
+    assert (await host.task_agents._template_of(chain[8])).read_only
+    # One more and it is not: the session it began with is there, and it is not opened as if it had none.
+    with pytest.raises(RuntimeError, match="a copy of a copy more than 8 times over"):
+        await host.task_agents._template_of(chain[9])
+
+
 async def test_a_preset_that_is_not_there_is_refused_with_the_ones_that_are(hosts, tmp_path):
     lead = ScriptedLLM(
         [

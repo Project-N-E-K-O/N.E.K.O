@@ -32,6 +32,7 @@ It gives the whole form or raises ``DraftError`` with a reason
 from __future__ import annotations
 
 import asyncio
+import heapq
 import logging
 import os
 import re
@@ -81,7 +82,8 @@ def list_folder(workdir: str, most: int) -> list[str]:
     """
     try:
         with os.scandir(workdir) as found:
-            entries = sorted(found, key=lambda entry: entry.name.casefold())[:most]
+            # The first by name, without holding all a large folder has.
+            entries = heapq.nsmallest(most, found, key=lambda entry: entry.name.casefold())
             lines: list[str] = []
             for entry in entries:
                 try:

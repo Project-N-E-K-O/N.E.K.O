@@ -98,7 +98,20 @@ MODELS: tuple[str, ...] = ("agent", "inherit")
 
 # What a session that reads only is opened without: what writes files, runs
 # commands, calls capabilities (which can write as well), files notes for
-# later commissions and starts task agents.
+# later commissions and starts task agents. A task agent it started would be
+# its own hands: it works in the same directory, on the same commission, with
+# what the user allowed that commission.
+#
+# It keeps the tools that reach other sessions (``message_session``,
+# ``ask_session``) and ``schedule_wake``, where it has them at all (a task
+# agent another one started has none of the three). A note to another
+# session is word to a colleague, not a way to write: the host hands it over
+# as what a session wrote, with no authority of the user's, and the other
+# session decides under its own commission and its own permissions what to
+# do about it. A session that only looks is the one that has to be able to
+# say what it saw (an inspector in a team, a scout that watches something
+# and wakes itself to look again). A copy is without them for another
+# reason: it answers once and is done with.
 READ_ONLY_WITHHELD: tuple[str, ...] = ("write", "edit", "bash", "pwsh", "capability_call", "note_lesson", "subagent")
 _WRITES_NONE_WITHHELD: tuple[str, ...] = ("write", "edit")
 _MEMORY_NONE_WITHHELD: tuple[str, ...] = ("note_lesson",)
@@ -300,6 +313,28 @@ def _choice(data: dict[str, Any], key: str, allowed: tuple[str, ...], default: s
     return value
 
 
+def _fields_once() -> Any:
+    """Return a YAML loader as safe as ``yaml.safe_load``'s that refuses a field given twice.
+
+    YAML takes the last of two fields of a name without a word: a file
+    that withholds a tool in one place and nothing in another would
+    withhold nothing, and nobody would be told.
+    """
+    import yaml
+
+    class FieldsOnce(yaml.SafeLoader):
+        def construct_mapping(self, node: Any, deep: bool = False) -> Any:
+            seen: list[Any] = []
+            for key_node, _value in node.value:
+                key = self.construct_object(key_node, deep=True)
+                if key in seen:
+                    raise TemplateError(f"the field {key} is given twice")
+                seen.append(key)
+            return super().construct_mapping(node, deep)
+
+    return FieldsOnce
+
+
 def parse_template(text: str, *, name: str, source: str) -> Template:
     """Return the template a file holds; raises ``TemplateError`` with what is wrong with it.
 
@@ -315,8 +350,10 @@ def parse_template(text: str, *, name: str, source: str) -> Template:
 
     front, body = _split(text)
     try:
-        data = yaml.safe_load(front)
-    except yaml.YAMLError as exc:
+        data = yaml.load(front, Loader=_fields_once())  # noqa: S506 - a safe loader, with one more check
+    except TemplateError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - whatever the parser raises (a date that is none, say), the file is wrong
         raise TemplateError(f"the front matter is not valid YAML ({type(exc).__name__})") from exc
     if not isinstance(data, dict):
         raise TemplateError("the front matter is not a set of fields")
@@ -483,8 +520,12 @@ class TemplateStore:
 
     def signature(self, project: str | None = None) -> tuple[_Signature, _Signature]:
         """Return what changes whenever a template file a project goes by is added, removed or written."""
-        everywhere, own = self._directories(project)
-        return _signature(everywhere), _signature(own) if own is not None else ()
+        return _signature(self._directories(None)[0]), self.project_signature(project)
+
+    def project_signature(self, project: str | None) -> _Signature:
+        """Return what changes whenever a template file of a project's own is added, removed or written."""
+        own = self._directories(project)[1]
+        return _signature(own) if own is not None else ()
 
     def listing(self, project: str | None = None) -> list[Listed]:
         """Return every template in effect for a project (None: for sessions of no project), the wrong ones too.

@@ -153,7 +153,10 @@ def doing_of(commission: Commission | None, calls: tuple[dict[str, Any], ...]) -
             if isinstance(item, dict) and item.get("status") == "in_progress" and item.get("content"):
                 parts.append(_cut(item["content"], BOARD_DOING_PART_MAX_TOKENS))
                 break
-    last = next((call for call in calls if str(call.get("tool_name") or "") not in _NOT_A_STEP), None)
+    # (A call that names no tool is no step either: the one before it is the last.)
+    last = next(
+        (call for call in calls if (name := str(call.get("tool_name") or "")) and name not in _NOT_A_STEP), None
+    )
     if last is not None:
         parts.append(_cut(_step(last), BOARD_DOING_PART_MAX_TOKENS))
     return _cut(" · ".join(part for part in parts if part), BOARD_DOING_MAX_TOKENS)
@@ -268,7 +271,7 @@ class Board:
                 record: tuple[int, int] | None = (stat.st_mtime_ns, stat.st_size)
             except OSError:
                 record = None
-            marks.append((directory.name, record, self._templates.signature(directory.name)[1]))
+            marks.append((directory.name, record, self._templates.project_signature(directory.name)))
         return tuple(marks)
 
     async def _mark(self) -> tuple[Any, ...]:
@@ -292,20 +295,27 @@ class Board:
             and kept[2] == known_revision
         ):
             return {"revision": known_revision, "unchanged": True}
-        board = await self._build(project, lanlan_name, now)
+        board, whole = await self._build(project, lanlan_name, now)
         revision = hashlib.sha256(
             json.dumps(board, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()[:16]
-        # The marks as they were read before the board was: a write that
-        # came in between shows as a change the next time, and costs one
-        # more look, not a board that is taken to be unchanged.
-        self._kept[key] = (mark, now, revision)
+        if whole:
+            # The marks as they were read before the board was: a write that
+            # came in between shows as a change the next time, and costs one
+            # more look, not a board that is taken to be unchanged.
+            self._kept[key] = (mark, now, revision)
+        else:
+            # Something of it could not be read (the projects, the model, the
+            # templates) and it is shown without: put together again the next
+            # time, whatever the marks say, so what was missing is there as
+            # soon as it can be read.
+            self._kept.pop(key, None)
         if known_revision is not None and known_revision == revision:
             return {"revision": revision, "unchanged": True}
         return {"revision": revision, **board}
 
-    async def _projects(self) -> tuple[list[Project], set[str]]:
-        """Return the projects on the board, and the names of the archived ones that are left off it."""
+    async def _projects(self) -> tuple[list[Project], set[str]] | None:
+        """Return the projects on the board, and the names of the archived ones that are left off it; None when they cannot be read."""
         from config.nekoclaw_settings import BOARD_ARCHIVED_PROJECTS_MAX
 
         try:
@@ -314,7 +324,7 @@ class Board:
             raise
         except Exception:  # noqa: BLE001 - the sessions are shown all the same, under the names they have
             logger.warning("listing the projects for the board failed", exc_info=True)
-            return [], set()
+            return None
         active = [item for item in found if item.status != PROJECT_ARCHIVED and item.name != DEFAULT_PROJECT]
         in_use = {item.name for item in active}
         # Of a name archived more than once, and of one in use again, the latest stands for it.
@@ -329,7 +339,8 @@ class Board:
         left_off = {item.name for item in archived[BOARD_ARCHIVED_PROJECTS_MAX:]}
         return [*active, *archived[:BOARD_ARCHIVED_PROJECTS_MAX]], left_off
 
-    async def _build(self, project: str | None, lanlan_name: str | None, now: float) -> dict[str, Any]:
+    async def _build(self, project: str | None, lanlan_name: str | None, now: float) -> tuple[dict[str, Any], bool]:
+        """Return the board, and whether all of it could be read."""
         from config import nekoclaw_settings as settings
 
         rows: BoardRows = await self._ledger.board_rows(
@@ -342,7 +353,11 @@ class Board:
             children_max=settings.BOARD_CHILDREN_MAX,
             events_each=settings.BOARD_DOING_EVENTS,
         )
-        found, left_off = await self._projects()
+        whole = True
+        read = await self._projects()
+        if read is None:
+            whole, read = False, ([], set())
+        found, left_off = read
         projects = [item for item in found if project is None or item.name == project]
         try:
             model = await self._model()
@@ -350,7 +365,7 @@ class Board:
             raise
         except Exception:  # noqa: BLE001 - the board is shown without it
             logger.warning("reading the model of the task agents for the board failed", exc_info=True)
-            model = None
+            whole, model = False, None
 
         by_id = {session.id: session for session in rows.sessions}
 
@@ -370,7 +385,7 @@ class Board:
             templates = await asyncio.to_thread(listings)
         except Exception:  # noqa: BLE001 - the cards are shown without what their templates say
             logger.warning("reading the templates for the board failed", exc_info=True)
-            templates = {}
+            whole, templates = False, {}
 
         def card(session: Session) -> dict[str, Any]:
             commission = rows.in_hand.get(session.id)
@@ -432,4 +447,4 @@ class Board:
                     "members": cards(leads, settings.BOARD_MEMBERS_MAX),
                 }
             )
-        return {"projects": listed, "loose": cards(loose)}
+        return {"projects": listed, "loose": cards(loose)}, whole

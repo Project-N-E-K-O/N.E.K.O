@@ -206,6 +206,25 @@ async def test_the_review_writes_what_the_project_is_for_unless_the_user_did(wor
     assert (await world.reviews(again.id))[0]["card"] == ["title", "duty", "summary"]
 
 
+async def test_a_commission_the_review_files_under_a_project_does_not_write_over_what_that_project_is_for(world):
+    # The model was shown the description of the project the commission was filed under: none, for
+    # an errand of no project. What it then writes is not what the project it names is for.
+    await world.space.touch_project("Budget app", description="A household budgeting web page.")
+    world.llm.answers[TIER_REVIEW] = [
+        {"review": "It was done.", "project": "Budget app", "card": {**CARD, "description": "A script that renames photos."}}
+    ]
+
+    commission = await world.finished()
+
+    assert (await world.reviews(commission.id))[0] == {
+        "status": "written", "project": "Budget app", "entries": [], "card": ["title", "duty", "summary"],
+    }
+    project = await world.space.get_project("Budget app")
+    assert (project.description, project.description_by) == ("A household budgeting web page.", "creator")
+    assert "A household budgeting web page." in (world.root / "MEMORY.md").read_text(encoding="utf-8")
+    assert "description: (none)" in world.llm.last(TIER_REVIEW)[1]["content"]
+
+
 async def test_what_a_project_is_for_is_not_written_for_a_commission_of_no_project(world):
     world.llm.answers[TIER_REVIEW] = [{"review": "It was done.", "card": {**CARD, "description": "An errand."}}]
 

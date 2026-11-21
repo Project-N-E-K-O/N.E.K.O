@@ -161,7 +161,8 @@ def test_tool_definitions_are_exactly_those_in_config() -> None:
             # A session that is not another task agent's says what it takes with its report: one
             # more parameter, after the others, and nothing else of the definition changed.
             assert list(schema["parameters"]["properties"]) == [*expected["parameters"]["properties"], "duty"]
-            assert schema["parameters"]["properties"].pop("duty") == REPORT_DUTY_PARAMETER
+            added = schema["parameters"]["properties"].pop("duty")
+            assert added == REPORT_DUTY_PARAMETER
         assert schema == expected
     # The catalog itself is as it was: a task agent another one started is offered report without it.
     assert "duty" not in catalog["report"]["parameters"]["properties"]

@@ -293,6 +293,42 @@ async def test_the_sessions_are_shown_though_the_projects_or_the_templates_canno
     assert (cards[lead.id]["preset"], cards[lead.id]["avatar"], cards[lead.id]["description"]) == ("boss", "general", "")
 
 
+@pytest.mark.parametrize("missing", ["projects", "templates", "model"])
+async def test_a_board_shown_without_something_that_could_not_be_read_is_not_taken_as_unchanged_later(
+    host, monkeypatch, missing
+):
+    await host.space.touch_project("Budget app", description="A budget for the household.")
+    _commission_made, lead = await _lead(host, "Budget app", "add a chart")
+
+    async def failing_async(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("the disk does not answer")
+
+    def failing(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("the disk does not answer")
+
+    with monkeypatch.context() as broken:
+        if missing == "projects":
+            broken.setattr(host.space, "list_projects", failing_async)
+        elif missing == "templates":
+            broken.setattr(host.templates_store, "listing", failing)
+        else:
+            broken.setattr(host, "_task_agent_model", failing_async)
+        without = await host.board()
+        # Asked again while it cannot be read: put together again, and the same as it was.
+        assert await host.board(known_revision=without["revision"]) == {"revision": without["revision"], "unchanged": True}
+
+    # It can be read again, and nothing was written meanwhile that the marks of a change would show:
+    # the board is put together all the same, and what was missing is there.
+    whole = await host.board(known_revision=without["revision"])
+    assert "unchanged" not in whole and whole["revision"] != without["revision"]
+    card = _cards(whole)[lead.id]
+    assert (whole["projects"][0]["description"], card["avatar"], card["model"]) == (
+        "A budget for the household.", "boss", "fake-model",
+    )
+    # From here on it is kept as any board is.
+    assert await host.board(known_revision=whole["revision"]) == {"revision": whole["revision"], "unchanged": True}
+
+
 async def test_a_copy_is_shown_under_its_session_and_a_copy_of_a_copy_is_not_on_the_board(host):
     commission, lead = await _lead(host, "Budget app", "add a chart")
     await _working(host, commission.id)
@@ -481,8 +517,12 @@ def test_what_a_session_is_doing_without_a_todo_list_and_with_other_tools():
     assert doing_of(commission(), (call("read", None),)) == "sort the photos · read"
     # A todo list that is no list, and a call that names no tool, add nothing.
     assert doing_of(commission(), (call("todo_write", "not json"), call("todo_write", {"todos": "all of it"}))) == "sort the photos"
-    assert doing_of(commission(), ({"args": {"file_path": "a.py"}},)) == "sort the photos · : a.py"
-    assert doing_of(commission(), ({"args": {}},)) == "sort the photos"
+    assert doing_of(commission(), ({"args": {"file_path": "a.py"}},)) == "sort the photos"
+    assert doing_of(commission(), ({"args": {}}, {"tool_name": "", "args": {"file_path": "a.py"}})) == "sort the photos"
+    # The step before it is the last then.
+    assert doing_of(commission(), ({"args": {"file_path": "a.py"}}, call("read", {"file_path": "b.py"}))) == (
+        "sort the photos · read: b.py"
+    )
     # A todo list with nothing in progress adds nothing; reports and the list itself are no step.
     idle_list = call("todo_write", {"todos": [{"content": "x", "status": "completed"}]})
     assert doing_of(commission(), (call("report", {"status": "progress"}), idle_list)) == "sort the photos"
@@ -1065,29 +1105,39 @@ def test_a_folder_is_listed_by_name_and_size_and_one_that_is_not_there_gives_not
 
 
 def test_the_form_is_filled_in_on_the_summary_model_under_a_name_of_its_own(monkeypatch):
+    import utils.config_manager as config_manager
+    import utils.llm_client as llm_client
     import utils.token_tracker as tracker
     from nekoclaw.host import decision
 
     named: list[str] = []
     monkeypatch.setattr(tracker, "set_call_type", named.append)
-    llm = decision.ConfiguredDecisionLLM()
-    seen: list[tuple[str, int]] = []
+    slots: list[str] = []
+    budgets: list[int] = []
+
+    class Config:
+        def get_model_api_config(self, slot: str) -> dict[str, Any]:
+            slots.append(slot)
+            return {"model": f"{slot}-model", "base_url": "http://127.0.0.1:9/v1", "api_key": "test-key"}
 
     class Client:
         async def ainvoke(self, messages: Any) -> Any:
             return type("Response", (), {"content": "ok"})()
 
-    async def client(tier: str, budget: int) -> Any:
-        seen.append((tier, budget))
+    async def create(**kwargs: Any) -> Any:
+        budgets.append(kwargs["max_completion_tokens"])
         return Client()
 
-    monkeypatch.setattr(llm, "_client", client)
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda **kwargs: Config())
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", create)
+    llm = decision.ConfiguredDecisionLLM()
 
     asyncio.run(llm.complete(TIER_SESSION_DRAFT, []))
 
-    assert named == ["task_agent_session_draft"] and seen == [(TIER_SESSION_DRAFT, 500)]
-    # The budget is the setting for this call, not whatever a call without one gets.
+    # The model it asks is the one the setting names, with the budget of this call, counted under its own name.
+    assert named == ["task_agent_session_draft"] and slots == ["summary"] and budgets == [500]
     monkeypatch.setattr("config.nekoclaw_settings.SESSION_DRAFT_OUTPUT_MAX_TOKENS", 321)
+    monkeypatch.setattr("config.nekoclaw_settings.SESSION_DRAFT_MODEL_SLOT", "emotion")
     asyncio.run(llm.complete(TIER_SESSION_DRAFT, []))
-    assert seen[-1] == (TIER_SESSION_DRAFT, 321)
+    assert (slots[-1], budgets[-1]) == ("emotion", 321)
     assert TIER_SESSION_DRAFT in decision._SUMMARY_TIERS
