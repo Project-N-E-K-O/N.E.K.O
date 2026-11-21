@@ -4046,10 +4046,12 @@ async def test_job_source_requires_a_completed_command(hosts, tmp_path, monkeypa
                 await manager._run_over(manager._held_by[session])
             elif interruption == "during_finish":
                 finishing = asyncio.create_task(original_action(session, payload))
-                await asyncio.wait_for(delivering.wait(), 3)
-                finishing.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await finishing
+                try:
+                    await asyncio.wait_for(delivering.wait(), 3)
+                finally:
+                    finishing.cancel()
+                    await asyncio.gather(finishing, return_exceptions=True)
+                assert finishing.cancelled()
                 await manager._run_over(manager._held_by[session])
                 return {"allow": False}
         return await original_action(session, payload)
@@ -4060,3 +4062,29 @@ async def test_job_source_requires_a_completed_command(hosts, tmp_path, monkeypa
     assert "could not be delivered" in replies["start"]
     assert ("job-1" in replies["list"]) == (interruption == "none")
     assert ("held-job" in replies["output"]) == (interruption == "none")
+
+
+async def test_path_resolution_precedes_the_rule_used_for_approval(hosts, tmp_path, monkeypatch):
+    document = tmp_path / "example.txt"
+    document.write_text("expected fixture text", encoding="utf-8")
+    llm = ScriptedLLM([[call("read", {"file_path": str(document)}, "read"), finish("tool_calls")],
+                       _report("ready", "done")])
+    host = _host(hosts, tmp_path, llm)
+    manager = host.task_agents
+    inspect_path = manager._rule_on_other_session
+
+    async def resolve(*args, **kwargs):
+        await host.permission_store.set_mode("outside_read", "always_ask")
+        return await inspect_path(*args, **kwargs)
+
+    asked = []
+    async def approve(_, question):
+        asked.append(question)
+        return "once"
+
+    monkeypatch.setattr(manager, "_rule_on_other_session", resolve)
+    host.permissions.set_asker(approve)
+    receipt = await _dispatch(host, "Read the fixture")
+    await wait_status(host, receipt.commission_id, "done")
+    assert len(asked) == 1 and asked[0].category == "outside_read"
+    assert any(m.get("tool_call_id") == "read" and "expected fixture text" in m["content"] for m in llm.requests[1])

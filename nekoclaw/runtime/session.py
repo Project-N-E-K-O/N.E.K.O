@@ -1072,6 +1072,8 @@ class TaskAgentSession(SessionInbox):
                     await self._fit(force=False)
                 # How much is about to be sent, as the conversation is measured.
                 sent = await self._size()
+                if signal is None or not signal.is_cancelled():
+                    await self._deliver_job_notices()
                 history = _provider_context(self.harness.message_list)
                 # Held back until output follows, so a request that is retried after
                 # an overflow does not announce two responses.
@@ -1422,7 +1424,7 @@ class TaskAgentSession(SessionInbox):
         now = self._clock()
         text = texts.runtime_context_notice(
             f"{now.strftime('%Y-%m-%d %H:%M %z')} ({now.strftime('%A')})",
-            [f"{job.id} ({job.kind}: {bounded_label(job.label)})" for job in self.jobs.running()],
+            [f"{job.id} ({job.kind}: {bounded_label(job.label)})" for job in self.jobs.running() if not job.origin],
             [(item["status"], item["content"]) for item in self.todos.open_items()],
         )
         message = CustomMessage(custom_type="notice:runtime_context", content=text, display=False)
@@ -1511,12 +1513,36 @@ class TaskAgentSession(SessionInbox):
     def withdraw_notice(self, handle: object) -> bool:
         return isinstance(handle, CustomMessage) and self.harness.remove_queued(handle)
 
+    async def _deliver_job_notices(self) -> None:
+        # The queue and transcript contain only the wake. Materialize the
+        # inline result after context fitting, at the actual model request.
+        for job_id, notice in list(self.jobs.pending_notices.items()):
+            if not any(message is notice.handle for message in self.harness.message_list):
+                continue
+            job = self.jobs.get(job_id)
+            if not job.origin:
+                continue
+            async with job.output_lock:
+                if self.jobs.pending_notices.get(job_id) is not notice:
+                    continue
+                try:
+                    ruling = await self._host.call(self.session_id, "execution_action", {
+                        "phase": "job_notice", "receipt": job.origin,
+                    })
+                except Exception:
+                    ruling = {}
+                self.jobs.pending_notices.pop(job_id, None)
+                if ruling.get("allow") is True:
+                    notice.handle.content, _ = completion_notice(self.jobs, job)
+
     async def _job_finished(self, job: Job) -> None:
+        if job.command_finished is not None:
+            await job.command_finished.wait()
         async with job.output_lock:
             if job.origin:
                 try:
                     decision = await self._host.call(self.session_id, "execution_action", {
-                        "phase": "job_notice", "receipt": job.origin,
+                        "phase": "job_notice_live", "receipt": job.origin,
                     })
                 except Exception:
                     return
@@ -1524,7 +1550,10 @@ class TaskAgentSession(SessionInbox):
                     return
             if self._closing or job.notice_suppressed or job.waiters or job.id in self.jobs.pending_notices:
                 return
-            text, held = completion_notice(self.jobs, job)
+            if job.origin:
+                text, held = f"Background job {job.id} finished.", None
+            else:
+                text, held = completion_notice(self.jobs, job)
             handle = self.deliver_notice("job", text)
             self.jobs.pending_notices[job.id] = PendingNotice(handle, held)
 

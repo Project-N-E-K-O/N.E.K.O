@@ -850,6 +850,12 @@ class DshRuntime:
         context = offer.output_context
         spill = context.spill
         tool, args = session.tool_calls[call_id]
+        if request.get("action") == "fetch":
+            from config.prompts.prompts_nekoclaw_dsh import HOST_TOOL_PREFIX
+
+            if tool != HOST_TOOL_PREFIX + "web_fetch" or not isinstance(args, dict):
+                raise ValueError()
+            return await self._tools.fetch(session.id, call_id, args, offer)
         receipt = session.execution_receipts.get(call_id) or session.finished_sources.get(call_id)
         if not receipt or not isinstance(args, dict):
             raise ValueError()

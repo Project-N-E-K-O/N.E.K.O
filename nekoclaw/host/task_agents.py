@@ -4954,9 +4954,13 @@ class TaskAgentManager:
         if payload.get("phase") == "release" and native:
             session.job_sources.pop(payload.get("receipt"), None)
             return {"allow": False}
-        if payload.get("phase") == "job_notice" and not native:
+        if payload.get("phase") in {"job_notice", "job_notice_live"} and not native:
             source = session.job_sources.get(payload.get("receipt"))
-            return {"allow": bool(source and source[0]() and await source[1]() and source[0]())}
+            if not source or not source[0]():
+                return {"allow": False}
+            if payload["phase"] == "job_notice_live":
+                return {"allow": True}
+            return {"allow": await source[1]() and source[0]()}
         if payload.get("phase") == "check":
             return {"allow": self._execution_audit.active(commission, session_id, payload.get("receipt"), kind=kind)}
         if payload.get("phase") == "finish":
@@ -5015,7 +5019,15 @@ class TaskAgentManager:
         if (category == "outside_read" and self._space is not None and isinstance(payload.get("path"), str)
                 and await self._space.contains(payload["path"])):
             effective_category = "workdir_files"
-        rules = self._permissions.current_rules(commission, effective_category, "managed_delivery")
+        delivery_rule = self._permissions.current_rules(commission, "managed_delivery")
+        action_rule = self._permissions.current_rules(commission, effective_category)
+
+        def bind_action_rule(category):
+            # Path and session ownership checks may yield before the gate
+            # decides which rule actually governs this action.
+            nonlocal action_rule
+            action_rule = self._permissions.current_rules(commission, category)
+
         grants = []
         origins = payload.get("origins", [])
         if not isinstance(origins, list) or not all(isinstance(ref, str) for ref in origins):
@@ -5027,7 +5039,7 @@ class TaskAgentManager:
         sources = [session.job_sources[ref][0] for ref in origins]
 
         def source_live() -> bool:
-            return (rules() and self._held_by.get(session_id) == commission
+            return (delivery_rule() and action_rule() and self._held_by.get(session_id) == commission
                     and self._sessions.get(commission) is session and not session.closing and session.model == model
                     and all(self._permissions.grant_active(grant) for grant in grants) and all(check() for check in sources))
 
@@ -5055,14 +5067,17 @@ class TaskAgentManager:
                 record.grant_id = self._permissions.authorization_ref(decision.grant_id)
                 answer = decision.to_json()
             else:
-                answer = await self._cb_permission(session_id, payload, audit=record, recipient=recipient, label=label, grants=grants)
+                answer = await self._cb_permission(
+                    session_id, payload, audit=record, recipient=recipient, label=label,
+                    grants=grants, before_check=bind_action_rule,
+                )
             if answer.get("allow"):
                 from contextvars import copy_context
 
                 parent = copy_context()
 
                 def available():
-                    return (record.status != "cancelled" and (record.closed or current()) and source_live())
+                    return record.closed and record.status in {"completed", "failed"} and source_live()
 
                 async def notice():
                     return await asyncio.create_task(deliver(record, available), context=parent.copy())
@@ -5086,7 +5101,9 @@ class TaskAgentManager:
             answer["origins"] = origins
         return answer
 
-    async def _cb_permission(self, session_id: str, payload: dict[str, Any], *, audit=None, recipient="", label="", grants=None) -> dict[str, Any]:
+    async def _cb_permission(
+        self, session_id: str, payload: dict[str, Any], *, audit=None, recipient="", label="", grants=None, before_check=None,
+    ) -> dict[str, Any]:
         session_id = self._at_work_in(session_id)
         detail = {key: payload.get(key) for key in ("tool", "path", "command", "cwd") if payload.get(key)}
         if label:
@@ -5181,6 +5198,8 @@ class TaskAgentManager:
                     # Forbidden while the question was open.
                     return PermissionDecision(False, DENIED_BY_SETTINGS).to_json()
                 return decision.to_json()
+        if before_check is not None:
+            before_check(category)
         session = self._sessions.get(session_id)
         if session is None or session.runtime_name != RUNTIME_BUILTIN:
             # ACP and unbound callbacks expose no verified tool registration.

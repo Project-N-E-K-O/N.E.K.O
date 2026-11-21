@@ -754,7 +754,39 @@ async def test_fetch_preflight_is_outside_the_timed_call_and_consumed_once(tmp_p
     assert not first.done()
     release.set()
     assert await first
-    result = await tools.call("s1", "web_fetch", arguments)
+    offer = tools.offer("s1")
+    assert (await tools.call("s1", "web_fetch", arguments, call_id="native-call"))["isError"]
+    result = await tools.fetch("s1", "native-call", arguments, offer)
     assert result["content"][0]["text"] == "fixture page"
-    repeated = await tools.call("s1", "web_fetch", arguments)
+    repeated = await tools.fetch("s1", "native-call", arguments, offer)
     assert repeated["isError"] and phases == ["begin", "check", "finish"]
+
+
+async def test_parallel_fetches_keep_their_own_receipts(tmp_path, monkeypatch):
+    from nekoclaw.runtime.tools import web
+
+    receipts = iter(["receipt-a", "receipt-b"])
+    checked = []
+    async def audit(_, payload):
+        if payload["phase"] == "begin":
+            return {"allow": True, "receipt": next(receipts)}
+        if payload["phase"] == "check":
+            checked.append(payload["receipt"])
+            if payload["receipt"] == "receipt-a":
+                raise OSError("fixture unavailable")
+        return {"allow": True}
+
+    async def fetch(url):
+        return "page"
+
+    monkeypatch.setattr(web, "web_fetch", fetch)
+    tools = HostTools(HostCallbacks(execution_action=audit, native_execution_action=audit))
+    _open(tools, tmp_path)
+    args = {"url": "https://example.invalid/same"}
+    for call_id in ["a", "b"]:
+        assert await tools.prepare_fetch("s1", call_id, args)
+    offer = tools.offer("s1")
+    assert not (await tools.fetch("s1", "b", args, offer))["isError"]
+    assert (await tools.fetch("s1", "a", args, offer))["isError"]
+    assert checked == ["receipt-b", "receipt-a"]
+    assert list(offer.prepared_fetches) == ["a"]  # terminal ACP update owns cancellation

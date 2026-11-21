@@ -93,6 +93,7 @@ class Job:
     notice_suppressed: bool = False
     stop_reason: str | None = None
     origin: str | None = None
+    command_finished: asyncio.Event | None = None
     settled: asyncio.Event = field(default_factory=asyncio.Event)
     output_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -168,6 +169,7 @@ class JobRegistry:
         self._counter += 1
         job = Job(
             origin=output.receipt if output else None,
+            command_finished=output.finished if output else None,
             id=f"job-{self._counter}",
             kind=kind,
             label=label,

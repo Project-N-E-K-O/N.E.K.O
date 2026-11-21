@@ -128,6 +128,9 @@ class _Offer:
     closed: bool = False
 
 
+_FETCH_CALL = contextvars.ContextVar("prepared_fetch_call", default="")
+
+
 class _SessionHost:
     """The host as one session's tools reach it: what they ask of it is stopped with the session.
 
@@ -155,15 +158,15 @@ class _SessionHost:
             if (name == "execution_action" and payload.get("phase") == "begin" and payload.get("tool") == "web_fetch"
                     and "native_execution_action" in self.capabilities):
                 # Only this offer's registered MCP implementation can consume its preflight.
-                for call_id, (scope, receipt) in self._offer.prepared_fetches.items():
-                    if scope == payload.get("scope_ref"):
-                        del self._offer.prepared_fetches[call_id]
-                        check = await self._host.call(session_id, name, {"phase": "check", "receipt": receipt})
-                        if check.get("allow") is True:
-                            return {"allow": True, "receipt": receipt}
-                        await self._host.call(session_id, name, {"phase": "finish", "receipt": receipt, "status": "cancelled"})
-                        break
-                return {"allow": False}
+                call_id = _FETCH_CALL.get()
+                prepared = self._offer.prepared_fetches.get(call_id)
+                if not prepared or prepared[0] != payload.get("scope_ref"):
+                    return {"allow": False}
+                receipt = prepared[1]
+                check = await self._host.call(session_id, name, {"phase": "check", "receipt": receipt})
+                if check.get("allow") is not True or self._offer.prepared_fetches.pop(call_id, None) != prepared:
+                    return {"allow": False}
+                return {"allow": True, "receipt": receipt}
             return await self._host.call(session_id, name, payload)
         finally:
             if task is not None:
@@ -299,6 +302,15 @@ class HostTools:
             return False
         offer.prepared_fetches[call_id] = scope, receipt
         return True
+
+    async def fetch(self, session_id: str, call_id: str, arguments: dict[str, Any], offer: _Offer) -> dict[str, Any]:
+        # Only the process-authenticated guard supplies an ACP call id. A
+        # JSON-RPC request id, even on the same URL, cannot claim its receipt.
+        binding = _FETCH_CALL.set(call_id)
+        try:
+            return await self.call(session_id, "web_fetch", arguments, call_id=call_id, offer=offer)
+        finally:
+            _FETCH_CALL.reset(binding)
 
     def names(self, session_id: str) -> list[str]:
         offer = self._offers.get(session_id)

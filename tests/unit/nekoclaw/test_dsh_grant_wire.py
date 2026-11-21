@@ -174,8 +174,11 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path):
                 allowed = payload["origins"] if not lists else []
                 lists.append(allowed)
                 return {"allow": True, "receipt": f"list-{len(lists)}", "origins": allowed}
-            return {"allow": payload.get("tool") != "job_output", "receipt": "original-command"}
-        return {"allow": True}
+            if payload["tool"] == "job_output":
+                attempt = sum(p["tool"] == "job_output" for p in begins)
+                return {"allow": True, "receipt": f"read-{attempt}"}
+            return {"allow": True, "receipt": "original-command"}
+        return {"allow": (payload["phase"], payload.get("receipt")) != ("finish", "read-1")}
 
     events = Recorder()
     runtime = DshRuntime(events, HostCallbacks(native_execution_action=action),
@@ -195,8 +198,10 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path):
                 job_ids.append(match.group(1))
         if job_ids and len(lists) < 2:
             return [sse_tool_call("job_list", {}, f"list{len(lists)}"), sse_finish("tool_calls")]
-        if not any(p["tool"] == "job_output" for p in begins):
-            return [sse_tool_call("job_output", {"job_id": job_ids[0]}, "output"), sse_finish("tool_calls")]
+        attempt = sum(p["tool"] == "job_output" for p in begins)
+        if attempt < 3:
+            return [sse_tool_call("job_output", {"job_id": job_ids[0], "wait": True}, f"output{attempt}"),
+                    sse_finish("tool_calls")]
         return [sse_text("Done"), sse_finish()]
 
     try:
@@ -207,13 +212,15 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path):
             assert (await events.wait_for(lambda e: e["type"] in ("started", "error"), timeout=60))["type"] == "started"
             await runtime.prompt(spec.session_id, "Start the fixture job and collect its output.")
             await events.wait_ended(spec.session_id, timeout=60)
-        assert job_ids and [p.get("origins") for p in begins if p["tool"] == "job_output"] == [["original-command"]]
-        replies = [m["content"] for req in server.requests for m in req["messages"] if m["role"] == "tool"]
+        assert job_ids and [p.get("origins") for p in begins if p["tool"] == "job_output"] == [["original-command"]] * 3
         assert lists == [["original-command"], []]
         listed = [req["messages"][-1]["content"] for req in server.requests
                   if req["messages"][-1].get("tool_call_id") in {"list0", "list1"}]
         assert len(listed) == 2 and job_ids[0] in listed[0] and job_ids[0] not in listed[1], listed
-        assert "kept-job-text" not in replies[-1]
+        output = {m["tool_call_id"]: m["content"] for req in server.requests for m in req["messages"]
+                  if m["role"] == "tool" and m.get("tool_call_id", "").startswith("output")}
+        assert "could not be delivered" in output["output0"] and "kept-job-text" not in output["output0"]
+        assert "kept-job-text" in output["output1"] and "kept-job-text" not in output["output2"]
     finally:
         await runtime.shutdown()
 

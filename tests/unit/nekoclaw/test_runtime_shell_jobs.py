@@ -800,7 +800,8 @@ async def test_closing_collects_pending_notices_after_process_settlement():
 
 
 @pytest.mark.parametrize("receive", [False, True])
-async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monkeypatch, receive):
+@pytest.mark.parametrize("notice_allowed", [False, True])
+async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monkeypatch, receive, notice_allowed):
     from types import SimpleNamespace
 
     stop = asyncio.Event()
@@ -809,6 +810,8 @@ async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monk
     async def audit(_, payload):
         if payload["phase"] == "begin":
             return {"allow": True, "receipt": "job-read"}
+        if payload["phase"] == "job_notice":
+            return {"allow": notice_allowed}
         if payload["phase"] == "finish":
             stdout.feed(b"second-part\n")
             stop.set()
@@ -820,7 +823,14 @@ async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monk
                        [say("done"), finish()]])
     session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=audit))
     notices = []
-    monkeypatch.setattr(session, "deliver_notice", lambda kind, text: notices.append(text))
+    from nekoclaw.runtime.loop.messages import CustomMessage
+
+    def enqueue(kind, text):
+        handle = CustomMessage(custom_type=f"notice:{kind}", content=text)
+        notices.append(handle)
+        return handle
+
+    monkeypatch.setattr(session, "deliver_notice", enqueue)
     process = SimpleNamespace(stdout=stdout, stderr=procs.OutputBuffer(1024, lambda: None),
                               wait=stop.wait, kill=stop.set, kill_requested=False, signal_name=None, returncode=0)
     job = session.jobs.start(SHELL, "fixture", process, foreground=False)
@@ -828,8 +838,12 @@ async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monk
     try:
         session.prompt("Read the current output")
         await events.wait_ended("s1")
-        assert len(notices) == 1 and "second-part" in notices[0]
-        assert ("first-part" in notices[0]) == (not receive)
+        assert len(notices) == 1 and "second-part" not in notices[0].text
+        session.harness.message_list.append(notices[0])
+        await session._deliver_job_notices()
+        assert ("second-part" in notices[0].text) == notice_allowed
+        assert ("first-part" in notices[0].text) == (notice_allowed and not receive)
+        assert ("second-part" in session.jobs.read(job)) != notice_allowed
         result = next(m["content"] for m in llm.requests[1] if m.get("tool_call_id") == "result")
         assert ("first-part" in result) == receive
     finally:

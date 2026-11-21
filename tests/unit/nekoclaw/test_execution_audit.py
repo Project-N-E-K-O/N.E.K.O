@@ -145,6 +145,8 @@ def test_private_outputs_share_one_file_and_keep_interleaved_bytes_separate(tmp_
                 assert reader.read() == expected
     finally:
         store.close()
+    with outputs[-1].reader() as reader, pytest.raises(OSError, match="closed"):
+        reader.read()
 
 
 @pytest.mark.parametrize("encoding", ["utf-16", "utf-32", "gbk"])
@@ -229,3 +231,10 @@ def test_established_gbk_is_used_for_a_line_also_valid_as_utf8(tmp_path):
                                 search._Budget(threading.Event(), time.monotonic() + 15),
                                 case_insensitive_globs=False)
     assert [(m.line_number, m.line) for m in matches] == [(1, "route 路"), (2003, "route 路")]
+
+
+def test_search_display_escapes_undecodable_filename_bytes(tmp_path):
+    from nekoclaw.runtime.tools.search import display_path
+
+    path = tmp_path / "name\udcfe"
+    assert display_path(path, tmp_path).encode("utf-8") == b"name\\udcfe"

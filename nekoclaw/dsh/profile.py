@@ -148,12 +148,30 @@ export function apply(ctx, config) {
     return { kind: 'ask', reason: 'the N.E.K.O host decides' }
   })
   const executions = new Set(config?.executions ?? [])
-  const request = async (session, call, action, text) => {
-    const response = await fetch(new URL('/internal/retained-output', config.outputURL), {method: 'POST', redirect: 'error',
+  const request = async (session, call, action, text, signal) => {
+    const response = await fetch(new URL('/internal/retained-output', config.outputURL), {method: 'POST', redirect: 'error', signal,
       headers: {'Authorization': 'Bearer ' + process.env[config.keyVariable], 'Content-Type': 'application/json'},
       body: JSON.stringify({session, call, action, text})})
     if (!response.ok) throw new Error('Retained output unavailable')
     return response.json()
+  }
+  // The native job registry advances its cursor inside execute. Keep the
+  // unacknowledged result on the owning agent until an authorized read.
+  const jobReads = new WeakMap()
+  async function withJobRead(exec, execute) {
+    if (exec.name !== 'job_output' || !exec.agent || exec.parent !== undefined) return execute()
+    let reads = jobReads.get(exec.agent)
+    if (!reads) jobReads.set(exec.agent, reads = new Map())
+    const id = exec.arguments?.job_id
+    let pending = reads.get(id)
+    if (!pending) reads.set(id, pending = {})
+    const turn = (pending.turn ?? Promise.resolve()).catch(() => {}).then(() => execute(pending))
+    pending.turn = turn
+    try {
+      return await turn
+    } finally {
+      if (pending.turn === turn && !pending.result) reads.delete(id)
+    }
   }
   const projections = new Map()
   const identity = exec => JSON.stringify([exec.agent?.session.header.id, exec.callId])
@@ -195,7 +213,12 @@ export function apply(ctx, config) {
     scoped.on('dispose', () => { store.saveText = save })
   })
   if (executions.size) ctx.on('tools/execute', async (exec, next) => {
-    if (exec.name === config.fetchTool && exec.parent !== undefined) return failed('No authorized program recipient.')
+    if (exec.name === config.fetchTool) {
+      if (exec.parent !== undefined) return failed('No authorized program recipient.')
+      const result = await request(exec.agent.session.header.id, exec.callId, 'fetch', undefined, exec.signal)
+      if (result.isError) return failed(result.content[0].text)
+      return {value: {content: result.content}, content: result.content}
+    }
     if (!executions.has(exec.name)) return next()
     const confirm = async phase => {
       const approval = ctx.get('approval')
@@ -208,53 +231,57 @@ export function apply(ctx, config) {
       const message = 'The tool result could not be delivered.'
       return {isError: true, error: {message}, content: [{type: 'text', text: message}]}
     }
-    if (!await confirm(exec.parent === undefined ? 'direct' : 'nested')) return refused()
-    const session = exec.agent.session.header.id
-    let result, display
-    try {
-      if (exec.name === 'read' || exec.name === 'grep') {
-        const saved = await request(session, exec.callId, 'read')
-        if (saved.error) result = failed(saved.error)
-        else if (typeof saved.text === 'string') { display = saved.text; result = textOnly(exec, display) }
-      }
-      result ??= await next()
-      if (exec.name === 'job_list' && Array.isArray(result.value)) {
-        const allowed = new Set((await request(session, exec.callId, 'list')).ids)
-        result = {value: result.value.filter(job => allowed.has(job.id))}
-      }
-      if (['pwsh', 'bash'].includes(exec.name) && typeof result.value?.jobId === 'string') {
-        await request(session, exec.callId, 'job', result.value.jobId)
-      }
-      const text = result.content?.filter(block => block.type === 'text').map(block => block.text).join('\\n') ?? ''
-      if (exec.name === 'grep' && display === undefined && Array.isArray(result.value?.matches)) {
-        const hits = result.value.matches
-        const full = hits.map(m => m.path + ':' + m.lineNumber + ': ' + m.line).join('\\n')
-        if (hits.length > 250 || Buffer.byteLength(full) > config.readBytes) {
-          const ref = await request(session, exec.callId, 'save', full)
-          const tail = '\\n\\n' + hint + ' ' + ref.path
-          const head = []
-          let bytes = Buffer.byteLength(tail)
-          for (const m of hits.slice(0, 250)) {
-            const line = m.path + ':' + m.lineNumber + ': ' + m.line
-            bytes += Buffer.byteLength(line) + 1
-            if (bytes > config.readBytes) break
-            head.push(line)
+    return withJobRead(exec, async pending => {
+      if (!await confirm(exec.parent === undefined ? 'direct' : 'nested')) return refused()
+      const session = exec.agent.session.header.id
+      let result = pending?.result, display
+      try {
+        if (exec.name === 'read' || exec.name === 'grep') {
+          const saved = await request(session, exec.callId, 'read')
+          if (saved.error) result = failed(saved.error)
+          else if (typeof saved.text === 'string') { display = saved.text; result = textOnly(exec, display) }
+        }
+        result ??= await next()
+        if (pending && !result.isError) pending.result = result
+        if (exec.name === 'job_list' && Array.isArray(result.value)) {
+          const allowed = new Set((await request(session, exec.callId, 'list')).ids)
+          result = {value: result.value.filter(job => allowed.has(job.id))}
+        }
+        if (['pwsh', 'bash'].includes(exec.name) && typeof result.value?.jobId === 'string') {
+          await request(session, exec.callId, 'job', result.value.jobId)
+        }
+        const text = result.content?.filter(block => block.type === 'text').map(block => block.text).join('\\n') ?? ''
+        if (exec.name === 'grep' && display === undefined && Array.isArray(result.value?.matches)) {
+          const hits = result.value.matches
+          const full = hits.map(m => m.path + ':' + m.lineNumber + ': ' + m.line).join('\\n')
+          if (hits.length > 250 || Buffer.byteLength(full) > config.readBytes) {
+            const ref = await request(session, exec.callId, 'save', full)
+            const tail = '\\n\\n' + hint + ' ' + ref.path
+            const head = []
+            let bytes = Buffer.byteLength(tail)
+            for (const m of hits.slice(0, 250)) {
+              const line = m.path + ':' + m.lineNumber + ': ' + m.line
+              bytes += Buffer.byteLength(line) + 1
+              if (bytes > config.readBytes) break
+              head.push(line)
+            }
+            display = head.join('\\n') + tail
+            result = textOnly(exec, display)
           }
-          display = head.join('\\n') + tail
+        }
+        if (display === undefined && ['read', 'grep'].includes(exec.name) && Buffer.byteLength(text) > config.readBytes) {
+          const ref = await request(session, exec.callId, 'save', text)
+          display = hint + ' ' + ref.path
           result = textOnly(exec, display)
         }
+      } catch {
+        result = failed('The tool result could not be delivered.')
       }
-      if (display === undefined && ['read', 'grep'].includes(exec.name) && Buffer.byteLength(text) > config.readBytes) {
-        const ref = await request(session, exec.callId, 'save', text)
-        display = hint + ' ' + ref.path
-        result = textOnly(exec, display)
-      }
-    } catch {
-      result = failed('The tool result could not be delivered.')
-    }
-    if (!await confirm(result.isError ? 'failed' : 'completed')) return refused()
-    if (display !== undefined && !result.isError) projections.set(identity(exec), display)
-    return result
+      if (!await confirm(result.isError ? 'failed' : 'completed')) return refused()
+      if (display !== undefined && !result.isError) projections.set(identity(exec), display)
+      if (pending) delete pending.result
+      return result
+    })
   })
   process.stderr.write('%s\\n')
 }

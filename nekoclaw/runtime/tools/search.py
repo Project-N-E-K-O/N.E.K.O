@@ -345,10 +345,10 @@ def display_path(path: Path, workdir: Path) -> str:
     try:
         relative = os.path.relpath(path, workdir)
     except ValueError:
-        return str(path)
+        relative = str(path)
     if relative == os.pardir or relative.startswith(os.pardir + os.sep):
-        return str(path)
-    return relative
+        relative = str(path)
+    return relative.encode("utf-8", errors="backslashreplace").decode("utf-8")
 
 
 # ---------------------------------------------------------------------------

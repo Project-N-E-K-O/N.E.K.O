@@ -10,7 +10,7 @@ import json
 import logging
 import os
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from nekoclaw.runtime.tools.protected_outputs import OUTPUT_SCOPE, OutputScope
@@ -28,6 +28,7 @@ EXECUTION_TOOLS = JOB_TOOLS | {
 @dataclass
 class CommandOutput:
     receipt: str
+    finished: asyncio.Event = field(default_factory=asyncio.Event)
     retained: bool = False
 
 
@@ -160,6 +161,8 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
         finally:
             if handoff and handoff.release:
                 handoff.release()
+            if output:
+                output.finished.set()
         raise ToolError("The tool result could not be delivered.") from None
 
     return replace(tool, execute_fn=execute)
