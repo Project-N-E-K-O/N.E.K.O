@@ -35,6 +35,13 @@ A session whose preset withholds a tool, or caps its requests, is opened in
 the built-in runtime (``Template.needs_builtin``): dsh has file and command
 tools of its own, which the host cannot keep from a session there.
 
+Withholding the tools that write files is not a sandbox. A preset that
+keeps the shell (the inspector, or a template with ``writes: none`` alone)
+can still change a file through a command, under the user's permission for
+commands like any other session; what it is told of its role says not to.
+Only a preset that reads only (``read_only``) has nothing left to change
+anything with.
+
 ``shadow`` is the preset of a copy of a session and no template: a copy is
 opened as the session it was copied from, without the tools every copy is
 without (``TASK_AGENT_FORK_WITHHELD_TOOLS``).
@@ -127,7 +134,8 @@ class Template:
     # Tools its sessions are opened without, besides those the next three imply.
     withhold: tuple[str, ...] = ()
     read_only: bool = False
-    # ``inherit``: writes where its session works. ``none``: has no tools that write files.
+    # ``inherit``: writes where its session works. ``none``: has no tools
+    # that write files (a command still can, where the shell is not withheld).
     writes: str = "inherit"
     # ``project``: is told what the task agent space keeps and may add to it. ``none``: neither.
     memory: str = "project"
