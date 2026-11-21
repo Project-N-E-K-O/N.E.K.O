@@ -2384,6 +2384,7 @@ async def test_stopping_git_is_not_cut_short_by_another_cancellation(
     assert started[0].returncode is not None  # killed and reaped all the same
 
 
+@pytest.mark.skipif(not WINDOWS, reason="on POSIX the group is killed: its id is not reused while it has members")
 async def test_a_reaped_process_is_not_killed_by_its_old_id(monkeypatch: Any) -> None:
     # Its id may belong to another process by now: nothing is killed by it.
     process = await asyncio.create_subprocess_exec(
@@ -2440,3 +2441,35 @@ async def test_probe_merge_driver_names_as_git_reads_them(
     assert found.usable is usable
     if not usable:
         assert found.reason == worktrees.MERGE_DRIVERS
+
+
+@pytest.mark.skipif(WINDOWS, reason="on Windows a child does not inherit the pipes")
+async def test_what_git_left_holding_its_pipes_is_killed_after_git_exited(
+    repo: Path, manager: WorktreeManager, tmp_path: Path, monkeypatch: Any
+) -> None:
+    import psutil
+
+    marker = tmp_path / "child.pid"
+    script = (
+        "import subprocess, sys\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        f"open({str(marker)!r}, 'w').write(str(child.pid))\n"
+    )
+    spawn = asyncio.create_subprocess_exec
+
+    async def exits_leaving_a_child(*command: Any, **kwargs: Any) -> Any:
+        return await spawn(PYTHON, "-c", script, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exits_leaving_a_child)
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_GIT_WORK_SECONDS", 1.0)
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_GIT_STOP_SECONDS", 20.0)
+    began = asyncio.get_running_loop().time()
+    with pytest.raises(worktrees.GitError):
+        await manager._git(repo, "status")
+    assert asyncio.get_running_loop().time() - began < 8
+    child = int(marker.read_text())
+    for _ in range(100):
+        if not psutil.pid_exists(child) or psutil.Process(child).status() == psutil.STATUS_ZOMBIE:
+            break
+        await asyncio.sleep(0.05)
+    assert not psutil.pid_exists(child) or psutil.Process(child).status() == psutil.STATUS_ZOMBIE

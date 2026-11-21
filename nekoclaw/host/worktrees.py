@@ -1347,8 +1347,10 @@ async def _stop(process: asyncio.subprocess.Process) -> None:
     """
 
     async def finish() -> None:
-        # Only while it is not reaped is its process id surely still its own.
-        if process.returncode is None:
+        # POSIX: the group id stays git's while any member lives, reaped or
+        # not (and killing an empty group does nothing). Windows: only while
+        # git is not reaped is its process id surely still its own.
+        if sys.platform != "win32" or process.returncode is None:
             await asyncio.to_thread(_kill_tree, process.pid)
         with contextlib.suppress(ProcessLookupError):
             process.kill()
@@ -1369,7 +1371,7 @@ def _kill_tree(pid: int) -> None:
 
     On POSIX its process group (git is started as one); on Windows its
     descendants, found by psutil, which leaves out a process whose id was
-    reused. Called only for a process not reaped yet.
+    reused. On Windows called only for a process not reaped yet.
     """
     if sys.platform != "win32":
         with contextlib.suppress(OSError):
