@@ -112,6 +112,16 @@ class _WatchedLock:
         self._lock.release()
 
 
+class _WatchedLocks(dict):
+    """Locks by name, each a ``_WatchedLock``, made when first asked for."""
+
+    def setdefault(self, key: Any, default: Any = None) -> Any:
+        del default
+        if key not in self:
+            self[key] = _WatchedLock()
+        return self[key]
+
+
 def _owed(manager: Any) -> dict[Any, Any]:
     """What the ledger did not take of what requests used, without the count that tells when a length was said."""
     return {key: owed[:6] for key, owed in manager._usage_owed.items()}
@@ -579,6 +589,16 @@ async def test_what_the_task_agents_it_started_use_is_the_commissions_own_and_th
 ):
     monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
     release, wait = _gate()
+
+    async def once_the_one_that_started_it_has_gone_on() -> None:
+        # The task agent it started is to be the one that asks. Whichever of the
+        # two comes to a next request first once the line is crossed asks, and
+        # the other waits for that answer: had the one that started it come to
+        # its second request only after this request was counted (on a slow
+        # machine), it would have asked, and the task agent it started would wait.
+        # So this request is made once that one has gone on with less used.
+        await wait_until(lambda: len(scripts["sort the photos"].requests) == 2, what="the second request of the one that started it")
+
     scripts = {
         "sort the photos": ScriptedLLM(
             [
@@ -590,7 +610,12 @@ async def test_what_the_task_agents_it_started_use_is_the_commissions_own_and_th
         ),
         "count the jpgs": ScriptedLLM(
             [
-                [call("glob", {"pattern": "*.jpg"}), _used(800, 10), finish("tool_calls")],
+                [
+                    once_the_one_that_started_it_has_gone_on,
+                    call("glob", {"pattern": "*.jpg"}),
+                    _used(800, 10),
+                    finish("tool_calls"),
+                ],
                 [call("report", {"status": "blocked", "summary": "counted 12 of them"}, "call-2"), _used(100, 5), finish("tool_calls")],
             ]
         ),
@@ -620,6 +645,87 @@ async def test_what_the_task_agents_it_started_use_is_the_commissions_own_and_th
     assert asked == []
     # Over, nothing is kept of the refusal.
     assert host.task_agents._refused_more == set()
+
+
+async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_waits_for_that_answer(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    started: list[str] = []
+
+    async def once_the_task_agent_it_started_has_used_its_share() -> None:
+        # So the check before its report sees the line crossed, with what the task agent
+        # it started used counted. (On a slow machine the check before this request does.)
+        await wait_until(lambda: started, what="the commission")
+        (child,) = await host.ledger.select(parent_id=started[0])
+        await wait_until(lambda: child.id in host.task_agents._sessions, what="the task agent it started")
+        deadline = asyncio.get_running_loop().time() + 15
+        while (await host.ledger.usage_standing(child.id)).used < 300 + 10 + 800 + 10:
+            assert asyncio.get_running_loop().time() < deadline, "what the task agent it started used was not counted"
+            await asyncio.sleep(0.01)
+
+    scripts = {
+        "sort the photos": ScriptedLLM(
+            [
+                [call("subagent", {"description": "count", "prompt": "count the jpgs"}), _used(300, 10), finish("tool_calls")],
+                [once_the_task_agent_it_started_has_used_its_share, call("glob", {"pattern": "*.none"}, "call-2"), _used(20, 10), finish("tool_calls")],
+                [call("report", {"status": "ready", "summary": "sorted"}, "call-9"), _used(330, 10), finish("tool_calls")],
+            ]
+        ),
+        "count the jpgs": ScriptedLLM(
+            [
+                [call("glob", {"pattern": "*.jpg"}), _used(800, 10), finish("tool_calls")],
+                [call("report", {"status": "ready", "summary": "counted 12 of them"}, "call-2"), _used(100, 5), finish("tool_calls")],
+            ]
+        ),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    manager = host.task_agents
+    # The locks of the questions, which say when somebody has to wait for one.
+    manager._usage_asks = _WatchedLocks()
+    budget = manager._cb_budget
+    checks: dict[str, int] = {}
+
+    async def the_task_agent_after_the_one_that_started_it(session_id: str, payload: dict[str, Any]) -> Any:
+        # The task agent it started comes to its next request only once the one that started it asks.
+        checks[session_id] = checks.get(session_id, 0) + 1
+        commission_id = manager._held_by.get(session_id)
+        if started and commission_id not in (None, started[0]) and checks[session_id] == 2:
+            await wait_status(host, started[0], "waiting_user")
+        return await budget(session_id, payload)
+
+    monkeypatch.setattr(manager, "_cb_budget", the_task_agent_after_the_one_that_started_it)
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    started.append(first.id)
+    await wait_until(lambda: scripts["count the jpgs"].requests, what="the task agent it started")
+    (child,) = await host.ledger.select(parent_id=first.id)
+
+    # The one that started it comes to its next request first: it asks, for the whole of the work.
+    question = await _asked(host, first.id)
+    assert question["category"] == "usage_limit" and question["detail"] == {"used": "1k", "more": "1k"}
+    # The task agent it started waits for that answer, at work as it was, and is not asked about a second time.
+    await asyncio.wait_for(manager._usage_asks[first.id].waited_for.wait(), 10)
+    assert (await host.ledger.get(child.id)).status == "working"
+    assert len(scripts["count the jpgs"].requests) == 1
+    assert len(await outbox(host, "question")) == 1
+
+    assert await host.answer(first.id, "go on", choice="once")
+
+    # Allowed, both go on.
+    assert (await wait_status(host, child.id, "done")).result_summary == "counted 12 of them"
+    assert (await wait_status(host, first.id, "done")).result_summary == "sorted"
+    await _let_go(host)
+    assert len(scripts["count the jpgs"].requests) == 2
+    asked = [
+        commission_id
+        for commission_id in (first.id, child.id)
+        for event in await _events(host, commission_id, "status")
+        if event.payload["to"] == "waiting_user"
+    ]
+    assert asked == [first.id]
+    assert await outbox(host, "question") == []
+    # Over, nothing is kept of the question.
+    assert host.task_agents._refused_more == set() and host.task_agents._usage_asks == {}
 
 
 async def test_a_commission_that_is_stopped_while_the_user_is_asked_is_stopped_and_no_limit_asks_nothing(
