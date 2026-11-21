@@ -133,6 +133,7 @@ from nekoclaw.runtime.tools.jobs import (
     PendingNotice,
     bounded_label,
     completion_notice,
+    preview_completion_notice,
 )
 from nekoclaw.runtime.tools.todo import TodoState
 
@@ -1158,9 +1159,15 @@ class TaskAgentSession(SessionInbox):
                     # sums up further only if it no longer fits.
                     await self._fit(force=False)
                 # How much is about to be sent, as the conversation is measured.
-                sent = await self._size()
+                expanded = False
                 if signal is None or not signal.is_cancelled():
-                    await self._deliver_job_notices()
+                    expanded = await self._deliver_job_notices()
+                sent = await self._size()
+                if expanded and sent > self.context.policy.threshold:
+                    await self._fit(force=False)
+                    if self._compaction_due:
+                        continue
+                    sent = await self._size()
                 history = _provider_context(self.harness.message_list)
                 # Held back until output follows, so a request that is retried after
                 # an overflow does not announce two responses.
@@ -1605,9 +1612,10 @@ class TaskAgentSession(SessionInbox):
     def withdraw_notice(self, handle: object) -> bool:
         return isinstance(handle, CustomMessage) and self.harness.remove_queued(handle)
 
-    async def _deliver_job_notices(self) -> None:
+    async def _deliver_job_notices(self) -> bool:
         # The queue carries only the wake. Record the final approved view
         # once, at the same boundary as its delivery to the model.
+        expanded = False
         for job_id, notice in list(self.jobs.pending_notices.items()):
             if not notice.admitted or not isinstance(notice.handle, CustomMessage):
                 continue
@@ -1624,11 +1632,17 @@ class TaskAgentSession(SessionInbox):
                 except Exception:
                     ruling = {}
                 self.jobs.pending_notices.pop(job_id, None)
+                saved = None
                 if ruling.get("allow") is True:
-                    notice.handle.content, _ = completion_notice(self.jobs, job)
+                    notice.handle.content, inline, cursors = preview_completion_notice(self.jobs, job)
+                    if inline is not None:
+                        saved = functools.partial(self.jobs.commit, job, cursors)
+                        job.output_write = self._recorder.flush
                 notice.handle.custom_type = "notice:job"
                 self.harness.message_list.append(notice.handle)
-                self._record(notice.handle)
+                self._record(notice.handle, saved=saved)
+                expanded = True
+        return expanded
 
     async def _job_finished(self, job: Job) -> None:
         if job.command_finished is not None:

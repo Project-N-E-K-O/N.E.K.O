@@ -801,8 +801,8 @@ async def test_closing_collects_pending_notices_after_process_settlement():
 
 
 @pytest.mark.parametrize("receive", [False, True])
-@pytest.mark.parametrize("notice_allowed", [False, True])
-async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monkeypatch, receive, notice_allowed):
+@pytest.mark.parametrize(("notice_allowed", "saved"), [(False, True), (True, True), (True, False)])
+async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monkeypatch, receive, notice_allowed, saved):
     from types import SimpleNamespace
 
     stop = asyncio.Event()
@@ -843,16 +843,24 @@ async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monk
         session.harness.message_list.append(notices[0])
         session._on_message(notices[0])
         assert not any(m is notices[0] for m in session.harness.message_list)
-        await session._deliver_job_notices()
+        if not saved:
+            append = session._recorder._append
+            async def fail_notice(entry):
+                if getattr(entry, "custom_type", None) == "notice:job":
+                    session._recorder._lost[entry.id] = entry.parent_id
+                else:
+                    await append(entry)
+            monkeypatch.setattr(session._recorder, "_append", fail_notice)
+        assert await session._deliver_job_notices()
         assert session.transcript.is_registered(notices[0])
         await session.flush()
         from nekoclaw.runtime.session import TRANSCRIPT_FILE
         rows = [json.loads(line) for line in (session._session_dir / TRANSCRIPT_FILE).read_text(encoding="utf-8").splitlines()]
-        assert [row["content"] for row in rows if row.get("custom_type") == "notice:job"] == [notices[0].text]
+        assert [row["content"] for row in rows if row.get("custom_type") == "notice:job"] == ([notices[0].text] if saved else [])
         assert all(row.get("custom_type") != "notice:pending_job" for row in rows)
         assert ("second-part" in notices[0].text) == notice_allowed
         assert ("first-part" in notices[0].text) == (notice_allowed and not receive)
-        assert ("second-part" in session.jobs.read(job)) != notice_allowed
+        assert ("second-part" in session.jobs.read(job)) != (notice_allowed and saved)
         result = next(m["content"] for m in llm.requests[1] if m.get("tool_call_id") == "result")
         assert ("first-part" in result) == receive
     finally:
@@ -909,5 +917,27 @@ async def test_oversized_failed_command_keeps_its_exit_status(tmp_path):
         await events.wait_ended(timeout=60)
         result = next(m["content"] for m in llm.requests[1] if m.get("tool_call_id") == "failed-build")
         assert "Use grep" in result and "[exit code: 2]" in result and "x" * 256 not in result
+    finally:
+        await session.close()
+
+
+async def test_notice_expansion_is_measured_and_fitted_before_model_request(tmp_path, monkeypatch):
+    session, events = await open_session(make_spec(tmp_path), ScriptedLLM([[say("done"), finish()]]), _host())
+    steps = []
+    async def expand():
+        steps.append("expand")
+        return True
+    async def measure():
+        steps.append("measure")
+        return session.context.policy.threshold + 1
+    async def fit(**options):
+        steps.append("fit")
+    monkeypatch.setattr(session, "_deliver_job_notices", expand)
+    monkeypatch.setattr(session, "_size", measure)
+    monkeypatch.setattr(session, "_fit", fit)
+    try:
+        session.prompt("Fixture")
+        await events.wait_ended()
+        assert steps[-4:] == ["expand", "measure", "fit", "measure"]
     finally:
         await session.close()

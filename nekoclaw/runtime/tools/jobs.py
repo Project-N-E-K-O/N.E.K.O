@@ -94,6 +94,7 @@ class Job:
     stop_reason: str | None = None
     origin: str | None = None
     command_finished: asyncio.Event | None = None
+    output_write: Callable[[], Awaitable[None]] | None = None
     settled: asyncio.Event = field(default_factory=asyncio.Event)
     output_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -317,23 +318,24 @@ class JobRegistry:
             job.waiters -= 1
 
 
-def completion_notice(registry: JobRegistry, job: Job) -> tuple[str, str | None]:
-    """Build the notice for a finished job.
-
-    Returns the text and, when the unread output fitted inline, that output
-    (now marked as read). Otherwise the output stays unread for ``job_output``.
-    """
+def preview_completion_notice(registry: JobRegistry, job: Job) -> tuple[str, str | None, tuple[int, int]]:
+    """Render a finished job without moving its output cursors."""
     head = f"background job {job.id} ({job.kind}: {bounded_label(job.label)}) finished {status_line(job)}"
     output, cursors = registry.peek(job)
     if not output:
-        registry.commit(job, cursors)
-        return f"{head}. No new output.", ""
+        return f"{head}. No new output.", "", cursors
     trimmed = output[:-1] if output.endswith("\n") else output
     inline = f"{head}. Output:\n{trimmed}"
     if len(inline.encode("utf-8", errors="replace")) <= NOTICE_INLINE_BYTES:
+        return inline, output, cursors
+    return f"{head}. Read its output with job_output.", None, cursors
+
+
+def completion_notice(registry: JobRegistry, job: Job) -> tuple[str, str | None]:
+    text, inline, cursors = preview_completion_notice(registry, job)
+    if inline is not None:
         registry.commit(job, cursors)
-        return inline, output
-    return f"{head}. Read its output with job_output.", None
+    return text, inline
 
 
 def build_job_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> list[AgentTool]:
@@ -365,6 +367,11 @@ def build_job_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> lis
         handoff = JOB_HANDOFF.get()
         if handoff is not None:
             await handoff.reserve_output(job, call)
+        if job.output_write is not None:
+            # A preceding notice may have queued its transcript entry.
+            # Its saved callback moves these cursors only on durable success.
+            await job.output_write()
+            job.output_write = None
         body, cursors = registry.peek(job)
         notice = registry.pending_notices.get(job.id)
 

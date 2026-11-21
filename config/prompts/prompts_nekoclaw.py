@@ -156,7 +156,7 @@ TOOL_GUIDANCE_SECTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     (
         "read",
         ("read",),
-        "Use read instead of shell commands for text files. Select lines with offset and limit. Search oversized files with grep.",
+        "Use the read tool for text files instead of shell commands. Select lines with offset and limit. Search oversized files with grep.",
     ),
     (
         "write",
