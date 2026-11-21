@@ -769,3 +769,37 @@ def test_cloudsave_binding_roots_cover_every_library(libraries):
         asset_source="",
         asset_source_id="",
     ) == ("steam_workshop", "200")
+
+
+def _vrm_character(item_id: str, name: str) -> dict:
+    return {"_reserved": {"avatar": {
+        "model_type": "vrm",
+        "asset_source": "steam_workshop",
+        "asset_source_id": item_id,
+        "vrm": {"model_path": f"/workshop/{item_id}/{name}.vrm"},
+    }}}
+
+
+@pytest.mark.parametrize("library", ["a", "b"])
+def test_cloudsave_binding_survives_an_unreadable_model_in_any_library(libraries, monkeypatch, library):
+    from utils.cloudsave_runtime import bindings
+
+    _write_model(getattr(libraries, library) / "200", "vrm", "Bravo")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    payload = _vrm_character("200", "Bravo")
+
+    readable = bindings._derive_character_binding_summary(libraries.config, "Neko", payload)
+    assert readable["asset_state"] == "ready"
+    assert readable["asset_fingerprint"]
+
+    def _denied(path):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(bindings, "_sha256_file", _denied)
+    summary = bindings._derive_character_binding_summary(libraries.config, "Neko", payload)
+    # Same as a model that is not on disk: still backed up, marked for download.
+    assert summary["asset_state"] == "downloadable"
+    assert summary["asset_fingerprint"] == ""
+    assert summary["asset_source"] == "steam_workshop"
+    assert summary["asset_source_id"] == "200"
+    assert summary["last_verified_at"] == ""

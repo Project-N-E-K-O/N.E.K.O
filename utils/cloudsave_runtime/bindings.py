@@ -911,6 +911,15 @@ def _derive_character_binding_summary(
         asset_source=asset_source,
         asset_source_id=asset_source_id,
     )
+    # Hash before anything relies on the path: a model file that exists but cannot be
+    # read (permissions, locked, vanished) is treated as unresolved, so one unavailable
+    # model does not stop this character's backup or the whole export.
+    asset_fingerprint = ""
+    if resolved_path is not None:
+        try:
+            asset_fingerprint = _sha256_file(resolved_path)
+        except OSError:
+            resolved_path = None
     asset_source, asset_source_id = _infer_binding_source_from_resolved_path(
         config_manager,
         resolved_path=resolved_path,
@@ -929,7 +938,6 @@ def _derive_character_binding_summary(
         model_type=binding_model_type,
         workshop_origin_index=workshop_origin_index,
     )
-    asset_fingerprint = _sha256_file(resolved_path) if resolved_path is not None else ""
 
     fallback_model_ref = ""
     if asset_state != "ready" and binding_model_type != "live2d":
