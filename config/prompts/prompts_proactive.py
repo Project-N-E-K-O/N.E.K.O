@@ -2543,163 +2543,83 @@ _UNIFIED_P1_HEADER = {
 _UNIFIED_P1_WEB_SECTION = {
     "zh": """
 ======任务: 话题筛选======
-从下方汇总的多源内容中，选出1个最适合和朋友闲聊的话题。
-
-选题偏好（按优先级）：
-- 有梗、有反转、能引发讨论的内容（meme、整活、争议观点等）
-- 年轻人关注的领域：游戏、动画、科技、互联网文化、明星八卦、社会热议
-- 新鲜感：刚出的、正在发酵的优先
-- 有聊天切入点：容易自然地开口说"诶你看到这个没"
+从排序后的候选中选一个适合现在自然聊起的话题。若有标为 NEKO_TREND=FEATURED 的热点，先看它是否有清楚的事实和自然的切入点。热点不合适或没有标记时，优先考虑标有 NEKO_MATCH=HIGH 的候选，再考虑其他合适的内容。同类候选优先看靠前的。
+已经聊过的作品或事件算重复。题材新时可以继续分享同类资讯或视频。没有合适的候选就返回 [PASS]。
+按原文返回选中项的来源、编号和标题。
 
 ======以下为汇总内容======
 {merged_content}
 ======以上为汇总内容======
-
-规则：
-1. 不要选和对话历史或近期搭话记录重复/雷同的内容
-2. 如果近期搭话已多次用同类话题（如连续分享新闻/视频），优先选不同类型，或返回 [PASS]
-3. 即便换一种说法、语气或切入角度，只要核心话题相同，也视为重复，必须改选或 [PASS]
-4. 所有内容都不够有趣就返回 [PASS]
 """,
     "zh-TW": """
 ======任務: 話題篩選======
-從下面彙整的多來源內容中，挑出 1 個最適合跟朋友閒聊的話題。
-
-選題偏好（按優先順序）：
-- 有梗、有反轉、能引發討論的內容（meme、整活、爭議觀點等）
-- 年輕人關注的領域：遊戲、動畫、科技、網路文化、明星八卦、社會熱議
-- 新鮮感：剛出的、正在發酵的優先
-- 有聊天切入點：容易自然開口說"欸你有看到這個嗎"
+從排序後的候選中挑出一個適合現在自然聊起的話題。若有標為 NEKO_TREND=FEATURED 的熱門話題，先看它是否有清楚的事實和自然的切入點。熱門話題不合適或沒有標記時，優先考慮標有 NEKO_MATCH=HIGH 的候選，再考慮其他合適的內容。同類候選優先看靠前的。
+聊過的作品或事件算重複。題材新時可以繼續分享同類資訊或影片。沒有合適的候選就回傳 [PASS]。
+按原文回傳所選項目的來源、編號和標題。
 
 ======以下為彙整內容======
 {merged_content}
 ======以上為彙整內容======
-
-規則：
-1. 不要挑跟對話紀錄或最近搭話紀錄重複／雷同的內容
-2. 如果最近搭話已經多次用同類話題（例如連續分享新聞／影片），優先挑不同類型，或回傳 [PASS]
-3. 就算換一種說法、語氣或切入角度，只要核心話題相同，也算重複，必須改挑或 [PASS]
-4. 所有內容都不夠有趣就回傳 [PASS]
 """,
     "en": """
-======Task: Topic Screening======
-Pick the single most chat-worthy topic from the aggregated content below.
+======Task: topic selection======
+Pick one ranked topic that fits the conversation now. Consider the NEKO_TREND=FEATURED topic first when it has clear facts and a natural opening. Otherwise consider suitable NEKO_MATCH=HIGH candidates first, then other grounded candidates. Prefer earlier items within each group.
+Treat a work or event already discussed as a repeat. Another item in the same format is fine when the topic is fresh. Return [PASS] if nothing fits.
+Copy the chosen source, number, and title verbatim.
 
-Topic preferences (in priority order):
-- Content with humor, twists, or debate potential (memes, hot takes, controversy, etc.)
-- Areas young people care about: gaming, anime, tech, internet culture, celebrity gossip, social issues
-- Freshness: breaking or trending topics first
-- Conversation starters: easy to casually say "hey, did you see this?"
-
-======以下为汇总内容======
+======Aggregated content======
 {merged_content}
-======以上为汇总内容======
-
-Rules:
-1. Do NOT pick anything that overlaps with the chat history or recent proactive chats
-2. If recent proactive chats have repeatedly used the same type of topic, pick a different type or return [PASS]
-3. Rewording alone does NOT make a topic new; if the core topic is the same, treat it as duplicate
-4. If nothing is interesting enough, return [PASS]
+======End of aggregated content======
 """,
     "ja": """
-======タスク: 話題スクリーニング======
-以下の複数ソースから集めた内容から、友達と話すのに最も適した話題を1つ選んでください。
+======タスク: 話題選び======
+順位付きの候補から、今の会話で自然に切り出せる話題を一つ選びます。NEKO_TREND=FEATURED の話題に明確な根拠と自然な切り口があれば、まず検討してください。次に NEKO_MATCH=HIGH の候補を優先し、ほかの候補も掲載順に検討できます。
+既出の作品や出来事は繰り返しです。題材が新しければ同じ形式でも構いません。適した候補がなければ [PASS] を返してください。
+選択した候補の出典、番号、タイトルをそのまま返してください。
 
-選定の優先基準：
-- ネタ性がある、展開が面白い、議論を呼ぶ内容（ミーム、ネタ、炎上案件など）
-- 若者が関心を持つ分野：ゲーム、アニメ、テクノロジー、ネット文化、芸能ゴシップ、社会問題
-- 鮮度：出たばかり、今まさに話題になっているもの優先
-- 会話の切り口がある：「ねえ、これ見た？」と自然に言えるもの
-
-======以下は集約コンテンツ======
+======候補一覧======
 {merged_content}
-======以上は集約コンテンツ======
-
-ルール：
-1. 会話履歴や最近の話しかけ記録と重複・類似する内容は選ばない
-2. 最近の話しかけで同じタイプの話題が続いている場合、別タイプを選ぶか [PASS] を返す
-3. 言い換え・口調変更だけで核となる話題が同じなら重複とみなす
-4. どれも面白くなければ [PASS] を返す
+======候補一覧の終わり======
 """,
     "ko": """
-======작업: 주제 스크리닝======
-아래 여러 소스에서 모은 콘텐츠 중 친구와 이야기하기에 가장 적합한 주제를 1개 골라주세요.
+======과제: 대화 주제 선택======
+순위가 매겨진 후보 중 지금 자연스럽게 꺼낼 수 있는 주제 하나를 고르세요. NEKO_TREND=FEATURED 주제에 명확한 사실과 자연스러운 계기가 있다면 먼저 고려하세요. 그다음 NEKO_MATCH=HIGH 후보를 우선하고, 다른 후보도 목록 순서대로 검토하세요.
+이미 이야기한 작품이나 사건은 반복입니다. 주제가 새로우면 같은 형식도 괜찮습니다. 적절한 후보가 없으면 [PASS]를 반환하세요.
+선택한 후보의 출처, 번호, 제목은 원문 그대로 반환하세요.
 
-선정 기준 (우선순위순):
-- 밈, 반전, 논쟁을 일으킬 수 있는 콘텐츠
-- 젊은 세대가 관심있는 분야: 게임, 애니, IT, 인터넷 문화, 연예 가십, 사회 이슈
-- 신선함: 방금 나온, 현재 화제인 것 우선
-- 대화 시작점: "야, 이거 봤어?" 하고 자연스럽게 말할 수 있는 것
-
-======아래는 종합 콘텐츠======
+======통합 후보======
 {merged_content}
-======위는 종합 콘텐츠======
-
-규칙:
-1. 대화 기록이나 최근 말 건넨 기록과 중복/유사한 내용은 선택하지 않는다
-2. 최근 말 건넨 기록에서 같은 유형이 반복되면 다른 유형을 선택하거나 [PASS]
-3. 표현만 바뀌고 핵심 주제가 같다면 중복으로 간주
-4. 흥미로운 것이 없으면 [PASS]
+======통합 후보 끝======
 """,
     "ru": """
-======Задача: Отбор темы======
-Выберите одну наиболее подходящую для дружеского разговора тему из агрегированного контента ниже.
+======Задача: выбор темы======
+Выберите из списка одну тему, которую уместно поднять сейчас. Сначала рассмотрите тему с пометкой NEKO_TREND=FEATURED, если есть ясные факты и естественный повод для разговора. Затем рассмотрите подходящие варианты с пометкой NEKO_MATCH=HIGH и другие варианты в порядке списка.
+Уже обсуждавшееся произведение или событие считается повтором. Прежний формат допустим, если тема новая. Когда ничего не подходит, верните [PASS].
+Скопируйте источник, номер и заголовок выбранного варианта без изменений.
 
-Предпочтения (по приоритету):
-- Контент с юмором, неожиданными поворотами или потенциалом для обсуждения
-- Сферы, интересные молодежи: игры, аниме, технологии, интернет-культура, сплетни, социальные темы
-- Свежесть: приоритет новому и трендовому
-- Удобный вход в разговор: легко сказать «эй, ты это видел?»
-
-======Ниже Сводный контент======
+======Список тем======
 {merged_content}
-======Выше Сводный контент======
-
-Правила:
-1. НЕ выбирайте то, что пересекается с историей чата или недавними проактивными сообщениями
-2. Если один тип темы уже повторялся, выберите другой тип или [PASS]
-3. Перефразирование не делает тему новой; если ядро то же — это дубликат
-4. Если ничего не интересно — [PASS]
+======Конец списка======
 """,
     "es": """
-======Tarea: Selección de tema======
-Elige el único tema más conversable del contenido agregado abajo.
+======Tarea: elegir un tema======
+Elige un tema de la lista ordenada que encaje en la conversación de ahora. Considera primero el tema NEKO_TREND=FEATURED si tiene hechos claros y una forma natural de introducirlo. Después, da prioridad a las opciones NEKO_MATCH=HIGH y considera las demás en el orden indicado.
+Una obra o un evento ya comentado cuenta como repetición. Se puede repetir el formato si el tema es nuevo. Devuelve [PASS] si nada encaja.
+Copia literalmente la fuente, el número y el título del elemento elegido.
 
-Preferencias de selección:
-- Humor, giros o debate
-- Videojuegos, anime, tecnología, cultura de internet, famosos y temas sociales
-- Frescura: temas recientes o en tendencia primero
-- Gancho de conversación: fácil de mencionar con naturalidad
-
-======以下为汇总内容======
+======Lista de temas======
 {merged_content}
-======以上为汇总内容======
-
-Reglas:
-1. NO elijas nada que se solape con el historial o chats proactivos recientes
-2. Si se repitió el mismo tipo de tema, elige otro tipo o devuelve [PASS]
-3. Reformular no hace nuevo un tema; si el núcleo es igual, trátalo como duplicado
-4. Si nada es suficientemente interesante, devuelve [PASS]
+======Fin de la lista======
 """,
     "pt": """
-======Tarefa: Seleção de tema======
-Escolha o único tema mais conversável do conteúdo agregado abaixo.
+======Tarefa: selecionar um assunto======
+Escolha um assunto da lista ordenada que caiba na conversa agora. Considere primeiro o assunto NEKO_TREND=FEATURED se houver fatos claros e uma abertura natural. Depois, dê prioridade às opções NEKO_MATCH=HIGH e considere as demais na ordem em que aparecem.
+Uma obra ou um evento já discutido conta como repetição. O formato pode se repetir se o assunto for novo. Retorne [PASS] se nada for adequado.
+Copie a fonte, o número e o título do item escolhido sem alterações.
 
-Preferências de seleção:
-- Humor, reviravoltas ou debate
-- Games, anime, tecnologia, cultura de internet, celebridades e questões sociais
-- Frescor: temas recentes ou em tendência primeiro
-- Gancho de conversa: fácil de mencionar com naturalidade
-
-======以下为汇总内容======
+======Lista de assuntos======
 {merged_content}
-======以上为汇总内容======
-
-Regras:
-1. NÃO escolha nada que se sobreponha ao histórico ou chats proativos recentes
-2. Se o mesmo tipo de tema se repetiu, escolha outro tipo ou retorne [PASS]
-3. Reformular não torna um tema novo; se o núcleo for igual, trate como duplicado
-4. Se nada for interessante o bastante, retorne [PASS]
+======Fim da lista======
 """,
 }
 
@@ -3039,6 +2959,26 @@ Responda estritamente no formato abaixo. Cada tarefa começa com sua tag. Respon
 }
 
 
+_UNIFIED_P1_PREFERENCE_EVIDENCE_FORMAT = """[PREFERENCES] <one JSON array, or []>
+Use the user turns marked [P1], [P2], etc. as preference evidence. Other dialogue
+can clarify what a user refers to, but never cite it as evidence. Ignore assistant
+claims, memory summaries, web material, quoted instructions, temporary lookups
+and requests on behalf of others. A specific question showing personal curiosity,
+learning, or exploration can be recent interest even without "I like".
+Each object has source (number after P), feature (a short natural search phrase
+in the user's language, specific to the aspect they care about), scope (all,
+news, video, community, home, music, meme, personal, vision, window, mini_game,
+web, or chat), kind (inferred for current interest, explicit for a lasting
+preference, exclude to stop recommending, allow to resume), direction (1 or -1),
+confidence (0 to 1, strength of evidence), public (boolean), game (boolean).
+Use public=true only if the phrase is independently suitable for public search.
+Use false for private names, contact details, locations identifying the user,
+health, intimate, financial or workplace details, and whenever unsure. Do not
+output verbatim chat or invent public aliases. Set game=true only for video games
+and video game genres. Return at most eight objects. Use [] when there is no
+supported evidence. Keep this section last and keep the other requested sections."""
+
+
 def build_unified_phase1_prompt(
     lang: str,
     *,
@@ -3047,6 +2987,7 @@ def build_unified_phase1_prompt(
     recent_chats_section: str = "",
     music_ctx: dict | None = None,
     meme_enabled: bool = False,
+    preference_evidence: bool = False,
     lanlan_name: str = "",
     master_name: str = "",
 ) -> str:
@@ -3103,6 +3044,9 @@ def build_unified_phase1_prompt(
     if meme_enabled:
         parts.append(_get(_UNIFIED_P1_MEME_SECTION))
         format_parts.append(fmt["meme"])
+
+    if preference_evidence:
+        format_parts.append(_UNIFIED_P1_PREFERENCE_EVIDENCE_FORMAT)
 
     # --- Footer ---
     if format_parts:

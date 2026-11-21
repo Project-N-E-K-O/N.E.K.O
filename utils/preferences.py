@@ -690,10 +690,17 @@ def load_global_conversation_settings_snapshot(
     """Load settings together with the server revision and ASR decision token."""
     try:
         global PREFERENCES_FILE
-        PREFERENCES_FILE = _get_active_preferences_path()
-        if os.path.exists(PREFERENCES_FILE):
-            with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
-                return _snapshot_from_preferences_data(json.load(f))
+        paths = (
+            tuple(dict.fromkeys((_get_preferences_write_path(), _get_preferences_read_path())))
+            if strict else (_get_active_preferences_path(),)
+        )
+        for path in paths:
+            PREFERENCES_FILE = path
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    return _snapshot_from_preferences_data(json.load(f))
+            except FileNotFoundError:
+                continue
     except Exception as e:
         if strict:
             raise
@@ -894,10 +901,18 @@ def is_privacy_mode_enabled() -> bool:
     return not settings.get('proactiveVisionEnabled', True)
 
 
-async def ais_privacy_mode_enabled() -> bool:
+async def ais_privacy_mode_enabled(*, strict: bool = False) -> bool:
     """Async version of ``is_privacy_mode_enabled``."""
-    settings = await aload_global_conversation_settings()
+    settings = await aload_global_conversation_settings(strict=strict)
     return not settings.get('proactiveVisionEnabled', True)
+
+
+@contextmanager
+def locked_privacy_mode():
+    """Read privacy mode and hold its settings lock until the local operation finishes."""
+    with _locked_preferences_store(attribute=False):
+        settings = load_global_conversation_settings(strict=True)
+        yield not settings.get('proactiveVisionEnabled', True)
 
 
 def _load_preferences_data_for_write_unlocked() -> List[Dict[str, Any]]:

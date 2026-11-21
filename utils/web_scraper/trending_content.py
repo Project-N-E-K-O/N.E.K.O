@@ -22,9 +22,10 @@ import json
 import os
 from pathlib import Path
 import httpx
+from utils.proactive_preferences.personalization import RecommendationContext
 from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
-from utils.social_base import DEFAULT_SOCIAL_BASE_URL, social_base_url
+from utils.social_base import DEFAULT_SOCIAL_BASE_URL, community_bearer_transport_allowed, social_base_url
 from utils.language_utils import get_global_language_full, normalize_language_code
 import random
 import re
@@ -63,6 +64,9 @@ XHH_USER_AGENT = (
 # of 60 cards. The caller's smaller ``limit`` is applied after normalization,
 # so Phase 1 keeps its existing prompt budget while still getting a varied pool.
 NEKO_COMMUNITY_FEED_PAGE_SIZE = 60
+NEKO_COMMUNITY_FALLBACK_SECONDS = 300
+NEKO_COMMUNITY_FALLBACK_POOLS = 8
+NEKO_COMMUNITY_PROACTIVE_TIMEOUT_SECONDS = 2.5
 NEKO_COMMUNITY_TITLE_MAX_CHARS = 200
 NEKO_COMMUNITY_AUTHOR_MAX_CHARS = 120
 NEKO_COMMUNITY_PUBLISHED_AT_MAX_CHARS = 80
@@ -75,6 +79,9 @@ NEKO_COMMUNITY_TEXT_MAX_NODES = 128
 NEKO_COMMUNITY_IDENTIFIER_MAX_CHARS = 200
 NEKO_COMMUNITY_URL_MAX_CHARS = 2048
 NEKO_COMMUNITY_RESPONSE_MAX_BYTES = 1_000_000
+_public_community_pools: OrderedDict[
+    tuple[str, str], tuple[float, list[dict[str, Any]]]
+] = OrderedDict()
 
 
 def _neko_community_urls() -> tuple[str, str]:
@@ -102,19 +109,6 @@ def _same_community_origin(left: str, right: str) -> bool:
         return (left_url.port or default_port) == (right_url.port or default_port)
     except ValueError:
         return False
-
-
-def _neko_community_bearer_transport_allowed(feed_api: str) -> bool:
-    """Allow bearer transport over HTTPS or the desktop's loopback HTTP hosts."""
-
-    try:
-        parsed = urlparse(feed_api)
-    except ValueError:
-        return False
-    hostname = (parsed.hostname or "").casefold()
-    return parsed.scheme.lower() == "https" or (
-        parsed.scheme.lower() == "http" and hostname in {"localhost", "127.0.0.1", "::1"}
-    )
 
 
 def _neko_community_legacy_session_path() -> Path | None:
@@ -2228,8 +2222,41 @@ async def _fetch_neko_community_payload(
     return response.status_code, json.loads(body)
 
 
+async def search_neko_community_cards(
+    query: str, *, limit: int, locale: str
+) -> list[dict[str, Any]]:
+    """Search the public card index with no community session attached."""
+    _, discover_url = _neko_community_urls()
+    endpoint = urljoin(discover_url, "/api/search")
+    headers = {"Accept": "application/json", "Accept-Language": locale}
+    body = bytearray()
+    async with httpx.AsyncClient(timeout=NEKO_COMMUNITY_PROACTIVE_TIMEOUT_SECONDS) as client:
+        async with client.stream(
+            "GET", endpoint, params={"q": query, "limit": limit}, headers=headers
+        ) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes():
+                if len(body) + len(chunk) > NEKO_COMMUNITY_RESPONSE_MAX_BYTES:
+                    return []
+                body.extend(chunk)
+    payload = json.loads(body)
+    cards = payload.get("cards") if isinstance(payload, dict) else None
+    if not isinstance(cards, list):
+        return []
+    public = []
+    for card in cards[:limit]:
+        if not isinstance(card, dict) or card.get("visibility") != "public":
+            continue
+        serial = card.get("serial_no")
+        slug = str(serial) if isinstance(serial, int) and serial > 0 else card.get("id")
+        if isinstance(slug, str) and re.fullmatch(r"[A-Za-z0-9-]{1,64}", slug):
+            public.append({**card, "url": f"/cards/{slug}"})
+    return normalize_neko_community_feed({"items": public}, limit=limit)
+
+
 async def fetch_neko_community_feed(
-    limit: int = 10, *, locale: str | None = None
+    limit: int = 10, *, locale: str | None = None,
+    recommendations: RecommendationContext | None = None,
 ) -> dict[str, Any]:
     """Fetch community cards with the validated desktop OAuth session when available."""
 
@@ -2241,52 +2268,114 @@ async def fetch_neko_community_feed(
             "User-Agent": XHH_USER_AGENT,
         }
         query: dict[str, Any] = {"cursor": None, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
+        requires_account = recommendations is not None and not recommendations.allows_guest_community
         access_token = ""
-        if _neko_community_bearer_transport_allowed(feed_api):
-            access_token = await _neko_community_access_token(feed_api)
+        if community_bearer_transport_allowed(feed_api):
+            if recommendations is None:
+                access_token = await _neko_community_access_token(feed_api)
+            elif _same_community_origin(recommendations.community, feed_api):
+                access_token = recommendations.bearer
+        if requires_account and not access_token:
+            raise ValueError("Community recommendation credentials unavailable")
         authenticated = bool(access_token)
         rejected_auth_status: int | None = None
+        payload: Any = None
+        posts = []
+        preference_exhausted = False
+        timeout = NEKO_COMMUNITY_PROACTIVE_TIMEOUT_SECONDS if recommendations is not None else None
         if authenticated:
             # Omit locale so the server honors the account's saved language.
             # Keep the refreshable bearer out of the shared client's cookie jar.
             headers["Authorization"] = f"Bearer {access_token}"
-            async with httpx.AsyncClient(
-                timeout=10.0,
-                trust_env=True,
-                follow_redirects=False,
-            ) as client:
-                status_code, payload = await _fetch_neko_community_payload(
-                    client, feed_api, query=query, headers=headers
-                )
-            if status_code in {401, 403}:
-                rejected_auth_status = status_code
+            cloud_query = {**query, "surface": "proactive"} if recommendations is not None else query
+            try:
+                async with asyncio.timeout(timeout):
+                    async with httpx.AsyncClient(
+                        timeout=10.0, trust_env=urlparse(feed_api).scheme == "https", follow_redirects=False,
+                    ) as client:
+                        try:
+                            status_code, payload = await _fetch_neko_community_payload(
+                                client, feed_api, query=cloud_query, headers=headers
+                            )
+                        except httpx.HTTPStatusError as exc:
+                            if recommendations is None or exc.response.status_code != 422:
+                                raise
+                            # Older Verse versions already serve authenticated
+                            # recommendations, without the proactive surface field.
+                            status_code, payload = await _fetch_neko_community_payload(
+                                client, feed_api, query=query, headers=headers
+                            )
+                if status_code in {401, 403}:
+                    if requires_account:
+                        raise ValueError(f"Account community recommendations rejected: HTTP {status_code}")
+                    rejected_auth_status = status_code
+                    authenticated = False
+                else:
+                    posts = normalize_neko_community_feed(payload, limit=NEKO_COMMUNITY_FEED_PAGE_SIZE)
+                    if not posts and _community_feed_collection(payload) != []:
+                        raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
+                    if recommendations is not None:
+                        profile = recommendations.preferences.profile
+                        allowed = [
+                            post for post in posts
+                            if profile.score("community", profile.match("community", post)) is not None
+                        ]
+                        preference_exhausted = bool(posts) and not allowed
+                        posts = allowed
+            except (httpx.HTTPError, TimeoutError, ValueError):
+                if recommendations is None or requires_account:
+                    raise
                 authenticated = False
-                headers.pop("Authorization", None)
         if not authenticated:
             # Missing or rejected credentials use anonymous recommendations.
+            headers.pop("Authorization", None)
             query["locale"] = normalize_language_code(
                 locale or get_global_language_full(), format="full"
             )
-            status_code, payload = await _fetch_neko_community_payload(
-                get_external_http_client(), feed_api, query=query, headers=headers
-            )
-        if status_code in {401, 403}:
-            auth_context = (
-                f" after authenticated HTTP {rejected_auth_status}"
-                if rejected_auth_status is not None else ""
-            )
-            raise ValueError(
-                f"Anonymous community recommendations rejected: HTTP {status_code}{auth_context}"
-            )
-        posts = normalize_neko_community_feed(payload, limit=limit)
-        if not posts and _community_feed_collection(payload) != []:
-            raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
+            cache_key = (feed_api, query["locale"])
+            try:
+                async with asyncio.timeout(timeout):
+                    status_code, payload = await _fetch_neko_community_payload(
+                        get_external_http_client(), feed_api, query=query, headers=headers
+                    )
+                if status_code in {401, 403}:
+                    _public_community_pools.pop(cache_key, None)
+                    auth_context = (
+                        f" after authenticated HTTP {rejected_auth_status}"
+                        if rejected_auth_status is not None else ""
+                    )
+                    raise ValueError(f"Anonymous community recommendations rejected: HTTP {status_code}{auth_context}")
+                posts = normalize_neko_community_feed(payload, limit=NEKO_COMMUNITY_FEED_PAGE_SIZE)
+                if recommendations is not None:
+                    _public_community_pools.pop(cache_key, None)
+                    if posts:
+                        _public_community_pools[cache_key] = (time.monotonic(), posts)
+                        if len(_public_community_pools) > NEKO_COMMUNITY_FALLBACK_POOLS:
+                            _public_community_pools.popitem(last=False)
+            except (httpx.TransportError, httpx.HTTPStatusError, TimeoutError) as exc:
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
+                    _public_community_pools.pop(cache_key, None)
+                    raise
+                cached = _public_community_pools.get(cache_key) if recommendations is not None else None
+                if cached is None or time.monotonic() - cached[0] > NEKO_COMMUNITY_FALLBACK_SECONDS:
+                    raise
+                posts = cached[1]
+            if not posts and _community_feed_collection(payload) != []:
+                raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
+        if not authenticated and recommendations is not None:
+            ranked = recommendations.preferences.rank_community([dict(post) for post in posts])
+            preference_exhausted = bool(posts) and not ranked
+            posts = ranked
+        posts = posts[:max(1, int(limit))]
         # Preserve server ranking; an exhausted language pool may legitimately be empty.
         return {
             "success": True,
             "posts": posts,
             "formatted_content": format_neko_community_feed(posts),
             "authenticated": authenticated,
+            # Local exclusions removed every fetched card; callers may still
+            # analyze chat evidence so the user can lift those exclusions.
+            "preference_exhausted": preference_exhausted,
         }
     except Exception as exc:
         logger.warning(f"获取喵宇宙社区内容失败: {type(exc).__name__}: {exc}")

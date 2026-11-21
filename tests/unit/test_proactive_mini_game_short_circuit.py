@@ -150,6 +150,39 @@ async def test_short_circuit_forwards_injected_persistence_root(
 
 
 @pytest.mark.asyncio
+async def test_account_switch_during_phase_two_cancels_personalized_invite(monkeypatch):
+    from utils.proactive_preferences.personalization import RecommendationContext
+
+    monkeypatch.setattr(invites, "MINI_GAME_INVITE_ENABLED", True)
+    monkeypatch.setattr(invites, "MINI_GAME_INVITE_FORCE_GAME_TYPE", None)
+    monkeypatch.setattr(invites, "_ensure_proactive_chat_totals_loaded", AsyncMock())
+    monkeypatch.setattr(invites, "_was_invite_ever_delivered", lambda _name: False)
+    monkeypatch.setattr(invites, "_get_proactive_chat_total", lambda _name: 100)
+    monkeypatch.setattr(invites, "_pick_mini_game_type", lambda *args, **kwargs: "soccer")
+    monkeypatch.setattr(invites, "_enter_proactive_phase2", AsyncMock(return_value=True))
+    monkeypatch.setattr(invites, "_proactive_turn_still_owned", lambda *args: True)
+    mgr = SimpleNamespace(
+        current_speech_id="invite-turn",
+        prepare_proactive_delivery=AsyncMock(return_value=True),
+        feed_tts_chunk=AsyncMock(),
+        finish_proactive_delivery=AsyncMock(),
+        handle_new_message=AsyncMock(),
+    )
+    short_circuit = await invites._run_mini_game_invite_short_circuit(
+        lanlan_name="Yui", mgr=mgr,
+        activity_snapshot=SimpleNamespace(state="present"), invite_lang="zh",
+        master_name="Master",
+        load_recommendations=AsyncMock(return_value=RecommendationContext()),
+        recommendation_owner_is_current=AsyncMock(side_effect=[True, False]),
+    )
+    assert short_circuit.result.body["reason_code"] == contracts.PROACTIVE_REASON_DELIVERY_PREEMPTED
+    assert short_circuit.options_payload is None
+    mgr.feed_tts_chunk.assert_not_awaited()
+    mgr.finish_proactive_delivery.assert_not_awaited()
+    mgr.handle_new_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_router_adapter_sends_options_payload() -> None:
     send_json = AsyncMock()
     mgr = SimpleNamespace(

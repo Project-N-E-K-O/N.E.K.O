@@ -1182,6 +1182,32 @@ def _fake_new_dialog_runtime(monkeypatch, tmp_path, pinned_store):
     return routes
 
 
+@pytest.mark.asyncio
+async def test_new_dialog_preference_sources_preserve_the_existing_context(tmp_path, monkeypatch):
+    from time import time
+
+    from app.memory_server import runtime
+    from utils.llm_client import AIMessage, HumanMessage
+
+    routes = _fake_new_dialog_runtime(monkeypatch, tmp_path, None)
+    original = {
+        "recordId": "a" * 32, "origin": "chat", "originalTime": str(int(time() * 1000)),
+    }
+    runtime.recent_history_manager.aget_recent_history.return_value = [
+        HumanMessage(content="I am learning swimming", metadata={"chat_original_source": original}),
+        AIMessage(content="Try a guide", metadata={"chat_original_source": original}),
+        HumanMessage(content="No original proof"),
+    ]
+    monkeypatch.setattr(routes, "get_timestamp", lambda: "2026-11-20 12:00")
+    plain = await routes._new_dialog(_NAME, render_language="en")
+    structured = await routes._new_dialog(_NAME, render_language="en", preference_evidence=True)
+    payload = json.loads(structured.body)
+    assert payload["context"] == plain.body.decode()
+    [source] = payload["preference_sources"]
+    assert source["id"] == original["recordId"]
+    assert payload["context"][source["offset"]:].splitlines()[0].endswith(" | I am learning swimming")
+
+
 def test_new_dialog_renders_pinned_section_before_persona(tmp_path, monkeypatch):
     from config.prompts.prompts_memory import PERSONA_HEADER, get_pinned_facts_section_header
 

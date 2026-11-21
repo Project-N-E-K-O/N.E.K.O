@@ -54,6 +54,19 @@ def social_base_url() -> str:
     return configured_social_base_url() or DEFAULT_SOCIAL_BASE_URL
 
 
+def community_bearer_transport_allowed(url: str) -> bool:
+    """Allow community bearer tokens over HTTPS and local development HTTP."""
+    try:
+        parsed = urlparse(validate_http_url(url, name="community URL"))
+        host = (parsed.hostname or "").casefold()
+    except ValueError:
+        return False
+    return bool(host) and (
+        parsed.scheme == "https"
+        or (parsed.scheme == "http" and host in {"localhost", "127.0.0.1", "::1"})
+    )
+
+
 def auth_public_url() -> str:
     """Return the configured IdP origin or the production fallback.
 
