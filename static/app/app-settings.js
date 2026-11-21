@@ -1194,8 +1194,9 @@
         }
     }
 
-    // Another window may have turned privacy mode on before its storage event
-    // reached this window. Returns that revocation's write token, or null.
+    // Another window may have turned a shared switch off (for screen consent:
+    // turned privacy mode on) before its storage event reached this window.
+    // Returns that write's token, or null.
     // Read-only. Only a revocation carrying the key's own write token counts
     // (the explicit write, or the knownKeyWrites token that window's later
     // unrelated saves keep carrying) and only when it is newer than what this
@@ -1206,8 +1207,7 @@
     // the revoking window's own event, arriving next, settles the same way.
     // An incidental stale "false" another window copied along in an
     // unrelated save is not a choice and is ignored.
-    function _unseenVisionRevocationToken() {
-        const key = 'proactiveVisionEnabled';
+    function _unseenSharedRevocationToken(key) {
         let stored = null;
         try {
             const raw = localStorage.getItem('project_neko_settings');
@@ -1229,6 +1229,18 @@
             && Number.isInteger(_knownServerKeyRevisions[key])
             && keyToken.confirmedRevision < _knownServerKeyRevisions[key]) return null;
         return token;
+    }
+
+    function _unseenVisionRevocationToken() {
+        return _unseenSharedRevocationToken('proactiveVisionEnabled');
+    }
+
+    // Whether another window explicitly turned this shared boolean setting off
+    // and this window has not received that write yet. A stale "false" copied
+    // along in an unrelated save does not count.
+    function sharedSwitchRevokedElsewhere(key) {
+        if (_SHARED_SETTINGS_KEYS.indexOf(key) === -1) return false;
+        return !!_unseenSharedRevocationToken(key);
     }
 
     // Live screen consent this window reports to the backend and acts on
@@ -3141,6 +3153,7 @@
 
     mod.saveSettings = saveSettings;
     mod.visionConsentForBackend = visionConsentForBackend;
+    mod.sharedSwitchRevokedElsewhere = sharedSwitchRevokedElsewhere;
     mod.loadSettings = loadSettings;
     mod.syncSettingsToServer = syncSettingsToServer;
     mod.getConversationSettings = getConversationSettings;

@@ -138,8 +138,15 @@ _HARNESS = textwrap.dedent(
         removeEventListener() {},
         dispatchEvent() {},
       };
-      // app-state.js binds these window mirrors to appState.
-      for (const key of ['proactiveVisionEnabled', 'mergeMessagesEnabled']) {
+      // app-state.js binds these window mirrors to appState (its proactiveKeys
+      // list, switches only).
+      for (const key of [
+        'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
+        'proactiveNewsChatEnabled', 'proactiveCommunityChatEnabled', 'proactiveVideoChatEnabled',
+        'proactivePersonalChatEnabled', 'proactiveMusicEnabled', 'proactiveMemeEnabled',
+        'proactiveMiniGameInviteEnabled', 'proactiveTheaterInviteEnabled',
+        'mergeMessagesEnabled', 'focusModeEnabled',
+      ]) {
         Object.defineProperty(sandbox.window, key, {
           get() { return sandbox.window.appState[key]; },
           set(v) { sandbox.window.appState[key] = v; },
@@ -444,6 +451,7 @@ _HARNESS = textwrap.dedent(
       await restore();
       await expectAllowed('consent back on');
 
+
       // B revokes, but "allowed" is what localStorage holds (B's own write
       // failed, or a stale window's copy landed over it). B still blocks.
       b.S.proactiveVisionEnabled = false;
@@ -459,6 +467,56 @@ _HARNESS = textwrap.dedent(
       assert(textVisionDropped(b) === true, 'and drops the text-chat screenshot');
     }
 
+    // A stale "off" copied along in an unrelated save is not a switch-off:
+    // the listener rejects it, so no later event corrects it, and the trigger
+    // gate must not stop proactive chat on it. C turns the switch on; D,
+    // before receiving that, saves something unrelated and copies its old
+    // "off" back into localStorage. (An explicit "off" from another window
+    // still blocks: see captureGates.)
+    async function staleSwitchCopy(key) {
+      const otherModes = ['proactiveNewsChatEnabled', 'proactiveCommunityChatEnabled',
+        'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled', 'proactiveMusicEnabled',
+        'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled', 'proactiveTheaterInviteEnabled'];
+      const c = makeWindow('C');
+      const d = makeWindow('D');
+      await settle();
+      c.deliver();
+      d.deliver();
+      // Set up in C only; D receives it (no edits of its own pending).
+      c.S.proactiveChatEnabled = true;
+      c.S.proactiveVisionChatEnabled = true;
+      c.S.proactiveVisionEnabled = true;
+      for (const other of otherModes) c.S[other] = false;
+      c.S[key] = false;
+      c.mod.saveSettings();
+      await settle();
+      d.deliver();
+      c.deliver();
+      await settle();
+      assert(d.S[key] === false, 'precondition: D has C\\'s setup');
+      c.S[key] = true;
+      c.mod.saveSettings();
+      await settle();
+      d.holdPosts = true; // nothing rewrites localStorage while C checks
+      d.S.focusModeEnabled = !d.S.focusModeEnabled;
+      d.mod.saveSettings();
+      await settle();
+      const copied = JSON.parse(store.get('project_neko_settings'));
+      assert(copied[key] === false && copied._sharedWriteMeta.changedKeys.indexOf(key) === -1,
+        'precondition: a stale ' + key + ' "off" is in localStorage');
+      c.deliver();
+      await settle();
+      assert(c.S[key] === true, 'C rejects the stale ' + key + ' copy');
+      assert(JSON.parse(store.get('project_neko_settings'))[key] === false,
+        'precondition: the stale ' + key + ' copy is still in localStorage');
+      assert(c.P.canTriggerProactively() === true,
+        'a stale ' + key + ' "off" does not stop proactive chat');
+      d.deliver();
+      await settle();
+      assert(d.S[key] === true && d.P.canTriggerProactively() === true,
+        'D adopts C\\'s ' + key + ' and may trigger');
+    }
+
     async function main() {
       if (__MODE__ === 'single') {
         await singleWindow();
@@ -468,6 +526,12 @@ _HARNESS = textwrap.dedent(
       }
       if (__MODE__ === 'baseline') {
         await receivedValueNotResent();
+        console.log('HARNESS_OK');
+        process.exitCode = 0;
+        return;
+      }
+      if (typeof __MODE__ === 'string' && __MODE__.indexOf('stale:') === 0) {
+        await staleSwitchCopy(__MODE__.slice('stale:'.length));
         console.log('HARNESS_OK');
         process.exitCode = 0;
         return;
@@ -802,6 +866,20 @@ def test_capture_gates_follow_cross_window_revocation_harness():
     result = _run("gates")
     assert result.returncode == 0, (
         "cross-window capture gate harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["proactiveChatEnabled", "proactiveVisionChatEnabled", "proactiveVisionEnabled"],
+)
+def test_stale_switch_copy_does_not_stop_proactive_triggers_harness(key):
+    result = _run("stale:" + key)
+    assert result.returncode == 0, (
+        f"stale {key} copy harness failed\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
