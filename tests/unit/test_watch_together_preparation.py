@@ -708,3 +708,20 @@ async def test_save_failure_replaces_the_earlier_failure_detail(tmp_path, monkey
     job = preparation.jobs[result['id']]
     assert job['stage_key'] == 'saveFailed' and job['error'] == 'OSError'
     assert job['error_detail'] == {'chain': [{'type': 'OSError', 'errno': 28, 'message': '[Errno 28] No space left on device'}]}
+
+
+@pytest.mark.parametrize('raw,expected', [
+    ('connect http://[::1] failed', 'connect http://[::1] failed'),
+    ('connect http://[::1]. retry', 'connect http://[::1]. retry'),
+    ('connect http://[::1]:8000/v1/x.', 'connect http://[::1]:8000.'),
+    ('(see [http://h.test:1/x])', '(see [http://h.test:1])'),
+])
+def test_message_urls_keep_ipv6_brackets_and_give_back_sentence_brackets(raw, expected):
+    assert preparation.redact_error_message(raw) == expected
+
+
+@pytest.mark.parametrize('key', ['https', 'token'])
+def test_short_keys_do_not_disable_the_url_and_label_rules(key):
+    message = 'GET https://user:privatepass@host.test/private-id?sid=s1 token=privatetok'
+    redacted = preparation.redact_error_message(message, secrets=(key,))
+    assert 'privatepass' not in redacted and 'private-id' not in redacted and 'privatetok' not in redacted

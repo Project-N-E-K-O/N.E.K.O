@@ -37,12 +37,16 @@ _SECRET_PATTERNS = (
                 r"(?:'[^']*'?|\"[^\"]*\"?|[^\s&'\",;}]+)", re.IGNORECASE), r"\1***"),
 )
 # A URL does not end on sentence punctuation (``…to http://127.0.0.1:7890.``).
-_URL = re.compile(r"\b([A-Za-z][A-Za-z0-9+.\-]{0,15})://[^\s'\"<>]*[^\s'\"<>.,;:!?)\]}]")
+# ``]`` may close an IPv6 host; an unbalanced one is given back in _url_origin.
+_URL = re.compile(r"\b([A-Za-z][A-Za-z0-9+.\-]{0,15})://[^\s'\"<>]*[^\s'\"<>.,;:!?)}]")
 _SHORT_SECRET_CHARS = 8
 
 
 def _url_origin(match):
-    url = match.group(0)
+    url, closing = match.group(0), ""
+    # ``(see [http://h:1/x])``: the bracket belongs to the sentence, not the URL.
+    while url.endswith("]") and url.count("]") > url.count("["):
+        url, closing = url[:-1], closing + "]"
     host = endpoint_host(url)
     if host is None:
         # An unreadable port must not cost the host name as well.
@@ -50,7 +54,7 @@ def _url_origin(match):
             host = urlparse(url).hostname
         except ValueError:
             host = None
-    return f"{match.group(1)}://{host or '?'}"
+    return f"{match.group(1)}://{host or '?'}{closing}"
 
 
 def _secret_variants(secrets):
@@ -83,8 +87,6 @@ def redact_error_message(message, secrets=()) -> str:
     substrings, words = _secret_variants(secrets)
     for secret in substrings:
         text = text.replace(secret, "***")
-    for word in words:
-        text = re.sub(rf"(?<![\w\-]){re.escape(word)}(?![\w\-])", "***", text)
     # Lone surrogates (non-UTF-8 file names) would break the UTF-8 timeline write.
     text = text[:_REDACTION_INPUT_CHARS].encode("utf-8", "backslashreplace").decode("utf-8")
     text = _DATA_URL.sub("data:***", text)
@@ -92,6 +94,10 @@ def redact_error_message(message, secrets=()) -> str:
         text = pattern.sub(replacement, text)
     # URLs keep only scheme and host[:port]: paths and queries may carry keys or IDs.
     text = _URL.sub(_url_origin, text)
+    # Short keys last: a key such as ``https`` or ``token`` must not erase the
+    # scheme or label the rules above rely on.
+    for word in words:
+        text = re.sub(rf"(?<![\w\-]){re.escape(word)}(?![\w\-])", "***", text)
     # OSError messages carry local paths (Windows ones repr-escaped, or with
     # forward slashes as ffmpeg prints them); users paste these logs into
     # public issues.
