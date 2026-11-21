@@ -316,6 +316,13 @@ describe('the built-in abilities tab', () => {
     expect(byTest('model-images')?.textContent).toContain(words.runtime.builtin.imagesByHand)
   })
 
+  it('says that the service did not answer when what came back holds no switches', async () => {
+    api.getSwitches.mockResolvedValue({})
+    api.getBrowser.mockResolvedValue({})
+    const page = await mount(BuiltinTab)
+    expect(page.textContent).toContain(words.errors.agent_unreachable)
+  })
+
   it('saves one browser setting at a time and shows what came back', async () => {
     api.getSwitches.mockResolvedValue(switches())
     api.getBrowser.mockResolvedValue(browser())

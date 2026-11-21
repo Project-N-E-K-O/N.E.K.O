@@ -164,6 +164,8 @@ async function load() {
   loading.value = true
   try {
     const [nextSwitches, nextBrowser] = await Promise.all([getSwitches(), getBrowser()])
+    // An answer without them is no answer: said, rather than an empty page shown.
+    if (!nextSwitches?.switches || !nextBrowser?.settings) throw new Error('incomplete answer')
     switches.value = nextSwitches.switches
     browser.value = nextBrowser
     error.value = ''

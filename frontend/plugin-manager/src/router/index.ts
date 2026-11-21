@@ -36,6 +36,14 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
+        path: 'familiars/space',
+        name: 'FamiliarSpace',
+        component: () => import('@/views/FamiliarSpace.vue'),
+        meta: {
+          titleKey: 'power.space.title'
+        }
+      },
+      {
         path: 'familiars/runtime',
         name: 'FamiliarRuntime',
         component: () => import('@/views/FamiliarRuntime.vue'),

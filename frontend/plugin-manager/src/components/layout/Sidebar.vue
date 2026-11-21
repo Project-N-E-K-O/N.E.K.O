@@ -93,7 +93,7 @@ import { useI18n } from 'vue-i18n'
 import { usePluginStore } from '@/stores/plugin'
 import MotionTransition from '@/motion/MotionTransition.vue'
 import { useSidebarState } from '@/composables/useSidebarState'
-import { Odometer, Box, VideoPlay, Monitor, Link, Collection, Connection, Tools, Setting, DArrowLeft, DArrowRight, ArrowDown } from '@element-plus/icons-vue'
+import { Odometer, Box, VideoPlay, Monitor, Link, Collection, Connection, Tools, Setting, FolderOpened, DArrowLeft, DArrowRight, ArrowDown } from '@element-plus/icons-vue'
 
 const emit = defineEmits<{ 'collapse-change': [collapsed: boolean] }>()
 const sidebar = ref<HTMLElement | null>(null)
@@ -122,6 +122,7 @@ const adapters = computed(() => pluginStore.pluginSummariesWithStatus.filter((p)
 
 const navItems = computed(() => [
   { path: '/', icon: Odometer, label: t('nav.dashboard'), guideId: 'sidebar-dashboard' },
+  { path: '/familiars/space', icon: FolderOpened, label: t('power.nav.space') },
   { path: '/familiars/runtime', icon: Setting, label: t('power.nav.runtime') },
   { path: '/plugins', icon: Box, label: t('nav.plugins'), guideId: 'sidebar-plugins' },
   { path: '/knowledge', icon: Collection, label: t('nav.knowledge') },

@@ -1,0 +1,176 @@
+<template>
+  <div class="familiar-space">
+    <header class="page-heading">
+      <h1>{{ t('power.space.title') }}</h1>
+      <p>{{ t('power.space.subtitle') }}</p>
+    </header>
+    <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="block" />
+
+    <div class="layout">
+      <nav v-loading="loading" class="scopes" :aria-label="t('power.space.title')">
+        <button class="scope" :class="{ on: !selected }" data-scope="" @click="choose(null)">
+          <span class="name">{{ t('power.space.global') }}</span>
+          <small>{{ t('power.space.globalHint') }}</small>
+        </button>
+        <div class="group">{{ t('power.space.projects') }}</div>
+        <p v-if="!loading && !active.length" class="muted pad">{{ t('power.space.noProjects') }}</p>
+        <button
+          v-for="project in active"
+          :key="project.name"
+          class="scope"
+          :class="{ on: isSelected(project) }"
+          :data-scope="project.name"
+          @click="choose(project)"
+        >
+          <span class="name">{{ project.name }}</span>
+          <small>{{ t('power.space.commissions', { count: project.commissions }) }}</small>
+        </button>
+        <template v-if="archived.length">
+          <div class="group">{{ t('power.space.archived') }}</div>
+          <button
+            v-for="project in archived"
+            :key="`${project.archive_year}/${project.directory || project.name}`"
+            class="scope"
+            :class="{ on: isSelected(project) }"
+            :data-scope="`${project.archive_year}/${project.directory || project.name}`"
+            @click="choose(project)"
+          >
+            <span class="name">{{ project.name }}</span>
+            <small>{{ t('power.space.archivedIn', { year: project.archive_year }) }}</small>
+          </button>
+        </template>
+      </nav>
+
+      <div class="body">
+        <section v-if="selected" class="project" data-testid="space-project">
+          <h2>{{ selected.name }}</h2>
+          <p v-if="selected.description" class="muted">{{ selected.description }}</p>
+          <dl>
+            <div>
+              <dt>{{ t('power.space.workdir') }}</dt>
+              <dd>{{ selected.workdir || t('power.space.workdirDefault') }}</dd>
+            </div>
+          </dl>
+        </section>
+
+        <el-tabs v-model="tab">
+          <el-tab-pane :label="t('power.space.tabs.rules')" name="rules">
+            <RulesPane :scope="scope" :readonly="isArchived" />
+          </el-tab-pane>
+          <el-tab-pane :label="t('power.space.tabs.notes')" name="notes" lazy>
+            <NotesPane :scope="scope" :readonly="isArchived" />
+          </el-tab-pane>
+          <el-tab-pane v-if="selected" :label="t('power.space.tabs.reviews')" name="reviews" lazy>
+            <ReviewsPane :project="selected.name" />
+          </el-tab-pane>
+          <el-tab-pane v-if="!selected" :label="t('power.space.tabs.preferences')" name="preferences" lazy>
+            <PreferencesPane />
+          </el-tab-pane>
+        </el-tabs>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
+import { listProjects } from '@/api/console'
+import type { SpaceProject, SpaceScope } from '@/api/console'
+import NotesPane from '@/components/power/space/NotesPane.vue'
+import PreferencesPane from '@/components/power/space/PreferencesPane.vue'
+import ReviewsPane from '@/components/power/space/ReviewsPane.vue'
+import RulesPane from '@/components/power/space/RulesPane.vue'
+import { describeConsoleError } from '@/components/power/powerFormat'
+
+const { t, te } = useI18n()
+const route = useRoute()
+const router = useRouter()
+const projects = ref<SpaceProject[]>([])
+const loading = ref(false)
+const error = ref('')
+
+const active = computed(() => projects.value.filter(project => !project.archive_year))
+const archived = computed(() => projects.value.filter(project => project.archive_year))
+// Which project is open is part of the address (`?project=`, and `?year=` for
+// an archived one, named by its directory), so a link can point at it.
+const selected = computed<SpaceProject | null>(() => {
+  const name = typeof route.query.project === 'string' ? route.query.project : ''
+  const year = typeof route.query.year === 'string' ? route.query.year : ''
+  if (!name) return null
+  return projects.value.find(project => (year
+    ? project.archive_year === year && (project.directory || project.name) === name
+    : !project.archive_year && project.name === name)) ?? null
+})
+const isArchived = computed(() => !!selected.value?.archive_year)
+const scope = computed<SpaceScope>(() => {
+  const project = selected.value
+  if (!project) return {}
+  return project.archive_year
+    ? { project: project.directory || project.name, archive_year: project.archive_year }
+    : { project: project.name }
+})
+const tab = computed({
+  get: () => {
+    const wanted = String(route.query.tab || 'rules')
+    const offered = ['rules', 'notes', selected.value ? 'reviews' : 'preferences']
+    return offered.includes(wanted) ? wanted : 'rules'
+  },
+  set: (name: string) => void router.replace({ query: { ...route.query, tab: name === 'rules' ? undefined : name } }),
+})
+
+function isSelected(project: SpaceProject): boolean {
+  const now = selected.value
+  return !!now && now.name === project.name && now.archive_year === project.archive_year && now.directory === project.directory
+}
+
+function choose(project: SpaceProject | null) {
+  void router.replace({ query: project
+    ? { project: project.archive_year ? project.directory || project.name : project.name, year: project.archive_year || undefined }
+    : {} })
+}
+
+async function load() {
+  loading.value = true
+  try {
+    projects.value = (await listProjects()).projects
+    error.value = ''
+  } catch (failure) {
+    error.value = describeConsoleError(failure, t, te)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => void load())
+</script>
+
+<style scoped>
+.familiar-space { max-width: 1280px; margin: 0 auto; padding: var(--spacing-lg, 24px); }
+.page-heading { margin-bottom: 18px; }
+h1 { margin: 0 0 8px; font-size: 26px; }
+.page-heading p { margin: 0; color: var(--el-text-color-secondary); line-height: 1.6; }
+.layout { display: flex; gap: 18px; align-items: flex-start; }
+.scopes { flex: none; width: 230px; background: var(--el-bg-color); border: 1px solid var(--surface-border, var(--el-border-color-lighter)); border-radius: var(--radius-card, 10px); padding: 8px; min-height: 120px; }
+.scope { display: flex; flex-direction: column; align-items: flex-start; width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.scope:hover { background: var(--el-fill-color-light); }
+.scope.on { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
+.scope .name { font-weight: 600; overflow-wrap: anywhere; }
+.scope small { color: var(--el-text-color-secondary); font-size: 12px; }
+.group { font-size: 12px; color: var(--el-text-color-secondary); padding: 12px 10px 4px; }
+.body { flex: 1; min-width: 0; }
+.project { background: var(--el-bg-color); border: 1px solid var(--surface-border, var(--el-border-color-lighter)); border-radius: var(--radius-card, 10px); padding: 16px 20px; margin-bottom: 14px; }
+.project h2 { margin: 0 0 6px; font-size: 18px; overflow-wrap: anywhere; }
+.project dl { margin: 10px 0 0; font-size: 13px; }
+.project dl > div { display: flex; gap: 16px; }
+.project dt { color: var(--el-text-color-secondary); flex: none; }
+.project dd { margin: 0; overflow-wrap: anywhere; }
+.muted { color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.6; margin: 0; }
+.pad { padding: 4px 10px 8px; }
+.block { margin-bottom: 12px; }
+@media (max-width: 860px) {
+  .layout { flex-direction: column; }
+  .scopes { width: 100%; }
+}
+</style>
