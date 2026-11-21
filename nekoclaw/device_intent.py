@@ -133,11 +133,12 @@ _SWITCH_CONTEXT = re.compile(
 # Match the destination of the switch. Settings and language names can be
 # capitalized just like an application, so a title-cased word is not evidence.
 _APP_TARGET = re.compile(
-    r"(?:应用|應用|程序|程式|窗口|視窗|\b(?:app|application|window))(?:\s+now)?\s*$|"
     r"^\s*(?:the\s+)?window\s+showing\b|"
-    r"^\s*(?:the\s+)?(?:记事本|記事本|微信|notepad|wechat|(?:microsoft\s+)?(?:excel|word)|vs\s+code)\s*$"
+    r"(?:(?:应用|應用|程序|程式|窗口|視窗|\b(?:app|application|window))(?:\s+now)?|"
+    r"^\s*(?:the\s+)?(?:记事本|記事本|微信|notepad|wechat|(?:microsoft\s+)?(?:excel|word)|vs\s+code))"
+    r"(?=\s*(?:$|\band\b|[并並]))"
 )
-_JOINED_TYPING = re.compile(r"[并並](?:且)?[输輸]入|\band\s+type\b")
+_JOINED_TYPING = re.compile(r"[并並](?:且)?(?:[输輸]入|[粘黏][贴貼]|貼上)|\band\s+(?:type|paste)\b")
 
 
 def _action_clauses(text: str) -> Iterator[str]:
@@ -202,7 +203,7 @@ def classify_device_intent(
         # "Code" in the app name is not a request to work on source code.
         code_text = clause
         if destination:
-            code_text = clause[:switch.end()] + clause[switch.end() + len(target):]
+            code_text = clause[:switch.end()] + clause[switch.end() + destination.end():]
         code = without_files != clause or bool(_CODE_CONTEXT.search(code_text))
         explicit_web = bool(_EXPLICIT_WEB.search(surface))
         web_object = bool(_WEB_OBJECT.search(surface))
