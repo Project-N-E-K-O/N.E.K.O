@@ -5677,7 +5677,7 @@
             + (groupExportBusy ? ', #export-group-open-btn' : ''),
         ));
         document.querySelectorAll('button, input, select, textarea').forEach((control) => {
-            if (allowed(control)) return;
+            if (allowed(control) || control.disabled) return;
             controls.set(control, control.disabled);
             control.disabled = true;
         });
@@ -5960,7 +5960,7 @@
         stageModule.setUserImages([...stageUserImages.entries()].map(([id, image]) => ({
             id, label: image.name, thumb: image.dataUrl,
         })));
-        stateStageSession?.refreshUserImages();
+        void stateStageSession?.refreshUserImages()?.catch(() => {});
     }
 
     /** 用户图片 → 单帧（按导出边长画到画布中央，透明背景）。 */

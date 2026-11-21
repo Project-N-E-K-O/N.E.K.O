@@ -240,6 +240,80 @@ def test_texture_batch_is_all_or_nothing_and_keeps_unmodified_images(store, monk
     assert not list(store.root.glob('.uploading-*'))
 
 
+@pytest.mark.parametrize('hardlinks', [False, True])
+def test_texture_staging_shares_unchanged_files_and_detaches_replacements(store, monkeypatch, hardlinks):
+    originals = [('StageImages/change.png', b'original'), ('StageImages/keep.png', b'unchanged')]
+    store.save('linked', _zip(), originals)
+    final = store._entry_dir('linked')
+    publish = store._publish_copy
+    if not hardlinks:
+        def unavailable(*args, **kwargs):
+            raise OSError('hardlinks unsupported')
+        monkeypatch.setattr(store_module.os, 'link', unavailable)
+
+    def inspect_and_publish(key, staging):
+        for relative in ('template.zip', 'textures/StageImages/keep.png'):
+            assert store_module.os.path.samefile(final / relative, staging / relative) == hardlinks
+        changed = 'textures/StageImages/change.png'
+        assert not store_module.os.path.samefile(final / changed, staging / changed)
+        assert (final / changed).read_bytes() == b'original'
+        assert (staging / changed).read_bytes() == b'replacement'
+        publish(key, staging)
+
+    monkeypatch.setattr(store, '_publish_copy', inspect_and_publish)
+    store.save_textures('linked', [('StageImages/change.png', b'replacement')])
+    assert store.texture_path('linked', 'StageImages/keep.png').read_bytes() == b'unchanged'
+    assert store.texture_path('linked', 'StageImages/change.png').read_bytes() == b'replacement'
+
+
+def test_recovery_cleans_expired_staging_but_keeps_recent_and_active_copies(store, monkeypatch):
+    now = store_module.time.time()
+    old_time = now - store_module.MAX_STAGING_AGE_SECONDS - 60
+    store.root.mkdir(parents=True, exist_ok=True)
+    old = store.root / f'.uploading-{int(old_time * 1000)}-a1'
+    recent = store.root / f'.uploading-{int(now * 1000)}-a2'
+    for path in (old, recent):
+        path.mkdir()
+        (path / 'template.zip').write_bytes(b'unpublished')
+        # copytree can preserve an old directory mtime even for a new staging copy.
+        store_module.os.utime(path, (old_time, old_time))
+    with monkeypatch.context() as patch:
+        patch.setattr(store_module.time, 'time', lambda: old_time)
+        active = store._new_staging()
+    active.mkdir()
+    (active / 'template.zip').write_bytes(b'still-writing')
+    store_module.os.utime(active, (old_time, old_time))
+    try:
+        EmoteTemplateArchiveStore(store.root)
+        assert not old.exists()
+        assert recent.is_dir()
+        assert (active / 'template.zip').read_bytes() == b'still-writing'
+    finally:
+        store._discard_staging(active)
+    assert active.resolve() not in store_module._active_staging
+
+
+def test_reopening_during_an_unlocked_archive_write_keeps_its_staging(store, monkeypatch):
+    original_write = Path.write_bytes
+    now = store_module.time.time()
+    observed = []
+
+    def write(path, data):
+        result = original_write(path, data)
+        if path.name == store_module.ARCHIVE_NAME and path.parent.name.startswith('.uploading-'):
+            with monkeypatch.context() as patch:
+                patch.setattr(store_module.time, 'time', lambda: now + 2 * store_module.MAX_STAGING_AGE_SECONDS)
+                EmoteTemplateArchiveStore(store.root)
+                observed.append(path.exists())
+        return result
+
+    monkeypatch.setattr(Path, 'write_bytes', write)
+    store.save('writing', _zip())
+    assert observed == [True]
+    assert store.archive_path('writing').read_bytes() == _zip()
+    assert not any(path.parent == store.root.resolve() for path in store_module._active_staging)
+
+
 def test_texture_merge_rejects_case_conflicts_without_losing_existing_files(store):
     store.save('case', _zip(), [('StageImages/A.png', b'first')])
     with pytest.raises(EmoteTemplateStoreError, match='大小写冲突'):

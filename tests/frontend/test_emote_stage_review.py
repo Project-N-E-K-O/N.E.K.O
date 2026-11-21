@@ -112,6 +112,29 @@ def test_restored_image_reloads_the_selected_preview_without_reselecting(page, r
     assert page.evaluate("__SOURCE_CALLS.includes('images:restored|full')")
 
 
+def test_image_refresh_keeps_an_inflight_scene_frame_result(page, running_server):
+    page.goto(running_server + '/emote_maker', wait_until='networkidle')
+    page.evaluate(REVEAL)
+    page.evaluate('window.reviewResolveFrames = []')
+    modified = BOOT.replace("framesFor: (source, quality) => {", "framesFor: async (source, quality) => {\n"
+                            "await new Promise(resolve => window.reviewResolveFrames.push(resolve));")
+    page.evaluate(modified, .1)
+    result = page.evaluate('''async () => {
+        const pending = __STAGE.refreshUserImages();
+        reviewResolveFrames[0]();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const next = __STAGE.refreshUserImages();
+        const cached = await Promise.race([next.then(()=>true),
+            new Promise(resolve => setTimeout(()=>resolve(false), 60))]);
+        const requests = reviewResolveFrames.length;
+        reviewResolveFrames.forEach(resolve=>resolve());
+        await Promise.all([pending, next]);
+        return {cached, requests};
+    }''')
+    assert result == {'cached':True, 'requests':2}
+    assert page.locator('.st-tile[data-state="idle_image"] .st-tile-status').inner_text() == '20f'
+
+
 def test_dispose_during_frame_loading_cannot_publish_a_late_graph(page, running_server):
     page.goto(running_server + '/emote_maker', wait_until='networkidle')
     page.evaluate(REVEAL)

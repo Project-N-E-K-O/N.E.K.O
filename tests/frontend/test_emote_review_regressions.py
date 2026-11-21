@@ -110,6 +110,30 @@ def test_single_png_download_starts_while_capture_controls_are_locked(editor):
     assert editor.locator('#export-png-btn').is_enabled()
 
 
+def test_export_unlock_keeps_controls_enabled_by_an_async_load(editor):
+    _import(editor, spine_zip())
+    result = editor.evaluate('''async () => {
+        const button = document.createElement('button');
+        button.disabled = true;
+        document.querySelector('.emote-maker-page').append(button);
+        let loaded = false;
+        window.reviewCaptureHook = () => {
+            if (loaded) return;
+            loaded = true;
+            queueMicrotask(() => { button.disabled = false; });
+        };
+        try {
+            await reviewEditor.captureGifFrames({scene:reviewEditor.getImportedScenes()[0],
+                maxFrames:4, maxDimension:32});
+            return {loaded, enabled:!button.disabled};
+        } finally {
+            delete window.reviewCaptureHook;
+            button.remove();
+        }
+    }''')
+    assert result == {'loaded':True, 'enabled':True}
+
+
 @pytest.mark.parametrize('path', ['registry', 'import', 'reimport'])
 def test_template_activation_clears_the_previous_group_preview(editor, path):
     original = _two_skins()

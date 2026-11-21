@@ -27,12 +27,23 @@ MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_TEXTURE_BYTES = 64 * 1024 * 1024
 MAX_TEXTURE_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_TEXTURE_FILES = 2000
+MAX_STAGING_AGE_SECONDS = 60 * 60
 
 ARCHIVE_NAME = "template.zip"
 TEXTURES_DIR = "textures"
 META_NAME = "meta.json"
 _KEY_HASH_ALGORITHM = "sha256"
 _replacement_lock = threading.RLock()
+_active_staging: set[Path] = set()
+
+
+def _link_or_copy(source, destination):
+    """Share unchanged files on supported filesystems; preserve copy fallback."""
+    try:
+        os.link(source, destination)
+    except OSError:
+        return shutil.copy2(source, destination)
+    return str(destination)
 
 class EmoteTemplateStoreError(Exception):
     """Report a storage failure with a message suitable for the API response."""
@@ -107,6 +118,37 @@ class EmoteTemplateArchiveStore:
                     except OSError:
                         blocked.add(key)
                         print('[emote-template] Skipped an inaccessible retired copy')
+            self._cleanup_staging()
+
+    def _cleanup_staging(self) -> None:
+        cutoff = time.time() - MAX_STAGING_AGE_SECONDS
+        root = self.root.resolve()
+        for staging in self.root.glob('.uploading-*'):
+            try:
+                resolved = staging.resolve()
+                if (staging.is_symlink() or not staging.is_dir() or resolved.parent != root
+                        or resolved in _active_staging):
+                    continue
+                modified = staging.stat().st_mtime
+                match = re.fullmatch(r'\.uploading-(\d+)-[0-9a-f]+', staging.name)
+                created = int(match[1]) / 1000 if match else modified
+                if max(created, modified) <= cutoff:
+                    shutil.rmtree(staging)
+            except OSError:
+                print('[emote-template] Skipped an inaccessible staging copy')
+
+    def _new_staging(self) -> Path:
+        with _replacement_lock:
+            staging = self.root / f".uploading-{int(time.time() * 1000)}-{os.urandom(4).hex()}"
+            _active_staging.add(staging.resolve())
+            return staging
+
+    def _discard_staging(self, staging: Path) -> None:
+        with _replacement_lock:
+            try:
+                shutil.rmtree(staging, ignore_errors=True)
+            finally:
+                _active_staging.discard(staging.resolve())
 
     def _require_writable(self, key: str) -> None:
         with _replacement_lock:
@@ -281,7 +323,7 @@ class EmoteTemplateArchiveStore:
         cleaned = self._clean_textures(textures)
 
         self.root.mkdir(parents=True, exist_ok=True)
-        staging = self.root / f".uploading-{int(time.time() * 1000)}-{os.urandom(4).hex()}"
+        staging = self._new_staging()
         final = self._entry_dir(key)
         try:
             staging.mkdir(parents=True)
@@ -306,7 +348,7 @@ class EmoteTemplateArchiveStore:
         except OSError as exc:
             raise EmoteTemplateStoreError(f"副本写入失败：{exc}") from exc
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            self._discard_staging(staging)
         return {
             "key": str(key),
             "bytes": _dir_size(final),
@@ -341,21 +383,22 @@ class EmoteTemplateArchiveStore:
             raise EmoteTemplateStoreError(f"贴图数量超过上限（最多 {MAX_TEXTURE_FILES} 张）")
         if total_bytes > MAX_TEXTURE_TOTAL_BYTES:
             raise EmoteTemplateStoreError("附带贴图总大小超过上限")
-        staging = self.root / f".uploading-{int(time.time() * 1000)}-{os.urandom(4).hex()}"
+        staging = self._new_staging()
         try:
-            # Copy on disk instead of loading every existing image into memory.
-            # A failed write/publication leaves the whole previous batch intact.
+            # Share unchanged files; detach replacements before writing so a
+            # failed batch cannot modify the currently published generation.
             with _replacement_lock:
-                shutil.copytree(self._entry_dir(key), staging)
+                shutil.copytree(self._entry_dir(key), staging, copy_function=_link_or_copy)
                 for relative, blob in cleaned:
                     target = self._safe_child(staging / TEXTURES_DIR, relative)
                     target.parent.mkdir(parents=True, exist_ok=True)
+                    target.unlink(missing_ok=True)
                     target.write_bytes(blob)
                 self._publish_copy(key, staging)
         except OSError as exc:
             raise EmoteTemplateStoreError(f"贴图写入失败：{exc}") from exc
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            self._discard_staging(staging)
         return {"key": str(key), "textures": self.texture_paths(key)}
 
     def remove_texture(self, key: str, relative: str) -> None:

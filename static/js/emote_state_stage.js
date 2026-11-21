@@ -139,6 +139,7 @@
         let selected = (graph.nodes.find((node) => model.typeOf(node)?.category === 'output') || {}).id || null;
         const framesBySource = new Map();  // `${scene}|${quality}` -> 该动画的帧
         let framesRevision = 0;
+        let imageFramesRevision = 0;
         const thumbsByScene = new Map();   // scene -> dataURL（状态行和动作库共用）
         const sliceByNode = new Map();     // nodeId  -> 落在起止范围内的帧
         let previewScene = null;           // 悬停试演的那条动画，不落进图里
@@ -449,8 +450,10 @@
             const key = `${sceneId}|${tier}`;
             if (framesBySource.has(key)) return framesBySource.get(key);
             const revision = framesRevision;
+            const imageRevision = imageFramesRevision;
             const result = await framesFor(sceneId, tier);
-            if (revision !== framesRevision) return [];
+            if (revision !== framesRevision
+                    || (String(sceneId).startsWith('images:') && imageRevision !== imageFramesRevision)) return [];
             const list = Array.isArray(result) ? result : [];
             // 空结果不进缓存：那条动画可能只是还没采完，缓存住就永远空着
             if (list.length) framesBySource.set(key, list);
@@ -1888,7 +1891,7 @@
 
             refreshUserImages: async () => {
                 if (disposed) return;
-                framesRevision += 1;
+                imageFramesRevision += 1;
                 for (const key of framesBySource.keys()) {
                     if (key.startsWith('images:')) framesBySource.delete(key);
                 }
