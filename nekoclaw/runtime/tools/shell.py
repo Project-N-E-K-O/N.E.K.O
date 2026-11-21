@@ -39,7 +39,7 @@ from nekoclaw.runtime.tools.base import (
     ToolError,
     define_tool,
 )
-from nekoclaw.runtime.tools.jobs import KILL_SETTLE_SECONDS, Job, render_delta
+from nekoclaw.runtime.tools.jobs import JOB_HANDOFF, KILL_SETTLE_SECONDS, Job, render_delta
 
 # dsh pwsh-local / bash-local defaults.
 MAX_OUTPUT_BYTES = 64_000
@@ -137,6 +137,11 @@ def render_result(job: Job, *, timed_out_ms: int | None = None) -> str:
         markers.append(f"[killed by signal: {signal_name}]")
     elif process.returncode != 0:
         markers.append(f"[exit code: {process.returncode}]")
+    from nekoclaw.runtime.execution import COMMAND_OUTPUT
+
+    command_output = COMMAND_OUTPUT.get()
+    if command_output is not None:
+        command_output.status = "\n".join(markers)
     if not markers:
         return body
     if not body.endswith("\n"):
@@ -146,7 +151,13 @@ def render_result(job: Job, *, timed_out_ms: int | None = None) -> str:
 
 def render_promoted(job: Job, output: str, timeout_ms: int) -> str:
     body = (output if output.endswith("\n") else f"{output}\n") if output else ""
-    return f"{body}[still running after {timeout_ms}ms; moved to background job {job.id}]"
+    from nekoclaw.runtime.execution import COMMAND_OUTPUT
+
+    marker = f"[still running after {timeout_ms}ms; moved to background job {job.id}]"
+    command_output = COMMAND_OUTPUT.get()
+    if command_output is not None:
+        command_output.status = marker
+    return body + marker
 
 
 class _ProgressFeed:
@@ -206,11 +217,15 @@ def build_shell_tool(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
         if call.cancelled():
             raise ToolAborted
 
-        def reserve(stream: str) -> Any:
-            return lambda: ctx.spill.reserve(f"{kind}-{stream}", ".log")
+        from nekoclaw.runtime.tools.protected_outputs import OUTPUT_SCOPE
 
-        stdout = procs.OutputBuffer(MAX_OUTPUT_BYTES, reserve("stdout"))
-        stderr = procs.OutputBuffer(MAX_OUTPUT_BYTES, reserve("stderr"))
+        scope = OUTPUT_SCOPE.get()
+
+        def reserve(stream: str) -> Any:
+            return lambda: ctx.spill.reserve(f"{kind}-{stream}", ".log", scope=scope)
+
+        stdout = procs.OutputBuffer(MAX_OUTPUT_BYTES, reserve("stdout"), protected=ctx.spill.protected)
+        stderr = procs.OutputBuffer(MAX_OUTPUT_BYTES, reserve("stderr"), protected=ctx.spill.protected)
         try:
             process = await procs.spawn(
                 shell_argv(kind, command),
@@ -236,7 +251,12 @@ def build_shell_tool(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
             # stopped the jobs it could see; this one did not exist yet.
             await stop_aborted(job)
             raise ToolAborted
+        from nekoclaw.runtime.execution import COMMAND_OUTPUT
+
+        output = COMMAND_OUTPUT.get()
         if background:
+            if output is not None:
+                output.retained = True
             return f"started background job {job.id}"
 
         progress = _ProgressFeed(job, call)
@@ -246,8 +266,17 @@ def build_shell_tool(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
             raise ToolAborted
         if outcome == "timeout":
             # The command keeps running as the job it already was.
+            handoff = JOB_HANDOFF.get()
+            if handoff is None:
+                initial_output = registry.read(job)
+            else:
+                await handoff.reserve_output(job, call)
+                initial_output, cursors = registry.peek(job)
+                handoff.acknowledge = lambda: registry.commit(job, cursors)
             job.foreground = False
-            return render_promoted(job, registry.read(job), timeout_ms)
+            if output is not None:
+                output.retained = True
+            return render_promoted(job, initial_output, timeout_ms)
         progress.tick(force=True)
         registry.remove(job)
         return render_result(job)

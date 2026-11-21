@@ -140,6 +140,7 @@ class CoreConfigMixin:
         'gameSummary': 'SUMMARY_MODEL',
         'correction': 'CORRECTION_MODEL',
         'emotion': 'EMOTION_MODEL',
+        'decision': 'DECISION_MODEL',
         'vision': 'VISION_MODEL',
         'agent': 'AGENT_MODEL',
     }
@@ -970,6 +971,7 @@ class CoreConfigMixin:
             DEFAULT_SUMMARY_MODEL,
             DEFAULT_CORRECTION_MODEL,
             DEFAULT_EMOTION_MODEL,
+            DEFAULT_DECISION_MODEL,
             DEFAULT_VISION_MODEL,
             DEFAULT_REALTIME_MODEL,
             DEFAULT_TTS_MODEL,
@@ -982,6 +984,8 @@ class CoreConfigMixin:
             DEFAULT_CORRECTION_MODEL_API_KEY,
             DEFAULT_EMOTION_MODEL_URL,
             DEFAULT_EMOTION_MODEL_API_KEY,
+            DEFAULT_DECISION_MODEL_URL,
+            DEFAULT_DECISION_MODEL_API_KEY,
             DEFAULT_VISION_MODEL_URL,
             DEFAULT_VISION_MODEL_API_KEY,
             DEFAULT_AGENT_MODEL_URL,
@@ -1007,6 +1011,9 @@ class CoreConfigMixin:
             'GAME_SUMMARY_MODEL': DEFAULT_SUMMARY_MODEL,
             'CORRECTION_MODEL': DEFAULT_CORRECTION_MODEL,
             'EMOTION_MODEL': DEFAULT_EMOTION_MODEL,
+            'DECISION_MODEL': DEFAULT_DECISION_MODEL,
+            'DECISION_PROTOCOL': '',
+            'DECISION_URL': '',
             'ASSIST_API_KEY_QWEN': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_OPENAI': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_GLM': DEFAULT_CORE_API_KEY,
@@ -1041,6 +1048,8 @@ class CoreConfigMixin:
             'CORRECTION_MODEL_API_KEY': DEFAULT_CORRECTION_MODEL_API_KEY,
             'EMOTION_MODEL_URL': DEFAULT_EMOTION_MODEL_URL,
             'EMOTION_MODEL_API_KEY': DEFAULT_EMOTION_MODEL_API_KEY,
+            'DECISION_MODEL_URL': DEFAULT_DECISION_MODEL_URL,
+            'DECISION_MODEL_API_KEY': DEFAULT_DECISION_MODEL_API_KEY,
             'VISION_MODEL_URL': DEFAULT_VISION_MODEL_URL,
             'VISION_MODEL_API_KEY': DEFAULT_VISION_MODEL_API_KEY,
             'AGENT_MODEL_URL': DEFAULT_AGENT_MODEL_URL,
@@ -1320,7 +1329,7 @@ class CoreConfigMixin:
         # configuration, avoiding expanding sensitive fields in general configuration snapshots.
         for _model_provider_prefix in (
             'conversation', 'summary', 'gameMain', 'gameSummary', 'correction',
-            'emotion', 'vision', 'agent', 'omni', 'tts',
+            'emotion', 'decision', 'vision', 'agent', 'omni', 'tts',
         ):
             _raw_provider = str(
                 core_cfg.get(f'{_model_provider_prefix}ModelProvider', '') or ''
@@ -1457,6 +1466,7 @@ class CoreConfigMixin:
                 ('gameSummary',  'GAME_SUMMARY_MODEL', 'GAME_SUMMARY_MODEL_URL', 'GAME_SUMMARY_MODEL_API_KEY'),
                 ('correction',   'CORRECTION_MODEL',    'CORRECTION_MODEL_URL',   'CORRECTION_MODEL_API_KEY'),
                 ('emotion',      'EMOTION_MODEL',       'EMOTION_MODEL_URL',      'EMOTION_MODEL_API_KEY'),
+                ('decision',     'DECISION_MODEL',      'DECISION_MODEL_URL',     'DECISION_MODEL_API_KEY'),
                 ('vision',       'VISION_MODEL',        'VISION_MODEL_URL',       'VISION_MODEL_API_KEY'),
                 ('agent',        'AGENT_MODEL',         'AGENT_MODEL_URL',        'AGENT_MODEL_API_KEY'),
                 ('omni',         'REALTIME_MODEL',      'REALTIME_MODEL_URL',     'REALTIME_MODEL_API_KEY'),
@@ -1841,6 +1851,13 @@ class CoreConfigMixin:
                 'default_model': 'EMOTION_MODEL',
                 'fallback_type': 'assist',
             },
+            'decision': {
+                'custom_model': 'DECISION_MODEL',
+                'custom_url': 'DECISION_MODEL_URL',
+                'custom_key': 'DECISION_MODEL_API_KEY',
+                'default_model': 'DECISION_MODEL',
+                'fallback_type': 'assist',
+            },
             'vision': {
                 'custom_model': 'VISION_MODEL',
                 'custom_url': 'VISION_MODEL_URL',
@@ -1912,6 +1929,7 @@ class CoreConfigMixin:
                 'game_summary': 'gameSummary',
                 'correction': 'correction',
                 'emotion': 'emotion',
+                'decision': 'decision',
                 'vision': 'vision',
                 'agent': 'agent',
                 'realtime': 'omni',
@@ -2023,6 +2041,82 @@ class CoreConfigMixin:
         # AGENT_MODEL_URL does **not** undergo region rewriting: _normalize_agent_url
         # is an identity function because free-agent-model deliberately pins the CN text endpoint. The former comment
         # claimed lanlan.app normalization, contradicting implementation and already misleading a review.
+        def _finalize_model_config(result: dict) -> dict:
+            if model_type != 'decision':
+                return result
+            from utils.decision_client.schema import (
+                infer_decision_protocol,
+                resolve_decision_endpoint,
+            )
+
+            assist_profiles = get_assist_api_profiles()
+            selected_provider = str(core_config.get('decisionModelProvider') or '').strip()
+            if not treat_as_custom or selected_provider in ('', 'follow_assist'):
+                effective_provider = str(core_config.get('assistApi') or '').strip()
+            elif selected_provider == 'follow_core':
+                effective_provider = str(core_config.get('CORE_API_TYPE') or '').strip()
+            elif selected_provider == 'custom':
+                effective_provider = ''
+            else:
+                effective_provider = selected_provider
+
+            profile = assist_profiles.get(effective_provider, {}) if effective_provider else {}
+            if not isinstance(profile, dict):
+                profile = {}
+
+            model_name = str(result.get('model') or '').strip()
+            base_url = str(result.get('base_url') or '').strip()
+            profile_protocol = str(
+                profile.get('DECISION_PROTOCOL')
+                or (core_config.get('DECISION_PROTOCOL') if not treat_as_custom else '')
+                or ''
+            ).strip().lower()
+            profile_model = str(profile.get('DECISION_MODEL') or '').strip()
+            profile_decision_url = str(
+                profile.get('DECISION_URL')
+                or (core_config.get('DECISION_URL') if not treat_as_custom else '')
+                or ''
+            ).strip()
+
+            profile_url_candidates = self._provider_url_candidates(
+                profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+            )
+            base_url_matches_profile = (
+                not base_url
+                or any(same_endpoint(base_url, c) for c in profile_url_candidates)
+                or (bool(profile_decision_url) and same_endpoint(base_url, profile_decision_url))
+            )
+
+            # Preserve custom/gateway base_url instead of forcing the profile's fixed
+            # DECISION_URL onto a different host; only apply profile_decision_url when
+            # base_url still targets the profile's default service.
+            decision_protocol = infer_decision_protocol(
+                model_name,
+                base_url,
+                profile_protocol=profile_protocol,
+                profile_model=profile_model,
+            )
+            decision_url = resolve_decision_endpoint(
+                decision_protocol,
+                base_url,
+                profile_decision_url if (decision_protocol != 'chat_fallback' and base_url_matches_profile) else '',
+            )
+            # Only pair fallback_model with the decision slot's own base_url/api_key
+            # when this slot targets a known profile's default service. For custom or
+            # gateway-overridden slots, keep fallback_model empty so DecisionClient
+            # resolves a complete emotion/summary chat slot instead of mixing provider
+            # A's model name with provider B's endpoint.
+            fallback_model = (
+                str(profile.get('EMOTION_MODEL') or profile.get('SUMMARY_MODEL') or '').strip()
+                if (profile and base_url_matches_profile)
+                else ''
+            )
+
+            enriched = dict(result)
+            enriched['decision_protocol'] = decision_protocol
+            enriched['decision_url'] = decision_url
+            enriched['fallback_model'] = fallback_model
+            return enriched
         if treat_as_custom or model_type == 'agent':
             custom_model = core_config.get(mapping['custom_model'], '')
             custom_url = core_config.get(mapping['custom_url'], '')
@@ -2045,7 +2139,7 @@ class CoreConfigMixin:
                 # capability users had before enabling GSV.
                 if is_gsv_url and not resolved_api_key and model_type == 'tts_custom':
                     resolved_api_key = (core_config.get('ASSIST_API_KEY_QWEN') or '').strip()
-                return {
+                return _finalize_model_config({
                     'model': custom_model,
                     'api_key': resolved_api_key,
                     'base_url': custom_url,
@@ -2070,7 +2164,7 @@ class CoreConfigMixin:
                     'api_type': (
                         _resolved_realtime_api_type() if model_type == 'realtime' else None
                     ),
-                }
+                })
         
         # Custom CosyVoice voice fallback: prefer the user's saved Qwen CosyVoice API,
         # falling back to assist API only when absent (CosyVoice is currently the sole provider supporting voice cloning).
@@ -2143,7 +2237,7 @@ class CoreConfigMixin:
             return self.get_model_api_config('summary', _core_config=core_config)
         else:
             # Fall back to assist API configuration with matching protocol, as explained above.
-            return {
+            return _finalize_model_config({
                 'model': core_config.get(mapping['default_model'], ''),
                 'api_key': core_config.get('OPENROUTER_API_KEY', ''),
                 'base_url': core_config.get('OPENROUTER_URL', ''),
@@ -2151,7 +2245,7 @@ class CoreConfigMixin:
                 'provider_type': _normalize_provider_type_value(
                     core_config.get('PROVIDER_TYPE')
                 ),
-            }
+            })
 
     def is_agent_api_ready(self) -> tuple[bool, list[str]]:
         """

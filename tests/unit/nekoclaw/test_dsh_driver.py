@@ -1083,6 +1083,48 @@ async def test_between_prompts_only_native_goal_terminal_updates_can_proceed(tmp
         assert bool(requests[-1].get("refused")) != allowed
 
 
+@pytest.mark.parametrize("stop_during_check", [False, True])
+async def test_automatic_round_keeps_its_own_execution_receipt(tmp_path, dsh, monkeypatch, stop_during_check):
+    phases = []
+
+    async def audit(session_id, payload):
+        phases.append(payload)
+        if payload["phase"] == "check" and stop_during_check:
+            session.aborting = True
+        return {"allow": True, "receipt": "read-receipt"}
+
+    driver = dsh(HostCallbacks(native_execution_action=audit))
+    await driver.started(make_spec(tmp_path))
+    runtime = driver.runtime
+    session = runtime._sessions["s1"]
+
+    async def approve(call_id):
+        reply = await runtime._on_request(session.process, "session/request_permission", {
+            "sessionId": session.dsh_id,
+            "toolCall": {"toolCallId": call_id},
+            "options": [{"optionId": "allow-once", "kind": "allow_once"}],
+        })
+        return reply["outcome"].get("optionId")
+
+    original = runtime._note_briefed
+
+    async def announce(current):
+        assert not current.in_turn
+        runtime._on_notification(session.process, "session/update", {
+            "sessionId": session.dsh_id,
+            "update": {"sessionUpdate": "tool_call", "toolCallId": "auto-read", "title": "read",
+                       "rawInput": {"file_path": "note.txt"}},
+        })
+        assert await approve("auto-read") == "allow-once"
+        await original(current)
+
+    monkeypatch.setattr(runtime, "_note_briefed", announce)
+    await driver.run("s1", "finish the work")
+    expected = "reject-once" if stop_during_check else "allow-once"
+    assert await approve("nekoclaw-exec/direct/auto-read") == expected
+    assert phases[-1] == {"phase": "check", "receipt": "read-receipt"}
+
+
 async def test_native_goal_announced_while_host_turn_settles_survives_until_its_own_end(tmp_path, dsh, monkeypatch):
     async def allow(session_id, payload):
         assert payload["tool"] == "update_goal" and not payload.get("refused")
@@ -2592,3 +2634,27 @@ async def test_a_call_of_a_turn_that_is_over_is_handed_nothing_though_the_run_go
     prompts = driver.record("session/prompt")
     assert len(prompts) == 2 and "a note for the next turn" in json.dumps(prompts[1])
     assert ended["reason"] == "completed" and ended["inputs"] == 2
+
+
+@pytest.mark.parametrize("already_stopped", [False, True])
+async def test_aborted_native_confirmation_releases_source_without_terminal_update(already_stopped):
+    from types import SimpleNamespace
+
+    session = SimpleNamespace(id="session", tool_calls={"c": ("bash", {})}, execution_receipts={"c": "receipt"},
+                              finished_sources={}, kept_calls={"c"}, job_origins={"job": "receipt"},
+                              aborting=already_stopped, closing=None)
+    calls = []
+    async def audit(_, payload):
+        calls.append((payload["phase"], payload.get("status")))
+        session.aborting = True
+        return {"allow": True}
+
+    runtime = DshRuntime(Recorder(), HostCallbacks(native_execution_action=audit), launch=lambda: pytest.fail("unexpected launch"))
+    process = SimpleNamespace(by_dsh_id={"dsh": session})
+    decision = await runtime._on_request(process, "session/request_permission", {
+        "sessionId": "dsh", "toolCall": {"toolCallId": "nekoclaw-exec/completed/c"},
+        "options": [{"optionId": "allow-once", "kind": "allow_once"}],
+    })
+    assert decision["outcome"]["optionId"] == "reject-once"
+    assert calls == ([("finish", "cancelled")] if already_stopped else [("finish", "completed"), ("release", None)])
+    assert not session.finished_sources

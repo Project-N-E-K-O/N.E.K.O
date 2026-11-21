@@ -3021,15 +3021,77 @@ def test_plugin_state_persist_mode_error_without_migration_is_one_line(tmp_path:
     assert ("error", "[plugin_state].persist_mode must be one of: auto, manual, off") in issues
 
 
-def test_host_applies_the_persist_modes_check_accepts() -> None:
-    from plugin.sdk.shared.storage.state import PluginStatePersistence
+def test_validate_plugin_dir_accepts_plugin_models_tables(tmp_path: Path) -> None:
+    baseline = validate_plugin_dir(_make_plugin_dir(tmp_path / "baseline"), strict=True)
+    issues = _validate_with_extra_toml(
+        tmp_path,
+        '[plugin.models.summary]\nlabel = "Summary"\ndescription = "Summarizes notes"\n'
+        'required = false\ncapabilities = ["text"]\n\n[plugin.models.vision]\nlabel = "Vision"',
+    )
 
-    assert PluginStatePersistence.VALID_PERSIST_MODES == ("auto", "manual", "off")
-    # Read the source instead of importing the host module.
-    source = (Path(__file__).resolve().parents[2] / "core" / "host.py").read_text(encoding="utf-8")
-    # The host reads both [plugin_state] and the legacy [plugin_checkpoint] through the shared constant.
-    assert source.count("in valid_persist_modes") == 2
-    assert '("auto", "manual", "off")' not in source
+    assert issues == baseline
+    assert not any("models" in message for _level, message in issues)
+
+
+_MODELS_REJECTED_SUFFIX = " is rejected by the plugin model schema: "
+
+
+def _models_errors(issues: list[tuple[str, str]]) -> dict[str, str]:
+    """Map each [plugin.models] error's label to its full message."""
+    return {
+        message.split("\n")[0].split(_MODELS_REJECTED_SUFFIX)[0]: message
+        for level, message in issues
+        if level == "error" and _MODELS_REJECTED_SUFFIX in message.split("\n")[0]
+    }
+
+
+@pytest.mark.parametrize(
+    ("extra", "label"),
+    [
+        ("[plugin.models]\nsummary = \"text\"", "[plugin.models.summary]"),
+        ("[plugin.models.summary]\nlabel = 1", "[plugin.models.summary].label"),
+        ("[plugin.models.summary]\nlabel = \"S\"\ndescription = []", "[plugin.models.summary].description"),
+        ("[plugin.models.summary]\nlabel = \"S\"\nrequired = \"false\"", "[plugin.models.summary].required"),
+        ("[plugin.models.summary]\nlabel = \"S\"\ncapabilities = \"text\"", "[plugin.models.summary].capabilities"),
+        ("[plugin.models.summary]\nlabel = \"S\"\ncapabilities = [\"text\", 1]", "[plugin.models.summary].capabilities[1]"),
+        # Rejected by the server schema beyond plain types.
+        ("[plugin.models.summary]\nlabel = \"S\"\nrequried = false", "[plugin.models.summary].requried"),
+        ("[plugin.models.summary]\ndescription = \"no label\"", "[plugin.models.summary].label"),
+        ("[plugin.models.summary]\nlabel = \"\"", "[plugin.models.summary].label"),
+        ("[plugin.models.summary]\nlabel = \" S \"", "[plugin.models.summary].label"),
+        ("[plugin.models.summary]\nlabel = \"S\"\ncapabilities = [\"vision\"]", "[plugin.models.summary].capabilities[0]"),
+        ("[plugin.models.summary]\nlabel = \"S\"\ncapabilities = [\"text\", \"text\"]", "[plugin.models.summary].capabilities"),
+        ("[plugin.models.Summary]\nlabel = \"S\"", "[plugin.models.Summary] (usage id)"),
+        ("[plugin.models.\"my-model\"]\nlabel = \"S\"", "[plugin.models.my-model] (usage id)"),
+        # A key TOML would not take bare is quoted, so it does not read as a nested table.
+        ("[plugin.models.\"a.b\"]\nlabel = \"S\"", '[plugin.models."a.b"] (usage id)'),
+        (f"[plugin.models.{'a' * 65}]\nlabel = \"S\"", f"[plugin.models.{'a' * 65}] (usage id)"),
+    ],
+)
+def test_validate_plugin_dir_rejects_what_the_plugin_model_schema_rejects(
+    tmp_path: Path, extra: str, label: str
+) -> None:
+    issues = _validate_with_extra_toml(tmp_path, extra)
+
+    errors = _models_errors(issues)
+    assert list(errors) == [label]
+    lines = errors[label].split("\n")
+    assert [line.strip().split(": ", 1)[0] for line in lines[1:]] == ["zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt"]
+    assert all(label in line for line in lines)
+    assert not any("is not a recognized" in m and "models" in m for _level, m in issues)
+
+
+def test_validate_plugin_dir_rejects_non_table_plugin_models(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace("[plugin]\n", "[plugin]\nmodels = 1\n", 1),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir, strict=True)
+
+    assert list(_models_errors(issues)) == ["[plugin.models]"]
 
 
 def test_validate_plugin_dir_accepts_plugin_database_table(tmp_path: Path) -> None:

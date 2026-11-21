@@ -156,8 +156,7 @@ TOOL_GUIDANCE_SECTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     (
         "read",
         ("read",),
-        "Use the read tool — not shell commands like cat, sed, head, or tail — to inspect text "
-        "files. Use offset and limit to read a line range or continue a large file.",
+        "Use the read tool for text files instead of shell commands. Select lines with offset and limit. Search oversized files with grep.",
     ),
     (
         "write",
@@ -371,7 +370,7 @@ def spill_notice(omitted_bytes: int, path: str) -> str:
     """Return the notice that follows a result whose middle was moved to a file."""
     return (
         f"(Omitted {omitted_bytes} bytes. Full formatted result stored at: {path}. "
-        "Use read with offset/limit, or grep this path to search within it.)"
+        "Use grep with a keyword to search this path in sections.)"
     )
 
 

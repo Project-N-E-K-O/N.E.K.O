@@ -83,7 +83,7 @@ def _looks_like_text(text: str) -> bool:
     return True
 
 
-def _detect_legacy_encoding(raw: bytes) -> str | None:
+def detect_legacy_encoding(raw: bytes) -> str | None:
     """Identify a non-UTF-8 text encoding, or return ``None`` when unsure."""
     try:
         from charset_normalizer import from_bytes
@@ -122,7 +122,7 @@ def decode_text(raw: bytes, *, verb: str, display: str) -> tuple[str, TextFormat
         decoded = raw.decode("utf-8")
         encoding = "utf-8"
     except UnicodeDecodeError as exc:
-        legacy = _detect_legacy_encoding(raw)
+        legacy = detect_legacy_encoding(raw)
         if legacy is None:
             raise ToolError(f'cannot {verb} "{display}": invalid UTF-8 text') from exc
         decoded = raw.decode(legacy)
@@ -158,7 +158,8 @@ def split_lines(text: str) -> list[str]:
     return [line[:-1] if line.endswith("\r") else line for line in lines]
 
 
-def read_bytes(path: Path, *, verb: str, display: str, max_bytes: int | None = None) -> bytes:
+def read_bytes(path: Path, *, verb: str, display: str, max_bytes: int | None = None,
+               limit_message: str | None = None) -> bytes:
     """Read a regular file, mapping the usual failures to model-facing errors."""
     try:
         info = path.stat()
@@ -171,11 +172,15 @@ def read_bytes(path: Path, *, verb: str, display: str, max_bytes: int | None = N
     if not stat.S_ISREG(info.st_mode):
         raise ToolError(f'cannot {verb} "{display}": not a regular file')
     if max_bytes is not None and info.st_size > max_bytes:
-        raise ToolError(
-            f'cannot {verb} "{display}": {info.st_size} bytes exceeds the {max_bytes}-byte limit'
-        )
+        raise ToolError(limit_message or f'cannot {verb} "{display}": {info.st_size} bytes exceeds the {max_bytes}-byte limit')
     try:
-        return path.read_bytes()
+        if max_bytes is None:
+            return path.read_bytes()
+        with path.open("rb") as handle:
+            raw = handle.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            raise ToolError(limit_message or f'cannot {verb} "{display}": exceeds the {max_bytes}-byte limit')
+        return raw
     except PermissionError as exc:
         raise ToolError(f'cannot {verb} "{display}": permission denied') from exc
     except OSError as exc:

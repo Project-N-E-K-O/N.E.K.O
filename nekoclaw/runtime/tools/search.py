@@ -36,12 +36,15 @@ it releases the lock while matching text and stops a match at a time limit.
 from __future__ import annotations
 
 import asyncio
+import codecs
+import io
 import os
 import shutil
 import stat
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -57,7 +60,8 @@ from nekoclaw.runtime.tools.base import (
     define_tool,
     run_cancellable,
 )
-from nekoclaw.runtime.tools.textio import BINARY_SAMPLE_BYTES
+from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
+from nekoclaw.runtime.tools.textio import BINARY_SAMPLE_BYTES, detect_legacy_encoding
 
 GLOB_MAX_RESULTS = 100
 GREP_MAX_MATCHES = 250
@@ -78,7 +82,7 @@ _MATCH_LABEL_BYTES = 16
 VCS_DIRECTORIES = frozenset({".git", ".svn", ".hg", ".bzr", ".jj", ".sl"})
 _GIT_TIMEOUT_SECONDS = 20.0
 _NUL = bytes(1)
-SPILL_HINT = "Use read with offset/limit, or grep this path to search within it."
+SPILL_HINT = "Use grep with a keyword to search this path in sections."
 
 
 class _Stopped(Exception):
@@ -341,10 +345,10 @@ def display_path(path: Path, workdir: Path) -> str:
     try:
         relative = os.path.relpath(path, workdir)
     except ValueError:
-        return str(path)
+        relative = str(path)
     if relative == os.pardir or relative.startswith(os.pardir + os.sep):
-        return str(path)
-    return relative
+        relative = str(path)
+    return relative.encode("utf-8", errors="backslashreplace").decode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +397,11 @@ class GrepMatch:
     path: str
     line_number: int
     line: str
+    match_start: int = 0
+
+
+class GrepMatches(list[GrepMatch]):
+    incomplete = False
 
 
 def validate_include(include: str) -> None:
@@ -414,50 +423,171 @@ def validate_include(include: str) -> None:
             )
 
 
-def preview_line(line: str, max_bytes: int = GREP_MAX_LINE_BYTES) -> str:
+def preview_line(line: str, max_bytes: int = GREP_MAX_LINE_BYTES, *, match_start: int = 0) -> str:
     encoded = line.encode("utf-8", errors="replace")
     if len(encoded) <= max_bytes:
         return line
+    position = len(line[:match_start].encode("utf-8", errors="replace"))
+    if position > max_bytes // 2:
+        start = position - max_bytes // 4
+        kept = encoded[start:start + max_bytes].decode("utf-8", errors="ignore")
+        return f"... {kept} (line truncated)"
     kept = encoded[:max_bytes].decode("utf-8", errors="ignore")
     return f"{kept} (line truncated)"
+
+
+class _RestartSearch(Exception):
+    """Earlier non-ASCII lines must be interpreted using the detected document encoding."""
+
+
+def _legacy_readline(source):
+    # ASCII headers can extend beyond the leading sample. Detect on the first
+    # non-UTF-8 line. Distinguish a damaged UTF-8 line from a legacy document.
+    utf8 = codecs.getincrementaldecoder("utf-8")()
+    legacy = None
+    encoding = None
+    detected = False
+    document_encoding = False
+    seen_non_ascii = False
+
+    def readline(size):
+        nonlocal legacy, encoding, detected, document_encoding, seen_non_ascii
+        raw = source.readline(size)
+        end = len(raw) < size or raw.endswith(b"\n")
+        if legacy is None:
+            try:
+                utf8.decode(raw, final=end)
+                seen_non_ascii |= not raw.isascii()
+                return raw, not end
+            except UnicodeDecodeError as exc:
+                utf8.reset()
+                raw = exc.object
+                if not detected:
+                    sample = raw + source.peek(BINARY_SAMPLE_BYTES)[:BINARY_SAMPLE_BYTES]
+                    complete, separator, _ = sample.rpartition(b"\n")
+                    sample = complete if separator and complete else raw
+                    encoding = detect_legacy_encoding(sample)
+                    if encoding:
+                        decoded = sample.decode("utf-8", errors="surrogateescape")
+                        invalid = sum(0xDC80 <= ord(char) <= 0xDCFF for char in decoded)
+                        # Several smart quotes on one damaged line are weak
+                        # evidence. Require independent lines before interpreting
+                        # otherwise valid UTF-8 in the detected encoding.
+                        invalid_lines = sum(any(0xDC80 <= ord(c) <= 0xDCFF for c in line)
+                                            for line in decoded.splitlines())
+                        document_encoding = invalid_lines >= 2 and invalid * 2 >= sum(not c.isascii() for c in decoded)
+                    detected = True
+                if encoding is None:
+                    return raw, not end
+                legacy = codecs.getincrementaldecoder(encoding)(errors="replace")
+                if document_encoding and seen_non_ascii:
+                    source.seek(0)
+                    raise _RestartSearch()
+        converted = legacy.decode(raw, final=end).encode("utf-8")
+        if end and not document_encoding:
+            legacy = None
+        return converted, not end
+
+    return readline
+
+
+@contextmanager
+def _grep_lines(path, protected):
+    with (protected.reader() if protected is not None else open(path, "rb")) as source:
+        sample = source.peek(BINARY_SAMPLE_BYTES)[:BINARY_SAMPLE_BYTES]
+        if sample.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+            encoding = "utf-32"
+        elif sample.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+            encoding = "utf-16"
+        else:
+            if _NUL in sample:
+                yield None
+            elif protected is None and os.fstat(source.fileno()).st_size > READ_MAX_BYTES:
+                yield _legacy_readline(source)
+            else:
+                def read_bytes(size):
+                    raw = source.readline(size)
+                    return raw, len(raw) == size and not raw.endswith(b"\n")
+                yield read_bytes
+            return
+        text = io.TextIOWrapper(source, encoding=encoding, errors="replace")
+        try:
+            def read_text(size):
+                line = text.readline(size)
+                return line.encode("utf-8"), len(line) == size and not line.endswith("\n")
+            yield read_text
+        finally:
+            text.detach()
+
+
+def _search_line(readline, literal: bytes | None, budget: _Budget, out: GrepMatches):
+    raw, more = readline(GREP_LINE_MAX_BYTES + 1)
+    if not more and len(raw.rstrip(b"\r\n")) <= GREP_LINE_MAX_BYTES:
+        return raw, False
+    prefix = raw[:GREP_LINE_MAX_BYTES]
+    if literal is None:
+        # Arbitrary regular expressions can depend on the entire line.
+        out.incomplete = True
+    overlap = b""
+    selected = None
+    while True:
+        budget.check()
+        if literal and selected is None:
+            chunk = overlap + raw
+            index = chunk.find(literal)
+            if index >= 0:
+                start = max(0, index - (GREP_LINE_MAX_BYTES - len(literal)) // 2)
+                selected = prefix if literal in prefix else chunk[start:start + GREP_LINE_MAX_BYTES]
+            overlap = chunk[-(len(literal) - 1):] if len(literal) > 1 else b""
+        if not more:
+            return (selected if selected is not None else prefix), True
+        raw, more = readline(GREP_LINE_MAX_BYTES)
 
 
 def _search_file(
     path: Path,
     shown: str,
     expression: regex.Pattern[str],
-    out: list[GrepMatch],
+    out: GrepMatches,
     budget: _Budget,
+    protected=None,
 ) -> int:
     """Append the matches of one file to ``out``; return the bytes of text added.
 
     The file is read one line at a time, so its size does not decide how much
     memory the search takes, and the search budget is checked as it goes. Of a
-    line longer than ``GREP_LINE_MAX_BYTES`` only that much is matched.
+    long line only one bounded excerpt is returned. Literal keywords are
+    searched across chunk boundaries; incomplete regex lines are omitted.
     """
     added = 0
+    plain = expression.pattern
+    literal = plain.encode() if not any(c in plain for c in r"\.^$*+?{}[]|()") else None
+    if literal is not None and len(literal) > GREP_LINE_MAX_BYTES:
+        literal = None
     try:
-        with open(path, "rb") as handle:
-            if _NUL in handle.read(BINARY_SAMPLE_BYTES):
+        with _grep_lines(path, protected) as readline:
+            if readline is None:
                 return 0
-            handle.seek(0)
             number = 0
+            first_match = len(out)
             while True:
-                raw = handle.readline(GREP_LINE_MAX_BYTES + 1)
-                if not raw:
+                try:
+                    raw, cut = _search_line(readline, literal, budget, out)
+                except _RestartSearch:
+                    budget.check()
+                    del out[first_match:]
+                    number = added = 0
+                    continue
+                if not raw and not cut:
                     break
                 number += 1
                 if number % _BUDGET_CHECK_LINES == 0:
                     budget.check()
-                cut = len(raw) > GREP_LINE_MAX_BYTES and not raw.endswith(b"\n")
+                if cut and literal is None:
+                    # An artificial end of line can make an anchored regex match.
+                    continue
                 if cut:
                     raw = raw[:GREP_LINE_MAX_BYTES]
-                    # Skip the rest of the line without holding it in memory.
-                    while True:
-                        budget.check()
-                        rest = handle.readline(GREP_LINE_MAX_BYTES)
-                        if not rest or rest.endswith(b"\n"):
-                            break
                 if raw.endswith(b"\n"):
                     raw = raw[:-1]
                 if raw.endswith(b"\r"):
@@ -480,7 +610,7 @@ def _search_file(
                 if not valid:
                     line = "(line is not valid UTF-8)"
                     size = len(line)
-                out.append(GrepMatch(shown, number, line))
+                out.append(GrepMatch(shown, number, line, found.start()))
                 added += size + _MATCH_LABEL_BYTES
                 if added > SEARCH_RAW_OUTPUT_MAX_BYTES or len(out) > SEARCH_MAX_MATCHES:
                     raise _too_much_output()
@@ -504,11 +634,12 @@ def grep_files(
     budget: _Budget,
     *,
     case_insensitive_globs: bool,
-) -> list[GrepMatch]:
-    """Search ``target`` (a file or a directory) and return every match."""
-    matches: list[GrepMatch] = []
-    if target.is_file():
-        _search_file(target, display_path(target, workdir), expression, matches, budget)
+    protected=None,
+) -> GrepMatches:
+    """Search a file or directory, reporting any regex ranges left unsearched."""
+    matches = GrepMatches()
+    if protected is not None or target.is_file():
+        _search_file(target, display_path(target, workdir), expression, matches, budget, protected)
         return matches
 
     include_matcher = (
@@ -552,11 +683,14 @@ def format_grep_matches(matches: list[GrepMatch]) -> str:
 def format_grep_output(matches: list[GrepMatch], spill_path: Path | None) -> str:
     if not matches:
         return "No matches found"
-    previewed = [GrepMatch(m.path, m.line_number, preview_line(m.line)) for m in matches]
+    previewed = [GrepMatch(m.path, m.line_number, preview_line(m.line, match_start=m.match_start)) for m in matches]
     seen = len(previewed)
     if seen <= GREP_MAX_MATCHES:
         noun = "match" if seen == 1 else "matches"
-        return f"Found {seen} {noun}\n\n{format_grep_matches(previewed)}"
+        body = f"Found {seen} {noun}\n\n{format_grep_matches(previewed)}"
+        if spill_path is not None:
+            body += f"\n\n(Full grep result stored at: {spill_path}. {SPILL_HINT})"
+        return body
     kept = previewed[:GREP_MAX_MATCHES]
     recovery = (
         f"Full grep result stored at: {spill_path}. {SPILL_HINT}"
@@ -625,7 +759,8 @@ def build_search_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> 
         include = args.get("include") or None
         if include is not None:
             validate_include(str(include))
-        if not target.exists():
+        protected = ctx.spill.protected.get(target)
+        if protected is None and not target.exists():
             raise ToolError(f'cannot search "{target}": not found')
         try:
             expression = regex.compile(pattern)
@@ -640,13 +775,28 @@ def build_search_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> 
             str(include) if include is not None else None,
             ctx.workdir,
             case_insensitive_globs=case_insensitive,
+            protected=protected,
         )
+        from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
+
+        partial = ("Very long lines were skipped for this pattern. Use a literal keyword to search them."
+                   if matches.incomplete else "")
+        preview = format_grep_output(matches, None)
         spill_path = None
-        if len(matches) > GREP_MAX_MATCHES:
-            previewed = [GrepMatch(m.path, m.line_number, preview_line(m.line)) for m in matches]
-            full = f"Found {len(matches)} matches\n\n{format_grep_matches(previewed)}"
+        if (len(matches) > GREP_MAX_MATCHES or len(preview.encode("utf-8")) > READ_MAX_BYTES
+                or any(len(m.line.encode("utf-8")) > GREP_MAX_LINE_BYTES for m in matches)):
+            full = f"Found {len(matches)} matches\n\n{format_grep_matches(matches)}"
+            if partial:
+                full = partial + "\n" + full
             spill_path = await asyncio.to_thread(_save_spill, ctx.spill, "grep-results", full)
-        return format_grep_output(matches, spill_path)
+        preview = format_grep_output(matches, spill_path)
+        if partial:
+            preview = partial + ("\n" + preview if matches else "")
+        if len(preview.encode("utf-8")) <= READ_MAX_BYTES:
+            return preview
+        notice = f"\n\n{SPILL_HINT} {spill_path}" if spill_path else "\n\nNarrow the grep pattern to see more."
+        kept = preview.encode("utf-8")[:max(0, READ_MAX_BYTES - len(notice.encode("utf-8")))]
+        return kept.decode("utf-8", errors="ignore") + notice
 
     return [
         define_tool(schemas["glob"], glob, parallel=True),

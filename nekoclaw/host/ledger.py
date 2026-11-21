@@ -84,6 +84,11 @@ STATUSES: tuple[str, ...] = (
 ACTIVE_STATUSES: frozenset[str] = frozenset({"queued", "working", "waiting_user", "blocked"})
 # Statuses in which someone is working on it right now and holds a slot.
 RUNNING_STATUSES: frozenset[str] = frozenset({"working", "waiting_user"})
+# Statuses of a commission its session is still at work on: being worked on
+# (also resting, which is ``working`` with nobody at it until it is woken),
+# waiting for a place, or waiting for the user. A stuck commission (``blocked``)
+# is not: it is taken up again only when somebody says more of it.
+UNDER_WAY_STATUSES: frozenset[str] = frozenset({"queued", "working", "waiting_user"})
 ENDED_STATUSES: frozenset[str] = frozenset({"done", "failed", "cancelled", "blocked"})
 _ENDED_MARKS = ", ".join("?" for _ in ENDED_STATUSES)
 
@@ -1831,6 +1836,57 @@ class Ledger:
         found = await self.select(session_id=session_id, limit=1)
         return found[0] if found else None
 
+    async def session_alive(self, session: Session | None, now: float | None = None) -> bool:
+        """Whether a session can still be gone on with: given notes, asked, woken, taken up again, summed up.
+
+        The one place that says so; everything that would give a session
+        new work asks here. Only a session of one commission (kind
+        ``single``) ends: it is over once its last commission ended
+        ``SESSION_SINGLE_LIFETIME_DAYS`` days ago (that day counts as
+        over), unless a commission is still under way in it
+        (``UNDER_WAY_STATUSES``: at work, queued, waiting for the user, or
+        resting until what it asked to be woken for comes). The age is that
+        of ``Session.last_active_at``: written whenever a commission in the
+        session changes its status, so, with none under way, it is when the
+        last one ended. What other sessions write to it, what a request of
+        it used, and the host summing it up do not move it. The session of
+        a project never ends this way (an old one is cleaned up, and the
+        next commission starts over in it); the sessions of task agents
+        another one started, and copies, have their own rules and are
+        reported alive here: this is about age only. No session is not
+        alive.
+
+        ``now`` is the moment asked about (the ledger's clock by default).
+        A session that looks old by what the caller read is looked at once
+        more here, with what is under way in it, in one go: whoever read it
+        may have read it a moment ago.
+        """
+        from config.nekoclaw_settings import SESSION_SINGLE_LIFETIME_DAYS
+
+        if session is None:
+            return False
+        if session.kind != "single":
+            return True
+        at = self._clock() if now is None else now
+        lifetime = SESSION_SINGLE_LIFETIME_DAYS * 86400.0
+        if at - session.last_active_at < lifetime:
+            return True
+        marks = ", ".join("?" for _ in UNDER_WAY_STATUSES)
+
+        def work(conn: sqlite3.Connection) -> bool:
+            row = conn.execute("SELECT last_active_at FROM sessions WHERE id = ?", (session.id,)).fetchone()
+            if row is None:
+                return False
+            if at - float(row["last_active_at"]) < lifetime:
+                return True
+            found = conn.execute(
+                f"SELECT 1 FROM commissions WHERE session_id = ? AND status IN ({marks}) LIMIT 1",
+                (session.id, *sorted(UNDER_WAY_STATUSES)),
+            ).fetchone()
+            return found is not None
+
+        return await self.run(work)
+
     async def resting_in(self, session_id: str) -> Commission | None:
         """Return the commission that rests in a session, the one that came to rest last; None when none does."""
 
@@ -2857,12 +2913,20 @@ class Ledger:
         Only one that still stands as being summed up: a commission that
         got to work in it meanwhile has written where it stands, and that
         is not written over.
+
+        A summary made leaves how long the conversation is unknown until
+        the next request says (``context_tokens`` goes back to 0): what
+        stood there was the length it was summed up from, and a commission
+        that ends in the session without a model request (it failed before
+        its first) would have it summed up a second time.
         """
 
         def work(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE sessions SET status = 'closed' WHERE id = ? AND status = 'compacting'", (session_id,))
             if compacted:
-                conn.execute("UPDATE sessions SET compacted_at = ? WHERE id = ?", (self._clock(), session_id))
+                conn.execute(
+                    "UPDATE sessions SET compacted_at = ?, context_tokens = 0 WHERE id = ?", (self._clock(), session_id)
+                )
 
         await self.run(work)
 
