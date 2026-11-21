@@ -32,6 +32,9 @@ from utils.file_utils import (
 
 from ._shared import logger
 
+# Guards the runtime Steam library root registry (register_steam_workshop_library_roots).
+_STEAM_LIBRARY_ROOTS_LOCK = threading.Lock()
+
 # Protects the lazy creation of the "last-good cache micro-lock" above; see _last_good_workshop_config_lock.
 _LAST_GOOD_LOCK_GUARD = threading.Lock()
 
@@ -472,20 +475,24 @@ class WorkshopMixin:
         Args:
             roots: iterable of Workshop content root paths
         """
-        current = list(getattr(self, "_steam_workshop_library_roots", None) or [])
-        seen = {os.path.normcase(os.path.normpath(str(root))) for root in current}
-        added = []
-        for root in roots or ():
-            if not root:
-                continue
-            key = os.path.normcase(os.path.normpath(str(root)))
-            if key in seen:
-                continue
-            seen.add(key)
-            current.append(str(root))
-            added.append(str(root))
+        # Startup (worker thread) and the subscribed-items endpoint can register at the
+        # same time; serialize the read-extend-replace so neither loses roots.
+        with _STEAM_LIBRARY_ROOTS_LOCK:
+            current = list(getattr(self, "_steam_workshop_library_roots", None) or [])
+            seen = {os.path.normcase(os.path.normpath(str(root))) for root in current}
+            added = []
+            for root in roots or ():
+                if not root:
+                    continue
+                key = os.path.normcase(os.path.normpath(str(root)))
+                if key in seen:
+                    continue
+                seen.add(key)
+                current.append(str(root))
+                added.append(str(root))
+            if added:
+                self._steam_workshop_library_roots = current
         if added:
-            self._steam_workshop_library_roots = current
             logger.info(f"已登记Steam创意工坊库目录（运行时）: {added}")
 
     def get_steam_workshop_library_roots(self):

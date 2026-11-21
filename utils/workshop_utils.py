@@ -205,9 +205,9 @@ class WorkshopStaticFiles(StaticFiles):
     The mounted directory is tried first, so single-library installs behave exactly as
     a plain ``StaticFiles(directory=...)``. Then the roots returned by
     ``extra_directories`` (read on every request, so libraries registered later are
-    served too) are tried in order. Starlette's own ``lookup_path`` does the lookup,
-    which rejects absolute paths and anything whose real path (after following
-    symlinks) leaves the root being tried.
+    served too) are tried in order. ``lookup_path`` applies Starlette's checks to
+    each root: absolute paths are rejected, as is anything whose real path (after
+    following symlinks) leaves the root being tried.
 
     Registered roots only grow during a run (a library stays served after its last
     item is unsubscribed, until restart). If the same item folder name exists in two
@@ -231,6 +231,44 @@ class WorkshopStaticFiles(StaticFiles):
         if self.directory is not None and not os.path.isdir(self.directory):
             return
         await super().check_config()
+
+    def lookup_path(self, path: str):
+        """Starlette's lookup, except a denied file in one library does not hide the next.
+
+        Same checks per root as ``StaticFiles.lookup_path`` (absolute paths rejected,
+        real path must stay inside the root). A ``PermissionError`` moves on to the next
+        library; it is re-raised (Starlette answers 401, as before) only if no library
+        has the file. A root that cannot be compared with the target (``commonpath``
+        raising ``ValueError``, e.g. another drive on Windows) is skipped, so later
+        libraries are still tried.
+        """
+        if path.startswith(("/", "\\")):
+            return "", None
+        denied: Optional[PermissionError] = None
+        for directory in self.all_directories:
+            joined_path = os.path.join(directory, path)
+            if self.follow_symlink:
+                full_path = os.path.abspath(joined_path)
+                root = os.path.abspath(directory)
+            else:
+                full_path = os.path.realpath(joined_path)
+                root = os.path.realpath(directory)
+            try:
+                if os.path.commonpath([full_path, root]) != str(root):
+                    continue
+            except ValueError:
+                continue
+            try:
+                return full_path, os.stat(full_path)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except PermissionError as e:
+                if denied is None:
+                    denied = e
+                continue
+        if denied is not None:
+            raise denied
+        return "", None
 
     @property
     def all_directories(self) -> List[Any]:

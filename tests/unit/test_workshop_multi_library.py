@@ -556,3 +556,91 @@ def test_by_id_url_and_config_routes_pick_the_same_nested_model(libraries, monke
     with _client(libraries, []) as client:
         config = client.get("/api/live2d/model_config_by_id/200").json()["config"]
     assert config["FileReferences"]["Moc"] == "a_first.moc3"
+
+
+def test_url_and_config_routes_share_the_folder_named_preference(libraries):
+    """A folder-named model nested later still wins for the URL and both config routes."""
+    item = libraries.b / "200"
+    _write_model(item / "a_first", "live2d", "Other")
+    _write_model(item / "z_last", "live2d", "200")
+    register_workshop_roots_from_items([{"installedFolder": str(item)}])
+    target = item / "z_last" / "200.model3.json"
+    assert frontend_utils.find_workshop_item_model_file(str(item)) == str(target)
+    assert frontend_utils.find_model_by_workshop_item_id("200") == "/workshop/200/z_last/200.model3.json"
+    with _client(libraries, []) as client:
+        assert client.get("/api/live2d/model_config_by_id/200").json()["config"]["FileReferences"]["Moc"] == "200.moc3"
+        assert client.post("/api/live2d/model_config_by_id/200", json={
+            "FileReferences": {"Expressions": [{"Name": "x", "File": "x.exp3.json"}]},
+        }).status_code == 200
+    assert "x.exp3.json" in target.read_text(encoding="utf-8")
+    assert "x.exp3.json" not in (item / "a_first" / "Other.model3.json").read_text(encoding="utf-8")
+
+
+def test_flat_folder_named_model_is_chosen_by_url_and_config_alike(libraries):
+    item = libraries.b / "200"
+    _write_model(item, "live2d", "Aaa")
+    # Only an exact folder-named file counts, not one that merely ends with the id.
+    _write_model(item, "live2d", "Bravo200")
+    _write_model(item, "live2d", "200")
+    register_workshop_roots_from_items([{"installedFolder": str(item)}])
+    assert frontend_utils.find_model_by_workshop_item_id("200") == "/workshop/200/200.model3.json"
+    assert frontend_utils.find_workshop_item_model_file(str(item)) == str(item / "200.model3.json")
+
+
+def test_find_models_lists_live2d_items_from_every_library(libraries):
+    # find_models names a model after its folder, here the item id.
+    _write_model(libraries.a / "100", "live2d", "Alpha")
+    _write_model(libraries.b / "200", "live2d", "Bravo")
+    before = {m["name"]: m for m in frontend_utils.find_models() if m["source"] == "workshop"}
+    assert set(before) == {"100"}
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    models = {m["name"]: m for m in frontend_utils.find_models() if m["source"] == "workshop"}
+    assert models["100"]["path"] == "/workshop/100/Alpha.model3.json"
+    assert models["200"]["path"] == "/workshop/200/Bravo.model3.json"
+    assert models["200"]["item_id"] == "200"
+    with _client(libraries, []) as client:
+        assert client.get(models["200"]["path"]).status_code == 200
+
+
+def test_concurrent_registration_keeps_every_root(libraries):
+    import threading
+
+    roots = []
+    for index in range(40):
+        root = libraries.tmp_path / f"Lib{index}" / "content"
+        (root / "1").mkdir(parents=True)
+        roots.append(root)
+    barrier = threading.Barrier(len(roots))
+
+    def register(root):
+        barrier.wait()
+        register_workshop_roots_from_items([{"installedFolder": str(root / "1")}])
+
+    threads = [threading.Thread(target=register, args=(root,)) for root in roots]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(libraries.config.get_steam_workshop_library_roots()) == sorted(str(r) for r in roots)
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="needs a non-root POSIX user")
+def test_denied_file_in_one_library_does_not_hide_the_next(libraries):
+    locked = libraries.a / "100"
+    locked.mkdir()
+    (locked / "Same.vrm").write_bytes(b"from A")
+    (libraries.b / "100").mkdir()
+    (libraries.b / "100" / "Same.vrm").write_bytes(b"from B")
+    locked.chmod(0)
+    try:
+        with _client(libraries, [], static_cls=StaticFiles) as client:
+            assert client.get("/workshop/100/Same.vrm").status_code == 401
+        with _client(libraries, []) as client:
+            # Only library A known: same 401 as before.
+            assert client.get("/workshop/100/Same.vrm").status_code == 401
+            register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "100")}])
+            response = client.get("/workshop/100/Same.vrm")
+            assert response.status_code == 200
+            assert response.content == b"from B"
+    finally:
+        locked.chmod(0o755)
