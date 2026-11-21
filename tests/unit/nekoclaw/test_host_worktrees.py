@@ -1667,3 +1667,30 @@ async def test_a_ref_whose_tree_has_a_filter_is_refused(repo: Path, manager: Wor
     assert raised.value.reason == CONTENT_FILTERS
     assert not exists(base / "w1") and git(repo, "for-each-ref", REF_PREFIX) == ""
     assert (await manager.create(repo, base / "w2", FromRef("main"))).id == "w2"
+
+
+async def test_cancelled_while_the_start_moves_on_puts_the_start_back(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "merged\n")
+    before = digest(repo)
+    original = manager._git
+    moved = []
+
+    async def cancelled_after_moving(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        done = await original(cwd, *args, **kwargs)
+        if args[:2] == ("update-ref", f"{REF_PREFIX}w1/start") and not moved:
+            moved.append(args[2])
+            raise asyncio.CancelledError
+        return done
+
+    monkeypatch.setattr(manager, "_git", cancelled_after_moving)
+    with pytest.raises(asyncio.CancelledError):
+        await manager.merge_back(tree)
+    monkeypatch.setattr(manager, "_git", original)
+    assert moved and moved[0] != tree.start
+    assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == tree.start
+    assert digest(repo) == before
+    assert await manager.has_changes(tree)
+    assert (await manager.merge_back(tree)).status == "landed"

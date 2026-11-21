@@ -771,6 +771,7 @@ class WorktreeManager:
 
     async def _land_on_working_files(self, worktree: Worktree, result: Snapshot) -> MergeResult:
         root = worktree.repo_root
+        base = await self._try_resolve(root, _start_ref(worktree.id)) or worktree.start
         current = await self._snapshot(root, "nekoclaw: project before landing")
         merged = await self._git(
             root,
@@ -780,7 +781,7 @@ class WorktreeManager:
             "--name-only",
             "--no-messages",
             "--merge-base",
-            await self._try_resolve(root, _start_ref(worktree.id)) or worktree.start,
+            base,
             current.commit,
             result.commit,
             check=False,
@@ -850,6 +851,9 @@ class WorktreeManager:
                 # Cancelled, timed out or git failed after writing may have
                 # begun: the files go back before the error goes on.
                 await _uninterrupted(_restore, root, saved)
+                # The start may have moved on already (cancelled while that
+                # was being written): it goes back with the files.
+                await _to_the_end(self._git(root, "update-ref", _start_ref(worktree.id), base, check=False))
                 raise
             left = await asyncio.to_thread(_restore, root, saved)
             return MergeResult("failed", detail=detail, left_changed=tuple(left), **counted)
@@ -1126,7 +1130,12 @@ def _failure(what: str, stderr: bytes) -> str:
 
 async def _uninterrupted(function, *args):  # type: ignore[no-untyped-def]
     """Run ``function`` in a worker thread to the end, even when cancelled meanwhile; re-raise the cancellation after."""
-    future = asyncio.ensure_future(asyncio.to_thread(function, *args))
+    return await _to_the_end(asyncio.to_thread(function, *args))
+
+
+async def _to_the_end(awaitable):  # type: ignore[no-untyped-def]
+    """Await ``awaitable`` to the end, even when cancelled meanwhile; re-raise the cancellation after."""
+    future = asyncio.ensure_future(awaitable)
     cancelled = False
     while not future.done():
         try:
