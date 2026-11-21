@@ -44,6 +44,16 @@ from tests.unit.nekoclaw.plugin_server_fake import FakePluginServer, entry, plug
 from tests.unit.nekoclaw.plugin_server_fake import finish as plugin_result
 
 
+@pytest.fixture(autouse=True)
+def _one_after_the_other(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Commissions of one session are worked on in it one after the other here.
+
+    A later one is not carried on in a copy of the session meanwhile; that is
+    ``test_host_fork_continue.py``'s.
+    """
+    monkeypatch.setattr("config.nekoclaw_settings.TASK_AGENT_FORK_CONTINUE_ENABLED", False)
+
+
 @pytest.fixture
 async def hosts() -> Any:
     made: list[Any] = []
@@ -192,10 +202,7 @@ async def test_another_characters_commission_of_the_project_has_a_session_of_its
     await wait_status(host, first.commission_id, "done")
 
 
-async def test_a_commission_waiting_for_the_user_keeps_its_session_and_the_next_one_waits(hosts, tmp_path, monkeypatch):
-    # The session itself: the next one is not carried on in a copy meanwhile
-    # (``test_host_fork_continue.py``).
-    monkeypatch.setattr("config.nekoclaw_settings.TASK_AGENT_FORK_CONTINUE_ENABLED", False)
+async def test_a_commission_waiting_for_the_user_keeps_its_session_and_the_next_one_waits(hosts, tmp_path):
     scripts = {
         "add a CSV export": ScriptedLLM(
             [_report("waiting", "Which separator?"), _report("ready", "export added with commas")]
