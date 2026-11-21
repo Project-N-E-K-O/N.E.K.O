@@ -594,6 +594,8 @@ async def _test_decision_endpoint(
             profile_model=profile_model,
         )
     if not is_native_decision_protocol(resolved_protocol):
+        if _looks_like_anthropic_messages_url(url):
+            return await _test_anthropic(url, api_key, model=model, is_free=is_free)
         return await _test_openai_compatible(url, api_key, model=model, is_free=is_free)
 
     if not str(model or "").strip():

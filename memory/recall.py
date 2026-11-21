@@ -738,17 +738,22 @@ class MemoryRecallReranker:
                     for cid in native_candidate_ids
                 }
                 dec_client = DecisionClient(config_manager=config_manager)
+                # Keep native decision total latency tightly capped (2.0s; typical
+                # native latency is ~150-250ms) so upstream's ~5s query_memory budget
+                # still leaves room for the summary chat fallback on timeout. Outer
+                # wait_for (2.2s) gives DecisionClient's inner 2.0s timeout priority
+                # so transient timeouts reliably trigger the 60s cooldown cache.
                 dec_resp = await asyncio.wait_for(
                     dec_client.decide(
                         state=state_text,
                         questions=questions,
                         config=decision_config,
-                        timeout=5.0,
+                        timeout=2.0,
                         allow_fallback=False,
                         respect_cooldown=True,
                         call_type="memory_recall_rerank",
                     ),
-                    timeout=5.0,
+                    timeout=2.2,
                 )
                 if dec_resp.answers:
                     scored_rows: list[tuple[float, int, str]] = []

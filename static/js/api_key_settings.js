@@ -1872,6 +1872,7 @@ const MODEL_TIER_BY_TYPE = {
     gameSummary: 'summary',
     correction: 'correction',
     emotion: 'emotion',
+    decision: 'decision',
     vision: 'vision',
     agent: 'agent',
 };

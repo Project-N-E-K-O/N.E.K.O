@@ -17,10 +17,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import hashlib
 import time
 import urllib.parse
 from typing import Any, Mapping
+
+import httpx
 
 from utils.logger_config import get_module_logger
 
@@ -38,11 +42,13 @@ logger = get_module_logger(__name__)
 
 # Process-local negative cooldown when a native Decisions endpoint reports a
 # permanent route/model error (400/404/405/422, e.g. preview model retired or
-# not enabled on the user's workspace). Prevents burning a doomed HTTP
-# round-trip on every subsequent call while automatically retrying later or
-# immediately when the route/model config changes.
+# not enabled on the user's workspace) or transient outage (timeout / 5xx /
+# connect failure). Prevents burning a doomed HTTP round-trip on every
+# subsequent call while automatically retrying after cooldown or immediately
+# when the route, model, or API key changes.
 _NATIVE_COOLDOWN_SECONDS = 300.0
-_native_cooldown_until: dict[tuple[str, str, str], float] = {}
+_NATIVE_TRANSIENT_COOLDOWN_SECONDS = 60.0
+_native_cooldown_until: dict[tuple[str, str, str, str], float] = {}
 
 
 def clear_native_cooldown() -> None:
@@ -50,7 +56,14 @@ def clear_native_cooldown() -> None:
     _native_cooldown_until.clear()
 
 
-def _is_native_in_cooldown(key: tuple[str, str, str]) -> bool:
+def _api_key_fingerprint(api_key: str) -> str:
+    cleaned = str(api_key or "").strip()
+    if not cleaned:
+        return ""
+    return hashlib.sha256(cleaned.encode("utf-8")).hexdigest()[:16]
+
+
+def _is_native_in_cooldown(key: tuple[str, str, str, str]) -> bool:
     deadline = _native_cooldown_until.get(key)
     if deadline is None:
         return False
@@ -60,8 +73,11 @@ def _is_native_in_cooldown(key: tuple[str, str, str]) -> bool:
     return True
 
 
-def _mark_native_cooldown(key: tuple[str, str, str]) -> None:
-    _native_cooldown_until[key] = time.monotonic() + _NATIVE_COOLDOWN_SECONDS
+def _mark_native_cooldown(
+    key: tuple[str, str, str, str],
+    duration: float = _NATIVE_COOLDOWN_SECONDS,
+) -> None:
+    _native_cooldown_until[key] = time.monotonic() + duration
 
 
 def _is_complete_native_decision_url(url: str) -> bool:
@@ -135,9 +151,7 @@ class DecisionClient:
             from utils.config_manager import get_config_manager
 
             cm = get_config_manager()
-        if hasattr(cm, "aget_model_api_config"):
-            return await cm.aget_model_api_config("decision")
-        return cm.get_model_api_config("decision")
+        return await cm.aget_model_api_config("decision")
 
     async def _resolve_fallback_chat_config(
         self,
@@ -170,11 +184,7 @@ class DecisionClient:
         if cm is not None:
             for tier in ("emotion", "summary"):
                 try:
-                    cfg = (
-                        await cm.aget_model_api_config(tier)
-                        if hasattr(cm, "aget_model_api_config")
-                        else cm.get_model_api_config(tier)
-                    )
+                    cfg = await cm.aget_model_api_config(tier)
                 except Exception as exc:
                     logger.debug("[DecisionClient] fallback tier=%s lookup failed: %s", tier, exc)
                     continue
@@ -279,7 +289,7 @@ class DecisionClient:
     ) -> DecisionResponse:
         if is_native_decision_protocol(protocol):
             endpoint = resolve_decision_endpoint(protocol, base_url, decision_url)
-            cooldown_key = (protocol, endpoint, model)
+            cooldown_key = (protocol, endpoint, model, _api_key_fingerprint(api_key))
             in_cooldown = respect_cooldown and _is_native_in_cooldown(cooldown_key)
             if in_cooldown:
                 if not allow_fallback:
@@ -289,7 +299,7 @@ class DecisionClient:
                         model,
                     )
                     raise DecisionProtocolError(
-                        f"native decision endpoint {protocol} ({model}) is in cooldown after permanent error",
+                        f"native decision endpoint {protocol} ({model}) is in cooldown after recent error",
                         protocol=protocol,
                         permanent_route_error=True,
                     )
@@ -301,14 +311,17 @@ class DecisionClient:
             else:
                 adapter = get_decision_adapter(protocol)
                 try:
-                    resp = await adapter.execute(
-                        state=state,
-                        questions=questions,
-                        model=model,
-                        base_url=base_url,
-                        api_key=api_key,
-                        decision_url=decision_url,
-                        provider_type=provider_type,
+                    resp = await asyncio.wait_for(
+                        adapter.execute(
+                            state=state,
+                            questions=questions,
+                            model=model,
+                            base_url=base_url,
+                            api_key=api_key,
+                            decision_url=decision_url,
+                            provider_type=provider_type,
+                            timeout=timeout,
+                        ),
                         timeout=timeout,
                     )
                     if resp.answers:
@@ -317,7 +330,12 @@ class DecisionClient:
                     return resp
                 except Exception as exc:
                     if isinstance(exc, DecisionProtocolError) and exc.permanent_route_error:
-                        _mark_native_cooldown(cooldown_key)
+                        _mark_native_cooldown(cooldown_key, _NATIVE_COOLDOWN_SECONDS)
+                    elif (
+                        (isinstance(exc, DecisionProtocolError) and exc.status_code is not None and exc.status_code >= 500)
+                        or isinstance(exc, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException, httpx.ConnectError))
+                    ):
+                        _mark_native_cooldown(cooldown_key, _NATIVE_TRANSIENT_COOLDOWN_SECONDS)
                     if not allow_fallback:
                         raise
                     logger.warning(

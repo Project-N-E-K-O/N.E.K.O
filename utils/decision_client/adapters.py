@@ -637,10 +637,29 @@ class GeminiDecisionsAdapter(DecisionAdapter):
                     score_norm=(score_val / max_idx) if max_idx > 0 else 0.0,
                 )
 
-        usage = data.get("usage_metadata") if isinstance(data.get("usage_metadata"), Mapping) else {}
-        prompt_tokens = int(usage.get("input_token_count") or usage.get("prompt_token_count") or 0)
-        completion_tokens = int(usage.get("output_token_count") or 0)
-        cached_tokens = int(usage.get("cached_content_token_count") or 0)
+        usage = data.get("usage_metadata")
+        if not isinstance(usage, Mapping):
+            usage = data.get("usageMetadata")
+        if not isinstance(usage, Mapping):
+            usage = {}
+        prompt_tokens = int(
+            usage.get("input_token_count")
+            or usage.get("prompt_token_count")
+            or usage.get("promptTokenCount")
+            or usage.get("inputTokenCount")
+            or 0
+        )
+        completion_tokens = int(
+            usage.get("output_token_count")
+            or usage.get("candidatesTokenCount")
+            or usage.get("outputTokenCount")
+            or 0
+        )
+        cached_tokens = int(
+            usage.get("cached_content_token_count")
+            or usage.get("cachedContentTokenCount")
+            or 0
+        )
 
         return DecisionResponse(
             answers=answers,
@@ -836,7 +855,7 @@ class ChatFallbackDecisionAdapter(DecisionAdapter):
                     answers[qid] = DecisionAnswer(
                         question_type="choice",
                         value=choice,
-                        probability=probs.get(choice) or conf,
+                        probability=probs[choice] if choice in probs else conf,
                         probabilities=probs,
                         confidence=conf,
                     )

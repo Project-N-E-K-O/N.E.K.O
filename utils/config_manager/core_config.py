@@ -2101,13 +2101,16 @@ class CoreConfigMixin:
                 base_url,
                 profile_decision_url if (decision_protocol != 'chat_fallback' and base_url_matches_profile) else '',
             )
-            fallback_model = str(
-                profile.get('EMOTION_MODEL')
-                or profile.get('SUMMARY_MODEL')
-                or core_config.get('EMOTION_MODEL')
-                or core_config.get('SUMMARY_MODEL')
-                or ''
-            ).strip()
+            # Only pair fallback_model with the decision slot's own base_url/api_key
+            # when this slot targets a known profile's default service. For custom or
+            # gateway-overridden slots, keep fallback_model empty so DecisionClient
+            # resolves a complete emotion/summary chat slot instead of mixing provider
+            # A's model name with provider B's endpoint.
+            fallback_model = (
+                str(profile.get('EMOTION_MODEL') or profile.get('SUMMARY_MODEL') or '').strip()
+                if (profile and base_url_matches_profile)
+                else ''
+            )
 
             enriched = dict(result)
             enriched['decision_protocol'] = decision_protocol

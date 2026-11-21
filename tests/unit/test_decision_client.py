@@ -42,7 +42,7 @@ def _reset_native_cooldown():
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("model", "base_url", "prof_proto", "prof_model", "expected"),
+    ("model", "endpoint_url", "prof_proto", "prof_model", "expected"),
     [
         ("decision-model-preview", "https://dashscope.aliyuncs.com/compatible-mode/v1", "systemone", "decision-model-preview", "systemone"),
         ("decision-model-preview", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "systemone", "decision-model-preview", "systemone"),
@@ -56,11 +56,11 @@ def _reset_native_cooldown():
         ("free-mini-model", "https://www.lanlan.tech/text/v1", "chat_fallback", "free-mini-model", "chat_fallback"),
     ],
 )
-def test_infer_decision_protocol(model, base_url, prof_proto, prof_model, expected):
+def test_infer_decision_protocol(model, endpoint_url, prof_proto, prof_model, expected):
     assert (
         infer_decision_protocol(
             model,
-            base_url,
+            endpoint_url,
             profile_protocol=prof_proto,
             profile_model=prof_model,
         )
@@ -282,6 +282,23 @@ def test_gemini_decisions_adapter_roundtrip():
     assert resp.answers["severity"].score_norm == pytest.approx(0.8)
     assert resp.answers["severity"].probabilities["high"] == pytest.approx(0.65)
 
+    # Also verify Gemini camelCase usageMetadata parsing
+    camel_resp = adapter.parse_response(
+        {
+            "answers": {"is_urgent": {"noul": 0.9}},
+            "usageMetadata": {
+                "promptTokenCount": 55,
+                "candidatesTokenCount": 0,
+                "cachedContentTokenCount": 12,
+            },
+        },
+        {"is_urgent": qs["is_urgent"]},
+        "gemini-decision-1",
+    )
+    assert camel_resp.prompt_tokens == 55
+    assert camel_resp.completion_tokens == 0
+    assert camel_resp.cached_tokens == 12
+
 
 @pytest.mark.unit
 def test_chat_fallback_parser_strips_thinking_and_fences():
@@ -290,7 +307,7 @@ def test_chat_fallback_parser_strips_thinking_and_fences():
         "<think>reasoning here</think>\n"
         "```json\n"
         '{"is_urgent": {"value": true, "probability": 0.88}, '
-        '"route": {"choice": "tech", "confidence": 0.9}, '
+        '"route": {"choice": "tech", "confidence": 0.9, "probabilities": {"tech": 0.0, "billing": 1.0}}, '
         '"severity": {"score": 2, "confidence": 0.85}}\n'
         "```"
     )
@@ -299,6 +316,8 @@ def test_chat_fallback_parser_strips_thinking_and_fences():
     assert resp.answers["is_urgent"].value is True
     assert resp.answers["is_urgent"].probability == pytest.approx(0.88)
     assert resp.answers["route"].value == "tech"
+    # Explicit 0.0 probability must be preserved rather than replaced by confidence
+    assert resp.answers["route"].probability == pytest.approx(0.0)
     assert resp.answers["severity"].value == pytest.approx(2.0)
     assert resp.answers["severity"].score_norm == pytest.approx(1.0)
 
@@ -607,6 +626,51 @@ async def test_decision_client_call_type_context_restored_and_empty_probe_keeps_
         _current_call_type.reset(token)
 
 
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_decision_client_timeout_and_5xx_trigger_cooldown_and_api_key_change_escapes():
+    import asyncio
+
+    qs = {"ok": BoolQuestion(instructions="Is it ok?")}
+    native_cfg = {
+        "model": "decision-model-preview",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "sk-key-a",
+        "decision_protocol": "systemone",
+        "decision_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/systemone",
+    }
+
+    slow_exec = AsyncMock(side_effect=asyncio.TimeoutError())
+    client = DecisionClient()
+    with patch.object(SystemOneAdapter, "execute", slow_exec):
+        with pytest.raises(asyncio.TimeoutError):
+            await client.decide(state="ping", questions=qs, config=native_cfg, timeout=0.5, allow_fallback=False)
+        assert slow_exec.await_count == 1
+
+        # Second call with same key hits 60s transient cooldown -> skips native immediately
+        with pytest.raises(DecisionProtocolError):
+            await client.decide(state="ping", questions=qs, config=native_cfg, timeout=0.5, allow_fallback=False)
+        assert slow_exec.await_count == 1
+
+        # Fixing API key immediately bypasses previous key's cooldown
+        updated_cfg = dict(native_cfg, api_key="sk-key-b")
+        with pytest.raises(asyncio.TimeoutError):
+            await client.decide(state="ping", questions=qs, config=updated_cfg, timeout=0.5, allow_fallback=False)
+        assert slow_exec.await_count == 2
+
+    # HTTP 503 also triggers transient cooldown
+    clear_native_cooldown()
+    err_503 = AsyncMock(
+        side_effect=DecisionProtocolError("HTTP 503", status_code=503, protocol="systemone", permanent_route_error=False)
+    )
+    with patch.object(SystemOneAdapter, "execute", err_503):
+        with pytest.raises(DecisionProtocolError):
+            await client.decide(state="ping", questions=qs, config=native_cfg, allow_fallback=False)
+        with pytest.raises(DecisionProtocolError):
+            await client.decide(state="ping", questions=qs, config=native_cfg, allow_fallback=False)
+    assert err_503.await_count == 1
+
+
 # ---------------------------------------------------------------------------
 # ConfigManager integration for `decision` slot
 # ---------------------------------------------------------------------------
@@ -692,6 +756,22 @@ def test_config_manager_decision_slot_defaults_and_cross_provider(clean_user_dat
     assert gw_dec["decision_protocol"] == "gemini_decisions"
     assert gw_dec["decision_url"] == "https://my-gateway.internal/v1/decisions"
     assert "generativelanguage.googleapis.com" not in gw_dec["decision_url"]
+    # Gateway override must NOT pair another provider's fallback_model with the custom host
+    assert gw_dec["fallback_model"] == ""
+
+    # Custom decision slot must keep fallback_model empty instead of borrowing assist's EMOTION_MODEL
+    _set_cfg({
+        "coreApi": "qwen",
+        "assistApi": "deepseek",
+        "assistApiKeyDeepseek": "sk-ds",
+        "enableCustomApi": True,
+        "decisionModelProvider": "custom",
+        "decisionModelUrl": "https://private-host.internal/v1",
+        "decisionModelId": "decision-model-preview",
+        "decisionModelApiKey": "sk-private",
+    })
+    custom_dec = cm.get_model_api_config("decision")
+    assert custom_dec["fallback_model"] == ""
 
     _set_cfg({
         "coreApi": "qwen",
@@ -842,6 +922,27 @@ async def test_connectivity_decision_probe_success_and_auth_error():
         assert chat_override_res["success"] is True
         assert mock_oai.await_count == 1
         assert mock_dec_probe.await_count == 0
+
+    # Custom decision slot pointing to Anthropic Messages API must route to _test_anthropic
+    with (
+        patch(
+            "main_routers.config_router.connectivity._test_anthropic",
+            AsyncMock(return_value={"success": True}),
+        ) as mock_anth,
+        patch(
+            "main_routers.config_router.connectivity._test_openai_compatible",
+            AsyncMock(return_value={"success": True}),
+        ) as mock_oai,
+    ):
+        anth_res = await _test_decision_endpoint(
+            "https://api.anthropic.com/v1/messages",
+            "sk-ant",
+            model="claude-haiku-4-5",
+            protocol="",
+        )
+        assert anth_res["success"] is True
+        assert mock_anth.await_count == 1
+        assert mock_oai.await_count == 0
 
 
 # ---------------------------------------------------------------------------
