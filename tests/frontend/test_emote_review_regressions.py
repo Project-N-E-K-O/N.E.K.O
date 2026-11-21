@@ -114,25 +114,28 @@ def test_single_png_download_starts_while_capture_controls_are_locked(editor):
     ('flat', 10, .2, .2), ('flat', 30, .2, .2),
     ('layered', 10, .2, .2), ('layered', 30, .2, .2),
     ('flat', 30, .3, .1),
+    ('flat', 60, 0, 1), ('layered', 60, 0, 1),
 ])
 def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, fps, start, seconds):
     from PIL import Image
 
     _import(editor, spine_zip())
-    exported = editor.evaluate('''async ([format, fps, start, seconds]) => {
+    source_count = max(4, round((start + seconds) * 10))
+    exported = editor.evaluate('''async ([format, fps, start, seconds, count]) => {
         const q = reviewEditor;
-        const files = ['#ff0000','#00ff00','#0000ff','#ffff00'].map((color, index) => {
+        const palette = ['#ff0000','#00ff00','#0000ff','#ffff00'];
+        const files = Array.from({length:count}, (_, index) => {
             const canvas = document.createElement('canvas');
             canvas.width = canvas.height = 16;
             const ctx = canvas.getContext('2d');
-            ctx.fillStyle = color; ctx.fillRect(0,0,16,16);
+            ctx.fillStyle = palette[index % palette.length]; ctx.fillRect(0,0,16,16);
             const bytes = Uint8Array.from(atob(canvas.toDataURL().split(',')[1]), c=>c.charCodeAt(0));
             return new File([bytes], `${index}.png`, {type:'image/png'});
         });
         await q.importStageImages(files);
         const names = JSON.parse(localStorage.getItem('neko-emote-maker-stage-image-names'));
         const ids = Object.keys(names).sort((a,b)=>names[a].localeCompare(names[b]));
-        if (ids.length !== 4) throw new Error('expected-four-imported-images');
+        if (ids.length !== count) throw new Error('missing-imported-images');
         Object.assign(q.state, {packFormat:format, packMode:'graph', exportResolution:64, exportFps:fps,
             nodeGraph: NekoEmoteNodeGraph.normalizeGraph({schemaVersion:1, nodes:[
                 {id:'root',type:'source.default',params:{}},
@@ -143,13 +146,14 @@ def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, 
         const built = await q.buildPngtuberPackage();
         if (!built) throw new Error('image-package-failed');
         return built.files.map(file=>({path:file.path,data:btoa(String.fromCharCode(...file.data))}));
-    }''', [pack_format, fps, start, seconds])
+    }''', [pack_format, fps, start, seconds, source_count])
     files = {item['path'].split('/', 1)[1]: base64.b64decode(item['data']) for item in exported}
-    blue, yellow = (0, 0, 255), (255, 255, 0)
-    wanted = [blue, yellow] if start == .2 else [yellow]
+    palette = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
+    yellow = palette[-1]
+    wanted = [palette[index % len(palette)] for index in range(round(start * 10), round((start + seconds) * 10))]
     if pack_format == 'flat':
         for name, duration, colors, count in (
-            ('idle.gif', seconds * 1000, wanted, round(seconds * fps)),
+            ('idle.gif', seconds * 1000, wanted, round(seconds * min(fps, 50))),
             ('talking.gif', 100, [yellow], 1),
         ):
             with Image.open(io.BytesIO(files[name])) as image:

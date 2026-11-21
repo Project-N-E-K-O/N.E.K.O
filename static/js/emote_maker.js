@@ -7227,7 +7227,10 @@
         // 预览用的 job 会自带 fps/edge（表演台只要看得清，不需要导出级精度）；
         // 导出路径不传，仍取全局值。
         const edge = Math.min(previewEdge || state.exportResolution || PACK_MAX_EDGE, PACK_MAX_EDGE);
-        const fps = previewFps || state.exportFps || GIF_EXPORT_FPS;
+        const requestedFps = previewFps || state.exportFps || GIF_EXPORT_FPS;
+        // GIF intervals between 15 and 20ms encode as 20ms. Sample flat packs
+        // at no more than 50 FPS so this cannot lengthen their animation.
+        const fps = packFormat === 'layered' ? requestedFps : Math.min(50, requestedFps);
         const sourceScenes = getImportedScenes();
         const results = [];
         const imageFrames = new Map();
