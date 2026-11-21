@@ -72,7 +72,7 @@ version = "1.2.0"
 entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 ```
 
-These four fields are **required** by the supported check and release workflow. `id` must match `^[A-Za-z0-9_-]+$` and must be unique. Legacy source discovery can still load some incomplete manifests or folder/ID mismatches, but package build and production installation require the declared ID, archive directory, executable destination, and entry package to stay aligned; no suffixed executable copy is created. `entry` must use `module.path:ClassName` and resolve to a `NekoPluginBase` subclass; a `PluginRouter` cannot be launched directly.
+These four fields are **required** by the supported check and release workflow. `id` must be unique. The host loads any `id` matching `^[A-Za-z0-9_-]+$`, but `neko-plugin init` and the release check (`neko-plugin check -r`) require a Market ID: a lowercase letter first, then only `a-z`, `0-9`, and `_` (`^[a-z][a-z0-9_]*$`); `check -r` also limits it to 100 characters. Use that stricter form for any plugin you plan to publish. Legacy source discovery can still load some incomplete manifests or folder/ID mismatches, but package build and production installation require the declared ID, archive directory, executable destination, and entry package to stay aligned; no suffixed executable copy is created. `entry` must use `module.path:ClassName` and resolve to a `NekoPluginBase` subclass; a `PluginRouter` cannot be launched directly.
 
 For a normal plugin, `type = "plugin"` is optional because it is the default. Use `type = "adapter"` only for an Adapter package. The removed `extension` type and `[plugin.host]` table are rejected.
 
@@ -204,6 +204,30 @@ Don't need storage? Just don't include this section (disabled by default).
 
 ---
 
+### `[plugin.database]` — SQLite database
+
+```toml
+[plugin.database]
+enabled = true
+name = "plugin.db"   # File name in the plugin's data directory (default: plugin.db)
+```
+
+When enabled, `self.db` uses a SQLite database file in the plugin's data directory: `async with unwrap(await self.db.session()) as session:` for SQL (`session()` returns a `Result`), or `self.db.kv` for key-value data. Disabled by default.
+
+---
+
+### `[plugin_state]` — Save and restore instance attributes
+
+```toml
+[plugin_state]
+backend = "file"        # Where the state is kept
+persist_mode = "auto"   # When it is saved
+```
+
+The runtime saves the plugin instance attributes named in the class's `__freezable__` list and restores them when the plugin next starts; the saved state is cleared after a successful restore. `backend` is the switch: `"file"` keeps the state in a file in the plugin's data directory, so only it survives a restart of the plugin process; `"memory"` keeps it only while the plugin process runs. Without `backend` (or without this table) nothing is saved, as with `"off"` (or an empty string); a value other than `file` / `memory` / `off` (for example `sqlite`) makes the plugin fail to start. What counts is the effective configuration: the manifest merged with the runtime copy (`config/plugin.toml` in the plugin's user data directory, created on first use from `config.example.toml`, or from the manifest if there is none) and the active profile, so if the runtime copy also sets `backend`, removing it from the manifest alone does not turn saving off. To turn saving off, set `backend = "off"` where it takes effect: the runtime copy and the active profile override the manifest. `persist_mode` decides which entry calls save it: `"auto"` after every entry call that returns normally (an `Err` result counts; an exception or a strict output-contract failure does not; only calls dispatched by the runtime count, so calling an entry method directly inside the plugin, for example from a timer, does not save), `"manual"` only after entries declared with `@plugin_entry(persist=True)`, and `"off"` not after entry calls; an entry's `persist=True` / `persist=False` overrides `"auto"` / `"manual"`. The mode is resolved in this order: the class attribute `__persist_mode__` (default `"off"`), then `[plugin_state].persist_mode` if it is one of `auto` / `manual` / `off` (the runtime ignores other values; `neko-plugin check` reports `always` / `disabled` as errors and suggests `auto` / `off`). If the result is `"off"`, including an explicit `persist_mode = "off"`, a legacy `[plugin_checkpoint] freeze_mode` of `"auto"` or `"manual"` still overrides it. Independently of `persist_mode`, the state is also saved when the plugin is frozen.
+
+---
+
 ### `[plugin.shared]` — Reading another plugin's shared files
 
 ```toml
@@ -293,7 +317,7 @@ Writable state is separate from the source or installed executable directory:
 
 ```text
 <user data root>/plugins/smart_notes/
-├── config/plugin.toml      ← effective runtime configuration
+├── config/plugin.toml      ← runtime copy of the configuration
 ├── data/                   ← self.data_path()
 └── cache/                  ← self.cache_path()
 

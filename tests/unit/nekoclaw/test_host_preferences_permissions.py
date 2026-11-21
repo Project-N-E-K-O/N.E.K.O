@@ -439,14 +439,14 @@ async def test_dsh_native_request_must_outlive_its_first_settings_read(store, mo
     await store.set_mode("run_command", mode)
     ask = Asker("once")
     gate = PermissionGate(store, ask)
-    read = store.mode
+    read = store.native_mode
 
-    async def end_during_read(category, key=None):
-        current = await read(category, key)
+    async def end_during_read(category):
+        current = await read(category)
         gate.end_run("commission")
         return current
 
-    monkeypatch.setattr(store, "mode", end_during_read)
+    monkeypatch.setattr(store, "native_mode", end_during_read)
     decision = await gate.check_native("commission", "run_command", detail={"tool": "native"})
     assert not decision.allow and not ask.asked
 
@@ -624,7 +624,7 @@ async def test_scoped_lookup_is_bound_to_the_run_that_requested_it(store, transi
 
 
 async def test_defaults_of_the_design(store):
-    assert DEFAULT_MODES == {
+    effective_modes = {
         "workdir_files": "allow",
         "outside_read": "first_ask",
         "outside_write": "first_ask",
@@ -636,12 +636,92 @@ async def test_defaults_of_the_design(store):
         "managed_delivery": "first_ask",
         "mcp_server": "first_ask",
     }
-    for category, mode in DEFAULT_MODES.items():
+    assert DEFAULT_MODES == dict.fromkeys(effective_modes, "auto")
+    assert (await store.snapshot())["categories"] == DEFAULT_MODES
+    for category, mode in effective_modes.items():
         assert await store.mode(category) == mode
     # Each MCP server starts at the category's default.
     assert await store.mode("mcp_server", "notes") == "first_ask"
     # A category nobody defined is never silently allowed.
     assert await store.mode("something_new") == "always_ask"
+
+
+async def test_auto_native_requires_a_fresh_decision_and_explicit_rules_survive_restart(tmp_path):
+    path = tmp_path / "permissions.json"
+    path.write_text(json.dumps({"version": 1, "categories": {"outside_write": "deny", "run_command": "allow"},
+                                "mcp_servers": {"private": "deny"}}), encoding="utf-8")
+    store = PermissionStore(path)
+    ask = Asker("once")
+    gate = PermissionGate(store, ask)
+    known = await gate.check_builtin("c", "other", detail={"tool": "internal"}, writes=False)
+    assert known.allow and not known.asked
+    assert (await gate.check("c", "plugin_entry", scope=GrantScope("registered-plugin"))).allow
+    assert not ask.asked
+    for _ in range(2):
+        assert (await gate.check_native("c", "other", detail={"tool": "read"})).asked
+    assert [q.options for _, q in ask.asked] == [("once", "deny")] * 2
+    assert not (await gate.check_native("c", "outside_write", detail={})).allow
+    assert (await gate.check_native("c", "run_command", detail={})).allow
+    assert len(ask.asked) == 2
+    await store.set_mode("run_command", "auto")
+    reloaded = PermissionStore(path)
+    assert await reloaded.native_mode("run_command") == "auto"
+    assert await reloaded.mode("outside_write") == "deny" and await reloaded.mode("mcp_server", "private") == "deny"
+
+
+async def test_command_session_consent_stays_with_shell_directory_recipient_and_runtime(store, tmp_path):
+    gate = PermissionGate(store, Asker("session"))
+    detail = {"tool": "bash", "cwd": str(tmp_path), "command": "echo first"}
+
+    async def builtin(commission="c", recipient="model-a", **overrides):
+        return await gate.check_builtin(
+            commission, "run_command", detail={**detail, **overrides}, writes=False, recipient=recipient
+        )
+
+    assert (await builtin()).asked
+    assert not (await builtin(command="echo second")).asked
+    assert (await builtin(tool="pwsh")).asked
+    assert (await builtin(cwd=str(tmp_path / "subdir"))).asked
+    assert (await builtin(recipient="model-b")).asked
+    assert (await builtin(commission="other")).asked
+    assert (await gate.check_native("c", "run_command", detail=detail, stock_tool=True, recipient="model-a")).asked
+    gate.end_session("c")
+    assert (await builtin()).asked
+
+
+async def test_auto_uses_effective_rules_when_revoking_scope(store):
+    gate = PermissionGate(store, Asker("session"))
+    scope = GrantScope("builtin", "browser")
+    await store.set_mode("browser", "allow")
+    old = await gate.check("c", "browser", scope=scope, hold_once=True)
+    await store.set_mode("browser", "auto")
+    assert not gate.grant_active(old.grant_id)
+    new = await gate.check("c", "browser", scope=scope, hold_once=True)
+    assert new.asked and new.allow
+    await store.set_mode("browser", "first_ask")
+    assert gate.grant_active(new.grant_id)
+    assert not (await gate.check("c", "browser", scope=scope, hold_once=True)).asked
+
+
+async def test_mcp_auto_and_discovery_follow_the_same_stricter_category(store):
+    from nekoclaw.host.capabilities import McpDenial
+
+    await store.set_mode("mcp_server", "auto", "notes")
+    await store.set_mode("mcp_server", "allow", "explicit")
+    gate = PermissionGate(store, Asker("session"))
+    scope = GrantScope("mcp", "notes:read")
+    first = await gate.check("c", "mcp_server", key="notes", scope=scope, hold_once=True)
+    assert first.asked
+    await store.set_mode("mcp_server", "deny")
+    assert not gate.grant_active(first.grant_id)
+    assert not (await gate.check("c", "mcp_server", key="notes", scope=scope, hold_once=True)).allow
+    view = await store.snapshot()
+    deny = McpDenial(view["mcp_servers"], view["categories"]["mcp_server"])
+    assert deny.server_denied("notes") and deny.server_denied("new") and not deny.server_denied("explicit")
+    await store.set_mode("mcp_server", "always_ask")
+    assert await store.mode("mcp_server", "notes") == "always_ask"
+    await store.set_mode("mcp_server", "allow")
+    assert await store.mode("mcp_server", "notes") == "first_ask"
 
 
 async def test_no_file_is_written_until_a_setting_changes(store, tmp_path):
@@ -665,7 +745,7 @@ async def test_settings_survive_a_restart(store, tmp_path):
     assert await again.mode("mcp_server", "other-server") == "first_ask"
     snapshot = await again.snapshot()
     assert snapshot["categories"]["run_command"] == "deny"
-    assert snapshot["categories"]["plugin_entry"] == "allow"
+    assert snapshot["categories"]["plugin_entry"] == "auto"
     assert snapshot["mcp_servers"] == {"notes": "allow"}
 
 
@@ -1140,7 +1220,7 @@ def test_the_categories_whose_once_lasts_the_run():
 
     assert RUN_SCOPED_CATEGORIES == {"keyboard_mouse", "browser"}
     # Both ask before the first step unless the user set them otherwise.
-    assert {DEFAULT_MODES[category] for category in RUN_SCOPED_CATEGORIES} == {"first_ask"}
+    assert {DEFAULT_MODES[category] for category in RUN_SCOPED_CATEGORIES} == {"auto"}
 
 
 @pytest.mark.parametrize("mode", ["first_ask", "always_ask"])

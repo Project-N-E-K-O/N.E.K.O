@@ -15,8 +15,9 @@
 """What task agents are permitted to do (design section 10.1).
 
 The settings live in ``<data root>/nekoclaw/permissions.json``. Each category
-has one of four modes:
+has one of five modes:
 
+* ``auto``       - apply the host policy for the verified operation and delivery scope.
 * ``first_ask``  - ask the user; "always" turns the category into ``allow``,
   "session" allows it until the asking commission is done, has failed or
   is stopped (being stuck and taken up again does not end it).
@@ -26,7 +27,7 @@ has one of four modes:
 
 ``DEFAULT_MODES`` gives the mode of a category the file does not mention. Each
 MCP server is a category of its own (``mcp_server`` plus the server's name).
-The defaults apply only while there is no file. A file that exists but cannot
+An omitted setting in an existing file also uses auto. A file that exists but cannot
 be read or parsed makes every category ``deny`` until it is repaired: the
 user's own settings are unknown then, and ``deny`` is the one mode every
 caller honours.
@@ -55,7 +56,6 @@ permission.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -67,7 +67,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-MODES: tuple[str, ...] = ("first_ask", "always_ask", "allow", "deny")
+MODES: tuple[str, ...] = ("auto", "first_ask", "always_ask", "allow", "deny")
 CHOICES: tuple[str, ...] = ("always", "session", "once", "deny")
 # A lower rank withdraws approval previously issued under a wider setting.
 _MODE_RANK = {"deny": 0, "always_ask": 1, "first_ask": 2, "allow": 3}
@@ -76,7 +76,7 @@ CHOICES_ALWAYS_ASK: tuple[str, ...] = ("once", "deny")
 
 MCP_SERVER_CATEGORY = "mcp_server"
 
-DEFAULT_MODES: dict[str, str] = {
+AUTO_POLICY: dict[str, str] = {
     # Built-in tools of the runtime (nekoclaw.runtime.permissions.CATEGORIES).
     "workdir_files": "allow",
     "outside_read": "first_ask",
@@ -90,6 +90,17 @@ DEFAULT_MODES: dict[str, str] = {
     "managed_delivery": "first_ask",
     MCP_SERVER_CATEGORY: "first_ask",
 }
+DEFAULT_MODES = dict.fromkeys(AUTO_POLICY, "auto")
+
+
+def _effective_mode(category: str, mode: str, *, category_mode: str = "auto") -> str:
+    if mode != "auto":
+        return mode
+    # An auto MCP server still observes stricter user settings on its category.
+    if category == MCP_SERVER_CATEGORY and category_mode in ("always_ask", "deny"):
+        return category_mode
+    return AUTO_POLICY.get(category, "always_ask")
+
 
 # Categories whose tools are single small steps. "once" covers the rest of
 # the run that asked instead of one call, in both asking modes.
@@ -190,6 +201,7 @@ class PermissionStore:
         # it was based on changed meanwhile.
         self._version = 0
         self._revisions: dict[tuple[str, str | None], int] = {}
+        self._session_read_denied_at = 0
         self._lock = asyncio.Lock()
 
     def _path(self) -> Path:
@@ -270,12 +282,19 @@ class PermissionStore:
         if self._unreadable:
             return _UNREADABLE_MODE
         name, slot = _slot(category, key)
-        if name == MCP_SERVER_CATEGORY:
-            specific = self._mcp_servers.get(slot or "*")
-            if specific is not None:
-                return specific
-            return self._categories.get(name, DEFAULT_MODES[name])
-        return self._categories.get(name, DEFAULT_MODES.get(name, "always_ask"))
+        category_mode = self._categories.get(name, "auto")
+        configured = self._mcp_servers.get(slot, category_mode) if name == MCP_SERVER_CATEGORY else category_mode
+        return _effective_mode(name, configured, category_mode=category_mode)
+
+    async def native_mode(self, category: str) -> str:
+        """Keep the local-file default. Other native auto decisions require a fresh answer."""
+        await self._ensure_loaded()
+        if self._unreadable:
+            return _UNREADABLE_MODE
+        configured = self._categories.get(category, "auto")
+        if configured == "auto" and category == "workdir_files":
+            return AUTO_POLICY[category]
+        return configured
 
     def revision(self, category: str, key: str | None = None) -> int:
         """Generation of the last tightening of the effective rule for this scope."""
@@ -283,6 +302,11 @@ class PermissionStore:
         if name == MCP_SERVER_CATEGORY and slot in self._mcp_servers:
             return self._revisions.get((name, slot), 0)
         return self._revisions.get((name, None), 0)
+
+    def loan_revision(self, slot: tuple[str, str | None], scope: GrantScope) -> int:
+        if slot[0] == "outside_read" and isinstance(scope, SessionActionScope):
+            return self._session_read_denied_at
+        return self.revision(*slot)
 
     async def set_mode(
         self, category: str, mode: str, key: str | None = None, *, expected_version: int | None = None,
@@ -308,7 +332,7 @@ class PermissionStore:
                 return False
             if expected_revision is not None and self.revision(category, key) != expected_revision:
                 return False
-            fallback = self._categories.get(name, DEFAULT_MODES.get(name, "always_ask"))
+            fallback = self._categories.get(name, "auto")
             setting = (name, None)
             previous = fallback
             generation = self._revisions.get(setting, 0)
@@ -320,10 +344,21 @@ class PermissionStore:
             else:
                 self._categories[name] = mode
             self._version += 1
+            if name == "outside_read" and mode == "deny" and previous != "deny":
+                self._session_read_denied_at = self._version
             # Managed transfers still ask per recipient under an "allow" setting.
             ceiling = _MODE_RANK["first_ask"] if name == "managed_delivery" else _MODE_RANK["allow"]
-            tighter = min(_MODE_RANK[mode], ceiling) < min(_MODE_RANK[previous], ceiling)
+            old_rule = _effective_mode(name, previous, category_mode=fallback)
+            new_rule = _effective_mode(name, mode, category_mode=self._categories.get(name, "auto"))
+            tighter = min(_MODE_RANK[new_rule], ceiling) < min(_MODE_RANK[old_rule], ceiling)
             self._revisions[setting] = self._version if tighter else generation
+            if name == MCP_SERVER_CATEGORY and key is None:
+                old_auto = _effective_mode(name, "auto", category_mode=fallback)
+                new_auto = _effective_mode(name, "auto", category_mode=mode)
+                if _MODE_RANK[new_auto] < _MODE_RANK[old_auto]:
+                    for server, configured in self._mcp_servers.items():
+                        if configured == "auto":
+                            self._revisions[(name, server)] = self._version
             # A cancelled caller still waits for the write, so the lock is not
             # released while an older setting can land on disk after a newer one.
             await to_thread_through_cancellation(self._write, dict(self._categories), dict(self._mcp_servers))
@@ -357,6 +392,10 @@ class GrantScope:
 
     def registered(self) -> bool:
         return all(binding.active for binding in self.bindings)
+
+
+class SessionActionScope(GrantScope):
+    """Host-constructed scope for intrinsic session operations, never constructed from tool JSON."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,6 +464,13 @@ class PermissionGate:
                 return lineage[: i + 1]
         return lineage
 
+    def current_rules(self, commission_id: str, *categories: str) -> Callable[[], bool]:
+        """Check the same rules again at handoff, including a tightening later undone."""
+        revisions = [(category, self._store.revision(category)) for category in categories]
+        lifetime = self._lives.setdefault(commission_id, object())
+        return lambda: (self._lives.get(commission_id) is lifetime and all(
+            self._store.revision(category) == revision for category, revision in revisions))
+
     def current_run(self, commission_id: str) -> Callable[[], bool]:
         """Bind in-flight host work to this run, including while awaiting a ledger write."""
         work = self._work.setdefault(commission_id, object())
@@ -489,7 +535,9 @@ class PermissionGate:
     ) -> PermissionDecision:
         """Check host-verified scope when available; older callers retain their category contract."""
         if scope is not None:
-            return await self._check_scoped(commission_id, category, key, scope, detail, hold_once)
+            return await self._check_scoped(
+                commission_id, category, key, scope, detail, hold_once, allow_always=scope.provider != "dsh-stock",
+            )
         if category == "managed_delivery":
             return PermissionDecision(False, DENIED_NO_ANSWER)
         mode = await self._store.mode(category, key)
@@ -556,9 +604,10 @@ class PermissionGate:
         return PermissionDecision(True, asked=True)
 
     async def check_builtin(
-        self, commission_id: str, category: str, *, detail: dict[str, Any], writes: bool
+        self, commission_id: str, category: str, *, detail: dict[str, Any],
+        writes: bool, recipient: str = "", dsh: bool = False,
     ) -> PermissionDecision:
-        """Scope files by access and resolved path, commands by tool, cwd and exact command."""
+        """Scope built-in commands by shell and directory, files by access and resolved path."""
         work = self._work.setdefault(commission_id, object())
         mode = await self._store.mode(category)
         if self._work.get(commission_id) is not work:
@@ -568,23 +617,38 @@ class PermissionGate:
         tool = str(detail.get("tool") or "")
         resource = tool
         if category == "run_command":
-            command = [tool, detail.get("cwd"), detail.get("command")]
-            resource = hashlib.sha256(json.dumps(command).encode()).hexdigest()
-        elif isinstance(path := detail.get("path"), str) and path:
+            cwd = detail.get("cwd")
+            if not tool or not isinstance(cwd, str) or not os.path.isabs(cwd):
+                return await self.check_native(commission_id, category, detail=detail)
+            directory = os.path.normcase(await asyncio.to_thread(os.path.realpath, cwd))
+            resource = json.dumps([tool, directory])
+        elif category in {"workdir_files", "outside_read", "outside_write"}:
+            path = detail.get("path")
+            if not isinstance(path, str) or not os.path.isabs(path):
+                return await self.check_native(commission_id, category, detail=detail)
             actual_path = os.path.normcase(await asyncio.to_thread(os.path.realpath, path))
             resource = json.dumps(["write" if writes else "read", actual_path])
         if self._work.get(commission_id) is not work:
             return PermissionDecision(False, DENIED_NO_ANSWER)
-        return await self.check(commission_id, category, detail=detail, scope=GrantScope("builtin-runtime", resource))
+        scope = GrantScope("dsh-stock" if dsh else "builtin-runtime", resource, recipient)
+        return await self._check_scoped(commission_id, category, None, scope, detail, False, allow_always=not dsh)
 
     async def check_native(
-        self, commission_id: str, category: str, *, detail: dict[str, Any]
+        self, commission_id: str, category: str, *, detail: dict[str, Any],
+        stock_tool: bool = False, recipient: str = "",
     ) -> PermissionDecision:
-        """ACP knows the operation, not the native tool owner's registration identity."""
+        """The stock dsh recipe identifies its standard tools; other ACP names have no verified owner."""
         if category not in {"workdir_files", "outside_read", "outside_write", "run_command", "other"}:
             return PermissionDecision(False, DENIED_BY_SETTINGS)
+        if stock_tool and category != "other":
+            from nekoclaw.runtime.permissions import WRITE_TOOL_NAMES
+
+            return await self.check_builtin(
+                commission_id, category, detail=detail, writes=detail.get("tool") in WRITE_TOOL_NAMES,
+                dsh=True, recipient=recipient,
+            )
         live = self.current_run(commission_id)
-        mode = await self._store.mode(category)
+        mode = await self._store.native_mode(category)
         if not live():
             return PermissionDecision(False, DENIED_NO_ANSWER)
         if mode in ("allow", "deny"):
@@ -607,7 +671,7 @@ class PermissionGate:
         """Last synchronous check before crossing a host-owned boundary."""
         loan = self._loans.get(grant_id) if grant_id else None
         return bool(
-            loan and loan.scope.registered() and self._store.revision(*loan.slot) == loan.revision
+            loan and loan.scope.registered() and self._store.loan_revision(loan.slot, loan.scope) == loan.revision
             and (loan.parent_id is None or loan.parent_id in self._loans)
         )
 
@@ -648,7 +712,7 @@ class PermissionGate:
         self, owner: str, root: str, slot: tuple[str, str | None], scope: GrantScope, lifetime: str,
         parent_id: str | None = None, branch: tuple[str, ...] = (),
     ) -> str:
-        loan = _Loan(uuid.uuid4().hex, owner, root, slot, scope, self._store.revision(*slot), lifetime, parent_id, branch)
+        loan = _Loan(uuid.uuid4().hex, owner, root, slot, scope, self._store.loan_revision(slot, scope), lifetime, parent_id, branch)
         self._loans[loan.id] = loan
         if lifetime != "once":
             self._shared[(owner, slot, scope)] = loan
@@ -656,10 +720,21 @@ class PermissionGate:
 
     async def _check_scoped(
         self, commission_id: str, category: str, key: str | None, scope: GrantScope,
-        detail: dict[str, Any] | None, hold_once: bool,
+        detail: dict[str, Any] | None, hold_once: bool, *, allow_always: bool = True,
     ) -> PermissionDecision:
         if not scope.registered() or not scope.provider or (category == "managed_delivery" and not scope.recipient):
             return PermissionDecision(False, DENIED_NO_ANSWER)
+        async def effective_mode() -> str:
+            if isinstance(scope, SessionActionScope):
+                # These actions have always been available without prompting. Reading a peer
+                # additionally respects the explicit ban on reads outside the work directory.
+                if category == "session_action":
+                    return "allow"
+                if category == "outside_read":
+                    return "deny" if await self.forbidden(category) else "allow"
+                return "deny"
+            return await self._store.mode(category, key)
+
         # Capture before any asynchronous settings or parent lookup. A late
         # request from an ended run cannot attach itself to the next run.
         work = self._work.setdefault(commission_id, object())
@@ -668,7 +743,7 @@ class PermissionGate:
         lookup = object()
         ended = self._lineage_lookups[lookup] = set()
         try:
-            mode = await self._store.mode(category, key)
+            mode = await effective_mode()
             if not scope.registered() or self._work.get(commission_id) is not work:
                 return PermissionDecision(False, DENIED_NO_ANSWER)
             if mode == "deny":
@@ -699,7 +774,7 @@ class PermissionGate:
             return loan_id
 
         while live():
-            mode = await self._store.mode(category, key)
+            mode = await effective_mode()
             if mode == "deny" or not live():
                 return PermissionDecision(False, DENIED_BY_SETTINGS)
             if delivery and mode == "allow":
@@ -736,7 +811,7 @@ class PermissionGate:
             try:
                 revision = self._store.revision(*slot)
                 options = CHOICES_ALWAYS_ASK if mode == "always_ask" else CHOICES
-                if delivery and mode != "always_ask":
+                if (delivery or not allow_always) and mode != "always_ask":
                     options = ("session", "once", "deny")
                 ask = PermissionAsk(category, key, dict(detail or {}), options)
                 choice = await self._asker(commission_id, ask)

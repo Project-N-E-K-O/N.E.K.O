@@ -72,7 +72,7 @@ version = "1.2.0"
 entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 ```
 
-サポート対象の check / release workflow では、この 4 フィールドが **必須** です。従来のソース探索では、不完全な manifest やディレクトリ名と ID が異なるプラグインを読み込める場合がありますが、有効なリリース package であることを意味しません。`id` は `^[A-Za-z0-9_-]+$` に一致し、一意でなければなりません。パッケージのビルドと本番環境へのインストールでは、宣言 ID、アーカイブ内のディレクトリ、インストール先、エントリーパッケージを一致させる必要があります。競合時に接尾辞付きのコピーは作成されません。`entry` は `module.path:ClassName` 形式で `NekoPluginBase` のサブクラスを指す必要があり、`PluginRouter` は直接起動できません。
+サポート対象の check / release workflow では、この 4 フィールドが **必須** です。従来のソース探索では、不完全な manifest やディレクトリ名と ID が異なるプラグインを読み込める場合がありますが、有効なリリース package であることを意味しません。`id` は一意でなければなりません。ホストは `^[A-Za-z0-9_-]+$` に一致する任意の `id` を読み込めますが、`neko-plugin init` とリリースチェック（`neko-plugin check -r`）は Market ID を要求します。先頭は英小文字、以降は `a-z`、`0-9`、`_` のみ（`^[a-z][a-z0-9_]*$`）です。`check -r` はさらに最大 100 文字に制限します。公開する予定のプラグインでは、この厳しい形式を使ってください。パッケージのビルドと本番環境へのインストールでは、宣言 ID、アーカイブ内のディレクトリ、インストール先、エントリーパッケージを一致させる必要があります。競合時に接尾辞付きのコピーは作成されません。`entry` は `module.path:ClassName` 形式で `NekoPluginBase` のサブクラスを指す必要があり、`PluginRouter` は直接起動できません。
 
 通常の plugin では `type = "plugin"` は default なので省略できます。Adapter package のみ `type = "adapter"` を使います。削除済みの `extension` type と `[plugin.host]` table は拒否されます。
 
@@ -203,6 +203,30 @@ enabled = true
 
 ---
 
+### `[plugin.database]` — SQLite データベース
+
+```toml
+[plugin.database]
+enabled = true
+name = "plugin.db"   # プラグインのデータディレクトリ内のファイル名（デフォルト: plugin.db）
+```
+
+有効にすると、`self.db` はプラグインのデータディレクトリにある SQLite データベースファイルを使います。SQL には `async with unwrap(await self.db.session()) as session:`（`session()` は `Result` を返します）、キーと値のデータには `self.db.kv` を使います。デフォルトでは無効です。
+
+---
+
+### `[plugin_state]` — インスタンス属性の保存と復元
+
+```toml
+[plugin_state]
+backend = "file"        # 状態の保存先
+persist_mode = "auto"   # 保存するタイミング
+```
+
+ランタイムはプラグインクラスの `__freezable__` リストに挙げたインスタンス属性を保存し、プラグインの次回起動時に復元します。復元に成功すると保存済みの状態は消去されます。`backend` がスイッチです。`"file"` はプラグインのデータディレクトリ内のファイルに保持し、プラグインプロセスの再起動後も残るのはこれだけです。`"memory"` はプラグインプロセスが動いている間だけ保持します。`backend` を書かなければ（このテーブル自体がなければ）何も保存されません（`"off"` や空文字列を書いた場合と同じです）。`file` / `memory` / `off` 以外の値（たとえば `sqlite`）を書くとプラグインは起動に失敗します。判断に使われるのは実効設定、つまりマニフェストにランタイム側のコピー（プラグインのユーザーデータディレクトリにある `config/plugin.toml`。初回利用時に `config.example.toml` から、それがなければマニフェストからコピーされます）と現在のプロファイルをマージした結果です。そのため、ランタイム側のコピーにも `backend` がある場合、マニフェストから消すだけでは保存は止まりません。保存を止めるには、実際に効く層で `backend = "off"` を指定してください。ランタイム側のコピーと現在のプロファイルはマニフェストより優先されます。`persist_mode` はどのエントリー呼び出しの後に保存するかを決めます。`"auto"` ではエントリー呼び出しが正常に戻るたびに保存し（`Err` を返した場合も正常に戻ったとみなします。例外や厳格な出力契約の違反では保存しません。ランタイム経由で配送された呼び出しだけが対象で、プラグイン内部でエントリーメソッドを直接呼ぶ場合（タイマーからなど）は保存されません）、`"manual"` では `@plugin_entry(persist=True)` で宣言したエントリーの呼び出し後だけ保存し、`"off"` ではエントリー呼び出し後に保存しません。エントリーの `persist=True` / `persist=False` は `"auto"` / `"manual"` より優先されます。モードは次の順で決まります。まずクラス属性 `__persist_mode__`（デフォルト `"off"`）、次に `[plugin_state].persist_mode` が `auto` / `manual` / `off` のいずれかならそれで上書きします（それ以外の値はランタイムでは無視されます。`neko-plugin check` は `always` / `disabled` を error とし、`auto` / `off` への変更を提案します）。結果が `"off"` の場合（`persist_mode = "off"` を明示した場合も含む）、旧設定 `[plugin_checkpoint] freeze_mode` が `"auto"` または `"manual"` ならそれで上書きされます。また `persist_mode` に関係なく、プラグインをフリーズするときにも状態が保存されます。
+
+---
+
 ### `[plugin.shared]` — 他のプラグインの共有ファイルを読む
 
 ```toml
@@ -292,7 +316,7 @@ plugin/plugins/smart_notes/
 
 ```text
 <ユーザーデータルート>/plugins/smart_notes/
-├── config/plugin.toml      ← 実際に使用される設定
+├── config/plugin.toml      ← 設定のランタイム用コピー
 ├── data/                   ← self.data_path()
 └── cache/                  ← self.cache_path()
 

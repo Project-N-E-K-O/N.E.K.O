@@ -185,6 +185,16 @@ async def test_every_request_is_made_with_the_one_tls_configuration_of_the_proce
     assert made == [{"trust_env": False}]
 
 
+async def test_invalid_refresh_keeps_the_last_valid_device_list(gateway, monkeypatch):
+    gateway.tools[0]["_meta"] = {"nekoclaw/commissionTool": True, "nekoclaw/deviceIntent": "browser"}
+    client = GatewayClient(gateway.url, TOKEN)
+    await client.connect()
+    monkeypatch.setattr(gateway, "answer", lambda body: {"result": {}})
+    with pytest.raises(GatewayError, match="tools/list"):
+        await client.list_tools(compactions=1)
+    assert client.commission_tools == {gateway.tools[0]["name"]}
+
+
 def _picture(data: str = "QUJD", mime: Any = "image/jpeg") -> dict[str, Any]:
     """One MCP image block as the gateway sends it."""
     block: dict[str, Any] = {"type": "image", "data": data}

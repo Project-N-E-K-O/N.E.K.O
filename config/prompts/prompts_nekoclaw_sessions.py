@@ -238,6 +238,7 @@ SESSION_STATE_WORDS = {
     "open": "open, between turns",
     "closed": "not running",
     "cleared": "record removed, results kept",
+    "ended": "ended, it can be read but nothing is written to it",
 }
 
 # ---------------------------------------------------------------------------
@@ -257,7 +258,7 @@ MESSAGE_QUEUED_NOTIFY = (
 MESSAGE_REFUSALS = {
     "same": 'Not sent: the same words were written to "{name}" a moment ago and are sent once. That note is queued or handed over; this one adds nothing.',
     "too_soon": 'Not sent: a note went to "{name}" less than {interval} seconds ago. Wait {wait} seconds, and put what you have to say in one note.',
-    "too_many": "Not sent: this session has written {limit} notes and questions within the hour. The next can go in {wait} seconds.",
+    "too_many": "Not sent: this session has written {limit} notes within the hour. The next can go in {wait} seconds.",
     "queue_full": 'Not sent: too many notes are waiting for "{name}" already.',
     "too_long": "Not sent: the note is {tokens} tokens long and {limit} is the most. Write the long part to a file in your working directory and send its path.",
     "too_deep": "Not sent: this commission was itself started by a note from another session, and so was the one that wrote that. The chain ends here; report what you have instead.",
@@ -266,6 +267,7 @@ MESSAGE_REFUSALS = {
     "fork": 'Not sent: "{name}" is a temporary copy of another session, made to answer one question; it takes no notes. Write to the session it was copied from.',
     "from_child": "Not sent: you were started by another task agent for one part of its work. Tell that task agent what the other session should know (send_message to lead); it writes to other sessions.",
     "cleared": 'Not sent: the record of "{name}" was removed, being old; there is nothing there to go on with. Its results can still be read.',
+    "ended": 'Not sent: "{name}" has ended: its last commission was over more than {days} days ago, and a session that belongs to no project is not gone on with after that. Nothing is written to it. read_session reads what it left.',
     "unknown": 'No session is called "{name}". list_sessions shows the names.',
     "ambiguous": '"{name}" fits more than one session: {ids}. Use the whole id of the one you mean.',
     "switched_off": "Not sent: task agents are switched off.",
@@ -284,12 +286,12 @@ ASK_REFUSALS = {
     "dsh": 'Not asked: "{name}" is worked on in dsh, whose conversation cannot be copied. read_session reads its results; message_session writes to it.',
     "no_copy": 'Not asked: no copy of "{name}" could be made ({reason}). read_session reads what it left.',
     "too_many_asks": "Not asked: this session has asked {limit} questions within the hour. The next can go in {wait} seconds; read_session may answer it meanwhile.",
-    "too_many": "Not asked: this session has written {limit} notes and questions within the hour. The next can go in {wait} seconds.",
     "too_long": "Not asked: the question is {tokens} tokens long and {limit} is the most. Write the long part to a file in your working directory and ask about its path.",
     "self": "Not asked: that is this session.",
     "child": 'Not asked: "{name}" is a task agent another task agent started, or a copy of a session; ask the session it belongs to.',
     "from_child": "Not asked: you were started by another task agent for one part of its work. Tell that task agent what you need to know (send_message to lead); it asks other sessions.",
     "cleared": 'Not asked: the record of "{name}" was removed, being old. Its results can still be read.',
+    "ended": 'Not asked: "{name}" has ended: its last commission was over more than {days} days ago, and a session that belongs to no project is not gone on with after that. read_session reads what it left.',
     "no_place": "Not asked: no task agent place is free for the copy to answer in. Try again later, or use read_session.",
     "not_started": 'Not asked: the copy of "{name}" could not be started ({reason}). read_session reads what it left.',
     "switched_off": "Not asked: task agents are switched off.",

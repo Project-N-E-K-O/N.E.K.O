@@ -72,7 +72,7 @@ version = "1.2.0"
 entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 ```
 
-支持的检查与发布流程要求这四个字段**必填**。旧的源码发现路径仍可能加载部分清单不完整、目录名与 ID 不一致的插件，但这不代表它们是有效的发布包。`id` 必须符合 `^[A-Za-z0-9_-]+$` 且全局唯一。打包和生产安装要求声明 ID、归档目录、执行目标目录与 entry 包路径保持一致，也不会创建带数字后缀的可执行副本。`entry` 必须是 `module.path:ClassName`，并解析到 `NekoPluginBase` 子类；不能直接把 `PluginRouter` 当作启动类。
+支持的检查与发布流程要求这四个字段**必填**。旧的源码发现路径仍可能加载部分清单不完整、目录名与 ID 不一致的插件，但这不代表它们是有效的发布包。`id` 必须全局唯一。宿主能加载符合 `^[A-Za-z0-9_-]+$` 的任何 `id`，但 `neko-plugin init` 和发布检查（`neko-plugin check -r`）要求 Market ID：以小写字母开头，之后只能是 `a-z`、`0-9` 和 `_`（`^[a-z][a-z0-9_]*$`）；`check -r` 还要求最多 100 个字符。打算发布的插件请使用这个更严格的形式。打包和生产安装要求声明 ID、归档目录、执行目标目录与 entry 包路径保持一致，也不会创建带数字后缀的可执行副本。`entry` 必须是 `module.path:ClassName`，并解析到 `NekoPluginBase` 子类；不能直接把 `PluginRouter` 当作启动类。
 
 普通插件的 `type = "plugin"` 可省略，因为它是默认值。只有 Adapter 包才使用 `type = "adapter"`。已删除的 `extension` 类型和 `[plugin.host]` 表会被拒绝。
 
@@ -199,6 +199,30 @@ enabled = true
 
 ---
 
+### `[plugin.database]` — SQLite 数据库
+
+```toml
+[plugin.database]
+enabled = true
+name = "plugin.db"   # 插件数据目录里的文件名（默认 plugin.db）
+```
+
+启用后，`self.db` 使用插件数据目录里的 SQLite 数据库文件：写 SQL 用 `async with unwrap(await self.db.session()) as session:`（`session()` 返回 `Result`），存键值数据用 `self.db.kv`。默认关闭。
+
+---
+
+### `[plugin_state]` — 保存和恢复实例属性
+
+```toml
+[plugin_state]
+backend = "file"        # 状态存在哪里
+persist_mode = "auto"   # 什么时候保存
+```
+
+运行时会保存插件类 `__freezable__` 列表里列出的实例属性，插件下次启动时恢复；恢复成功后清除已保存的状态。`backend` 是总开关：`"file"` 存在插件数据目录的文件里，只有它能在插件进程重启后保留；`"memory"` 只在插件进程存活期间保留。不写 `backend`（或不写这一段）就什么都不保存，和写 `"off"`（或空字符串）一样；写成 `file` / `memory` / `off` 以外的值（例如 `sqlite`）插件会启动失败。这里看的是生效配置，即清单与运行时副本（插件用户数据目录下的 `config/plugin.toml`，首次使用时从 `config.example.toml` 复制，没有这个文件才复制清单）和当前 profile 合并后的结果，所以运行时副本里也有 `backend` 时，只从清单里删掉它并不能关闭保存。要关闭保存，就把 `backend = "off"` 写在生效的那一层：运行时副本和当前 profile 会覆盖清单。`persist_mode` 决定哪些入口调用后保存：`"auto"` 在每次入口调用正常返回后保存（返回 `Err` 也算正常返回；抛异常或严格输出校验失败时不保存；只算经运行时分发的调用，插件内部直接调用入口方法（例如在定时器里调用）不会保存），`"manual"` 只在用 `@plugin_entry(persist=True)` 声明的入口调用后保存，`"off"` 时入口调用后不保存；入口上的 `persist=True` / `persist=False` 优先于 `"auto"` / `"manual"`。取值按这个顺序确定：先取类属性 `__persist_mode__`（默认 `"off"`），`[plugin_state].persist_mode` 是 `auto` / `manual` / `off` 之一时覆盖它（其他取值运行时会忽略；`neko-plugin check` 会把 `always` / `disabled` 报成 error，并提示改成 `auto` / `off`）。结果为 `"off"` 时（包括显式写 `persist_mode = "off"`），旧配置 `[plugin_checkpoint] freeze_mode` 为 `"auto"` 或 `"manual"` 时仍会覆盖它。另外，不论 `persist_mode` 是什么，冻结插件时都会保存一次状态。
+
+---
+
 ### `[plugin.shared]` — 读取别的插件的共享文件
 
 ```toml
@@ -289,7 +313,7 @@ plugin/plugins/smart_notes/
 ```text
 <用户数据根目录>/plugins/smart_notes/
 ├── config/
-│   └── plugin.toml          ← 这个用户实际使用的配置
+│   └── plugin.toml          ← 这个用户的运行时配置副本
 ├── data/                    ← 运行时数据，self.data_path() 指向这里
 └── cache/                   ← 运行时缓存，self.cache_path() 指向这里
 

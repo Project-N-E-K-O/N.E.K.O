@@ -81,7 +81,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from nekoclaw.dsh import profile
 from nekoclaw.dsh.acp import AcpClosed, AcpConnection, AcpError
@@ -90,6 +90,7 @@ from nekoclaw.dsh.forward import ModelForwarder, unsupported_reason
 from nekoclaw.dsh.host_tools import ON_ANSWERED, HostTools
 from nekoclaw.dsh.profile import SESSION_FILE, DshLaunch, DshUnavailable, Shape
 from nekoclaw.runtime import protocol
+from nekoclaw import TASK_CONTROL_TOOLS
 from nekoclaw.runtime.host import HostBridge, NoHost
 from nekoclaw.runtime.permissions import GATEWAY_CALL_CATEGORY, HOST_TOOL_CALL_CATEGORY
 from nekoclaw.runtime.protocol import EventSink
@@ -124,6 +125,7 @@ class _Process:
     token: str
     free_slots: list[int]
     native_device_schemas: bool = False
+    stock_execution: bool = False
     guard_ready: asyncio.Event = field(default_factory=asyncio.Event)
     sessions: dict[str, "_Session"] = field(default_factory=dict)
     # dsh session id -> session.
@@ -138,10 +140,13 @@ class _Given(str):
     """A text a session was given, and which one it is, counted from 1 in the order they were given."""
 
     number: int
+    human: bool
+    device_instruction: Literal["opening", "user"] | None = None
 
-    def __new__(cls, text: str, number: int) -> "_Given":
+    def __new__(cls, text: str, number: int, human: bool = True) -> "_Given":
         made = super().__new__(cls, text)
         made.number = number
+        made.human = human
         return made
 
 
@@ -218,6 +223,7 @@ class _Session:
     # Whether a turn is with dsh right now: a call that comes in between two
     # turns is a late one of the turn before, and is handed nothing either.
     in_turn: bool = False
+    human_in_turn: bool = False
     # False until dsh took the first message, which carries the host's instructions.
     briefed: bool = False
     # Whether it is offered the subagent tool, which its first message then tells of.
@@ -231,6 +237,13 @@ class _Session:
     closing: asyncio.Future[None] | None = None
     # Tool calls dsh announced: id -> (name as dsh has it, arguments).
     tool_calls: dict[str, tuple[str, Any]] = field(default_factory=dict)
+    execution_receipts: dict[str, str | None] = field(default_factory=dict)
+    finished_sources: dict[str, str] = field(default_factory=dict)
+    kept_calls: set[str] = field(default_factory=set)
+    job_origins: dict[str, str] = field(default_factory=dict)
+    listed_jobs: dict[str, list[str]] = field(default_factory=dict)
+    audit_writes: set[asyncio.Task] = field(default_factory=set)
+    prompt_calls: set[str] = field(default_factory=set)
     # Permission requests being decided right now.
     asks: set[asyncio.Task[Any]] = field(default_factory=set)
     # Set whenever a text is queued; ``wait_agent`` waits on it.
@@ -244,6 +257,18 @@ class _Session:
     # The next reply is the endpoint's own word after a closing report
     # (``forward.py``), not something the task agent said.
     local_reply_due: bool = False
+    # Most recent unanswered input asking for each of the two device groups.
+    device_intents: dict[str, int] = field(default_factory=dict)
+    registered_device_groups: frozenset[str] | None = None
+    # The focus established by accepted user instructions, if any.
+    device_browser_context: bool | None = None
+    device_focus_input: int = 0
+    # Inputs of the last completed ACP prompt that received a real model reply.
+    device_completed_input: int = 0
+    device_local_reply_turn: int = -1
+    visible_devices: list[str] | None = None
+    device_epoch: int = 0
+    device_refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def id(self) -> str:
@@ -380,7 +405,7 @@ class DshRuntime:
             on_local_reply=self._on_local_reply,
             on_window=self._on_window,
         )
-        self._endpoint = LocalEndpoint(forwarder=self._forwarder, tools=self._tools)
+        self._endpoint = LocalEndpoint(forwarder=self._forwarder, tools=self._tools, device_view=self._device_view, retained_output=self._retained_output)
         self._sessions: dict[str, _Session] = {}
         self._processes: dict[Shape, _Process] = {}
         self._process_lock = asyncio.Lock()
@@ -467,6 +492,8 @@ class DshRuntime:
         session = self._sessions.get(session_id)
         if session is not None:
             session.local_reply_due = True
+            # This turn cannot confirm new input. Earlier model replies still count.
+            session.device_local_reply_turn = session.turns
 
     def _on_window(self, session_id: str, model: Any, tokens: int, said: str) -> None:
         """A session's model endpoint refused a request as too long and stated its window.
@@ -537,6 +564,62 @@ class DshRuntime:
         process = self._processes.get(shape_of(model))
         return bool(process and process.native_device_schemas and not process.retiring and process.connection.alive)
 
+    async def _device_view(
+        self, token: str, dsh_id: str, epoch: int, refresh: bool, idle_cycle: bool = False,
+        shown: tuple[str, ...] = (), same_turn: bool = False, registered: tuple[str, ...] | None = None,
+    ) -> list[str] | None:
+        """Refresh just this process's registered commission devices after a successful summary."""
+        from nekoclaw.runtime.tools.gateway import GatewayClient
+
+        process = next((p for p in self._processes.values() if p.token == token), None)
+        if process is None or process.retiring or not process.native_device_schemas:
+            return None
+        session = process.by_dsh_id.get(dsh_id)
+        if session is None or session.spec.gateway is None:
+            return None
+        gateway = session.spec.gateway
+
+        def still_current() -> bool:
+            return (not process.retiring and session.closing is None and self._sessions.get(session.id) is session
+                    and process.by_dsh_id.get(dsh_id) is session)
+
+        # A timed-out local lookup may still be finishing when dsh retries.
+        async with session.device_refresh_lock:
+            if not still_current():
+                return None
+            if epoch < session.device_epoch or (epoch > session.device_epoch and not refresh):
+                return session.visible_devices
+            # A pre-step summary runs after input admission but before that input
+            # reaches a model. Only an ordinary successful reply proves exposure.
+            delivered = session.device_completed_input
+            if same_turn and session.device_local_reply_turn != session.turns:
+                delivered = session.taken
+            if registered is not None and session.registered_device_groups is None:
+                session.registered_device_groups = frozenset(registered)
+            eligible = session.registered_device_groups
+            for group, input_number in tuple(session.device_intents.items()):
+                if (eligible is not None and group not in eligible) or (input_number <= delivered and group in shown):
+                    del session.device_intents[group]
+            wanted = tuple(session.device_intents)
+            if not refresh and not wanted and epoch == session.device_epoch:
+                return session.visible_devices
+            client = GatewayClient(gateway.url, gateway.token)
+            try:
+                await client.list_tools(compactions=epoch, wanted=wanted, idle_device_cycle=idle_cycle)
+            finally:
+                await client.aclose()
+            # A close, process exit or a replacement commission can finish while
+            # the loopback lookup is in flight. Only the live owner can report.
+            if not still_current():
+                return None
+            session.visible_devices = sorted(client.commission_tools)
+            if epoch > session.device_epoch:
+                session.device_epoch = epoch
+                # Several successful summaries can coalesce before this lookup.
+                # A process-local epoch is not the session's lifetime count.
+                self._emit(session, protocol.CompactedEvent(session_id=session.id, count=None, tokens_before=None))
+            return session.visible_devices
+
     async def _ensure_process(self, shape: Shape) -> _Process:
         async with self._process_lock:
             process = self._processes.get(shape)
@@ -557,11 +640,13 @@ class DshRuntime:
 
         launch = await asyncio.to_thread(self._launch)
         await self._endpoint.start()
-        patch = profile.build_patch(
-            shape=shape, endpoint=self._endpoint.model_url, slots=DSH_SESSION_SLOTS, home=launch.home
-        )
+        model_url = self._endpoint.model_url
 
         def prepare() -> tuple[Path, Path]:
+            patch = profile.build_patch(
+                shape=shape, endpoint=model_url, slots=DSH_SESSION_SLOTS, home=launch.home,
+                managed_execution="native_execution_action" in self._host.capabilities,
+            )
             return profile.write_profile(launch.home, patch, tag=_shape_tag(shape)), profile.start_directory(launch.home)
 
         patch_path, start_directory = await asyncio.to_thread(prepare)
@@ -618,8 +703,11 @@ class DshRuntime:
                 raise DshUnavailable("dsh did not load the permission guard") from exc
             from config.nekoclaw_settings import FIRST_TURN_DEVICE_TOOLS
 
-            if FIRST_TURN_DEVICE_TOOLS:
-                process.native_device_schemas = await asyncio.to_thread(profile.uses_stock_tool_presentation, launch.home)
+            if FIRST_TURN_DEVICE_TOOLS or {"native_execution_action", "decide_permission"}.intersection(self._host.capabilities):
+                process.stock_execution = await asyncio.to_thread(profile.uses_stock_tool_presentation, launch.home)
+                process.native_device_schemas = process.native_device_schemas and FIRST_TURN_DEVICE_TOOLS and process.stock_execution
+            else:
+                process.native_device_schemas = False
         except BaseException as exc:
             process.retiring = True
             await asyncio.shield(connection.close(DSH_CLOSE_SECONDS))
@@ -640,7 +728,9 @@ class DshRuntime:
 
     def _on_stderr(self, process: _Process, line: str) -> None:
         if profile.GUARD_READY in line:
-            process.guard_ready.set()
+            if not process.guard_ready.is_set():
+                process.native_device_schemas = profile.DEVICE_VIEW_READY in line
+                process.guard_ready.set()
         else:
             logger.debug("dsh: %s", line[:500])
 
@@ -756,6 +846,8 @@ class DshRuntime:
             name = str(update.get("title") or "")
             arguments = update.get("rawInput")
             session.tool_calls[call_id] = (name, arguments)
+            if session.in_turn:
+                session.prompt_calls.add(call_id)
             self._emit(
                 session,
                 protocol.ToolStartEvent(
@@ -772,7 +864,46 @@ class DshRuntime:
             call_id = str(update.get("toolCallId") or "")
             # Over: nothing is asked about it any more, and what it was
             # called with (a whole file, for a write) need not be kept.
+            session.prompt_calls.discard(call_id)
             name = session.tool_calls.pop(call_id, ("", None))[0]
+            from nekoclaw.runtime.execution import JOB_TOOLS
+
+            requested = call_id in session.execution_receipts
+            receipt = session.execution_receipts.pop(call_id, None)
+            session.listed_jobs.pop(call_id, None)
+            finished = session.finished_sources.pop(call_id, None)
+            kept = call_id in session.kept_calls
+            session.kept_calls.discard(call_id)
+            outcome = None
+            if receipt is not None:
+                # The source guard never confirmed delivery (native refusal or a stopped call).
+                outcome = {"phase": "finish", "receipt": receipt, "status": "cancelled"}
+            elif finished and not kept:
+                outcome = {"phase": "release", "receipt": finished}
+            elif (not requested and status == "failed" and name in (*profile.GATED_TOOLS, *JOB_TOOLS)
+                  and "native_execution_action" in self._host.capabilities):
+                # Rejected by dsh before it even asked ACP. ACP reports only failure.
+                outcome = {"phase": "native_failure", "tool": name}
+            callback = "native_execution_action"
+            offer = self._tools.offer(session.id)
+            if offer:
+                offer.preparing_fetches.pop(call_id, None)
+            prepared = offer.prepared_fetches.pop(call_id, None) if offer else None
+            if prepared is not None:
+                callback = "execution_action"
+                outcome = {"phase": "finish", "receipt": prepared[1], "status": "cancelled"}
+            if outcome is not None:
+                async def close_record():
+                    from config.nekoclaw_settings import DSH_CLOSE_SECONDS
+
+                    try:
+                        await asyncio.wait_for(self._host.call(session.id, callback, outcome), DSH_CLOSE_SECONDS)
+                    except Exception as exc:  # The native effect has already happened.
+                        logger.warning("closing a dsh action record failed (%s)", type(exc).__name__)
+
+                write = asyncio.create_task(close_record())
+                session.audit_writes.add(write)
+                write.add_done_callback(session.audit_writes.discard)
             parts = []
             for item in update.get("content") or []:
                 inner = item.get("content") if isinstance(item, dict) else None
@@ -789,6 +920,91 @@ class DshRuntime:
                 ),
             )
 
+    async def _retained_output(self, token: str, request: dict[str, Any]) -> dict[str, Any]:
+        from nekoclaw.runtime.tools.base import ToolError
+        from nekoclaw.runtime.tools.protected_outputs import OUTPUT_SCOPE, OutputScope
+
+        process = next((p for p in self._processes.values() if p.token == token), None)
+        if not isinstance(request.get("session"), str) or not isinstance(request.get("call"), str):
+            raise ValueError()
+        session = process.by_dsh_id.get(request["session"]) if process else None
+        if not session or session.closing or session.aborting:
+            raise ValueError()
+        offer = self._tools.offer(session.id)
+        call_id = request.get("call")
+        if not offer or not offer.output_context or call_id not in session.tool_calls:
+            raise ValueError()
+        context = offer.output_context
+        spill = context.spill
+        tool, args = session.tool_calls[call_id]
+        if request.get("action") == "fetch":
+            from config.prompts.prompts_nekoclaw_dsh import HOST_TOOL_PREFIX
+
+            if tool != HOST_TOOL_PREFIX + "web_fetch" or not isinstance(args, dict):
+                raise ValueError()
+            return await self._tools.fetch(session.id, call_id, args, offer)
+        receipt = session.execution_receipts.get(call_id) or session.finished_sources.get(call_id)
+        if not receipt or not isinstance(args, dict):
+            raise ValueError()
+        action = request.get("action")
+        if action == "save_job":
+            # Unacknowledged batches can outlive the read that collected them.
+            # Keep them under the job's command source, as with its native ring.
+            if tool != "job_output" or not session.execution_receipts.get(call_id):
+                raise ValueError()
+            receipt = session.job_origins.get(str(args.get("job_id", "")).strip())
+            if not receipt:
+                raise ValueError()
+        output_scope = OutputScope(receipt)
+        binding = OUTPUT_SCOPE.set(output_scope)
+        try:
+            if action == "list" and tool == "job_list":
+                return {"ids": session.listed_jobs.get(call_id, [])}
+            if action == "job" and tool in {"bash", "pwsh"}:
+                job_id = request.get("text")
+                if not isinstance(job_id, str) or not job_id or len(job_id) > 192:
+                    raise ValueError()
+                session.job_origins[job_id] = receipt
+                session.kept_calls.add(call_id)
+                return {}
+            if action in {"save", "save_job"}:
+                content = request.get("text")
+                prefix = None
+                if action == "save_job":
+                    if not isinstance(content, dict):
+                        raise ValueError()
+                    prior = content.get("prefix")
+                    if prior is not None:
+                        prefix = spill.protected.get(Path(prior)) if isinstance(prior, str) else None
+                        if prefix is None or prefix.origin != receipt:
+                            raise ValueError()
+                    content = content.get("delta")
+                if not isinstance(content, str):
+                    raise ValueError()
+                path = await asyncio.to_thread(spill.save, tool, content)
+                if path is not None and prefix is not None:
+                    spill.protected[path].prepend(prefix)
+                if path is None:
+                    raise OSError()
+                if action == "save":
+                    session.kept_calls.add(call_id)
+                return {"path": str(path)}
+            if action != "read" or tool not in offer.readers or not session.execution_receipts.get(call_id):
+                raise ValueError()
+            path = context.resolve(str(args.get("file_path") or args.get("path") or "."))
+            output = spill.protected.get(path)
+            if output is None:
+                return {}
+            try:
+                result = await offer.readers[tool].execute(call_id, args)
+            except ToolError as exc:
+                return {"error": str(exc)}
+            return {"text": result.text}
+        finally:
+            if output_scope.retained and action != "save_job":
+                session.kept_calls.add(call_id)
+            OUTPUT_SCOPE.reset(binding)
+
     async def _on_request(self, process: _Process, method: str, params: dict[str, Any]) -> dict[str, Any] | None:
         if method != "session/request_permission":
             raise AcpError(-32601, f"{method} is not supported")
@@ -801,6 +1017,56 @@ class DshRuntime:
             for option in options if isinstance(option, dict)
             and isinstance(option.get("optionId"), str) and isinstance(option.get("kind"), str)
         } if isinstance(options, list) else set()
+        if (session and ("allow-once", "allow_once") in offered and call_id.startswith("nekoclaw-exec/")
+                and call_id not in session.tool_calls and "native_execution_action" in self._host.capabilities):
+            _, phase, original = call_id.split("/", 2) if call_id.count("/") >= 2 else ("", "", "")
+            receipt = session.execution_receipts.get(original)
+            if not receipt or original not in session.tool_calls:
+                return _REJECT
+            if phase in ("direct", "nested"):
+                if phase == "nested":
+                    return _REJECT
+                if session.aborting or session.closing is not None:
+                    return _REJECT
+                reply = await self._host.call(session.id, "native_execution_action", {"phase": "check", "receipt": receipt})
+                if session.aborting or session.closing is not None or session.execution_receipts.get(original) != receipt:
+                    return _REJECT
+                return _ALLOW if reply.get("allow") is True else _REJECT
+            if phase not in ("completed", "failed"):
+                return _REJECT
+            status = "cancelled" if session.aborting or session.closing is not None else phase
+            session.execution_receipts[original] = None
+            try:
+                reply = await self._host.call(session.id, "native_execution_action", {
+                    "phase": "finish", "receipt": receipt, "status": status, "retain_source": True,
+                    **({"started_job": True} if session.tool_calls[original][0] in {"bash", "pwsh"}
+                       and receipt in session.job_origins.values() else {}),
+                })
+            except Exception as exc:
+                # Keep the receipt for the terminal ACP event's cancellation.
+                if original in session.tool_calls:
+                    session.execution_receipts[original] = receipt
+                logger.warning("finishing a dsh action failed (%s)", type(exc).__name__)
+                return _REJECT
+            if status == "cancelled":
+                return _REJECT
+            if session.aborting or session.closing is not None:
+                # A stop during the host write abandons even an already
+                # closed source. ACP need not send another terminal update.
+                await self._host.call(session.id, "native_execution_action", {"phase": "release", "receipt": receipt})
+                session.kept_calls.discard(original)
+                return _REJECT
+            if reply.get("allow") is True:
+                session.finished_sources[original] = receipt
+                return _ALLOW
+            return _REJECT
+        control_check = call_id.startswith(profile.CONTROL_CHECK_PREFIX)
+        if control_check:
+            # The native tool's own approval uses the original ID and policy.
+            # Never accept a real tool call that occupies the reserved namespace.
+            if session is None or call_id in session.tool_calls:
+                return _CANCELLED
+            call_id = call_id[len(profile.CONTROL_CHECK_PREFIX):]
         if ("allow-once", "allow_once") not in offered or session is None or call_id not in session.tool_calls:
             # ACP may narrow the offered choices. A host loan cannot add one.
             return _REJECT if ("reject-once", "reject_once") in offered else _CANCELLED
@@ -808,7 +1074,26 @@ class DshRuntime:
         assert task is not None
         session.asks.add(task)
         try:
-            return _ALLOW if await self._decide(session, *session.tool_calls[call_id]) else _REJECT
+            if control_check:
+                name, arguments = session.tool_calls[call_id]
+                if name not in TASK_CONTROL_TOOLS:
+                    return _REJECT
+                # ACP represents every prompt as user text. A framed peer message must
+                # not establish or change a goal on the strength of that transport role.
+                eligible = True
+                if name in {"create_goal", "update_goal"}:
+                    # Between host prompts, dsh may run its own goal round. Its goal
+                    # tool validates the exact goal, revision and round on execution.
+                    terminal = name == "update_goal" and isinstance(arguments, dict) and arguments.get("action") in ("complete", "blocked")
+                    eligible = session.spec.top_level and (session.human_in_turn if session.in_turn else terminal)
+                if "task_control_begin" not in self._host.capabilities:
+                    return _ALLOW if eligible else _REJECT
+                payload = {"tool": name, "call_id": call_id}
+                if not eligible:
+                    payload["refused"] = True
+                reply = await self._host.call(session.id, "task_control_begin", payload)
+                return _ALLOW if eligible and reply.get("allow") is True else _REJECT
+            return _ALLOW if await self._decide(session, *session.tool_calls[call_id], call_id=call_id) else _REJECT
         except asyncio.CancelledError:
             if session.aborting or session.closing is not None:
                 # The run was stopped while the user was being asked.
@@ -820,7 +1105,7 @@ class DshRuntime:
         finally:
             session.asks.discard(task)
 
-    async def _decide(self, session: _Session, name: str, arguments: Any) -> bool:
+    async def _decide(self, session: _Session, name: str, arguments: Any, *, call_id: str = "") -> bool:
         """Return whether the host allows one call of a dsh tool."""
         from nekoclaw.runtime.permissions import classify, default_permission_decision
 
@@ -829,6 +1114,9 @@ class DshRuntime:
         process = session.process
         given = arguments if isinstance(arguments, dict) else {}
         gateway_prefix = f"mcp__{profile.GATEWAY_SERVICE}__"
+        if (name == HOST_TOOL_PREFIX + "web_fetch" and "execution_action" in self._host.capabilities
+                and "native_execution_action" in self._host.capabilities):
+            return await self._tools.prepare_fetch(session.id, call_id, given)
         if name in profile.GATED_TOOLS:
             if not _well_formed(name, arguments):
                 return False
@@ -837,6 +1125,8 @@ class DshRuntime:
             readable = (profile.session_spill_dir(process.home, session.dsh_id),) if process is not None else ()
             request = classify(name, given, Path(session.spec.workdir), readable=readable)
             payload = {**request.to_json(), "default": default_permission_decision(request)}
+            if process is not None and process.stock_execution:
+                payload["private_route"] = True
         elif name.startswith(HOST_TOOL_PREFIX):
             # One of the host's own tools the guard asks about
             # (``profile.ASKED_HOST_TOOLS``): the host asks the user now what
@@ -865,8 +1155,40 @@ class DshRuntime:
                 "category": "other",
                 "arguments": given,
                 "workdir": session.spec.workdir,
-                "default": "allow",
+                "default": "ask",
             }
+        from nekoclaw.runtime.execution import JOB_TOOLS, resource_ref
+
+        if name in (*profile.GATED_TOOLS, *JOB_TOOLS) and "native_execution_action" in self._host.capabilities:
+            if not call_id or call_id.startswith("nekoclaw-exec/") or call_id in session.execution_receipts:
+                return False
+            session.execution_receipts[call_id] = None
+            classified = classify(name, given, Path(session.spec.workdir))
+            offer = self._tools.offer(session.id)
+            saved = (offer.output_context.spill.protected.get(Path(classified.path))
+                     if offer and offer.output_context and classified.path else None)
+            if saved is not None:
+                payload["category"] = "workdir_files"
+            origins = [saved.origin] if saved else []
+            if name == "job_list":
+                origins.extend(session.job_origins.values())
+            elif name in {"job_output", "job_kill"}:
+                job_id = str(given.get("job_id", "")).strip()
+                origins.append(session.job_origins.get(job_id, "unknown-native-job"))
+            reply = await self._host.call(session.id, "native_execution_action", {
+                **{key: value for key, value in payload.items() if key != "arguments"}, "phase": "begin",
+                "scope_ref": await asyncio.to_thread(resource_ref, classified, given),
+                "private_route": bool(process and process.stock_execution),
+                **({"origins": origins} if origins else {}),
+            })
+            receipt = reply.get("receipt")
+            if reply.get("allow") is not True or not isinstance(receipt, str) or not receipt:
+                return False
+            if name == "job_list":
+                permitted = set(reply.get("origins", []))
+                session.listed_jobs[call_id] = [job for job, origin in session.job_origins.items() if origin in permitted]
+            session.execution_receipts[call_id] = receipt
+            return True
         if "decide_permission" not in self._host.capabilities:
             return payload["default"] == "allow"
         reply = await self._host.call(session.id, "decide_permission", payload)
@@ -1153,15 +1475,46 @@ class DshRuntime:
             # Resumed, it is told once more.
             logger.warning("the note of dsh session %s could not be written", session.id, exc_info=True)
 
-    def _queue(self, session: _Session, text: str) -> None:
+    def _queue(self, session: _Session, text: str, *, human: bool = False, opening: bool = False) -> None:
         # Numbered as it is given, like the host numbers what it sends: a
         # text that is dropped before dsh has it leaves its number unused.
         session.given += 1
-        session.queue.append(_Given(text, session.given))
+        given = _Given(text, session.given, human)
+        if (human or opening) and session.process and session.process.native_device_schemas and session.spec.gateway:
+            given.device_instruction = "opening" if opening else "user"
+        session.queue.append(given)
         session.arrived.set()
         if session.run is None:
             session.aborting = False
             session.run = asyncio.ensure_future(self._run(session))
+
+    @staticmethod
+    def _accept_device_inputs(session: _Session, texts: list[str], browser: bool | None) -> None:
+        # An abort can discard queued texts. Activate only what is handed to
+        # the ACP turn or delivered with the result of its wait_agent call.
+        for text in texts:
+            if not isinstance(text, _Given) or not text.device_instruction:
+                continue
+            from nekoclaw.device_intent import BUILTIN_GROUP_BROWSER, BUILTIN_GROUPS, classify_device_intent
+
+            registered = session.registered_device_groups
+            if text.device_instruction == "opening":
+                # The catalog, not the host's opening message, selects the initial groups.
+                groups = BUILTIN_GROUPS
+            else:
+                if browser is None:
+                    browser = session.spec.gateway.opening_browser_context
+                if browser is None and registered is not None:
+                    browser = registered == {BUILTIN_GROUP_BROWSER}
+                groups, target = classify_device_intent(text, browser_context=browser, inherit_target=False)
+                if target is not None:
+                    browser = target
+                    if text.number > session.device_focus_input:
+                        session.device_browser_context = target
+                        session.device_focus_input = text.number
+            for group in groups:
+                if registered is None or group in registered:
+                    session.device_intents[group] = max(text.number, session.device_intents.get(group, 0))
 
     async def _take_input(self, session: _Session, seconds: float) -> list[str]:
         """Hand a waiting session the texts queued for it; see ``host_tools.TakeInput``."""
@@ -1209,6 +1562,9 @@ class DshRuntime:
         # meanwhile): they are told of as taken when the turn the call
         # belongs to ends as a turn does that was not cut short.
         session.awaited.extend(numbers)
+        # A delayed receipt still belongs to the target this batch was handed
+        # with; a newer instruction may change the click target meanwhile.
+        browser = session.device_browser_context
         on_answered = ON_ANSWERED.get()
         if on_answered is not None:
             # Whoever serves the call says whether its answer reached dsh.
@@ -1221,11 +1577,19 @@ class DshRuntime:
             # it to queue again.
             outcome: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             session.answering.append((outcome, numbers))
-            on_answered.append(lambda delivered: self._answered(session, texts, of_run, outcome, delivered))
+            def answered(delivered: bool) -> None:
+                if delivered and session.in_turn and session.runs == of_run and session.turns == of_turn:
+                    session.human_in_turn |= any(isinstance(text, _Given) and text.human for text in texts)
+                self._answered(session, texts, of_run, outcome, delivered, browser)
+
+            on_answered.append(answered)
+        else:
+            self._accept_device_inputs(session, texts, browser)
         return texts
 
     def _answered(
-        self, session: _Session, texts: list[str], of_run: int, outcome: asyncio.Future[bool], delivered: bool
+        self, session: _Session, texts: list[str], of_run: int, outcome: asyncio.Future[bool], delivered: bool,
+        browser: bool | None,
     ) -> None:
         """Take note of whether the answer that carried some texts reached dsh; queue them again where it did not.
 
@@ -1239,6 +1603,8 @@ class DshRuntime:
         """
         if not outcome.done():
             outcome.set_result(delivered)
+        if delivered:
+            self._accept_device_inputs(session, texts, browser)
         left = session.unsettled.pop(outcome, None)
         late = left is not None
         if not delivered:
@@ -1378,11 +1744,13 @@ class DshRuntime:
                 texts, session.queue = session.queue, []
                 sent = _numbers_of(texts)
                 session.taken = max([session.taken, *sent])
+                self._accept_device_inputs(session, texts, session.device_browser_context)
                 work = "\n\n".join(texts)
                 first = not session.briefed
                 if first:
                     work = self._first_message(session, work)
                 try:
+                    session.human_in_turn = any(isinstance(text, _Given) and text.human for text in texts)
                     session.in_turn = True
                     try:
                         answer = await process.connection.request(
@@ -1394,6 +1762,19 @@ class DshRuntime:
                         # is handed anything from here on. (The answers its
                         # calls were handed are settled below all the same.)
                         session.in_turn = False
+                        # An automatic goal round can start while this prompt settles.
+                        # Only discard the receipts of calls announced by this prompt.
+                        offer = self._tools.offer(session.id) if self._sessions.get(session.id) is session else None
+                        for call_id in session.prompt_calls:
+                            session.tool_calls.pop(call_id, None)
+                            session.execution_receipts.pop(call_id, None)
+                            session.finished_sources.pop(call_id, None)
+                            session.kept_calls.discard(call_id)
+                            session.listed_jobs.pop(call_id, None)
+                            if offer:
+                                offer.preparing_fetches.pop(call_id, None)
+                                offer.prepared_fetches.pop(call_id, None)
+                        session.prompt_calls.clear()
                         session.turns += 1
                 except AcpClosed:
                     # The process is gone; that is announced where it was noticed.
@@ -1440,6 +1821,9 @@ class DshRuntime:
                     # they go with the next turn.
                     await self._answers_settled(session)
                     self._say_taken(session, session.awaited)
+                    if (isinstance(answer, dict) and answer.get("stopReason") in ("end_turn", "max_tokens")
+                            and session.device_local_reply_turn != session.turns - 1):
+                        session.device_completed_input = max([session.device_completed_input, *sent, *session.awaited])
                 session.awaited = []
                 session.answering = []
                 if first:
@@ -1453,13 +1837,14 @@ class DshRuntime:
                     reason = "aborted"
                     break
         finally:
-            session.run = None
-            # Over: a call of it that is still waiting is not taken for
-            # one of the run that starts next.
-            session.runs += 1
+            try:
+                if session.audit_writes:
+                    await asyncio.gather(*session.audit_writes)
+            finally:
+                session.runs += 1
+                session.run = None
         if session.closing is not None or self._sessions.get(session.id) is not session:
             return
-        session.tool_calls.clear()
         if session.aborting and reason == "completed":
             # Stopped between two turns, or before the first one was sent.
             reason = "aborted"
@@ -1504,12 +1889,7 @@ class DshRuntime:
     async def prompt(
         self, session_id: str, text: str, *, opening: bool = False, human: bool = True, serial: int | None = None
     ) -> None:
-        # ``opening`` is for a runtime that sums the conversation up itself
-        # and can leave that text as it is; dsh sums up on its own. ``human``
-        # is for one that keeps something for the user's own words; dsh
-        # asks the host before every call that needs asking. ``serial`` is
-        # said again where the text is refused.
-        del opening, human
+
         session = await self._session(session_id, "prompt", serial)
         if session is None:
             return
@@ -1518,24 +1898,22 @@ class DshRuntime:
         elif session.run is not None:
             self._reject(session_id, "prompt", "a run is in progress", serial)
         else:
-            self._queue(session, text)
+            self._queue(session, text, human=human, opening=opening)
 
     async def steer(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
-        del human
-        await self._add(session_id, "steer", text, serial)
+        await self._add(session_id, "steer", text, serial, human)
 
     async def follow_up(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
-        del human
-        await self._add(session_id, "follow_up", text, serial)
+        await self._add(session_id, "follow_up", text, serial, human)
 
-    async def _add(self, session_id: str, command: str, text: str, serial: int | None) -> None:
+    async def _add(self, session_id: str, command: str, text: str, serial: int | None, human: bool) -> None:
         session = await self._session(session_id, command, serial)
         if session is None:
             return
         if self._shutdowns:
             self._reject(session_id, command, "the runtime is shutting down", serial)
             return
-        self._queue(session, text)
+        self._queue(session, text, human=human)
 
     async def abort(self, session_id: str) -> None:
         session = await self._session(session_id, "abort")

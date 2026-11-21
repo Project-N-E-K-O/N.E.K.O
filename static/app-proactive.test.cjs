@@ -528,7 +528,12 @@ test('live vision consent sends a typed snapshot only on an open socket', () => 
 
 
 test('a screenshot taken before a revocation never rides a later request', () => {
-    const window = { appState: { proactiveVisionEnabled: true }, appConst: {}, addEventListener() {} };
+    // The text-chat gate needs the two switches too (holdsProactiveVisionStream).
+    const window = {
+        appState: { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true },
+        appConst: {},
+        addEventListener() {},
+    };
     let sharedSettings = null;
     vm.runInNewContext(source, {
         window,
@@ -564,6 +569,17 @@ test('a screenshot taken before a revocation never rides a later request', () =>
     assert.deepEqual(titleOnly, { enabled_modes: ['news'] });
     const noVision = { enabled_modes: ['news'] };
     assert.equal(proactive.discardVisionRevokedSince(noVision, seqAtCapture), false);
+
+    // Proactive Chat or its Screen Share option off, revocation sequence unchanged
+    // (e.g. turned off in another window, this one not synced yet): drop too.
+    for (const key of ['proactiveChatEnabled', 'proactiveVisionChatEnabled']) {
+        window.appState[key] = false;
+        const switchedOff = makeBody();
+        const seqNow = proactive.currentProactiveVisionRevocationSeq();
+        assert.equal(proactive.discardVisionRevokedSince(switchedOff, seqNow), true, key);
+        assert.deepEqual(switchedOff, { enabled_modes: ['news'] }, key);
+        window.appState[key] = true;
+    }
 
     const later = makeBody();
     assert.equal(

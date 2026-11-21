@@ -1002,6 +1002,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     if _owns_voice_connection():
                         session_manager[lanlan_name].handle_screen_share_stopped()
                     continue
+                if message.get("action") == "proactive_vision_invalidate":
+                    # Every open window runs the switch sync, a superseded
+                    # one included. Ending in-flight screen access only takes
+                    # access away, so apply it; closing this socket over it
+                    # would add a close (and a reconnect) to each toggle.
+                    session_manager[lanlan_name].invalidate_proactive_vision_rounds()
+                    continue
                 if _is_voice_path_message(message) and _owns_voice_connection():
                     await _dispatch_voice_message_while_superseded(message)
                     continue
@@ -1072,6 +1079,12 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 session_manager[lanlan_name].update_proactive_vision_consent(
                     message.get("enabled")
                 )
+                continue
+
+            if action == "proactive_vision_invalidate":
+                # Proactive Chat or its Screen Share option went off: rounds
+                # already in flight must stop using the screen.
+                session_manager[lanlan_name].invalidate_proactive_vision_rounds()
                 continue
 
             if action == "screen_share_stopped":

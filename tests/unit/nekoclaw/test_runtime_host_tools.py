@@ -511,3 +511,30 @@ async def test_each_session_tool_is_offered_with_its_callback_and_withheld_when_
 async def test_a_run_says_how_many_background_jobs_it_leaves_running(tmp_path: Path) -> None:
     events, _llm = await _run(tmp_path, HostCallbacks())
     assert events.of("ended")[0]["jobs"] == 0
+
+
+@pytest.mark.parametrize("allow", [True, False])
+async def test_task_control_admission_precedes_local_todo_change(tmp_path, allow):
+    requests = []
+    original = [{"content": "existing item", "status": "pending"}]
+    args = {"todos": [{"content": "private local state", "status": "pending"}]}
+
+    async def begin(session_id, payload):
+        requests.append((session_id, payload))
+        assert session.todos.items == original
+        return {"allow": allow}
+
+    llm = ScriptedLLM([[call("todo_write", args, "control-1"), finish("tool_calls")], [say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(task_control_begin=begin))
+    try:
+        session.todos.write(original)
+        session.prompt("go")
+        await events.wait_ended()
+        assert session.todos.items == (args["todos"] if allow else original)
+    finally:
+        await session.close()
+    assert requests == [("s1", {"tool": "todo_write", "call_id": "control-1"})]
+    end, = events.of("tool_end")
+    assert end["is_error"] is not allow
+    if not allow:
+        assert "task control was not admitted" in end["text"]

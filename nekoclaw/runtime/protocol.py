@@ -163,6 +163,9 @@ class GatewaySpec(_Strict):
     url: str = Field(min_length=1)
     # Issued by the host for this one session; sent as a bearer token.
     token: str = Field(min_length=1, repr=False)
+    # The host and its same-version Python child share this optional start
+    # hint. Neither runtime sends it to its model or grants access with it.
+    opening_browser_context: bool | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class TaskAgentSpec(_Strict):
@@ -177,6 +180,10 @@ class TaskAgentSpec(_Strict):
     model: ModelConfig
     # Host-supplied text appended to the built-in system prompt.
     instructions: str | None = None
+    # A host maintenance opening reuses the saved prompt until the next commission.
+    idle_compaction: bool = False
+    # A fresh snapshot without the workspace brief should be retried on the next opening.
+    workspace_brief_unavailable: bool = False
     # False for a task agent started by another task agent: such a session cannot
     # manage goals on the strength of the messages it receives.
     top_level: bool = True
@@ -435,10 +442,9 @@ class CompactedEvent(_SessionEvent):
     """The conversation was summed up; the session goes on from the summary."""
 
     type: Literal["compacted"] = "compacted"
-    # How often the conversation of this session has been summed up so far.
-    count: int = 0
-    # Size of the conversation before the summary, as the context manager counted it.
-    tokens_before: int = 0
+    # Lifetime count and pre-summary size, when the runtime measured them.
+    count: int | None = 0
+    tokens_before: int | None = 0
 
 
 # ``EndedEvent.error`` of a session whose runtime process went away. Nothing

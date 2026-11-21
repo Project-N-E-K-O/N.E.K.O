@@ -34,7 +34,7 @@ class MyPlugin(NekoPluginBase):
         return Ok({"status": "done"})
 ```
 
-Extension に互換 shim はありません。`type = "extension"` と `[plugin.host]` を削除し、Router module を旧 host に移して `self.include_router(router)` を呼ぶか、通常の `NekoPluginBase` package に変換します。`plugin.sdk.extension` import は `plugin.sdk.plugin` の対応する public symbol に置き換えてください。`PluginRouter` は通常 Plugin 内部のコード整理にだけ残ります。
+Extension に互換 shim はありません。`type = "extension"` と `[plugin.host]` を削除し、Router module を旧 host に移し、router class を host の `__routers__` に列挙して `self.include_router(router)` を呼ぶか、通常の `NekoPluginBase` package に変換します。`plugin.sdk.extension` import は `plugin.sdk.plugin` の対応する public symbol に置き換えてください。`PluginRouter` は通常 Plugin 内部のコード整理にだけ残ります。
 
 ## Result の import
 
@@ -84,14 +84,14 @@ callable の `filter(predicate)`、`where(predicate)`、`sort(key=callable)` は
 
 ## Memory
 
-旧 SDK `MemoryClient` は異なる 2 つの概念を混在させていました。現在サポートされる代替機能は、host の最近の user-context snapshot の読み取りです。
+旧 SDK `MemoryClient` は異なる 2 つの概念を混在させていました。最近の user context は host の snapshot から読み取ります。
 
 ```python
 # 1 bucket の最近の record
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-これらは件数制限付きでメモリ上にのみ保持されるユーザー発話イベントで、TTL は 1 時間です。キャラクターの永続的な facts、reflections、persona ではありません。`self.bus.memory` による record の読み取りと型付き record は残ります。削除されたのは高レベルの `self.memory` property と旧 SDK/runtime の `MemoryClient` facade です（現在 `plugin.sdk.plugin` からエクスポートされている `MemoryClient` は別の新しい検索クライアントです）。`ctx.query_memory(...)` は組み込みの `recall_memory` ツールと同じハイブリッド recall を実行し、ヒットをレンダリング済みテキストとして返します（該当なしの場合は空文字列）。構造化ヒットが必要な場合は `MemoryClient(self.ctx).search(target=MemoryTarget.private(...), query=...)` を使用します。戻り値は `Ok` / `Err` です。
+これらは件数制限付きでメモリ上にのみ保持されるユーザー発話イベントで、TTL は 1 時間です。キャラクターの永続的な facts、reflections、persona ではありません。`self.bus.memory` による record の読み取りと型付き record は残ります。削除されたのは高レベルの `self.memory` property と旧 SDK/runtime の `MemoryClient` facade です（現在 `plugin.sdk.plugin` からエクスポートされている `MemoryClient` は別の新しい検索クライアントです）。`ctx.query_memory(...)` は組み込みの `recall_memory` ツールと同じハイブリッド recall を実行し、ヒットをレンダリング済みテキストとして返します（該当なしの場合は空文字列）。構造化ヒットが必要な場合は `MemoryClient(self.ctx).search(target=MemoryTarget.private(...), query=...)` を使用します。戻り値は `Ok` / `Err` です。`MemoryClient` には `get_persona(target=...)` もあり、`private` ターゲットだけに対応し、それ以外では `CAPABILITY_UNAVAILABLE` を返します。capability policy が有効な間（`NEKO_PLUGIN_CAPABILITY_POLICY` が `off` でない場合）、ホストに届いたメモリ呼び出しは `memory.read` capability の使用として判定されます。ただし `decision` 監査記録が書かれるのは、ポリシーが拒否するはずの呼び出しと、肩代わり呼び出しの疑いがあるとフラグが付いた呼び出しだけです（同じ結果は 1 分に最大 1 件）。それ以外の許可された呼び出しは、せいぜい所属する entry 呼び出しの終了時に書かれる `allow_summary` 記録で回数として集計されるだけです。そのため、この監査記録は呼び出しごとのアクセスログではありません。メモリの内容はユーザーのプライベートなデータなので、ログに出さないでください。
 
 ## `push_message` v2
 

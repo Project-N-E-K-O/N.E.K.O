@@ -67,6 +67,8 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
         "2026-11-19-eight-locale-gap-fill",
+        "2026-11-21-emote-maker-upstream-sync",
+        "2026-11-21-decision-model-slot",
         "2026-11-18-emote-maker-restore-confirmations",
         "2026-11-18-emote-maker-upstream-sync",
         "2026-10-11-emote-group-export",
@@ -593,7 +595,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "a41b93b0f37375688457760e9665105ba697004d0c9e4dc859f88df8464240e9"
+LOCALE_KEY_SIGNATURE = "0266a472deab48752a7b94f508def2a7a9ed34365d715e59dfbba71a4a833804"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

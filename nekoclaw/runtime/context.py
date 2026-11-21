@@ -537,6 +537,9 @@ class Compaction:
     replaced_entry_ids: list[str]
     tokens_before: int
     usage: Usage | None = None
+    # A forced fit may have dropped the old span after a failed/truncated
+    # summary. The transcript still advances, but device tools stay put.
+    complete: bool = True
 
 
 def frame_summary(summary: str) -> str:
@@ -694,6 +697,7 @@ class ContextManager:
         on_compaction: Callable[[Compaction], None] | None = None,
         pinned: Collection[str] = (),
         or_drop: bool = True,
+        reserve_tokens: int = 0,
     ) -> list[Compaction]:
         """Bring the conversation under the threshold; rewrites ``transcript`` in place.
 
@@ -735,7 +739,8 @@ class ContextManager:
         if trimmed is not None:
             transcript.rewrite(trimmed)
             self.invalidate()
-        if not force and await self.measure(transcript.messages) <= self.policy.threshold:
+        threshold = self.policy.threshold - reserve_tokens
+        if not force and await self.measure(transcript.messages) <= threshold:
             return []
 
         # As it is before anything is cut for the summary: put back when
@@ -747,7 +752,7 @@ class ContextManager:
         if pruned is not None:
             transcript.rewrite(pruned)
             self.invalidate()
-            if not force and await self.measure(transcript.messages) <= self.policy.threshold:
+            if not force and await self.measure(transcript.messages) <= threshold:
                 return []
 
         done: list[Compaction] = []
@@ -773,7 +778,7 @@ class ContextManager:
                     # Before the next await: a cancellation from here on must not
                     # leave the conversation ahead of what the caller has saved.
                     on_compaction(compaction)
-                if await self.measure(transcript.messages) <= self.policy.threshold:
+                if await self.measure(transcript.messages) <= threshold:
                     break
         finally:
             # Also when this is cancelled, or fails, while the summary is
@@ -807,7 +812,7 @@ class ContextManager:
             # Nothing but earlier summaries or oversized user text: no gain.
             return None
 
-        summary, usage = await self._summarize_region(replaced, or_drop=or_drop)
+        summary, usage, complete = await self._summarize_region(replaced, or_drop=or_drop)
         if summary is None:
             # No summary to be had, and nothing that has to go: left as it is.
             return None
@@ -830,10 +835,13 @@ class ContextManager:
             replaced_entry_ids=[row.entry_id for row in replaced],
             tokens_before=tokens_before,
             usage=usage,
+            complete=complete,
         )
 
-    async def _summarize_region(self, region: Sequence[Row], *, or_drop: bool = True) -> tuple[str | None, Usage | None]:
-        """Ask the model for a checkpoint of ``region``; never raises.
+    async def _summarize_region(
+        self, region: Sequence[Row], *, or_drop: bool = True
+    ) -> tuple[str | None, Usage | None, bool]:
+        """Ask the model for a checkpoint of ``region`` and say whether it is complete.
 
         Without a whole summary: what stands in for it when ``or_drop``,
         else None (see ``fit``).
@@ -852,7 +860,7 @@ class ContextManager:
             # no call, or the second of two of one call), and the
             # summary would stand for it all the same.
             logger.warning("the part to be summed up does not fit one request; the conversation is left as it is")
-            return None, None
+            return None, None, False
         try:
             summary, usage = await self.summarize(prepared, policy.summary_cap)
         except asyncio.CancelledError:
@@ -862,18 +870,18 @@ class ContextManager:
             # that is missing: not taken for a whole summary.
             if not or_drop or not cut.text.strip():
                 logger.warning("context summary was cut short at its length limit")
-                return (SUMMARY_FALLBACK if or_drop else None), None
+                return (SUMMARY_FALLBACK if or_drop else None), None, False
             logger.warning("context summary was cut short at its length limit; kept as far as it got")
-            return f"{cut.text.rstrip()}\n\n{SUMMARY_CUT_SHORT_NOTE}", None
+            return f"{cut.text.rstrip()}\n\n{SUMMARY_CUT_SHORT_NOTE}", None, False
         except Exception as exc:  # noqa: BLE001 - a failed summary must not fail the run
             if not or_drop:
                 logger.warning("context summary failed; the conversation is left as it is: %s", exc)
-                return None, None
+                return None, None, False
             logger.warning("context summary failed, dropping the older span instead: %s", exc)
-            return SUMMARY_FALLBACK, None
+            return SUMMARY_FALLBACK, None, False
         if not summary.strip():
-            return (SUMMARY_FALLBACK if or_drop else None), usage
-        return summary, usage
+            return (SUMMARY_FALLBACK if or_drop else None), usage, False
+        return summary, usage, True
 
 
 def _leaves_results_out(messages: Sequence[AgentMessage]) -> bool:

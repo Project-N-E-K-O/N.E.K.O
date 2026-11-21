@@ -17,7 +17,8 @@ import re
 import sqlite3
 import time
 import uuid
-from contextlib import asynccontextmanager
+from collections.abc import Coroutine
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -226,6 +227,15 @@ class Call:
     # True only after the closing update actually matched this row and committed.
     closed: bool = False
 
+    async def withhold_read(self, status: str, reason: str | None = None) -> None:
+        """Correct a completed read whose result never left the host."""
+        async def update() -> None:
+            await self.ledger.run(lambda db: db.execute(
+                "UPDATE host_calls SET status=?, reason=? WHERE call_id=? AND status='completed'",
+                (status, reason, self.call_id),
+            ))
+        await _settle(update())
+
     async def bind_run(self, run_id: str, target: str) -> None:
         opaque_id = (
             run_id
@@ -240,9 +250,18 @@ class Call:
         )
 
 
-@asynccontextmanager
-async def call(ledger: Ledger, commission_id: str, kind: str, target: str):
-    """Link to the invoking host operation in this task, never the latest call in a session."""
+@contextmanager
+def commission_entry():
+    """Detached commission work starts at its own ledger node, even in an inherited task context."""
+    token = _CURRENT.set(None)
+    try:
+        yield
+    finally:
+        _CURRENT.reset(token)
+
+
+async def start_call(ledger: Ledger, commission_id: str, kind: str, target: str) -> Call:
+    """Reserve an operation before execution, including work completed by a runtime event."""
     parent = _CURRENT.get()
     call_id = uuid.uuid4().hex
 
@@ -270,10 +289,23 @@ async def call(ledger: Ledger, commission_id: str, kind: str, target: str):
     # commits. Wait for the identity and close that same record before leaving.
     started = asyncio.create_task(ledger.run(begin))
     try:
-        record = await asyncio.shield(started)
+        return await asyncio.shield(started)
     except asyncio.CancelledError:
-        await _finish(started, "cancelled")
+        async def cancel_started() -> None:
+            try:
+                pending = await started
+            except Exception:
+                return
+            await finish_call(pending, "cancelled")
+
+        await _settle(cancel_started())
         raise
+
+
+@asynccontextmanager
+async def call(ledger: Ledger, commission_id: str, kind: str, target: str):
+    """Link to the invoking host operation in this task, never the latest call in a session."""
+    record = await start_call(ledger, commission_id, kind, target)
     token = _CURRENT.set(record)
     try:
         yield record
@@ -286,17 +318,12 @@ async def call(ledger: Ledger, commission_id: str, kind: str, target: str):
         raise
     finally:
         _CURRENT.reset(token)
-        await _finish(started, record.status)
+        await finish_call(record, record.status)
 
 
-async def _finish(started: asyncio.Task[Call], status: str) -> None:
-    # Revocation and disconnect can both cancel the caller while SQLite is
-    # still working. One independent task owns both the ID and its closing write.
+async def finish_call(record: Call, status: str) -> None:
+    """Settle the reserved row even if the caller is stopped during the SQLite write."""
     async def close_record() -> None:
-        try:
-            record = await started
-        except Exception:  # insertion rolled back; there is no record to close
-            return
         try:
             record.closed = await record.ledger.run(
                 lambda db: db.execute(
@@ -310,7 +337,11 @@ async def _finish(started: asyncio.Task[Call], status: str) -> None:
             # retried as a failed action. Reconciliation marks unfinished rows.
             logger.warning("could not close host call %s (%s)", record.call_id, type(exc).__name__)
 
-    closing = asyncio.create_task(close_record())
+    await _settle(close_record())
+
+
+async def _settle(work: Coroutine[Any, Any, None]) -> None:
+    closing = asyncio.create_task(work)
     cancelled = False
     while not closing.done():
         try:
