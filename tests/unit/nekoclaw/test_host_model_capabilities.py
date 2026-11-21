@@ -316,6 +316,8 @@ async def test_a_model_nothing_is_known_about_gets_the_window_of_the_setting(pat
         # The owner's numbers (2026-11-18): a preset of 200,000, summed up from 170,000 on.
         "compact_at": 170_000,
         "compact_at_set": None,
+        "idle_compact_after": 24 * 60.0,
+        "idle_compact_after_set": None,
     }
     assert settings.TASK_AGENT_COMPACT_AT_TOKENS == 170_000 and await store.compact_at(URL, "any") == 170_000
     assert not path.exists()
@@ -339,6 +341,8 @@ async def test_a_model_whose_window_is_written_down_is_managed_for_that(path):
         # The same part of its window as the presets are of each other.
         "compact_at": 108_800,
         "compact_at_set": None,
+        "idle_compact_after": 24 * 60.0,
+        "idle_compact_after_set": None,
     }
     # By name, whatever the address; and no other model.
     assert await store.context_window(URL, " free-agent-model ") == 128_000
@@ -391,6 +395,58 @@ async def test_a_point_that_is_no_number_of_tokens_is_not_set(path, tokens):
 
     assert await store.compact_at(URL, "m") == 170_000
     assert not path.exists()
+
+
+async def test_the_user_sets_how_long_a_session_is_idle_before_it_is_summed_up_and_takes_it_back(path, monkeypatch):
+    from config import nekoclaw_settings as settings
+
+    store = ModelCapabilityStore(path)
+    # Nothing set: the setting, 24 minutes.
+    assert settings.TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS == 24 * 60.0
+    assert await store.idle_compact_after(URL, "m") == 24 * 60.0
+    assert not path.exists()
+
+    assert await store.set_idle_compact_after(URL, "m", 600) == 600.0
+    assert await store.idle_compact_after(URL, "m") == 600.0
+    # For that model, and no other; and it is kept across a restart.
+    assert await store.idle_compact_after(URL, "other") == 24 * 60.0
+    assert await ModelCapabilityStore(path).idle_compact_after(URL, "m") == 600.0
+    described = await store.describe_window(URL, "m")
+    assert (described["idle_compact_after"], described["idle_compact_after_set"]) == (600.0, 600.0)
+    other = await store.describe_window(URL, "other")
+    assert (other["idle_compact_after"], other["idle_compact_after_set"]) == (24 * 60.0, None)
+
+    # Back to the setting, which is read when it is asked for.
+    assert await store.set_idle_compact_after(URL, "m", None) == 24 * 60.0
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 1_800.0)
+    assert await store.idle_compact_after(URL, "m") == 1_800.0
+    assert json.loads(path.read_text(encoding="utf-8"))["models"] == {}
+
+
+@pytest.mark.parametrize("seconds", [0, 59, -5, float("nan"), float("inf"), True, "600", 31 * 24 * 3600])
+async def test_a_time_that_is_no_usable_number_of_seconds_is_not_set(path, seconds):
+    store = ModelCapabilityStore(path)
+
+    with pytest.raises(ValueError):
+        await store.set_idle_compact_after(URL, "m", seconds)
+    assert await store.idle_compact_after(URL, "m") == 24 * 60.0 and not path.exists()
+
+
+@pytest.mark.parametrize("written", ["soon", 5, -1, True, None, [600], 10**12])
+async def test_a_time_written_by_hand_that_is_no_usable_number_of_seconds_counts_as_not_set(path, written):
+    _write(path, {"version": 1, "models": {model_key(URL, "m"): {"idle_compact_after": written}}})
+    store = ModelCapabilityStore(path)
+
+    assert await store.idle_compact_after(URL, "m") == 24 * 60.0
+    assert (await store.describe_window(URL, "m"))["idle_compact_after_set"] is None
+
+
+async def test_what_the_user_set_for_the_idle_time_stays_when_a_refusal_of_pictures_is_written_down(path):
+    store = ModelCapabilityStore(path)
+    await store.set_idle_compact_after(URL, "m", 900)
+
+    assert await store.note_images_refused(URL, "m", "no images") is True
+    assert await store.idle_compact_after(URL, "m") == 900.0
 
 
 async def test_the_user_is_to_be_told_of_a_models_smaller_window_once(path):
@@ -496,6 +552,8 @@ async def test_the_window_a_provider_stated_counts_when_it_is_the_smaller_one(pa
         "set": None,
         "compact_at": 27_853,
         "compact_at_set": None,
+        "idle_compact_after": 24 * 60.0,
+        "idle_compact_after_set": None,
         "learned": 32_768,
         "learned_at": 1_800_000_000,
         "lapses_at": 1_800_000_000 + settings.MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS,
@@ -546,6 +604,8 @@ async def test_a_stated_window_is_believed_for_a_while_and_then_the_setting_coun
         "set": 100_000,
         "compact_at": 85_000,
         "compact_at_set": None,
+        "idle_compact_after": 24 * 60.0,
+        "idle_compact_after_set": None,
     }
     # Stated again, a larger number is taken now: the old one is no longer believed.
     assert await store.note_context_window(URL, "local", 65_536) is True

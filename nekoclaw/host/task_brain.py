@@ -409,14 +409,27 @@ class TaskBrain:
 
         What a sentence that adds something can go on with (``decision.read_follow_up``):
         done, failed or stopped within ``FOLLOW_UP_RECENT_SECONDS``, her own
-        (not one a task agent started for itself), and worked on in a session.
+        (not one a task agent started for itself), and worked on in a session
+        that has not ended (``Ledger.session_alive``: a session of one
+        commission is not gone on with from the eighth day on, however far
+        the guess by words is set to reach).
         """
         from config.nekoclaw_settings import FOLLOW_UP_RECENT_SECONDS, FOLLOW_UP_ROWS
 
         # Newest by when they ended, which is when they last changed.
-        return await self._ledger.ended_lately(
+        ended = await self._ledger.ended_lately(
             lanlan_name, since=self._ledger._clock() - FOLLOW_UP_RECENT_SECONDS, limit=FOLLOW_UP_ROWS
         )
+        # One look for each session, not for each commission: they are few (at most ``FOLLOW_UP_ROWS``).
+        alive: dict[str, bool] = {}
+        goes_on: list[Commission] = []
+        for item in ended:
+            session_id = item.session_id or ""
+            if session_id not in alive:
+                alive[session_id] = await self._ledger.session_alive(await self._ledger.get_session(session_id))
+            if alive[session_id]:
+                goes_on.append(item)
+        return goes_on
 
     async def _denied_mcp(self) -> McpDenial:
         """Return the MCP server settings as of now."""
