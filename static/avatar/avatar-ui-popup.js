@@ -15,6 +15,17 @@ const AVATAR_POPUP_HOVER_BRIDGE_PADDING_PX = 18;
 const AVATAR_CHARACTER_MANAGER_WINDOW_WIDTH = 1240;
 const AVATAR_CHARACTER_MANAGER_WINDOW_HEIGHT = 940;
 
+// Proactive chat / vision interval defaults are owned by app-state.js (window.appConst).
+// These literals are display-only fallbacks for pages that don't load app-state.js and
+// must match it (guarded by tests/unit/test_proactive_interval_defaults_static.py).
+const AVATAR_POPUP_FALLBACK_PROACTIVE_CHAT_INTERVAL = 15;
+const AVATAR_POPUP_FALLBACK_PROACTIVE_VISION_INTERVAL = 10;
+
+function getAvatarPopupDefaultInterval(constKey, fallback) {
+    const value = window.appConst ? window.appConst[constKey] : undefined;
+    return Number.isFinite(value) ? value : fallback;
+}
+
 function isAvatarFramedSettingsWindowUrl(finalUrl) {
     return typeof finalUrl === 'string'
         && (
@@ -526,8 +537,8 @@ function createSettingsPopupContent(manager, prefix, popup) {
     }
 
     const settingsToggles = [
-        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15, controlStyle: 'slider' },
-        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true, controlStyle: 'slider' }
+        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: getAvatarPopupDefaultInterval('DEFAULT_PROACTIVE_CHAT_INTERVAL', AVATAR_POPUP_FALLBACK_PROACTIVE_CHAT_INTERVAL), controlStyle: 'slider' },
+        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: getAvatarPopupDefaultInterval('DEFAULT_PROACTIVE_VISION_INTERVAL', AVATAR_POPUP_FALLBACK_PROACTIVE_VISION_INTERVAL), inverted: true, controlStyle: 'slider' }
     ];
 
     settingsToggles.forEach(toggle => {
