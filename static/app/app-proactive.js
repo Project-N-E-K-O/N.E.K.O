@@ -608,6 +608,15 @@
             && result.reason_code === PROACTIVE_REASON_PASS_SYSTEM_INACTIVE);
     }
 
+    // Send boundary check: the tick passed its sleep/quiet checks, but the
+    // machine may have slept during an await before fetch (mutation headers,
+    // screenshot). Drop the send; the caller treats it like an input cancel
+    // (not an attempt) and rescheduling honours the quiet deadline.
+    function _systemQuietBlocksSend() {
+        _checkWallClockJump();
+        return _getSystemQuietDelay() > 0;
+    }
+
     // Push the earliest next tick out by the recheck interval; scheduling and
     // the tick callbacks already honour _systemQuietUntil.
     function _deferAfterSystemInactivePass() {
@@ -1397,7 +1406,7 @@
                         try { Object.assign(hdrs, await voiceProactiveSec.getMutationHeaders()); } catch (_) { }
                     }
                     // 取请求头是异步的。这段时间里用户开始输入会刷新截止时间，不能再把搭话送出去。
-                    if (_inputSlowdownStillBlocksSend()) {
+                    if (_inputSlowdownStillBlocksSend() || _systemQuietBlocksSend()) {
                         return null;
                     }
                     // A switch may have gone off while the headers were
@@ -1416,7 +1425,7 @@
 
                 var resp = await _sendVoiceProactive();
                 if (!resp) {
-                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入，取消本次搭话');
+                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入或系统刚醒来，取消本次搭话');
                     return false;
                 }
 
@@ -1434,7 +1443,7 @@
                     } catch (_) { /* fall through to 403 handling below */ }
                 }
                 if (!resp) {
-                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入，取消本次搭话');
+                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入或系统刚醒来，取消本次搭话');
                     return false;
                 }
 
@@ -1746,7 +1755,7 @@
                     try { Object.assign(hdrs, await proactiveSec.getMutationHeaders()); } catch (_) { }
                 }
                 // 取请求头是异步的。这段时间里用户开始输入会刷新截止时间，不能再把搭话送出去。
-                if (_inputSlowdownStillBlocksSend()) {
+                if (_inputSlowdownStillBlocksSend() || _systemQuietBlocksSend()) {
                     return null;
                 }
                 // 截图、取 header、CSRF 重试期间都可能撤权后又重新开启。
@@ -1764,7 +1773,7 @@
             var response = await _sendProactive();
             if (!response) {
                 restoreScreenCooldownAfterInputCancel();
-                console.log('[ProactiveChat] 等待请求头期间用户开始输入，取消本次搭话');
+                console.log('[ProactiveChat] 等待请求头期间用户开始输入或系统刚醒来，取消本次搭话');
                 return false;
             }
 
@@ -1783,7 +1792,7 @@
             }
             if (!response) {
                 restoreScreenCooldownAfterInputCancel();
-                console.log('[ProactiveChat] 等待请求头期间用户开始输入，取消本次搭话');
+                console.log('[ProactiveChat] 等待请求头期间用户开始输入或系统刚醒来，取消本次搭话');
                 return false;
             }
 

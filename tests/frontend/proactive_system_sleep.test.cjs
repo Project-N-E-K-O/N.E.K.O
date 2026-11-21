@@ -375,3 +375,31 @@ test('an inactive pass never shortens a longer pending quiet window', async () =
     pet.window.scheduleProactiveChat();
     assert.ok(pet.scheduledDelay() >= 299999 - 1000);
 });
+
+for (const mode of ['text', 'voice']) {
+    test(`${mode}: sleeping while the request headers are fetched cancels the send`, async () => {
+        const { pet } = setupLeaderAndFollower();
+        if (mode === 'voice') {
+            pet.appState.isRecording = true;
+            pet.appState._voiceProactiveNoResponseCount = 0;
+        }
+        let release;
+        pet.window.nekoLocalMutationSecurity = {
+            getMutationHeaders: () => new Promise((resolve) => { release = () => resolve({}); }),
+        };
+        pet.window.scheduleProactiveChat();
+        clock.now += pet.scheduledDelay();
+        const pending = pet.fire();   // on time: passes the tick checks
+        for (let i = 0; i < 20 && typeof release !== 'function'; i += 1) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+        assert.equal(typeof release, 'function', 'waiting for headers');
+        clock.now += 10 * 60 * 1000;  // machine sleeps during the await
+        release();
+        await pending;
+        assert.equal(proactiveFetches(pet), 0, 'no POST right after wake');
+        assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
+        assert.equal(pet.appState._voiceProactiveNoResponseCount || 0, 0);
+        assert.ok(pet.scheduledDelay() >= 59999, 'rescheduled after the quiet window');
+    });
+}
