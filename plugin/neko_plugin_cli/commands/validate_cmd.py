@@ -21,6 +21,7 @@ from plugin._types.plugin_types import (
     format_removed_plugin_host,
 )
 from plugin.core.entry_points import plugin_package_matches_directory
+from plugin.core.ui_manifest import PERMISSIONS as UI_PERMISSIONS
 from plugin.sdk.shared.core.push_message_schema import (
     LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS,
     LEGACY_PUSH_MESSAGE_POSITIONAL_FIELDS,
@@ -1022,9 +1023,10 @@ def _check_ui_surface(plugin_dir: Path, value: object, label: str, issues: list[
     if permissions is not None:
         _check_string_list(permissions, f"{label}.permissions", issues, required=False)
         if isinstance(permissions, list):
-            allowed = {"state:read", "config:read", "config:write", "action:call", "logs:read", "runs:read"}
+            # Same set and stripping the runtime uses, so check cannot drift from it.
+            # Blank entries already got the non-empty error from _check_string_list.
             for index, permission in enumerate(permissions):
-                if isinstance(permission, str) and permission not in allowed:
+                if isinstance(permission, str) and permission.strip() and permission.strip() not in UI_PERMISSIONS:
                     issues.append(("warning", f"{label}.permissions[{index}] is not a recognized permission: {permission}"))
     _check_optional_bool(value, "available", f"{label}.available", issues)
 
