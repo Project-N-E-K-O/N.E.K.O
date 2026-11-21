@@ -159,7 +159,7 @@ async def test_pinned_dsh_reuses_source_when_searching_retained_text(tmp_path):
         await runtime.shutdown()
 
 
-@pytest.mark.parametrize(("post_block", "retained"), [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize(("post_block", "retained"), [(False, False), (True, False), (True, True), ("replace", False)])
 async def test_pinned_native_job_output_checks_the_command_source(tmp_path, monkeypatch, post_block, retained):
     import re
 
@@ -202,6 +202,8 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path, monk
         block = """  ctx.on('tools/post-execute', (exec, result, next) =>
     exec.callId === 'output0' ? {kind: 'block', feedback: [{type: 'text', text: 'fixture post block'}]} : next())
 """
+        if post_block == "replace":
+            block = block.replace("{kind: 'block', feedback:", "{kind: 'accept', content:").replace("fixture post block", "status only")
         monkeypatch.setattr(profile, "GUARD_SOURCE", profile.GUARD_SOURCE.replace("  process.stderr.write", block + "  process.stderr.write"))
 
     async def action(_, payload):
@@ -221,7 +223,7 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path, monk
             return {"allow": True, "receipt": "original-command"}
         if retained and (payload["phase"], payload.get("receipt")) == ("finish", "read-1"):
             marker.touch()
-        return {"allow": post_block or (payload["phase"], payload.get("receipt")) != ("finish", "read-1")}
+        return {"allow": bool(post_block) or (payload["phase"], payload.get("receipt")) != ("finish", "read-1")}
 
     events = Recorder()
     runtime = DshRuntime(events, HostCallbacks(native_execution_action=action),
@@ -276,7 +278,8 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path, monk
         assert len(listed) == 2 and job_ids[0] in listed[0] and job_ids[0] not in listed[1], listed
         output = {m["tool_call_id"]: m["content"] for req in server.requests for m in req["messages"]
                   if m["role"] == "tool" and m.get("tool_call_id", "").startswith("output")}
-        assert ("fixture post block" if post_block else "could not be delivered") in output["output0"]
+        feedback = "status only" if post_block == "replace" else "fixture post block" if post_block else "could not be delivered"
+        assert feedback in output["output0"]
         assert "kept-job-text" not in output["output0"]
         if retained:
             assert saved_calls[0] == "output0" and len(saved_calls) == 2, saved_calls
@@ -520,5 +523,53 @@ async def test_pinned_dsh_workdir_reads_use_auto_or_the_explicit_rule(tmp_path, 
             assert update["title"] == "read" and update["kind"] == "other"
         options = ("session", "once", "deny") if configured == "first_ask" else ("once", "deny")
         assert questions == [("workdir_files", options)] * expected_asks
+    finally:
+        await runtime.shutdown()
+
+
+async def test_pinned_dsh_bounds_the_native_read_after_the_host_check(tmp_path, monkeypatch):
+    from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
+
+    binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
+    if not binary:
+        pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to the pinned dsh executable")
+    growing = tmp_path / "growing.log"
+    small = tmp_path / "small.log"
+    growing.write_text("small fixture", encoding="utf-8")
+    small.write_text("omitted-line\nrequested-line\nthird-line\n", encoding="utf-8")
+    retained_output = DshRuntime._retained_output
+
+    async def grow_before_native_read(runtime, token, request):
+        reply = await retained_output(runtime, token, request)
+        if request.get("call") == "growth" and request.get("action") == "read":
+            growing.write_bytes(b"private-growth-marker\n" + b"x" * READ_MAX_BYTES)
+        return reply
+
+    monkeypatch.setattr(DshRuntime, "_retained_output", grow_before_native_read)
+
+    async def allow(_, payload):
+        return {"allow": True, "receipt": "read-fixture"}
+
+    events = Recorder()
+    runtime = DshRuntime(events, HostCallbacks(native_execution_action=allow),
+                         launch=lambda: profile.DshLaunch(home=tmp_path / "dsh", executable=Path(binary)),
+                         environment={**os.environ, "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"})
+    replies = iter([[sse_tool_call("read", {"file_path": str(growing)}, "growth"), sse_finish("tool_calls")],
+                    [sse_tool_call("read", {"file_path": str(small), "offset": 2, "limit": 1}, "page"), sse_finish("tool_calls")],
+                    [sse_tool_call("edit", {"file_path": str(small), "old_string": "requested-line", "new_string": "edited-line"},
+                                   "edit-page"), sse_finish("tool_calls")],
+                    [sse_text("Done"), sse_finish()]])
+    try:
+        with FakeOpenAIServer(lambda _: next(replies)) as server:
+            spec = make_spec(tmp_path, model=ModelConfig(model="fixture", base_url=server.base_url,
+                                                         api_key="local", auto_extra_body=False))
+            await runtime.start(spec)
+            assert (await events.wait_for(lambda e: e["type"] in ("started", "error"), timeout=60))["type"] == "started"
+            await runtime.prompt(spec.session_id, "Read the two fixture logs.")
+            await events.wait_ended(spec.session_id, timeout=60)
+        rejected, page, edit = (request["messages"][-1]["content"] for request in server.requests[1:])
+        assert small.read_text(encoding="utf-8").splitlines()[1] == "edited-line", edit
+        assert "Use grep" in rejected and "private-growth-marker" not in rejected
+        assert "requested-line" in page and "omitted-line" not in page and "third-line" not in page
     finally:
         await runtime.shutdown()

@@ -135,6 +135,8 @@ GUARD_SOURCE = """\
 // N.E.K.O host as a permission request, and the host decides by its own
 // settings. Only the tools named in the configuration pass unasked; without
 // a configuration every tool is asked about.
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 export const name = 'nekoclaw-guard'
 
 export function apply(ctx, config) {
@@ -178,7 +180,7 @@ export function apply(ctx, config) {
   const jobReads = new WeakMap()
   const jobResults = new Map()
   if (executions.size) ctx.on('tools/result', (exec, result) => {
-    jobResults.get(identity(exec))?.(!result.isError)
+    jobResults.get(identity(exec))?.(result)
   })
   async function withJobRead(exec, execute) {
     if (exec.name !== 'job_output' || !exec.agent || exec.parent !== undefined) return execute()
@@ -199,11 +201,15 @@ export function apply(ctx, config) {
       cancelWait()
       if (!executing) finish(false)
     }
-    const finish = delivered => {
+    const finish = result => {
       if (jobResults.get(key) !== finish) return
       jobResults.delete(key)
       exec.signal.removeEventListener('abort', abort)
-      if (delivered) {
+      const expected = pending.path ? hint + ' ' + pending.path : pending.text
+      const shown = result && !result.isError && (!expected || result.content?.some(block =>
+        block.type === 'text' && (block.text === expected || block.text.startsWith(
+          expected.endsWith('\\n') ? expected : expected + '\\n'))))
+      if (shown) {
         delete pending.path
         delete pending.text
       }
@@ -256,6 +262,33 @@ export function apply(ctx, config) {
   })
   const hint = 'Use grep with a keyword to search this path in sections.'
   const failed = message => ({isError: true, error: {message}, content: [{type: 'text', text: message}]})
+  const nativeRead = new AsyncLocalStorage()
+  let boundedReads = false
+  if (executions.has('read')) ctx.inject(['fs'], scoped => {
+    const fs = scoped.get('fs')
+    const read = fs.readText, stream = fs.streamText
+    async function bounded(provider, target, signal) {
+      let bytes
+      try { bytes = await provider.readBytes(target, signal, config.readBytes) }
+      catch (error) {
+        if (error.code === 'FS_TOO_LARGE') throw new Error(hint)
+        throw error
+      }
+      if (bytes.length > config.readBytes) throw new Error(hint)
+      if (bytes.subarray(0, 8192).includes(0)) throw new Error('Cannot read a binary file.')
+      return new TextDecoder('utf-8', {fatal: true}).decode(bytes)
+    }
+    fs.readText = function(target, signal) {
+      return nativeRead.getStore() ? bounded(this, target, signal) : read.call(this, target, signal)
+    }
+    fs.streamText = async function(target, signal) {
+      if (!nativeRead.getStore()) return stream.call(this, target, signal)
+      const text = await bounded(this, target, signal)
+      return (async function* () { yield text })()
+    }
+    boundedReads = true
+    scoped.on('dispose', () => { boundedReads = false; fs.readText = read; fs.streamText = stream })
+  })
   if (executions.size) ctx.inject(['spillStore'], scoped => {
     const store = scoped.get('spillStore')
     const save = store.saveText
@@ -310,7 +343,9 @@ export function apply(ctx, config) {
             result = {value: {...latest.value, text: pending.path ? hint + ' ' + pending.path : pending.text}}
           }
         } else {
-          result ??= await next()
+          if (!result && exec.name === 'read') {
+            result = boundedReads ? await nativeRead.run(true, next) : failed('The bounded reader is unavailable.')
+          } else result ??= await next()
         }
         if (exec.name === 'job_list' && Array.isArray(result.value)) {
           const allowed = new Set((await request(session, exec.callId, 'list')).ids)

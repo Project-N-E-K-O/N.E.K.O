@@ -921,7 +921,6 @@ class DshRuntime:
             )
 
     async def _retained_output(self, token: str, request: dict[str, Any]) -> dict[str, Any]:
-        from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
         from nekoclaw.runtime.tools.base import ToolError
         from nekoclaw.runtime.tools.protected_outputs import OUTPUT_SCOPE, OutputScope
 
@@ -995,8 +994,6 @@ class DshRuntime:
             path = context.resolve(str(args.get("file_path") or args.get("path") or "."))
             output = spill.protected.get(path)
             if output is None:
-                if tool == "read" and path.is_file() and path.stat().st_size > READ_MAX_BYTES:
-                    return {"error": f"Use grep with a keyword (limit {READ_MAX_BYTES} bytes)."}
                 return {}
             try:
                 result = await offer.readers[tool].execute(call_id, args)

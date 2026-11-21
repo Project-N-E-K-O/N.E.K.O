@@ -129,10 +129,12 @@ async function check() {
     first.control.abort()  // No final result for this read.
     assert.equal((await last.result).value.text, 'first last ')
     hooks['tools/result'](first.exec, {})  // A late acknowledgement cannot consume the new batch.
-    hooks['tools/result'](last.exec, {})
+    hooks['tools/result'](last.exec, {content: [{type: 'text', text: 'first last '}]})
     const next = read('next')
     assert.equal((await next.result).value.text, 'next ')
-    hooks['tools/result'](next.exec, {})
+    hooks['tools/result'](next.exec, {content: [{type: 'text', text: 'post-policy status'}]})
+    const retried = read('retried')
+    assert.equal((await retried.result).value.text, 'next retried ')
 }
 const deadline = setTimeout(() => { console.error('job read queue stalled'); process.exit(1) }, 3000)
 check().catch(error => { console.error(error); process.exitCode = 1 }).finally(() => clearTimeout(deadline))

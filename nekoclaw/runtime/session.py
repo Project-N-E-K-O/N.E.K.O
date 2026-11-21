@@ -43,6 +43,7 @@ import os
 import sys
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1652,28 +1653,37 @@ class TaskAgentSession(SessionInbox):
         # The queue carries only the wake. Record the final approved view
         # once, at the same boundary as its delivery to the model.
         added_tokens = 0
-        for job_id, notice in list(self.jobs.pending_notices.items()):
-            if not notice.admitted or not isinstance(notice.handle, CustomMessage):
-                continue
-            job = self.jobs.get(job_id)
-            if not job.origin:
-                continue
-            async with job.output_lock:
-                if self.jobs.pending_notices.get(job_id) is not notice:
+        async with AsyncExitStack() as locks:
+            pending = []
+            for job_id, notice in list(self.jobs.pending_notices.items()):
+                if not notice.admitted or not isinstance(notice.handle, CustomMessage):
                     continue
-                if self._abort_requested or self._closing:
-                    return added_tokens
-                try:
-                    ruling = await self._host.call(self.session_id, "execution_action", {
-                        "phase": "job_notice", "receipt": job.origin,
-                    })
-                except Exception:
-                    ruling = {}
-                if self._abort_requested or self._closing:
-                    return added_tokens
-                self.jobs.pending_notices.pop(job_id, None)
+                job = self.jobs.get(job_id)
+                if not job.origin:
+                    continue
+                await locks.enter_async_context(job.output_lock)
+                if self.jobs.pending_notices.get(job_id) is notice:
+                    pending.append((job, notice))
+            if not pending or self._abort_requested or self._closing:
+                return 0
+            origins = [job.origin for job, _ in pending]
+            one = len(origins) == 1
+            payload = {"receipt": origins[0]} if one else {"receipts": origins}
+            try:
+                ruling = await self._host.call(self.session_id, "execution_action", {"phase": "job_notice", **payload})
+            except Exception:
+                ruling = {}
+            if self._abort_requested or self._closing:
+                return 0
+            if one:
+                allowed = set(origins) if ruling.get("allow") is True else set()
+            else:
+                approved = ruling.get("origins")
+                allowed = {r for r in approved if isinstance(r, str)} if isinstance(approved, list) else set()
+            for job, notice in pending:
+                self.jobs.pending_notices.pop(job.id, None)
                 saved = None
-                if ruling.get("allow") is True:
+                if job.origin in allowed:
                     notice.handle.content, inline, cursors = preview_completion_notice(self.jobs, job)
                     if inline is not None:
                         saved = functools.partial(self.jobs.commit, job, cursors)
@@ -1883,7 +1893,7 @@ class TaskAgentSession(SessionInbox):
             raise SessionError("the session is closed")
         if self.running:
             raise SessionError("a run is in progress")
-        if self.jobs.running():
+        if self.jobs.running() or self.jobs.waking():
             # What a background command says when it ends would come while
             # the conversation is summed up: it would reach no run, and
             # wait for whatever is said to the session next.

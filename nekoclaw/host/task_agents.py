@@ -5318,13 +5318,23 @@ class TaskAgentManager:
         if payload.get("phase") == "release" and native:
             session.job_sources.pop(payload.get("receipt"), None)
             return {"allow": False}
-        if payload.get("phase") in {"job_notice", "job_notice_live"} and not native:
+        if payload.get("phase") == "job_notice_live" and not native:
             source = session.job_sources.get(payload.get("receipt"))
-            if not source or not source[0]():
+            return {"allow": bool(source and source[0]())}
+        if payload.get("phase") == "job_notice" and not native:
+            batch = "receipts" in payload
+            receipts = payload["receipts"] if batch else [payload.get("receipt")]
+            if not isinstance(receipts, list) or not all(isinstance(r, str) for r in receipts):
                 return {"allow": False}
-            if payload["phase"] == "job_notice_live":
-                return {"allow": True}
-            return {"allow": await source[1]() and source[0]()}
+            checked = {}
+            for receipt in dict.fromkeys(receipts):
+                source = session.job_sources.get(receipt)
+                if source and source[0]() and await source[1]():
+                    checked[receipt] = source
+            # A later transfer may have waited on the ledger while an earlier
+            # source was revoked. Check the whole batch without yielding.
+            allowed = [r for r, source in checked.items() if session.job_sources.get(r) is source and source[0]()]
+            return {"origins": allowed} if batch else {"allow": bool(allowed)}
         if payload.get("phase") == "check":
             return {"allow": self._execution_audit.active(commission, session_id, payload.get("receipt"), kind=kind)}
         if payload.get("phase") == "finish":

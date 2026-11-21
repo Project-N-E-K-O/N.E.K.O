@@ -783,8 +783,9 @@ async def test_refused_job_output_is_unread_until_delivered(tmp_path):
         await session.close()
 
 
-async def test_closing_collects_pending_notices_after_process_settlement():
+async def test_closing_collects_pending_notices_after_process_settlement(tmp_path):
     from types import SimpleNamespace
+    from nekoclaw.runtime.session import SessionError
 
     reporting = asyncio.Event()
     released = asyncio.Event()
@@ -803,6 +804,16 @@ async def test_closing_collects_pending_notices_after_process_settlement():
     settled = registry.start("bash", "finished", process, foreground=False)
     await asyncio.wait_for(reporting.wait(), 2)
     assert registry.running() == [] and registry.waking() == [settled]
+    session, _ = await open_session(make_spec(tmp_path), ScriptedLLM([]), _host())
+    original_jobs = session.jobs
+    try:
+        # Only the in-flight completion notice keeps the session busy.
+        session.jobs = registry
+        with pytest.raises(SessionError, match="background command"):
+            session.compact()
+    finally:
+        session.jobs = original_jobs
+        await session.close()
     stopping = asyncio.Event()
     pending = SimpleNamespace(wait=stopping.wait, kill=stopping.set, kill_requested=True, signal_name=None)
     running = registry.start("bash", "running", pending, foreground=False)
@@ -983,5 +994,51 @@ async def test_notice_expansion_is_measured_and_fitted_before_model_request(tmp_
         assert "private-fixture-text" not in str(llm.requests)
         assert "private-fixture-text" not in str(session.transcript.messages)
         assert job.stdout_offset == 0
+    finally:
+        await session.close()
+
+
+async def test_job_notice_batch_rechecks_earlier_sources_before_delivery(tmp_path):
+    from types import SimpleNamespace
+    from nekoclaw.host.task_agents import TaskAgentManager
+    from nekoclaw.runtime.loop.messages import CustomMessage
+    from nekoclaw.runtime.tools.jobs import Job, PendingNotice
+
+    first_live = True
+
+    async def admit_first():
+        return True
+
+    async def admit_second():
+        nonlocal first_live
+        first_live = False
+        return True
+
+    sources = {"first": (lambda: first_live, admit_first), "second": (lambda: True, admit_second)}
+    host_session = SimpleNamespace(session_id="s1", closing=False, job_sources=sources)
+    manager = SimpleNamespace(_held_by={"s1": "work"}, _sessions={"work": host_session})
+
+    async def audit(session_id, payload):
+        return await TaskAgentManager._cb_execution_action(manager, session_id, payload)
+
+    llm = ScriptedLLM([[say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=audit))
+    jobs = session.jobs
+    try:
+        for key in sources:
+            stdout = procs.OutputBuffer(1024, lambda: None)
+            stdout.feed(f"private-{key}".encode())
+            proc = SimpleNamespace(stdout=stdout, stderr=procs.OutputBuffer(64, lambda: None))
+            job = Job(key, SHELL, "fixture", proc, 0, status="completed", origin=key)
+            jobs._jobs[key] = job
+            handle = CustomMessage(custom_type="notice:pending_job", content=f"{key} finished.", display=False)
+            jobs.pending_notices[key] = PendingNotice(handle, None, admitted=True)
+        session.prompt("Collect the fixtures.")
+        await events.wait_ended()
+        await session.flush()
+        assert not first_live
+        for view in (str(llm.requests), str(session.transcript.messages)):
+            assert "private-first" not in view and "first finished." in view and "private-second" in view
+        assert jobs.get("first").stdout_offset == 0 and jobs.get("second").stdout_offset > 0
     finally:
         await session.close()
