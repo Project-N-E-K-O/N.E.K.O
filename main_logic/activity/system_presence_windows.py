@@ -325,14 +325,17 @@ class _Watcher:
             if not self._hwnd:
                 self._fail(f'CreateWindowExW error {ctypes.get_last_error()}')
                 return
-            # Lock state first, so the display notification sent on registration
-            # meets a known lock state.
-            self._refresh_lock_state()
             if not wtsapi32.WTSRegisterSessionNotification(self._hwnd, NOTIFY_FOR_THIS_SESSION):
                 self._fail(f'WTSRegisterSessionNotification error {ctypes.get_last_error()}')
                 user32.DestroyWindow(self._hwnd)
                 return
             self._session_registered = True
+            # Read the initial lock state only after session notifications are
+            # registered: a lock in between is then either seen by the query or
+            # queued as a notification, never lost. Read it before registering
+            # the display notification so the initial display report (sent on
+            # registration) meets a known lock state.
+            self._refresh_lock_state()
             self._power_notify = user32.RegisterPowerSettingNotification(
                 self._hwnd, ctypes.byref(GUID_SESSION_DISPLAY_STATUS), DEVICE_NOTIFY_WINDOW_HANDLE,
             )

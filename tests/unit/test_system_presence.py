@@ -217,8 +217,7 @@ def test_watcher_start_failure_fails_open_and_logs_once(monkeypatch, fresh_singl
     fake = types.ModuleType("main_logic.activity.system_presence_windows")
     fake.start_watcher = boom
     monkeypatch.setitem(sys.modules, "main_logic.activity.system_presence_windows", fake)
-    import main_logic.activity as activity_pkg
-    monkeypatch.setattr(activity_pkg, "system_presence_windows", fake, raising=False)
+    monkeypatch.setattr(sys.modules["main_logic.activity"], "system_presence_windows", fake, raising=False)
 
     with caplog.at_level("WARNING", logger=sp.__name__):
         for _ in range(3):

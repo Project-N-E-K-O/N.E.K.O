@@ -33,8 +33,9 @@ function flush() {
     while (queue.length) queue.shift()();
 }
 
-function createWindow(pathname) {
+function createWindow(pathname, options = {}) {
     const timers = new Map();
+    const intervals = [];
     let nextTimer = 1;
     const listeners = { document: {}, window: {} };
     const fetches = [];
@@ -85,7 +86,12 @@ function createWindow(pathname) {
             return id;
         },
         clearTimeout(id) { timers.delete(id); },
-        setInterval() { return 0; },
+        setInterval(fn) {
+            // Heartbeat stays disabled unless a test drives it explicitly.
+            if (!options.captureIntervals) return 0;
+            intervals.push(fn);
+            return 1000 + intervals.length;
+        },
         clearInterval() {},
         fetch(url) {
             fetches.push(url);
@@ -105,6 +111,9 @@ function createWindow(pathname) {
     vm.runInContext(source, window, { filename: 'static/app/app-proactive.js' });
     return {
         window, appState, document, input, timers, fetches, listeners,
+        heartbeat() {
+            for (const fn of intervals) fn();
+        },
         emit(type, target) {
             for (const fn of listeners.document[type] || []) fn({ target });
         },
@@ -247,4 +256,51 @@ test('typing that keeps deferring a tick for minutes is not mistaken for sleep',
     }
     assert.equal(proactiveFetches(pet), 1, 'speaks once typing stops');
     assert.deepEqual(sleepLogs, [], 'input deferrals must not trip the sleep guard');
+});
+
+
+function setupLeaderAndFollower() {
+    channels.length = 0;
+    queue.length = 0;
+    clock.now = 1_000_000;
+    const pet = createWindow('/', { captureIntervals: true });
+    const chat = createWindow('/chat', { captureIntervals: true });
+    flush();
+    pet.heartbeat();
+    chat.heartbeat();
+    flush();
+    assert.equal(pet.window.isProactiveLeader(), true);
+    assert.equal(chat.window.isProactiveLeader(), false);
+    chat.window.scheduleProactiveChat();  // follower: leader recheck timer
+    pet.window.scheduleProactiveChat();   // leader: proactive tick
+    return { pet, chat };
+}
+
+test('follower taking over through its heartbeat right after wake keeps the quiet window', () => {
+    const { chat } = setupLeaderAndFollower();
+    clock.now += 10 * 60 * 1000;  // machine slept; the leader's heartbeat expired meanwhile
+    chat.heartbeat();
+    assert.equal(chat.window.isProactiveLeader(), true, 'follower takes over');
+    assert.ok(chat.scheduledDelay() >= 60000, 'new leader still waits out the wake quiet window');
+});
+
+test('follower taking over through its recheck timer right after wake keeps the quiet window', async () => {
+    const { chat } = setupLeaderAndFollower();
+    clock.now += 10 * 60 * 1000;
+    await chat.fire();  // recheck timer fires first on wake
+    assert.equal(chat.window.isProactiveLeader(), true);
+    assert.ok(chat.scheduledDelay() >= 60000);
+});
+
+test('regular heartbeats do not trigger the wall-clock sleep guard', () => {
+    const { pet, chat } = setupLeaderAndFollower();
+    for (let i = 0; i < 100; i += 1) {
+        clock.now += 5000;
+        pet.heartbeat();
+        chat.heartbeat();
+        flush();
+    }
+    assert.equal(pet.window.isProactiveLeader(), true);
+    pet.window.scheduleProactiveChat();
+    assert.ok(pet.scheduledDelay() < 20000, 'leader keeps the base interval without a clock jump');
 });

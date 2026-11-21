@@ -572,6 +572,28 @@
     }
     mod._proactiveTickMissedBySleep = _proactiveTickMissedBySleep;
 
+    // Every window also watches its own wall clock: the leader heartbeat runs
+    // every few seconds, so a gap above SYSTEM_SLEEP_LATE_FLOOR_MS between two
+    // checks means the machine slept. Without this a follower that takes over
+    // right after wake (the leader's heartbeat expired during sleep) would
+    // schedule a fresh tick with no quiet window. Each window detects the
+    // jump itself, so no cross-window state is needed. Only active while the
+    // heartbeat keeps the stamp fresh; otherwise a long idle gap would look
+    // like sleep. Known harmless false positive: a browser tab frozen by the
+    // page lifecycle (or a debugger pause) for over the floor gets 60s of quiet.
+    var _lastWallClockCheckAt = 0;
+
+    function _checkWallClockJump() {
+        if (!_proactiveLeaderHeartbeatTimer) return;
+        var now = Date.now();
+        var last = _lastWallClockCheckAt;
+        _lastWallClockCheckAt = now;
+        if (!last || now - last <= SYSTEM_SLEEP_LATE_FLOOR_MS) return;
+        var quietUntil = now + SYSTEM_RETURN_QUIET_MS;
+        if (!(_systemQuietUntil >= quietUntil)) _systemQuietUntil = quietUntil;
+        console.log('[ProactiveChat] Wall clock jumped ' + Math.round((now - last) / 1000) + 's (system sleep); staying quiet for ' + (SYSTEM_RETURN_QUIET_MS / 1000) + 's');
+    }
+
     function _isSystemInactivePass(result) {
         return !!(result && result.action === 'pass'
             && result.reason_code === PROACTIVE_REASON_PASS_SYSTEM_INACTIVE);
@@ -708,6 +730,8 @@
     if (_proactiveLeaderChannel) {
         _proactiveBroadcast('announce');
         _proactiveLeaderHeartbeatTimer = setInterval(function () {
+            // Before any takeover below: a woken follower must inherit the quiet window.
+            _checkWallClockJump();
             _proactiveBroadcast('heartbeat');
             // 心跳节奏顺手扫一下过期 peer，防止 leader 被关掉后 follower 不知情
             if (_purgeStaleProactivePeers()) {
@@ -924,6 +948,7 @@
      * 主动搭话定时触发功能
      */
     function scheduleProactiveChat() {
+        _checkWallClockJump();
         // 清除现有定时器
         if (S.proactiveChatTimer) {
             clearTimeout(S.proactiveChatTimer);
