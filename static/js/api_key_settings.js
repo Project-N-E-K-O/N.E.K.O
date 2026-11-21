@@ -331,6 +331,127 @@ function updateMimoTokenPlanControls() {
     keepApiSettingsBottomIfNeeded(wasAtBottom);
 }
 
+// ==================== 百炼业务空间 ID（决策模型原生接口） ====================
+// 百炼的原生决策接口只挂在带业务空间 ID 的专属域名上；没填时后端用普通聊天模型代替。
+// 北京（qwen）和新加坡（qwen_intl）各存一份，输入框只编辑决策模型当前实际用的那一份。
+const BAILIAN_WORKSPACE_ID_FIELDS = {
+    qwen: 'assistWorkspaceIdQwen',
+    qwen_intl: 'assistWorkspaceIdQwenIntl',
+};
+// 与后端 utils/decision_client/workspace.py 一致：单个 DNS 标签，字母数字和 -，最长 63。
+const BAILIAN_WORKSPACE_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const _bailianWorkspaceIds = { assistWorkspaceIdQwen: '', assistWorkspaceIdQwenIntl: '' };
+// 决定决策模型实际服务商的控件；任一变化都要刷新业务空间 ID 行。
+const BAILIAN_WORKSPACE_PROVIDER_SELECTS = ['assistApiSelect', 'coreApiSelect', 'decisionModelProvider', 'enableCustomApi'];
+let _bailianWorkspaceActiveField = '';
+
+// 用户常直接粘贴整个 API Host（llm-xxx.cn-beijing.maas.aliyuncs.com，可带 https:// 和路径），取最前面那段。
+const BAILIAN_API_HOST_PATTERN = /^(?:https:\/\/)?([^./:\s]+)\.[a-z0-9-]+\.maas\.aliyuncs\.com(?:[/:?#].*)?$/i;
+
+function normalizeBailianWorkspaceId(value) {
+    let raw = String(value || '').trim();
+    if (!raw) return { value: '', valid: true };
+    const hostMatch = BAILIAN_API_HOST_PATTERN.exec(raw);
+    if (hostMatch) raw = hostMatch[1];
+    const lowered = raw.toLowerCase();
+    // eslint-disable-next-line no-control-regex
+    const ascii = /^[\x00-\x7f]*$/.test(raw);
+    return { value: lowered, valid: ascii && BAILIAN_WORKSPACE_ID_PATTERN.test(lowered) };
+}
+
+function getDecisionEffectiveProviderKey() {
+    const assistSel = document.getElementById('assistApiSelect');
+    const assistApi = assistSel ? assistSel.value : '';
+    const enableCustomApi = document.getElementById('enableCustomApi');
+    if (!enableCustomApi || !enableCustomApi.checked) return assistApi;
+    const decisionSel = document.getElementById('decisionModelProvider');
+    const selected = decisionSel ? decisionSel.value : '';
+    if (!selected || selected === 'follow_assist') return assistApi;
+    if (selected === 'follow_core') {
+        const coreSel = document.getElementById('coreApiSelect');
+        return coreSel ? coreSel.value : '';
+    }
+    if (selected === 'custom') return '';
+    return selected;
+}
+
+function getBailianWorkspaceIdForProvider(providerKey) {
+    const field = BAILIAN_WORKSPACE_ID_FIELDS[providerKey];
+    if (!field) return '';
+    const raw = String(_bailianWorkspaceIds[field] || '').trim();
+    const { value, valid } = normalizeBailianWorkspaceId(raw);
+    // 非法值原样交给后端，由后端返回 invalid_workspace_id，不在前端悄悄改写。
+    return valid ? value : raw;
+}
+
+function getBailianWorkspaceDocUrl(providerKey) {
+    // 「迁移至业务空间专属域名」一节说明了在哪里复制 API Host（即业务空间专属域名）。
+    if (providerKey === 'qwen') {
+        return 'https://help.aliyun.com/zh/model-studio/regions#h2_migrate_domain';
+    }
+    const lang = String((window.i18next && window.i18next.language) || document.documentElement.lang || '').toLowerCase();
+    const docLang = lang.startsWith('zh') ? 'zh' : 'en';
+    return `https://www.alibabacloud.com/help/${docLang}/model-studio/regions#h2_migrate_domain`;
+}
+
+function updateBailianWorkspaceControls() {
+    const row = document.getElementById('bailianWorkspaceRow');
+    const input = document.getElementById('bailianWorkspaceIdInput');
+    if (!row || !input) return;
+    const providerKey = getDecisionEffectiveProviderKey();
+    const field = BAILIAN_WORKSPACE_ID_FIELDS[providerKey] || '';
+    if (field !== _bailianWorkspaceActiveField) {
+        input.value = field ? (_bailianWorkspaceIds[field] || '') : '';
+        _bailianWorkspaceActiveField = field;
+    }
+    row.style.display = field ? 'flex' : 'none';
+    const link = document.getElementById('bailianWorkspaceIdDocLink');
+    if (link && field) link.href = getBailianWorkspaceDocUrl(providerKey);
+    updateBailianWorkspaceValidity();
+}
+
+function updateBailianWorkspaceValidity() {
+    const input = document.getElementById('bailianWorkspaceIdInput');
+    const errorEl = document.getElementById('bailianWorkspaceIdError');
+    if (!input) return true;
+    const { valid } = normalizeBailianWorkspaceId(input.value);
+    if (errorEl) errorEl.style.display = valid ? 'none' : 'block';
+    input.setAttribute('aria-invalid', valid ? 'false' : 'true');
+    return valid;
+}
+
+function onBailianWorkspaceInput() {
+    const input = document.getElementById('bailianWorkspaceIdInput');
+    if (!input || !_bailianWorkspaceActiveField) return;
+    _bailianWorkspaceIds[_bailianWorkspaceActiveField] = input.value.trim();
+    updateBailianWorkspaceValidity();
+}
+
+function applyLoadedBailianWorkspaceIds(data) {
+    Object.values(BAILIAN_WORKSPACE_ID_FIELDS).forEach(field => {
+        _bailianWorkspaceIds[field] = typeof data[field] === 'string' ? data[field] : '';
+    });
+    _bailianWorkspaceActiveField = '';
+    updateBailianWorkspaceControls();
+}
+
+/**
+ * 保存用：提交合法的业务空间 ID。当前显示的那份非法时返回 null 让保存中止；
+ * 切走后看不到的那份非法值不提交（服务端保留原值），免得用户看不到原因却存不了。
+ */
+function bailianWorkspacePayload() {
+    const payload = {};
+    for (const field of Object.values(BAILIAN_WORKSPACE_ID_FIELDS)) {
+        const { value, valid } = normalizeBailianWorkspaceId(_bailianWorkspaceIds[field]);
+        if (valid) {
+            payload[field] = value;
+        } else if (field === _bailianWorkspaceActiveField) {
+            return null;
+        }
+    }
+    return payload;
+}
+
 function isAliyunUsApiUrl(url) {
     const rawUrl = String(url || '').trim();
     if (!rawUrl) return false;
@@ -845,6 +966,10 @@ function buildProviderSelectDropdownMenu(select) {
 }
 
 function syncProviderSelectDropdowns(targetSelect = null, { rebuild = false } = {}) {
+    // 下拉框被程序改值（加载配置、联动）时不会触发 change，这里顺手刷新业务空间 ID 行。
+    if (!targetSelect || BAILIAN_WORKSPACE_PROVIDER_SELECTS.includes(targetSelect.id)) {
+        updateBailianWorkspaceControls();
+    }
     const selects = targetSelect
         ? [targetSelect]
         : Array.from(document.querySelectorAll('.api-provider-select[data-dropdown-enhanced="true"]'));
@@ -2799,6 +2924,7 @@ async function loadCurrentApiKey() {
                 setSecretInputValue('mimoTokenPlanKeyInput', data.assistApiKeyMimoTokenPlan);
             }
             updateMimoTokenPlanControls();
+            applyLoadedBailianWorkspaceIds(data);
 
             // Sync the core API key into the Key Book for the selected core provider
             // so autoFillCoreApiKey() can find it later
@@ -3483,6 +3609,25 @@ document.addEventListener('DOMContentLoaded', function () {
     if (enableCustomApi) {
         enableCustomApi.addEventListener('change', () => toggleCustomApi());
     }
+    document.addEventListener('change', (event) => {
+        const target = event.target;
+        if (target && BAILIAN_WORKSPACE_PROVIDER_SELECTS.includes(target.id)) {
+            updateBailianWorkspaceControls();
+        }
+    });
+    const bailianWorkspaceInput = document.getElementById('bailianWorkspaceIdInput');
+    if (bailianWorkspaceInput) {
+        bailianWorkspaceInput.addEventListener('input', onBailianWorkspaceInput);
+        // 失焦时把粘贴的 API Host 等写法收成规范 ID，让用户看到实际会保存的值。
+        bailianWorkspaceInput.addEventListener('blur', () => {
+            const { value, valid } = normalizeBailianWorkspaceId(bailianWorkspaceInput.value);
+            if (valid && value !== bailianWorkspaceInput.value) {
+                bailianWorkspaceInput.value = value;
+                onBailianWorkspaceInput();
+                bailianWorkspaceInput.dispatchEvent(new Event('change'));
+            }
+        });
+    }
     ['ttsModelProvider', 'ttsModelUrl', 'ttsModelId', 'ttsModelApiKey', 'ttsVoiceId'].forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -3546,6 +3691,18 @@ async function save_button_down(e) {
 
     if (e && e.preventDefault) e.preventDefault();
     if (_apiSaveInProgress) return;
+
+    const workspacePayload = bailianWorkspacePayload();
+    if (!workspacePayload) {
+        updateBailianWorkspaceControls();
+        const workspaceInput = document.getElementById('bailianWorkspaceIdInput');
+        if (workspaceInput) {
+            workspaceInput.scrollIntoView({ block: 'center' });
+            workspaceInput.focus();
+        }
+        showStatus(window.t ? window.t('api.bailianWorkspaceIdInvalid') : '百炼业务空间 ID 格式不对：只能包含字母、数字和 -，最长 63 个字符', 'error');
+        return;
+    }
 
     const apiKeyInput = document.getElementById('apiKeyInput');
 
@@ -3757,6 +3914,7 @@ async function save_button_down(e) {
         mcpToken, enableCustomApi,
         useMimoTokenPlan,
         assistApiKeyMimoTokenPlan: mimoTokenPlanKey,
+        ...workspacePayload,
         resolvedProviderUrls: _resolvedProviderUrls,
         ...modelProviders
     };
@@ -4660,6 +4818,21 @@ function updateLightStatus(lightElement, status) {
     }
 }
 
+/** 决策槽位检测走了聊天回退时，指示灯提示里追加的说明；其他情况返回空串。 */
+function getDecisionFallbackNote(reason) {
+    if (reason === 'workspace_missing') {
+        return window.t
+            ? window.t('connectivity.decisionFallback.workspace_missing')
+            : '未填百炼业务空间 ID，决策模型暂用聊天模型';
+    }
+    if (reason === 'region_unsupported') {
+        return window.t
+            ? window.t('connectivity.decisionFallback.region_unsupported')
+            : '当前地域没有原生决策接口，决策模型用聊天模型';
+    }
+    return '';
+}
+
 // ==================== 连通性测试：错误信息展示 UI 组件 ====================
 
 /**
@@ -4725,7 +4898,9 @@ function buildConnectivityCacheId(scope, providerKey, key, url, model = '') {
     // decision 槽位使用独立 scope + model 维度的缓存键，避免与普通聊天 assist 灯混用。
     if (scope && providerKey) {
         if (scope === 'decision') {
-            return `${scope}|${providerKey}|${key || ''}|${model || ''}`;
+            // 百炼的决策地址由业务空间 ID 决定，换 ID 必须换一份检测结果。
+            const workspaceId = getBailianWorkspaceIdForProvider(providerKey);
+            return `${scope}|${providerKey}|${key || ''}|${model || ''}|${workspaceId}`;
         }
         return `${scope}|${providerKey}|${key || ''}`;
     }
@@ -4762,6 +4937,8 @@ const ConnectivityManager = {
 
     /** Key → 错误信息映射 { error_code, error } */
     keyErrorMap: {},
+    /** Key → 决策槽位聊天回退说明（workspace_missing / region_unsupported），没有则为 null */
+    keyNoteMap: {},
 
     /** Key → 指示灯 DOM 元素列表映射 */
     keyLightsMap: {},
@@ -5140,6 +5317,12 @@ const ConnectivityManager = {
                     if (provider_scope === 'decision' && model) {
                         body.model = model;
                     }
+                    if (provider_scope === 'decision' && BAILIAN_WORKSPACE_ID_FIELDS[provider_key]) {
+                        body.workspace_id = getBailianWorkspaceIdForProvider(provider_key);
+                        // 带上 Key 实际解析到的聊天端点（如国际版落在美国地域），
+                        // 后端按运行时同一规则判断能否走业务空间专属域名。
+                        if (url) body.url = url;
+                    }
                     if ((provider_scope === 'assist' || provider_scope === 'decision') && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
                         body.url = overrideUrl;
                     }
@@ -5178,6 +5361,10 @@ const ConnectivityManager = {
                 }
 
                 const data = await response.json();
+                if (cacheId) {
+                    // 决策槽位按聊天模型检测通过时，灯的提示里注明「聊天模型代替」。
+                    this.keyNoteMap[cacheId] = data.success ? (data.decision_fallback || null) : null;
+                }
                 return {
                     success: !!data.success,
                     error: data.error || null,
@@ -5327,8 +5514,11 @@ const ConnectivityManager = {
             results: {}
         };
 
-        // 并发测试所有唯一配置
-        const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
+        // 并发测试所有唯一配置。百炼决策检测要用辅助 API 实际解析到的地域端点
+        // （国际版可能落在美国），所以等第一批检测跑完、解析结果记下来之后再测。
+        const isBailianDecision = (config) => config.provider_scope === 'decision'
+            && !!BAILIAN_WORKSPACE_ID_FIELDS[config.provider_key];
+        const runOne = async ([cacheId, config]) => {
             const result = await this.testKey({ ...config, cache_id: cacheId });
             if (result.cancelled) {
                 return {
@@ -5363,7 +5553,16 @@ const ConnectivityManager = {
                 provider_scope: config.provider_scope || '',
                 resolved_url: result.resolved_url || ''
             };
+        };
+        const entries = Object.entries(keyConfigs);
+        const firstWave = entries.filter(([, config]) => !isBailianDecision(config)).map(runOne);
+        const deferredWave = entries.filter(([, config]) => isBailianDecision(config)).map(async ([cacheId, config]) => {
+            await Promise.allSettled(firstWave);
+            const pInfo = getProviderInfo(config.provider_key);
+            const resolvedUrl = getProviderOpenrouterUrl(config.provider_key, pInfo);
+            return runOne([cacheId, resolvedUrl ? { ...config, url: resolvedUrl } : config]);
         });
+        const testPromises = [...firstWave, ...deferredWave];
 
         const settledResults = await Promise.allSettled(testPromises);
         settledResults.forEach(item => {
@@ -5396,8 +5595,22 @@ const ConnectivityManager = {
         const lights = this.keyLightsMap[key] || [];
         console.log(`[ConnectivityManager] syncLightsForKey: status=${status}, lights=${lights.length}`);
         lights.forEach(light => {
-            updateLightStatus(light, status);
+            this.applyStatusToLight(light, key, status);
         });
+    },
+
+    /**
+     * 设置指示灯状态；决策槽位按聊天模型检测通过时在提示里追加说明。
+     * 同步、从缓存恢复、汇总灯都走这里，说明不会在切换后丢失。
+     */
+    applyStatusToLight(light, key, status) {
+        updateLightStatus(light, status);
+        const note = status === LightStatus.CONNECTED ? getDecisionFallbackNote(this.keyNoteMap[key]) : '';
+        if (!note) return;
+        light.title = `${light.title} · ${note}`;
+        if (light.classList.contains('connectivity-summary-light')) {
+            light.setAttribute('aria-label', light.title);
+        }
     },
 
     /**
@@ -5566,7 +5779,7 @@ function initConnectivityLights() {
             // 有 key 或有 URL → 检查缓存，有缓存用缓存，无缓存显示黄色
             const cachedStatus = ConnectivityManager.keyStatusMap[cacheId];
             if (cachedStatus) {
-                updateLightStatus(light, cachedStatus);
+                ConnectivityManager.applyStatusToLight(light, cacheId, cachedStatus);
                 const errorInfo = ConnectivityManager.keyErrorMap[cacheId];
                 if (errorInfo) {
                     updateErrorMessage(errorDisplay, errorInfo.error_code, errorInfo.error);
@@ -5609,7 +5822,7 @@ function initConnectivityLights() {
         // Re-register summary light to the new key
         if (summaryLight && newKey) {
             ConnectivityManager.registerLight(newKey, summaryLight);
-            summaryLight.dataset.status = light.dataset.status;
+            ConnectivityManager.applyStatusToLight(summaryLight, newKey, light.dataset.status || LightStatus.NOT_CONFIGURED);
         } else if (summaryLight) {
             summaryLight.dataset.status = LightStatus.NOT_CONFIGURED;
         }
@@ -5858,7 +6071,7 @@ function initConnectivityLights() {
             // Set initial status to match the main light
             summaryLight.dataset.status = light.dataset.status;
             summaryLight.dataset.tooltipLabel = getCustomModelDisplayLabel(mt);
-            updateLightStatus(summaryLight, light.dataset.status || LightStatus.NOT_CONFIGURED);
+            ConnectivityManager.applyStatusToLight(summaryLight, key, light.dataset.status || LightStatus.NOT_CONFIGURED);
         }
         if (summaryLight) {
             lightRefs.custom[mt].summaryLight = summaryLight;
@@ -5993,6 +6206,16 @@ function initConnectivityLights() {
             input.addEventListener('change', handleCustomEndpointChange);
         });
     });
+
+    // 百炼业务空间 ID 决定决策模型的检测地址：改 ID 后重新登记决策槽位的灯。
+    const bailianWorkspaceInput = document.getElementById('bailianWorkspaceIdInput');
+    if (bailianWorkspaceInput) {
+        const handleBailianWorkspaceChange = debounce(() => {
+            if (lightRefs.custom.decision) reRegisterModelSlot('decision');
+        }, 300);
+        bailianWorkspaceInput.addEventListener('input', handleBailianWorkspaceChange);
+        bailianWorkspaceInput.addEventListener('change', handleBailianWorkspaceChange);
+    }
 
     // ===== Task 8.2: Provider switch event binding =====
 
