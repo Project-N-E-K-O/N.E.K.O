@@ -69,7 +69,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
-import itertools
 import json
 import logging
 import sqlite3
@@ -1223,11 +1222,6 @@ class TaskAgentManager:
         # moment, or that a commission is being put on record with a copy
         # of, each with how many: nothing else starts in them meanwhile.
         self._handing_back_to: dict[str, int] = {}
-        # In which order commissions were queued for their sessions as they
-        # were handed over (``submit``): one that comes back from a copy it
-        # was to be carried on in goes back in that order.
-        self._queued_order: dict[str, int] = {}
-        self._queued_count = itertools.count()
         self._starting: set[asyncio.Task[Any]] = set()
         self._control_settlements: set[asyncio.Task[None]] = set()
         self._read_corrections: dict[str, tuple[call_audit.Call, str, str | None]] = {}
@@ -1628,7 +1622,6 @@ class TaskAgentManager:
                 await self._ledger.transition(commission.id, "failed", reason=_NO_PLACE_REASON)
                 return False
             self._queue.append(commission.id)
-            self._queued_order[commission.id] = next(self._queued_count)
             queued: dict[str, Any] = {"ahead": len(self._queue) - 1}
             holder = self._held_by.get(self._session_of.get(commission.id, ""))
             if holder is not None and holder != commission.id:
@@ -1977,6 +1970,7 @@ class TaskAgentManager:
         if back:
             parts.append(texts.TASK_AGENT_COMMISSION_BACK)
         earlier = await self._ledger.get(commission.continues) if commission.continues else None
+        in_copy = ""
         if earlier is not None:
             if cleared:
                 result = truncate_to_tokens(
@@ -1987,12 +1981,14 @@ class TaskAgentManager:
             elif commission.session_id and earlier.session_id and await self._not_above(earlier, commission.session_id):
                 # Worked on in a copy of this session, or of the session this
                 # is a copy of (it was followed up there, and this went to
-                # the session itself): nothing of it is above.
+                # the session itself): nothing of it is above. Said past the
+                # cap below, whole: it is put on record as told
+                # (``_copies_said``), and is within a cap of its own.
                 result = truncate_to_tokens(
                     earlier.result_summary or earlier.status_reason or earlier.status,
                     TASK_AGENT_CONTINUED_RESULT_MAX_TOKENS,
                 )
-                parts.append(texts.TASK_AGENT_COMMISSION_CONTINUES_IN_COPY.format(title=earlier.title, result=result))
+                in_copy = texts.TASK_AGENT_COMMISSION_CONTINUES_IN_COPY.format(title=earlier.title, result=result)
             else:
                 parts.append(texts.TASK_AGENT_COMMISSION_CONTINUES.format(title=earlier.title))
         preferences = await self._preferences.render(f"{commission.dispatch_text}\n{commission.user_text}")
@@ -2001,6 +1997,8 @@ class TaskAgentManager:
         capped = truncate_to_tokens("\n\n".join(parts), TASK_AGENT_BRIEF_MAX_TOKENS) if parts else ""
         opening = "\n\n".join(part for part in (whole, capped) if part)
         # After the cap above, each within a cap of its own.
+        if in_copy:
+            opening += "\n\n" + in_copy
         if copies:
             opening += "\n\n" + copies
         if excerpt:
@@ -3309,7 +3307,6 @@ class TaskAgentManager:
         # What its opening message was to tell of copies: said with the next
         # one, should this one's not have been taken.
         self._forks_said.pop(commission_id, None)
-        self._queued_order.pop(commission_id, None)
         self._drop_search_ruling(commission_id)
         if self._gateway is not None:
             self._gateway.revoke(commission_id)
@@ -8000,13 +7997,21 @@ class TaskAgentManager:
         return len(at_work | self._copying_for.get(session_id, set()))
 
     def _waits_for(self, commission_id: str, session_id: str) -> bool:
-        """Whether a commission is queued for a session that another commission holds, and nothing else."""
+        """Whether a commission is queued for a session that another commission holds, and nothing else.
+
+        Held by another commission, that is: not only kept from starting
+        while a commission is being put back among those that wait for it
+        (``_handing_back_to``), which is over in a moment, and after which
+        it starts there in its turn.
+        """
+        holder = self._held_by.get(session_id)
         return (
             commission_id in self._queue
             and commission_id not in self._sessions
             and commission_id not in self._resume
             and self._session_of.get(commission_id) == session_id
-            and not self._session_free_for(commission_id)
+            and holder is not None
+            and holder != commission_id
         )
 
     def _try_carry_on(self, commission: Commission) -> None:
@@ -8090,6 +8095,8 @@ class TaskAgentManager:
         def may() -> bool:
             return (
                 worth_it()
+                # Its record cleared meanwhile: the copy holds what is gone.
+                and kept.status != "cleared"
                 and self._waits_for(commission_id, main)
                 and not self._closed
                 and len(self._sessions) < self.limit
@@ -8229,20 +8236,22 @@ class TaskAgentManager:
                 del self._held_by[copy.id]
             self._session_of[commission_id] = main
             if commission_id not in self._queue:
-                # In front of the first of the same session that was queued
-                # after it (or whose order is not known here: later), behind
-                # those queued before it, wherever the queue stands now.
-                own = self._queued_order.get(commission_id)
-                at = next(
-                    (
-                        index
-                        for index, item in enumerate(self._queue)
-                        if self._session_of.get(item) == main
-                        and (own is None or self._queued_order.get(item, own + 1) > own)
-                    ),
-                    len(self._queue),
-                )
-                self._queue.insert(at, commission_id)
+                # Back among those that wait for the session itself, in the
+                # order the ledger took them (a commission handed back, or
+                # queued again after a restart, included), as one handed
+                # back is (``_put_back_in_order``); nothing starts in the
+                # session meanwhile (``_handing_back_to``). Where that order
+                # cannot be read, at the end.
+                self._queue.append(commission_id)
+                try:
+                    filed = await self._ledger.filed_order(
+                        [item for item in list(self._queue) if self._session_of.get(item) == main]
+                    )
+                except Exception:  # noqa: BLE001 - it waits at the end of the queue, which is all that is lost
+                    logger.warning("reading in which order commissions were filed failed", exc_info=True)
+                    filed = {}
+                if commission_id in filed:
+                    self._put_back_in_order(commission_id, main, filed)
             await self._discard_copy(copy)
             return False
         return True

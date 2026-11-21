@@ -703,7 +703,12 @@ def test_a_commission_is_counted_once_while_it_is_both_copied_for_and_at_work_in
     del manager._sessions["c1"]
 
 
-async def test_a_follow_up_that_is_work_goes_to_the_session_itself_and_waits_for_it(hosts, tmp_path, monkeypatch):
+@pytest.mark.parametrize("brief", [None, 40], ids=["brief", "brief_cut_short"])
+async def test_a_follow_up_that_is_work_goes_to_the_session_itself_and_waits_for_it(hosts, tmp_path, monkeypatch, brief):
+    if brief is not None:
+        # What the line that tells of the commission it follows up is said
+        # past: put on record as told, it is said whole.
+        monkeypatch.setattr(settings, "TASK_AGENT_BRIEF_MAX_TOKENS", brief)
     release, wait = _gate()
     decisions = FakeDecisionLLM()
     # The question is a side question; what follows it up is work.
@@ -1411,3 +1416,186 @@ def test_what_copies_did_is_said_within_the_limit_with_the_user_words_cut():
     for number in (1, 2, 3):
         assert f"in session copy{number:04d}" in said
     assert _forked_work_text([], []) == ""
+
+
+@pytest.mark.parametrize("judge", ["fails", "none"])
+async def test_a_commission_waits_for_its_session_where_nothing_tells_it_is_a_side_question(hosts, tmp_path, monkeypatch, judge):
+    release, wait = _gate()
+    scripts = {EXPORT: ScriptedLLM([[wait, *_report("export added")]]), FILES: ScriptedLLM([_report("tables.py")])}
+    host = _host(hosts, tmp_path, scripts)
+
+    async def failing(dispatch_text: str, user_text: str) -> bool | None:
+        raise RuntimeError("down")
+
+    host.task_agents.set_side_question_judge(failing if judge == "fails" else None)
+    copied = _copies_made(host, monkeypatch)
+    first = await _export_at_work(host, scripts)
+    second = await _dispatch(host, FILES)
+    await _decided(host)
+    assert copied == []
+    assert (await host.ledger.get(second.id)).status == "queued"
+    release.set()
+    assert (await wait_status(host, second.id, "done")).session_id == first.session_id
+
+
+async def test_what_a_copy_finished_while_the_session_asks_with_the_question_tool_is_told_once_it_goes_on(hosts, tmp_path):
+    question = {"questions": [{"id": "cols", "question": "Which columns?", "options": [{"label": "A"}, {"label": "B"}]}]}
+    scripts = {
+        EXPORT: ScriptedLLM(
+            [
+                [call("ask_user_question", question, "call-q"), finish("tool_calls")],
+                [call("glob", {"pattern": "*.py"}, "call-x"), finish("tool_calls")],
+                _report("export added", "call-y"),
+            ]
+        ),
+        FILES: ScriptedLLM([_report("tables.py")]),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    await host.space.touch_project("Budget app")
+    first = await _dispatch(host, EXPORT)
+    await wait_status(host, first.id, "waiting_user")
+    second = await _filed(host, FILES)
+    done = await wait_status(host, second.id, "done")
+    await _decided(host)
+    # Its run waits in the middle of a tool call: nothing is said to it meanwhile.
+    assert "told_of_copies" not in await _types(host, first.id)
+    assert await host.task_agents.answer(first.id, "A")
+    await wait_status(host, first.id, "done")
+    said = [text for request in scripts[EXPORT].requests[1:] for text in _said(request)]
+    news = [text for text in said if brain_texts.TASK_AGENT_FORKED_WORK.split("{items}")[0] in text]
+    assert len(news) == 1 and f'The user asked "{_words(done)}" (answered' in news[0]
+
+
+async def test_a_session_whose_run_is_over_while_it_waits_for_its_jobs_is_not_woken_to_be_told(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM(
+            [[wait, call("glob", {"pattern": "*.py"}, "call-x"), finish("tool_calls")], _report("export added", "call-y")]
+        ),
+        FILES: ScriptedLLM([_report("tables.py")]),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    first = await _export_at_work(host, scripts)
+    # As it stands when its run ended with jobs of its own still running, whose end starts the next.
+    host.task_agents._sessions[first.id].idle = True
+    second = await _dispatch(host, FILES)
+    done = await wait_status(host, second.id, "done")
+    await _decided(host)
+    assert "told_of_copies" not in await _types(host, first.id)
+    assert host.task_agents._copy_news
+    # Told once it is at work again.
+    release.set()
+    await wait_status(host, first.id, "done")
+    assert f'The user asked "{_words(done)}" (answered' in "\n".join(_said(scripts[EXPORT].requests[1]))
+
+
+async def test_a_copy_finished_while_another_is_put_on_record_after_the_session_came_free_is_not_taken(
+    hosts, tmp_path, monkeypatch
+):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        FILES: ScriptedLLM([_report("tables.py")]),
+        "list the reports": ScriptedLLM([_report("reports")]),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    manager, ledger = host.task_agents, host.ledger
+    first = await _export_at_work(host, scripts)
+    main = first.session_id
+    append = ledger.append_event
+    writing, written = asyncio.Event(), asyncio.Event()
+    held: list[str] = []
+
+    async def slow(commission_id: str, kind: str, payload: Any = None) -> Any:
+        if kind == "carried_on_in_copy" and not held:
+            held.append(commission_id)
+            writing.set()
+            await written.wait()
+        return await append(commission_id, kind, payload)
+
+    monkeypatch.setattr(ledger, "append_event", slow)
+    fork_of = manager.fork_session
+    copying, copied = asyncio.Event(), asyncio.Event()
+    forks: list[Any] = []
+
+    async def gated(*args: Any, **kwargs: Any) -> Any:
+        forks.append(args)
+        if len(forks) == 2:
+            copying.set()
+            await copied.wait()
+        return await fork_of(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "fork_session", gated)
+    earlier = await _dispatch(host, FILES)
+    await asyncio.wait_for(writing.wait(), 10)
+    later = await _dispatch(host, "list the reports")
+    await asyncio.wait_for(copying.wait(), 10)
+    # The session comes free while the earlier one is being put on record with its copy.
+    release.set()
+    await wait_status(host, first.id, "done")
+    await wait_until(lambda: manager._held_by.get(main) is None, what="the session let go")
+    # The later copy is made now: the session is free, so it is not taken.
+    copied.set()
+    await wait_until(lambda: later.id not in manager._copying_for.get(main, set()), what="the later copy looked at")
+    written.set()
+    assert (await wait_status(host, earlier.id, "done")).session_id != main
+    assert (await wait_status(host, later.id, "done")).session_id == main
+    assert "carried_on_in_copy" not in await _types(host, later.id)
+
+
+async def test_a_session_cleared_while_it_is_copied_is_not_carried_on_in(hosts, tmp_path, monkeypatch):
+    release, wait = _gate()
+    scripts = {EXPORT: ScriptedLLM([[wait, *_report("export added")]]), FILES: ScriptedLLM([_report("tables.py")])}
+    host = _host(hosts, tmp_path, scripts)
+    manager = host.task_agents
+    first = await _export_at_work(host, scripts)
+    fork_of = manager.fork_session
+
+    async def clearing(*args: Any, **kwargs: Any) -> Any:
+        made = await fork_of(*args, **kwargs)
+        await host.ledger.update_session(first.session_id, status="cleared")
+        return made
+
+    monkeypatch.setattr(manager, "fork_session", clearing)
+    second = await _dispatch(host, FILES)
+    await _decided(host)
+    assert (await host.ledger.get(second.id)).status == "queued"
+    assert "carried_on_in_copy" not in await _types(host, second.id)
+    release.set()
+    await wait_status(host, second.id, "done", "failed", "blocked")
+
+
+async def test_a_copy_that_cannot_be_put_on_record_goes_back_behind_one_handed_back_before_it(hosts, tmp_path, monkeypatch):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        RENAME: ScriptedLLM(
+            [
+                [call("write", {"file_path": "chart.py", "content": "x"}, "call-1"), finish("tool_calls")],
+                [say("It is in chart.py."), finish()],
+                _report("renamed", "call-2"),
+            ]
+        ),
+        FILES: ScriptedLLM([_report("tables.py")]),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    first = await _export_at_work(host, scripts)
+    handed = await _dispatch(host, RENAME)
+    await wait_until(lambda: _handed_back(host, handed.id), what="the hand-back")
+    ledger = host.ledger
+    append = ledger.append_event
+
+    async def failing(commission_id: str, kind: str, payload: Any = None) -> Any:
+        if kind == "carried_on_in_copy":
+            raise RuntimeError("the ledger is busy")
+        return await append(commission_id, kind, payload)
+
+    monkeypatch.setattr(ledger, "append_event", failing)
+    later = await _dispatch(host, FILES)
+    await wait_until(lambda: later.id in host.task_agents._queue, what="the later one back in the queue")
+    await _decided(host)
+    # Handed over first, the one handed back goes first.
+    assert list(host.task_agents._queue) == [handed.id, later.id]
+    release.set()
+    assert (await wait_status(host, handed.id, "done")).session_id == first.session_id
+    await wait_status(host, later.id, "done")
