@@ -150,6 +150,72 @@ async def test_an_agent_that_does_not_answer_is_told_as_such(app, agent, answer)
     assert seen.status_code == 502 and seen.json()["detail"] == {"code": "agent_unreachable"}
 
 
+@pytest.mark.parametrize(
+    ("payload", "command"),
+    [
+        ({"enabled": True}, {"command": "set_agent_enabled", "enabled": True}),
+        ({"enabled": False}, {"command": "set_agent_enabled", "enabled": False}),
+        ({"key": "browser_use_enabled", "value": True}, {"command": "set_flag", "key": "browser_use_enabled", "value": True}),
+        ({"key": "computer_use_enabled", "value": False}, {"command": "set_flag", "key": "computer_use_enabled", "value": False}),
+    ],
+)
+async def test_a_switch_goes_to_the_main_server_as_the_command_it_is(app, agent, payload, command):
+    async with _client(app, _page_changes()) as client:
+        answer = await client.post("/console/switch", json=payload)
+    assert answer.status_code == 200 and answer.json() == {"success": True}
+    (request,) = agent.requests
+    import config
+
+    assert request.url.path == "/api/agent/command" and request.url.port == config.MAIN_SERVER_PORT
+    assert request.url.host == "127.0.0.1"
+    assert json.loads(request.content) == command
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"key": "user_plugin_enabled", "value": False},
+        {"key": "agent_enabled", "value": True},
+        {"enabled": "yes"},
+        {"enabled": True, "key": "browser_use_enabled", "value": True},
+        {"key": "browser_use_enabled", "value": 1},
+        {"command": "refresh_state"},
+        {"command": "set_agent_enabled", "profile": {"x": 1}},
+        [],
+    ],
+)
+async def test_nothing_but_those_switches_reaches_the_command_route(app, agent, payload):
+    async with _client(app, _page_changes()) as client:
+        answer = await client.post("/console/switch", json=payload)
+    assert answer.status_code == 400 and answer.json()["detail"] == {"code": "bad_switch"}
+    assert agent.requests == []
+
+
+async def test_a_switch_needs_the_page_and_its_token_and_a_backend_that_is_with_the_user(app, agent, monkeypatch):
+    async with _client(app, {"Origin": PAGE}) as client:
+        assert (await client.post("/console/switch", json={"enabled": True})).status_code == 403
+    monkeypatch.setattr(console_proxy, "_remote", lambda: True)
+    async with _client(app, _page_changes()) as client:
+        refused = await client.post("/console/switch", json={"enabled": True})
+    assert refused.status_code == 501 and agent.requests == []
+
+
+@pytest.mark.parametrize(
+    ("answer", "code"),
+    [
+        (httpx.Response(200, json={"success": False, "error": "tool_server responded 500"}), "switch_failed"),
+        (httpx.Response(502, json={"success": False}), "switch_failed"),
+        (httpx.ConnectError("refused"), "agent_unreachable"),
+        (httpx.Response(200, text="<html>"), "agent_unreachable"),
+    ],
+)
+async def test_a_switch_that_was_not_taken_is_told_as_such(app, agent, answer, code):
+    agent.answer = answer
+    async with _client(app, _page_changes()) as client:
+        seen = await client.post("/console/switch", json={"enabled": True})
+    assert seen.status_code == 502 and seen.json()["detail"] == {"code": code}
+
+
 def test_the_router_is_part_of_the_plugin_server():
     from pathlib import Path
 

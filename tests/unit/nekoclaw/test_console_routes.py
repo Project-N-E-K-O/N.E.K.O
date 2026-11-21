@@ -526,3 +526,63 @@ async def test_a_preference_is_listed_changed_switched_off_and_forgotten(console
     ):
         gone = await request
         assert gone.status_code == 404 and gone.json()["detail"]["code"] == "no_preference"
+
+
+# ---------------------------------------------------------------------------
+# The switches and the browser settings of the agent process
+# ---------------------------------------------------------------------------
+
+
+async def test_a_host_on_its_own_has_no_switches_to_show(console):
+    client, _, _ = console
+    for request in (
+        client.get("/console/switches", headers=HEADERS),
+        client.get("/console/browser", headers=HEADERS),
+        client.post("/console/browser", headers=HEADERS, json={"mode": "attach"}),
+    ):
+        missing = await request
+        assert missing.status_code == 404 and missing.json()["detail"]["code"] == "no_switches"
+
+
+async def test_the_switches_and_the_browser_settings_are_those_the_agent_process_gives(tmp_path):
+    from fastapi import HTTPException
+
+    host = make_host(tmp_path, None, dsh=Installation())
+    written: list[dict[str, Any]] = []
+
+    async def get_host() -> Any:
+        return host
+
+    async def switches() -> dict[str, Any]:
+        return {"enabled": True, "flags": {"browser_use_enabled": True}, "capabilities": {"browser_use": {"ready": True}}}
+
+    async def read_browser() -> dict[str, Any]:
+        return {"settings": {"mode": "own_profile"}, "modes": ["own_profile", "attach"], "browsers": []}
+
+    async def write_browser(payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("mode") not in ("own_profile", "attach"):
+            raise HTTPException(400, "unknown mode")
+        written.append(payload)
+        return {"success": True, "settings": {"mode": payload["mode"]}, "modes": ["own_profile", "attach"], "browsers": []}
+
+    app = FastAPI()
+    app.include_router(build_console_router(
+        get_host, lambda: TOKEN, switches=switches, read_browser=read_browser, write_browser=write_browser,
+    ))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://agent.test") as client:
+        assert (await client.get("/console/switches")).status_code == 403
+        seen = (await client.get("/console/switches", headers=HEADERS)).json()
+        assert seen == {"success": True, "switches": {
+            "enabled": True, "flags": {"browser_use_enabled": True}, "capabilities": {"browser_use": {"ready": True}},
+        }}
+        browser = (await client.get("/console/browser", headers=HEADERS)).json()
+        assert browser["success"] is True and browser["settings"] == {"mode": "own_profile"}
+
+        changed = await client.post("/console/browser", headers=HEADERS, json={"mode": "attach"})
+        assert changed.json()["settings"] == {"mode": "attach"} and written == [{"mode": "attach"}]
+        # What the agent process refuses comes back with a code and its reason.
+        refused = await client.post("/console/browser", headers=HEADERS, json={"mode": "incognito"})
+        assert refused.status_code == 400
+        assert refused.json()["detail"] == {"code": "bad_browser_setting", "message": "unknown mode"}
+        assert written == [{"mode": "attach"}]
+    await host.shutdown()

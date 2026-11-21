@@ -88,6 +88,52 @@ async def _forward(request: Request, path: str) -> JSONResponse:
     return JSONResponse(content, status_code=answer.status_code)
 
 
+def _main_base() -> str:
+    from config import MAIN_SERVER_PORT
+
+    return f"http://127.0.0.1:{MAIN_SERVER_PORT}"
+
+
+# The keys of the switches a console page may set besides the one for all of
+# it. The plugins' switch is not among them: it follows the one for all.
+_SWITCH_KEYS = frozenset({"computer_use_enabled", "browser_use_enabled"})
+
+
+@router.post("/switch", dependencies=[Depends(require_plugin_mutation_access)])
+async def set_switch(request: Request) -> JSONResponse:
+    """Switch NekoClaw on or off, or one of the two device switches.
+
+    ``{"enabled": bool}`` for all of it; ``{"key": ..., "value": bool}``
+    for the keyboard and mouse or the browser. Passed to the main server's
+    command route, which keeps its sessions in step and passes it on to the
+    agent process; nothing else of that route is reachable from here.
+    """
+    if _remote():
+        raise HTTPException(501, {"code": "remote_backend"})
+    try:
+        payload = await request.json()
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        raise HTTPException(400, {"code": "bad_switch"})
+    # One or the other, and nothing beside it: what is sent on is built here.
+    if set(payload) == {"enabled"} and isinstance(payload["enabled"], bool):
+        command: dict[str, Any] = {"command": "set_agent_enabled", "enabled": payload["enabled"]}
+    elif set(payload) == {"key", "value"} and payload["key"] in _SWITCH_KEYS and isinstance(payload["value"], bool):
+        command = {"command": "set_flag", "key": payload["key"], "value": payload["value"]}
+    else:
+        raise HTTPException(400, {"code": "bad_switch"})
+    try:
+        answer = await _http().post(f"{_main_base()}/api/agent/command", json=command)
+        content = answer.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("the main server did not answer a switch (exc_type=%s)", type(exc).__name__)
+        raise HTTPException(502, {"code": "agent_unreachable"}) from None
+    if not answer.is_success or not isinstance(content, dict) or content.get("success") is not True:
+        raise HTTPException(502, {"code": "switch_failed"})
+    return JSONResponse({"success": True})
+
+
 @router.get("/{path:path}", dependencies=[Depends(require_plugin_token_bootstrap_access)])
 async def read_console(request: Request, path: str) -> JSONResponse:
     """Read something of the task agents for a console page."""

@@ -110,12 +110,18 @@ def build_console_router(
     token: Callable[[], str],
     *,
     open_directory: Callable[[Path], None] | None = None,
+    switches: Callable[[], Awaitable[dict[str, Any]]] | None = None,
+    read_browser: Callable[[], Awaitable[dict[str, Any]]] | None = None,
+    write_browser: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
 ) -> APIRouter:
     """Return the ``/console`` routes over the host ``get_host`` gives.
 
     ``token`` returns what ``X-CSRF-Token`` has to be. ``open_directory``
     shows a directory in the system's file manager (``utils.native_directory``
-    by default).
+    by default). ``switches`` returns where the switches of the agent
+    process stand; ``read_browser`` and ``write_browser`` are its routes for
+    the browser settings. Without them those routes answer 404: a host on
+    its own has no switches.
     """
 
     def authorized(request: Request) -> None:
@@ -128,6 +134,38 @@ def build_console_router(
     # The download that was started from here, and why the last one failed
     # when the installation itself does not say (dsh was in use).
     install: dict[str, Any] = {"task": None, "error": None}
+
+    # -- the switches, and the browser the tools use -----------------------
+    #
+    # Read here; a switch is changed through the main server
+    # (``/api/agent/command``), which keeps its sessions in step.
+
+    @router.get("/switches")
+    async def get_switches() -> dict[str, Any]:
+        """Return where the switches stand and why a capability is not ready. Nothing is used up by reading."""
+        if switches is None:
+            raise _refuse(404, "no_switches")
+        return {"success": True, "switches": await switches()}
+
+    @router.get("/browser")
+    async def get_browser() -> dict[str, Any]:
+        """Return which browser the browser tools use and how, with the browsers found on this computer."""
+        if read_browser is None:
+            raise _refuse(404, "no_switches")
+        return {"success": True, **(await read_browser())}
+
+    @router.post("/browser")
+    async def set_browser(payload: dict[str, Any]) -> dict[str, Any]:
+        """Change which browser the browser tools use and how."""
+        if write_browser is None:
+            raise _refuse(404, "no_switches")
+        try:
+            changed = await write_browser(payload or {})
+        except HTTPException as exc:
+            if exc.status_code != 400:
+                raise
+            raise _refuse(400, "bad_browser_setting", message=str(exc.detail)) from None
+        return {"success": True, **{key: value for key, value in changed.items() if key != "success"}}
 
     # -- the runtime ------------------------------------------------------
 
