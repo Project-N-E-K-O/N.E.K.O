@@ -198,15 +198,16 @@ color:rgba(255,255,255,.94);
 background:rgba(7,82,137,.2);
 font-size:.74rem}
 
-/* The status is only focusable while its text is truncated (theater_selector.js toggles tabindex/title).
-   Mouse users get the title tooltip; keyboard focus wraps the full text in place inside the title bar,
-   which may grow taller and push the layout down instead of covering the story library. */
-.theater-selector-shell .theater-status[tabindex]:focus-visible{
+/* The status is only focusable while its text is truncated (theater_selector.js toggles tabindex/title),
+   so focusing it never moves a chip whose text already fits. When focused (Tab, click or tap) the full
+   text wraps in place inside the title bar, which may grow taller and push the layout down instead of
+   covering the story library; blur collapses it again. */
+.theater-selector-shell .theater-status[tabindex]:focus{
 max-width:none;
 overflow:visible;
 white-space:normal;
 overflow-wrap:anywhere;
-outline:2px solid #fff;
+outline:2px solid #075289;
 outline-offset:1px}
 
 .theater-selector-layout{
