@@ -163,6 +163,9 @@ _CLOSING_RETRY_SECONDS = 1.0
 # kind is somebody's helper (a task agent another one started), reached
 # through whoever it helps.
 _ADDRESSED_KINDS = ("project", "single")
+# How many sessions' last requests are kept before those too old to matter
+# are let go of (``TaskAgentManager._last_request_at``).
+_LAST_REQUESTS_KEPT = 64
 _USAGE_REASON = "it used as many tokens as one commission may, and the user allowed no more"
 # The kinds of session the host sums up while they are idle: those that go
 # on being handed commissions. A session of one commission, or of a task
@@ -1914,7 +1917,8 @@ class TaskAgentManager:
         if place is None:
             return ""
         if place.kind == "fork":
-            return texts.TASK_AGENT_COMMISSION_IN_COPY if place.forked_from else ""
+            carried = place.forked_from and await self._ledger.has_event(commission.id, "carried_on_in_copy")
+            return texts.TASK_AGENT_COMMISSION_IN_COPY if carried else ""
         if place.kind != "project":
             return ""
         done = [
@@ -2267,10 +2271,15 @@ class TaskAgentManager:
             if kept is None:
                 raise RuntimeError("the session of the commission is not on record")
             session.cleared_before = kept.status == "cleared"
-            if kept.kind == "fork" and kept.forked_from and _carried_on(commission):
+            if (
+                kept.kind == "fork"
+                and kept.forked_from
+                and _carried_on(commission)
+                and await self._ledger.has_event(commission.id, "carried_on_in_copy")
+            ):
                 # A commission of the project carried on in a copy of its
                 # session (``_carry_on_in_copy``), also when it is taken
-                # up again there.
+                # up again there; not one filed in a copy by other means.
                 session.carries_on_for = kept.forked_from
             # Where a session is kept and where its task agent works are the
             # session's, on record from when it was first opened. Until then
@@ -3733,9 +3742,12 @@ class TaskAgentManager:
                 session.held_end = event
                 return
             session.held_end = None
-            if session.hand_back_left is not None and await self._hand_back(session, said=str(event.get("text") or "")):
+            if session.hand_back is not None and await self._hand_back(session, said=str(event.get("text") or "")):
                 # A copy that was told to write down what it found for the
-                # session itself did, and ended its run: handed back.
+                # session itself did, and ended its run: handed back. So is
+                # one whose run ended right after the call that changes
+                # something (it made as many requests as it may), before
+                # it was told: what it said last is what it found.
                 return
             if commission.status == "waiting_user" and session.awaiting_prompt:
                 # It asked for an answer and stopped; the session stays for the answer.
@@ -4550,7 +4562,14 @@ class TaskAgentManager:
         if not event.get("summary"):
             # A copy begins its requests as the session it was copied from
             # does: what a provider keeps of the one is the other's too.
+            from config.nekoclaw_settings import TASK_AGENT_FORK_CONTINUE_HOT_SECONDS
+
             now = asyncio.get_running_loop().time()
+            if len(self._last_request_at) > _LAST_REQUESTS_KEPT:
+                # One made longer ago than that says as much as none.
+                for kept, at in list(self._last_request_at.items()):
+                    if now - at > TASK_AGENT_FORK_CONTINUE_HOT_SECONDS:
+                        del self._last_request_at[kept]
             self._last_request_at[session.session_id] = now
             if session.carries_on_for is not None:
                 self._last_request_at[session.carries_on_for] = now
@@ -7213,7 +7232,12 @@ class TaskAgentManager:
             # seen once what the session said before it asked is handled).
             await self._caught_up()
             if self._sessions.get(commission_id or "") is session and session.hand_back is not None and not session.closing:
-                return await self._hand_back_step(session)
+                verdict = await self._hand_back_step(session)
+                if verdict is not None:
+                    return verdict
+                # (A request it has for writing down what it found, or one
+                # whose commission ended meanwhile: what it may use is
+                # looked at as for any.)
         if limit <= 0 or commission_id is None or session is None or session.closing:
             return None
         # Always, however far from the line the account stands: what is
@@ -7646,12 +7670,28 @@ class TaskAgentManager:
             # there. (It is handed back once: from then on it is the
             # session's own.)
             # Also how the user answered what it asked there. In the order
-            # it was said.
-            told = [
-                str(event.payload.get("text") or "")
-                for event in await self._ledger.events(commission_id)
-                if event.type in ("told", "answered") and str(event.payload.get("text") or "").strip()
-            ]
+            # it was said, all of it (read a page at a time).
+            told: list[str] = []
+            after = 0
+            while True:
+                page = await self._ledger.events(commission_id, after=after)
+                told.extend(
+                    str(event.payload.get("text") or "")
+                    for event in page
+                    if event.type in ("told", "answered") and str(event.payload.get("text") or "").strip()
+                )
+                if len(page) < 500:
+                    break
+                after = page[-1].seq
+            # When the commissions that wait for the session itself were
+            # handed over, for putting this one back among them in that
+            # order (below).
+            waiting = {
+                item: (await self._ledger.get(item))
+                for item in list(self._queue)
+                if item != commission_id and self._session_of.get(item) == main
+            }
+            own = await self._ledger.get(commission_id)
         except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
             logger.warning("handing commission %s back to its session failed: %s", commission_id, exc)
             await self._fail(commission_id, f"it could not be handed back to its session: {exc}", said="run", detail=str(exc))
@@ -7667,8 +7707,36 @@ class TaskAgentManager:
         )
         if await self._wake_working(commission_id, message, reason="handed back by a copy of its session"):
             self._notes.setdefault(commission_id, []).extend(told)
+            if own is not None:
+                self._put_back_in_order(commission_id, main, waiting, own.created_at)
         elif self._queue and len(self._sessions) < self.limit:
             self._spawn(self._start_next())
+
+    def _put_back_in_order(
+        self, commission_id: str, main: str, waiting: dict[str, Commission | None], created_at: float
+    ) -> None:
+        """Put a commission handed back by a copy among those that wait for the session itself, in the order they were handed over.
+
+        Queued again, it went to the end. Handed over before others that
+        wait for the session, it is to be worked on before them: a later
+        one may build on what this one changes. It goes in front of the
+        first that was handed over after it, or that came to wait since
+        ``waiting`` was read (which is later). Commissions of other
+        sessions keep their places. Nothing is awaited here: whoever
+        starts the next one finds it in its place.
+        """
+        if commission_id not in self._queue:
+            return
+        self._queue.remove(commission_id)
+        at = len(self._queue)
+        for index, item in enumerate(self._queue):
+            if self._session_of.get(item) != main:
+                continue
+            known = waiting.get(item)
+            if known is None or known.created_at > created_at:
+                at = index
+                break
+        self._queue.insert(at, commission_id)
 
     # -- copying a session ------------------------------------------------
 

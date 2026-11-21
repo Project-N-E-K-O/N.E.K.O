@@ -573,3 +573,56 @@ async def test_a_copy_that_is_gone_when_it_is_closed_is_handed_back_all_the_same
     done = await wait_status(host, second.id, "done")
     assert done.session_id == first.session_id
     assert "\n    It is in chart.py.\n" in _said(scripts[RENAME].requests[2])[-1]
+
+
+async def test_one_handed_back_goes_before_those_handed_over_after_it(hosts, tmp_path, monkeypatch):
+    # One copy at a time: the second waits for the session itself.
+    monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_MAX_PER_SESSION", 1)
+    release, wait = _gate()
+    copy_release, copy_wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        RENAME: ScriptedLLM(
+            [
+                [copy_wait, call("write", {"file_path": "chart.py", "content": "x"}, "call-1"), finish("tool_calls")],
+                [say("load() is in budget.py."), finish()],
+                _report("renamed", "call-2"),
+            ]
+        ),
+        "add a chart": ScriptedLLM([_report("chart added")]),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    first = await _export_at_work(host, scripts)
+    renaming = await _dispatch(host, RENAME)
+    await wait_until(lambda: scripts[RENAME].requests, what="the copy at work")
+    later = await _dispatch(host, "add a chart")
+    await host.brain.settle()
+    assert list(host.task_agents._queue) == [later.id]
+    copy_release.set()
+    await wait_until(lambda: _handed_back(host, renaming.id), what="the hand-back")
+    # Handed over first, it is worked on first in the session itself.
+    assert list(host.task_agents._queue) == [renaming.id, later.id]
+    release.set()
+    renamed = await wait_status(host, renaming.id, "done")
+    added = await wait_status(host, later.id, "done")
+    assert renamed.session_id == added.session_id == first.session_id
+    said = (Path((await host.ledger.get_session(first.session_id)).session_dir) / "transcript.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert said.index(f"Commission {renaming.id}") < said.index(f"Commission {later.id}")
+
+
+async def test_a_commission_put_in_a_copy_by_other_means_is_not_carried_on(hosts, tmp_path):
+    scripts = {EXPORT: ScriptedLLM([_report("export added")]), FILES: ScriptedLLM([_report("tables.py")])}
+    host = _host(hosts, tmp_path, scripts)
+    await host.space.touch_project("Budget app")
+    first = await wait_status(host, (await _dispatch(host, EXPORT)).id, "done")
+    await wait_until(lambda: not host.task_agents._held_by, what="the session let go")
+    copy = await host.task_agents.fork_session(first.session_id)
+    item, _created = await host.ledger.create(
+        lanlan_name="Lan", title=FILES, dispatch_text=FILES, user_text=FILES, source="dispatch", session_id=copy.id,
+        lang="en",
+    )
+    await host.task_agents.submit(item)
+    await wait_status(host, item.id, "done")
+    assert brain_texts.TASK_AGENT_COMMISSION_IN_COPY not in _said(scripts[FILES].requests[0])[-1]
