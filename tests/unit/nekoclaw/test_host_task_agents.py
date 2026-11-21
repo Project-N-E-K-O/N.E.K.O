@@ -4014,7 +4014,8 @@ async def test_space_read_uses_workdir_rule_at_delivery(hosts, tmp_path, monkeyp
     assert ("knowledge fixture" in result) == (not tighten_at_delivery)
 
 
-async def test_completed_job_keeps_its_source_when_first_delivery_fails(hosts, tmp_path, monkeypatch):
+@pytest.mark.parametrize("cancel_before_finish", [False, True])
+async def test_job_source_requires_a_completed_command(hosts, tmp_path, monkeypatch, cancel_before_finish):
     import os
     tool, command = ("pwsh", "Write-Output held-job") if os.name == "nt" else ("bash", "echo held-job")
     llm = ScriptedLLM([[call(tool, {"command": command, "description": "fixture", "run_in_background": True}, "start"),
@@ -4031,8 +4032,18 @@ async def test_completed_job_keeps_its_source_when_first_delivery_fails(hosts, t
             return False
         return await original(commission, session, kind, target, permit, refuse if target == tool else deliver, live)
     monkeypatch.setattr(audit, "begin", begin)
+    manager = host.task_agents
+    original_action = manager._cb_execution_action
+    async def action(session, payload):
+        if payload.get("phase") == "job_notice":
+            return {"allow": False}
+        if cancel_before_finish and payload.get("phase") == "finish" and payload.get("started_job"):
+            await manager._run_over(manager._held_by[session])
+        return await original_action(session, payload)
+    monkeypatch.setattr(manager, "_cb_execution_action", action)
     receipt = await _dispatch(host, "Collect the example job")
     await wait_status(host, receipt.commission_id, "done")
     replies = {m["tool_call_id"]: m["content"] for batch in llm.requests for m in batch if m.get("tool_call_id")}
     assert "could not be delivered" in replies["start"]
-    assert "job-1" in replies["list"] and "held-job" in replies["output"]
+    assert ("job-1" in replies["list"]) == (not cancel_before_finish)
+    assert ("held-job" in replies["output"]) == (not cancel_before_finish)

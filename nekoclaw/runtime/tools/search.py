@@ -466,10 +466,12 @@ def _legacy_readline(source):
                     if encoding:
                         decoded = sample.decode("utf-8", errors="surrogateescape")
                         invalid = sum(0xDC80 <= ord(char) <= 0xDCFF for char in decoded)
-                        # A single bad byte is local damage. When most non-ASCII
-                        # characters fail UTF-8, use the detected file encoding
-                        # even for byte pairs that happen to be valid in both.
-                        document_encoding = invalid > 1 and invalid * 2 >= sum(not c.isascii() for c in decoded)
+                        # Several smart quotes on one damaged line are weak
+                        # evidence. Require independent lines before interpreting
+                        # otherwise valid UTF-8 in the detected encoding.
+                        invalid_lines = sum(any(0xDC80 <= ord(c) <= 0xDCFF for c in line)
+                                            for line in decoded.splitlines())
+                        document_encoding = invalid_lines >= 2 and invalid * 2 >= sum(not c.isascii() for c in decoded)
                     detected = True
                 if encoding is None:
                     return raw, not end

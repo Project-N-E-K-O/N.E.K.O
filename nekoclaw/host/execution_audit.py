@@ -108,10 +108,12 @@ class ExecutionAudit:
         command_completed = action.record.closed and status == "completed" and action.tool in {"pwsh", "bash"}
         return ExecutionOutcome(delivered, command_completed)
 
-    async def end_run(self, commission: str) -> None:
+    async def end_run(self, commission: str, discard_source: Callable[[str], None] | None = None) -> None:
         pending = [action for action in self._actions.values() if action.commission == commission]
         for action in pending:
             if not action.ended.done():
+                if discard_source is not None:
+                    discard_source(action.record.call_id)
                 action.ended.set_result("cancelled")
         if pending:
             await asyncio.gather(*(action.worker for action in pending), return_exceptions=True)

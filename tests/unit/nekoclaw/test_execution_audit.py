@@ -206,7 +206,7 @@ def test_bad_byte_in_large_utf8_log_preserves_later_utf8_lines(tmp_path, monkeyp
     from nekoclaw.runtime.tools import search
 
     document = tmp_path / "log.txt"
-    document.write_bytes("header\n".encode() * 9000 + b"division \x92\n" + "café résumé\n".encode())
+    document.write_bytes(b"header\n" * 9000 + b'he said \x93hi\x94\n' + b"x\n" * 5000 + "café résumé\n".encode())
     monkeypatch.setattr(search, "detect_legacy_encoding", lambda sample: "cp1252")
     matches = search.grep_files(document, regex.compile("café"), None, tmp_path,
                                 search._Budget(threading.Event(), time.monotonic() + 15),

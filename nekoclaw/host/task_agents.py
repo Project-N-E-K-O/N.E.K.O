@@ -3043,7 +3043,13 @@ class TaskAgentManager:
         self._permissions.end_run(commission_id)
         if self._leases is not None:
             self._leases.release(commission_id)
-        await self._execution_audit.end_run(commission_id)
+        session = self._sessions.get(commission_id)
+
+        def discard_source(receipt):
+            if session is not None:
+                session.job_sources.pop(receipt, None)
+
+        await self._execution_audit.end_run(commission_id, discard_source)
 
     async def _remind_of_window(self, session: _Session, base_url: Any, model: Any, was: int) -> None:
         """Have the user told, once for each model, that its window is smaller than was assumed.
@@ -4959,8 +4965,11 @@ class TaskAgentManager:
             )
             if outcome is None:
                 return {"allow": False}
-            keep_job = outcome.command_completed and payload.get("started_job") is True
-            if not (keep_job or (outcome.delivered and payload.get("retain_source") is True)):
+            if payload.get("started_job") is True:
+                keep = outcome.command_completed
+            else:
+                keep = outcome.delivered and payload.get("retain_source") is True
+            if not keep:
                 session.job_sources.pop(payload.get("receipt"), None)
             return {"allow": outcome.delivered}
         tool = payload.get("tool")

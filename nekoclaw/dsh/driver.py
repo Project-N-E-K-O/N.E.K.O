@@ -933,11 +933,15 @@ class DshRuntime:
                     session.execution_receipts[original] = receipt
                 logger.warning("finishing a dsh action failed (%s)", type(exc).__name__)
                 return _REJECT
+            if session.aborting or session.closing is not None:
+                # A stopped turn abandons its unpublished result, including any
+                # background job. The terminal update releases its source.
+                session.finished_sources[original] = receipt
+                session.kept_calls.discard(original)
+                return _REJECT
             if reply.get("allow") is True:
                 session.finished_sources[original] = receipt
-                if not session.aborting and session.closing is None:
-                    return _ALLOW
-                session.kept_calls.discard(original)
+                return _ALLOW
             return _REJECT
         if ("allow-once", "allow_once") not in offered or session is None or call_id not in session.tool_calls:
             # ACP may narrow the offered choices. A host loan cannot add one.

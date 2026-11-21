@@ -118,7 +118,7 @@ def format_read_output(display: str, window: ReadWindow) -> str:
 
 def read_file(path: Path, *, offset: int, limit: int, protected=None) -> str:
     """Blocking implementation of ``read``."""
-    display = str(path)
+    display = str(path).encode("utf-8", errors="backslashreplace").decode("utf-8")
     hint = f'Use grep with a keyword to read "{display}" in sections (limit {READ_MAX_BYTES} bytes).'
     if protected is not None:
         with protected.reader() as handle:

@@ -36,6 +36,7 @@ from nekoclaw.runtime.tools.base import (
     ToolContext,
     ToolError,
     define_tool,
+    run_cancellable,
 )
 from nekoclaw.runtime.tools.procs import ShellProcess
 
@@ -350,8 +351,10 @@ def build_job_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> lis
                 released = "user steered"
         handoff = JOB_HANDOFF.get()
         if handoff is not None:
-            await job.output_lock.acquire()
-            handoff.release = job.output_lock.release
+            async def reserve_read():
+                await job.output_lock.acquire()
+                handoff.release = job.output_lock.release
+            await run_cancellable(reserve_read(), call)
         body, cursors = registry.peek(job)
         notice = registry.pending_notices.get(job.id)
 
