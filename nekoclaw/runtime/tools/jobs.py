@@ -23,8 +23,10 @@ completion notice follow dsh ``packages/jobs/tool-jobs``.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -34,8 +36,28 @@ from nekoclaw.runtime.tools.base import (
     ToolContext,
     ToolError,
     define_tool,
+    run_cancellable,
 )
 from nekoclaw.runtime.tools.procs import ShellProcess
+
+@dataclass
+class JobHandoff:
+    visible_origins: frozenset[str]
+    acknowledge: Callable[[], None] | None = None
+    release: Callable[[], None] | None = None
+
+    async def reserve_output(self, job: Job, call: ToolCallInfo) -> None:
+        async def reserve():
+            await job.output_lock.acquire()
+            self.release = job.output_lock.release
+
+        if job.output_lock.locked():
+            await run_cancellable(reserve(), call)
+        else:
+            await reserve()
+
+
+JOB_HANDOFF: ContextVar[JobHandoff | None] = ContextVar("job_handoff", default=None)
 
 JobStatus = Literal["running", "stopping", "completed", "killed", "failed"]
 
@@ -70,7 +92,11 @@ class Job:
     # Whoever stopped the job already knows: no completion notice follows.
     notice_suppressed: bool = False
     stop_reason: str | None = None
+    origin: str | None = None
+    command_finished: asyncio.Event | None = None
+    output_write: Callable[[], Awaitable[None]] | None = None
     settled: asyncio.Event = field(default_factory=asyncio.Event)
+    output_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def active(self) -> bool:
@@ -114,15 +140,16 @@ class PendingNotice:
     handle: object
     # Output the notice carried inline; returned by job_output if it withdraws the notice.
     held: str | None
+    admitted: bool = False
 
 
 class JobRegistry:
     """The jobs of one session."""
 
-    def __init__(self, on_finished: Callable[[Job], None]) -> None:
+    def __init__(self, on_finished: Callable[[Job], Awaitable[None] | None]) -> None:
         self._on_finished = on_finished
         self._jobs: dict[str, Job] = {}
-        self._watchers: set[asyncio.Task[None]] = set()
+        self._watchers: dict[asyncio.Task[None], Job] = {}
         self._counter = 0
         self._closing = False
         self.pending_notices: dict[str, PendingNotice] = {}
@@ -138,8 +165,13 @@ class JobRegistry:
             )
 
     def start(self, kind: str, label: str, process: ShellProcess, *, foreground: bool) -> Job:
+        from nekoclaw.runtime.execution import COMMAND_OUTPUT
+
+        output = COMMAND_OUTPUT.get()
         self._counter += 1
         job = Job(
+            origin=output.receipt if output else None,
+            command_finished=output.finished if output else None,
             id=f"job-{self._counter}",
             kind=kind,
             label=label,
@@ -149,8 +181,8 @@ class JobRegistry:
         )
         self._jobs[job.id] = job
         watcher = asyncio.ensure_future(self._watch(job))
-        self._watchers.add(watcher)
-        watcher.add_done_callback(self._watchers.discard)
+        self._watchers[watcher] = job
+        watcher.add_done_callback(self._watchers.pop)
         return job
 
     async def _watch(self, job: Job) -> None:
@@ -169,7 +201,9 @@ class JobRegistry:
             self._closing or job.foreground or job.waiters > 0 or job.notice_suppressed
         )
         if not suppressed and job.id in self._jobs:
-            self._on_finished(job)
+            handed = self._on_finished(job)
+            if inspect.isawaitable(handed):
+                await handed
 
     def get(self, job_id: str) -> Job:
         job = self._jobs.get(job_id)
@@ -184,12 +218,15 @@ class JobRegistry:
         return [job for job in self.visible() if job.active]
 
     def waking(self) -> list[Job]:
-        """Return the running jobs whose end tells the session, which starts its next run.
+        """Return jobs that can still wake the session, including a notice awaiting admission.
 
         Not one that whoever stopped it already knows about (the model's own
         ``job_kill``): nothing follows its end.
         """
-        return [job for job in self.running() if not job.notice_suppressed]
+        return [
+            job for watcher, job in self._watchers.items()
+            if not watcher.done() and job.id in self._jobs and not job.foreground and not job.notice_suppressed
+        ]
 
     def remove(self, job: Job) -> None:
         self._jobs.pop(job.id, None)
@@ -199,24 +236,25 @@ class JobRegistry:
         """Stop every running job without a completion notice; returns how many."""
         stopped = 0
         for job in list(self._jobs.values()):
+            job.notice_suppressed = True
             if job.active:
-                job.notice_suppressed = True
                 self.kill(job, reason)
                 stopped += 1
         return stopped
 
     def close(self) -> None:
         """Stop every running job; no completion notices are produced afterwards."""
-        self._closing = True
+        if not self._closing:
+            self._closing = True
+            for watcher, job in self._watchers.items():
+                if job.settled.is_set():
+                    watcher.cancel()
         self.stop_all("session closed")
 
     async def wait_closed(self, timeout_seconds: float = KILL_SETTLE_SECONDS) -> None:
-        pending = [job.settled.wait() for job in self._jobs.values() if not job.settled.is_set()]
-        if pending:
-            try:
-                await asyncio.wait_for(asyncio.gather(*pending), timeout_seconds)
-            except asyncio.TimeoutError:
-                pass
+        if self._watchers:
+            # Unsettled processes must still be collected after the caller's deadline.
+            await asyncio.wait(tuple(self._watchers), timeout=timeout_seconds)
 
     # -- reading and control ---------------------------------------------------
 
@@ -232,7 +270,8 @@ class JobRegistry:
         return render_delta(out, err, out_lossy or err_lossy, spill), (out_next, err_next)
 
     def commit(self, job: Job, cursors: tuple[int, int]) -> None:
-        job.stdout_offset, job.stderr_offset = cursors
+        job.stdout_offset = max(job.stdout_offset, cursors[0])
+        job.stderr_offset = max(job.stderr_offset, cursors[1])
 
     def read(self, job: Job) -> str:
         """Return the output since the previous read and mark it as read."""
@@ -282,23 +321,24 @@ class JobRegistry:
             job.waiters -= 1
 
 
-def completion_notice(registry: JobRegistry, job: Job) -> tuple[str, str | None]:
-    """Build the notice for a finished job.
-
-    Returns the text and, when the unread output fitted inline, that output
-    (now marked as read). Otherwise the output stays unread for ``job_output``.
-    """
+def preview_completion_notice(registry: JobRegistry, job: Job) -> tuple[str, str | None, tuple[int, int]]:
+    """Render a finished job without moving its output cursors."""
     head = f"background job {job.id} ({job.kind}: {bounded_label(job.label)}) finished {status_line(job)}"
     output, cursors = registry.peek(job)
     if not output:
-        registry.commit(job, cursors)
-        return f"{head}. No new output.", ""
+        return f"{head}. No new output.", "", cursors
     trimmed = output[:-1] if output.endswith("\n") else output
     inline = f"{head}. Output:\n{trimmed}"
     if len(inline.encode("utf-8", errors="replace")) <= NOTICE_INLINE_BYTES:
+        return inline, output, cursors
+    return f"{head}. Read its output with job_output.", None, cursors
+
+
+def completion_notice(registry: JobRegistry, job: Job) -> tuple[str, str | None]:
+    text, inline, cursors = preview_completion_notice(registry, job)
+    if inline is not None:
         registry.commit(job, cursors)
-        return inline, output
-    return f"{head}. Read its output with job_output.", None
+    return text, inline
 
 
 def build_job_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> list[AgentTool]:
@@ -327,10 +367,30 @@ def build_job_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> lis
                 raise ToolError("wait aborted")
             if outcome == "interrupted":
                 released = "user steered"
-        body = registry.read(job)
-        notice = registry.pending_notices.pop(job.id, None)
-        if notice is not None and ctx.inbox.withdraw_notice(notice.handle):
-            # This result covers everything the withdrawn notice would have said.
+        handoff = JOB_HANDOFF.get()
+        if handoff is not None:
+            await handoff.reserve_output(job, call)
+        if job.output_write is not None:
+            # A preceding notice may have queued its transcript entry.
+            # Its saved callback moves these cursors only on durable success.
+            await job.output_write()
+            job.output_write = None
+        body, cursors = registry.peek(job)
+        notice = registry.pending_notices.get(job.id)
+
+        def acknowledge():
+            registry.commit(job, cursors)
+            if notice is not None and registry.pending_notices.get(job.id) is notice:
+                registry.pending_notices.pop(job.id, None)
+                return ctx.inbox.withdraw_notice(notice.handle)
+            return False
+
+        if handoff is None:
+            collect_notice = acknowledge()
+        else:
+            handoff.acknowledge = acknowledge
+            collect_notice = notice is not None and ctx.inbox.notice_queued(notice.handle)
+        if collect_notice and notice is not None:
             body = f"{notice.held or ''}{body}"
         if not body:
             body = "(no new output)"
@@ -340,6 +400,9 @@ def build_job_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> lis
     async def job_list(args: dict[str, Any], call: ToolCallInfo) -> str:
         del args, call
         jobs = registry.visible()
+        handoff = JOB_HANDOFF.get()
+        if handoff is not None:
+            jobs = [job for job in jobs if job.origin in handoff.visible_origins]
         if not jobs:
             return "(no background jobs)"
         return "\n".join(

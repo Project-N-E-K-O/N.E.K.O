@@ -562,11 +562,10 @@ async def test_a_relative_session_dir_still_gives_the_model_paths_it_can_open(
         session.prompt("list the files")
         await events.wait_ended()
         text = events.of("tool_end")[0]["text"]
-        saved = Path(text.split("Full sorted result stored at: ", 1)[1].split(". Use read", 1)[0])
-        # The path is absolute, so `read` finds the file although it resolves
-        # relative paths against the working directory.
-        assert saved.is_absolute() and saved.is_file()
-        assert saved.parent == Path.cwd() / "sessions" / "relative" / "outputs"
+        output_dir = Path.cwd() / "sessions" / "relative" / "outputs"
+        saved, = output_dir.glob("*.txt")
+        assert saved.is_file()
+        assert f"Full sorted result stored at: {saved}. " in text
     finally:
         await session.close()
 

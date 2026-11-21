@@ -697,6 +697,7 @@ class ContextManager:
         on_compaction: Callable[[Compaction], None] | None = None,
         pinned: Collection[str] = (),
         or_drop: bool = True,
+        reserve_tokens: int = 0,
     ) -> list[Compaction]:
         """Bring the conversation under the threshold; rewrites ``transcript`` in place.
 
@@ -738,7 +739,8 @@ class ContextManager:
         if trimmed is not None:
             transcript.rewrite(trimmed)
             self.invalidate()
-        if not force and await self.measure(transcript.messages) <= self.policy.threshold:
+        threshold = self.policy.threshold - reserve_tokens
+        if not force and await self.measure(transcript.messages) <= threshold:
             return []
 
         # As it is before anything is cut for the summary: put back when
@@ -750,7 +752,7 @@ class ContextManager:
         if pruned is not None:
             transcript.rewrite(pruned)
             self.invalidate()
-            if not force and await self.measure(transcript.messages) <= self.policy.threshold:
+            if not force and await self.measure(transcript.messages) <= threshold:
                 return []
 
         done: list[Compaction] = []
@@ -776,7 +778,7 @@ class ContextManager:
                     # Before the next await: a cancellation from here on must not
                     # leave the conversation ahead of what the caller has saved.
                     on_compaction(compaction)
-                if await self.measure(transcript.messages) <= self.policy.threshold:
+                if await self.measure(transcript.messages) <= threshold:
                     break
         finally:
             # Also when this is cancelled, or fails, while the summary is

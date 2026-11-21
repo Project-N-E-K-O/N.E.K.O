@@ -52,6 +52,7 @@ MODEL_PREFIX = "/model/v1"
 MODEL_PATH = f"{MODEL_PREFIX}/chat/completions"
 DEVICE_PATH = f"{MODEL_PREFIX}/device-tools"
 TOOLS_PATH = "/tools/mcp"
+OUTPUT_PATH = "/internal/retained-output"
 _START_TIMEOUT_SECONDS = 10.0
 
 Send = Callable[[dict[str, Any]], Awaitable[None]]
@@ -99,8 +100,9 @@ class LocalEndpoint:
 
     def __init__(
         self, *, forwarder: ModelForwarder, tools: HostTools,
-        device_view: DeviceView | None = None,
+        device_view: DeviceView | None = None, retained_output=None,
     ) -> None:
+        self._retained_output = retained_output
         self._forwarder = forwarder
         self._tools = tools
         self._device_view = device_view
@@ -239,7 +241,7 @@ class LocalEndpoint:
             return
         headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope.get("headers", [])}
         path = scope.get("path")
-        if path not in (MODEL_PATH, TOOLS_PATH, DEVICE_PATH):
+        if path not in (MODEL_PATH, TOOLS_PATH, DEVICE_PATH, OUTPUT_PATH):
             await respond_json(send, 404, {"error": "not found"})
             return
         if scope.get("method") != "POST":
@@ -257,6 +259,40 @@ class LocalEndpoint:
             await respond_json(send, 403, {"error": "requests with an Origin are not served"})
             return
         token = _bearer(headers)
+        if path == OUTPUT_PATH:
+            if self._retained_output is None:
+                await respond_json(send, 404, {"error": "not found"})
+                return
+            process = self._process_of(token)
+            if process is None:
+                await respond_json(send, 401, {"error": "unknown process"})
+                return
+            body = await _read_body(receive)
+            if body is None:
+                return
+            try:
+                request = json.loads(body)
+                if not isinstance(request, dict) or self._process_of(token) != process:
+                    raise ValueError()
+                work = asyncio.create_task(self._retained_output(process, request))
+                gone = asyncio.create_task(_wait_disconnect(receive))
+                try:
+                    await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
+                    if gone.done():
+                        return
+                    result = work.result()
+                finally:
+                    gone.cancel()
+                    # A save may already be writing through a worker thread.
+                    # Let it finish under the private store's lock.
+                    if not work.done() and request.get("action") != "save":
+                        work.cancel()
+                    await asyncio.gather(work, gone, return_exceptions=True)
+            except (ValueError, OSError, KeyError):
+                await respond_json(send, 403, {"error": "output unavailable"})
+                return
+            await respond_json(send, 200, result)
+            return
         if path in (MODEL_PATH, DEVICE_PATH):
             process = self._process_of(token)
             if process is None:

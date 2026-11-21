@@ -101,7 +101,7 @@ def test_glob_output_is_capped_and_points_at_the_full_list(tmp_path: Path) -> No
     assert text.splitlines()[:100] == paths[:100]
     assert text.endswith(
         f"(Showing 100 of 130 paths. Full sorted result stored at: {saved}. "
-        "Use read with offset/limit, or grep this path to search within it.)"
+        "Use grep with a keyword to search this path in sections.)"
     )
     assert saved is not None and saved.read_text(encoding="utf-8").count("\n") == 129
     assert "could not be saved" in search.format_glob_output(paths, None)
@@ -167,7 +167,7 @@ def test_grep_caps_inline_matches_and_long_lines(tmp_path: Path) -> None:
     assert "Line 250: hit 250" in text and "Line 251" not in text
     assert text.endswith(
         f"(Full grep result stored at: {tmp_path / 'full.txt'}. "
-        "Use read with offset/limit, or grep this path to search within it.)"
+        "Use grep with a keyword to search this path in sections.)"
     )
     assert search.preview_line("z" * 3000) == "z" * 2000 + " (line truncated)"
 
@@ -277,7 +277,7 @@ def test_a_directory_search_does_not_read_through_links(tmp_path: Path, inside_g
     assert [path.relative_to(root).as_posix() for path in listed] == ["plain/inside.txt"]
 
 
-def test_grep_reads_line_by_line_and_matches_only_the_start_of_a_huge_line(
+def test_grep_reads_line_by_line_and_finds_a_keyword_beyond_the_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(search, "GREP_LINE_MAX_BYTES", 64)
@@ -295,12 +295,23 @@ def test_grep_reads_line_by_line_and_matches_only_the_start_of_a_huge_line(
     )
     assert [(match.line_number, match.line) for match in matches] == [
         (1, "first needle"),
-        # Line 2 only matches beyond the first 64 bytes, which are all that is looked at.
+        # The tail of line 2 is searched without buffering the physical line.
+        (2, "x" * 12 + " needle past the cut"),
         # Line 3 is cut inside a two-byte character; the half character is dropped.
         (3, "needle " + e_acute * 28),
         (4, "(line is not valid UTF-8)"),
         (5, "last needle"),
     ]
+    assert matches[1].line.endswith("needle past the cut")
+    regex_matches = search.grep_files(
+        path, regex.compile("needle.+cut"), None, tmp_path, _budget(), case_insensitive_globs=False
+    )
+    assert regex_matches.incomplete and not regex_matches
+    path.write_text("x" * 90 + "y\nxxx\n", encoding="utf-16")
+    anchored = search.grep_files(
+        path, regex.compile("^x+$"), None, tmp_path, _budget(), case_insensitive_globs=False
+    )
+    assert anchored.incomplete and [match.line_number for match in anchored] == [2]
     # No phantom empty line after a final newline.
     path.write_bytes(b"one\n\n")
     blank = search.grep_files(
