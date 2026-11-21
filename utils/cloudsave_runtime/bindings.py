@@ -754,7 +754,12 @@ def _resolve_binding_file_path(
             return None
 
         ranked_candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
-        return ranked_candidates[0][3]
+        # Best-ranked copy that can actually be read; an unreadable copy in one
+        # library must not hide a readable one elsewhere.
+        for ranked_candidate in ranked_candidates:
+            if _is_readable_file(ranked_candidate[3]):
+                return ranked_candidate[3]
+        return None
 
     def _resolve_local_live2d_fallback() -> Path | None:
         if model_type != "live2d" or normalized_ref.startswith("/"):
@@ -823,7 +828,12 @@ def _resolve_binding_file_path(
             return None
 
         ranked_candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
-        return ranked_candidates[0][3]
+        # Best-ranked copy that can actually be read; an unreadable copy in one
+        # library must not hide a readable one elsewhere.
+        for ranked_candidate in ranked_candidates:
+            if _is_readable_file(ranked_candidate[3]):
+                return ranked_candidate[3]
+        return None
 
     if model_type == "live2d":
         if normalized_ref.startswith("/user_live2d/"):

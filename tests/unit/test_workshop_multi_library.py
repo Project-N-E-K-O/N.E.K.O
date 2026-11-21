@@ -897,3 +897,36 @@ def test_by_id_lookup_prefers_a_non_empty_item_folder_over_an_empty_leftover(lib
     # Only empty folders: the first one, as before.
     (libraries.b / "300" / "Charlie.vrm").unlink()
     assert frontend_utils.find_workshop_item_by_id("300") == (str(libraries.a / "300"), "/workshop")
+
+
+@pytest.mark.parametrize("asset_source", ["steam_workshop", ""])
+def test_cloudsave_live2d_fallbacks_try_the_next_ranked_copy(libraries, monkeypatch, asset_source):
+    """Nested Live2D model in both libraries: when the best-ranked copy cannot be
+    opened, the workshop fallback (stored source) and the local fallback (no source)
+    both move on to the other copy."""
+    from utils.cloudsave_runtime import bindings
+    import builtins
+
+    for lib in (libraries.a, libraries.b):
+        _write_model(lib / "200" / "Bravo", "live2d", "Bravo")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+
+    def resolve():
+        return bindings._resolve_binding_file_path(
+            libraries.config, model_type="live2d", model_ref="Bravo.model3.json",
+            asset_source=asset_source, asset_source_id="200" if asset_source else "")
+
+    first = resolve()
+    assert first is not None and first.name == "Bravo.model3.json"
+    blocked_root = libraries.a if str(first).startswith(str(libraries.a)) else libraries.b
+    other_root = libraries.b if blocked_root is libraries.a else libraries.a
+
+    real_open = builtins.open
+
+    def _open(file, *args, **kwargs):
+        if str(file).startswith(str(blocked_root)):
+            raise PermissionError(13, "Permission denied", str(file))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _open)
+    assert resolve() == other_root / "200" / "Bravo" / "Bravo.model3.json"
