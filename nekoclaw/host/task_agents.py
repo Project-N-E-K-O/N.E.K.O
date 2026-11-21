@@ -587,6 +587,16 @@ class _Unsaid(str):
         return answer
 
 
+class _Found(str):
+    """What a copy of a project's session wrote down for a commission it hands back (``_handed_back``).
+
+    A model wrote it, in that commission's own work: it is sent as no word
+    of the user's and is not read for what the user wants of the devices.
+    It is no answer from another session (``_Unsaid``): it goes the way any
+    text of the commission goes.
+    """
+
+
 def _shows_work_taken(event: dict[str, Any], sent: int) -> bool:
     """Whether a session event shows the session took everything sent to it.
 
@@ -2310,7 +2320,7 @@ class TaskAgentManager:
                     # original dispatch is history. A restart or idle wake
                     # must not put a folded device back in the request.
                     summed_up = opened_at is not None and kept.compacted_at is not None and kept.compacted_at >= opened_at
-                    follow_up = "\n".join(piece for piece in session.carried if not isinstance(piece, (_Handed, _Unsaid)))
+                    follow_up = "\n".join(piece for piece in session.carried if not isinstance(piece, (_Handed, _Unsaid, _Found)))
                     if not summed_up:
                         groups, browser_context = classify_device_intent(
                             commission.dispatch_text + "\n" + follow_up, browser_context=None,
@@ -2553,7 +2563,7 @@ class TaskAgentManager:
                         # Close its pending row and borrow as the current run once.
                         continue
                     said_first = opens and not opened and commission.source not in ("session", "ask")
-                    nobody = not said_first and all(isinstance(piece, (_Handed, _Unsaid)) for piece in session.carried)
+                    nobody = not said_first and all(isinstance(piece, (_Handed, _Unsaid, _Found)) for piece in session.carried)
                     await self._send_text(runtime, session, "prompt", render(text), opening=opens, wakes=riding, human=not nobody)
                 break
             session.ready = True
@@ -2924,7 +2934,7 @@ class TaskAgentManager:
         the user spoke in.
         """
         if human is None:
-            human = not isinstance(text, (_Handed, _Unsaid))
+            human = not isinstance(text, (_Handed, _Unsaid, _Found))
         if isinstance(text, _Unsaid):
             live = self._permissions.current_run(session.commission_id)
             async with self._answer_delivery(session, [text]) as render:
@@ -7614,7 +7624,7 @@ class TaskAgentManager:
             await self._fail(commission_id, f"it could not be handed back to its session: {exc}", said="run", detail=str(exc))
             return
         nonce = secrets.token_hex(8)
-        message = _Unsaid(
+        message = _Found(
             frame(
                 texts.TASK_AGENT_FORK_HANDED_BACK.format(tool=session.hand_back, nonce=nonce),
                 truncate_to_tokens(session.handing_back or "", TASK_AGENT_FORK_FINDINGS_MAX_TOKENS)
