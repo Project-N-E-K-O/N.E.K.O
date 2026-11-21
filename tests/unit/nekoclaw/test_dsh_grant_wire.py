@@ -158,15 +158,22 @@ async def test_pinned_dsh_reuses_source_when_searching_retained_text(tmp_path):
         await runtime.shutdown()
 
 
-async def test_pinned_native_job_output_checks_the_command_source(tmp_path):
+@pytest.mark.parametrize("post_block", [False, True])
+async def test_pinned_native_job_output_checks_the_command_source(tmp_path, monkeypatch, post_block):
     import re
 
     binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
     if not binary:
         pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to the pinned dsh executable")
-    shell, command = ("pwsh", "Write-Output kept-job-text") if os.name == "nt" else ("bash", "echo kept-job-text")
+    shell, command = (("pwsh", "Write-Output kept-job-text; Start-Sleep -Seconds 2; Write-Output later-text")
+                      if os.name == "nt" else ("bash", "echo kept-job-text; sleep 2; echo later-text"))
     begins = []
     lists = []
+    if post_block:
+        block = """  ctx.on('tools/post-execute', (exec, result, next) =>
+    exec.callId === 'output0' ? {kind: 'block', feedback: [{type: 'text', text: 'fixture post block'}]} : next())
+"""
+        monkeypatch.setattr(profile, "GUARD_SOURCE", profile.GUARD_SOURCE.replace("  process.stderr.write", block + "  process.stderr.write"))
 
     async def action(_, payload):
         if payload["phase"] == "begin":
@@ -179,7 +186,7 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path):
                 attempt = sum(p["tool"] == "job_output" for p in begins)
                 return {"allow": True, "receipt": f"read-{attempt}"}
             return {"allow": True, "receipt": "original-command"}
-        return {"allow": (payload["phase"], payload.get("receipt")) != ("finish", "read-1")}
+        return {"allow": post_block or (payload["phase"], payload.get("receipt")) != ("finish", "read-1")}
 
     events = Recorder()
     runtime = DshRuntime(events, HostCallbacks(native_execution_action=action),
@@ -201,7 +208,7 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path):
             return [sse_tool_call("job_list", {}, f"list{len(lists)}"), sse_finish("tool_calls")]
         attempt = sum(p["tool"] == "job_output" for p in begins)
         if attempt < 3:
-            return [sse_tool_call("job_output", {"job_id": job_ids[0], "wait": True}, f"output{attempt}"),
+            return [sse_tool_call("job_output", {"job_id": job_ids[0], "wait": attempt > 0}, f"output{attempt}"),
                     sse_finish("tool_calls")]
         return [sse_text("Done"), sse_finish()]
 
@@ -220,8 +227,10 @@ async def test_pinned_native_job_output_checks_the_command_source(tmp_path):
         assert len(listed) == 2 and job_ids[0] in listed[0] and job_ids[0] not in listed[1], listed
         output = {m["tool_call_id"]: m["content"] for req in server.requests for m in req["messages"]
                   if m["role"] == "tool" and m.get("tool_call_id", "").startswith("output")}
-        assert "could not be delivered" in output["output0"] and "kept-job-text" not in output["output0"]
-        assert "kept-job-text" in output["output1"] and "kept-job-text" not in output["output2"]
+        assert ("fixture post block" if post_block else "could not be delivered") in output["output0"]
+        assert "kept-job-text" not in output["output0"]
+        assert "kept-job-text" in output["output1"] and "later-text" in output["output1"]
+        assert "kept-job-text" not in output["output2"] and "later-text" not in output["output2"]
     finally:
         await runtime.shutdown()
 

@@ -367,7 +367,8 @@ async def test_a_cancelled_spawn_does_not_leave_a_process_behind(
             process.kill()
 
 
-async def test_background_job_completion_is_reported_to_the_session(tmp_path: Path) -> None:
+@pytest.mark.parametrize("managed", [False, True])
+async def test_background_job_completion_is_reported_to_the_session(tmp_path: Path, managed: bool) -> None:
     script = _write(tmp_path, "brief.py", "import time\ntime.sleep(1.5)\nprint('all built')\n")
     llm = ScriptedLLM(
         [
@@ -382,7 +383,10 @@ async def test_background_job_completion_is_reported_to_the_session(tmp_path: Pa
             [say("The build finished."), finish()],
         ]
     )
-    session, events = await open_session(make_spec(tmp_path), llm, _host())
+    async def allow(_, payload):
+        return {"allow": True, "receipt": "command"}
+    host = HostCallbacks(execution_action=allow) if managed else _host()
+    session, events = await open_session(make_spec(tmp_path), llm, host)
     try:
         session.prompt("build")
         assert (await events.wait_for(lambda e: e["type"] == "tool_end", timeout=60))["text"] == (
@@ -396,6 +400,13 @@ async def test_background_job_completion_is_reported_to_the_session(tmp_path: Pa
         assert notice["role"] == "user"
         assert notice["content"].startswith(f"background job job-1 ({SHELL}: ")
         assert notice["content"].endswith("finished [status: completed, exit code: 0]. Output:\nall built")
+        if managed:
+            from nekoclaw.runtime.session import TRANSCRIPT_FILE
+            await session.flush()
+            assert sum(m.get("content") == notice["content"] for m in llm.requests[2]) == 1
+            rows = [json.loads(s) for s in (session._session_dir / TRANSCRIPT_FILE).read_text(encoding="utf-8").splitlines()]
+            assert [row["content"] for row in rows if row.get("custom_type") == "notice:job"] == [notice["content"]]
+            assert all(row.get("custom_type") != "notice:pending_job" for row in rows)
     finally:
         await session.close()
 
@@ -808,10 +819,13 @@ async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monk
     stop = asyncio.Event()
     stdout = procs.OutputBuffer(1024, lambda: None)
     stdout.feed(b"first-part\n")
+    stop_at_notice = False
     async def audit(_, payload):
         if payload["phase"] == "begin":
             return {"allow": True, "receipt": "job-read"}
         if payload["phase"] == "job_notice":
+            if stop_at_notice:
+                session._abort_requested = True
             return {"allow": notice_allowed}
         if payload["phase"] == "finish":
             stdout.feed(b"second-part\n")
@@ -843,6 +857,11 @@ async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monk
         session.harness.message_list.append(notices[0])
         session._on_message(notices[0])
         assert not any(m is notices[0] for m in session.harness.message_list)
+        stop_at_notice = True
+        assert not await session._deliver_job_notices()
+        assert job.id in session.jobs.pending_notices and not session.transcript.is_registered(notices[0])
+        stop_at_notice = False
+        session._abort_requested = False
         if not saved:
             append = session._recorder._append
             async def fail_notice(entry):

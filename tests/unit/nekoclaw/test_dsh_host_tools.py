@@ -750,6 +750,7 @@ async def test_fetch_preflight_is_outside_the_timed_call_and_consumed_once(tmp_p
     arguments = {"url": "https://example.invalid/test"}
     first = asyncio.create_task(tools.prepare_fetch("s1", "native-call", arguments))
     await arrived.wait()
+    assert not await tools.prepare_fetch("s1", "native-call", arguments)
     await asyncio.sleep(0.15)
     assert not first.done()
     release.set()
@@ -790,3 +791,16 @@ async def test_parallel_fetches_keep_their_own_receipts(tmp_path, monkeypatch):
     assert (await tools.fetch("s1", "a", args, offer))["isError"]
     assert checked == ["receipt-b", "receipt-a"]
     assert list(offer.prepared_fetches) == ["a"]  # terminal ACP update owns cancellation
+
+
+async def test_private_fetch_requires_both_host_capabilities(tmp_path, monkeypatch):
+    from nekoclaw.runtime.tools import web
+
+    async def audit(_, payload):
+        pytest.fail("a private fetch without its host bridge must not start")
+    async def fetch(url):
+        pytest.fail("the fixture provider was not authorized")
+    monkeypatch.setattr(web, "web_fetch", fetch)
+    tools = HostTools(HostCallbacks(native_execution_action=audit))
+    _open(tools, tmp_path)
+    assert (await tools.fetch("s1", "call", {"url": "https://example.invalid/"}, tools.offer("s1")))["isError"]

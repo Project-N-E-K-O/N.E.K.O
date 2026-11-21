@@ -400,6 +400,10 @@ class GrepMatch:
     match_start: int = 0
 
 
+class GrepMatches(list[GrepMatch]):
+    incomplete = False
+
+
 def validate_include(include: str) -> None:
     if not include.strip():
         raise ToolError("include must be a non-empty glob when given")
@@ -516,11 +520,35 @@ def _grep_lines(path, protected):
             text.detach()
 
 
+def _search_line(readline, literal: bytes | None, budget: _Budget, out: GrepMatches):
+    raw, more = readline(GREP_LINE_MAX_BYTES + 1)
+    if not more and len(raw.rstrip(b"\r\n")) <= GREP_LINE_MAX_BYTES:
+        return raw, False
+    prefix = raw[:GREP_LINE_MAX_BYTES]
+    if literal is None:
+        # Arbitrary regular expressions can depend on the entire line.
+        out.incomplete = True
+    overlap = b""
+    selected = None
+    while True:
+        budget.check()
+        if literal and selected is None:
+            chunk = overlap + raw
+            index = chunk.find(literal)
+            if index >= 0:
+                start = max(0, index - (GREP_LINE_MAX_BYTES - len(literal)) // 2)
+                selected = prefix if literal in prefix else chunk[start:start + GREP_LINE_MAX_BYTES]
+            overlap = chunk[-(len(literal) - 1):] if len(literal) > 1 else b""
+        if not more:
+            return (selected if selected is not None else prefix), True
+        raw, more = readline(GREP_LINE_MAX_BYTES)
+
+
 def _search_file(
     path: Path,
     shown: str,
     expression: regex.Pattern[str],
-    out: list[GrepMatch],
+    out: GrepMatches,
     budget: _Budget,
     protected=None,
 ) -> int:
@@ -528,9 +556,14 @@ def _search_file(
 
     The file is read one line at a time, so its size does not decide how much
     memory the search takes, and the search budget is checked as it goes. Of a
-    line longer than ``GREP_LINE_MAX_BYTES`` only that much is matched.
+    long line only one bounded excerpt is returned. Literal keywords are
+    searched across chunk boundaries; regex prefix-only results are labelled.
     """
     added = 0
+    plain = expression.pattern
+    literal = plain.encode() if not any(c in plain for c in r"\.^$*+?{}[]|()") else None
+    if literal is not None and len(literal) > GREP_LINE_MAX_BYTES:
+        literal = None
     try:
         with _grep_lines(path, protected) as readline:
             if readline is None:
@@ -539,11 +572,7 @@ def _search_file(
             first_match = len(out)
             while True:
                 try:
-                    raw, more = readline(GREP_LINE_MAX_BYTES + 1)
-                    cut = more or len(raw.rstrip(b"\r\n")) > GREP_LINE_MAX_BYTES
-                    while more:
-                        budget.check()
-                        _, more = readline(GREP_LINE_MAX_BYTES)
+                    raw, cut = _search_line(readline, literal, budget, out)
                 except _RestartSearch:
                     budget.check()
                     del out[first_match:]
@@ -603,9 +632,9 @@ def grep_files(
     *,
     case_insensitive_globs: bool,
     protected=None,
-) -> list[GrepMatch]:
-    """Search ``target`` (a file or a directory) and return every match."""
-    matches: list[GrepMatch] = []
+) -> GrepMatches:
+    """Search a file or directory, reporting any regex ranges left unsearched."""
+    matches = GrepMatches()
     if protected is not None or target.is_file():
         _search_file(target, display_path(target, workdir), expression, matches, budget, protected)
         return matches
@@ -747,13 +776,19 @@ def build_search_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> 
         )
         from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
 
+        partial = ("Only the beginning of very long lines was searched. Use a literal keyword to scan the rest."
+                   if matches.incomplete else "")
         preview = format_grep_output(matches, None)
         spill_path = None
         if (len(matches) > GREP_MAX_MATCHES or len(preview.encode("utf-8")) > READ_MAX_BYTES
                 or any(len(m.line.encode("utf-8")) > GREP_MAX_LINE_BYTES for m in matches)):
             full = f"Found {len(matches)} matches\n\n{format_grep_matches(matches)}"
+            if partial:
+                full = partial + "\n" + full
             spill_path = await asyncio.to_thread(_save_spill, ctx.spill, "grep-results", full)
         preview = format_grep_output(matches, spill_path)
+        if partial:
+            preview = partial + ("\n" + preview if matches else "")
         if len(preview.encode("utf-8")) <= READ_MAX_BYTES:
             return preview
         notice = f"\n\n{SPILL_HINT} {spill_path}" if spill_path else "\n\nNarrow the grep pattern to see more."

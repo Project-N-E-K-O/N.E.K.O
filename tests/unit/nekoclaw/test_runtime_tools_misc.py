@@ -277,7 +277,7 @@ def test_a_directory_search_does_not_read_through_links(tmp_path: Path, inside_g
     assert [path.relative_to(root).as_posix() for path in listed] == ["plain/inside.txt"]
 
 
-def test_grep_reads_line_by_line_and_matches_only_the_start_of_a_huge_line(
+def test_grep_reads_line_by_line_and_finds_a_keyword_beyond_the_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(search, "GREP_LINE_MAX_BYTES", 64)
@@ -295,12 +295,18 @@ def test_grep_reads_line_by_line_and_matches_only_the_start_of_a_huge_line(
     )
     assert [(match.line_number, match.line) for match in matches] == [
         (1, "first needle"),
-        # Line 2 only matches beyond the first 64 bytes, which are all that is looked at.
+        # The tail of line 2 is searched without buffering the physical line.
+        (2, "x" * 12 + " needle past the cut"),
         # Line 3 is cut inside a two-byte character; the half character is dropped.
         (3, "needle " + e_acute * 28),
         (4, "(line is not valid UTF-8)"),
         (5, "last needle"),
     ]
+    assert matches[1].line.endswith("needle past the cut")
+    regex_matches = search.grep_files(
+        path, regex.compile("needle.+cut"), None, tmp_path, _budget(), case_insensitive_globs=False
+    )
+    assert regex_matches.incomplete and not regex_matches
     # No phantom empty line after a final newline.
     path.write_bytes(b"one\n\n")
     blank = search.grep_files(

@@ -878,6 +878,8 @@ class DshRuntime:
                 outcome = {"phase": "native_failure", "tool": name}
             callback = "native_execution_action"
             offer = self._tools.offer(session.id)
+            if offer:
+                offer.preparing_fetches.pop(call_id, None)
             prepared = offer.prepared_fetches.pop(call_id, None) if offer else None
             if prepared is not None:
                 callback = "execution_action"
@@ -938,6 +940,14 @@ class DshRuntime:
         if not receipt or not isinstance(args, dict):
             raise ValueError()
         action = request.get("action")
+        if action == "save_job":
+            # Unacknowledged batches can outlive the read that collected them.
+            # Keep them under the job's command source, as with its native ring.
+            if tool != "job_output" or not session.execution_receipts.get(call_id):
+                raise ValueError()
+            receipt = session.job_origins.get(str(args.get("job_id", "")).strip())
+            if not receipt:
+                raise ValueError()
         output_scope = OutputScope(receipt)
         binding = OUTPUT_SCOPE.set(output_scope)
         try:
@@ -950,14 +960,15 @@ class DshRuntime:
                 session.job_origins[job_id] = receipt
                 session.kept_calls.add(call_id)
                 return {}
-            if action == "save":
+            if action in {"save", "save_job"}:
                 content = request.get("text")
                 if not isinstance(content, str):
                     raise ValueError()
                 path = await asyncio.to_thread(spill.save, tool, content)
                 if path is None:
                     raise OSError()
-                session.kept_calls.add(call_id)
+                if action == "save":
+                    session.kept_calls.add(call_id)
                 return {"path": str(path)}
             if action != "read" or tool not in offer.readers or not session.execution_receipts.get(call_id):
                 raise ValueError()
@@ -973,7 +984,7 @@ class DshRuntime:
                 return {"error": str(exc)}
             return {"text": result.text}
         finally:
-            if output_scope.retained:
+            if output_scope.retained and action != "save_job":
                 session.kept_calls.add(call_id)
             OUTPUT_SCOPE.reset(binding)
 
@@ -1766,8 +1777,9 @@ class DshRuntime:
                 if session.audit_writes:
                     await asyncio.gather(*session.audit_writes)
             finally:
-                offer = self._tools.offer(session.id)
+                offer = self._tools.offer(session.id) if self._sessions.get(session.id) is session else None
                 if offer:
+                    offer.preparing_fetches.clear()
                     offer.prepared_fetches.clear()
                 session.execution_receipts.clear()
                 session.finished_sources.clear()

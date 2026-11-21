@@ -160,6 +160,15 @@ export function apply(ctx, config) {
   // The native job registry advances its cursor inside execute. Keep the
   // unacknowledged result on the owning agent until an authorized read.
   const jobReads = new WeakMap()
+  const jobResults = new Map()
+  if (executions.size) ctx.on('tools/result', (exec, result) => {
+    const key = identity(exec)
+    const finish = jobResults.get(key)
+    if (finish) {
+      jobResults.delete(key)
+      finish(!result.isError)
+    }
+  })
   async function withJobRead(exec, execute) {
     if (exec.name !== 'job_output' || !exec.agent || exec.parent !== undefined) return execute()
     let reads = jobReads.get(exec.agent)
@@ -167,13 +176,17 @@ export function apply(ctx, config) {
     const id = exec.arguments?.job_id
     let pending = reads.get(id)
     if (!pending) reads.set(id, pending = {})
-    const turn = (pending.turn ?? Promise.resolve()).catch(() => {}).then(() => execute(pending))
+    const previous = pending.turn
+    let release
+    const turn = new Promise(resolve => { release = resolve })
     pending.turn = turn
-    try {
-      return await turn
-    } finally {
+    jobResults.set(identity(exec), delivered => {
+      if (delivered) delete pending.result
+      release()
       if (pending.turn === turn && !pending.result) reads.delete(id)
-    }
+    })
+    await previous
+    return execute(pending)
   }
   const projections = new Map()
   const identity = exec => JSON.stringify([exec.agent?.session.header.id, exec.callId])
@@ -186,7 +199,7 @@ export function apply(ctx, config) {
     const text = projections.get(key)
     projections.delete(key)
     const decision = await next()
-    return text !== undefined && decision.kind === 'accept'
+    return text !== undefined && decision.kind === 'accept' && !result.isError && !exec.signal.aborted
       ? {...decision, content: [{type: 'text', text}]} : decision
   })
   // Native notices are queued independently of the command. Keep the wake
@@ -239,12 +252,27 @@ export function apply(ctx, config) {
       let result = pending?.result, display
       try {
         if (exec.name === 'read' || exec.name === 'grep') {
-          const saved = await request(session, exec.callId, 'read')
+          const saved = await request(session, exec.callId, 'read', undefined, exec.signal)
           if (saved.error) result = failed(saved.error)
           else if (typeof saved.text === 'string') { display = saved.text; result = textOnly(exec, display) }
         }
-        result ??= await next()
-        if (pending && !result.isError) pending.result = result
+        if (pending) {
+          // Always run the native read with this call's wait and timeout.
+          // A refused batch contributes only its unread text, never stale status.
+          const prefix = pending.result?.value?.text ?? ''
+          const latest = await next()
+          if (latest.isError) result = latest
+          else {
+            const value = {...latest.value, text: prefix + latest.value.text}
+            pending.result = result = {value}
+            if (Buffer.byteLength(value.text) > config.readBytes) {
+              const ref = await request(session, exec.callId, 'save_job', value.text)
+              pending.result = result = {value: {...value, text: hint + ' ' + ref.path}}
+            }
+          }
+        } else {
+          result ??= await next()
+        }
         if (exec.name === 'job_list' && Array.isArray(result.value)) {
           const allowed = new Set((await request(session, exec.callId, 'list')).ids)
           result = {value: result.value.filter(job => allowed.has(job.id))}
@@ -281,7 +309,6 @@ export function apply(ctx, config) {
       }
       if (!await confirm(result.isError ? 'failed' : 'completed')) return refused()
       if (display !== undefined && !result.isError) projections.set(identity(exec), display)
-      if (pending) delete pending.result
       return result
     })
   })

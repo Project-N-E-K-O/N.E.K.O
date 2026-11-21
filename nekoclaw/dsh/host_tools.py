@@ -122,6 +122,7 @@ class _Offer:
     output_context: ToolContext | None = None
     readers: dict[str, AgentTool] = field(default_factory=dict)
     prepared_fetches: dict[str, tuple[str, str]] = field(default_factory=dict)
+    preparing_fetches: dict[str, object] = field(default_factory=dict)
     running: dict[asyncio.Task[Any], _Cancelled] = field(default_factory=dict)
     # The tasks that wait for the host on behalf of its calls; see ``_SessionHost``.
     asking: set[asyncio.Task[Any]] = field(default_factory=set)
@@ -287,17 +288,24 @@ class HostTools:
 
         offer = self._offers.get(session_id)
         if (not offer or not offer.output_context or "web_fetch" not in offer.tools or not call_id
-                or call_id in offer.prepared_fetches or not isinstance(arguments.get("url"), str)):
+                or call_id in offer.prepared_fetches or call_id in offer.preparing_fetches
+                or not isinstance(arguments.get("url"), str)):
             return False
         request = classify("web_fetch", arguments, offer.output_context.workdir)
         scope = resource_ref(request, arguments)
-        decision = await self._host.call(session_id, "execution_action", {
-            **request.to_json(), "phase": "begin", "scope_ref": scope,
-        })
+        pending = offer.preparing_fetches[call_id] = object()
+        try:
+            decision = await self._host.call(session_id, "execution_action", {
+                **request.to_json(), "phase": "begin", "scope_ref": scope,
+            })
+        finally:
+            active = offer.preparing_fetches.get(call_id) is pending
+            if active:
+                del offer.preparing_fetches[call_id]
         receipt = decision.get("receipt")
         if decision.get("allow") is not True or not isinstance(receipt, str) or not receipt:
             return False
-        if self._offers.get(session_id) is not offer:
+        if not active or self._offers.get(session_id) is not offer:
             await self._host.call(session_id, "execution_action", {"phase": "finish", "receipt": receipt, "status": "cancelled"})
             return False
         offer.prepared_fetches[call_id] = scope, receipt
@@ -306,6 +314,8 @@ class HostTools:
     async def fetch(self, session_id: str, call_id: str, arguments: dict[str, Any], offer: _Offer) -> dict[str, Any]:
         # Only the process-authenticated guard supplies an ACP call id. A
         # JSON-RPC request id, even on the same URL, cannot claim its receipt.
+        if not {"execution_action", "native_execution_action"} <= self._host.capabilities or call_id not in offer.prepared_fetches:
+            return _result("No authorized web fetch.", error=True)
         binding = _FETCH_CALL.set(call_id)
         try:
             return await self.call(session_id, "web_fetch", arguments, call_id=call_id, offer=offer)

@@ -1631,6 +1631,8 @@ class TaskAgentSession(SessionInbox):
                     })
                 except Exception:
                     ruling = {}
+                if self._abort_requested or self._closing:
+                    return expanded
                 self.jobs.pending_notices.pop(job_id, None)
                 saved = None
                 if ruling.get("allow") is True:
