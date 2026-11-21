@@ -171,6 +171,7 @@
         return canProactiveVisionRunDuringSpeech();
     }
     mod.holdsProactiveVisionStream = holdsProactiveVisionStream;
+    mod.isVisionConsentHeldNow = isVisionConsentHeldNow;
     mod.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
 
     // Also bumped when Proactive Chat or its Screen Share option takes vision
@@ -838,8 +839,9 @@
             return false;
         }
 
-        // 必须开启主动搭话
-        if (!S.proactiveChatEnabled) {
+        // 必须开启主动搭话。Another window may have turned it off before its
+        // storage event reached this one: off on either side wins.
+        if (!isSwitchOnNow('proactiveChatEnabled')) {
             return false;
         }
 
@@ -856,7 +858,10 @@
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
-            return isProactiveVisionEnabledNow();
+            // Same rule as the vision request itself: screen consent and the
+            // Screen Share option, each from this window's value and the
+            // latest saved setting (a revocation in another window counts).
+            return holdsProactiveVisionStream();
         }
 
         // 如果只选择了个人动态搭话，需要同时开启个人动态
@@ -2495,8 +2500,12 @@
         return (!stream && !sourceId) ? 'screen' : null;
     }
 
+    // Screen consent from both sides (isVisionConsentHeldNow): the latest
+    // saved setting, so another window's revocation counts before its storage
+    // event arrives, and this window's own value, so a revocation here counts
+    // even if its local save failed or a stale window copied "allowed" back.
     function isProactiveScreenshotBlocked() {
-        return isHomeTutorialFeatureSuppressed() || !isProactiveVisionEnabledNow();
+        return isHomeTutorialFeatureSuppressed() || !isVisionConsentHeldNow();
     }
 
     function declinedProactiveScreenshot() {

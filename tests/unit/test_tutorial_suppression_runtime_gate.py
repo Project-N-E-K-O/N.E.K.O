@@ -186,7 +186,7 @@ def test_central_gate_and_vision_wiring_in_app_proactive():
         "\n    }", 1
     )[0]
     assert trigger_fn.index("isHomeTutorialFeatureSuppressed()") < trigger_fn.index(
-        "S.proactiveChatEnabled"
+        "isSwitchOnNow('proactiveChatEnabled')"
     )
 
     # Two vision gates: startup and every-frame tick.

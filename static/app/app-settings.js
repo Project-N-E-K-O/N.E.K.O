@@ -2928,14 +2928,26 @@
             // pending settings GET skips it as user-owned. A received value
             // laundered into user intent that way can pin a whole window to a
             // stale ASR route and POST it back over the server's. Keys this
-            // window really did touch stay dirty and keep their authority.
+            // window really did touch stay dirty and keep their authority:
+            // _dirtySettingsKeys is not changed here.
+            // The roll covers dirty keys too. An edit this window already
+            // saved (dirty, no longer pending) does not make a later value
+            // from another window this window's own: without the roll, the next
+            // unrelated save re-marks the key pending and sends the received
+            // value out as a fresh explicit write (new write token, kept over
+            // the server value on a 412), overwriting a newer change the other
+            // window made in the meantime. An unsaved change here (still
+            // pending) was dropped from `incoming` above and is reasserted
+            // (unless a newer explicit write from the other window superseded
+            // it), so it is not rolled: the same rule as the save-time adoption
+            // (_adoptUnseenVisionRevocation), where this window's unsaved value
+            // stays and a value it merely received is never sent out as its own.
             // for...of rather than a forEach callback on purpose: the
             // callback's closing punctuation would truncate the listener slice
             // that test_cross_window_asr_flip_marks_hydration_and_asr_dirty
             // extracts by string split.
             if (_settingsBaseline) {
                 for (const key of _SHARED_SETTINGS_KEYS) {
-                    if (_dirtySettingsKeys.has(key)) continue;
                     if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
                     _settingsBaseline[key] = S[key];
                 }
