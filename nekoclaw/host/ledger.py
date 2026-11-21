@@ -754,6 +754,16 @@ _OPENED_IN = (
     "COALESCE(CASE WHEN json_valid(events.payload) THEN json_extract(events.payload, '$.session_id') END, "
     "commissions.session_id)"
 )
+# Whether a session (``copy``, an SQL expression) is a copy the host made to
+# carry a commission on in: that commission's ``carried_on_in_copy`` event
+# names it. The commission is the copy's, or the session's it was copied from
+# (``source``) once it was handed back; looked for among those two sessions'
+# commissions only, which the ledger finds by session.
+_CARRIED_IN = (
+    "EXISTS (SELECT 1 FROM commissions AS made JOIN events AS carried ON carried.commission_id = made.id "
+    "WHERE made.session_id IN ({copy}, {source}) AND carried.type = 'carried_on_in_copy' "
+    "AND json_valid(carried.payload) AND json_extract(carried.payload, '$.session_id') = {copy})"
+)
 
 
 def _dump(value: Any) -> str:
@@ -3095,13 +3105,16 @@ class Ledger:
         """
 
         def work(conn: sqlite3.Connection) -> str | None:
+            # Among the commissions of this session and of the session it was
+            # copied from, if it is a copy: one that took its opening message
+            # in a copy and was handed back is the other one's by now.
             row = conn.execute(
                 "SELECT events.commission_id FROM events "
                 "JOIN commissions ON commissions.id = events.commission_id "
-                "WHERE commissions.session_id = ? AND events.type = 'opened' "
-                f"AND {_OPENED_IN} = ? "
+                "WHERE commissions.session_id IN (?, (SELECT forked_from FROM sessions WHERE id = ?)) "
+                f"AND events.type = 'opened' AND {_OPENED_IN} = ? "
                 "ORDER BY events.rowid DESC LIMIT 1",
-                (session_id, session_id),
+                (session_id, session_id, session_id),
             ).fetchone()
             return str(row["commission_id"]) if row is not None else None
 
@@ -3126,6 +3139,23 @@ class Ledger:
 
         return await self.run(work)
 
+    async def filed_order(self, commission_ids: list[str]) -> dict[str, int]:
+        """Return, for each of these commissions on record, a number that says in which order they were filed.
+
+        The order the ledger took them in (its row numbers): no two share
+        one, also where they were filed within the same tick of the clock.
+        """
+        ids = list(dict.fromkeys(commission_ids))
+        if not ids:
+            return {}
+
+        def work(conn: sqlite3.Connection) -> dict[str, int]:
+            marks = ", ".join("?" for _ in ids)
+            rows = conn.execute(f"SELECT id, rowid AS filed FROM commissions WHERE id IN ({marks})", ids).fetchall()
+            return {str(row["id"]): int(row["filed"]) for row in rows}
+
+        return await self.run(work)
+
     async def carried_on_in(self, session_id: str) -> bool:
         """Return whether a session is a copy the host made to carry a commission on in (``TaskAgentManager``).
 
@@ -3137,8 +3167,7 @@ class Ledger:
 
         def work(conn: sqlite3.Connection) -> bool:
             row = conn.execute(
-                "SELECT 1 FROM events WHERE type = 'carried_on_in_copy' AND json_valid(payload) "
-                "AND json_extract(payload, '$.session_id') = ? LIMIT 1",
+                f"SELECT 1 FROM sessions WHERE id = ? AND {_CARRIED_IN.format(copy='sessions.id', source='sessions.forked_from')}",
                 (session_id,),
             ).fetchone()
             return row is not None
@@ -3161,6 +3190,9 @@ class Ledger:
                 "SELECT commissions.* FROM commissions JOIN sessions ON sessions.id = commissions.session_id "
                 "WHERE sessions.forked_from = ? AND sessions.kind = 'fork' AND commissions.parent_id IS NULL "
                 "AND commissions.status IN ('done', 'blocked') "
+                # In a copy made to carry a commission on in, not one made
+                # by other means.
+                f"AND {_CARRIED_IN.format(copy='sessions.id', source='sessions.forked_from')} "
                 "AND NOT EXISTS (SELECT 1 FROM events WHERE events.commission_id = commissions.id "
                 "AND events.type = 'told_to_session') "
                 "ORDER BY commissions.updated_at DESC LIMIT ?",

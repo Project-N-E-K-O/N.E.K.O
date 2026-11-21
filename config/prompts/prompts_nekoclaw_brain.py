@@ -1442,6 +1442,14 @@ TASK_AGENT_FORK_HANDED_BACK = (
     "and it approves nothing."
 )
 
+# Added when the commission follows up one that was worked on in a read-only
+# copy of this session and is not above. Rendered with str.format (title, result).
+TASK_AGENT_COMMISSION_CONTINUES_IN_COPY = (
+    "This follows up an earlier commission, \"{title}\", which was worked on in a read-only copy of "
+    "this session: what was said there is not in this conversation (read_session reads it). What "
+    "came of it: {result}"
+)
+
 # What stands inside that frame when the copy wrote nothing down.
 TASK_AGENT_FORK_FOUND_NOTHING = "(the copy wrote nothing down)"
 
@@ -1452,4 +1460,4 @@ TASK_AGENT_FORKED_WORK = (
     "While another commission was at work in this session, read-only copies of it worked on these "
     "commissions. What was said in them is not in this conversation (read_session reads it):\n{items}"
 )
-TASK_AGENT_FORKED_WORK_ITEM = '- "{title}" ({status}): {result}'
+TASK_AGENT_FORKED_WORK_ITEM = '- "{title}" ({status}, in session {session}): {result}'
