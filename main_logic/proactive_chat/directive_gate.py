@@ -41,8 +41,13 @@ from .generation import _proactive_directive_hits
 from .state import _proactive_turn_still_owned
 
 # Card fields the frontend renders as text: source cards show ``title`` and
-# ``source`` (site name); music offers show ``title`` and ``artist``.
+# ``source`` (site name), falling back to ``url`` when there is no title;
+# music offers show ``title`` and ``artist``.
 _VISIBLE_CARD_FIELDS = ("title", "artist", "source")
+# Internal channel marker on music links. The frontend never displays it (a
+# music card shows track and artist), so it must not be matched: a ban on
+# "推荐" would otherwise block every music card.
+_MUSIC_SOURCE_MARKER = "音乐推荐"
 
 
 def _visible_delivery_text(text: str, source_links: Iterable[Any] | None) -> str:
@@ -57,8 +62,14 @@ def _visible_delivery_text(text: str, source_links: Iterable[Any] | None) -> str
             continue
         for field in _VISIBLE_CARD_FIELDS:
             value = link.get(field)
+            if field == "source" and value == _MUSIC_SOURCE_MARKER:
+                continue
             if isinstance(value, str) and value.strip():
                 parts.append(value)
+        title = link.get("title")
+        url = link.get("url")
+        if not (isinstance(title, str) and title.strip()) and isinstance(url, str):
+            parts.append(url)
     return "\n".join(parts)
 
 

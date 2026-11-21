@@ -53,7 +53,10 @@ from .contracts import (
     _proactive_chat_body,
     _proactive_pass_body,
 )
-from .directive_gate import _proactive_delivery_directive_block
+from .directive_gate import (
+    _proactive_delivery_directive_block,
+    _proactive_delivery_directive_hit_count,
+)
 from .state import (
     _enter_proactive_phase2,
     _ensure_proactive_chat_totals_loaded,
@@ -593,26 +596,36 @@ async def _attempt_mini_game_invite_delivery(
     selected_theater = await _select_theater_story() if game_type == "theater" else None
     if game_type == "theater" and selected_theater is None:
         return None
-    invite_text = (await _compose_theater_invite_line(
-        selected_theater, invite_lang, character_prompt=character_prompt, master_name=master_name,
-    ) if selected_theater else "") or _render_mini_game_invite_line(
+    fallback_line = _render_mini_game_invite_line(
         game_type, invite_lang, master_name, selected_story=selected_theater,
     )
-    if not invite_text:
-        return None
-    # Ban-topic gate on the line, which can carry a theater story title. It
-    # runs before the turn is claimed, so there is nothing to release.
+    # Ban-topic gate. The fixed line names the game or the theater story, so
+    # it is checked first: a banned game or story never pays for the compose
+    # call below. It runs before the turn is claimed, so there is nothing to
+    # release.
     # ⚠️ A blocked invite falls through to the normal pipeline (None) rather
     # than ending the round: the force-first branch retries the invite on
     # every round until one is delivered, so ending the round here would
     # silence proactive chat for as long as a ban like "games" stays active.
-    if await _proactive_delivery_directive_block(
+    if fallback_line and await _proactive_delivery_directive_block(
         mgr=mgr,
         proactive_sid=None,
         lanlan_name=lanlan_name,
-        text=invite_text,
+        text=fallback_line,
         channel="mini_game",
     ) is not None:
+        return None
+    composed_line = await _compose_theater_invite_line(
+        selected_theater, invite_lang, character_prompt=character_prompt, master_name=master_name,
+    ) if selected_theater else ""
+    # A composed line that hits a ban is discarded like any other rejected
+    # composition, and the fixed line already checked above is spoken instead.
+    if composed_line and _proactive_delivery_directive_hit_count(
+        lanlan_name, composed_line,
+    ):
+        composed_line = ""
+    invite_text = composed_line or fallback_line
+    if not invite_text:
         return None
 
     # Same round ownership as the main Phase 2 path: a retired HTTP task must

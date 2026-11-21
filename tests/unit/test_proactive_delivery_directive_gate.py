@@ -77,6 +77,21 @@ def test_payload_ignores_invisible_fields(monkeypatch):
     assert _proactive_delivery_directive_hit_count("Neko", "look", links) == 0
 
 
+def test_payload_scans_url_only_when_the_card_shows_it(monkeypatch):
+    # The source card falls back to showing the url when there is no title.
+    _install_directives(monkeypatch, ["layoffs"])
+    untitled = [{"url": "https://example.com/layoffs"}]
+    assert _proactive_delivery_directive_hit_count("Neko", "look", untitled) == 1
+
+
+def test_payload_skips_internal_music_marker(monkeypatch):
+    # "音乐推荐" tags music links internally and is never displayed.
+    _install_directives(monkeypatch, ["推荐"])
+    links = [{"title": "晴天", "artist": "某歌手", "source": "音乐推荐",
+              "url": "https://example.com/m"}]
+    assert _proactive_delivery_directive_hit_count("Neko", "听听这首", links) == 0
+
+
 def test_payload_pieces_do_not_join_across_boundaries(monkeypatch):
     # Line "...work" + title "out..." must not read as "workout".
     _install_directives(monkeypatch, ["workout"])
@@ -427,6 +442,55 @@ async def test_mini_game_invite_delivers_without_ban(monkeypatch, _invite_harnes
     assert out is not None and out["action"] == "chat"
     mgr.feed_tts_chunk.assert_awaited_once()
     mgr.finish_proactive_delivery.assert_awaited_once()
+
+
+def _theater_harness(monkeypatch, composed):
+    monkeypatch.setattr(
+        invites, "_pick_mini_game_type", lambda *_args, **_kwargs: "theater",
+    )
+    monkeypatch.setattr(
+        invites, "_select_theater_story",
+        AsyncMock(return_value={"title": "雨夜来信", "background": "一个故事"}),
+    )
+    monkeypatch.setattr(
+        invites, "_render_mini_game_invite_line",
+        lambda *_args, **_kwargs: "要不要一起演《雨夜来信》？",
+    )
+    compose = AsyncMock(return_value=composed)
+    monkeypatch.setattr(invites, "_compose_theater_invite_line", compose)
+    return compose
+
+
+@pytest.mark.asyncio
+async def test_theater_invite_banned_story_skips_compose_call(
+    monkeypatch, _invite_harness,
+):
+    compose = _theater_harness(monkeypatch, "今晚想和你演一个下雨天的故事。")
+    _install_directives(monkeypatch, ["雨夜来信"])
+    mgr = _invite_mgr()
+
+    out = await _attempt_invite(mgr)
+
+    assert out is None
+    # The fixed line names the story; a banned story never pays for the
+    # compose model call, so force-first retries cost nothing.
+    compose.assert_not_awaited()
+    mgr.prepare_proactive_delivery.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_theater_invite_banned_composition_falls_back_to_fixed_line(
+    monkeypatch, _invite_harness,
+):
+    _theater_harness(monkeypatch, "下雨天最适合聊加班的烦恼了，来演一段吧？")
+    _install_directives(monkeypatch, ["加班"])
+    mgr = _invite_mgr()
+
+    out = await _attempt_invite(mgr)
+
+    assert out is not None and out["action"] == "chat"
+    spoken = mgr.feed_tts_chunk.await_args.args[0]
+    assert spoken == "要不要一起演《雨夜来信》？"
 
 
 # ---------------------------------------------------------------------------
