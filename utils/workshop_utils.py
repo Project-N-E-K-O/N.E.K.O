@@ -224,6 +224,14 @@ class WorkshopStaticFiles(StaticFiles):
         self._extra_directories = extra_directories or get_workshop_library_roots
         super().__init__(directory=directory, **kwargs)
 
+    async def check_config(self) -> None:
+        # Starlette refuses to serve when the mounted directory is gone at the first
+        # request; the other libraries can still be served, so only check a root
+        # that exists (a missing one is skipped by lookup_path like any missing file).
+        if self.directory is not None and not os.path.isdir(self.directory):
+            return
+        await super().check_config()
+
     @property
     def all_directories(self) -> List[Any]:
         base = list(getattr(self, '_base_directories', []))

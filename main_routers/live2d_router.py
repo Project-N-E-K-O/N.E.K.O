@@ -51,6 +51,7 @@ from utils.frontend_utils import (
     find_model_directory,
     find_models,
     find_workshop_item_by_id,
+    find_workshop_item_model_file,
 )
 from utils.logger_config import get_module_logger
 from utils.url_utils import drop_non_utf8_entries, encode_url_path, is_utf8_text
@@ -976,12 +977,8 @@ def get_model_config_by_id(model_id: str):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
+        # Find .model3.json (directly in the item first, then nested), inside the item only.
+        model_json_path = find_workshop_item_model_file(model_dir)
         
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
@@ -1027,12 +1024,8 @@ async def update_model_config_by_id(model_id: str, request: Request):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
+        # Find .model3.json (directly in the item first, then nested), inside the item only.
+        model_json_path = find_workshop_item_model_file(model_dir)
         
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})

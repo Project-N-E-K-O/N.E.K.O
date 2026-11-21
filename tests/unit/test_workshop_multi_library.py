@@ -431,3 +431,128 @@ def test_startup_mount_is_created_even_without_a_usable_root(libraries, monkeypa
     register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
     with TestClient(app) as client:
         assert client.get("/workshop/200/Bravo.pmx").status_code == 200
+
+
+def _link(link: Path, target: Path, *, is_dir: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=is_dir)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+
+def test_by_id_fallback_never_returns_an_item_folder_linked_out_of_its_root(libraries):
+    """Configured-root item '42' links outside and no library has it: nothing is returned."""
+    outside = libraries.tmp_path / "outside_item"
+    _write_model(outside, "live2d", "Secret")
+    _link(libraries.a / "42", outside, is_dir=True)
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    assert frontend_utils.find_workshop_item_by_id("42") == (None, None)
+    assert frontend_utils.find_model_by_workshop_item_id("42") is None
+    with _client(libraries, []) as client:
+        response = client.get("/api/live2d/model_config_by_id/42")
+    assert response.status_code == 404
+    assert "Secret" not in response.text
+
+
+def test_by_id_ignores_model_file_links_but_keeps_real_models_in_the_item(libraries):
+    outside = libraries.tmp_path / "outside_file"
+    _write_model(outside, "live2d", "Secret")
+    item = libraries.b / "200"
+    item.mkdir()
+    # Listed first, but links out of the item.
+    _link(item / "A_Secret.model3.json", outside / "Secret.model3.json")
+    _write_model(item / "nested", "live2d", "Good")
+    register_workshop_roots_from_items([{"installedFolder": str(item)}])
+    assert frontend_utils.find_workshop_item_model_file(str(item)) == str(item / "nested" / "Good.model3.json")
+    assert frontend_utils.find_model_by_workshop_item_id("200") == "/workshop/200/nested/Good.model3.json"
+    with _client(libraries, []) as client:
+        response = client.get("/api/live2d/model_config_by_id/200")
+    assert response.status_code == 200
+    assert "Good.moc3" in response.text and "Secret" not in response.text
+
+
+def test_by_id_item_with_only_a_linked_model_file_is_not_found(libraries):
+    outside = libraries.tmp_path / "outside_file"
+    _write_model(outside, "live2d", "Secret")
+    (libraries.b / "200").mkdir()
+    _link(libraries.b / "200" / "Secret.model3.json", outside / "Secret.model3.json")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    with _client(libraries, []) as client:
+        response = client.get("/api/live2d/model_config_by_id/200")
+    assert response.status_code == 404
+    assert "Secret" not in response.text
+
+
+@pytest.mark.parametrize("layout", ["flat", "nested"])
+def test_by_id_config_read_and_update_support_both_layouts(libraries, layout):
+    item = libraries.b / "200"
+    model_dir = item if layout == "flat" else item / "assets" / "Avatar"
+    _write_model(model_dir, "live2d", "Avatar")
+    if layout == "flat":
+        # A nested model must not take precedence over the one directly in the item.
+        _write_model(item / "zz_other", "live2d", "Other")
+    register_workshop_roots_from_items([{"installedFolder": str(item)}])
+    model_file = model_dir / "Avatar.model3.json"
+    with _client(libraries, []) as client:
+        read = client.get("/api/live2d/model_config_by_id/200")
+        assert read.status_code == 200, read.text
+        assert read.json()["config"]["FileReferences"]["Moc"] == "Avatar.moc3"
+        update = client.post("/api/live2d/model_config_by_id/200", json={
+            "FileReferences": {"Motions": {"Idle": []}, "Expressions": [{"Name": "x", "File": "x.exp3.json"}]},
+        })
+        assert update.status_code == 200, update.text
+    saved = model_file.read_text(encoding="utf-8")
+    assert "x.exp3.json" in saved and "Avatar.moc3" in saved
+
+
+def test_mount_serves_other_libraries_when_primary_vanishes_before_first_request(libraries):
+    for library, content in ((libraries.a, b"from A"), (libraries.b, b"from B")):
+        (library / "100").mkdir()
+        (library / "100" / "Same.vrm").write_bytes(content)
+    _write_model(libraries.b / "200", "vrm", "Bravo")
+    app = FastAPI()
+    app.mount("/workshop", create_workshop_static_files(str(libraries.a)), name="workshop")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    moved = libraries.tmp_path / "moved_away"
+    libraries.a.rename(moved)
+    with TestClient(app) as client:
+        assert client.get("/workshop/200/Bravo.vrm").status_code == 200
+        assert client.get("/workshop/100/Same.vrm").content == b"from B"
+        # Primary back in place: it wins again for a file present in both libraries.
+        moved.rename(libraries.a)
+        assert client.get("/workshop/100/Same.vrm").content == b"from A"
+
+
+def test_mount_with_existing_primary_still_checks_it(libraries, monkeypatch):
+    mount = create_workshop_static_files(str(libraries.a))
+    calls = []
+
+    async def fake_check(self):
+        calls.append(self.directory)
+
+    monkeypatch.setattr(StaticFiles, "check_config", fake_check)
+    import asyncio
+    asyncio.run(mount.check_config())
+    assert calls == [str(libraries.a)]
+
+
+def test_by_id_url_and_config_routes_pick_the_same_nested_model(libraries, monkeypatch):
+    real_walk = os.walk
+
+    def reversed_walk(*args, **kwargs):
+        # Directory order is filesystem-specific; make it the unfavourable one.
+        for root, dirs, files in real_walk(*args, **kwargs):
+            dirs.sort(reverse=True)
+            files.sort(reverse=True)
+            yield root, dirs, files
+
+    monkeypatch.setattr(frontend_utils.os, "walk", reversed_walk)
+    item = libraries.b / "200"
+    for sub in ("b_second", "a_first"):
+        _write_model(item / sub, "live2d", sub)
+    register_workshop_roots_from_items([{"installedFolder": str(item)}])
+    url = frontend_utils.find_model_by_workshop_item_id("200")
+    assert url == "/workshop/200/a_first/a_first.model3.json"
+    with _client(libraries, []) as client:
+        config = client.get("/api/live2d/model_config_by_id/200").json()["config"]
+    assert config["FileReferences"]["Moc"] == "a_first.moc3"

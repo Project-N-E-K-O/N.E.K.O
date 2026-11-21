@@ -1245,19 +1245,42 @@ def find_model_directory(model_name: str):
     # Return None if none exists.
     return (None, None)
 
-def _workshop_item_has_model(item_path: str) -> bool:
-    """Whether a Workshop item folder holds a .model3.json at any depth.
-
-    Matches the recursive layout ``find_model_by_workshop_item_id`` accepts. Directory
-    links are not followed, and the item folder itself must stay inside its root
-    (checked by the caller), so a link cannot widen the search.
+def find_workshop_item_model_file(item_path: str):
     """
-    if not os.path.isdir(item_path):
-        return False
-    for _root, _dirs, files in os.walk(item_path, followlinks=False):
-        if any(file.endswith('.model3.json') for file in files):
-            return True
-    return False
+    Path of the .model3.json a Workshop item folder provides, or None.
+
+    A file directly in the folder wins (first in listing order, as before); otherwise the
+    first one found at any depth. Directory links are not followed, and a candidate whose
+    real path leaves the item folder (a file or folder link pointing elsewhere) is skipped,
+    so other model files in the same item stay usable.
+    """
+    if not item_path or not os.path.isdir(item_path):
+        return None
+    item_real = os.path.realpath(item_path)
+
+    def _inside(path: str) -> bool:
+        return _is_within(item_real, os.path.realpath(path)) and os.path.isfile(path)
+
+    for file in os.listdir(item_path):
+        if file.endswith('.model3.json'):
+            candidate = os.path.join(item_path, file)
+            if _inside(candidate):
+                return candidate
+    for root, dirs, files in os.walk(item_path, followlinks=False):
+        dirs.sort()
+        if os.path.normpath(root) == os.path.normpath(item_path):
+            continue
+        for file in sorted(files):
+            if file.endswith('.model3.json'):
+                candidate = os.path.join(root, file)
+                if _inside(candidate):
+                    return candidate
+    return None
+
+
+def _workshop_item_has_model(item_path: str) -> bool:
+    """Whether a Workshop item folder holds a usable .model3.json (see find_workshop_item_model_file)."""
+    return find_workshop_item_model_file(item_path) is not None
 
 
 def _is_plain_item_id(item_id) -> bool:
@@ -1302,8 +1325,11 @@ def find_workshop_item_by_id(item_id: str) -> tuple:
             if _workshop_item_has_model(item_path):
                 return (item_path, '/workshop')
         
-        # Return the default path if no matching folder is found.
+        # Return the default path if no matching folder is found, unless that folder
+        # is a link leading out of its root.
         default_path = os.path.join(search_dirs[0], item_id)
+        if not _is_within(os.path.realpath(search_dirs[0]), os.path.realpath(default_path)):
+            return (None, None)
         return (default_path, '/workshop')
     except Exception as e:
         logging.error(f"查找创意工坊物品ID {item_id} 时出错: {e}")
@@ -1330,12 +1356,19 @@ def find_model_by_workshop_item_id(item_id: str) -> str:
             return None
         
         model_dir, url_prefix = item_result
+        if not model_dir:
+            logging.warning(f"未找到创意工坊物品ID: {item_id}")
+            return None
         
         # Find the .model3.json file
         model_files = []
+        model_dir_real = os.path.realpath(model_dir)
         for root, _, files in os.walk(model_dir):
             for file in files:
                 if file.endswith('.model3.json'):
+                    # Skip files whose real path leaves the item folder.
+                    if not _is_within(model_dir_real, os.path.realpath(os.path.join(root, file))):
+                        continue
                     # Calculate the relative path.
                     relative_path = os.path.relpath(os.path.join(root, file), model_dir)
                     model_files.append(os.path.normpath(relative_path).replace('\\', '/'))
@@ -1346,7 +1379,11 @@ def find_model_by_workshop_item_id(item_id: str) -> str:
             for model_file in model_files:
                 if model_file.endswith(f"{folder_name}.model3.json"):
                     return f"{url_prefix}/{item_id}/{model_file}"
-            # Otherwise return the first model file found.
+            # Otherwise use the file the by-id config routes read, so both agree.
+            chosen = find_workshop_item_model_file(model_dir)
+            if chosen:
+                relative_path = os.path.relpath(chosen, model_dir)
+                return f"{url_prefix}/{item_id}/{os.path.normpath(relative_path).replace(os.sep, '/')}"
             return f"{url_prefix}/{item_id}/{model_files[0]}"
         
         logging.warning(f"创意工坊物品 {item_id} 中未找到模型配置文件")
