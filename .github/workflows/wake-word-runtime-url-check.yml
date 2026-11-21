@@ -1,0 +1,56 @@
+name: Wake word runtime URL check
+
+# The "repair resources" flow downloads the custom sherpa-onnx wheel pinned by
+# WHEEL_URL / WHEEL_SHA256 / WHEEL_BYTES in
+# main_logic/voice_input/wake_word/runtime_bundle.py. This workflow reads those
+# constants (via scripts/check_wake_word_runtime_url.py, no hard-coded copy
+# here) and fails when the asset stops being downloadable, so a missing or
+# replaced Release is noticed within a day instead of months later.
+#
+# - schedule: one anonymous HEAD probe per day (ranged 1-byte GET fallback).
+# - release published / workflow_dispatch with mode=full: download the whole
+#   wheel and verify size and SHA256.
+# Requests never carry GITHUB_TOKEN.
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'head = anonymous reachability probe; full = download and verify size and SHA256'
+        type: choice
+        options: [head, full]
+        default: head
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wake-word-runtime-url-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check pinned wheel URL
+    # Forks that enable Actions should not probe on a timer; manual and
+    # release-triggered runs are still allowed there.
+    if: github.event_name != 'schedule' || github.repository == 'Project-N-E-K-O/N.E.K.O'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Release events check out the tag's commit by default; the pins
+          # that matter are the ones on the default branch.
+          ref: ${{ github.event_name == 'release' && github.event.repository.default_branch || '' }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v4
+      - name: Check wheel URL
+        env:
+          CHECK_MODE: ${{ (github.event_name == 'release' || inputs.mode == 'full') && 'full' || 'head' }}
+        # Standard library only; --no-project avoids syncing the app's
+        # dependencies just to run this script.
+        run: uv run --no-project --python 3.11 python scripts/check_wake_word_runtime_url.py "--${CHECK_MODE}"
