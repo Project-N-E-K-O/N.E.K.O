@@ -46,7 +46,7 @@ from .workshop_router import get_subscribed_workshop_items
 from contextlib import suppress
 
 from utils.file_utils import atomic_write_json_async, read_json_async
-from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
+from utils.frontend_utils import _is_within, find_models, find_model_directory, find_workshop_item_by_id
 from utils.logger_config import get_module_logger
 from utils.url_utils import drop_non_utf8_entries, encode_url_path, is_utf8_text
 from utils.workshop_utils import get_workshop_path
@@ -335,28 +335,43 @@ def _upsert_model(
     })
 
 
+def _is_inside_model_dir(model_dir_real: str, path: str) -> bool:
+    """
+    Whether the real path of *path* (links resolved) stays inside *model_dir_real*,
+    the real path of the model folder. Same boundary rule as
+    ``find_workshop_item_model_file``: links pointing inside the folder keep
+    working, entries whose real path leaves it are skipped.
+    """
+    try:
+        return _is_within(model_dir_real, os.path.realpath(path))
+    except (OSError, ValueError):
+        return False
+
+
 def _locate_model_config(model_dir: str):
     """
     Probe *model_dir* (root) and its single-level subdirectories for a
-    ``.model3.json`` file.
+    ``.model3.json`` file. Entries whose real path leaves *model_dir*
+    (file or directory links pointing elsewhere) are skipped.
 
     Returns ``(actual_model_dir, model_config_file, subdir_name)`` on
     success, or ``(None, None, None)`` when nothing is found.
     """
     if not os.path.isdir(model_dir):
         return None, None, None
+    model_dir_real = os.path.realpath(model_dir)
 
     for file in os.listdir(model_dir):
-        if file.endswith('.model3.json'):
+        if file.endswith('.model3.json') and _is_inside_model_dir(model_dir_real, os.path.join(model_dir, file)):
             return model_dir, file, None
 
     try:
         for subdir in os.listdir(model_dir):
             subdir_path = os.path.join(model_dir, subdir)
-            if not os.path.isdir(subdir_path):
+            if not os.path.isdir(subdir_path) or not _is_inside_model_dir(model_dir_real, subdir_path):
                 continue
             for file in os.listdir(subdir_path):
-                if file.endswith('.model3.json'):
+                if file.endswith('.model3.json') and _is_inside_model_dir(model_dir_real, os.path.join(subdir_path, file)):
                     return subdir_path, file, subdir
     except Exception as e:
         logger.warning(f"检查子目录时出错: {e}")
@@ -737,6 +752,8 @@ def get_model_files(model_name: str):
             )
             return {"success": False, "error": "模型配置文件(.model3.json)不存在"}
 
+        # Listings stay inside the model folder: entries whose real path leaves it are skipped.
+        model_root_real = os.path.realpath(model_dir)
         model_dir = actual_model_dir
         motion_files = []
         expression_files = []
@@ -753,6 +770,8 @@ def get_model_files(model_name: str):
             try:
                 for item in os.listdir(directory):
                     item_path = os.path.join(directory, item)
+                    if not _is_inside_model_dir(model_root_real, item_path):
+                        continue
                     if os.path.isfile(item_path):
                         if item.endswith(target_ext):
                             # Calculate path relative to model root.
@@ -1071,6 +1090,8 @@ def get_model_files_by_id(model_id: str):
             logger.warning(f"未找到模型 {model_id} 的 .model3.json 文件: {model_dir}")
             return {"success": False, "error": "未找到模型配置文件(.model3.json)"}
         
+        # Listings stay inside the model folder: entries whose real path leaves it are skipped.
+        model_root_real = os.path.realpath(model_dir)
         motion_files = []
         expression_files = []
         
@@ -1086,6 +1107,8 @@ def get_model_files_by_id(model_id: str):
             try:
                 for item in os.listdir(directory):
                     item_path = os.path.join(directory, item)
+                    if not _is_inside_model_dir(model_root_real, item_path):
+                        continue
                     if os.path.isfile(item_path):
                         if item.endswith(target_ext):
                             # Calculate path relative to model root.
