@@ -850,7 +850,12 @@ async def _run_with_model_client_cleanup(ctx: PluginContext, awaitable: Any) -> 
                 logger.warning("[Plugin Process] Model client cleanup failed: {}", type(exc).__name__)
 
 
-def _resolve_persist_mode(instance: object, effective_cfg: object) -> str:
+def _resolve_persist_mode(
+    instance: object,
+    effective_cfg: object,
+    plugin_id: str = "",
+    log: Any = logger,
+) -> str:
     """Return the state persist mode for a plugin instance.
 
     Order: a valid ``[plugin_state].persist_mode`` wins, including an explicit
@@ -858,6 +863,10 @@ def _resolve_persist_mode(instance: object, effective_cfg: object) -> str:
     (``NekoPluginBase`` defines it as ``"off"``, so ``__freeze_mode__`` is only
     read for objects without that attribute), else ``"off"``. When that default
     is ``"off"``, a valid legacy ``[plugin_checkpoint].freeze_mode`` still applies.
+
+    An invalid instance default only logs a warning: it keeps its current
+    effect (not "auto", so no class-level auto persistence, yet not "off", so
+    explicit method-level persist settings still apply).
     """
     from plugin.sdk.shared.storage.state import PluginStatePersistence
 
@@ -865,6 +874,13 @@ def _resolve_persist_mode(instance: object, effective_cfg: object) -> str:
     persist_mode = getattr(instance, "__persist_mode__", None)
     if persist_mode is None:
         persist_mode = getattr(instance, "__freeze_mode__", "off")
+    if persist_mode not in valid_persist_modes:
+        log.warning(
+            "[Plugin Process] Plugin {} declares an invalid class persist mode {!r}; expected one of: {}",
+            plugin_id,
+            persist_mode,
+            ", ".join(valid_persist_modes),
+        )
     if not isinstance(effective_cfg, dict):
         return persist_mode
 
@@ -873,7 +889,7 @@ def _resolve_persist_mode(instance: object, effective_cfg: object) -> str:
     if isinstance(state_cfg, dict):
         cfg_persist_mode = state_cfg.get("persist_mode")
         if cfg_persist_mode in valid_persist_modes:
-            logger.debug("[Plugin Process] persist_mode from effective config: {}", cfg_persist_mode)
+            log.debug("[Plugin Process] persist_mode from effective config: {}", cfg_persist_mode)
             return cfg_persist_mode
 
     # Backward-compatible old [plugin_checkpoint] settings, only when
@@ -883,7 +899,7 @@ def _resolve_persist_mode(instance: object, effective_cfg: object) -> str:
         if isinstance(checkpoint_cfg, dict):
             cfg_freeze_mode = checkpoint_cfg.get("freeze_mode")
             if cfg_freeze_mode in valid_persist_modes:
-                logger.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", cfg_freeze_mode)
+                log.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", cfg_freeze_mode)
                 return cfg_freeze_mode
     return persist_mode
 
@@ -1067,7 +1083,7 @@ def _plugin_process_runner(
                 logger.debug("[Plugin Process] Could not read startup config through SDK: {}", type(e).__name__)
 
         freezable_keys = getattr(instance, "__freezable__", []) or []
-        persist_mode = _resolve_persist_mode(instance, effective_cfg)
+        persist_mode = _resolve_persist_mode(instance, effective_cfg, plugin_id, logger)
 
         # Mark restored frozen state for unfreeze lifecycle events.
         ctx._restored_from_freeze = False

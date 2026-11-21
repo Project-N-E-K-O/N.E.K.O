@@ -73,3 +73,40 @@ def test_host_applies_the_persist_modes_check_accepts(mode: str) -> None:
     assert PluginStatePersistence.VALID_PERSIST_MODES == ("auto", "manual", "off")
     assert _resolve_persist_mode(_Plugin(), {"plugin_state": {"persist_mode": mode}}) == mode
     assert _resolve_persist_mode(_Plugin(), {"plugin_checkpoint": {"freeze_mode": mode}}) == mode
+
+
+class _RecordingLog:
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def warning(self, message: str, *args: object) -> None:
+        self.warnings.append(message.format(*args))
+
+    def debug(self, message: str, *args: object) -> None:
+        pass
+
+
+class _InvalidModeBasePlugin(NekoPluginBase):
+    __persist_mode__ = "always"
+
+
+@pytest.mark.parametrize(
+    "effective_cfg",
+    [{}, {"plugin_checkpoint": {"freeze_mode": "auto"}}],
+)
+def test_invalid_class_persist_mode_warns_and_keeps_its_value(effective_cfg: dict) -> None:
+    log = _RecordingLog()
+
+    result = _resolve_persist_mode(object.__new__(_InvalidModeBasePlugin), effective_cfg, "demo_plugin", log)
+
+    # Behaviour unchanged: the invalid value is kept and still blocks the legacy fallback.
+    assert result == "always"
+    (warning,) = log.warnings
+    assert "demo_plugin" in warning and "'always'" in warning
+
+
+def test_valid_class_persist_mode_does_not_warn() -> None:
+    log = _RecordingLog()
+
+    assert _resolve_persist_mode(_AutoPlugin(), {}, "demo_plugin", log) == "auto"
+    assert log.warnings == []
