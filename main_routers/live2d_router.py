@@ -1619,7 +1619,14 @@ def get_user_models():
                 for vrm_file in vrm_dir.iterdir():
                     # Any letter case, like the VRM upload check ('Foo.VRM'); folders
                     # and dangling links are skipped as in the VRM model list.
-                    if vrm_file.suffix.lower() != '.vrm' or not vrm_file.is_file():
+                    if vrm_file.suffix.lower() != '.vrm':
+                        continue
+                    try:
+                        if not vrm_file.is_file():
+                            continue
+                    except OSError:
+                        # Type cannot be checked (e.g. EACCES on Python 3.11): skip
+                        # this entry and keep scanning the rest.
                         continue
                     user_models.append({
                         'name': vrm_file.stem,

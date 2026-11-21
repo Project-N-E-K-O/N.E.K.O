@@ -347,3 +347,69 @@ def test_models_list_skips_uncheckable_paths_and_keeps_the_rest(mmd_app, monkeyp
         "/workshop/123/Shop.pmx",
     ]
     assert (mmd_app.mmd_dir / "Locked" / "Locked.PMX").exists()
+
+
+@pytest.mark.parametrize("locked", ["A.pmx", "B.PMX"])
+def test_zip_import_returns_a_checkable_model(mmd_app, monkeypatch, locked):
+    # The returned model_url is loaded by the frontend right away, so it must not
+    # be a path whose type cannot be checked, whichever order rglob yields.
+    from pathlib import Path
+
+    real_is_file = Path.is_file
+
+    def is_file(self):
+        if self.name == locked:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("Miku/A.pmx", b"pmx")
+        archive.writestr("Miku/B.PMX", b"pmx")
+
+    with TestClient(mmd_app.app) as client:
+        response = client.post("/api/model/mmd/upload_zip",
+                               files={"file": ("Miku.zip", buffer.getvalue(), "application/zip")})
+
+    assert response.status_code == 200, response.text
+    other = "B.PMX" if locked == "A.pmx" else "A.pmx"
+    assert response.json()["model_url"] == f"/user_mmd/Miku/{other}"
+
+
+def test_live2d_user_models_skip_an_uncheckable_vrm_and_keep_scanning(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from main_routers import live2d_router
+
+    live2d_dir = tmp_path / "live2d"
+    live2d_dir.mkdir()
+    vrm_dir = tmp_path / "vrm"
+    vrm_dir.mkdir()
+    for name in ["A.vrm", "Locked.VRM", "Z.VRM"]:
+        (vrm_dir / name).write_bytes(b"glTF")
+    config = SimpleNamespace(live2d_dir=live2d_dir, readable_live2d_dir=None, vrm_dir=vrm_dir,
+                             ensure_live2d_directory=lambda: True, ensure_vrm_directory=lambda: True)
+    monkeypatch.setattr(live2d_router, "get_config_manager", lambda: config)
+    real_is_file = Path.is_file
+
+    def is_file(self):
+        if self.name == "Locked.VRM":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_file(self)
+
+    real_iterdir = Path.iterdir
+
+    def iterdir(self):
+        # Sorted, so 'Z.VRM' comes after the uncheckable entry.
+        return iter(sorted(real_iterdir(self)))
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    app = FastAPI()
+    app.include_router(live2d_router.router)
+    with TestClient(app) as client:
+        models = client.get("/api/live2d/user_models").json()["models"]
+    assert sorted(model["path"] for model in models if model.get("type") == "vrm") == [
+        "/user_vrm/A.vrm", "/user_vrm/Z.VRM",
+    ]

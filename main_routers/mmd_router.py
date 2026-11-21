@@ -558,7 +558,8 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                 await asyncio.to_thread(_extract_zip_with_encoding, zf, target_dir, name_map)
 
         # Find extracted PMX path.
-        pmx_candidates = list(_iter_model_files(target_dir))
+        # Only a checked file can be returned as model_url for the frontend to load.
+        pmx_candidates = [p for p in _iter_model_files(target_dir) if _file_check(p)]
         if not pmx_candidates:
             await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
             return JSONResponse(status_code=500, content={
@@ -568,7 +569,7 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
         pmx_file = pmx_candidates[0]
         rel_path = pmx_file.relative_to(mmd_dir)
         model_url = f"{MMD_USER_PATH}/{rel_path.as_posix()}"
-        file_count = sum(1 for _ in target_dir.rglob('*') if _.is_file())
+        file_count = sum(1 for path in target_dir.rglob('*') if _file_check(path))
 
         logger.info(f"成功解压 MMD 模型包: {extract_dir_name} ({file_count} 个文件, {total_size / (1024*1024):.1f}MB)")
 
