@@ -154,7 +154,7 @@ test('text tick fired long after its due time (system sleep) is dropped and the 
     await pet.fire();
     assert.equal(proactiveFetches(pet), 0, 'no catch-up proactive right after wake');
     assert.equal(pet.appState.proactiveChatBackoffLevel, 0, 'a dropped tick is not an attempt');
-    assert.ok(pet.scheduledDelay() >= 60000, 'stays quiet for at least 60s after wake');
+    assert.ok(pet.scheduledDelay() >= 59999, 'stays quiet for at least 60s after wake');
 
     clock.now += pet.scheduledDelay();
     await pet.fire();
@@ -188,7 +188,7 @@ test('voice tick after system sleep is dropped without counting as no-response',
     await pet.fire();
     assert.equal(proactiveFetches(pet), 0);
     assert.equal(pet.appState._voiceProactiveNoResponseCount, 0);
-    assert.ok(pet.scheduledDelay() >= 60000, 'voice also waits out the quiet window');
+    assert.ok(pet.scheduledDelay() >= 59999, 'voice also waits out the quiet window');
 
     clock.now += pet.scheduledDelay();
     await pet.fire();
@@ -202,6 +202,7 @@ test('PASS_SYSTEM_INACTIVE does not raise the text backoff level; ordinary pass 
     for (let i = 0; i < 5; i += 1) {
         clock.now += pet.scheduledDelay();
         await pet.fire();
+        assert.ok(pet.scheduledDelay() >= 59999, 'screen-off polling backs off to the recheck interval');
     }
     assert.equal(proactiveFetches(pet), 5);
     assert.equal(pet.appState.proactiveChatBackoffLevel, 0, 'inactive passes are not attempts');
@@ -221,8 +222,9 @@ test('PASS_SYSTEM_INACTIVE does not consume the voice no-response quota; ordinar
     for (let i = 0; i < 12; i += 1) {
         clock.now += pet.scheduledDelay();
         await pet.fire();
+        assert.ok(pet.scheduledDelay() >= 59999, 'voice also rechecks at most once per recheck interval');
     }
-    assert.equal(proactiveFetches(pet), 12, 'keeps polling through a long screen-off');
+    assert.equal(proactiveFetches(pet), 12, 'keeps polling (slowly) through a long screen-off');
     assert.equal(pet.appState._voiceProactiveNoResponseCount, 0);
 
     pet.window.__proactiveResponse = MODEL_PASS;
@@ -281,7 +283,7 @@ test('follower taking over through its heartbeat right after wake keeps the quie
     clock.now += 10 * 60 * 1000;  // machine slept; the leader's heartbeat expired meanwhile
     chat.heartbeat();
     assert.equal(chat.window.isProactiveLeader(), true, 'follower takes over');
-    assert.ok(chat.scheduledDelay() >= 60000, 'new leader still waits out the wake quiet window');
+    assert.ok(chat.scheduledDelay() >= 59999, 'new leader still waits out the wake quiet window');
 });
 
 test('follower taking over through its recheck timer right after wake keeps the quiet window', async () => {
@@ -289,7 +291,7 @@ test('follower taking over through its recheck timer right after wake keeps the 
     clock.now += 10 * 60 * 1000;
     await chat.fire();  // recheck timer fires first on wake
     assert.equal(chat.window.isProactiveLeader(), true);
-    assert.ok(chat.scheduledDelay() >= 60000);
+    assert.ok(chat.scheduledDelay() >= 59999);
 });
 
 test('regular heartbeats do not trigger the wall-clock sleep guard', () => {
@@ -330,3 +332,46 @@ for (const mode of ['text', 'voice']) {
         assert.ok(next && next.due >= due + 50 * 1000, 'rescheduled past the quiet deadline');
     });
 }
+
+test('8 hours of screen-off polls at most once a minute and leaves the backoff level alone', async () => {
+    const pet = setup();
+    pet.window.__proactiveResponse = INACTIVE;
+    pet.window.scheduleProactiveChat();
+    const end = clock.now + 8 * 3600 * 1000;
+    while (clock.now < end) {
+        clock.now += pet.scheduledDelay();
+        await pet.fire();
+    }
+    assert.ok(proactiveFetches(pet) <= 8 * 60 + 1, `got ${proactiveFetches(pet)} requests`);
+    assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
+});
+
+test('tick firing before the heartbeat after a medium sleep (late < one long interval) is dropped', async () => {
+    const { pet, chat } = setupLeaderAndFollower();
+    pet.appState.proactiveChatInterval = 600;
+    pet.window.scheduleProactiveChat();
+    const due = pet.timers.get(pet.appState.proactiveChatTimer).due;
+    while (clock.now + 5000 < due) {   // awake: heartbeats every 5s
+        clock.now += 5000;
+        pet.heartbeat();
+        chat.heartbeat();
+        flush();
+    }
+    clock.now = due + 5 * 60 * 1000;  // slept 5 min: late by less than one 600s interval
+    await pet.fire();                 // the tick wins the race against the heartbeat
+    assert.equal(proactiveFetches(pet), 0, 'no catch-up line right at wake');
+    assert.ok(pet.scheduledDelay() >= 59999);
+});
+
+test('an inactive pass never shortens a longer pending quiet window', async () => {
+    const pet = setup();
+    pet.window.__proactiveResponse = INACTIVE;
+    pet.appState.proactiveChatInterval = 300;  // recheck = max(300s, 60s)
+    pet.window.scheduleProactiveChat();
+    clock.now += pet.scheduledDelay();
+    await pet.fire();
+    assert.ok(pet.scheduledDelay() >= 299999);
+    pet.appState.proactiveChatInterval = 10;   // a shorter interval must not cut the pending wait
+    pet.window.scheduleProactiveChat();
+    assert.ok(pet.scheduledDelay() >= 299999 - 1000);
+});

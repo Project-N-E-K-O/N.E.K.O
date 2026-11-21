@@ -55,6 +55,12 @@ logger = logging.getLogger(__name__)
 # resumes from sleep, stay quiet this long before the next proactive turn.
 SYSTEM_RETURN_QUIET_SECONDS = 60.0
 
+# A suspend that has not been followed by a resume notification for this long
+# is treated as resumed. Requests are only evaluated while the process runs,
+# so a lingering "suspended" means the resume broadcast was missed; without
+# this, one missed broadcast would silence proactive chat until restart.
+SUSPEND_STALE_SECONDS = 120.0
+
 REASON_DISPLAY_OFF = 'display_off'
 REASON_SESSION_LOCKED = 'session_locked'
 REASON_SUSPENDED = 'suspended'
@@ -88,6 +94,7 @@ class SystemPresenceState:
         self._seen_display_on = False
         self._seen_unlocked = False
         self._suspended = False
+        self._suspended_at: float | None = None
         self._returned_at: float | None = None
 
     def _armed_locked(self) -> bool:
@@ -119,6 +126,7 @@ class SystemPresenceState:
     def on_suspend(self) -> None:
         with self._lock:
             self._suspended = True
+            self._suspended_at = self._clock()
 
     def on_resume(self) -> None:
         with self._lock:
@@ -146,7 +154,16 @@ class SystemPresenceState:
             if self._failed or not self._armed_locked():
                 return None
             if self._suspended:
-                return REASON_SUSPENDED
+                if (
+                    self._suspended_at is not None
+                    and self._clock() - self._suspended_at >= SUSPEND_STALE_SECONDS
+                ):
+                    # Missed resume broadcast: we are evidently running, so
+                    # treat it as resumed (quiet window starts now).
+                    self._suspended = False
+                    self._mark_returned_locked()
+                else:
+                    return REASON_SUSPENDED
             if self._display_on is False:
                 return REASON_DISPLAY_OFF
             if self._session_locked is True:

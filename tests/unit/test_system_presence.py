@@ -330,3 +330,16 @@ async def test_route_runs_service_from_remote_client_even_if_local_session_inact
 def test_entry_guard_fails_open_on_unexpected_request_shape(monkeypatch):
     monkeypatch.setattr(flow, "get_system_inactive_reason", lambda: sp.REASON_DISPLAY_OFF)
     assert flow._local_system_inactive_reason(SimpleNamespace()) is None
+
+
+def test_missed_resume_broadcast_does_not_silence_forever():
+    clock = FakeClock()
+    state = _armed_state(clock)
+    state.on_suspend()
+    clock.now += sp.SUSPEND_STALE_SECONDS - 1
+    assert state.inactive_reason() == sp.REASON_SUSPENDED
+    clock.now += 1
+    # No resume notification arrived, but we are clearly running: treat as resumed.
+    assert state.inactive_reason() == sp.REASON_RECENTLY_RETURNED
+    clock.now += sp.SYSTEM_RETURN_QUIET_SECONDS
+    assert state.inactive_reason() is None

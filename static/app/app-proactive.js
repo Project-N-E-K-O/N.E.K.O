@@ -548,6 +548,12 @@
     var SYSTEM_SLEEP_LATE_FLOOR_MS = 120 * 1000;
     // Mirrors SYSTEM_RETURN_QUIET_SECONDS in main_logic/activity/system_presence.py.
     var SYSTEM_RETURN_QUIET_MS = 60 * 1000;
+    // After a PASS_SYSTEM_INACTIVE the next tick waits at least this long (or one
+    // base interval if longer). The backoff level is left alone so the user is
+    // not pushed to hour-long intervals on return, but a screen that stays off
+    // all night is no longer polled (screenshot + window title + POST) at the
+    // fastest interval.
+    var SYSTEM_INACTIVE_RECHECK_MS = 60 * 1000;
     var _proactiveTimerDueAt = 0;
     var _systemQuietUntil = 0;
 
@@ -562,6 +568,9 @@
     // Called first thing in a firing tick. Returns true when the tick is a
     // catch-up after system sleep and must be dropped.
     function _proactiveTickMissedBySleep() {
+        // On wake the tick may fire before the heartbeat does; check the wall
+        // clock here too so a short-late tick still gets the quiet window.
+        _checkWallClockJump();
         if (!_proactiveTimerDueAt) return false;
         var lateBy = Date.now() - _proactiveTimerDueAt;
         var baseMs = (Number(S.proactiveChatInterval) || 0) * 1000;
@@ -597,6 +606,14 @@
     function _isSystemInactivePass(result) {
         return !!(result && result.action === 'pass'
             && result.reason_code === PROACTIVE_REASON_PASS_SYSTEM_INACTIVE);
+    }
+
+    // Push the earliest next tick out by the recheck interval; scheduling and
+    // the tick callbacks already honour _systemQuietUntil.
+    function _deferAfterSystemInactivePass() {
+        var baseMs = (Number(S.proactiveChatInterval) || 0) * 1000;
+        var until = Date.now() + Math.max(baseMs, SYSTEM_INACTIVE_RECHECK_MS);
+        if (!(_systemQuietUntil >= until)) _systemQuietUntil = until;
     }
 
     document.addEventListener('focusin', function (event) {
@@ -1448,6 +1465,7 @@
                     // Local session asleep / locked / display off: not an attempt.
                     console.log('[ProactiveChat] 语音模式：系统处于非活动状态 (' + (result.system_inactive_reason || '-') + ')，不消耗 attempt');
                     S._voiceProactiveLastResult = 'pass';
+                    _deferAfterSystemInactivePass();
                     return false;
                 }
                 if (result.success && result.action === 'chat' && canOfferRecommendations() && window.nekoRecommendations) {
@@ -1812,6 +1830,7 @@
             // and hand back the screenshot cooldown this round reserved.
             if (_isSystemInactivePass(result)) {
                 restoreScreenCooldownAfterInputCancel();
+                _deferAfterSystemInactivePass();
                 console.log('[ProactiveChat] 系统处于非活动状态 (' + (result.system_inactive_reason || '-') + ')，不消耗 backoff attempt');
                 return false;
             }
