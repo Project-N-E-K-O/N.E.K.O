@@ -1381,8 +1381,10 @@ def _log_startup_identity(stage: str = "startup") -> None:
     """One info line identifying this build and where it reads memory from.
 
     Logged at ``startup`` (before the storage gate, so limited mode has it
-    too) and again at ``continue`` once a limited-mode boot is released,
-    because the user may have picked a different data root in between.
+    too) and again at ``continue`` when a limited-mode boot is released and
+    the runtime actually initializes, so the release moment is visible in
+    the log. ``_config_manager`` is a process-wide singleton, so both lines
+    carry the same paths.
 
     The install dir (``sys.executable``'s folder) tells apart launches that
     share the same version and data root, e.g. a Steam install versus a
@@ -1411,7 +1413,7 @@ def _log_startup_identity(stage: str = "startup") -> None:
             getattr(_config_manager, "memory_dir", None),
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[Memory] startup identity log failed: %s", exc)
+        logger.warning("[Memory] startup identity log failed (stage=%s): %s", stage, exc)
 
 
 @app.on_event("startup")
@@ -1454,8 +1456,8 @@ async def continue_storage_startup(payload: ContinueStorageStartupRequest | None
         )
         _memory_storage_blocked_after_init = False
         if initialized:
-            # The startup line was logged before the storage choice; record
-            # the root this runtime actually initialized against.
+            # Log the identity again when the limited-mode release actually
+            # initializes the runtime, to mark the release moment in the log.
             _log_startup_identity(stage="continue")
         return {
             "ok": True,

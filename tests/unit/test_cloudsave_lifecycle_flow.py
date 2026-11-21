@@ -1200,13 +1200,14 @@ async def test_memory_server_startup_logs_identity_even_in_limited_mode(tmp_path
 @pytest.mark.asyncio
 @pytest.mark.parametrize("initialized, expected_lines", [(True, 1), (False, 0)])
 async def test_memory_server_continue_startup_relogs_identity_after_init(tmp_path, initialized, expected_lines):
-    """After a limited-mode boot is released, the data root may differ from
-    the one logged at startup, so the identity line is logged again — but
-    only when this call actually initialized the runtime."""
+    """When a limited-mode boot is released, the identity line is logged again
+    with stage=continue to mark the release moment — but only when this call
+    actually initialized the runtime."""
     from app import memory_server
 
-    cm = SimpleNamespace(app_docs_dir=tmp_path / "picked", memory_dir=tmp_path / "picked" / "memory")
+    cm = SimpleNamespace(app_docs_dir=tmp_path, memory_dir=tmp_path / "memory")
     with patch.object(memory_server.runtime, "_config_manager", cm), \
+         patch.object(memory_server.runtime, "_memory_storage_blocked_after_init", False), \
          patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value=None)), \
          patch.object(memory_server.runtime, "ensure_memory_server_runtime_initialized", AsyncMock(return_value=initialized)), \
          patch.object(memory_server.runtime, "logger") as mock_logger:
@@ -1221,8 +1222,6 @@ async def test_memory_server_continue_startup_relogs_identity_after_init(tmp_pat
     if identity_calls:
         args = identity_calls[0].args
         assert args[2] == "continue"
-        assert args[5] == tmp_path / "picked"
-        assert args[6] == tmp_path / "picked" / "memory"
 
 
 @pytest.mark.unit
