@@ -157,7 +157,7 @@ class MyPlugin(NekoPluginBase):
             },
             "required": ["item_id"],
         },
-        # 可选：读取结果的模型能看到的返回字段（见 entries#controlling-what-the-ai-sees）。
+        # 可选：读取结果的模型能看到的返回字段。
         llm_result_fields=["message"],
     )
     async def refresh_item(self, item_id: str, **_):
@@ -169,6 +169,7 @@ class MyPlugin(NekoPluginBase):
 - `@ui.context(id="dashboard")` 的返回值会进入 `props.state`。
 - `@ui.action(...)` 会把某个后端 entry 暴露为 UI 动作。
 - `@plugin_entry(...)` 仍然是后端可调用入口，Agent 和其他插件也能调用它。它不是主对话模型的工具，见[选择 `@plugin_entry` 还是 `@llm_tool`](/zh-CN/plugins/tool-calling#choosing-an-entry-type)。
+- `llm_result_fields` 限定读取结果的模型能看到哪些返回字段，见[控制 AI 看到的返回内容](./entries#controlling-what-the-ai-sees)。
 - `tr(...)` 声明插件本地 i18n key，并提供英文默认值。
 - `refresh_context=True` 表示动作成功后自动刷新上下文。
 

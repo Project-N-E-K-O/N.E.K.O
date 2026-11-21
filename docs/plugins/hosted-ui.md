@@ -157,7 +157,7 @@ class MyPlugin(NekoPluginBase):
             },
             "required": ["item_id"],
         },
-        # Optional: result fields the model reading the result sees (see entries#controlling-what-the-ai-sees).
+        # Optional: result fields the model reading the result sees.
         llm_result_fields=["message"],
     )
     async def refresh_item(self, item_id: str, **_):
@@ -169,6 +169,7 @@ This gives the UI two things:
 - `@ui.context(id="dashboard")` returns the `props.state` payload.
 - `@ui.action(...)` exposes a backend entry as a UI action.
 - `@plugin_entry(...)` is still the callable backend entry; the Agent and other plugins can call it too. It is not a tool of the main dialogue model: see [Choosing between `@plugin_entry` and `@llm_tool`](/plugins/tool-calling#choosing-an-entry-type).
+- `llm_result_fields` limits which result fields the model reading the result sees; see [Controlling what the AI sees](./entries#controlling-what-the-ai-sees).
 - `tr(...)` declares a plugin-local i18n key with an English default.
 - `refresh_context=True` asks the hosted UI to refresh context after the action succeeds.
 
