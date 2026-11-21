@@ -1,6 +1,7 @@
 """MMD configuration regressions; real browser scripts, no GPU or user files."""
 
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 import pytest
 from playwright.sync_api import Page
@@ -386,3 +387,119 @@ def test_blocked_broadcast_receiver_keeps_storage_support(page: Page):
         return {happy, channel: receiver._moodMapChannel};
     }""")
     assert result == {"happy": ["瞳小"], "channel": None}
+
+
+@pytest.mark.parametrize("raw,expected", [
+    # #3379: raw names from config / model lists; '#', '?', '%' must not become URL syntax.
+    ("/user_mmd/a#b/a#b.pmx", "/user_mmd/a%23b/a%23b.pmx"),
+    ("/user_mmd/50%.pmx", "/user_mmd/50%25.pmx"),
+    ("/user_mmd/what?.pmx", "/user_mmd/what%3F.pmx"),
+    ("/static/mmd/空 格/花火.pmx", "/static/mmd/%E7%A9%BA%20%E6%A0%BC/%E8%8A%B1%E7%81%AB.pmx"),
+    ("/workshop/123/Folder#20%/m.PMD", "/workshop/123/Folder%2320%25/m.PMD"),
+    # Already-encoded input (page config, earlier URLs) is not encoded twice.
+    ("/user_mmd/a%23b/a%23b.pmx", "/user_mmd/a%23b/a%23b.pmx"),
+    ("/static/mmd/%E8%8A%B1%E7%81%AB.pmx", "/static/mmd/%E8%8A%B1%E7%81%AB.pmx"),
+    # Not a local model path: left alone.
+    ("http://neko.test/user_mmd/a#b.pmx", "http://neko.test/user_mmd/a#b.pmx"),
+    ("relative/a#b.pmx", "relative/a#b.pmx"),
+])
+def test_request_url_escapes_raw_local_names_once(page: Page, raw, expected):
+    setup_runtime(page)
+    assert page.evaluate("raw => MMDCore.toRequestUrl(raw)", raw) == expected
+
+
+def test_request_url_honours_configured_prefixes(page: Page):
+    setup_runtime(page)
+    result = page.evaluate("""() => {
+        window.MMD_PATHS = {user_mmd: '/custom_mmd', static_mmd: '/static/mmd'};
+        return MMDCore.toRequestUrl('/custom_mmd/a#b.pmx');
+    }""")
+    assert result == "/custom_mmd/a%23b.pmx"
+
+
+@pytest.mark.parametrize("raw", ["/user_mmd/a#b/a#b.pmx", "/user_mmd/50%.pmx", "/user_mmd/空 格 %41.pmx",
+                                 "/workshop/123/x?y.pmx"])
+def test_browser_requests_the_exact_raw_file(page: Page, raw):
+    """The server must see the same path segments the model list reported."""
+    setup_runtime(page)
+    seen = []
+
+    def fulfill(route):
+        seen.append(route.request.url)
+        route.fulfill(body="pmx")
+
+    page.route("http://neko.test/user_mmd/**", fulfill)
+    page.route("http://neko.test/workshop/**", fulfill)
+    # setup_runtime stubs fetch, so issue a real request through XHR.
+    body = page.evaluate("""raw => new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', MMDCore.toRequestUrl(raw));
+        xhr.onload = () => resolve(xhr.responseText);
+        xhr.onerror = reject;
+        xhr.send();
+    })""", raw)
+    assert body == "pmx"
+    path = urlsplit(seen[0]).path
+    # %41 in a raw name is read as an escape (shared rule with getConfigName), so it decodes to A.
+    assert unquote(path) == raw.replace("%41", "A")
+    assert not urlsplit(seen[0]).query and not urlsplit(seen[0]).fragment
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("/user_mmd/a#b/x#1.pmx", "x#1"),
+    ("/user_mmd/what?.pmx", "what?"),
+    ("/user_mmd/50%.pmx", "50%"),
+])
+def test_config_name_keeps_raw_url_syntax_characters(page: Page, raw, expected):
+    setup_runtime(page)
+    assert page.evaluate("raw => MMDCore.getConfigName(raw)", raw) == expected
+
+
+def test_loader_gets_escaped_url_while_identity_stays_raw(page: Page):
+    setup_runtime(page)
+    result = page.evaluate("""async () => {
+        window.THREE = {LoadingManager: class {}};
+        const loaded = [];
+        manager.currentModel = null;
+        manager.core._getMMDModule = async () => ({MMDLoader: class {
+            load(url, onLoad, onProgress, onError) { loaded.push(url); onError(new Error('fixture stop')); }
+        }});
+        try { await manager.core.loadModel('/user_mmd/a#b/a#b.pmx', {}, manager._activeLoadToken); }
+        catch (_) { /* the fixture loader always fails after recording the URL */ }
+        return loaded;
+    }""")
+    assert result == ["/user_mmd/a%23b/a%23b.pmx"]
+
+
+@pytest.mark.parametrize("raw,config_name", [
+    ("/user_mmd/a#b/a#b.pmx", "a#b"),
+    ("/user_mmd/空 格/50%.pmx", "50%"),
+])
+def test_successful_load_keeps_raw_identity(page: Page, raw, config_name):
+    """Only the loader request is escaped; currentModel.url and preferences keep the raw path."""
+    setup_runtime(page)
+    result = page.evaluate("""async raw => {
+        window.THREE = {LoadingManager: class {}};
+        const loaded = [];
+        const restored = [];
+        const core = manager.core;
+        manager.currentModel = null;
+        manager.scene = {add() {}};
+        manager.enablePhysics = false;
+        manager._shouldRender = true;
+        core._postProcessMaterials = () => {};
+        core._logMaterialDiagnostics = () => {};
+        core._buildModelInfo = mmd => ({name: 'fixture', configName: mmd.configName});
+        core._restoreUserPreferences = async (mmd, modelUrl) => { restored.push(modelUrl); };
+        core._getMMDModule = async () => ({MMDLoader: class {
+            load(url, onLoad) { loaded.push(url); onLoad({mesh: {}}); }
+        }});
+        const info = await core.loadModel(raw, {}, manager._activeLoadToken);
+        return {loaded, restored, url: manager.currentModel.url,
+                configName: manager.currentModel.configName, info};
+    }""", raw)
+    assert result["loaded"] == [page.evaluate("raw => MMDCore.toRequestUrl(raw)", raw)]
+    assert result["loaded"][0] != raw
+    assert result["url"] == raw
+    assert result["restored"] == [raw]
+    assert result["configName"] == config_name
