@@ -166,6 +166,43 @@ export function consoleErrorCode(error: unknown): string | null {
   return null
 }
 
+// -- the switches, and the browser the tools use ---------------------------------
+
+export interface Capability {
+  ready?: boolean
+  reason?: string
+}
+
+export interface Switches {
+  /** The one switch for all of it. */
+  enabled: boolean
+  flags: Record<string, boolean | undefined>
+  gate: { ready?: boolean; reasons?: string[]; is_free_version?: boolean }
+  capabilities: Record<string, Capability | undefined>
+  model_images: { sees: boolean; source?: string; reason?: string; noted_at?: number; lapses_at?: number }
+}
+
+export type DeviceSwitch = 'computer_use_enabled' | 'browser_use_enabled'
+
+export interface BrowserSettings {
+  mode: string
+  executable: string | null
+  headless: boolean
+}
+
+export interface BrowserView {
+  settings: BrowserSettings
+  modes: string[]
+  browsers: Array<{ kind: string; name: string; executable: string }>
+}
+
+export const getSwitches = () => get<{ switches: Switches }>('/console/switches')
+export const setPower = (enabled: boolean) => send<{ success: boolean }>('post', '/console/switch', { enabled })
+export const setDeviceSwitch = (key: DeviceSwitch, value: boolean) =>
+  send<{ success: boolean }>('post', '/console/switch', { key, value })
+export const getBrowser = () => get<BrowserView>('/console/browser')
+export const setBrowser = (settings: Partial<BrowserSettings>) => send<BrowserView>('post', '/console/browser', settings)
+
 // -- the runtime --------------------------------------------------------------
 
 export const getRuntime = () => get<RuntimeView>('/console/runtime')

@@ -14,6 +14,9 @@
       <el-tab-pane :label="t('power.runtime.tabs.plugins')" name="plugins" lazy>
         <DshPluginsTab :plugins="runtime?.plugins ?? []" :installed="runtime?.dsh.installed ?? false" />
       </el-tab-pane>
+      <el-tab-pane :label="t('power.runtime.tabs.builtin')" name="builtin" lazy>
+        <BuiltinTab />
+      </el-tab-pane>
       <el-tab-pane :label="t('power.runtime.tabs.permissions')" name="permissions" lazy>
         <PermissionsTab />
       </el-tab-pane>
@@ -32,13 +35,14 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import type { RuntimeView } from '@/api/console'
+import BuiltinTab from '@/components/power/BuiltinTab.vue'
 import DshPluginsTab from '@/components/power/DshPluginsTab.vue'
 import PermissionsTab from '@/components/power/PermissionsTab.vue'
 import PlacesTab from '@/components/power/PlacesTab.vue'
 import RuntimeTab from '@/components/power/RuntimeTab.vue'
 import WindowTab from '@/components/power/WindowTab.vue'
 
-const TABS = ['runtime', 'plugins', 'permissions', 'window', 'places']
+const TABS = ['runtime', 'plugins', 'builtin', 'permissions', 'window', 'places']
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()

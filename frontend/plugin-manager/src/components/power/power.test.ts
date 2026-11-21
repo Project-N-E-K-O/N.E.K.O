@@ -7,6 +7,7 @@ import ElementPlus from 'element-plus'
 import { powerMessages } from '@/i18n/power'
 import type { PermissionsView, RuntimeView } from '@/api/console'
 import { describeConsoleError, formatBytes, joinIdle, splitIdle } from './powerFormat'
+import BuiltinTab from './BuiltinTab.vue'
 import PermissionsTab from './PermissionsTab.vue'
 import PlacesTab from './PlacesTab.vue'
 import RuntimeTab from './RuntimeTab.vue'
@@ -16,6 +17,7 @@ const api = vi.hoisted(() => ({
   getRuntime: vi.fn(), setRuntimePreference: vi.fn(), installDsh: vi.fn(), uninstallDsh: vi.fn(),
   getPermissions: vi.fn(), setPermission: vi.fn(), getWindow: vi.fn(), setWindow: vi.fn(),
   getPlaces: vi.fn(), openPlace: vi.fn(),
+  getSwitches: vi.fn(), setDeviceSwitch: vi.fn(), setPower: vi.fn(), getBrowser: vi.fn(), setBrowser: vi.fn(),
   consoleErrorCode: (error: unknown) => (error as { code?: string })?.code ?? null,
 }))
 vi.mock('@/api/console', () => api)
@@ -237,5 +239,73 @@ describe('the folders tab', () => {
     expect(missing?.querySelector('button')).toBeNull()
     await click(page.querySelector('[data-place="space"] button'))
     expect(api.openPlace).toHaveBeenCalledWith('space')
+  })
+})
+
+describe('the built-in abilities tab', () => {
+  const switches = (over: Record<string, unknown> = {}) => ({ switches: {
+    enabled: true, flags: { computer_use_enabled: false, browser_use_enabled: true }, gate: { ready: true },
+    capabilities: { browser_use: { ready: true, reason: '' } }, model_images: { sees: true }, ...over,
+  } })
+  const browser = (settings: Record<string, unknown> = {}) => ({
+    settings: { mode: 'own_profile', executable: null, headless: false, ...settings },
+    modes: ['own_profile', 'attach'],
+    browsers: [{ kind: 'chrome', name: 'Chrome', executable: 'C:/chrome.exe' }, { kind: 'edge', name: 'Edge', executable: 'C:/edge.exe' }],
+  })
+
+  it('shows what the agent process says after a switch, whether it took or not', async () => {
+    api.getSwitches.mockResolvedValueOnce(switches())
+    api.getBrowser.mockResolvedValue(browser())
+    const page = await mount(BuiltinTab)
+    expect(page.textContent).toContain('Found on this computer: Chrome, Edge')
+    expect(byTest('builtin-needs-power')).toBeNull()
+
+    // Switched on, and put off again at once by a model that cannot be reached.
+    api.setDeviceSwitch.mockResolvedValue({ success: true })
+    api.getSwitches.mockResolvedValueOnce(switches({
+      flags: { computer_use_enabled: true, browser_use_enabled: true },
+      capabilities: { computer_use: { ready: false, reason: 'AGENT_API_KEY_INVALID' }, browser_use: { ready: true } },
+    }))
+    await click(byTest('switch-keyboard')?.querySelector('input'))
+    expect(api.setDeviceSwitch).toHaveBeenCalledWith('computer_use_enabled', true)
+    expect(byTest('keyboard-reason')?.textContent).toContain('AGENT_API_KEY_INVALID')
+
+    api.setDeviceSwitch.mockRejectedValue(refusal('switch_failed'))
+    api.getSwitches.mockResolvedValueOnce(switches())
+    await click(byTest('switch-browser')?.querySelector('input'))
+    expect(api.setDeviceSwitch).toHaveBeenLastCalledWith('browser_use_enabled', false)
+    expect(page.textContent).toContain(words.errors.switch_failed)
+    // The agent process still has it on: so does the page.
+    expect((byTest('switch-browser')?.querySelector('input') as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('says that nothing here takes effect while it is all switched off', async () => {
+    api.getSwitches.mockResolvedValue(switches({ enabled: false }))
+    api.getBrowser.mockResolvedValue(browser())
+    await mount(BuiltinTab)
+    expect(byTest('builtin-needs-power')).toBeTruthy()
+  })
+
+  it('tells why the model is not sent pictures', async () => {
+    api.getSwitches.mockResolvedValue(switches({ model_images: { sees: false, source: 'refused', reason: 'image input is not supported', lapses_at: 1797552000 } }))
+    api.getBrowser.mockResolvedValue(browser())
+    await mount(BuiltinTab)
+    const shown = byTest('model-images')?.textContent ?? ''
+    expect(shown).toContain('the model provider refused pictures')
+    expect(document.body.textContent).toContain('image input is not supported')
+    cleanup?.()
+    api.getSwitches.mockResolvedValue(switches({ model_images: { sees: false, source: 'set by hand' } }))
+    await mount(BuiltinTab)
+    expect(byTest('model-images')?.textContent).toContain(words.runtime.builtin.imagesByHand)
+  })
+
+  it('saves one browser setting at a time and shows what came back', async () => {
+    api.getSwitches.mockResolvedValue(switches())
+    api.getBrowser.mockResolvedValue(browser())
+    api.setBrowser.mockResolvedValue(browser({ headless: true }))
+    await mount(BuiltinTab)
+    await click(byTest('browser-headless')?.querySelector('input'))
+    expect(api.setBrowser).toHaveBeenCalledWith({ headless: true })
+    expect((byTest('browser-headless')?.querySelector('input') as HTMLInputElement).checked).toBe(true)
   })
 })
