@@ -1944,9 +1944,9 @@ async def test_a_session_that_is_waiting_keeps_the_time_it_was_given_when_the_us
     seen: list[float | None] = []
     look = manager._idle_compact
 
-    async def spy(session_id: str, stops: int | None = None, after: float | None = None) -> bool:
+    async def spy(session_id: str, stops: int | None = None, after: float | None = None, model: str | None = None) -> bool:
         seen.append(after)
-        return await look(session_id, stops, after)
+        return await look(session_id, stops, after, model)
 
     monkeypatch.setattr(manager, "_idle_compact", spy)
     monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.05)
@@ -1962,6 +1962,48 @@ async def test_a_session_that_is_waiting_keeps_the_time_it_was_given_when_the_us
     assert first.id not in manager._idle_timers
     # What is set after that is for the sessions that are let go from then on.
     assert await manager._idle_after() == 30 * 86_400.0
+
+
+async def test_a_session_that_waited_is_not_summed_up_when_the_task_model_is_another_by_then(
+    hosts, tmp_path, monkeypatch
+):
+    _idle_on(monkeypatch, after=30.0)
+    summary = [say("## Current Work\n- export added"), _used(7_000, 60), finish()]
+    export = ScriptedLLM([*_long_work("export added"), summary])
+    current = {"model": "fake-model"}
+
+    async def model() -> dict[str, Any]:
+        return {"model": current["model"], "api_key": "test-key", "context_window": 16_000, "max_output_tokens": 2_000}
+
+    host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=model)
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    manager._drop_idle_timer(first.id)
+
+    # The wait is set under one model; the user moves to another provider before it is up (nothing is
+    # awaited between the two, so the timer cannot come due in between).
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.05)
+    await manager._schedule_idle_compact(first.id)
+    current["model"] = "another-provider-model"
+    await wait_until(lambda: first.id not in manager._idle_timers, what="the timer coming due")
+    await _idle_work_over(host)
+
+    # Nothing of what was said in the session went there: no request, no failure counted, no wait
+    # set again, and the session is as it was.
+    assert len(export.requests) == 5
+    assert manager._idle_compact_failures == {} and manager._idle_timers == {}
+    session = await host.ledger.get_session(first.id)
+    assert (session.status, session.compacted_at) == ("closed", None)
+
+    # Waiting under the model that is configured when the time is up, it is summed up.
+    await manager._schedule_idle_compact(first.id)
+    await wait_until(lambda: len(export.requests) == 6, what="the request that sums it up")
+    await _idle_work_over(host)
+    assert (await host.ledger.get_session(first.id)).compacted_at is not None
 
 
 async def test_a_session_a_commission_took_while_the_time_was_looked_up_gets_no_timer(hosts, tmp_path, monkeypatch):

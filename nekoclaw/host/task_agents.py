@@ -7543,8 +7543,32 @@ class TaskAgentManager:
                 logger.warning("looking up how long a session is idle before it is summed up failed", exc_info=True)
         return float(TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS)
 
+    @staticmethod
+    def _model_key_of(config: dict[str, Any] | None) -> str | None:
+        """Return the key (address and name) of the model a configuration names; None when it names none."""
+        from nekoclaw.host.model_capabilities import model_key
+
+        if not config or not config.get("model"):
+            return None
+        return model_key(config.get("base_url"), config.get("model"))
+
+    async def _task_model_key(self) -> str | None:
+        """Return the key of the task agent model as it is configured now; None when that cannot be told."""
+        try:
+            return self._model_key_of(await self._model_config())
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - not knowing is the same as no model
+            logger.warning("looking up the task agent model failed", exc_info=True)
+            return None
+
     async def _schedule_idle_compact(
-        self, session_id: str, *, after: float | None = None, idle_for: float | None = None
+        self,
+        session_id: str,
+        *,
+        after: float | None = None,
+        idle_for: float | None = None,
+        model: str | None = None,
     ) -> None:
         """Have a session summed up once nothing has been at work in it for the time the user set (``_idle_after``).
 
@@ -7555,6 +7579,11 @@ class TaskAgentManager:
         been idle, read now when it is not given: the timer keeps it, and
         looks at the session by it when it comes due, whatever the user sets
         meanwhile (the next session that is let go gets the new time).
+        ``model`` is the key of the task agent model the wait was set under
+        (read now when ``idle_for`` is): the timer keeps it, and nothing is
+        summed up when the model is another by the time it comes due (the
+        user moved to another provider: what was said in the session is not
+        sent there without the user going on with it). In memory only.
         ``after`` is how long from now, when that is not the whole time (the
         time had come by the timer, and not yet by what the ledger has of the
         session: ``_idle_compact``).
@@ -7572,6 +7601,7 @@ class TaskAgentManager:
         stops = self._idle_stops
         if idle_for is None:
             idle_for = await self._idle_after()
+            model = await self._task_model_key()
             # Looked at again after the wait: the session may have been taken
             # by a commission meanwhile (that drops its timer, and sets
             # another when it is over), everything stopped, or the host
@@ -7591,7 +7621,7 @@ class TaskAgentManager:
         def due() -> None:
             self._idle_timers.pop(session_id, None)
             if not self._closed:
-                self._spawn(self._idle_compact(session_id, stops, idle_for))
+                self._spawn(self._idle_compact(session_id, stops, idle_for, model))
 
         self._idle_timers[session_id] = asyncio.get_running_loop().call_later(max(0.0, float(after)), due)
 
@@ -7704,14 +7734,18 @@ class TaskAgentManager:
         return not self._closed and not self._in_use(session_id)
 
     async def _idle_compact(
-        self, session_id: str, stops: int | None = None, after: float | None = None
+        self, session_id: str, stops: int | None = None, after: float | None = None, model: str | None = None
     ) -> bool:
         """Sum up the conversation of a session nothing has been at work in for long. Returns whether it was summed up.
 
         ``after`` is how long the session has to have been idle: the time
         its timer was set for (``_schedule_idle_compact``), so that what the
         user sets while a session waits does not change that wait; read now
-        when it is not given.
+        when it is not given. ``model`` is the key of the task agent model the
+        wait was set under: with another one configured now, nothing is
+        asked of it (no failure is counted and no wait is set again), so that
+        what was said in the session does not go to a provider the user
+        moved to meanwhile without the user going on with it.
 
         One model request, of the length of the conversation at the most,
         made by the host itself: for no commission, so it is counted with
@@ -7766,6 +7800,10 @@ class TaskAgentManager:
         try:
             if after is None:
                 after = await self._idle_after()
+            config = await self._model_config()
+            if model is not None and self._model_key_of(config) != model:
+                logger.info("the task agent model changed while session %s waited; it is not summed up", session_id)
+                return False
             now = self._ledger._clock()
             kept = await self._ledger.get_session(session_id)
             # A session that has ended is not summed up, whatever else is so.
@@ -7791,7 +7829,6 @@ class TaskAgentManager:
                         too_early = up - now
                 return False
             last = await self._ledger.select(session_id=session_id, limit=1)
-            config = await self._model_config()
             if not last or not config or not config.get("model"):
                 return False
             commission = last[0]
@@ -7895,7 +7932,7 @@ class TaskAgentManager:
                 self._idle_compact_over(
                     session_id, task, runtime=runtime, events=events, opened=opened, grant=grant,
                     marked=marked, compacted=compacted, too_early=too_early, stops=stops,
-                    asked=asked, cut_short=cut_short, idle_for=after,
+                    asked=asked, cut_short=cut_short, idle_for=after, model=model,
                 )
             )
             self._idle_over[session_id] = over
@@ -7936,6 +7973,7 @@ class TaskAgentManager:
         asked: bool = False,
         cut_short: bool = False,
         idle_for: float | None = None,
+        model: str | None = None,
     ) -> None:
         """Give a session back after the host had it to sum it up (``_idle_compact``).
 
@@ -7967,7 +8005,7 @@ class TaskAgentManager:
                 # A little more than what is left, so that it is not a
                 # moment early once more.
                 await self._schedule_idle_compact(
-                    session_id, after=too_early + _IDLE_TIMER_MARGIN_SECONDS, idle_for=idle_for
+                    session_id, after=too_early + _IDLE_TIMER_MARGIN_SECONDS, idle_for=idle_for, model=model
                 )
 
     async def _end_service(
