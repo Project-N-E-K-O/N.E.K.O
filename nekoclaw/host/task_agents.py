@@ -7965,7 +7965,12 @@ class TaskAgentManager:
         try:
             return await self._hand_back(session, said=said)
         except Exception:  # noqa: BLE001 - asked again by a task of its own
-            logger.warning("closing a copy to hand its commission back failed; it is asked again", exc_info=True)
+            logger.warning("handing a copy's commission back failed; its close is asked again", exc_info=True)
+            if session.handing_back is None:
+                # It failed before it was marked (the ledger was not to be
+                # read): marked now, and whether it is still at work is
+                # looked at once the copy is closed (``_back_in_session``).
+                session.handing_back = (said or "".join(session.findings)).strip()
             self._spawn(self._close_copy_later(session))
             return True
 
@@ -8037,6 +8042,12 @@ class TaskAgentManager:
 
         try:
             await self._ledger.update_session(copy_id, status="closed")
+            stands = await self._looked(lambda: self._ledger.get(commission_id), what="for a commission a copy hands back")
+            if stands is None or stands.status != "working":
+                # Over meanwhile (stopped, say), or never read before it was
+                # handed back: it stays the copy's, and nothing is queued.
+                self._session_of[commission_id] = copy_id
+                return
             await self._ledger.update(commission_id, session_id=main)
             # Everything the user said to it so far went to the copy: what
             # came while it was queued went with the work it was given

@@ -961,3 +961,46 @@ async def test_a_copy_whose_run_is_over_and_cannot_be_closed_at_once_is_closed_b
     # Handed back once: queued for the session itself once.
     queued = [event for event in await host.ledger.events(second.id) if event.type == "status" and event.payload.get("to") == "queued"]
     assert len([event for event in queued if "handed back" in str(event.payload.get("reason"))]) == 1
+
+
+
+async def test_a_hand_back_whose_look_at_the_ledger_fails_goes_on_once_the_copy_is_closed(hosts, tmp_path, monkeypatch):
+    import sys
+
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        RENAME: ScriptedLLM(
+            [
+                [call("write", {"file_path": "chart.py", "content": "x"}, "call-1"), finish("tool_calls")],
+                [say("It is in chart.py."), finish()],
+                _report("renamed", "call-2"),
+            ]
+        ),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    first = await _export_at_work(host, scripts)
+    ledger = host.ledger
+    get = ledger.get
+    failed: list[str] = []
+
+    def failing(commission_id: str) -> Any:
+        if sys._getframe(1).f_code.co_name == "_hand_back" and not failed:
+            failed.append(commission_id)
+            raise RuntimeError("the ledger is busy")
+        return get(commission_id)
+
+    monkeypatch.setattr(ledger, "get", failing)
+    second = await _dispatch(host, RENAME)
+
+    async def back() -> bool:
+        # (Not on record as handed back: that note comes after the look that failed.)
+        manager = host.task_agents
+        return bool(failed) and second.id in manager._queue and manager._session_of.get(second.id) == first.session_id
+
+    await wait_until(back, what="the hand-back")
+    assert failed == [second.id] and (await host.ledger.get(second.id)).session_id == first.session_id
+    release.set()
+    done = await wait_status(host, second.id, "done")
+    assert done.session_id == first.session_id
+    assert "\n    It is in chart.py.\n" in _said(scripts[RENAME].requests[2])[-1]
