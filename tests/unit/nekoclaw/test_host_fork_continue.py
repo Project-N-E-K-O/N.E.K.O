@@ -330,6 +330,30 @@ async def test_a_commission_waits_for_its_session_where_it_is_not_carried_on(hos
         assert (await host.ledger.get_session((await host.ledger.get(carried.id)).session_id)).kind == "fork"
 
 
+async def test_as_many_copies_as_may_be_at_work_at_once_are(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_MAX_PER_SESSION", 2)
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        # Both at work in their copies until the first lets the session go.
+        FILES: ScriptedLLM([[wait, *_report("tables.py")]]),
+        "list the reports": ScriptedLLM([[wait, *_report("reports")]]),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    await _export_at_work(host, scripts)
+    carried = [await _dispatch(host, FILES)]
+    # Handed over the moment the first is being started in its copy: counted once.
+    await wait_until(
+        lambda: any(item.carries_on_for for item in host.task_agents._sessions.values()), what="the first copy"
+    )
+    carried.append(await _dispatch(host, "list the reports"))
+    await wait_until(lambda: scripts["list the reports"].requests, what="the second copy at work")
+    release.set()
+    for item in carried:
+        done = await wait_status(host, item.id, "done")
+        assert (await host.ledger.get_session(done.session_id)).kind == "fork"
+
+
 async def test_a_session_that_made_a_request_lately_is_copied_however_long(hosts, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_COLD_MAX_TOKENS", -1)
     release, wait = _gate()

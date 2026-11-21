@@ -7387,10 +7387,13 @@ class TaskAgentManager:
     # -- carrying on in a copy of a project's session ---------------------
 
     def _carrying_on(self, session_id: str) -> int:
-        """How many commissions are carried on in copies of a session, or are about to be."""
-        return sum(1 for item in self._sessions.values() if item.carries_on_for == session_id) + len(
-            self._copying_for.get(session_id, ())
-        )
+        """How many commissions are carried on in copies of a session, or are about to be.
+
+        Each once: one that was started in its copy a moment ago is still
+        among those being copied for until that is through.
+        """
+        at_work = {commission_id for commission_id, item in self._sessions.items() if item.carries_on_for == session_id}
+        return len(at_work | self._copying_for.get(session_id, set()))
 
     def _waits_for(self, commission_id: str, session_id: str) -> bool:
         """Whether a commission is queued for a session that another commission holds, and nothing else."""
