@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -39,6 +40,7 @@ from nekoclaw.host.capabilities import (
     BuiltinOutcome,
     builtin_tool,
 )
+from nekoclaw.host import call_audit
 from nekoclaw.host.gateway import CALL_TOOL, SEARCH_TOOL
 from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM, make_host, wait_until
 from tests.unit.nekoclaw.plugin_server_fake import (
@@ -147,6 +149,25 @@ def _text(result: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # Protocol
 # ---------------------------------------------------------------------------
+
+
+async def test_parallel_gateway_calls_keep_their_own_plugin_runs(host, server):
+    _catalog(server)
+    commission = await _commission(host, session_id="stable-session")
+    grant = _grant(host, commission)
+    await asyncio.gather(
+        _call(host, grant, "plugin__weather__today", {"city": "PrivateCity"}),
+        _call(host, grant, "plugin__lamp__switch"),
+    )
+    records = await host.ledger.run(lambda db: call_audit.read_trace(db, commission.id, now=host.ledger._clock()))
+    by_id = {r["call_id"]: r for r in records}
+    children = [r for r in records if r["kind"] == "plugin"]
+    assert len(children) == 2 and len({r["run_id"] for r in children}) == 2
+    for child in children:
+        gateway = by_id[child["parent_call_id"]]
+        assert gateway["kind"] == "gateway" and gateway["target"] == child["target"]
+        assert gateway["parent_call_id"] == commission.id and child["session_id"] == "stable-session"
+    assert "PrivateCity" not in json.dumps(records)
 
 
 async def test_initialize_ping_and_unknown_methods(host, server):
@@ -563,6 +584,40 @@ async def test_plugin_entries_are_allowed_without_asking(host, server):
     assert asker.asked == []
 
 
+async def test_gateway_observes_the_plugin_switch_after_asking(host, server, monkeypatch):
+    _catalog(server)
+    await host.permission_store.set_mode("plugin_entry", "first_ask")
+    enabled = True
+    monkeypatch.setattr(host.gateway._registry, "plugins_enabled", lambda: enabled)
+
+    async def switch_off(_cid, _question):
+        nonlocal enabled
+        enabled = False
+        return "once"
+
+    host.permissions.set_asker(switch_off)
+    grant = _grant(host, await _commission(host), "weather")
+    result = await _call(host, grant, "plugin__weather__today", {"city": "Paris"})
+    assert result["isError"] and not server.run_requests
+
+
+async def test_gateway_refuses_a_different_mcp_target_on_the_same_catalog_entry(host, server):
+    _mcp(server)
+    grant = _grant(host, await _commission(host))
+
+    async def change_target(_cid, _question):
+        registered = next(item for item in server.catalog if item["id"] == "mcp_adapter")
+        target = next(item for item in registered["entries"] if item["id"] == "mcp_notes_search")
+        target["name"] = "[other] search"
+        host.catalog.invalidate()
+        return "once"
+
+    host.permissions.set_asker(change_target)
+    result = await _call(host, grant, CALL_TOOL, {"name": "mcp__notes__search"})
+    assert result["isError"] and "approved plugin entry has changed" in _text(result)
+    assert not server.run_requests
+
+
 async def test_plugin_entries_can_be_forbidden_in_the_settings(host, server):
     _catalog(server)
     await host.permission_store.set_mode("plugin_entry", "deny")
@@ -700,6 +755,49 @@ async def test_a_name_two_capabilities_share_is_served_for_neither(host, server)
 # ---------------------------------------------------------------------------
 # The listener's edges, without a socket
 # ---------------------------------------------------------------------------
+
+
+async def test_revocation_then_disconnect_finishes_a_pending_audit_insert(host, server, monkeypatch):
+    import threading
+
+    _catalog(server)
+    commission = await _commission(host)
+    grant = _grant(host, commission)
+    inserting = asyncio.Event()
+    commit = threading.Event()
+    loop = asyncio.get_running_loop()
+    ensure = call_audit._ensure_commissions
+
+    def pause_insert(*args, **kwargs):
+        result = ensure(*args, **kwargs)
+        loop.call_soon_threadsafe(inserting.set)
+        assert commit.wait(5)
+        return result
+
+    monkeypatch.setattr(call_audit, "_ensure_commissions", pause_insert)
+    incoming = asyncio.Queue()
+    message = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "plugin__weather__today"}}
+    await incoming.put({"type": "http.request", "body": json.dumps(message).encode()})
+    scope = {"type": "http", "method": "POST", "path": "/mcp", "headers": [(b"authorization", f"Bearer {grant.token}".encode())]}
+
+    async def send(response):
+        pytest.fail(f"the disconnected client was sent {response['type']}")
+
+    serving = asyncio.create_task(host.gateway._asgi(scope, incoming.get, send))
+    try:
+        await asyncio.wait_for(inserting.wait(), 3)
+        (work,) = grant.in_flight
+        host.gateway.revoke(commission.id)
+        await asyncio.sleep(0)  # first cancellation reaches the pending audit insertion
+        await incoming.put({"type": "http.disconnect"})
+        await wait_until(lambda: work.cancelling() >= 2, what="the disconnect cancelling revoked work again")
+    finally:
+        commit.set()
+        await asyncio.wait_for(serving, 3)
+    assert work.cancelled() and not server.calls
+    root, attempt = await host.ledger.run(lambda db: call_audit.read_trace(db, commission.id, now=host.ledger._clock()))
+    assert (attempt["parent_call_id"], attempt["status"]) == (root["call_id"], "cancelled")
+    assert attempt["ended_at"] is not None
 
 
 async def test_a_token_replaced_while_the_body_arrives_is_refused(host, server):
@@ -990,8 +1088,11 @@ class Builtins:
         ]
 
     async def run(
-        self, capability: Any, *, commission_id: str, arguments: dict[str, Any], reopen_agreement: Any = None
+        self, capability: Any, *, commission_id: str, arguments: dict[str, Any], reopen_agreement: Any = None,
+        still_allowed: Any = None,
     ) -> Any:
+        if still_allowed is not None and not still_allowed():
+            return BuiltinOutcome(False, "permission denied")
         self.calls.append((capability.tool_name, commission_id, dict(arguments)))
         self.reopened = [*self.reopened, reopen_agreement]
         if reopen_agreement is not None:
@@ -1060,11 +1161,123 @@ async def _tool_names(host: Any, grant: Any) -> list[str]:
     return [tool["name"] for tool in answer["result"]["tools"]]
 
 
+async def test_declared_device_is_scoped_to_the_commission_and_still_needs_permission(builtin_host):
+    host = builtin_host
+    commission = await _commission(host)
+    token = host.gateway.issue(commission.id, supports_images=True, first_turn_groups=("browser",))
+    grant = host.gateway._grant(token)
+    assert set(await _tool_names(host, grant)) == {SEARCH_TOOL, CALL_TOOL, "browser_navigate_page", "browser_take_screenshot"}
+    assert not host.provider.calls and not grant.loaded_groups
+    await host.permission_store.set_mode("browser", "deny")
+    # Screenshot isn't a legacy first action. Seeing its schema doesn't authorize it.
+    result = await _call(host, grant, "browser_take_screenshot")
+    assert result["isError"] and "permission denied" in _text(result) and not host.provider.calls
+    await host.permission_store.set_mode("browser", "allow")
+    result = await _call(host, grant, "browser_take_screenshot")
+    assert not result["isError"] and len(host.provider.calls) == 1 and not grant.loaded_groups
+    next_token = host.gateway.issue(commission.id, supports_images=True)
+    assert await _tool_names(host, host.gateway._grant(next_token)) == [SEARCH_TOOL, CALL_TOOL]
+
+
+async def test_first_turn_listing_respects_availability_image_support_and_readonly_forks(builtin_host):
+    host = builtin_host
+    commission = await _commission(host)
+    groups = BUILTIN_GROUPS
+    token = host.gateway.issue(commission.id, first_turn_groups=groups)
+    grant = host.gateway._grant(token)
+    assert await _tool_names(host, grant) == [SEARCH_TOOL, CALL_TOOL, "browser_navigate_page"]
+    host.provider.switched_off.add("browser_navigate_page")
+    assert await _tool_names(host, grant) == [SEARCH_TOOL, CALL_TOOL]
+    assert (await _call(host, grant, "browser_navigate_page"))["isError"]
+    token = host.gateway.issue(commission.id, supports_images=True, first_turn_groups=groups, reads_only=True)
+    assert await _tool_names(host, host.gateway._grant(token)) == [SEARCH_TOOL, CALL_TOOL]
+
+
 def _cost(definition: dict[str, Any]) -> int:
     """The tokens one listed definition is counted as."""
     from utils.tokenize import count_tokens
 
     return count_tokens(json.dumps(definition, ensure_ascii=False))
+
+
+async def test_compaction_keeps_only_groups_actually_used_and_rediscovery_restores_one(builtin_host):
+    host = builtin_host
+    commission = await _commission(host)
+    token = host.gateway.issue(commission.id, supports_images=True, first_turn_groups=BUILTIN_GROUPS)
+    grant = host.gateway._grant(token)
+    await host.permission_store.set_mode("browser", "allow")
+
+    async def listed(count, wanted=()):
+        meta = {"nekoclaw/compactions": count, "nekoclaw/deviceIntent": list(wanted)}
+        reply = await _rpc(host, grant, "tools/list", {"_meta": meta})
+        return {item["name"] for item in reply["result"]["tools"]}
+
+    assert {"computer", "browser_take_screenshot"} <= await listed(0)
+    assert not (await _call(host, grant, "browser_take_screenshot"))["isError"]
+    kept = await listed(1)
+    assert "browser_take_screenshot" in kept and "computer" not in kept
+    assert await listed(1) == kept
+    assert await listed(2) == {SEARCH_TOOL, CALL_TOOL}
+    assert await listed(1, ("browser",)) == {SEARCH_TOOL, CALL_TOOL}
+    # Naming an old non-first tool no longer skips the group's guidance.
+    refused = await _call(host, grant, "browser_take_screenshot")
+    assert refused["isError"] and len(host.provider.calls) == 1
+    assert not (await _call(host, grant, SEARCH_TOOL, {"group": "browser"}))["isError"]
+    assert set(await _tool_names(host, grant)) == kept
+    assert "computer" in await listed(3, ("keyboard_mouse",))
+    assert await listed(4) == {SEARCH_TOOL, CALL_TOOL}
+
+
+async def test_restored_compaction_count_alone_does_not_discard_a_used_group(builtin_host):
+    host = builtin_host
+    commission = await _commission(host)
+    token = host.gateway.issue(commission.id, supports_images=True, first_turn_groups=("browser",))
+    grant = host.gateway._grant(token)
+    await host.permission_store.set_mode("browser", "allow")
+    await _tool_names(host, grant)
+    assert not (await _call(host, grant, "browser_take_screenshot"))["isError"]
+    resumed = await host.gateway.tool_definitions(grant, compactions=100)
+    assert "browser_take_screenshot" in {tool["name"] for tool in resumed}
+    assert not (await _call(host, grant, "browser_take_screenshot"))["isError"]
+    folded = await host.gateway.tool_definitions(grant, compactions=102, idle_device_cycle=True)
+    assert {tool["name"] for tool in folded} == {SEARCH_TOOL, CALL_TOOL}
+
+
+@pytest.mark.parametrize("idle_cycle", [False, True])
+async def test_compaction_during_permission_preflight_and_device_execution(builtin_host, idle_cycle):
+    host = builtin_host
+    commission = await _commission(host)
+    token = host.gateway.issue(commission.id, supports_images=True, first_turn_groups=("browser",))
+    grant = host.gateway._grant(token)
+    original = set(await _tool_names(host, grant))
+    asked, answer = asyncio.Event(), asyncio.Event()
+
+    async def ask(*_):
+        asked.set()
+        await answer.wait()
+        return "once"
+
+    async def listed(count):
+        tools = await host.gateway.tool_definitions(grant, compactions=count, idle_device_cycle=idle_cycle)
+        return {tool["name"] for tool in tools}
+
+    host.permissions.set_asker(ask)
+    preflight = asyncio.create_task(host.gateway.clear_call(commission.id, "browser_take_screenshot", {}))
+    await asyncio.wait_for(asked.wait(), 5)
+    assert await listed(1) == original
+    answer.set()
+    await preflight
+    assert await listed(2) == original
+    host.provider.hold = asyncio.Event()
+    work = asyncio.create_task(_call(host, grant, "browser_take_screenshot"))
+    try:
+        await asyncio.wait_for(host.provider.started.wait(), 5)
+        assert await listed(3) == original
+        assert await listed(4) == original
+    finally:
+        host.provider.hold.set()
+        assert not (await work)["isError"]
+    assert await listed(5) == {SEARCH_TOOL, CALL_TOOL}
 
 
 def _found(text: str) -> list[str]:
@@ -1137,6 +1350,52 @@ async def _groups_on_offer(host: Any, grant: Any) -> list[str]:
 
 async def _load(host: Any, grant: Any, group: str) -> dict[str, Any]:
     return await _call(host, grant, SEARCH_TOOL, {"group": group})
+
+
+@pytest.mark.parametrize("dsh_precheck", [False, True], ids=["builtin", "dsh"])
+async def test_registered_browser_is_discovered_called_and_released_through_the_gateway(server, tmp_path, dsh_precheck):
+    from nekoclaw.builtin.browser.tools import BrowserTools
+    from nekoclaw.builtin.devices import BrowserDeviceProvider
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    registration = create_autospec(BrowserDeviceProvider, instance=True)
+    driver = create_autospec(BrowserTools, instance=True)
+    registration.tools.return_value = [({**NAVIGATE, "name": "browser_fixture"}, False)]
+    registration.open_driver.return_value = driver
+    driver.closed_by_user.return_value = False
+    driver.window.return_value = None
+    driver.call.return_value = BuiltinOutcome(True, "a page")
+    def ports() -> set[int]:
+        return {48911}
+
+    devices = BuiltinToolProvider(state=lambda group: (True, ""), browser_provider=registration, own_ports=ports)
+    host = make_host(tmp_path, server, builtins=devices)
+    try:
+        asker = Asker("once")
+        host.permissions.set_asker(asker)
+        commission = await _commission(host)
+        grant = _grant(host, commission, loaded=())
+        loaded = _served(_text(await _load(host, grant, "browser")))
+        assert [item["name"] for item in loaded] == ["browser_fixture"]
+        registration.open_driver.assert_not_called()
+        arguments = {"name": "browser_fixture", "arguments": {"url": "https://example.org"}}
+        if dsh_precheck:
+            reply = await host.task_agents._cb_permission(
+                commission.id, {"tool": CALL_TOOL, "category": "gateway", "arguments": arguments}
+            )
+            assert reply["allow"] is True
+        result = await _call(host, grant, CALL_TOOL, arguments)
+        assert _text(result) == "a page"
+        assert len(asker.asked) == 1
+        registration.open_driver.assert_called_once_with(own_ports=ports)
+        assert driver.call.await_args.args == ("browser_fixture", arguments["arguments"])
+        # Its operation receipt is released when the driver returns.
+        assert driver.call.await_args.kwargs["refused"]() == "permission denied"
+        assert host.leases.release(commission.id) == [BUILTIN_GROUP_BROWSER]
+        await host.leases.settle()
+        driver.released.assert_awaited_once_with()
+    finally:
+        await host.shutdown()
 
 
 def _served(text: str) -> list[dict[str, Any]]:
@@ -2101,8 +2360,12 @@ async def test_a_builtin_call_asks_first_and_then_runs_for_the_commission(builti
         ("browser_navigate_page", commission.id, {"url": "https://example.com"})
     ]
     assert result == {"content": [{"type": "text", "text": "browser_navigate_page done"}], "isError": False}
-    # A step that went well adds no row to the ledger: the task agent's own
-    # tool events show it already, and a task is many such steps.
+    root, device = await builtin_host.ledger.run(
+        lambda db: call_audit.read_trace(db, commission.id, now=builtin_host.ledger._clock())
+    )
+    assert (device["parent_call_id"], device["kind"], device["status"]) == (root["call_id"], "device", "completed")
+    assert "example.com" not in json.dumps(device)
+    # Existing HUD events remain separate from the compact host audit.
     assert [event.type for event in await builtin_host.ledger.events(commission.id)] == before
 
 
@@ -2115,6 +2378,10 @@ async def test_a_declined_builtin_is_not_run(builtin_host):
 
     assert result["isError"] is True and "the user declined" in _text(result)
     assert builtin_host.provider.calls == []
+    root, device = await builtin_host.ledger.run(
+        lambda db: call_audit.read_trace(db, commission.id, now=builtin_host.ledger._clock())
+    )
+    assert (device["parent_call_id"], device["status"], device["reason"]) == (root["call_id"], "denied", "user")
     # Declined before the desktop was occupied.
     assert builtin_host.leases.occupied() == {}
     denied = [
@@ -2620,6 +2887,48 @@ async def test_a_commission_that_stopped_working_while_it_waited_for_a_group_doe
     assert [cid for _name, cid, _args in builtin_host.provider.calls] == [first.id]
     # The browser it was handed is given straight back.
     assert builtin_host.leases.occupied() == {}
+
+
+async def test_revoking_browser_approval_while_queued_keeps_the_next_provider_call_from_running(builtin_host):
+    builtin_host.permissions.set_asker(Asker("session"))
+    holder = await _commission(builtin_host)
+    other = await _commission(builtin_host, title="second browser task")
+    await _call(builtin_host, _grant(builtin_host, holder), "browser_navigate_page")
+    other_grant = _grant(builtin_host, other, images=True)
+    await _call(builtin_host, other_grant, "computer", {"action": "screenshot"})
+    waiting = asyncio.create_task(_call(builtin_host, other_grant, "browser_navigate_page"))
+    await wait_until(lambda: builtin_host.leases._waiters, what="second task waiting at the device")
+    await builtin_host.permission_store.set_mode("browser", "deny")
+    await builtin_host.ledger.transition(holder.id, "done", reason="test")
+    result = await asyncio.wait_for(waiting, 10)
+    assert result["isError"] and "permission denied" in _text(result)
+    assert [cid for _, cid, _ in builtin_host.provider.calls] == [holder.id, other.id]
+    assert builtin_host.leases.occupied() == {"keyboard_mouse": other.id}
+
+
+async def test_decline_inside_provider_queue_keeps_parallel_browser_call_occupied(builtin_host, monkeypatch):
+    host = builtin_host
+    await host.permission_store.set_mode("browser", "allow")
+    commission = await _commission(host)
+    grant = _grant(host, commission)
+    running, finish = asyncio.Event(), asyncio.Event()
+
+    async def run(tool, *, commission_id, arguments, still_allowed):
+        assert still_allowed()
+        if arguments["url"] == "queued":
+            return BuiltinOutcome(False, "permission denied")
+        running.set()
+        await finish.wait()
+        return BuiltinOutcome(True, "finished")
+
+    monkeypatch.setattr(host.provider, "run", run)
+    async with asyncio.timeout(5), asyncio.TaskGroup() as group:
+        group.create_task(_call(host, grant, "browser_navigate_page", {"url": "active"}))
+        await running.wait()
+        denied = await _call(host, grant, "browser_navigate_page", {"url": "queued"})
+        assert denied["isError"] and host.leases.occupied() == {"browser": commission.id}
+        finish.set()
+    assert host.leases.occupied() == {"browser": commission.id}
 
 
 async def test_stopping_a_commission_stops_its_call_that_waits_for_a_group(builtin_host):

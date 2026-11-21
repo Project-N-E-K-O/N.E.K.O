@@ -299,10 +299,15 @@ async def test_a_promise_without_a_named_task_is_dispatched_in_the_users_words(s
     llm = FakeDecisionLLM(turn=[{"verdict": "promised", "task": ""}], fine=[pick_plugin("weather", "today")])
     host = _host(hosts, tmp_path, server, llm)
 
-    result = await _check(host, "明天天气怎么样", "我去看看", external_intent=0.8)
+    from nekoclaw.host import call_audit
+
+    ref = "chat_original:" + "b" * 32
+    result = await _check(host, "明天天气怎么样", "我去看看", external_intent=0.8, source_message_ref=ref)
 
     commission = await host.ledger.get(result.receipt.commission_id)
     assert commission.dispatch_text == "明天天气怎么样"
+    rows = await host.ledger.run(lambda db: call_audit.read_trace(db, commission.id, now=host.ledger._clock()))
+    assert rows[0]["target"] == "promised" and rows[0]["source_message_ref"] == ref
 
 
 async def test_a_promise_nothing_can_keep_wakes_her_to_take_it_back(server, hosts, tmp_path):

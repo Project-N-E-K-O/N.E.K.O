@@ -60,12 +60,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from nekoclaw import TASK_CONTROL_TOOLS
+
 PROFILE = "acp"
 PROVIDER = "nekoclaw"
 PATCH_FILE = "nekoclaw.patch.yml"
 GUARD_FILE = "nekoclaw-guard.mjs"
 # What the guard writes to standard error once dsh has loaded it.
 GUARD_READY = "nekoclaw-guard ready"
+DEVICE_VIEW_READY = f"{GUARD_READY} with device view"
 # The variable dsh reads the "key" of its one provider from: the token of the
 # driver's endpoint, of no use anywhere else.
 KEY_VARIABLE = "NEKOCLAW_DSH_ENDPOINT_TOKEN"
@@ -82,12 +85,10 @@ GATED_TOOLS: tuple[str, ...] = ("read", "read_image", "glob", "grep", "write", "
 # counterparts. (dsh's ``web_fetch`` is not among them: it is switched off,
 # see ``build_patch``.)
 UNASKED_TOOLS: tuple[str, ...] = (
+    "job_list", "job_output", "job_kill",
     "create_goal",
     "get_goal",
     "update_goal",
-    "job_kill",
-    "job_list",
-    "job_output",
     "skill",
     "todo_write",
 )
@@ -125,6 +126,8 @@ DISABLED_ROWS: tuple[str, ...] = (
     "tool-working-directory",
 )
 
+CONTROL_CHECK_PREFIX = "nekoclaw:task-control:"
+
 GUARD_SOURCE = """\
 // Written by N.E.K.O (nekoclaw/dsh/profile.py). Do not edit: it is rewritten at every start.
 //
@@ -132,21 +135,367 @@ GUARD_SOURCE = """\
 // N.E.K.O host as a permission request, and the host decides by its own
 // settings. Only the tools named in the configuration pass unasked; without
 // a configuration every tool is asked about.
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 export const name = 'nekoclaw-guard'
 
 export function apply(ctx, config) {
+  if (config?.deviceViewUrl) installDeviceView(ctx, config.deviceViewUrl)
   const unasked = new Set(Array.isArray(config?.unasked) ? config.unasked : [])
   const prefixes = Array.isArray(config?.unaskedPrefixes) ? config.unaskedPrefixes : []
   const asked = new Set(Array.isArray(config?.asked) ? config.asked : [])
+  const controls = new Set(%s)
   ctx.on('tools/pre-execute', async (exec, next) => {
+    if (exec.name === config?.fetchTool && exec.parent !== undefined) {
+      return {kind: 'deny', reason: 'No authorized program recipient.'}
+    }
+    if (controls.has(exec.name)) {
+      const native = await next()
+      if (native.kind === 'deny') return native
+      const approval = ctx.get('approval')
+      if (!approval || !exec.agent || !exec.callId) return { kind: 'deny', reason: 'missing task control context' }
+      const answer = await approval.request({
+        agent: exec.agent, toolName: exec.name, callId: '%s' + exec.callId, signal: exec.signal,
+      })
+      if (answer !== 'allowed-once') return { kind: 'deny', reason: 'task control unavailable' }
+      return native
+    }
     if (!asked.has(exec.name) && (unasked.has(exec.name) || prefixes.some(prefix => exec.name.startsWith(prefix)))) {
       return next()
     }
+    const native = await next()
+    if (native.kind !== 'allow') return native
     return { kind: 'ask', reason: 'the N.E.K.O host decides' }
   })
-  process.stderr.write('%s\\n')
+  const executions = new Set(config?.executions ?? [])
+  const request = async (session, call, action, text, signal) => {
+    const response = await fetch(new URL('/internal/retained-output', config.outputURL), {method: 'POST', redirect: 'error', signal,
+      headers: {'Authorization': 'Bearer ' + process.env[config.keyVariable], 'Content-Type': 'application/json'},
+      body: JSON.stringify({session, call, action, text})})
+    if (!response.ok) throw new Error('Retained output unavailable')
+    return response.json()
+  }
+  // The native job registry advances its cursor inside execute. Keep the
+  // unacknowledged result on the owning agent until an authorized read.
+  const jobReads = new WeakMap()
+  const jobResults = new Map()
+  if (executions.size) ctx.on('tools/result', (exec, result) => {
+    jobResults.get(identity(exec))?.(result)
+  })
+  async function withJobRead(exec, execute) {
+    if (exec.name !== 'job_output' || !exec.agent || exec.parent !== undefined) return execute()
+    let reads = jobReads.get(exec.agent)
+    if (!reads) jobReads.set(exec.agent, reads = new Map())
+    const id = exec.arguments?.job_id
+    let pending = reads.get(id)
+    if (!pending) reads.set(id, pending = {})
+    const key = identity(exec)
+    const previous = pending.turn
+    let release, cancelWait
+    const done = new Promise(resolve => { release = resolve })
+    const cancelled = new Promise(resolve => { cancelWait = resolve })
+    const turn = previous ? previous.then(() => done) : done
+    pending.turn = turn
+    let executing = false
+    let expected
+    const abort = () => {
+      cancelWait()
+      if (!executing) finish(false)
+    }
+    const finish = result => {
+      if (jobResults.get(key) !== finish) return
+      jobResults.delete(key)
+      exec.signal.removeEventListener('abort', abort)
+      // A post-execute policy can replace a successful result's content.
+      // Acknowledge only the output (or complete locator) in the model view.
+      const delivered = expected && result && !result.isError && result.content?.some(block =>
+        block.type === 'text' && (block.text === expected ||
+          block.text.startsWith(expected.endsWith('\\n') ? expected : expected + '\\n')))
+      if (delivered) {
+        delete pending.path
+        delete pending.text
+      }
+      release()
+      turn.then(() => {
+        if (pending.turn === turn && !pending.path && !pending.text) reads.delete(id)
+      })
+    }
+    jobResults.set(key, finish)
+    exec.signal.addEventListener('abort', abort, {once: true})
+    try {
+      if (previous && !exec.signal.aborted) await Promise.race([previous, cancelled])
+      exec.signal.throwIfAborted()
+      executing = true
+      const result = await execute(pending)
+      if (!result.isError) expected = result.value?.text
+      return result
+    } catch (error) {
+      finish(false)
+      throw error
+    } finally {
+      executing = false
+      if (exec.signal.aborted) finish(false)
+    }
+  }
+  const projections = new Map()
+  const identity = exec => JSON.stringify([exec.agent?.session.header.id, exec.callId])
+  const textOnly = (exec, text) => {
+    const value = exec.name === 'grep' ? {matches: []} : {path: '', offset: 1, lines: [], totalLines: 0}
+    return {value, content: [{type: 'text', text}]}
+  }
+  if (executions.size) ctx.on('tools/post-execute', async (exec, result, next) => {
+    const key = identity(exec)
+    const text = projections.get(key)
+    projections.delete(key)
+    const decision = await next()
+    return text !== undefined && decision.kind === 'accept' && !result.isError && !exec.signal.aborted
+      ? {...decision, content: [{type: 'text', text}]} : decision
+  })
+  // Native notices are queued independently of the command. Keep the wake
+  // and job id; fetch labels and output through the guarded job tools.
+  if (executions.size) ctx.on('agent/created', ({agent}) => {
+    for (const method of ['followup', 'inject']) {
+      const send = agent[method].bind(agent)
+      agent[method] = (message, ...args) => {
+        if (message?.source?.kind !== 'tool-jobs') return send(message, ...args)
+        const id = /^background job ([a-zA-Z0-9_-]+)(?: |$)/.exec(message.content?.[0]?.text ?? '')?.[1]
+        const text = id ? 'Background job ' + id + ' finished. Use job_output.' : 'A job finished. Use job_list.'
+        return send({...message, content: [{type: 'text', text}], source: {...message.source, summary: text}}, ...args)
+      }
+    }
+  })
+  const hint = 'Use grep with a keyword to search this path in sections.'
+  const failed = message => ({isError: true, error: {message}, content: [{type: 'text', text: message}]})
+  const nativeRead = new AsyncLocalStorage()
+  let boundedReads = false
+  if (executions.has('read')) ctx.inject(['fs'], scoped => {
+    const fs = scoped.get('fs')
+    const read = fs.readText, stream = fs.streamText
+    async function bounded(provider, target, signal) {
+      let bytes
+      try { bytes = await provider.readBytes(target, signal, config.readBytes) }
+      catch (error) {
+        if (error.code === 'FS_TOO_LARGE') throw new Error(hint)
+        throw error
+      }
+      if (bytes.length > config.readBytes) throw new Error(hint)
+      if (bytes.subarray(0, 8192).includes(0)) throw new Error('Cannot read a binary file.')
+      return new TextDecoder('utf-8', {fatal: true}).decode(bytes)
+    }
+    fs.readText = function(target, signal) {
+      return nativeRead.getStore() ? bounded(this, target, signal) : read.call(this, target, signal)
+    }
+    fs.streamText = async function(target, signal) {
+      if (!nativeRead.getStore()) return stream.call(this, target, signal)
+      const text = await bounded(this, target, signal)
+      return (async function* () { yield text })()
+    }
+    boundedReads = true
+    scoped.on('dispose', () => { boundedReads = false; fs.readText = read; fs.streamText = stream })
+  })
+  if (executions.size) ctx.inject(['spillStore'], scoped => {
+    const store = scoped.get('spillStore')
+    const save = store.saveText
+    store.saveText = async function(input) {
+      if (!executions.has(input.source?.toolName)) return save.call(this, input)
+      const ref = await request(input.owner.sessionId, input.source.callId, 'save', input.content)
+      return {locator: ref.path, bytes: Buffer.byteLength(input.content), retrievalHint: hint}
+    }
+    scoped.on('dispose', () => { store.saveText = save })
+  })
+  if (executions.size) ctx.on('tools/execute', async (exec, next) => {
+    if (exec.name === config.fetchTool) {
+      if (exec.parent !== undefined) return failed('No authorized program recipient.')
+      const result = await request(exec.agent.session.header.id, exec.callId, 'fetch', undefined, exec.signal)
+      if (result.isError) return failed(result.content[0].text)
+      return {value: {content: result.content}, content: result.content}
+    }
+    if (!executions.has(exec.name)) return next()
+    const confirm = async phase => {
+      const approval = ctx.get('approval')
+      if (!approval || !exec.agent || exec.signal.aborted) return false
+      const response = await approval.request({agent: exec.agent, toolName: exec.name,
+        callId: 'nekoclaw-exec/' + phase + '/' + exec.callId, signal: exec.signal})
+      return response === 'allowed-once' && !exec.signal.aborted
+    }
+    const refused = () => {
+      const message = 'The tool result could not be delivered.'
+      return {isError: true, error: {message}, content: [{type: 'text', text: message}]}
+    }
+    return withJobRead(exec, async pending => {
+      if (!await confirm(exec.parent === undefined ? 'direct' : 'nested')) return refused()
+      const session = exec.agent.session.header.id
+      let result, display
+      try {
+        if (exec.name === 'read' || exec.name === 'grep') {
+          const saved = await request(session, exec.callId, 'read', undefined, exec.signal)
+          if (saved.error) result = failed(saved.error)
+          else if (typeof saved.text === 'string') { display = saved.text; result = textOnly(exec, display) }
+        }
+        if (pending) {
+          // Always run the native read with this call's wait and timeout.
+          // A refused batch contributes only its unread text, never stale status.
+          const latest = await next()
+          if (latest.isError) result = latest
+          else {
+            pending.text = (pending.text ?? '') + (latest.value.text ?? '')
+            if ((pending.path && pending.text) || Buffer.byteLength(pending.text) > config.readBytes) {
+              const ref = await request(session, exec.callId, 'save_job', {prefix: pending.path, delta: pending.text})
+              pending.path = ref.path
+              pending.text = ''
+            }
+            result = {value: {...latest.value, text: pending.path ? hint + ' ' + pending.path : pending.text}}
+          }
+        } else {
+          if (!result && exec.name === 'read') {
+            result = boundedReads ? await nativeRead.run(true, next) : failed('The bounded reader is unavailable.')
+          } else result ??= await next()
+        }
+        if (exec.name === 'job_list' && Array.isArray(result.value)) {
+          const allowed = new Set((await request(session, exec.callId, 'list')).ids)
+          result = {value: result.value.filter(job => allowed.has(job.id))}
+        }
+        if (['pwsh', 'bash'].includes(exec.name) && typeof result.value?.jobId === 'string') {
+          await request(session, exec.callId, 'job', result.value.jobId)
+        }
+        const text = result.content?.filter(block => block.type === 'text').map(block => block.text).join('\\n') ?? ''
+        if (exec.name === 'grep' && display === undefined && Array.isArray(result.value?.matches)) {
+          const hits = result.value.matches
+          const full = hits.map(m => m.path + ':' + m.lineNumber + ': ' + m.line).join('\\n')
+          if (hits.length > 250 || Buffer.byteLength(full) > config.readBytes) {
+            const ref = await request(session, exec.callId, 'save', full)
+            const tail = '\\n\\n' + hint + ' ' + ref.path
+            const head = []
+            let bytes = Buffer.byteLength(tail)
+            for (const m of hits.slice(0, 250)) {
+              const line = m.path + ':' + m.lineNumber + ': ' + m.line
+              bytes += Buffer.byteLength(line) + 1
+              if (bytes > config.readBytes) break
+              head.push(line)
+            }
+            display = head.join('\\n') + tail
+            result = textOnly(exec, display)
+          }
+        }
+        if (display === undefined && ['read', 'grep'].includes(exec.name) && Buffer.byteLength(text) > config.readBytes) {
+          const ref = await request(session, exec.callId, 'save', text)
+          display = hint + ' ' + ref.path
+          result = textOnly(exec, display)
+        }
+      } catch {
+        result = failed('The tool result could not be delivered.')
+      }
+      if (!await confirm(result.isError ? 'failed' : 'completed')) return refused()
+      if (display !== undefined && !result.isError) projections.set(identity(exec), display)
+      return result
+    })
+  })
+  process.stderr.write((config?.deviceViewUrl ? '%s' : '%s') + '\\n')
 }
-""" % GUARD_READY
+""" % (json.dumps(sorted(TASK_CONTROL_TOOLS)), CONTROL_CHECK_PREFIX, DEVICE_VIEW_READY, GUARD_READY)
+
+
+# dsh assembles schemas *before* its pre-step compaction and prepares the model
+# request *afterwards*. Keep the actual assembled array for that request so a
+# successful summary takes effect immediately, including overflow retries.
+GUARD_SOURCE += """
+function installDeviceView(ctx, url) {
+  const views = new WeakMap()
+  const prefix = 'mcp__gateway__'
+  const device = name => name === prefix + 'computer' || name.startsWith(prefix + 'browser_')
+  function groupsOf(tools) {
+    const groups = new Set()
+    for (const tool of tools) {
+      if (tool.name === prefix + 'computer') groups.add('keyboard_mouse')
+      if (tool.name.startsWith(prefix + 'browser_')) groups.add('browser')
+    }
+    return [...groups]
+  }
+  ctx.on('system-prompt/assemble', async (_assembly, { agent }, next) => {
+    const assembly = await next()
+    if (agent && assembly.tools.some(tool => device(tool.name))) {
+      const session = agent.session
+      const view = views.get(session) || { epoch: 0, dirty: false, allowed: null }
+      view.unfiltered = assembly.tools
+      view.assembly = { ...assembly }
+      views.set(session, view)
+      return view.assembly
+    }
+    return assembly
+  })
+  ctx.on('session/event', (session, event) => {
+    const view = views.get(session)
+    if (view && event.type === 'assistant/message' && !event.data.interrupted) {
+      // Only the ordinary agent loop commits this event. An overflow, network
+      // failure or interrupted stream is an attempt; a summary is separate.
+      view.shown = { groups: groupsOf(view.assembly.tools), turn: event.data.turn }
+    }
+    if (view && event.type === 'compaction/end' && event.data.error === undefined) {
+      view.idleCycle = view.endSinceRequest === true
+      view.endSinceRequest = true
+      view.epoch++
+      view.dirty = true
+    }
+  })
+  ctx.on('tools/result', (exec, result) => {
+    const view = views.get(exec.agent?.session)
+    if (view?.hidden && !result.isError && exec.name === prefix + 'capability_search' && exec.arguments?.group) {
+      view.dirty = true
+    }
+    if (view && exec.name === 'mcp__host__wait_agent') {
+      // New user input may have just been delivered, after the preceding reply.
+      view.shown = null
+      view.checkIntent = true
+    }
+  })
+  ctx.on('agent/request', async ({ agent, turn, signal }, next) => {
+    const view = views.get(agent.session)
+    if (!view?.epoch || !view.assembly || view.disabled) return next()
+    // The agent cannot dispatch a device between two summaries without a model
+    // step. A later attempt with intervening work must not claim that proof.
+    const idleCycle = view.idleCycle === true && view.endSinceRequest === true
+    view.endSinceRequest = false
+    if (view.dirty || (view.hidden && (view.turn !== turn || view.checkIntent))) {
+      try {
+        const status = { session: agent.session.id, epoch: view.epoch, refresh: view.dirty }
+        if (view.turn === undefined) status.registered = groupsOf(view.unfiltered)
+        if (idleCycle) status.idleCycle = true
+        if (view.shown?.groups.length) {
+          status.shown = view.shown.groups
+          if (view.shown.turn === turn) status.sameTurn = true
+        }
+        const response = await fetch(url, {
+          method: 'POST', redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+          headers: {
+            Authorization: 'Bearer ' + process.env.NEKOCLAW_DSH_ENDPOINT_TOKEN,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(status),
+        })
+        if (response.ok) {
+          const names = await response.json()
+          if (names === null) view.disabled = true
+          if (Array.isArray(names)) view.allowed = new Set(names.map(name => prefix + name))
+          view.dirty = false
+          view.checkIntent = false
+          view.turn = turn
+        }
+      } catch {
+        // A failed refresh keeps the last confirmed view and retries next request.
+      }
+    }
+    if (view.allowed !== null) {
+      // The previous request may have frozen its schema array, while an
+      // overflow retry still reuses the assembly. Preserve that history.
+      const source = view.unfiltered
+      const visible = source.filter(tool => !device(tool.name) || view.allowed.has(tool.name))
+      view.hidden = visible.length !== source.length
+      view.assembly.tools = view.hidden ? visible : source
+    }
+    return next()
+  })
+}
+"""
 
 
 class DshUnavailable(RuntimeError):
@@ -195,14 +544,17 @@ def model_option(index: int) -> str:
     return json.dumps([PROVIDER, slot_model(index)], separators=(",", ":"))
 
 
-def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[dict[str, Any]]:
+def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path,
+                managed_execution: bool = False) -> list[dict[str, Any]]:
     """Return the patch a dsh process is started with.
 
     ``endpoint`` is the driver's model endpoint as dsh is to call it (an
     address on the loopback interface ending in ``/v1``). A patch replaces
     the whole configuration of the row it names.
     """
-    from config.nekoclaw_settings import DSH_MODEL_RETRIES, DSH_SPILL_KEPT_DAYS
+    from config.nekoclaw_settings import DSH_MODEL_RETRIES, DSH_SPILL_KEPT_DAYS, FIRST_TURN_DEVICE_TOOLS
+    from nekoclaw.runtime.execution import JOB_TOOLS
+    from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
     from config.prompts.prompts_nekoclaw import TASK_AGENT_IDENTITY
     from config.prompts.prompts_nekoclaw_dsh import DSH_HOST_TOOLS_SECTION, HOST_TOOL_PREFIX
 
@@ -211,6 +563,11 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
     from nekoclaw.runtime.context import headroom_of
 
     headroom = headroom_of(shape.context_window)
+    # A fresh home is initialized with the pinned stock ACP recipe on launch.
+    # With a pre-existing custom recipe, leave every plugin hook untouched.
+    device_view = FIRST_TURN_DEVICE_TOOLS and (
+        not (home / "profiles" / PROFILE).exists() or uses_stock_tool_presentation(home)
+    )
     models = [
         {
             "id": slot_model(index),
@@ -293,9 +650,15 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
                     # The host's own tools ask the host themselves when they
                     # need to; everything else not listed is asked about.
                     "config": {
-                        "unasked": list(UNASKED_TOOLS),
+                        **({"executions": [*GATED_TOOLS, "job_list", "job_output", "job_kill"],
+                            "outputURL": endpoint,
+                            "keyVariable": KEY_VARIABLE, "readBytes": READ_MAX_BYTES,
+                            "fetchTool": HOST_TOOL_PREFIX + "web_fetch"} if managed_execution else {}),
+                        "unasked": [name for name in UNASKED_TOOLS if not managed_execution or name not in JOB_TOOLS],
                         "unaskedPrefixes": [HOST_TOOL_PREFIX],
-                        "asked": [f"{HOST_TOOL_PREFIX}{name}" for name in ASKED_HOST_TOOLS],
+                        "asked": [f"{HOST_TOOL_PREFIX}{name}" for name in ASKED_HOST_TOOLS]
+                                 + ([f"{HOST_TOOL_PREFIX}web_fetch"] if managed_execution else []),
+                        **({"deviceViewUrl": f"{endpoint}/device-tools"} if device_view else {}),
                     },
                 }
             ]
@@ -322,6 +685,26 @@ def session_spill_dir(home: Path, dsh_session: str) -> Path:
 def config_dir(home: Path) -> Path:
     """Return the directory the patch and the guard are written to."""
     return home / "nekoclaw"
+
+
+def uses_stock_tool_presentation(home: Path) -> bool:
+    """The pinned stock ACP recipe sends active MCP schemas natively on new and resume.
+
+    A custom Cordis patch or agent preset can present tools through run_code
+    instead, or filter the scope. Leave those routes on normal discovery.
+    """
+    directory = home / "profiles" / PROFILE
+    try:
+        package = json.loads((directory / "package.json").read_text(encoding="utf-8"))
+        if package["dsh"]["profile"] != {"bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-acp-app"]}:
+            return False
+        for filename in ("cordis.yml", "cordis.patch.yml"):
+            lines = (directory / filename).read_text(encoding="utf-8").splitlines()
+            if "".join(line.partition("#")[0].strip() for line in lines) != "[]":
+                return False
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    return True
 
 
 def write_profile(home: Path, patch: list[dict[str, Any]], *, tag: str = "") -> Path:

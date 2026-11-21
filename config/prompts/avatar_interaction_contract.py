@@ -51,6 +51,16 @@ AVATAR_INTERACTION_TOOL_CONTRACT = {
         "boolean_field": "easter_egg",
         "round_choice": False,
     },
+    # 不拿道具、直接点模型的连点（static/avatar/avatar-click-shake.js）：
+    # normal=第 2 下（开心）、rapid=第 3 下（害羞/疑惑）、angry=第 4 下（被戳烦）
+    "tap": {
+        "actions": {
+            "poke": frozenset({"normal", "rapid", "angry"}),
+        },
+        "touch_zone": False,
+        "boolean_field": None,
+        "round_choice": False,
+    },
     "rps": {
         "actions": {},
         "touch_zone": False,

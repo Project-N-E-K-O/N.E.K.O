@@ -1058,6 +1058,105 @@ async def test_a_gateway_tool_is_ruled_on_by_the_host_before_the_call_is_made(tm
         assert [row["failed"] for row in driver.record("service-call")] == [False, True]
 
 
+@pytest.mark.parametrize("top_level", [True, False])
+async def test_between_prompts_only_native_goal_terminal_updates_can_proceed(tmp_path, dsh, top_level):
+    requests = []
+
+    async def begin(session_id, payload):
+        requests.append(payload)
+        return {"allow": True}
+
+    driver = dsh(HostCallbacks(task_control_begin=begin))
+    await driver.started(make_spec(tmp_path, top_level=top_level))
+    session = driver.runtime._sessions["s1"]
+    assert not session.in_turn
+    for tool, action in [("create_goal", None), *(("update_goal", a) for a in ("edit", "pause", "resume", "complete", "blocked"))]:
+        call_id = action or "create"
+        session.tool_calls[call_id] = (tool, {"action": action})
+        reply = await driver.runtime._on_request(session.process, "session/request_permission", {
+            "sessionId": session.dsh_id,
+            "toolCall": {"toolCallId": profile.CONTROL_CHECK_PREFIX + call_id},
+            "options": [{"optionId": "allow-once", "kind": "allow_once"}, {"optionId": "reject-once", "kind": "reject_once"}],
+        })
+        allowed = top_level and action in ("complete", "blocked")
+        assert reply["outcome"]["optionId"] == ("allow-once" if allowed else "reject-once")
+        assert bool(requests[-1].get("refused")) != allowed
+
+
+@pytest.mark.parametrize("stop_during_check", [False, True])
+async def test_automatic_round_keeps_its_own_execution_receipt(tmp_path, dsh, monkeypatch, stop_during_check):
+    phases = []
+
+    async def audit(session_id, payload):
+        phases.append(payload)
+        if payload["phase"] == "check" and stop_during_check:
+            session.aborting = True
+        return {"allow": True, "receipt": "read-receipt"}
+
+    driver = dsh(HostCallbacks(native_execution_action=audit))
+    await driver.started(make_spec(tmp_path))
+    runtime = driver.runtime
+    session = runtime._sessions["s1"]
+
+    async def approve(call_id):
+        reply = await runtime._on_request(session.process, "session/request_permission", {
+            "sessionId": session.dsh_id,
+            "toolCall": {"toolCallId": call_id},
+            "options": [{"optionId": "allow-once", "kind": "allow_once"}],
+        })
+        return reply["outcome"].get("optionId")
+
+    original = runtime._note_briefed
+
+    async def announce(current):
+        assert not current.in_turn
+        runtime._on_notification(session.process, "session/update", {
+            "sessionId": session.dsh_id,
+            "update": {"sessionUpdate": "tool_call", "toolCallId": "auto-read", "title": "read",
+                       "rawInput": {"file_path": "note.txt"}},
+        })
+        assert await approve("auto-read") == "allow-once"
+        await original(current)
+
+    monkeypatch.setattr(runtime, "_note_briefed", announce)
+    await driver.run("s1", "finish the work")
+    expected = "reject-once" if stop_during_check else "allow-once"
+    assert await approve("nekoclaw-exec/direct/auto-read") == expected
+    assert phases[-1] == {"phase": "check", "receipt": "read-receipt"}
+
+
+async def test_native_goal_announced_while_host_turn_settles_survives_until_its_own_end(tmp_path, dsh, monkeypatch):
+    async def allow(session_id, payload):
+        assert payload["tool"] == "update_goal" and not payload.get("refused")
+        return {"allow": True}
+
+    driver = dsh(HostCallbacks(task_control_begin=allow))
+    await driver.started(make_spec(tmp_path, top_level=True))
+    runtime = driver.runtime
+    session = runtime._sessions["s1"]
+
+    def notify(**update):
+        runtime._on_notification(session.process, "session/update", {"sessionId": session.dsh_id, "update": update})
+
+    original = runtime._note_briefed
+
+    async def announce(current):
+        assert not current.in_turn
+        notify(sessionUpdate="tool_call", toolCallId="between", title="update_goal", rawInput={"action": "complete"})
+        await original(current)
+
+    monkeypatch.setattr(runtime, "_note_briefed", announce)
+    await driver.run("s1", "finish the work")
+    reply = await runtime._on_request(session.process, "session/request_permission", {
+        "sessionId": session.dsh_id,
+        "toolCall": {"toolCallId": profile.CONTROL_CHECK_PREFIX + "between"},
+        "options": [{"optionId": "allow-once", "kind": "allow_once"}, {"optionId": "reject-once", "kind": "reject_once"}],
+    })
+    assert reply["outcome"]["optionId"] == "allow-once"
+    notify(sessionUpdate="tool_call_update", toolCallId="between", status="completed")
+    assert "between" not in session.tool_calls
+
+
 async def test_a_tool_a_plugin_brought_is_asked_about_under_the_category_for_everything_else(tmp_path: Path, dsh) -> None:
     asked: list[dict[str, Any]] = []
 
@@ -1073,8 +1172,8 @@ async def test_a_tool_a_plugin_brought_is_asked_about_under_the_category_for_eve
     await driver.run("s1", '!tool plugin_weather {"city": "Oslo"}\n!tool plugin_delete_everything {}')
 
     assert asked == [
-        {"tool": "plugin_weather", "category": "other", "arguments": {"city": "Oslo"}, "workdir": spec.workdir, "default": "allow"},
-        {"tool": "plugin_delete_everything", "category": "other", "arguments": {}, "workdir": spec.workdir, "default": "allow"},
+        {"tool": "plugin_weather", "category": "other", "arguments": {"city": "Oslo"}, "workdir": spec.workdir, "default": "ask"},
+        {"tool": "plugin_delete_everything", "category": "other", "arguments": {}, "workdir": spec.workdir, "default": "ask"},
     ]
     assert [(row["name"], row["outcome"]) for row in driver.record("tool")] == [
         ("plugin_weather", "allowed"),
@@ -2535,3 +2634,27 @@ async def test_a_call_of_a_turn_that_is_over_is_handed_nothing_though_the_run_go
     prompts = driver.record("session/prompt")
     assert len(prompts) == 2 and "a note for the next turn" in json.dumps(prompts[1])
     assert ended["reason"] == "completed" and ended["inputs"] == 2
+
+
+@pytest.mark.parametrize("already_stopped", [False, True])
+async def test_aborted_native_confirmation_releases_source_without_terminal_update(already_stopped):
+    from types import SimpleNamespace
+
+    session = SimpleNamespace(id="session", tool_calls={"c": ("bash", {})}, execution_receipts={"c": "receipt"},
+                              finished_sources={}, kept_calls={"c"}, job_origins={"job": "receipt"},
+                              aborting=already_stopped, closing=None)
+    calls = []
+    async def audit(_, payload):
+        calls.append((payload["phase"], payload.get("status")))
+        session.aborting = True
+        return {"allow": True}
+
+    runtime = DshRuntime(Recorder(), HostCallbacks(native_execution_action=audit), launch=lambda: pytest.fail("unexpected launch"))
+    process = SimpleNamespace(by_dsh_id={"dsh": session})
+    decision = await runtime._on_request(process, "session/request_permission", {
+        "sessionId": "dsh", "toolCall": {"toolCallId": "nekoclaw-exec/completed/c"},
+        "options": [{"optionId": "allow-once", "kind": "allow_once"}],
+    })
+    assert decision["outcome"]["optionId"] == "reject-once"
+    assert calls == ([("finish", "cancelled")] if already_stopped else [("finish", "completed"), ("release", None)])
+    assert not session.finished_sources

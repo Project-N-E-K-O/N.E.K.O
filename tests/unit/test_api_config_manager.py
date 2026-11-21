@@ -617,6 +617,7 @@ class TestCustomApiToggle:
             ('gameSummary', 'GAME_SUMMARY_MODEL'),
             ('correction', 'CORRECTION_MODEL'),
             ('emotion', 'EMOTION_MODEL'),
+            ('decision', 'DECISION_MODEL'),
             ('vision', 'VISION_MODEL'),
             ('agent', 'AGENT_MODEL'),
             ('omni', 'REALTIME_MODEL'),

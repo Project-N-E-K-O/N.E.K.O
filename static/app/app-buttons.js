@@ -1247,6 +1247,15 @@
                 booleanField: Object.freeze({ input: 'easterEgg', output: 'easter_egg' }),
                 roundChoice: false
             }),
+            // 不拿道具直接连点模型（static/avatar/avatar-click-shake.js）
+            tap: Object.freeze({
+                actions: Object.freeze({
+                    poke: Object.freeze(['normal', 'rapid', 'angry'])
+                }),
+                acceptsTouchZone: false,
+                booleanField: null,
+                roundChoice: false
+            }),
             rps: Object.freeze({
                 actions: Object.freeze({}),
                 acceptsTouchZone: false,
@@ -1856,7 +1865,10 @@
         return normalized;
     }
 
-    async function sendAvatarInteractionPayload(payload) {
+    // options.isStillValid（可选）：等待 WebSocket 重连后、真正发送前再确认一次这条互动是否还该发
+    // （例如等待期间已切换角色）。不传时行为不变。
+    async function sendAvatarInteractionPayload(payload, options) {
+        var isStillValid = options && typeof options.isStillValid === 'function' ? options.isStillValid : null;
         var normalized = normalizeAvatarInteractionPayload(payload);
         if (!normalized) {
             return false;
@@ -1886,6 +1898,13 @@
 
         try {
             await window.ensureWebSocketOpen();
+            if (isStillValid && !isStillValid()) {
+                console.debug('[AvatarInteraction] dropped stale interaction after reconnect wait:', normalized.interaction_id);
+                if (avatarInteractionTextContinuationState.interactionId === normalized.interaction_id) {
+                    releaseDeferredTextAfterAvatarInteraction();
+                }
+                return false;
+            }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) {
                 throw new Error('WEBSOCKET_NOT_CONNECTED');
             }
@@ -2162,6 +2181,12 @@
         // Mic button click
         // ----------------------------------------------------------------
         micButton.addEventListener('click', async function () {
+            // A host-mediated (mini-game) start offers a receipt right before it
+            // clicks. Take it before any early return so it can only ever
+            // describe THIS dispatch; a user's own press finds the slot empty.
+            var voiceStartReceipt = typeof window.takeVoiceStartReceipt === 'function'
+                ? window.takeVoiceStartReceipt()
+                : null;
             if (micButton.disabled || S.isRecording) return;
             // 邀请等待也已占用串门输入通道，在修改启动状态或结束文本会话前直接提示。
             if (typeof window.isNekoVisitVoiceBlocked === 'function' && window.isNekoVisitVoiceBlocked()) {
@@ -2201,6 +2226,18 @@
             S.voiceStartPending = true;
             var voiceStartEpoch = (S.voiceSessionStartEpoch || 0) + 1;
             S.voiceSessionStartEpoch = voiceStartEpoch;
+            // Accepted synchronously, before the first await: from here this
+            // press is the receipt's start, identified by its epoch. The
+            // receipt only records facts -- it never steers this flow.
+            if (voiceStartReceipt) {
+                voiceStartReceipt.accepted = true;
+                voiceStartReceipt.voiceStartEpoch = voiceStartEpoch;
+            }
+            function settleVoiceStartReceipt(outcome) {
+                if (voiceStartReceipt && voiceStartReceipt.outcome === 'pending') {
+                    voiceStartReceipt.outcome = outcome;
+                }
+            }
             function ensureVoiceStartCurrent() {
                 if (S.voiceSessionStartEpoch !== voiceStartEpoch
                         || window.isMicStarting !== true
@@ -2281,6 +2318,13 @@
                             && S._pendingSessionStartMode !== 'audio')) {
                     return false;
                 }
+                // Every path below stands this start down. Settle its receipt
+                // now: an automatic audio restart takes over WITHOUT moving
+                // the epoch (app-websocket.js), so while it holds the
+                // lifecycle flags the bridge could not tell this exited start
+                // from one still running and would keep reporting 'pending'.
+                // A no-op when the catch already settled it.
+                settleVoiceStartReceipt('cancelled');
                 if (!window.supersededByAudioStart(micStartOwner)) {
                     // This flow may have set S.isSwitchingMode when it began
                     // from a live text session, and standing down returns past
@@ -2397,6 +2441,11 @@
                 await window.ensureWebSocketOpen();
                 ensureVoiceStartCurrent();
                 if (micStartMustStandDown()) return;
+                if (window.nekoVoiceCaptureReadiness) {
+                    await window.nekoVoiceCaptureReadiness.prepareCapture();
+                    ensureVoiceStartCurrent();
+                    if (micStartMustStandDown()) return;
+                }
                 S.socket.send(JSON.stringify({
                     action: 'start_session',
                     input_type: 'audio',
@@ -2496,10 +2545,18 @@
                         // enabled and failed to start). Do not open the mic;
                         // unwind the starting-voice UI so the button is usable
                         // again, and let the ASR failure toast stand.
+                        settleVoiceStartReceipt('cancelled');
                         if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
                             window.abortVoiceStartForBlockedRoute();
                         }
                         return;
+                    }
+                    // startMicCapture takes the receipt synchronously on entry and
+                    // binds it to its own capture generation.
+                    if (voiceStartReceipt
+                            && typeof window.offerVoiceStartReceipt === 'function'
+                            && typeof window.startMicCapture === 'function') {
+                        window.offerVoiceStartReceipt(voiceStartReceipt);
                     }
                     var microphoneStarted = await window.startMicCapture();
                     if (microphoneStarted !== true) {
@@ -2582,6 +2639,12 @@
 
                 window.dispatchEvent(new CustomEvent('neko:voice-session-started'));
 
+                // Settled before the lifecycle flags clear. A start that
+                // reached here without committing its own capture handed over
+                // to a capture that something else owns.
+                settleVoiceStartReceipt(
+                    voiceStartReceipt && voiceStartReceipt.committed === true ? 'started' : 'superseded'
+                );
                 S.voiceStartPending = false;
                 window.isMicStarting = false;
                 S.isSwitchingMode = false;
@@ -2591,6 +2654,9 @@
                 var isVoiceStartCancelled = !!(error && error.voiceStartCancelled);
                 var isMicrophoneStartCancelled = !!(
                     error && error.microphoneStartCancelled
+                );
+                settleVoiceStartReceipt(
+                    (isVoiceStartCancelled || isMicrophoneStartCancelled) ? 'cancelled' : 'failed'
                 );
                 var preserveGoodbyeUi = isVoiceStartCancelled
                     && typeof window.isNekoGoodbyeModeActive === 'function'

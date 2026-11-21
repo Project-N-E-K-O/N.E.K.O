@@ -1930,6 +1930,20 @@ async def test_permission_denied_is_told_to_the_task_agent(hosts, tmp_path):
     assert not (tmp_path / "outside.txt").exists()
     assert "permission denied: the user declined" in llm.requests[1][-1]["content"]
 
+    from nekoclaw.host import call_audit
+
+    rows = await host.ledger.run(
+        lambda db: call_audit.read_trace(db, receipt.commission_id, now=host.ledger._clock())
+    )
+    action, = [row for row in rows if row["kind"] == "runtime"]
+    assert (action["target"], action["status"], action["parent_call_id"]) == (
+        "write", "denied", receipt.commission_id,
+    )
+    commission = await host.ledger.get(receipt.commission_id)
+    assert commission.session_id and action["session_id"] == commission.session_id
+    assert len(action["scope_ref"]) == 64
+    assert "outside.txt" not in str(action) and str(tmp_path) not in str(action)
+
 
 async def test_an_answer_that_says_neither_yes_nor_no_keeps_waiting(hosts, tmp_path):
     llm = ScriptedLLM([_write_outside(tmp_path), _report("ready", "written")])
@@ -3857,3 +3871,220 @@ def test_the_host_and_the_runtime_call_the_transcript_by_the_same_name():
     from nekoclaw.runtime.session import TRANSCRIPT_FILE
 
     assert TRANSCRIPT_NAME == TRANSCRIPT_FILE
+
+
+@pytest.mark.parametrize(("choice", "expected"), [("session", 1), ("once", 3)])
+async def test_outside_reads_and_their_model_results_share_one_user_answer(hosts, tmp_path, choice, expected):
+    from nekoclaw.host import call_audit
+    from nekoclaw.host.reports import render_question
+
+    document = tmp_path / "meeting.txt"
+    document.write_text("fixture meeting minutes", encoding="utf-8")
+    reads = [[call("read", {"file_path": str(document)}, f"read-{i}"), finish("tool_calls")]
+             for i in range(3)]
+    llm = ScriptedLLM([*reads, _report("ready", "summarized")])
+    host = _host(hosts, tmp_path, llm)
+    questions = []
+
+    async def answer(_commission, ask):
+        questions.append(ask)
+        return choice
+
+    host.permissions.set_asker(answer)
+    receipt = await _dispatch(host, "Summarize the meeting minutes")
+    await wait_status(host, receipt.commission_id, "done")
+    assert len(questions) == expected
+    for ask in questions:
+        assert ask.category == "outside_read"
+        assert ask.detail["path"] == str(document)
+        displayed = render_question("Summarize the meeting minutes", ask.to_json(), "en")
+        assert str(document) in displayed and ask.detail["content_to"] in displayed
+        assert "deliver content to the model" in displayed
+    assert len(llm.requests) == 4
+    for i, messages in enumerate(llm.requests[1:]):
+        assert any(m.get("tool_call_id") == f"read-{i}" and "fixture meeting minutes" in str(m["content"])
+                   for m in messages)
+    rows = await host.ledger.run(lambda db: call_audit.read_trace(db, receipt.commission_id, now=host.ledger._clock()))
+    operations = [r for r in rows if r["target"] == "read"]
+    transfers = [r for r in rows if r["kind"] == "transfer_content"]
+    assert len(operations) == len(transfers) == 3
+    assert {r["call_id"] for r in operations} == {r["parent_call_id"] for r in transfers}
+    assert all(r["status"] == "completed" and r["target"].startswith("model:") for r in transfers)
+    assert "meeting.txt" not in str(rows) and "fixture meeting minutes" not in str(rows)
+
+
+async def test_keep_long_results_for_original_reader_and_require_grep(hosts, tmp_path):
+    import re
+
+    from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
+
+    document = tmp_path / "minutes.txt"
+    document.write_text(("hit\n" * 251) + "hit " + ("账" * READ_MAX_BYTES) + " hit final-decision\n",
+                        encoding="utf-8")
+    llm = ScriptedLLM()
+    host = _host(hosts, tmp_path, llm)
+    questions = []
+
+    async def answer(_commission, question):
+        questions.append(question)
+        return "session"
+
+    host.permissions.set_asker(answer)
+    llm.add(call("read", {"file_path": str(document)}, "long-original"), finish("tool_calls"))
+    llm.add(call("grep", {"path": str(document), "pattern": "hit"}, "all-hits"), finish("tool_calls"))
+    saved = []
+
+    def read_retained():
+        text = next(m["content"] for m in llm.last_request() if m.get("tool_call_id") == "all-hits")
+        path = re.search(r"Full grep result stored at: (.+?\.txt)\.", text).group(1)
+        saved.append(path)
+        return [call("read", {"file_path": path}, "long-copy"), finish("tool_calls")]
+
+    def search_retained():
+        return [call("grep", {"path": saved[0], "pattern": "final-decision"}, "filtered"), finish("tool_calls")]
+
+    async def revoke():
+        await host.permission_store.set_mode("outside_read", "deny")
+
+    llm.turns.extend([read_retained, search_retained, lambda: [
+        revoke, call("grep", {"path": saved[0], "pattern": "final-decision"}, "revoked"), finish("tool_calls")],
+        _report("ready", "done")])
+    receipt = await _dispatch(host, "Find the final decision")
+    await wait_status(host, receipt.commission_id, "done")
+    results = {m["tool_call_id"]: m["content"] for batch in llm.requests for m in batch if m.get("tool_call_id")}
+    assert saved and not Path(saved[0]).exists()
+    assert len(questions) == 1
+    assert "Use grep" in results["long-original"] and "Use grep" in results["long-copy"]
+    assert "hit final-decision" in results["filtered"] and "final-decision" not in results["revoked"]
+    assert all(len(results[key].encode("utf-8")) <= READ_MAX_BYTES
+               for key in ("long-original", "all-hits", "long-copy", "filtered", "revoked"))
+
+
+@pytest.mark.parametrize(("mode", "expected"), [("allow", 0), ("always_ask", 3)])
+async def test_fetch_uses_other_tool_policy_once_per_action(hosts, tmp_path, monkeypatch, mode, expected):
+    from nekoclaw.runtime.tools import web
+
+    fetched = []
+    questions = []
+
+    async def fixture_page(url):
+        fetched.append(url)
+        return "synthetic page"
+
+    async def answer(_commission, question):
+        questions.append(question.category)
+        return "once"
+
+    monkeypatch.setattr(web, "web_fetch", fixture_page)
+    url = "https://example.invalid/fixture"
+    reads = [[call("web_fetch", {"url": url}, f"fetch-{i}"), finish("tool_calls")] for i in range(3)]
+    host = _host(hosts, tmp_path, ScriptedLLM([*reads, _report("ready", "done")]))
+    host.permissions.set_asker(answer)
+    await host.permission_store.set_mode("other", mode)
+    receipt = await _dispatch(host, "Fetch the example page")
+    await wait_status(host, receipt.commission_id, "done")
+    assert fetched == [url, url, url]
+    assert questions == ["other"] * expected
+
+
+@pytest.mark.parametrize("tighten_at_delivery", [False, True])
+async def test_space_read_uses_workdir_rule_at_delivery(hosts, tmp_path, monkeypatch, tighten_at_delivery):
+    path = tmp_path / "shared-knowledge.txt"
+    path.write_text("knowledge fixture", encoding="utf-8")
+    llm = ScriptedLLM([[call("read", {"file_path": str(path)}, "space-file"), finish("tool_calls")],
+                       _report("ready", "done")])
+    host = _host(hosts, tmp_path, llm)
+    await host.permission_store.set_mode("outside_read", "deny")
+
+    async def contains(candidate):
+        return Path(candidate) == path
+
+    manager = host.task_agents
+    monkeypatch.setattr(manager._space, "contains", contains)
+    original = manager._cb_execution_action
+    async def check(session, payload):
+        if tighten_at_delivery and payload.get("phase") == "finish":
+            await host.permission_store.set_mode("workdir_files", "deny")
+        return await original(session, payload)
+
+    monkeypatch.setattr(manager, "_cb_execution_action", check)
+    receipt = await _dispatch(host, "Read the shared knowledge")
+    await wait_status(host, receipt.commission_id, "done")
+    result = next(m["content"] for m in llm.requests[1] if m.get("tool_call_id") == "space-file")
+    assert ("knowledge fixture" in result) == (not tighten_at_delivery)
+
+
+@pytest.mark.parametrize("interruption", ["none", "before_finish", "during_finish"])
+async def test_job_source_requires_a_completed_command(hosts, tmp_path, monkeypatch, interruption):
+    import os
+    tool, command = ("pwsh", "Write-Output held-job") if os.name == "nt" else ("bash", "echo held-job")
+    llm = ScriptedLLM([[call(tool, {"command": command, "description": "fixture", "run_in_background": True}, "start"),
+                        finish("tool_calls")],
+                       [call("job_list", {}, "list"), finish("tool_calls")],
+                       [call("job_output", {"job_id": "job-1", "wait": True}, "output"), finish("tool_calls")],
+                       _report("ready", "done")])
+    host = _host(hosts, tmp_path, llm)
+    await host.permission_store.set_mode("run_command", "allow")
+    audit = host.task_agents._execution_audit
+    original = audit.begin
+    delivering = asyncio.Event()
+    async def begin(commission, session, kind, target, permit, deliver, live):
+        async def refuse(record):
+            delivering.set()
+            if interruption == "during_finish":
+                await asyncio.Event().wait()
+            return False
+        return await original(commission, session, kind, target, permit, refuse if target == tool else deliver, live)
+    monkeypatch.setattr(audit, "begin", begin)
+    manager = host.task_agents
+    original_action = manager._cb_execution_action
+    async def action(session, payload):
+        if payload.get("phase") == "job_notice":
+            return {"allow": False}
+        if payload.get("phase") == "finish" and payload.get("started_job"):
+            if interruption == "before_finish":
+                await manager._run_over(manager._held_by[session])
+            elif interruption == "during_finish":
+                finishing = asyncio.create_task(original_action(session, payload))
+                try:
+                    await asyncio.wait_for(delivering.wait(), 3)
+                finally:
+                    finishing.cancel()
+                    await asyncio.gather(finishing, return_exceptions=True)
+                assert finishing.cancelled()
+                await manager._run_over(manager._held_by[session])
+                return {"allow": False}
+        return await original_action(session, payload)
+    monkeypatch.setattr(manager, "_cb_execution_action", action)
+    receipt = await _dispatch(host, "Collect the example job")
+    await wait_status(host, receipt.commission_id, "done")
+    replies = {m["tool_call_id"]: m["content"] for batch in llm.requests for m in batch if m.get("tool_call_id")}
+    assert "could not be delivered" in replies["start"]
+    assert ("job-1" in replies["list"]) == (interruption == "none")
+    assert ("held-job" in replies["output"]) == (interruption == "none")
+
+
+async def test_path_resolution_precedes_the_rule_used_for_approval(hosts, tmp_path, monkeypatch):
+    document = tmp_path / "example.txt"
+    document.write_text("expected fixture text", encoding="utf-8")
+    llm = ScriptedLLM([[call("read", {"file_path": str(document)}, "read"), finish("tool_calls")],
+                       _report("ready", "done")])
+    host = _host(hosts, tmp_path, llm)
+    manager = host.task_agents
+    inspect_path = manager._rule_on_other_session
+
+    async def resolve(*args, **kwargs):
+        await host.permission_store.set_mode("outside_read", "always_ask")
+        return await inspect_path(*args, **kwargs)
+
+    asked = []
+    async def approve(_, question):
+        asked.append(question)
+        return "once"
+
+    monkeypatch.setattr(manager, "_rule_on_other_session", resolve)
+    host.permissions.set_asker(approve)
+    receipt = await _dispatch(host, "Read the fixture")
+    await wait_status(host, receipt.commission_id, "done")
+    assert len(asked) == 1 and asked[0].category == "outside_read"
+    assert any(m.get("tool_call_id") == "read" and "expected fixture text" in m["content"] for m in llm.requests[1])

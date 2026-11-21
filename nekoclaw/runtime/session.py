@@ -43,10 +43,12 @@ import os
 import sys
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import AsyncExitStack
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from config.nekoclaw_settings import BUILTIN_GROUP_BROWSER
 from config.prompts import prompts_nekoclaw as texts
 from nekoclaw.runtime import protocol
 from nekoclaw.runtime import fork
@@ -127,11 +129,13 @@ from nekoclaw.runtime.tools import build_tools
 from nekoclaw.runtime.tools.base import SessionInbox, SpillStore, ToolContext, ToolError, define_tool
 from nekoclaw.runtime.tools.goal import GOAL_NAMESPACE, GoalState
 from nekoclaw.runtime.tools.jobs import (
+    NOTICE_INLINE_BYTES,
     Job,
     JobRegistry,
     PendingNotice,
     bounded_label,
     completion_notice,
+    preview_completion_notice,
 )
 from nekoclaw.runtime.tools.todo import TodoState
 
@@ -500,6 +504,18 @@ class TaskAgentSession(SessionInbox):
         self._tools: list[AgentTool] = []
         # Those there are now.
         self._executors: list[AgentTool] = []
+        # These gateway tools follow a commission, not its persistent session.
+        # They belong to live requests but never to the shared system snapshot.
+        self._commission_tools: list[AgentTool] = []
+        # Fresh user input only. Consume it at the next summary, even when
+        # it asked for the same device as the commission that opened here.
+        self._wanted_device_groups: tuple[str, ...] = ()
+        # A summary can run again after a provider refuses a request. Keep
+        # this input's groups until an ordinary model request gets a reply.
+        self._unanswered_device_groups: tuple[str, ...] = ()
+        self._browser_click_context = False
+        self._device_fold_due = False
+        self._device_fold_at = 0
         # What the model is told of, as the snapshot has it.
         self._wire_tools: list[AgentTool] = []
         self._workdir = Path(".")
@@ -604,7 +620,27 @@ class TaskAgentSession(SessionInbox):
             emit_report=self._emit_report,
             top_level=spec.top_level,
         )
-        executors = build_tools(tool_context, disabled=spec.disabled_tools)
+        # A session made from another by copying what was said in it
+        # (``fork.py``) reads the tool output that one kept where it is:
+        # what was said names those files.
+        readable = [spill.directory]
+        for custom in state.custom_entries if state is not None else ():
+            if custom.namespace != fork.FORK_NAMESPACE:
+                continue
+            # Where the session it was made from kept its output, and
+            # where the ones that one was made from kept theirs.
+            behind = custom.data.get("outputs_behind")
+            for kept_there in (custom.data.get("outputs"), *(behind if isinstance(behind, list) else ())):
+                if isinstance(kept_there, str) and kept_there:
+                    readable.append(Path(kept_there))
+        from nekoclaw.runtime.execution import managed_tool
+
+        builtins = build_tools(tool_context, disabled=spec.disabled_tools)
+        executors = [
+            managed_tool(tool, self._host, self.session_id, workdir, tuple(readable), self.jobs,
+                         spill=spill, cap=lambda *args: self.context.cap_tool_result(*args)) for tool in builtins
+        ]
+        self._managed_tools = {wrapped.name for original, wrapped in zip(builtins, executors) if wrapped is not original}
         if spec.gateway is not None:
             # Capabilities the host serves (plugin entries, MCP tools) join the
             # built-in tools. The host decides permissions for them itself.
@@ -619,22 +655,16 @@ class TaskAgentSession(SessionInbox):
                 )
             except GatewayError as exc:
                 raise SessionError(f"the capability gateway cannot be reached: {exc}") from exc
+            self._commission_tools = [tool for tool in gateway_tools if tool.name in self._gateway.commission_tools]
+            self._wanted_device_groups = tuple(sorted(set(self._gateway.device_groups.values())))
+            self._unanswered_device_groups = self._wanted_device_groups
+            focus = spec.gateway.opening_browser_context
+            self._browser_click_context = (
+                focus if focus is not None else self._wanted_device_groups == (BUILTIN_GROUP_BROWSER,)
+            )
             executors = sorted([*executors, *gateway_tools], key=lambda tool: tool.name)
-        self._executors = executors
         self._workdir, self._session_dir = workdir, session_dir
-        # A session made from another by copying what was said in it
-        # (``fork.py``) reads the tool output that one kept where it is:
-        # what was said names those files.
-        readable = [spill.directory]
-        for custom in state.custom_entries if state is not None else ():
-            if custom.namespace != fork.FORK_NAMESPACE:
-                continue
-            # Where the session it was made from kept its output, and
-            # where the ones that one was made from kept theirs.
-            behind = custom.data.get("outputs_behind")
-            for kept_there in (custom.data.get("outputs"), *(behind if isinstance(behind, list) else ())):
-                if isinstance(kept_there, str) and kept_there:
-                    readable.append(Path(kept_there))
+        self._executors = executors
         # Known before the snapshot is looked at, which says how often the
         # conversation had been summed up when it was made.
         self._compactions = len(state.compaction_entries) if state is not None else 0
@@ -644,18 +674,17 @@ class TaskAgentSession(SessionInbox):
         # the requests changes anyway. One that has nothing said yet is put
         # together from what there is now.
         snapshot = await asyncio.to_thread(read_snapshot, session_dir) if state is not None else None
-        if snapshot is not None and snapshot.workdir in ("", str(workdir)):
-            self._adopt(snapshot)
-            if snapshot.compactions is not None and snapshot.compactions != self._compactions:
-                # Summed up since, and stopped before what follows a summary
-                # was done (the session was closed meanwhile): done before
-                # the first request, as it would have been before the next.
-                self._compaction_due = True
-        else:
-            # Nothing to go on with, or made for another working directory:
-            # the data was moved since, and the system prompt names the
-            # directory the tools work in.
+        if snapshot is None or snapshot.workdir not in ("", str(workdir)):
+            # A moved session's system prompt must name its new working directory.
             await self._renew_snapshot(REASON_OPENED if snapshot is None else REASON_MOVED)
+        else:
+            # An interrupted summary still owes the host a completion event.
+            # Its recovery renews the snapshot before the first model request.
+            self._compaction_due = snapshot.compactions is not None and snapshot.compactions != self._compactions
+            if snapshot.refresh_on_resume and not spec.idle_compaction and not self._compaction_due:
+                await self._renew_snapshot(REASON_COMPACTED)
+            else:
+                self._adopt(snapshot)
         # Fixed for as long as the session is open: a run looks its tools up
         # here by name. Every tool there is now, and a stand-in for each the
         # model is still told of that is not there. What the model is told
@@ -686,7 +715,7 @@ class TaskAgentSession(SessionInbox):
                     # Those the session was opened without, and any other
                     # the model is told of that is not there now. (Never
                     # one that is there after all.)
-                    withheld=(frozenset(spec.disabled_tools) | {tool.name for tool in self._tools}) - there,
+                    withheld=((frozenset(spec.disabled_tools) | {tool.name for tool in self._tools}) - there) | self._managed_tools,
                 ),
                 after_tool_call=self._after_tool_call,
                 finish_turn=self._finish_turn,
@@ -737,32 +766,87 @@ class TaskAgentSession(SessionInbox):
         it is called.
         """
         by_name = {tool.name: tool for tool in self._executors}
+        scoped = {tool.name for tool in self._commission_tools}
         wire: list[AgentTool] = []
         for definition in snapshot.tools:
+            if definition.name in scoped:
+                continue
             tool = by_name.get(definition.name) or _stand_in(definition)
             wire.append(
                 dataclasses.replace(tool, description=definition.description, parameters=definition.parameters)
             )
         self._system = snapshot.system
-        self._wire_tools = wire
+        self._wire_tools = [*wire, *self._visible_commission_tools()]
+
+    def _visible_commission_tools(self) -> list[AgentTool]:
+        return [tool for tool in self._commission_tools if tool.name in self._gateway.commission_tools]
+
+    async def _refresh_device_tools(self, *, compacted: bool = False) -> None:
+        gateway = self._gateway
+        if not self._commission_tools or not gateway.device_groups:
+            return
+        # Only a whole summary made while this commission held the session
+        # may fold its tools. A disk replay or forced truncation may not.
+        fold = (compacted and self._device_fold_at > 0) or self._device_fold_due
+        if not (fold or gateway.device_list_dirty):
+            return
+        from nekoclaw.runtime.tools.gateway import GatewayError
+
+        try:
+            definitions = await gateway.list_tools(
+                compactions=self._device_fold_at if fold else None,
+                wanted=self._wanted_device_groups or self._unanswered_device_groups,
+            )
+        except GatewayError:
+            # The host still controls every call. Keep the last usable list
+            # and retry on the next request instead of losing the session.
+            logger.warning("could not refresh device tools for session %s", self.session_id)
+            self._device_fold_due = fold
+            return
+        self._device_fold_due = False
+        gateway.device_list_dirty = False
+        if fold:
+            self._wanted_device_groups = ()
+            self._device_fold_at = 0
+        by_name = {tool.name: tool for tool in self._commission_tools}
+        # Keep all original executors. This list alone changes what the next
+        # model request describes and removes the group's guidance with it.
+        for definition in definitions:
+            name = definition["name"]
+            if name in by_name and name in gateway.commission_tools:
+                by_name[name] = dataclasses.replace(
+                    by_name[name], description=definition["description"], parameters=definition["inputSchema"]
+                )
+        self._commission_tools = list(by_name.values())
+        self._wire_tools = [tool for tool in self._wire_tools if tool.name not in by_name] + self._visible_commission_tools()
+        if not compacted:
+            self.context.fixed_tokens = await self._fixed_tokens()
+            self.context.invalidate()
 
     async def _renew_snapshot(self, reason: str) -> None:
         """Put the system prompt and the tool definitions together from what there is now, and keep them."""
         spec = self.spec
-        self._system = build_system_prompt(
-            tool_names=[tool.name for tool in self._executors],
-            workdir=str(self._workdir),
-            platform=self._platform,
-            instructions=spec.instructions,
-        )
-        self._wire_tools = list(self._executors)
+        scoped = {tool.name for tool in self._commission_tools}
+        if spec.idle_compaction and reason == REASON_COMPACTED:
+            # Keep the same prompt and tools the summary request used.
+            baseline = [tool for tool in self._wire_tools if tool.name not in scoped]
+        else:
+            baseline = [tool for tool in self._executors if tool.name not in scoped]
+            self._system = build_system_prompt(
+                tool_names=[tool.name for tool in baseline],
+                workdir=str(self._workdir),
+                platform=self._platform,
+                instructions=spec.instructions,
+            )
+            self._wire_tools = [*baseline, *self._visible_commission_tools()]
         snapshot = SystemSnapshot(
             self._system,
-            definitions_of(self._wire_tools),
+            definitions_of(baseline),
             reason,
             time.time(),
             workdir=str(self._workdir),
             compactions=self._compactions,
+            refresh_on_resume=spec.idle_compaction or spec.workspace_brief_unavailable,
         )
         try:
             await asyncio.to_thread(write_snapshot, self._session_dir, snapshot)
@@ -908,7 +992,17 @@ class TaskAgentSession(SessionInbox):
             self._on_message(event.message)
 
     def _on_message(self, message: AgentMessage) -> None:
+        if isinstance(message, CustomMessage) and message.custom_type == "notice:pending_job":
+            # Resolve the wake after budget and context checks. Only the
+            # approved view belongs in the transcript or in a fork.
+            for notice in self.jobs.pending_notices.values():
+                if notice.handle is message:
+                    notice.admitted = True
+                    break
+            self.harness.message_list[:] = [item for item in self.harness.message_list if item is not message]
+            return
         taken: Callable[[], None] | None = None
+        opening = message is self._opening_message
         for index, (number, given) in enumerate(self._given):
             if given is message:
                 # One of the texts the session was given is in its
@@ -936,6 +1030,21 @@ class TaskAgentSession(SessionInbox):
             else:
                 # Text from the user: it authorizes goal management for this run.
                 self._human_in_run = True
+                gateway = self._gateway
+                if taken is not None and not opening and self._commission_tools and gateway.device_groups:
+                    from nekoclaw.device_intent import classify_device_intent
+
+                    # All steering messages drained together share the next
+                    # reply. An earlier, answered batch contributes nothing.
+                    selected, self._browser_click_context = classify_device_intent(
+                        message.text, browser_context=self._browser_click_context
+                    )
+                    requested = set(selected).intersection(gateway.device_groups.values())
+                    self._unanswered_device_groups = tuple(sorted(requested.union(self._unanswered_device_groups)))
+                    self._wanted_device_groups = self._unanswered_device_groups
+                    hidden = gateway.device_groups.keys() - gateway.commission_tools
+                    if any(gateway.device_groups[name] in self._wanted_device_groups for name in hidden):
+                        gateway.device_list_dirty = True
             # Either makes an earlier run of identical tool calls irrelevant.
             self._repeat.reset()
         elif isinstance(message, AssistantMessage):
@@ -1009,6 +1118,7 @@ class TaskAgentSession(SessionInbox):
                 stopped = AssistantMessage(model=model, stop_reason="aborted", error_message="stopped")
                 yield AssistantErrorEvent(reason="aborted", error=stopped)
                 return
+            await self._refresh_device_tools()
             self._inject_runtime_context()
             failed_before, self._last_request_failed = self._last_request_failed, False
             long = failed_before and await self._size() > TASK_AGENT_UNSURE_REFUSAL_TOKENS
@@ -1056,6 +1166,15 @@ class TaskAgentSession(SessionInbox):
                     await self._fit(force=False)
                 # How much is about to be sent, as the conversation is measured.
                 sent = await self._size()
+                if (signal is None or not signal.is_cancelled()) and self.jobs.pending_notices:
+                    reserve = await self._job_notice_room(self.context.policy.threshold - sent)
+                    if reserve:
+                        await self._fit(force=False, reserve_tokens=reserve)
+                        if self._compaction_due:
+                            continue
+                        sent = await self._size()
+                    if signal is None or not signal.is_cancelled():
+                        sent += await self._deliver_job_notices()
                 history = _provider_context(self.harness.message_list)
                 # Held back until output follows, so a request that is retried after
                 # an overflow does not announce two responses.
@@ -1079,7 +1198,9 @@ class TaskAgentSession(SessionInbox):
                         if held is not None:
                             yield held
                             held = None
-                        answered = answered or isinstance(event, AssistantDoneEvent)
+                        if isinstance(event, AssistantDoneEvent):
+                            self._unanswered_device_groups = ()
+                            answered = True
                         yield event
                     if answered:
                         # Shorter, it went through. That does not show it
@@ -1193,7 +1314,7 @@ class TaskAgentSession(SessionInbox):
             self._record(message)
         return bool(verdict.get("stop"))
 
-    async def _fit(self, *, force: bool, tight: bool | None = None, or_drop: bool = True) -> None:
+    async def _fit(self, *, force: bool, tight: bool | None = None, or_drop: bool = True, reserve_tokens: int = 0) -> None:
         # Each summary is saved the moment it is applied, not after fit()
         # returns: an abort during a later summary ends fit() with the earlier
         # one already in the conversation, and later entries refer to its id.
@@ -1205,6 +1326,7 @@ class TaskAgentSession(SessionInbox):
             # The commission under way stays as it was handed over.
             pinned=self._pinned(),
             or_drop=or_drop,
+            reserve_tokens=reserve_tokens,
         )
 
     def _pinned(self) -> tuple[str, ...]:
@@ -1253,6 +1375,8 @@ class TaskAgentSession(SessionInbox):
             )
         )
         self._compactions += 1
+        if compaction.complete:
+            self._device_fold_at = self._compactions
         self._compaction_entry_id = compaction.summary_row.entry_id
         self._tokens_before_compaction = compaction.tokens_before
         # (What the request that wrote it used was told when it came back:
@@ -1278,6 +1402,7 @@ class TaskAgentSession(SessionInbox):
         made before the session was last closed) by a summing up that
         made none itself: the host takes the word for that one.
         """
+        await self._refresh_device_tools(compacted=True)
         await self._renew_snapshot(REASON_COMPACTED)
         self.context.fixed_tokens = await self._fixed_tokens()
         self.context.invalidate()
@@ -1406,7 +1531,7 @@ class TaskAgentSession(SessionInbox):
         now = self._clock()
         text = texts.runtime_context_notice(
             f"{now.strftime('%Y-%m-%d %H:%M %z')} ({now.strftime('%A')})",
-            [f"{job.id} ({job.kind}: {bounded_label(job.label)})" for job in self.jobs.running()],
+            [f"{job.id} ({job.kind}: {bounded_label(job.label)})" for job in self.jobs.running() if not job.origin],
             [(item["status"], item["content"]) for item in self.todos.open_items()],
         )
         message = CustomMessage(custom_type="notice:runtime_context", content=text, display=False)
@@ -1422,7 +1547,9 @@ class TaskAgentSession(SessionInbox):
     async def _after_tool_call(
         self, call: ToolCall, result: AgentToolResult, is_error: bool
     ) -> tuple[AgentToolResult, bool]:
-        result = await self.context.cap_tool_result(call.name, call.id, result)
+        # Managed results, including tool errors, were capped under their source receipt.
+        if call.name not in self._managed_tools:
+            result = await self.context.cap_tool_result(call.name, call.id, result)
         reminder = self._repeat.observe(call.name, call.arguments)
         if reminder is not None:
             self.deliver_notice("repeat_tool", reminder)
@@ -1488,15 +1615,106 @@ class TaskAgentSession(SessionInbox):
             self._begin_run(message)
         return message
 
+    def notice_queued(self, handle: object) -> bool:
+        queue = self.harness.queued_messages
+        return any(message is handle for message in (*queue.steering, *queue.follow_up))
+
     def withdraw_notice(self, handle: object) -> bool:
         return isinstance(handle, CustomMessage) and self.harness.remove_queued(handle)
 
-    def _job_finished(self, job: Job) -> None:
-        if self._closing:
-            return
-        text, held = completion_notice(self.jobs, job)
-        handle = self.deliver_notice("job", text)
-        self.jobs.pending_notices[job.id] = PendingNotice(handle, held)
+    async def _job_notice_room(self, available: int) -> int:
+        """Reserve space for notices without putting private text in a summary."""
+        pending = [(job_id, notice) for job_id, notice in self.jobs.pending_notices.items()
+                   if notice.admitted and isinstance(notice.handle, CustomMessage)]
+        # With room for even one token per inline byte, avoid reading output twice.
+        if sum(NOTICE_INLINE_BYTES + estimate_tokens(notice.handle) for _, notice in pending) <= available:
+            return 0
+        sizes = []
+        for job_id, notice in pending:
+            job = self.jobs.get(job_id)
+            text, _, _ = preview_completion_notice(self.jobs, job)
+            preview = CustomMessage(custom_type="notice:job", content=text, display=False)
+            sizes.append((job, estimate_tokens(preview), estimate_tokens(notice.handle)))
+        if sum(full for _, full, _ in sizes) <= available:
+            return 0
+        # Only near the context limit, avoid compressing history for a revoked notice.
+        total = 0
+        for job, full, minimal in sizes:
+            try:
+                ruling = await self._host.call(self.session_id, "execution_action", {
+                    "phase": "job_notice_live", "receipt": job.origin,
+                })
+            except Exception:
+                ruling = {}
+            total += full if ruling.get("allow") is True else minimal
+        return total if total > available else 0
+
+    async def _deliver_job_notices(self) -> int:
+        # The queue carries only the wake. Record the final approved view
+        # once, at the same boundary as its delivery to the model.
+        added_tokens = 0
+        async with AsyncExitStack() as locks:
+            pending = []
+            for job_id, notice in list(self.jobs.pending_notices.items()):
+                if not notice.admitted or not isinstance(notice.handle, CustomMessage):
+                    continue
+                job = self.jobs.get(job_id)
+                if not job.origin:
+                    continue
+                await locks.enter_async_context(job.output_lock)
+                if self.jobs.pending_notices.get(job_id) is notice:
+                    pending.append((job, notice))
+            if not pending or self._abort_requested or self._closing:
+                return 0
+            origins = [job.origin for job, _ in pending]
+            one = len(origins) == 1
+            payload = {"receipt": origins[0]} if one else {"receipts": origins}
+            try:
+                ruling = await self._host.call(self.session_id, "execution_action", {"phase": "job_notice", **payload})
+            except Exception:
+                ruling = {}
+            if self._abort_requested or self._closing:
+                return 0
+            if one:
+                allowed = set(origins) if ruling.get("allow") is True else set()
+            else:
+                approved = ruling.get("origins")
+                allowed = {r for r in approved if isinstance(r, str)} if isinstance(approved, list) else set()
+            for job, notice in pending:
+                self.jobs.pending_notices.pop(job.id, None)
+                saved = None
+                if job.origin in allowed:
+                    notice.handle.content, inline, cursors = preview_completion_notice(self.jobs, job)
+                    if inline is not None:
+                        saved = functools.partial(self.jobs.commit, job, cursors)
+                        job.output_write = self._recorder.flush
+                notice.handle.custom_type = "notice:job"
+                self.harness.message_list.append(notice.handle)
+                self._record(notice.handle, saved=saved)
+                added_tokens += estimate_tokens(notice.handle)
+        return added_tokens
+
+    async def _job_finished(self, job: Job) -> None:
+        if job.command_finished is not None:
+            await job.command_finished.wait()
+        async with job.output_lock:
+            if job.origin:
+                try:
+                    decision = await asyncio.wait_for(self._host.call(self.session_id, "execution_action", {
+                        "phase": "job_notice_live", "receipt": job.origin,
+                    }), CLOSE_GRACE_SECONDS)
+                except Exception:
+                    return
+                if decision.get("allow") is not True:
+                    return
+            if self._closing or job.notice_suppressed or job.waiters or job.id in self.jobs.pending_notices:
+                return
+            if job.origin:
+                text, held = f"Background job {job.id} finished.", None
+            else:
+                text, held = completion_notice(self.jobs, job)
+            handle = self.deliver_notice("pending_job" if job.origin else "job", text)
+            self.jobs.pending_notices[job.id] = PendingNotice(handle, held)
 
     # ------------------------------------------------------------------
     # Commands
@@ -1509,7 +1727,7 @@ class TaskAgentSession(SessionInbox):
     @property
     def busy(self) -> bool:
         """True while a run is in progress or a background job is still running."""
-        return self.running or bool(self.jobs.running())
+        return self.running or bool(self.jobs.running()) or bool(self.jobs.waking())
 
     def prompt(self, text: str, *, opening: bool = False, human: bool = True) -> None:
         """Hand the session work. ``opening`` marks the text that opens a commission.
@@ -1652,6 +1870,7 @@ class TaskAgentSession(SessionInbox):
         # Once more, for a command the run started while it was unwinding.
         self.jobs.close()
         await self.jobs.wait_closed()
+        await asyncio.to_thread(self.context.spill.close)
         await self._recorder.close()
         await self._model.aclose()
         if self._gateway is not None:
@@ -1674,7 +1893,7 @@ class TaskAgentSession(SessionInbox):
             raise SessionError("the session is closed")
         if self.running:
             raise SessionError("a run is in progress")
-        if self.jobs.running():
+        if self.jobs.running() or self.jobs.waking():
             # What a background command says when it ends would come while
             # the conversation is summed up: it would reach no run, and
             # wait for whatever is said to the session next.
@@ -1782,6 +2001,8 @@ class TaskAgentSession(SessionInbox):
         self.transcript.rewrite(as_it_was)
         self.context.invalidate()
         self._compactions, self._compaction_due = before, due_before
+        if self._device_fold_at > before:
+            self._device_fold_at = 0
         if self._gateway is not None:
             # Nor is the gateway to take what it handed over before (a
             # group of tools and how they are used) for gone: the

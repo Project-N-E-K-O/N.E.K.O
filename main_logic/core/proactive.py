@@ -51,6 +51,7 @@ from main_logic.proactive_delivery import (
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language_full
 from utils.desktop_capture import capture_desktop_screenshot
+from utils.loopback import is_direct_loopback_peer
 import main_logic.core as _core_facade
 from uuid import uuid4
 from ._shared import (
@@ -142,6 +143,21 @@ class ProactiveMixin:
                         exc_info=True,
                     )
 
+    def invalidate_proactive_vision_rounds(self) -> None:
+        """End the screen access of proactive rounds already in flight.
+
+        The frontend sends this when Proactive Chat or its Screen Share option
+        turns proactive vision off while privacy mode still allows it. Those
+        switches only gate new requests in the browser; a round that already
+        started (a voice nudge with vision, a text round with a screenshot)
+        compares this epoch on every visual step and drops its screen once it
+        moved. Unlike a consent revocation, consent stays granted and no frame
+        cache is cleared: the switches do not govern manual screen sharing.
+        """
+        self._proactive_vision_revocation_epoch = (
+            getattr(self, "_proactive_vision_revocation_epoch", 0) + 1
+        )
+
     def _proactive_round_owned(self, round_id: str | None) -> bool:
         """Whether ``round_id`` still owns the proactive round; ``None`` opts out.
 
@@ -228,6 +244,7 @@ class ProactiveMixin:
         *,
         language: str | None = None,
         allow_vision: bool = True,
+        vision_consent_epoch: int | None = None,
     ) -> bool:
         """Inject a text prompt to nudge the voice model into speaking.
 
@@ -242,13 +259,21 @@ class ProactiveMixin:
         source; the cached frame then stays out of this turn. Live consent is
         re-checked inside ``prompt_ephemeral`` on every visual step.
 
+        ``vision_consent_epoch`` is the revocation epoch the proactive request
+        started under (the HTTP entry); a revocation or a switch-off since then
+        already counts. None: start from the current epoch.
+
         Returns True if the text turn was sent, False if skipped.
         """
         # Same rule as the text path's consent checker: a revocation during
         # this nudge, including while it waits for the lock below, ends its
         # vision for good, even if consent is granted again before the frame
         # would be sent.
-        vision_epoch = getattr(self, "_proactive_vision_revocation_epoch", 0)
+        vision_epoch = (
+            getattr(self, "_proactive_vision_revocation_epoch", 0)
+            if vision_consent_epoch is None
+            else vision_consent_epoch
+        )
         # Share the callback-inject lock so a scheduled nudge cannot register a
         # second no-id fallback while an agent callback inject is unresolved.
         async with self._voice_proactive_inject_lock:
@@ -319,10 +344,15 @@ class ProactiveMixin:
         if not scoped:
             request_id = uuid4().hex
             self._proactive_screenshot_request_id = request_id
+        # A revocation while capturing ends this request for good, even if consent
+        # is granted again before the image would be returned (same rule as the
+        # round-level consent checker).
+        vision_epoch = getattr(self, "_proactive_vision_revocation_epoch", 0)
 
         def still_owned() -> bool:
             return (
                 getattr(self, "_proactive_screenshot_request_id", None) == request_id
+                and getattr(self, "_proactive_vision_revocation_epoch", 0) == vision_epoch
                 and (not scoped or getattr(getattr(self, "state", None), "proactive_round_id", request_id) == request_id)
             )
 
@@ -402,7 +432,16 @@ class ProactiveMixin:
         try:
             ws = self.websocket
             if ws and hasattr(ws, 'client') and ws.client:
-                is_local = ws.client.host in ('127.0.0.1', '::1', 'localhost')
+                # Same entry point as the screenshot route; imported lazily like
+                # manager.py does, since main_logic.activity's package init is heavy.
+                from main_logic.activity.system_signals import is_remote_backend_deployment
+                # Same policy as the backend screenshot route: a direct loopback
+                # peer (dual-stack ::ffff:127.0.0.1 included), no proxy-forwarded
+                # connection in proxy mode, and never in remote deployments.
+                is_local = (
+                    is_direct_loopback_peer(ws.client.host, getattr(ws, 'headers', None) or {})
+                    and not is_remote_backend_deployment()
+                )
         except Exception:
             # Introspection failure just means "not local" — keep the False default.
             pass

@@ -119,10 +119,17 @@ class _Offer:
     """What one session is offered, and its calls under way."""
 
     tools: dict[str, AgentTool] = field(default_factory=dict)
+    output_context: ToolContext | None = None
+    readers: dict[str, AgentTool] = field(default_factory=dict)
+    prepared_fetches: dict[str, tuple[str, str]] = field(default_factory=dict)
+    preparing_fetches: dict[str, object] = field(default_factory=dict)
     running: dict[asyncio.Task[Any], _Cancelled] = field(default_factory=dict)
     # The tasks that wait for the host on behalf of its calls; see ``_SessionHost``.
     asking: set[asyncio.Task[Any]] = field(default_factory=set)
     closed: bool = False
+
+
+_FETCH_CALL = contextvars.ContextVar("prepared_fetch_call", default="")
 
 
 class _SessionHost:
@@ -149,6 +156,18 @@ class _SessionHost:
         if task is not None:
             self._offer.asking.add(task)
         try:
+            if (name == "execution_action" and payload.get("phase") == "begin" and payload.get("tool") == "web_fetch"
+                    and "native_execution_action" in self.capabilities):
+                # Only this offer's registered MCP implementation can consume its preflight.
+                call_id = _FETCH_CALL.get()
+                prepared = self._offer.prepared_fetches.get(call_id)
+                if not prepared or prepared[0] != payload.get("scope_ref"):
+                    return {"allow": False}
+                receipt = prepared[1]
+                check = await self._host.call(session_id, name, {"phase": "check", "receipt": receipt})
+                if check.get("allow") is not True or self._offer.prepared_fetches.pop(call_id, None) != prepared:
+                    return {"allow": False}
+                return {"allow": True, "receipt": receipt}
             return await self._host.call(session_id, name, payload)
         finally:
             if task is not None:
@@ -215,7 +234,17 @@ class HostTools:
             emit_report=emit_report,
             top_level=top_level,
         )
-        built = [*build_host_tools(context, schemas), *build_web_tools(context, schemas)]
+        from nekoclaw.runtime.execution import managed_tool
+        from nekoclaw.runtime.tools.fs import build_fs_tools
+        from nekoclaw.runtime.tools.search import build_search_tools
+
+        offer.output_context = context
+        offer.readers = {tool.name: tool for tool in (*build_fs_tools(context, schemas), *build_search_tools(context, schemas))
+                         if tool.name in {"read", "grep"}}
+
+        web = [managed_tool(tool, context.host, session_id, context.workdir, spill=context.spill)
+               for tool in build_web_tools(context, schemas)]
+        built = [*build_host_tools(context, schemas), *web]
         tools = {tool.name: tool for tool in built}
 
         if offers_subagents(self._host.capabilities):
@@ -245,11 +274,53 @@ class HostTools:
         if offer is None:
             return
         offer.closed = True
+        if offer.output_context is not None:
+            offer.output_context.spill.close()
         for work, token in list(offer.running.items()):
             token.cancelled = True
             work.cancel()
         for asking in list(offer.asking):
             asking.cancel()
+
+    async def prepare_fetch(self, session_id: str, call_id: str, arguments: dict[str, Any]) -> bool:
+        from nekoclaw.runtime.execution import resource_ref
+        from nekoclaw.runtime.permissions import classify
+
+        offer = self._offers.get(session_id)
+        if (not offer or not offer.output_context or "web_fetch" not in offer.tools or not call_id
+                or call_id in offer.prepared_fetches or call_id in offer.preparing_fetches
+                or not isinstance(arguments.get("url"), str)):
+            return False
+        request = classify("web_fetch", arguments, offer.output_context.workdir)
+        scope = resource_ref(request, arguments)
+        pending = offer.preparing_fetches[call_id] = object()
+        try:
+            decision = await self._host.call(session_id, "execution_action", {
+                **request.to_json(), "phase": "begin", "scope_ref": scope,
+            })
+        finally:
+            active = offer.preparing_fetches.get(call_id) is pending
+            if active:
+                del offer.preparing_fetches[call_id]
+        receipt = decision.get("receipt")
+        if decision.get("allow") is not True or not isinstance(receipt, str) or not receipt:
+            return False
+        if not active or self._offers.get(session_id) is not offer:
+            await self._host.call(session_id, "execution_action", {"phase": "finish", "receipt": receipt, "status": "cancelled"})
+            return False
+        offer.prepared_fetches[call_id] = scope, receipt
+        return True
+
+    async def fetch(self, session_id: str, call_id: str, arguments: dict[str, Any], offer: _Offer) -> dict[str, Any]:
+        # Only the process-authenticated guard supplies an ACP call id. A
+        # JSON-RPC request id, even on the same URL, cannot claim its receipt.
+        if not {"execution_action", "native_execution_action"} <= self._host.capabilities or call_id not in offer.prepared_fetches:
+            return _result("No authorized web fetch.", error=True)
+        binding = _FETCH_CALL.set(call_id)
+        try:
+            return await self.call(session_id, "web_fetch", arguments, call_id=call_id, offer=offer)
+        finally:
+            _FETCH_CALL.reset(binding)
 
     def names(self, session_id: str) -> list[str]:
         offer = self._offers.get(session_id)

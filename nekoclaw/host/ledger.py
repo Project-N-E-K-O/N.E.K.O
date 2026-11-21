@@ -65,6 +65,8 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, TypeVar
 
+from nekoclaw.host import call_audit
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -82,6 +84,11 @@ STATUSES: tuple[str, ...] = (
 ACTIVE_STATUSES: frozenset[str] = frozenset({"queued", "working", "waiting_user", "blocked"})
 # Statuses in which someone is working on it right now and holds a slot.
 RUNNING_STATUSES: frozenset[str] = frozenset({"working", "waiting_user"})
+# Statuses of a commission its session is still at work on: being worked on
+# (also resting, which is ``working`` with nobody at it until it is woken),
+# waiting for a place, or waiting for the user. A stuck commission (``blocked``)
+# is not: it is taken up again only when somebody says more of it.
+UNDER_WAY_STATUSES: frozenset[str] = frozenset({"queued", "working", "waiting_user"})
 ENDED_STATUSES: frozenset[str] = frozenset({"done", "failed", "cancelled", "blocked"})
 _ENDED_MARKS = ", ".join("?" for _ in ENDED_STATUSES)
 
@@ -146,7 +153,7 @@ HOST_ENDED_REASON = "the host process ended before this finished"
 
 # (5: the notes sessions write to one another and what a session asked to be
 # woken for have tables of their own, and a commission may rest.)
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 # The first version in which a commission is worked on in a session that is a
 # row of its own; a ledger of an earlier one has its commissions given theirs.
 _SESSIONS_SINCE_VERSION = 3
@@ -714,20 +721,21 @@ def body_hash(text: str) -> str:
     return hashlib.sha256(" ".join(str(text).split()).encode("utf-8")).hexdigest()
 
 
-def _hour_used(conn: sqlite3.Connection, from_session: str, kinds: tuple[str, ...], now: float, limit: int) -> float | None:
-    """Return in how many seconds a session may write again, when it wrote ``limit`` of these kinds within the hour; else None.
+def _hour_used(conn: sqlite3.Connection, from_session: str, kind: str, now: float, limit: int) -> float | None:
+    """Return in how many seconds a session may write again, when it wrote ``limit`` of this kind within the hour; else None.
 
-    What was written in the hour before ``now``, and, as a clock that was
-    set back by a little leaves it, in the hour after (see ``message_add``).
+    Notes and questions are counted apart: each kind against a limit of
+    its own. What was written in the hour before ``now``, and, as a clock
+    that was set back by a little leaves it, in the hour after (see
+    ``message_add``).
     """
-    marks = ", ".join("?" for _ in kinds)
     # (A question that was not asked after all, which is void, counts for
     # nothing; a note that was dropped was written all the same.)
     within = (
-        f"FROM messages WHERE from_session = ? AND kind IN ({marks}) AND created_at >= ? AND created_at <= ? "
+        "FROM messages WHERE from_session = ? AND kind = ? AND created_at >= ? AND created_at <= ? "
         "AND NOT (kind = 'ask' AND status = 'void')"
     )
-    window = (from_session, *kinds, now - 3600.0, now + 3600.0)
+    window = (from_session, kind, now - 3600.0, now + 3600.0)
     sent = conn.execute(f"SELECT COUNT(*) AS n {within}", window).fetchone()
     if sent is None or sent["n"] < limit:
         return None
@@ -859,7 +867,7 @@ class Ledger:
             conn.execute("PRAGMA synchronous=NORMAL")
             # As the ledger was left: 0 for one that is made now.
             version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-            conn.executescript(_SCHEMA)
+            conn.executescript(_SCHEMA + call_audit.SCHEMA)
             self._add_columns(conn)
             # Not in the script above: in a ledger of an earlier build the
             # column is only there once it was added.
@@ -894,7 +902,8 @@ class Ledger:
     @staticmethod
     def _add_columns(conn: sqlite3.Connection) -> None:
         """Give a ledger made by an earlier build the columns added since (``_ADDED_COLUMNS``, ``_ADDED_SESSION_COLUMNS``)."""
-        for table, added in (("commissions", _ADDED_COLUMNS), ("sessions", _ADDED_SESSION_COLUMNS)):
+        for table, added in (("commissions", _ADDED_COLUMNS), ("sessions", _ADDED_SESSION_COLUMNS),
+                             ("host_calls", (("grant_id", "TEXT"), ("scope_ref", "TEXT")))):
             present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             for name, kind in added:
                 if name not in present:
@@ -1000,6 +1009,9 @@ class Ledger:
         """
         conn.execute("BEGIN IMMEDIATE")
         try:
+            conn.execute("UPDATE host_calls SET status='interrupted', ended_at=? WHERE status='running'",
+                         (self._clock(),))
+            call_audit.reclaim(conn, self._clock())
             marks = ", ".join("?" for _ in LIVE_SESSION_STATUSES)
             conn.execute(
                 f"UPDATE sessions SET status = 'closed' WHERE status IN ({marks})", sorted(LIVE_SESSION_STATUSES)
@@ -1225,7 +1237,7 @@ class Ledger:
 
     # -- commissions ------------------------------------------------------
 
-    def _insert(self, conn: sqlite3.Connection, values: dict[str, Any]) -> Commission:
+    def _insert(self, conn: sqlite3.Connection, values: dict[str, Any], *, source_message_ref: str | None = None) -> Commission:
         now = self._clock()
         row: dict[str, Any] = {name: None for name in _COMMISSION_COLUMNS}
         row.update(
@@ -1249,7 +1261,14 @@ class Ledger:
             f"INSERT INTO commissions ({columns}) VALUES ({marks})",
             [row[name] for name in _COMMISSION_COLUMNS],
         )
-        self._event(conn, row["id"], "created", {"source": row["source"], "title": row["title"]})
+        filed = {"source": row["source"], "title": row["title"]}
+        try:
+            call_audit.file_source(conn, row["id"], source_message_ref, now)
+        except call_audit.AuditFull:
+            # Filing ordinary work can continue. Preserve why the known
+            # reference was lost in the existing filing event, never its value.
+            filed["audit"] = call_audit.SOURCE_NOT_RECORDED
+        self._event(conn, row["id"], "created", filed)
         commission = _commission(conn.execute("SELECT * FROM commissions WHERE id = ?", (row["id"],)).fetchone())
         assert commission is not None
         return commission
@@ -1258,6 +1277,7 @@ class Ledger:
         self,
         *,
         unless: Callable[[list[Commission]], Commission | None] | None = None,
+        source_message_ref: str | None = None,
         **values: Any,
     ) -> tuple[Commission, bool]:
         """File a commission. Returns ``(commission, created)``.
@@ -1277,7 +1297,7 @@ class Ledger:
                 existing = unless(active)
                 if existing is not None:
                     return existing, False
-            return self._insert(conn, values), True
+            return self._insert(conn, values, source_message_ref=source_message_ref), True
 
         commission, created = await self.run(work)
         if created:
@@ -1290,6 +1310,16 @@ class Ledger:
                 conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone()
             )
         )
+
+    async def permission_parent(self, commission_id: str) -> tuple[str | None, bool]:
+        """Return the active parent link and whether this commission received another session's words."""
+        row = await self.run(lambda db: db.execute(
+            "SELECT c.parent_id, c.status, EXISTS (SELECT 1 FROM messages WHERE delivered_to = c.id) AS received "
+            "FROM commissions c WHERE c.id = ?", (commission_id,),
+        ).fetchone())
+        if row is None or row["status"] not in ACTIVE_STATUSES:
+            raise LookupError("the commission has ended or is unknown")
+        return row["parent_id"], bool(row["received"])
 
     @staticmethod
     def _select(
@@ -1365,6 +1395,10 @@ class Ledger:
             return Transition(False, current, current.status, refusal)
 
         now = self._clock()
+        if (current.status in ENDED_STATUSES and current.ended_at is not None
+                and current.ended_at <= now - call_audit.RETENTION):
+            # Resuming it or setting a later end time must not bring expired calls back.
+            call_audit.reclaim(conn, now, force=True)
         changes: dict[str, Any] = dict(values)
         changes.update(status=status, status_reason=reason, updated_at=now, host_instance=self.instance)
         if status == "working":
@@ -1802,6 +1836,57 @@ class Ledger:
         found = await self.select(session_id=session_id, limit=1)
         return found[0] if found else None
 
+    async def session_alive(self, session: Session | None, now: float | None = None) -> bool:
+        """Whether a session can still be gone on with: given notes, asked, woken, taken up again, summed up.
+
+        The one place that says so; everything that would give a session
+        new work asks here. Only a session of one commission (kind
+        ``single``) ends: it is over once its last commission ended
+        ``SESSION_SINGLE_LIFETIME_DAYS`` days ago (that day counts as
+        over), unless a commission is still under way in it
+        (``UNDER_WAY_STATUSES``: at work, queued, waiting for the user, or
+        resting until what it asked to be woken for comes). The age is that
+        of ``Session.last_active_at``: written whenever a commission in the
+        session changes its status, so, with none under way, it is when the
+        last one ended. What other sessions write to it, what a request of
+        it used, and the host summing it up do not move it. The session of
+        a project never ends this way (an old one is cleaned up, and the
+        next commission starts over in it); the sessions of task agents
+        another one started, and copies, have their own rules and are
+        reported alive here: this is about age only. No session is not
+        alive.
+
+        ``now`` is the moment asked about (the ledger's clock by default).
+        A session that looks old by what the caller read is looked at once
+        more here, with what is under way in it, in one go: whoever read it
+        may have read it a moment ago.
+        """
+        from config.nekoclaw_settings import SESSION_SINGLE_LIFETIME_DAYS
+
+        if session is None:
+            return False
+        if session.kind != "single":
+            return True
+        at = self._clock() if now is None else now
+        lifetime = SESSION_SINGLE_LIFETIME_DAYS * 86400.0
+        if at - session.last_active_at < lifetime:
+            return True
+        marks = ", ".join("?" for _ in UNDER_WAY_STATUSES)
+
+        def work(conn: sqlite3.Connection) -> bool:
+            row = conn.execute("SELECT last_active_at FROM sessions WHERE id = ?", (session.id,)).fetchone()
+            if row is None:
+                return False
+            if at - float(row["last_active_at"]) < lifetime:
+                return True
+            found = conn.execute(
+                f"SELECT 1 FROM commissions WHERE session_id = ? AND status IN ({marks}) LIMIT 1",
+                (session.id, *sorted(UNDER_WAY_STATUSES)),
+            ).fetchone()
+            return found is not None
+
+        return await self.run(work)
+
     async def resting_in(self, session_id: str) -> Commission | None:
         """Return the commission that rests in a session, the one that came to rest last; None when none does."""
 
@@ -1966,8 +2051,8 @@ class Ledger:
                 # (Never longer than the whole of it: a note of a time to
                 # come is no further back than now.)
                 return None, "too_soon", min(limits.target_interval, limits.target_interval - (now - last["at"]))
-            # (The questions it asked count as well: ``ask_add``.)
-            wait = _hour_used(conn, from_session, ("note", "ask"), now, limits.per_hour)
+            # (The questions it asked are counted apart: ``ask_add``.)
+            wait = _hour_used(conn, from_session, "note", now, limits.per_hour)
             if wait is not None:
                 return None, "too_many", wait
             # The notes that wait, and not what else waits for the session
@@ -2055,15 +2140,13 @@ class Ledger:
         from_commission: str,
         to_session: str,
         body: str,
-        per_hour: int,
         asks_per_hour: int,
     ) -> tuple[Message | None, str, float]:
         """Put on record that a session asks another a question; ``(message, refusal, wait)``.
 
-        Counted from what is on record, as a note is (``message_add``):
-        ``refusal`` is ``"over"`` (the commission that asks is not under
-        way any more), ``"too_many"`` (the session wrote ``per_hour``
-        notes and questions within the hour), ``"too_many_asks"`` (it
+        Counted from what is on record, as a note is (``message_add``), and
+        apart from the notes: ``refusal`` is ``"over"`` (the commission
+        that asks is not under way any more), ``"too_many_asks"`` (it
         asked ``asks_per_hour`` questions within the hour), or empty with
         the message; ``wait`` says how many seconds are left. Written as
         delivered: nothing hands it over, a copy of the other session
@@ -2075,10 +2158,7 @@ class Ledger:
             writer = conn.execute("SELECT status FROM commissions WHERE id = ?", (from_commission,)).fetchone()
             if writer is None or writer["status"] not in ("working", "waiting_user"):
                 return None, "over", 0.0
-            wait = _hour_used(conn, from_session, ("note", "ask"), now, per_hour)
-            if wait is not None:
-                return None, "too_many", wait
-            wait = _hour_used(conn, from_session, ("ask",), now, asks_per_hour)
+            wait = _hour_used(conn, from_session, "ask", now, asks_per_hour)
             if wait is not None:
                 return None, "too_many_asks", wait
             message = self._message_insert(
@@ -2833,12 +2913,20 @@ class Ledger:
         Only one that still stands as being summed up: a commission that
         got to work in it meanwhile has written where it stands, and that
         is not written over.
+
+        A summary made leaves how long the conversation is unknown until
+        the next request says (``context_tokens`` goes back to 0): what
+        stood there was the length it was summed up from, and a commission
+        that ends in the session without a model request (it failed before
+        its first) would have it summed up a second time.
         """
 
         def work(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE sessions SET status = 'closed' WHERE id = ? AND status = 'compacting'", (session_id,))
             if compacted:
-                conn.execute("UPDATE sessions SET compacted_at = ? WHERE id = ?", (self._clock(), session_id))
+                conn.execute(
+                    "UPDATE sessions SET compacted_at = ?, context_tokens = 0 WHERE id = ?", (self._clock(), session_id)
+                )
 
         await self.run(work)
 
@@ -3005,14 +3093,20 @@ class Ledger:
 
         return await self.run(work)
 
+    async def first_event_at(self, commission_id: str, kind: str) -> float | None:
+        """Time when this commission first recorded an event of the requested kind."""
+        def work(conn: sqlite3.Connection) -> float | None:
+            row = conn.execute(
+                "SELECT ts FROM events WHERE commission_id = ? AND type = ? ORDER BY seq LIMIT 1",
+                (commission_id, kind),
+            ).fetchone()
+            return row["ts"] if row is not None else None
+
+        return await self.run(work)
+
     async def has_event(self, commission_id: str, kind: str) -> bool:
         """Return whether a commission has an event of a kind."""
-        return await self.run(
-            lambda conn: conn.execute(
-                "SELECT 1 FROM events WHERE commission_id = ? AND type = ? LIMIT 1", (commission_id, kind)
-            ).fetchone()
-            is not None
-        )
+        return await self.first_event_at(commission_id, kind) is not None
 
     async def events(self, commission_id: str, *, after: int = 0, limit: int = 500) -> list[LedgerEvent]:
         def work(conn: sqlite3.Connection) -> list[LedgerEvent]:

@@ -22,7 +22,7 @@ from ..plugin_import_alias import PLUGIN_ID_ENV, PLUGIN_SOURCE_ENV
 from ..repo_state import committed_file_sizes, git_output, worktree_dirty_paths
 from ..templates import agent_kit
 from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candidate
-from .validate_cmd import validate_plugin_dir
+from .validate_cmd import collect_advisory_issues, validate_plugin_dir
 
 
 Issue = tuple[str, str]
@@ -83,6 +83,9 @@ def handle_check(args: argparse.Namespace) -> int:
         )
         issues.extend(_diagnose_repository(plugin_dir, defaults=defaults))
         issues.extend(_diagnose_agent_kit(plugin_dir))
+        # Advisory only: printed, never counted toward the exit code. Release
+        # checks (and thus precheck and Market CI) do not run them.
+        issues.extend(collect_advisory_issues(plugin_dir))
     except Exception as exc:
         print(f"[FAIL] {command_label}: {exc}", file=sys.stderr)
         return 1

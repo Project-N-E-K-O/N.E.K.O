@@ -1784,6 +1784,55 @@ async def test_what_the_user_allowed_a_commission_is_asked_again_once_another_se
     await wait_status(host, building.commission_id, "done")
 
 
+async def test_a_recovered_recipient_keeps_its_approval_boundary(hosts, tmp_path):
+    from nekoclaw.host.permissions import GrantScope, PermissionGate
+
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    ledger = host.ledger
+    root = await _at_work(ledger, title="parent")
+    child = await _at_work(ledger, title="recipient", parent_id=root.id)
+    sibling = await _at_work(ledger, title="sibling", parent_id=root.id)
+    source = await _at_work(ledger, title="sender")
+    asked = []
+
+    async def allow(cid, _question):
+        asked.append(cid)
+        return "session"
+
+    scope = GrantScope("builtin", "outside-path")
+    gate = host.permissions
+    gate.set_asker(allow)
+
+    async def borrow(cid):
+        decision = await gate.check(cid, "outside_write", scope=scope, hold_once=True)
+        assert decision.allow
+        return gate.authorization_ref(decision.grant_id)
+
+    original = await borrow(root.id)
+    assert await borrow(child.id) == original
+    _, refusal, _ = await _note(ledger, source, child.session_id)
+    assert not refusal
+    [wake] = await ledger.wakes_pending(session_id=child.session_id)
+    await ledger.wakes_fire([wake.id], into=child.id)
+    await ledger.wakes_taken([wake.id])
+    gate.received_external_input(child.id)
+    assert (await ledger.transition(child.id, "failed")).applied
+    assert (await ledger.transition(child.id, "working")).applied
+
+    async def verify():
+        root_grant = await borrow(root.id)
+        assert await borrow(sibling.id) == root_grant
+        assert not await gate.valid_grant(child.id, root_grant, "outside_write", scope=scope)
+        assert await borrow(child.id) != root_grant
+
+    await verify()
+    assert asked == [root.id, child.id]
+    # A new gate has no in-memory indication that the message was delivered.
+    gate = PermissionGate(host.permission_store, allow, ledger.permission_parent)
+    await verify()
+    assert asked == [root.id, child.id, root.id, child.id]
+
+
 async def test_a_user_who_forbade_reading_outside_the_working_directory_has_forbidden_reading_other_sessions(
     hosts, tmp_path
 ):
@@ -2186,6 +2235,14 @@ async def test_a_commission_is_filed_with_its_notes_or_not_at_all(ledger, monkey
     await ledger.wakes_fire([second.id], into=commission.id)
     assert (await ledger.message_get(later.id)).delivered_at == (await ledger.message_get(first.id)).delivered_at
     assert [note.id for note in await ledger.messages_opening(commission.id)] == [first.id]
+    from nekoclaw.host import call_audit
+
+    async with call_audit.call(ledger, commission.id, "device", "browser"):
+        pass
+    root, _step = await ledger.run(lambda db: call_audit.read_trace(db, commission.id, now=ledger._clock()))
+    event = next(event for event in await ledger.events(commission.id) if event.type == "woken")
+    assert event.payload["wake_ids"] == [wake.id]
+    assert root["source_message_ref"] == f"wake_event:{event.seq}"
     # Dropped meanwhile, or handed over already: none is filed for nothing.
     assert await ledger.create_for_wakes([wake.id, second.id], **values) is None
     assert len(await filed()) == 1

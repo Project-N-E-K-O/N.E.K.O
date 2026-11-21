@@ -75,7 +75,7 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/libs/licenses", "TRTC.LICENSE"),
     ("static/libs/licenses", "LIVEKIT.LICENSE"),
     # Built-in Live2D models: source archives are assets/<name>.tar.gz, and build_frontend extracts them to static/<name>/.
-    # The default character uses yui-lolita, which is also the fallback and tutorial model if loading fails; yui-origin is bundled too.
+    # The default character uses yui-lolita, which is also the fallback and tutorial model if loading fails; yui-origin and yui-sister are bundled too.
     # Checking only model3.json does not catch a partial extraction — moc3 and textures are required for loading, so assert all of them.
     ("static/yui-lolita", "yui-lolita.model3.json"),
     ("static/yui-lolita", "yui-lolita.moc3"),
@@ -83,6 +83,9 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("static/yui-origin", "yui-origin.model3.json"),
     ("static/yui-origin", "yui-origin.moc3"),
     ("static/yui-origin/yui-origin.4096", "texture_00.png"),
+    ("static/yui-sister", "yui-sister.model3.json"),
+    ("static/yui-sister", "yui-sister.moc3"),
+    ("static/yui-sister/yui-sister.4096", "texture_00.png"),
     ("static/pngtuber/yui-lolita", "model.json"),
     ("static/pngtuber/yui-origin", "model.json"),
     ("static/pngtuber/yui-sister", "model.json"),

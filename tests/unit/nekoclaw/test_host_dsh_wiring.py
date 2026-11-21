@@ -14,7 +14,7 @@
 
 """The host with dsh: which runtime a commission runs in, and what the host does for a session in dsh.
 
-No dsh is needed. The in-process runtime stands in for dsh's driver, which
+Except for tests exercising the pinned runtime, the in-process runtime stands in for dsh's driver, which
 has tests of its own (``test_dsh_driver.py``); what is tested here is the
 host's side: the choice, the ledger, the fallback, the permission requests
 only dsh makes, the removal of dsh, and the cleaning of old sessions.
@@ -22,17 +22,20 @@ only dsh makes, the removal of dsh, and the cleaning of old sessions.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from nekoclaw.dsh import DshUnavailable
 from nekoclaw.host.paths import DSH_SESSION_NAME, TRANSCRIPT_NAME
 from nekoclaw.host.runtimes import RUNTIME_BUILTIN, RUNTIME_DSH
-from nekoclaw.host.task_agents import _begun_in, _has_transcript
+from nekoclaw.host.task_agents import _Handed, _Unsaid, _begun_in, _has_transcript
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish
 from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
@@ -47,6 +50,65 @@ from tests.unit.nekoclaw.host_fakes import (
 async def model_with_an_address() -> dict[str, Any]:
     """As the host's configured model always has one; nothing listens there."""
     return {"model": "fake-model", "api_key": "test-key", "base_url": "http://127.0.0.1:9/v1"}
+
+
+@pytest.mark.parametrize("runtime_name", [RUNTIME_BUILTIN, RUNTIME_DSH])
+@pytest.mark.parametrize(("choice", "expected"), [("session", 1), ("once", 3)])
+async def test_three_different_commands_in_one_directory(runtime_name, choice, expected, tmp_path):
+    from nekoclaw.dsh import profile
+    from nekoclaw.dsh.driver import DshRuntime
+    from nekoclaw.host import call_audit
+    from tests.unit.nekoclaw.fake_openai_server import FakeOpenAIServer, sse_finish, sse_text, sse_tool_call
+
+    binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
+    if runtime_name == RUNTIME_DSH and not binary:
+        pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to run the stock dsh test")
+
+    def factory(on_event, callbacks, installation):
+        return DshRuntime(
+            on_event, callbacks, launch=lambda: profile.DshLaunch(home=tmp_path / "dsh", executable=Path(binary)),
+        )
+
+    shell = "pwsh" if os.name == "nt" else "bash"
+    commands = [f"echo consent-{i}" for i in range(3)]
+    replies = iter(
+        [sse_tool_call(shell, {"command": command, "description": "Print the fixture"}, f"call_{i}"),
+         sse_finish("tool_calls")]
+        for i, command in enumerate(commands)
+    )
+    questions = []
+
+    async def answer(commission, ask):
+        questions.append(ask)
+        return choice
+
+    with FakeOpenAIServer(lambda _: next(replies, [sse_text("Done"), sse_finish()])) as model:
+        async def model_config():
+            return dict(model="fixture", base_url=model.base_url, api_key="local", auto_extra_body=False)
+
+        host = make_host(
+            tmp_path, task_agent_model=model_config, decision_llm=FakeDecisionLLM(), plugins_enabled=lambda: False,
+            dsh=Installation(installed=runtime_name == RUNTIME_DSH), dsh_runtime_factory=factory,
+        )
+        try:
+            host.permissions.set_asker(answer)
+            commission = await _dispatch(host, "Run three fixture commands")
+            await wait_until(lambda: len(model.requests) >= 4, timeout=90, what="delivery of the three command results")
+            for i, req in enumerate(model.requests[1:4]):
+                assert f"consent-{i}" in str(req["messages"][-1])
+            assert len(questions) == expected and all(q.category == "run_command" for q in questions)
+            assert all(q.detail["content_to"] and "session" in q.options for q in questions)
+            if runtime_name == RUNTIME_DSH:
+                assert all(q.options == ("session", "once", "deny") for q in questions)
+            audit = await host.ledger.run(lambda db: call_audit.read_trace(db, commission, now=host.ledger._clock()))
+            operations = [row for row in audit if row["target"] == shell]
+            assert len(operations) == 3 and len({row["scope_ref"] for row in operations}) == 3
+            if choice == "session":
+                assert operations[0]["grant_id"] and len({row["grant_id"] for row in operations}) == 1
+            delivered = {row["parent_call_id"] for row in audit if row["kind"] == "transfer_content"}
+            assert {row["call_id"] for row in operations} <= delivered
+        finally:
+            await host.shutdown()
 
 
 class Installation:
@@ -196,9 +258,150 @@ async def _fallbacks(host: Any, commission_id: str) -> list[dict[str, Any]]:
     return [event.payload for event in await host.ledger.events(commission_id) if event.type == "runtime_fallback"]
 
 
+@pytest.mark.parametrize(
+    ("enabled", "runtime", "native", "text", "has_browser"),
+    [
+        (False, "builtin", False, "Open the browser", False),
+        (True, "builtin", False, "Open the browser", True),
+        (True, "builtin", False, "Explain the browser", False),
+        (True, "auto", False, "Open the browser", False),
+        (True, "auto", True, "Open the browser", True),
+    ],
+)
+async def test_dispatch_only_mounts_devices_on_a_supported_related_route(
+    hosts, tmp_path, monkeypatch, enabled, runtime, native, text, has_browser
+):
+    from config import nekoclaw_settings
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    monkeypatch.setattr(nekoclaw_settings, "FIRST_TURN_DEVICE_TOOLS", enabled)
+    if native:
+        monkeypatch.setattr(Dsh, "supports_device_schemas", lambda self, model: True, raising=False)
+    llm = ScriptedLLM([_report("ready", "done")])
+    host = _host(hosts, tmp_path, llm, Installation(preference=runtime),
+                 builtins=BuiltinToolProvider(state=lambda group: (True, "")))
+    await wait_status(host, await _dispatch(host, text), "done")
+    names = {tool["function"]["name"] for tool in llm.overrides[0]["tools"]}
+    assert ("browser_navigate_page" in names) == has_browser
+    assert "computer" not in names and {"capability_call", "capability_search"} <= names
+
+
+@pytest.mark.parametrize(("dispatch", "note", "expected", "focus", "retry"), [
+    ("Summarize the report.", "Open the browser.", {"browser_click"}, True, False),
+    ("Summarize the report.", "Open the browser.", {"browser_click"}, True, True),
+    ("Take a desktop screenshot.", "Open the browser.", {"computer", "browser_click"}, True, False),
+    ("Open the browser.", "Take a desktop screenshot.", {"computer", "browser_click"}, False, False),
+    ("Summarize the report.", _Handed("Open the browser.", ()), set(), None, False),
+    ("Summarize the report.", lambda recipient: _Unsaid("Take a desktop screenshot.", recipient), set(), None, False),
+])
+async def test_queued_instructions_choose_the_opening_tools_and_click_target(
+    hosts, tmp_path, monkeypatch, dispatch, note, expected, focus, retry,
+):
+    from config import nekoclaw_settings
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    monkeypatch.setattr(nekoclaw_settings, "FIRST_TURN_DEVICE_TOOLS", True)
+    release = asyncio.Event()
+    busy = ScriptedLLM([[release.wait, *_report("ready", "done")]])
+    next_model = ScriptedLLM([_report("ready", "done")])
+    specs = []
+
+    def pick(spec):
+        specs.append(spec)
+        return busy if len(specs) == 1 else next_model
+
+    host = _host(hosts, tmp_path, pick, Installation(preference="builtin"), max_task_agents=1,
+                 builtins=BuiltinToolProvider(state=lambda group: (True, "")))
+    monkeypatch.setattr(host.task_agents, "_sees_images", AsyncMock(return_value=True))
+    await _dispatch(host, "Wait for data.")
+    await wait_until(lambda: bool(busy.requests))
+    queued = await _dispatch(host, dispatch)
+    await host.brain.settle()
+    assert host.task_agents.queued == [queued]
+    if callable(note):
+        note = note(queued)
+    assert await host.task_agents.tell(queued, note)
+    if retry:
+        # A fresh opening takes the same user sentence from the carried inbox.
+        make_spec = host.task_agents._spec
+
+        async def fail_once(*args, **kwargs):
+            monkeypatch.setattr(host.task_agents, "_spec", make_spec)
+            raise RuntimeError("opening interrupted")
+
+        monkeypatch.setattr(host.task_agents, "_spec", fail_once)
+    release.set()
+    if retry:
+        await wait_status(host, queued, "failed")
+        assert await host.task_agents.tell(queued, "Please continue.")
+    await wait_status(host, queued, "done")
+    names = {tool["function"]["name"] for tool in next_model.overrides[0]["tools"]}
+    assert names.intersection({"browser_click", "computer"}) == expected
+    gateway = specs[-1].gateway
+    assert gateway.opening_browser_context is focus
+    assert ("opening_browser_context" in gateway.model_dump()) == (focus is not None)
+    ending = note + "\n\nPlease continue." if retry else note
+    assert next_model.requests[0][-1]["content"].endswith(ending)
+
+
+@pytest.mark.parametrize("backend", ["builtin", "auto"], ids=["builtin", "dsh"])
+@pytest.mark.parametrize(("follow_up", "compacted", "expected"), [
+    ("点击登录按钮", False, {"browser_click"}), ("继续", False, {"browser_click"}),
+    ("继续", "while_queued", {"browser_click"}),
+    ("按下回车", False, {"browser_click", "computer"}), ("按下回车", True, {"computer"}),
+    ("继续", True, set()), ("列出浏览器标签页", True, {"browser_click"}),
+    ("点击登录按钮", True, {"browser_click"}), ("click login", True, {"browser_click"}),
+    ("截桌面", True, {"computer"}), ("Click the Start menu", True, {"computer"}),
+    ("Switch to Notepad, then click OK", True, {"computer"}),
+    (_Handed("点击登录按钮", ()), True, set()),
+])
+async def test_relaunch_uses_current_device_intent_after_a_summary(
+    hosts, tmp_path, monkeypatch, backend, follow_up, compacted, expected
+):
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    llm = ScriptedLLM([_report("blocked", "waiting for login"), _report("ready", "done")])
+    monkeypatch.setattr(Dsh, "supports_device_schemas", lambda self, model: True, raising=False)
+    host = _host(hosts, tmp_path, llm, Installation(preference=backend),
+                 builtins=BuiltinToolProvider(state=lambda group: (True, "")))
+    monkeypatch.setattr(host.task_agents, "_sees_images", AsyncMock(return_value=True))
+    commission_id = await _dispatch(host, "打开浏览器")
+    await wait_status(host, commission_id, "blocked")
+    await wait_until(lambda: host.task_agents.running == [], what="the blocked session being released")
+    if compacted:
+        commission = await host.ledger.get(commission_id)
+        # Both the active runtime's compacted event and a host idle summary
+        # save this timestamp on the persistent session.
+        # A previous commission may finish a summary while this one waits to open.
+        summary_at = commission.created_at if compacted == "while_queued" else host.ledger._clock()
+        await host.ledger.update_session(commission.session_id, compacted_at=summary_at)
+    assert await host.task_agents.tell(commission_id, follow_up)
+    await wait_status(host, commission_id, "done")
+    assert len(llm.overrides) == 2
+    assert bool(host.fake.dsh) == (backend == "auto")
+    for request, devices in zip(llm.overrides, [{"browser_click"}, expected], strict=True):
+        names = {tool["function"]["name"] for tool in request["tools"]}
+        assert names.intersection({"browser_click", "computer"}) == devices
+
+
 # ---------------------------------------------------------------------------
 # Which runtime
 # ---------------------------------------------------------------------------
+
+
+async def test_dsh_compaction_can_confirm_the_opening_before_the_first_model_reply(hosts, tmp_path, monkeypatch):
+    async def prompt(driver, session_id, text, **kwargs):
+        if kwargs.get("opening"):
+            driver._on_event({"type": "compacted", "session_id": session_id, "count": None, "tokens_before": None})
+        await driver.inner.prompt(session_id, text, **kwargs)
+
+    monkeypatch.setattr(Dsh, "prompt", prompt, raising=False)
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "done")]), Installation())
+    commission_id = await _dispatch(host, "Open the browser")
+    await wait_status(host, commission_id, "done")
+    kinds = [event.type for event in await host.ledger.events(commission_id)]
+    assert kinds.count("opened") == 1
+    assert kinds.index("opened") < kinds.index("compacted")
 
 
 async def test_a_user_without_dsh_is_served_by_the_built_in_runtime_as_before(hosts, tmp_path):
@@ -226,6 +429,148 @@ async def test_a_user_without_dsh_is_served_by_the_built_in_runtime_as_before(ho
     assert not (tmp_path / "nekoclaw" / "dsh").exists()
     status = await host.dsh_status()
     assert (status["installed"], status["sessions"], status["fallback_reason"]) == (False, 0, None)
+
+
+@pytest.mark.parametrize("complete", [True, False], ids=["success", "empty-summary"])
+async def test_pinned_dsh_summary_is_recorded_and_a_sleeping_commission_wakes_without_old_devices(
+    tmp_path, monkeypatch, complete,
+):
+    from config import nekoclaw_settings
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+    from nekoclaw.dsh import profile
+    from nekoclaw.dsh.driver import DshRuntime
+    from nekoclaw.host.capabilities import BuiltinOutcome
+    from tests.unit.nekoclaw.fake_openai_server import FakeOpenAIServer, sse_finish, sse_text, sse_tool_call, sse_usage
+
+    executable = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
+    if not executable:
+        pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to run the pinned dsh sleep/wake test")
+    monkeypatch.setattr(nekoclaw_settings, "FIRST_TURN_DEVICE_TOOLS", True)
+    original_patch = profile.build_patch
+
+    def short_history(**kwargs):
+        patch = original_patch(**kwargs)
+        next(row for row in patch if row.get("id") == "compaction-basic")["config"]["retainTokens"] = 1
+        return patch
+
+    monkeypatch.setattr(profile, "build_patch", short_history)
+    phase = "before_rest"
+    seen, usage, operated = [], [], []
+    epochs = set()
+    browser = "mcp__gateway__browser_navigate_page"
+    search = "mcp__gateway__capability_search"
+    call_tool = "mcp__gateway__capability_call"
+
+    def reply(body):
+        names = {tool["function"]["name"] for tool in body["tools"]}
+        summary = "Output only the checkpoint text" in json.dumps(body["messages"][-1])
+        ordinal = sum(p == phase and not checkpoint for p, checkpoint, _ in seen)
+        seen.append((phase, summary, names))
+        tokens = 100
+        if summary:
+            chunks = [sse_text("Checkpoint: private fixture text."), sse_finish()] if complete else [sse_finish()]
+        elif phase == "before_rest" and ordinal == 0:
+            chunks = [sse_text("Synthetic history. " * 4000),
+                      sse_tool_call("mcp__host__schedule_wake", {"delay_seconds": 3600, "note": "look again"}),
+                      sse_finish("tool_calls")]
+            tokens = 31_000
+        elif phase == "before_rest" and ordinal == 1:
+            chunks = [sse_tool_call(search, {"query": "unrelated fixture capability"}, "local-second"), sse_finish("tool_calls")]
+        elif phase == "cold" and ordinal == 0:
+            chunks = [sse_tool_call("mcp__host__wait_agent", {"timeout_ms": 20000}), sse_finish("tool_calls")]
+        elif phase == "cold" and ordinal == 1:
+            chunks = [sse_tool_call(search, {"group": "browser"}, "local-search"), sse_finish("tool_calls")]
+        elif phase == "cold" and ordinal == 2:
+            chunks = [sse_tool_call(call_tool, {"name": "browser_list_pages", "arguments": {}}, "local-call"), sse_finish("tool_calls")]
+        elif phase == "cold" and ordinal == 3:
+            chunks = [sse_tool_call("mcp__host__schedule_wake", {"delay_seconds": 3600, "note": "look again"}, "second-sleep"),
+                      sse_finish("tool_calls")]
+        else:
+            chunks = [sse_text("Done."), sse_finish()]
+        usage.append((tokens, 10))
+        return [*chunks, sse_usage(tokens, 10)]
+
+    with FakeOpenAIServer(reply) as model:
+        async def model_config():
+            return dict(model="fixture", base_url=model.base_url, api_key="loopback-only", auto_extra_body=False,
+                        supports_images=True, context_window=32_000, max_output_tokens=1024)
+
+        def factory(on_event, callbacks, installation):
+            launch = profile.DshLaunch(home=tmp_path / "dsh", executable=Path(executable))
+            runtime = DshRuntime(on_event, callbacks, launch=lambda: launch)
+            original_view = runtime._endpoint._device_view
+
+            async def repeated_receipt(process, session, epoch, refresh, *args):
+                result = await original_view(process, session, epoch, refresh, *args)
+                if epoch and result is not None and refresh:
+                    # A retry of the same successful receipt must not produce a second SQLite event.
+                    epochs.add((phase, session, epoch))
+                    await original_view(process, session, epoch, refresh, *args)
+                return result
+
+            runtime._endpoint._device_view = repeated_receipt
+            return runtime
+
+        provider = BuiltinToolProvider(state=lambda group: (True, ""))
+
+        async def run_fake(capability, *, commission_id, **unused):
+            operated.append((capability.tool_name, commission_id))
+            return BuiltinOutcome(True, "fixture page list")
+
+        monkeypatch.setattr(provider, "run", run_fake)
+
+        host = make_host(tmp_path, task_agent_model=model_config, decision_llm=FakeDecisionLLM(),
+                         builtins=provider,
+                         plugins_enabled=lambda: False, dsh=Installation(), dsh_runtime_factory=factory)
+        try:
+            await host.permission_store.set_mode("browser", "allow")
+            commission_id = await _dispatch(host, "打开浏览器")
+
+            async def resting():
+                row = await host.ledger.get(commission_id)
+                return row.resting and not host.task_agents.running
+
+            await wait_until(resting, timeout=45, what="the dsh commission closing its session to rest")
+            ordinary = [names for _, summary, names in seen if not summary]
+            assert browser in ordinary[0] and (browser not in ordinary[-1]) == complete
+            events = await host.ledger.events(commission_id)
+            checkpoints = [e for e in events if e.type == "compacted"]
+            assert any(summary for _, summary, _ in seen)
+            assert len(checkpoints) == len(epochs)
+            assert bool(checkpoints) == complete
+            for checkpoint in checkpoints:
+                assert set(checkpoint.payload) == {"seq", "count", "tokens_before"}
+                assert checkpoint.payload["count"] is None and checkpoint.payload["tokens_before"] is None
+            row = await host.ledger.get(commission_id)
+            session = await host.ledger.get_session(row.session_id)
+            assert (row.requests, row.tokens_in, row.tokens_out) == (
+                len(usage), sum(i for i, _ in usage), sum(o for _, o in usage),
+            )
+            if not complete:
+                assert session.compacted_at is None
+                return
+            assert session.compacted_at >= checkpoints[-1].ts
+
+            phase = "cold"
+            assert await host.task_agents.tell(commission_id, "继续写总结")
+            await wait_until(lambda: any(p == "cold" and not s for p, s, _ in seen), timeout=45, what="the ordinary wake request")
+            # The ordinary wake registered only discovery/call in this MCP scope.
+            # A later browser instruction uses those tools until the session next opens.
+            assert await host.task_agents.tell(commission_id, "打开浏览器")
+            await wait_until(resting, timeout=45, what="the second rest")
+            cold = [(names, request) for (p, s, names), request in zip(seen, model.requests) if p == "cold" and not s]
+            assert all(browser not in names and {search, call_tool} <= names for names, _ in cold)
+            assert any("打开浏览器" in str(message) for message in cold[1][1]["messages"][-2:])
+            assert "browser_navigate_page" in str(cold[2][1]["messages"][-1])
+            assert "fixture page list" in str(cold[3][1]["messages"][-1])
+            assert operated == [("browser_list_pages", commission_id)]
+
+            phase = "explicit"
+            assert await host.task_agents.tell(commission_id, "打开浏览器")
+            await wait_until(lambda: any(p == "explicit" and not s for p, s, _ in seen), timeout=45, what="the explicit wake")
+            assert browser in next(names for p, s, names in seen if p == "explicit" and not s)
+        finally:
+            await host.shutdown()
 
 
 async def test_a_commission_runs_in_dsh_once_dsh_is_installed(hosts, tmp_path):
@@ -745,15 +1090,26 @@ async def test_a_ruling_on_a_search_does_not_wait_for_its_call_for_ever_or_outli
     assert len(asked) == 3 and host.task_agents._search_rulings == {}
 
 
-async def test_a_tool_a_dsh_plugin_brought_follows_the_setting_for_everything_else(hosts, tmp_path):
+async def test_an_unidentified_dsh_plugin_asks_each_time_unless_the_user_configured_it(hosts, tmp_path):
     host = _host(hosts, tmp_path, ScriptedLLM(), Installation())
     payload = {"tool": "plugin_weather", "category": "other", "arguments": {"city": "Oslo"}, "workdir": "w", "default": "allow"}
+    asked = []
 
+    async def once(commission_id, question):
+        asked.append(question.options)
+        return "once"
+
+    host.permissions.set_asker(once)
+    for _ in range(2):
+        assert (await host.task_agents._cb_permission("c1", payload))["allow"] is True
+    assert asked == [("once", "deny")] * 2
+
+    await host.permission_store.set_mode("other", "allow")
     assert (await host.task_agents._cb_permission("c1", payload))["allow"] is True
-
     await host.permission_store.set_mode("other", "deny")
     refused = await host.task_agents._cb_permission("c1", payload)
     assert refused["allow"] is False and "settings" in refused["reason"]
+    assert len(asked) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -810,6 +1166,31 @@ async def test_the_switch_and_the_plugins_are_read_and_set_through_the_host(host
     assert (await host.install_dsh())["installed"] is True and installation.installs == 0
     installation.is_installed = False
     assert (await host.install_dsh())["installed"] is True and installation.installs == 1
+
+
+async def test_selected_dsh_stays_in_use_during_gateway_setup(hosts, tmp_path, monkeypatch):
+    import asyncio
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "done")]), Installation())
+    setting_up, resume = asyncio.Event(), asyncio.Event()
+    start = host.gateway.start
+
+    async def wait_for_setup():
+        setting_up.set()
+        await resume.wait()
+        return await start()
+
+    monkeypatch.setattr(host.gateway, "start", wait_for_setup)
+    dispatch = asyncio.create_task(_dispatch(host, "Open the browser"))
+    try:
+        await asyncio.wait_for(setting_up.wait(), 5)
+        with pytest.raises(DshUnavailable, match="in use"):
+            await host.uninstall_dsh()
+        assert not host.fake.dsh[0].shut_down
+    finally:
+        resume.set()
+        commission_id = await dispatch
+    await wait_status(host, commission_id, "done")
 
 
 async def test_shutting_the_host_down_ends_every_runtime_that_was_started(hosts, tmp_path):
@@ -893,3 +1274,39 @@ async def test_a_directory_that_is_not_a_sessions_is_not_asked_about_in_dsh(host
     assert host.space_keeper._clean(elsewhere, "c1") == "nothing"
     assert host.space_keeper._clean(misnamed, "c1") == "nothing"
     assert installation.forgotten == []
+
+
+@pytest.mark.parametrize(("mode", "choice", "expected"), [("auto", "once", 0), ("first_ask", "session", 1), ("always_ask", "once", 3)])
+async def test_stock_job_list_uses_the_other_tool_policy(tmp_path, mode, choice, expected):
+    from nekoclaw.dsh import profile
+    from nekoclaw.dsh.driver import DshRuntime
+    from tests.unit.nekoclaw.fake_openai_server import FakeOpenAIServer, sse_finish, sse_text, sse_tool_call
+
+    binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
+    if not binary:
+        pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to run the stock dsh test")
+    def factory(on_event, callbacks, installation):
+        return DshRuntime(on_event, callbacks, launch=lambda: profile.DshLaunch(home=tmp_path / "dsh", executable=Path(binary)))
+
+    replies = iter([[sse_tool_call("job_list", {}, f"list{i}"), sse_finish("tool_calls")] for i in range(3)])
+    questions = []
+    async def answer(_, ask):
+        questions.append(ask)
+        return choice
+    with FakeOpenAIServer(lambda _: next(replies, [sse_text("Done"), sse_finish()])) as model:
+        async def model_config():
+            return dict(model="fixture", base_url=model.base_url, api_key="local", auto_extra_body=False)
+        host = make_host(tmp_path, task_agent_model=model_config, decision_llm=FakeDecisionLLM(),
+                         plugins_enabled=lambda: False, dsh=Installation(installed=True), dsh_runtime_factory=factory)
+        try:
+            await host.permission_store.set_mode("other", mode)
+            host.permissions.set_asker(answer)
+            await _dispatch(host, "Check the fixture jobs")
+            await wait_until(lambda: len(model.requests) >= 4, timeout=90, what="all three stock job reads")
+            assert len(questions) == expected
+            assert all(ask.category == "other" and "always" not in ask.options for ask in questions)
+            for i, req in enumerate(model.requests[1:4]):
+                message = next(m for m in req["messages"] if m.get("tool_call_id") == f"list{i}")
+                assert "no background jobs" in message["content"].lower()
+        finally:
+            await host.shutdown()

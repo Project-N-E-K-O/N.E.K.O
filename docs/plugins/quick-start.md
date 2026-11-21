@@ -138,17 +138,10 @@ uv run neko-plugin check hello_world
 A new project should report:
 
 ```text
-[OK] hello_world: check found 0 error(s), 4 warning(s)
+[OK] hello_world: check found 0 error(s), ... warning(s)
 ```
 
-The four warnings are:
-
-- no `startup` lifecycle hook
-- no `shutdown` lifecycle hook
-- no configured Git remote
-- uncommitted files in the Git worktree
-
-This Hello World plugin does not need startup or shutdown hooks. The Git remote and commit warnings only affect publishing. None of these warnings prevent the plugin from running. Stop and follow the suggested fix when the command reports `[FAIL]` or an error.
+The warnings at this stage are about Git (for example no configured `origin` remote, or uncommitted files in the plugin's repository). They only affect publishing and do not prevent the plugin from running. Stop and follow the suggested fix when the command reports `[FAIL]` or an error. In later checks, read each warning too: a warning can mean that a setting is ignored even though the result is `[OK]`.
 
 ## What the CLI created
 
@@ -157,6 +150,9 @@ plugin/plugins/hello_world/
 ├── .git/
 ├── .gitignore
 ├── .vscode/
+├── .agents/skills/neko-plugin/   ← guide for coding agents
+├── AGENTS.md
+├── CLAUDE.md
 ├── plugin.toml
 ├── config.example.toml
 ├── __init__.py
@@ -236,7 +232,7 @@ class HelloWorldPlugin(NekoPluginBase):
 The `plugin_id` is `hello_world`; this feature's `entry_id` is `hello`. They identify different things and are not interchangeable.
 
 ::: tip Plugin entries and LLM tools are different
-`@plugin_entry` declares a runtime plugin entry. `@llm_tool` registers a tool used during a conversation. The first run only needs `@plugin_entry`; no LLM tool setup is required.
+`@plugin_entry` declares a runtime plugin entry. `@llm_tool` registers a tool used during a conversation. The first run only needs `@plugin_entry`; no LLM tool setup is required. To choose between them, see [Choosing between `@plugin_entry` and `@llm_tool`](/plugins/tool-calling#choosing-an-entry-type).
 :::
 
 Change the final line to:

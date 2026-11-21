@@ -1344,7 +1344,7 @@ async def market_publication_requests(request: Request, plugin_id: int) -> Respo
     return await _proxy_market_authenticated(
         request, method="GET", api_path="/api/v1/plugins",
         upstream_path=f"/{plugin_id}/versions/publication-requests",
-        query=("request_id",), requires_verified_email=True,
+        query=("request_id", "limit", "offset"), requires_verified_email=True,
     )
 
 

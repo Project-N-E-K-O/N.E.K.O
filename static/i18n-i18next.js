@@ -35,7 +35,9 @@
     // 远程配对页新增八种语言的密钥获取说明，刷新客户端缓存。
     // 补齐八语言 airBasketball 台词并同步 zh-CN 文案，刷新客户端缓存。
     // Retire the standalone library namespace; management uses the plugin UI.
-    const LOCALE_VERSION = '2026-11-20-unified-knowledge-manager-merge';
+    // 新增决策模型槽位（api.decisionModelConfig / api.decisionModelApiKeyPlaceholder）八语言文案，刷新客户端缓存。
+    // Merge main's decision-model copy with the unified knowledge manager.
+    const LOCALE_VERSION = '2026-11-21-unified-knowledge-manager-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

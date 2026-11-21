@@ -1,6 +1,7 @@
 """VRM emotion mappings must preserve uploaded filenames and path boundaries."""
 
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import quote
@@ -43,6 +44,9 @@ def vrm_api(tmp_path, monkeypatch):
         "get_subscribed_workshop_items",
         AsyncMock(return_value={"success": True, "items": []}),
     )
+    # Never resolve the real Workshop folder; tests that need one point it at tmp_path.
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: None)
+    monkeypatch.setattr(vrm_router, "get_steam_workshop_path", lambda: None)
     app = FastAPI()
     app.include_router(vrm_router.router)
     app.include_router(live2d_models.router)
@@ -536,3 +540,200 @@ def test_resolved_paths_cannot_escape_their_directory(vrm_api, tmp_path, locatio
     else:
         assert vrm_router._get_model_path(name) == (None, "")
     assert outside.read_bytes() == b"outside sentinel"
+
+
+@pytest.mark.parametrize("model_name", ["Cool Model", "猫娘#1%"])
+@pytest.mark.parametrize("subdir", ["", "nested"])
+def test_workshop_model_emotion_mapping_roundtrip(vrm_api, tmp_path, monkeypatch, model_name, subdir):
+    """#3379: Workshop VRMs are listed in the emotion manager, so saving must find them."""
+    client, config = vrm_api
+    workshop_root = tmp_path / "workshop"
+    item = workshop_root / "123"
+    directory = item / subdir
+    directory.mkdir(parents=True)
+    (directory / f"{model_name}.VRM").write_bytes(b"glTF")
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    monkeypatch.setattr(vrm_router, "get_subscribed_workshop_items", AsyncMock(return_value={
+        "success": True, "items": [{"installedFolder": str(item), "publishedFileId": "123"}],
+    }))
+    listed = client.get(f"{API}/models").json()["models"]
+    assert [model["name"] for model in listed] == [model_name]
+
+    url = f"{API}/emotion_mapping/{quote(model_name, safe='')}"
+    mapping = {"happy": ["workshop smile"]}
+    saved = client.post(url, json=mapping)
+    assert saved.status_code == 200
+    assert saved.json()["success"] is True
+    assert client.get(url).json()["config"] == mapping
+    config_path = config.project_root / "static" / "vrm" / "configs" / f"{model_name}_emotion.json"
+    assert json.loads(config_path.read_text(encoding="utf-8")) == mapping
+    assert vrm_router._get_model_path(model_name) == ((directory / f"{model_name}.VRM").resolve(), "/workshop")
+
+
+def test_workshop_lookup_matches_listing_depth_only(vrm_api, tmp_path, monkeypatch):
+    client, config = vrm_api
+    workshop_root = tmp_path / "workshop"
+    (workshop_root / "123" / "a" / "b").mkdir(parents=True)
+    (workshop_root / "123" / "a" / "b" / "Deep.vrm").write_bytes(b"glTF")
+    (workshop_root / "not-an-item").mkdir()
+    (workshop_root / "not-an-item" / "Loose.vrm").write_bytes(b"glTF")
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    for model_name in ("Deep", "Loose"):
+        response = client.post(f"{API}/emotion_mapping/{model_name}", json={"happy": ["smile"]})
+        assert response.status_code == 404
+    assert not (config.project_root / "static" / "vrm" / "configs").exists()
+
+
+def test_workshop_lookup_rejects_items_that_escape_their_folder(vrm_api, tmp_path, monkeypatch):
+    client, config = vrm_api
+    workshop_root = tmp_path / "workshop"
+    (workshop_root / "123").mkdir(parents=True)
+    outside = tmp_path / "outside.vrm"
+    outside.write_bytes(b"glTF")
+    try:
+        (workshop_root / "123" / "Escape.vrm").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    response = client.post(f"{API}/emotion_mapping/Escape", json={"happy": ["smile"]})
+    assert response.status_code == 404
+    assert not (config.project_root / "static" / "vrm" / "configs").exists()
+
+
+def test_workshop_lookup_uses_mounted_steam_root_when_user_mod_folder_differs(vrm_api, tmp_path, monkeypatch):
+    """get_workshop_path() prefers user_mod_folder, but /workshop serves the Steam root."""
+    client, _ = vrm_api
+    steam_root = tmp_path / "steam_workshop"
+    (steam_root / "123").mkdir(parents=True)
+    (steam_root / "123" / "Steam Only.vrm").write_bytes(b"glTF")
+    user_mod_folder = tmp_path / "user_mod_folder"
+    (user_mod_folder / "456").mkdir(parents=True)
+    (user_mod_folder / "456" / "Local Only.vrm").write_bytes(b"glTF")
+    monkeypatch.setattr(vrm_router, "get_steam_workshop_path", lambda: str(steam_root))
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(user_mod_folder))
+    for model_name in ("Steam Only", "Local Only"):
+        url = f"{API}/emotion_mapping/{quote(model_name, safe='')}"
+        assert client.post(url, json={"happy": ["smile"]}).status_code == 200
+    # Offline: only the configured root is known.
+    monkeypatch.setattr(vrm_router, "get_steam_workshop_path", lambda: None)
+    assert vrm_router._get_model_path("Steam Only") == (None, "")
+    assert vrm_router._get_model_path("Local Only")[1] == "/workshop"
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="needs a non-root POSIX user")
+def test_unreadable_workshop_item_does_not_hide_later_items(vrm_api, tmp_path, monkeypatch):
+    client, _ = vrm_api
+    workshop_root = tmp_path / "workshop"
+    locked = workshop_root / "100"
+    (locked / "nested").mkdir(parents=True)
+    (workshop_root / "200").mkdir()
+    (workshop_root / "200" / "Avatar.vrm").write_bytes(b"glTF")
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    locked.chmod(0)
+    try:
+        response = client.post(f"{API}/emotion_mapping/Avatar", json={"happy": ["smile"]})
+    finally:
+        locked.chmod(0o755)
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("linked", ["item", "subdir"])
+def test_workshop_folder_symlinks_cannot_widen_the_boundary(vrm_api, tmp_path, monkeypatch, linked):
+    client, config = vrm_api
+    workshop_root = tmp_path / "workshop"
+    workshop_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "Escape.vrm").write_bytes(b"glTF")
+    try:
+        if linked == "item":
+            (workshop_root / "123").symlink_to(outside, target_is_directory=True)
+        else:
+            (workshop_root / "123").mkdir()
+            (workshop_root / "123" / "linked").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    assert vrm_router._get_model_path("Escape") == (None, "")
+    response = client.post(f"{API}/emotion_mapping/Escape", json={"happy": ["smile"]})
+    assert response.status_code == 404
+    assert not (config.project_root / "static" / "vrm" / "configs").exists()
+
+
+@pytest.mark.parametrize("loop_at", ["item", "subdir", "model_file", "root", "static_dir", "user_dir"])
+def test_symlink_loops_do_not_stop_the_workshop_search(vrm_api, tmp_path, monkeypatch, loop_at):
+    """Python 3.11 raises RuntimeError (3.13: OSError) when resolving a symlink loop."""
+    client, _ = vrm_api
+    workshop_root = tmp_path / "workshop"
+    (workshop_root / "100").mkdir(parents=True)
+    (workshop_root / "200").mkdir()
+    (workshop_root / "200" / "Avatar.vrm").write_bytes(b"glTF")
+    try:
+        if loop_at == "item":
+            (workshop_root / "050").symlink_to("050")
+        elif loop_at == "subdir":
+            (workshop_root / "100" / "loop").symlink_to("loop")
+        elif loop_at == "model_file":
+            (workshop_root / "100" / "Avatar.vrm").symlink_to("Avatar.vrm")
+        elif loop_at == "static_dir":
+            (tmp_path / "project" / "static" / "vrm" / "Avatar.vrm").symlink_to("Avatar.vrm")
+        elif loop_at == "user_dir":
+            (tmp_path / "user_vrm" / "Avatar.vrm").symlink_to("Avatar.vrm")
+        else:
+            (tmp_path / "loop_root").symlink_to("loop_root")
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    steam_root = str(tmp_path / "loop_root") if loop_at == "root" else None
+    monkeypatch.setattr(vrm_router, "get_steam_workshop_path", lambda: steam_root)
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    response = client.post(f"{API}/emotion_mapping/Avatar", json={"happy": ["smile"]})
+    assert response.status_code == 200
+    assert vrm_router._get_model_path("Avatar") == ((workshop_root / "200" / "Avatar.vrm").resolve(), "/workshop")
+
+
+@pytest.mark.parametrize("escape_at", ["static_dir", "user_dir"])
+def test_escaping_builtin_entry_does_not_stop_the_workshop_search(vrm_api, tmp_path, monkeypatch, escape_at):
+    """The escaping file is refused, but a valid Workshop model with the same name still saves."""
+    client, _ = vrm_api
+    outside = tmp_path / "outside.vrm"
+    outside.write_bytes(b"outside sentinel")
+    link_dir = tmp_path / "project" / "static" / "vrm" if escape_at == "static_dir" else tmp_path / "user_vrm"
+    try:
+        (link_dir / "Avatar.vrm").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    workshop_root = tmp_path / "workshop"
+    (workshop_root / "200").mkdir(parents=True)
+    (workshop_root / "200" / "Avatar.vrm").write_bytes(b"glTF")
+    monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(workshop_root))
+    assert vrm_router._get_model_path("Avatar") == ((workshop_root / "200" / "Avatar.vrm").resolve(), "/workshop")
+    response = client.post(f"{API}/emotion_mapping/Avatar", json={"happy": ["smile"]})
+    assert response.status_code == 200
+    assert outside.read_bytes() == b"outside sentinel"
+
+
+@pytest.mark.parametrize("location", ["user", "workshop"])
+def test_looping_canonical_file_does_not_hide_a_case_variant(vrm_api, tmp_path, monkeypatch, location):
+    """A looping Avatar.vrm is skipped; Avatar.VRM in the same folder still saves its mapping."""
+    client, _ = vrm_api
+    if location == "user":
+        directory = tmp_path / "user_vrm"
+    else:
+        directory = tmp_path / "workshop" / "200"
+        directory.mkdir(parents=True)
+        monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: str(tmp_path / "workshop"))
+    probe = directory / "case_probe"
+    probe.write_bytes(b"")
+    case_insensitive = (directory / "CASE_PROBE").exists()
+    probe.unlink(missing_ok=True)
+    if case_insensitive:
+        # APFS / Windows: Avatar.VRM would open the looping Avatar.vrm link itself.
+        pytest.skip("filesystem is case-insensitive; Avatar.vrm and Avatar.VRM cannot coexist")
+    try:
+        (directory / "Avatar.vrm").symlink_to("Avatar.vrm")
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    (directory / "Avatar.VRM").write_bytes(b"glTF")
+    assert vrm_router._get_model_path("Avatar")[0] == (directory / "Avatar.VRM").resolve()
+    response = client.post(f"{API}/emotion_mapping/Avatar", json={"happy": ["smile"]})
+    assert response.status_code == 200

@@ -248,6 +248,9 @@ async def test_the_listener_is_local_and_asks_for_a_token(endpoint) -> None:
     assert [sock.getsockname()[0] for sock in sockets] == ["127.0.0.1"] and listener.port not in (None, 0)
     async with httpx.AsyncClient(trust_env=False) as client:
         good = await client.post(listener.tools_url, headers={"Authorization": f"Bearer {token}"}, json=listing)
+        unavailable = await client.post(f"http://127.0.0.1:{listener.port}/internal/retained-output",
+                                        headers={"Authorization": f"Bearer {token}"}, json=listing)
+        assert unavailable.status_code == 404
         none = await client.post(listener.tools_url, json=listing)
         wrong = await client.post(listener.tools_url, headers={"Authorization": "Bearer nonsense"}, json=listing)
         # A process's token opens the model endpoint, not a session's tools, and the other way round.
@@ -480,7 +483,8 @@ async def test_each_dsh_process_has_a_token_of_its_own_that_ends_with_it(endpoin
     assert await status(other[:-1]) == 401
 
 
-async def test_a_call_dsh_gives_up_is_stopped_at_the_host(tmp_path: Path) -> None:
+@pytest.mark.parametrize("retained", [False, True])
+async def test_a_call_dsh_gives_up_is_stopped_at_the_host(tmp_path: Path, retained: bool) -> None:
     started = asyncio.Event()
     stopped = asyncio.Event()
 
@@ -496,13 +500,14 @@ async def test_a_call_dsh_gives_up_is_stopped_at_the_host(tmp_path: Path) -> Non
     tools = HostTools(HostCallbacks(web_search=search))
     _open(tools, tmp_path)
     forwarder = ModelForwarder(lambda session_id, usage: None, report_tool="mcp__host__report")
-    listener = LocalEndpoint(forwarder=forwarder, tools=tools)
+    listener = LocalEndpoint(forwarder=forwarder, tools=tools, retained_output=search if retained else None)
     await listener.start()
     try:
-        token = listener.issue("s1")
+        token = listener.issue_process_token() if retained else listener.issue("s1")
+        url = f"http://127.0.0.1:{listener.port}/internal/retained-output" if retained else listener.tools_url
         call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "web_search", "arguments": {"queries": ["q"]}}}
         async with httpx.AsyncClient(trust_env=False, timeout=0.5) as client:
-            request = asyncio.ensure_future(client.post(listener.tools_url, headers={"Authorization": f"Bearer {token}"}, json=call))
+            request = asyncio.ensure_future(client.post(url, headers={"Authorization": f"Bearer {token}"}, json=call))
             await asyncio.wait_for(started.wait(), 5)
             with pytest.raises(httpx.TimeoutException):
                 await request
@@ -694,3 +699,108 @@ async def test_a_wait_that_cannot_be_answered_takes_nothing(tmp_path: Path) -> N
     # With an id it is carried out as ever.
     answered = await tools.handle("s1", {**wait, "id": 8})
     assert asked == [30.0] and "a note that would go nowhere" in answered["result"]["content"][0]["text"]
+
+
+async def test_managed_fetch_is_checked_before_returning_mcp_content(tmp_path, monkeypatch):
+    from nekoclaw.runtime.tools import web
+
+    calls = []
+    ran = []
+
+    async def audit(session, payload):
+        calls.append((session, payload))
+        if payload["phase"] == "begin":
+            return {"allow": True, "receipt": "fetch-receipt"}
+        return {"allow": False}
+
+    async def fetch(url):
+        ran.append(url)
+        return "fixture page body"
+
+    monkeypatch.setattr(web, "web_fetch", fetch)
+    tools = HostTools(HostCallbacks(execution_action=audit))
+    _open(tools, tmp_path)
+    url = "https://example.test/private-fixture"
+    reply = await tools.call("s1", "web_fetch", {"url": url})
+    assert ran == [url] and reply["isError"] and "fixture page body" not in str(reply)
+    assert [p["phase"] for _, p in calls] == ["begin", "finish"]
+    assert calls[0][1]["tool"] == "web_fetch" and len(calls[0][1]["scope_ref"]) == 64
+    assert url not in str(calls) and "fixture page body" not in str(calls)
+
+
+async def test_fetch_preflight_is_outside_the_timed_call_and_consumed_once(tmp_path, monkeypatch):
+    from config import nekoclaw_settings
+    from nekoclaw.runtime.tools import web
+
+    arrived = asyncio.Event()
+    release = asyncio.Event()
+    phases = []
+    async def audit(_, payload):
+        phases.append(payload["phase"])
+        if payload["phase"] == "begin":
+            arrived.set()
+            await release.wait()
+        return {"allow": True, "receipt": "original"}
+    async def fetch(url):
+        return "fixture page"
+    monkeypatch.setattr(web, "web_fetch", fetch)
+    monkeypatch.setattr(nekoclaw_settings, "DSH_HOST_TOOL_SECONDS", 0.1)
+    tools = HostTools(HostCallbacks(execution_action=audit, native_execution_action=audit))
+    _open(tools, tmp_path)
+    arguments = {"url": "https://example.invalid/test"}
+    first = asyncio.create_task(tools.prepare_fetch("s1", "native-call", arguments))
+    await arrived.wait()
+    assert not await tools.prepare_fetch("s1", "native-call", arguments)
+    await asyncio.sleep(0.15)
+    assert not first.done()
+    release.set()
+    assert await first
+    offer = tools.offer("s1")
+    assert (await tools.call("s1", "web_fetch", arguments, call_id="native-call"))["isError"]
+    result = await tools.fetch("s1", "native-call", arguments, offer)
+    assert result["content"][0]["text"] == "fixture page"
+    repeated = await tools.fetch("s1", "native-call", arguments, offer)
+    assert repeated["isError"] and phases == ["begin", "check", "finish"]
+
+
+async def test_parallel_fetches_keep_their_own_receipts(tmp_path, monkeypatch):
+    from nekoclaw.runtime.tools import web
+
+    receipts = iter(["receipt-a", "receipt-b"])
+    checked = []
+    async def audit(_, payload):
+        if payload["phase"] == "begin":
+            return {"allow": True, "receipt": next(receipts)}
+        if payload["phase"] == "check":
+            checked.append(payload["receipt"])
+            if payload["receipt"] == "receipt-a":
+                raise OSError("fixture unavailable")
+        return {"allow": True}
+
+    async def fetch(url):
+        return "page"
+
+    monkeypatch.setattr(web, "web_fetch", fetch)
+    tools = HostTools(HostCallbacks(execution_action=audit, native_execution_action=audit))
+    _open(tools, tmp_path)
+    args = {"url": "https://example.invalid/same"}
+    for call_id in ["a", "b"]:
+        assert await tools.prepare_fetch("s1", call_id, args)
+    offer = tools.offer("s1")
+    assert not (await tools.fetch("s1", "b", args, offer))["isError"]
+    assert (await tools.fetch("s1", "a", args, offer))["isError"]
+    assert checked == ["receipt-b", "receipt-a"]
+    assert list(offer.prepared_fetches) == ["a"]  # terminal ACP update owns cancellation
+
+
+async def test_private_fetch_requires_both_host_capabilities(tmp_path, monkeypatch):
+    from nekoclaw.runtime.tools import web
+
+    async def audit(_, payload):
+        pytest.fail("a private fetch without its host bridge must not start")
+    async def fetch(url):
+        pytest.fail("the fixture provider was not authorized")
+    monkeypatch.setattr(web, "web_fetch", fetch)
+    tools = HostTools(HostCallbacks(native_execution_action=audit))
+    _open(tools, tmp_path)
+    assert (await tools.fetch("s1", "call", {"url": "https://example.invalid/"}, tools.offer("s1")))["isError"]

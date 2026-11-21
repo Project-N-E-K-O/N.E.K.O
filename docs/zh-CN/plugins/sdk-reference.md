@@ -49,7 +49,7 @@ class MyPlugin(NekoPluginBase):
 | `self.config_dir` | `Path` | `self.plugin_dir` 的兼容别名 |
 | `self.storage_dir` | `Path` | 分配给插件的用户存储根目录 |
 | `self.runtime_config_path` | `Path` | 外部运行配置文件路径 |
-| `self.metadata` | `dict` | 来自 `plugin.toml` 的插件元数据 |
+| `self.metadata` | `dict` | 目前在插件进程里恒为 `{}`（`plugin.toml` 的内容不会传进来）。读取配置用 `await self.config.dump()` |
 | `self.bus` | `SdkBusContext` | 宿主状态的 read/watch 门面；没有 publish/emit API |
 | `self.plugins` | `Plugins` | 跨插件调用辅助工具 |
 | `self.system_info` | `SystemInfo` | 宿主系统元数据 |
@@ -59,7 +59,7 @@ class MyPlugin(NekoPluginBase):
 `NekoPluginBase` 无需额外设置即可提供日志和配置：
 
 ```python
-self.logger.info("Processing request: {}", request_id)
+self.logger.info("Processing request: %s", request_id)
 timeout = await self.config.get_int("my_settings.timeout", default=30)
 ```
 
@@ -106,6 +106,8 @@ async with unwrap(await self.db.session()) as session:
 ```python
 message = self.i18n.t("greeting", name="Alice")
 ```
+
+`self.i18n.t(...)` 不跟随用户语言：不传 `locale=` 时，依次查插件的 `default_locale`、它的基础语言（例如 `fr-CA` 的 `fr`）、`en`，最后退回 `default` 参数或键名。宿主登记的面向用户的字符串（插件和入口名称、描述、schema 标签、UI 动作标签）请用 `tr("key", default="...")`，由宿主按每个用户的语言解析。
 
 ### 方法
 
@@ -183,13 +185,18 @@ cities = self.shared_path_of("weather", "cities.json")
 在运行时注册入口点（非通过装饰器）。
 
 ```python
+async def greet(name: str = "World", **_):
+    return Ok({"msg": f"Hi {name}"})
+
 self.register_dynamic_entry(
     entry_id="dynamic_greet",
-    handler=lambda name="World", **_: Ok({"msg": f"Hi {name}"}),
+    handler=greet,
     name="Dynamic Greet",
     description="A dynamically registered greeting",
 )
 ```
+
+handler 必须是 `async def` 函数：注册时只检查是否可调用，但调用 handler 不是协程函数的入口会失败，报 `Entry must be 'async def'`。
 
 #### `unregister_dynamic_entry(entry_id) -> bool`
 
@@ -215,7 +222,7 @@ self.register_static_ui("static")  # 提供 <plugin_dir>/static/index.html 服�
 
 挂载一个 `PluginRouter`，用于组织大型或按功能拆分的普通 Plugin。
 
-相关方法还有 `exclude_router(router_or_name) -> bool`、`get_router(name)` 和 `list_routers()`。Router 不能作为 manifest 的 `[plugin].entry`，而且这条挂载路径不会自动调用 `on_mount` / `on_unmount`。
+还要把每个 router 类列进插件类属性 `__routers__`：宿主的静态入口扫描只读这个列表（见 [PluginRouter](./router)）。列进去的 router 类不要再配 `prefix`，否则列表里的 ID 调不通（见[带前缀的 Router](./router#prefixed-routers)）。相关方法还有 `exclude_router(router_or_name) -> bool`、`get_router(name)` 和 `list_routers()`。Router 不能作为 manifest 的 `[plugin].entry`。`on_mount` / `on_unmount` 不会被宿主调用，不要覆盖它们。
 
 #### Hosted/静态 UI 与列表操作
 
@@ -366,7 +373,7 @@ chain.allows("memory.read")
 
 ## PluginStore（持久化存储）
 
-通过 `self.store` 访问（由宿主在插件构造时预先创建并注入，无需自己实例化）。
+通过 `self.store` 访问（由宿主在插件构造时预先创建并注入，无需自己实例化）。`plugin.toml` 里没有 `[plugin.store]` 且 `enabled = true` 时它是关闭的：关闭时 `set()` 不保存任何内容，`get()` 返回默认值。
 
 `PluginStore` 的所有方法都返回 `Result`，需用 `unwrap_or(...)` 解包。
 
@@ -399,7 +406,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `ctx.config_path` | `Path` | `plugin.toml` 的路径 |
 | `ctx.logger` | `Logger` | 日志记录器实例 |
 | `ctx.bus` | `SdkBusContext` | 宿主状态的 read/watch 门面 |
-| `ctx.metadata` | `dict` | 插件元数据 |
+| `ctx.metadata` | `dict` | 传给 `__init__` 的原始 `ctx` 没有 `metadata` 属性（读取会抛 `AttributeError`）；包装后的 `self.ctx.metadata` 返回 `{}`。读取配置用 `await self.config.dump()` |
 
 ### Bus 与 Memory
 

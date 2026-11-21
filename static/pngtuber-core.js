@@ -4054,6 +4054,7 @@
             const isCurrentLoad = () => (
                 loadGeneration === this._loadGeneration
                 && (!loadToken || loadToken === this._latestLifecycleLoadToken)
+                && (typeof options.isCurrent !== 'function' || options.isCurrent())
             );
             this.detachDragListeners();
             this.clearEmotion({ render: false });
@@ -5242,6 +5243,7 @@
         // 若继续写 DOM 会把刚显示的 Live2D 容器与画布隐藏掉。主 app 调用方不传
         // loadToken，行为与既往一致。
         const isStaleCall = () => {
+            if (typeof options.isCurrent === 'function' && !options.isCurrent()) return true;
             if (loadToken && loadToken !== pngtuberLoadSequence) return true;
             return !!(document.body?.classList.contains('model-manager-page')
                 && window._modelManagerCurrentAvatarType
@@ -5300,30 +5302,33 @@
             });
     }
 
-    async function loadPNGTuberAvatar(config) {
+    async function loadPNGTuberAvatar(config, options = {}) {
         const loadToken = ++pngtuberLoadSequence;
+        const isCurrentLoad = () => loadToken === pngtuberLoadSequence
+            && (typeof options.isCurrent !== 'function' || options.isCurrent());
+        if (!isCurrentLoad()) return window.pngtuberManager || null;
         window.dispatchEvent(new CustomEvent('pngtuber-model-loading', {
             detail: { loadToken }
         }));
         try {
-            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
-            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager || null;
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken, isCurrent: isCurrentLoad });
+            if (!isCurrentLoad()) return window.pngtuberManager || null;
             if (!window.pngtuberManager) {
                 window.pngtuberManager = new PNGTuberManager();
             }
-            const loaded = await window.pngtuberManager.load(config || {}, { loadToken });
-            if (!loaded || loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            const loaded = await window.pngtuberManager.load(config || {}, { loadToken, isCurrent: isCurrentLoad });
+            if (!loaded || !isCurrentLoad()) return window.pngtuberManager;
             if (document.body?.classList.contains('model-manager-page')
                 && window._modelManagerCurrentAvatarType
                 && window._modelManagerCurrentAvatarType !== 'pngtuber') {
                 window.pngtuberManager.hide();
                 return window.pngtuberManager;
             }
-            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
-            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken, isCurrent: isCurrentLoad });
+            if (!isCurrentLoad()) return window.pngtuberManager;
             window.pngtuberManager.show();
-            await hideOtherAvatarRuntimesForPNGTuber({ loadToken });
-            if (loadToken !== pngtuberLoadSequence) return window.pngtuberManager;
+            await hideOtherAvatarRuntimesForPNGTuber({ loadToken, isCurrent: isCurrentLoad });
+            if (!isCurrentLoad()) return window.pngtuberManager;
             window.dispatchEvent(new CustomEvent('pngtuber-model-loaded', {
                 detail: { loadToken }
             }));

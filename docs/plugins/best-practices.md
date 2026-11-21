@@ -98,12 +98,23 @@ async def batch_job(self, items: list, **_):
 
 ## Input validation
 
-Use `input_schema` for automatic JSON Schema validation, or `params` for Pydantic models:
+Use a Pydantic model with `params=` when input must be validated: the plugin runtime validates the arguments with the model before your handler runs and rejects invalid input. This applies to calls dispatched through the runtime (from the host, other plugins, or UI); calling the method directly inside your plugin (`await self.fetch(...)`) skips validation. A bare `input_schema` mapping is only published (to the UI, the Agent, and other callers); it is **not** validated at runtime. `params` and `input_schema` are mutually exclusive: passing both raises `ValueError`.
 
 ```python
-# Option A: JSON Schema
+# Option A: Pydantic model (validated at call time, schema generated from the model)
+from pydantic import BaseModel, Field
+
+class UserInput(BaseModel):
+    email: str = Field(..., description="User email")
+    age: int = Field(..., ge=0, le=150)
+
+@plugin_entry(id="validated", params=UserInput)
+async def validated(self, email: str, age: int, **_):
+    return Ok({"email": email, "age": age})
+
+# Option B: JSON Schema (published only, not validated: check the values yourself)
 @plugin_entry(
-    id="validated",
+    id="described",
     input_schema={
         "type": "object",
         "properties": {
@@ -113,18 +124,11 @@ Use `input_schema` for automatic JSON Schema validation, or `params` for Pydanti
         "required": ["email", "age"]
     }
 )
-async def validated(self, email: str, age: int, **_):
-    return Ok({"email": email, "age": age})
-
-# Option B: Pydantic model (auto-generates schema)
-from pydantic import BaseModel, Field
-
-class UserInput(BaseModel):
-    email: str = Field(..., description="User email")
-    age: int = Field(..., ge=0, le=150)
-
-@plugin_entry(id="validated_v2", params=UserInput)
-async def validated_v2(self, email: str, age: int, **_):
+async def described(self, email: str = "", age: int = -1, **_):
+    if not isinstance(email, str) or "@" not in email:
+        return Err(SdkError("a valid email is required"))
+    if not isinstance(age, int) or isinstance(age, bool) or not 0 <= age <= 150:
+        return Err(SdkError("age must be an integer from 0 to 150"))
     return Ok({"email": email, "age": age})
 ```
 
@@ -171,9 +175,12 @@ Clean up resources in the shutdown lifecycle:
 ```python
 @lifecycle(id="shutdown")
 async def on_shutdown(self, **_):
-    # Close network connections
-    if self.session:
-        await self.session.close()
+    # Stop threads you started yourself (e.g. a threading.Event they watch).
+    # Do not close async HTTP clients/sessions here: shutdown runs in its own
+    # event loop, so create them per call inside the entry instead.
+    stop = getattr(self, "_worker_stop", None)
+    if stop is not None:
+        stop.set()
 
     # No need to flush self.store: each set() commits synchronously.
     # If you opened the store yourself, close it here (optional):
@@ -223,7 +230,7 @@ Before shipping your plugin:
 
 - [ ] All entry points return `Ok`/`Err` (not raw dicts or exceptions)
 - [ ] Lifecycle hooks are added only for resources that actually need setup or cleanup
-- [ ] Entry parameters have an inferred schema, explicit `input_schema`, or a Pydantic `params` model as appropriate
+- [ ] Entries that need validated input use a Pydantic `params` model (an explicit `input_schema` is only published, not validated)
 - [ ] Handler signatures declare what they consume; `**_` is used only when extra fields are intentional
 - [ ] Normal metadata uses the logger; raw privacy-sensitive content never does
 - [ ] Shared state is protected with locks if timers are used

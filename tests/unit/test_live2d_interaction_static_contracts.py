@@ -191,7 +191,7 @@ def test_live2d_random_click_prefers_motion_and_uses_expression_as_fallback():
         "motionManager.stopAllMotions();\n"
         "        stopped = true;\n"
         "        if (typeof this._resetActiveMotionParameters === 'function') {\n"
-        "            this._resetActiveMotionParameters({ preserveExpression: true });"
+        "            this._resetActiveMotionParameters({ preserveExpression: true, smooth: true });"
     ) in stop_action
     assert "triggerLog.motions.push({" in click_effect
     assert "triggerLog.expressions.push({ emotion, file: choiceFile, fallbackFor: 'motion' });" in click_effect

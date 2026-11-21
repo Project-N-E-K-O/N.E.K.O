@@ -73,4 +73,4 @@ Coding Agent（Codex、DeepSeek Harness、Claude Code、Cursor、Trae など）�
 - [サンプル](./examples) — 完全に動作するサンプル
 - [Adapter と並行処理](./advanced) — Adapter ゲートウェイ、非同期エントリー、スレッドセーフティ
 - [LLM ツール呼び出し](./tool-calling) — LLM が会話中に呼び出せるツールをプラグインから登録する
-- [ベストプラクティス](./best-practices) — エラーハンドリング、テスト、コード構成
+- [ベストプラクティス](./best-practices) — エラーハンドリング、コード構成

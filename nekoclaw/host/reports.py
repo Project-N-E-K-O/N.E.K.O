@@ -93,6 +93,13 @@ def describe_permission(question: dict[str, Any], lang: str, *, max_tokens: int 
     answers = f" ({' / '.join(offered)})" if offered else ""
     room = PERMISSION_SUBJECT_MAX_TOKENS
     if max_tokens is not None:
+        if question.get("category") == "managed_delivery" or (question.get("detail") or {}).get("content_to"):
+            full = _permission_subject(question, lang, room) + answers
+            if count_tokens(full) > max_tokens:
+                from config.prompts.prompts_nekoclaw_brain import MANAGED_DELIVERY_FULL_QUESTION
+
+                return _loc(MANAGED_DELIVERY_FULL_QUESTION, lang)
+            return full
         unquoted = _permission_subject({**question, "detail": {}, "key": None}, lang, 0)
         room = min(room, max(PERMISSION_SUBJECT_MIN_TOKENS, max_tokens - count_tokens(unquoted + answers)))
     return _permission_subject(question, lang, room) + answers
@@ -113,6 +120,8 @@ def _permission_subject(question: dict[str, Any], lang: str, max_tokens: int) ->
     categories = _loc(PERMISSION_CATEGORY_TEXTS, lang)
     detail = question.get("detail") if isinstance(question.get("detail"), dict) else {}
     category = str(question.get("category") or "other")
+    if category == "managed_delivery" and detail.get("direction") in ("arguments", "result", "value", "content"):
+        category += "_" + detail["direction"]
     specific = str(
         detail.get("command")
         or detail.get("path")
@@ -131,7 +140,15 @@ def _permission_subject(question: dict[str, Any], lang: str, max_tokens: int) ->
         specific = truncate_head_tail_tokens(specific, kept - kept // 2 + mark_tokens, kept // 2, separator=mark)
     # What a question about usage states: how much was used, and how much more is asked for.
     amounts = {name: str(detail.get(name) or "") for name in ("used", "more")}
-    return categories.get(category, categories["other"]).format(detail=specific, **amounts).strip()
+    action = categories.get(category, categories["other"]).format(detail=specific, **amounts).strip()
+    if detail.get("content_to"):
+        recipient = str(detail["content_to"])
+        if count_tokens(recipient) > max_tokens // 2:
+            room = max_tokens // 4
+            recipient = truncate_head_tail_tokens(recipient, room, room, separator=_loc(PERMISSION_DETAIL_CUT_MARK, lang))
+        destination = categories["managed_delivery_content"].format(detail=recipient)
+        return f"{action} · {destination}"
+    return action
 
 
 def tokens_text(tokens: int) -> str:
@@ -164,6 +181,14 @@ def render_question(title: str, question: dict[str, Any], lang: str) -> str:
         what = _permission_subject(question, lang, PERMISSION_SUBJECT_MAX_TOKENS)
         offered = [names[option] for option in question.get("options") or [] if option in names]
         text = words["permission"].format(title=title, what=what, options=" / ".join(offered))
+        if question.get("category") == "managed_delivery" or (question.get("detail") or {}).get("content_to"):
+            from utils.tokenize import count_tokens
+
+            if count_tokens(text) > QUESTION_TEXT_MAX_TOKENS:
+                text = words["permission"].format(title="", what=what, options=" / ".join(offered))
+                if count_tokens(text) > QUESTION_TEXT_MAX_TOKENS:
+                    what = _permission_subject(question, lang, PERMISSION_SUBJECT_MAX_TOKENS // 2)
+                    text = words["permission"].format(title="", what=what, options=" / ".join(offered))
     elif kind == "confirmation":
         text = words["confirm"].format(title=title, question=str(question.get("question") or "").strip())
     else:

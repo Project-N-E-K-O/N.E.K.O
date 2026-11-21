@@ -1662,7 +1662,7 @@ def test_pngtuber_load_announces_identity_change_before_async_setup():
 def test_pngtuber_loader_finishes_loading_state_on_every_exit():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     loader_block = source[
-        source.index("    async function loadPNGTuberAvatar(config) {"):
+        source.index("    async function loadPNGTuberAvatar("):
         source.index("    function playPNGTuberAnimation")
     ]
 
@@ -1678,17 +1678,19 @@ def test_pngtuber_loader_binds_lifecycle_events_to_one_load_token():
         source.index("        stateToSrc(state)")
     ]
     loader_block = source[
-        source.index("    async function loadPNGTuberAvatar(config) {"):
+        source.index("    async function loadPNGTuberAvatar("):
         source.index("    function playPNGTuberAnimation")
     ]
 
     assert "let pngtuberLoadSequence = 0;" in source
     assert "const loadToken = ++pngtuberLoadSequence;" in loader_block
-    assert "await window.pngtuberManager.load(config || {}, { loadToken });" in loader_block
+    assert "await window.pngtuberManager.load(config || {}, { loadToken, isCurrent: isCurrentLoad });" in loader_block
     assert "const loadToken = Number(options.loadToken) || 0;" in load_block
     assert "if (!isCurrentLoad()) return false;" in load_block
-    assert loader_block.count("if (loadToken !== pngtuberLoadSequence)") == 3
-    assert "if (!loaded || loadToken !== pngtuberLoadSequence)" in loader_block
+    assert "loadToken === pngtuberLoadSequence" in loader_block
+    assert "typeof options.isCurrent !== 'function' || options.isCurrent()" in loader_block
+    assert loader_block.count("if (!isCurrentLoad())") == 4
+    assert "if (!loaded || !isCurrentLoad())" in loader_block
     assert load_block.count("detail: { loadToken }") == 1
     assert loader_block.count("detail: { loadToken }") == 3
 

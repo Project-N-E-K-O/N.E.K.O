@@ -29,7 +29,7 @@ def test_live2d_peek_restore_anchor_is_consumed_on_return():
     return_block = app_ui_source.split("const handleReturnClick", 1)[1]
 
     restore_call = "window.nekoLive2DPeek.restoreAnchor(live2DPeekRestoreAnchor)"
-    settle_call = "settleReturnedModelBounds(returnModelWasMoved)"
+    settle_call = "settleReturnedModelBounds(returnModelWasMoved,"
     complete_dispatch = "new CustomEvent('neko:cat-return-complete'"
 
     assert "let live2DPeekRestoreAnchor = null;" in return_block

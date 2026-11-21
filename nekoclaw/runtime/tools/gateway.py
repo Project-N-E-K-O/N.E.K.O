@@ -41,7 +41,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from config.nekoclaw_settings import GATEWAY_COMPACTIONS_META_KEY, GATEWAY_REPLY_META_KEY
+from config.nekoclaw_settings import (
+    GATEWAY_COMMISSION_TOOL_META_KEY,
+    GATEWAY_COMPACTIONS_META_KEY,
+    GATEWAY_DEVICE_INTENT_META_KEY,
+    GATEWAY_IDLE_DEVICE_CYCLE_META_KEY,
+    GATEWAY_REPLY_META_KEY,
+)
 from nekoclaw.runtime.loop.messages import ImageContent, TextContent
 from nekoclaw.runtime.loop.tools import AgentTool, AgentToolResult
 from nekoclaw.runtime.tools.base import ToolCallInfo, ToolError, define_tool, run_cancellable
@@ -118,6 +124,9 @@ class GatewayClient:
         # handed over before a summary (a group of tools and how they are
         # used) is no longer in the conversation after it.
         self.compactions = 0
+        self.commission_tools: set[str] = set()
+        self.device_groups: dict[str, str] = {}
+        self.device_list_dirty = False
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -183,9 +192,37 @@ class GatewayClient:
         if isinstance(result, dict) and isinstance(result.get("protocolVersion"), str):
             self._protocol_version = result["protocolVersion"]
         await self.notify("notifications/initialized")
-        listed = await self.request("tools/list", {}, read_timeout=HANDSHAKE_TIMEOUT_SECONDS)
+        offered = await self.list_tools()
+        self.device_groups = {
+            tool["name"]: group for tool in offered
+            if tool["name"] in self.commission_tools
+            and isinstance(group := tool["_meta"].get(GATEWAY_DEVICE_INTENT_META_KEY), str)
+        }
+        return offered
+
+    async def list_tools(
+        self, *, compactions: int | None = None, wanted: tuple[str, ...] = (), idle_device_cycle: bool = False
+    ) -> list[dict[str, Any]]:
+        meta: dict[str, Any] = {}
+        if compactions is not None:
+            meta[GATEWAY_COMPACTIONS_META_KEY] = compactions
+        if wanted:
+            meta[GATEWAY_DEVICE_INTENT_META_KEY] = list(wanted)
+        if idle_device_cycle:
+            meta[GATEWAY_IDLE_DEVICE_CYCLE_META_KEY] = True
+        listed = await self.request("tools/list", {"_meta": meta} if meta else {}, read_timeout=HANDSHAKE_TIMEOUT_SECONDS)
         tools = listed.get("tools") if isinstance(listed, dict) else None
-        return [tool for tool in tools or [] if isinstance(tool, dict) and tool.get("name")]
+        if not isinstance(tools, list):
+            raise GatewayError("tools/list did not return a list of tools")
+        offered = [
+            tool for tool in tools
+            if isinstance(tool, dict) and isinstance(tool.get("name"), str) and tool["name"]
+        ]
+        self.commission_tools = {
+            tool["name"] for tool in offered
+            if isinstance(tool.get("_meta"), dict) and tool["_meta"].get(GATEWAY_COMMISSION_TOOL_META_KEY) is True
+        }
+        return offered
 
     def next_reply(self) -> None:
         """Note that the model has answered: the calls made from now on were written in that reply.
@@ -207,6 +244,9 @@ class GatewayClient:
         result = await self.request("tools/call", params, read_timeout=None)
         if not isinstance(result, dict):
             return GatewayResult("", (), False)
+        update = result.get("_meta")
+        if isinstance(update, dict) and update.get(GATEWAY_DEVICE_INTENT_META_KEY) in self.device_groups.values():
+            self.device_list_dirty = True
         parts: list[str] = []
         images: list[ImageContent] = []
         dropped = 0

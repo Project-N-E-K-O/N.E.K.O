@@ -559,11 +559,97 @@ def _looks_like_anthropic_messages_url(url: str | None) -> bool:
 
 def _normalize_provider_type(profile: dict[str, Any] | None, url: str | None = None) -> str:
     provider_type = str((profile or {}).get("provider_type") or "openai_compatible").strip().lower()
-    if provider_type not in ("openai_compatible", "anthropic", "websocket", "tts"):
+    if provider_type not in ("openai_compatible", "anthropic", "websocket", "tts", "decision"):
         return "openai_compatible"
     if provider_type == "openai_compatible" and _looks_like_anthropic_messages_url(url):
         return "anthropic"
     return provider_type
+
+
+async def _test_decision_endpoint(
+    url: str,
+    api_key: str,
+    model: str = "",
+    protocol: str = "",
+    is_free: bool = False,
+    profile_protocol: str = "",
+    profile_model: str = "",
+) -> dict:
+    """Test a native Decisions API endpoint with a minimal single-question probe."""
+    import httpx
+    from utils.decision_client import (
+        BoolQuestion,
+        DecisionClient,
+        DecisionProtocolError,
+        infer_decision_protocol,
+        is_native_decision_protocol,
+    )
+
+    resolved_protocol = str(protocol or "").strip().lower()
+    if not is_native_decision_protocol(resolved_protocol):
+        resolved_protocol = infer_decision_protocol(
+            model,
+            url,
+            profile_protocol=profile_protocol,
+            profile_model=profile_model,
+        )
+    if not is_native_decision_protocol(resolved_protocol):
+        if _looks_like_anthropic_messages_url(url):
+            return await _test_anthropic(url, api_key, model=model, is_free=is_free)
+        return await _test_openai_compatible(url, api_key, model=model, is_free=is_free)
+
+    if not str(model or "").strip():
+        return {"success": False, "error": "缺少模型 ID", "error_code": "missing_params"}
+
+    client = DecisionClient()
+    try:
+        resp = await client.decide(
+            state="ping",
+            questions={"ok": BoolQuestion(instructions="Is this a connectivity check?")},
+            config={
+                "model": model,
+                "base_url": url,
+                "api_key": api_key,
+                "decision_protocol": resolved_protocol,
+                "decision_url": url if url.rstrip("/").lower().endswith(("/systemone", "/decisions")) else "",
+            },
+            timeout=10.0,
+            allow_fallback=False,
+            respect_cooldown=False,
+            call_type="connectivity_test",
+        )
+        ok_answer = (resp.answers or {}).get("ok") if resp is not None else None
+        if ok_answer is None or not isinstance(getattr(ok_answer, "value", None), bool):
+            return {
+                "success": False,
+                "error": "决策模型未返回有效应答",
+                "error_code": "invalid_response",
+            }
+        return {"success": True}
+    except DecisionProtocolError as e:
+        status = e.status_code
+        if status in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        if status == 429:
+            return {"success": True}
+        if is_free and status == 400:
+            return {"success": True}
+        if status is not None:
+            return {"success": False, "error": f"HTTP {status}", "error_code": "unknown"}
+        return {"success": False, "error": str(e), "error_code": "unknown"}
+    except (httpx.TimeoutException, TimeoutError, asyncio.TimeoutError):
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except ssl.SSLError:
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    except httpx.ConnectError as e:
+        err_str = str(e).lower()
+        if "getaddrinfo" in err_str or "name or service not known" in err_str or "nodename nor servname" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        if "ssl" in err_str or "certificate" in err_str:
+            return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+        return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+    except Exception as e:
+        return {"success": False, "error": str(e), "error_code": "unknown"}
 
 
 async def _test_connectivity_candidates(
@@ -574,6 +660,8 @@ async def _test_connectivity_candidates(
     is_free: bool,
     sub_type: str = "",
     voice_id: str = "",
+    profile_protocol: str = "",
+    profile_model: str = "",
 ) -> dict:
     """Probe the candidate URLs concurrently; return the first that succeeds.
 
@@ -611,6 +699,16 @@ async def _test_connectivity_candidates(
                 result = {"success": False, "error": "不支持的 TTS 探测协议", "error_code": "unsupported"}
         elif provider_type == "anthropic":
             result = await _test_anthropic(candidate_url, api_key, model=model, is_free=is_free)
+        elif provider_type == "decision":
+            result = await _test_decision_endpoint(
+                candidate_url,
+                api_key,
+                model=model,
+                protocol=sub_type,
+                is_free=is_free,
+                profile_protocol=profile_protocol,
+                profile_model=profile_model,
+            )
         else:
             result = await _test_openai_compatible(candidate_url, api_key, model=model, is_free=is_free)
         return result
@@ -717,7 +815,7 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
     if core_cfg.get("enableCustomApi", False):
         model_types = [
             "conversation", "summary", "gameMain", "gameSummary", "correction", "emotion",
-            "vision", "agent", "omni", "tts",
+            "decision", "vision", "agent", "omni", "tts",
         ]
         def _add_model_target(model_type: str, provider: str, seen: set[str] | None = None) -> None:
             seen = seen or set()
@@ -865,6 +963,9 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
     All requests have a 10-second timeout. The endpoint is async, so it naturally supports concurrent requests without blocking.
     """
     api_key_stripped = (req.api_key or "").strip()
+    mode1_sub_type = ""
+    profile_protocol = ""
+    profile_model = ""
 
     # --- Mode 1: Built-in provider (resolve config from api_providers.json) ---
     if req.provider_key and req.provider_scope:
@@ -894,10 +995,54 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             provider_type = _normalize_provider_type(profile, url_stripped)
             is_free = profile.get("is_free_version", False)
             _source_label = profile.get("name", provider_key)
+        elif scope == "decision":
+            from utils.decision_client.schema import (
+                infer_decision_protocol,
+                is_native_decision_protocol,
+            )
+
+            providers = api_config.get("assist_api_providers", {})
+            profile = providers.get(provider_key, {})
+            profile_openrouter_url = profile.get("openrouter_url", "")
+            profile_decision_url = str(profile.get("decision_url") or "").strip()
+            profile_model = str(
+                profile.get("decision_model") or profile.get("conversation_model") or ""
+            ).strip()
+            profile_protocol = str(profile.get("decision_protocol") or "").strip().lower()
+            model = (req.model or "").strip() or profile_model
+            is_free = profile.get("is_free_version", False)
+            _source_label = f"{profile.get('name', provider_key)}（决策模型）"
+
+            # Match runtime core_config.py: infer protocol from the provider's chat
+            # base URL (profile_openrouter_url) + selected model first, and only pick
+            # profile_decision_url when the resolved protocol is native. Otherwise a
+            # regular chat model override on Gemini/OpenRouter/Qwen would be forced onto
+            # the native endpoint by profile_decision_url's /decisions or /systemone suffix.
+            resolved_protocol = infer_decision_protocol(
+                model,
+                profile_openrouter_url,
+                profile_protocol=profile_protocol,
+                profile_model=profile_model,
+            )
+            if is_native_decision_protocol(resolved_protocol):
+                url_stripped = profile_decision_url or profile_openrouter_url
+                url_candidates = (
+                    [profile_decision_url]
+                    if profile_decision_url
+                    else _normalize_provider_url_candidates(profile, "openrouter_url")
+                )
+                provider_type = "decision"
+                mode1_sub_type = resolved_protocol
+            else:
+                url_stripped = profile_openrouter_url
+                url_candidates = _normalize_provider_url_candidates(profile, "openrouter_url")
+                provider_type = _normalize_provider_type(profile, url_stripped)
         else:
             return {"success": False, "error": "无效的 provider_scope", "error_code": "missing_params"}
 
         if not url_stripped:
+            if scope == "decision":
+                return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
             # Provider has no core_url (e.g. Gemini uses SDK, not raw WebSocket).
             # Fall back to the assist profile's OpenAI-compatible endpoint to verify the key.
             assist_providers = api_config.get("assist_api_providers", {})
@@ -914,7 +1059,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
         elif req.url and req.url.strip():
             override_url = req.url.strip()
-            if scope != "assist" or provider_key != "mimo" or not _is_mimo_token_plan_url(override_url):
+            if scope not in ("assist", "decision") or provider_key != "mimo" or not _is_mimo_token_plan_url(override_url):
                 return {"success": False, "error": "无效的 provider URL override", "error_code": "missing_params"}
             url_stripped = override_url
             url_candidates = [url_stripped]
@@ -932,9 +1077,9 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
         _source_label = _identify_provider_label(url_stripped, is_free)
 
     # sub_type is allowed only for Mode 2 (custom URL); for Mode 1 built-in providers,
-    # api_providers.json determines provider_type, which must not be overridden by the frontend's sub_type
-    # (#1764, sixth review round).
-    sub_type = ""
+    # api_providers.json determines provider_type/sub_type, which must not be overridden
+    # by the frontend's sub_type (#1764, sixth review round).
+    sub_type = mode1_sub_type
     if not (req.provider_key and req.provider_scope):
         sub_type = (req.sub_type or "").strip().lower()
 
@@ -947,6 +1092,8 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             is_free,
             sub_type=sub_type,
             voice_id=(req.voice_id or "").strip(),
+            profile_protocol=profile_protocol,
+            profile_model=profile_model,
         )
     except Exception as e:
         logger.exception("[ConnectivityTest] 未预期的异常")

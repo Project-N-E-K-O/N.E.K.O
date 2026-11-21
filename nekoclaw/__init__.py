@@ -21,3 +21,6 @@ offers task agents (``nekoclaw.builtin``: keyboard and mouse, browser).
 Importing any module here starts no process, opens no connection and touches
 no data directory.
 """
+
+# Local session-state tools provided by both runtimes, with host-managed admission.
+TASK_CONTROL_TOOLS = frozenset({"todo_write", "create_goal", "get_goal", "update_goal"})

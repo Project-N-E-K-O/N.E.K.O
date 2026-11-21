@@ -50,6 +50,12 @@ model with a small window is not sent requests it must refuse. Nothing else
 tells a model's window: the configuration has no field for it, and no table
 of models is kept here.
 
+How long a session is idle before the host sums it up is kept here too
+(``idle_compact_after``): how long a provider keeps the head of a request in
+its cache is a matter of the provider and the model, and that is what the time
+is set against. What the user set wins; without it the setting
+``TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS`` counts.
+
 Stored in ``<data root>/nekoclaw/model_capabilities.json``. It is read once,
 on first use, and never at startup. A file that cannot be read counts as
 empty: the worst that follows is one refused request, which is how it would
@@ -78,6 +84,9 @@ _WINDOW_FIELDS = (
     "compact_at",
     "window_reminded",
     "window_reminded_at",
+    # Not of the window, but a number the user set for the model that the
+    # refusal of pictures is not to take with it.
+    "idle_compact_after",
 )
 
 
@@ -336,6 +345,66 @@ class ModelCapabilityStore:
             await self._save(models)
         return await self.compact_at(base_url, model)
 
+    @staticmethod
+    def _idle_time(value: Any) -> float | None:
+        """Return a time read from an entry, or None when it is not a usable number of seconds."""
+        from config.nekoclaw_settings import (
+            TASK_AGENT_IDLE_COMPACT_AFTER_MAX_SECONDS,
+            TASK_AGENT_IDLE_COMPACT_AFTER_MIN_SECONDS,
+        )
+
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        # The bounds first, and not ``math.isfinite``: that turns an integer into a float, which one
+        # of 400 digits does not survive. A number that is no number (nan) is outside them as well.
+        if not TASK_AGENT_IDLE_COMPACT_AFTER_MIN_SECONDS <= value <= TASK_AGENT_IDLE_COMPACT_AFTER_MAX_SECONDS:
+            return None
+        return float(value)
+
+    async def idle_compact_after(self, base_url: Any, model: Any) -> float:
+        """Return how long a session with this model is idle before the host sums it up, in seconds.
+
+        What the user set for the model, else the setting. A number in the
+        file that is no usable time (edited by hand) counts as not set.
+        """
+        from config.nekoclaw_settings import TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS
+
+        entry = (await self._loaded()).get(model_key(base_url, model))
+        set_by_user = self._idle_time((entry or {}).get("idle_compact_after"))
+        return set_by_user if set_by_user is not None else float(TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS)
+
+    async def set_idle_compact_after(self, base_url: Any, model: Any, seconds: float | None) -> float:
+        """Set how long sessions with this model are idle before the host sums them up; None goes back to the setting.
+
+        Returns what is used from now on (``idle_compact_after``). A
+        session that is already waiting for its time keeps the time it was
+        given; the next one that is let go gets the new one.
+        """
+        if seconds is not None and self._idle_time(seconds) is None:
+            from config.nekoclaw_settings import (
+                TASK_AGENT_IDLE_COMPACT_AFTER_MAX_SECONDS,
+                TASK_AGENT_IDLE_COMPACT_AFTER_MIN_SECONDS,
+            )
+
+            raise ValueError(
+                "the time a session is idle before it is summed up is between "
+                f"{TASK_AGENT_IDLE_COMPACT_AFTER_MIN_SECONDS:g} and {TASK_AGENT_IDLE_COMPACT_AFTER_MAX_SECONDS:g} seconds"
+            )
+        models = await self._loaded()
+        key = model_key(base_url, model)
+        async with self._lock:
+            entry = dict(models.get(key) or {})
+            if seconds is None:
+                entry.pop("idle_compact_after", None)
+            else:
+                entry["idle_compact_after"] = self._idle_time(seconds)
+            if entry:
+                models[key] = entry
+            else:
+                models.pop(key, None)
+            await self._save(models)
+        return await self.idle_compact_after(base_url, model)
+
     async def claim_window_reminder(self, base_url: Any, model: Any) -> int | None:
         """Return the window the user is to be told of for this model, to whoever asks first. Once.
 
@@ -395,7 +464,10 @@ class ModelCapabilityStore:
         ``set`` (what the user set, or None), and ``learned`` with ``learned_at`` and
         ``lapses_at`` when a provider stated one that is still believed.
         ``compact_at`` (the length a conversation is summed up from) and
-        ``compact_at_set`` (what the user set for it, or None). ``reminded``
+        ``compact_at_set`` (what the user set for it, or None).
+        ``idle_compact_after`` (how long a session is idle before it is
+        summed up, in seconds) and ``idle_compact_after_set`` (what the
+        user set for it, or None). ``reminded``
         and ``reminded_at`` when the user was told that the model's window
         is smaller than was assumed: the window they were told of.
         """
@@ -408,6 +480,8 @@ class ModelCapabilityStore:
             "set": self._tokens((entry or {}).get("context_window")),
             "compact_at": await self.compact_at(base_url, model),
             "compact_at_set": self._point((entry or {}).get("compact_at")),
+            "idle_compact_after": await self.idle_compact_after(base_url, model),
+            "idle_compact_after_set": self._idle_time((entry or {}).get("idle_compact_after")),
         }
         if entry is not None and entry.get("window_reminded_at") is not None:
             described["reminded"] = entry.get("window_reminded")
