@@ -790,7 +790,7 @@
     function chooseSpineResource(payload) {
         return new Promise((resolve) => {
             const dialog = document.createElement('div');
-            dialog.className = 'emote-confirm';
+            dialog.className = 'emote-confirm emote-template-resource-choice';
             dialog.setAttribute('role', 'dialog');
             dialog.setAttribute('aria-modal', 'true');
             const card = document.createElement('div');
@@ -5681,7 +5681,7 @@
         const main = document.querySelector('.emote-maker-page');
         const controls = new Map();
         const allowed = (target) => target instanceof Element && Boolean(target.closest(
-            '[data-neko-window-control], #emote-maker-close, a[download][href^="blob:"]'
+            '[data-neko-window-control], #emote-maker-close, a[download][href^="blob:"], .emote-template-resource-choice'
             + (groupExportBusy ? ', #export-group-open-btn' : ''),
         ));
         const disableControls = () => {
@@ -5739,7 +5739,8 @@
         }
         let settle = null;
         const promise = new Promise((resolve, reject) => { settle = { resolve, reject }; });
-        stageQueue.push({ key, priority, kind, task, resolve: settle.resolve, reject: settle.reject });
+        stageQueue.push({ key, priority, kind, task, generation: spineRendererGeneration,
+            resolve: settle.resolve, reject: settle.reject });
         stagePending.set(key, promise);
         // 队列自己消化异常（失败就不缓存，下次重试），这里只负责让 promise 被处理过
         promise.catch(() => []).then(() => {
@@ -5758,6 +5759,9 @@
                 const job = stageQueue.shift();
                 const unlock = job.kind === 'export' ? lockExportEditing() : () => {};
                 try {
+                    if (job.kind === 'export' && job.generation !== spineRendererGeneration) {
+                        throw new Error('template_changed');
+                    }
                     job.resolve(await job.task());
                 } catch (error) {
                     job.reject(error);
@@ -6620,7 +6624,7 @@
             const rawName = archiveResponse.headers.get('X-Archive-Filename') || '';
             const fileName = rawName ? decodeURIComponent(rawName) : 'template.zip';
             const file = new File([blob], fileName, { type: 'application/zip' });
-            return await importTemplateFile(file, {
+            return await importTemplateFileNow(file, {
                 displayName: builtinPackage ? '' : templateLibraryModule.entryLabel(entry) || '',
                 fromArchive: true,
                 restoreKey: key,
@@ -6648,8 +6652,18 @@
      * 那套校验（只接受仍然存在的槽位名等）不该在库里再写第二份。
      */
     function applyTemplateFromRegistry(key) {
-        return queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 20, 'template',
-            () => applyTemplateFromRegistryNow(key));
+        return queueTemplateChange(() => applyTemplateFromRegistryNow(key));
+    }
+
+    async function queueTemplateChange(task) {
+        // Block export requests before they snapshot the old template. Use the
+        // export priority so already queued exports finish before activation.
+        const unlock = lockExportEditing();
+        try {
+            return await queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'template', task);
+        } finally {
+            unlock();
+        }
     }
 
     function applyTemplateFromRegistryNow(key) {
@@ -6701,23 +6715,25 @@
         if (!templateLibraryModule || !key || packBusy || pendingTemplateRemovals.has(key)) return;
         if (key === currentTemplateKey()) return;
         if (!findTemplateLibraryEntry(key)) return;
-        if (await applyTemplateFromRegistry(key)) {
-            showToast(t('emoteMaker.templateSwitched'));
-            return;
-        }
-        // 内存里没有（重启过）就先试本地副本：有副本就不该再让用户去认一遍路径。
-        // 旧条目第一次没有副本，走完重新定位导入后副本自然就有了。
-        if (await tryRestoreTemplateFromArchive(key)) {
-            showToast(t('emoteMaker.templateSwitched'));
-            return;
-        }
-        if (builtinTemplates.has(key)) {
-            reportImportFailure(new Error('builtin-template-load-failed'));
-            return;
-        }
-        if (!pendingTemplateRemovals.has(key) && templateLibraryModule.find(templateLibraryState, key)) {
-            chooseTemplateArchive();
-        }
+        const needsArchive = await queueTemplateChange(async () => {
+            if (applyTemplateFromRegistryNow(key)) {
+                showToast(t('emoteMaker.templateSwitched'));
+                return;
+            }
+            // Keep archive loading in the same transaction as activation.
+            if (await tryRestoreTemplateFromArchive(key)) {
+                showToast(t('emoteMaker.templateSwitched'));
+                return;
+            }
+            if (builtinTemplates.has(key)) {
+                reportImportFailure(new Error('builtin-template-load-failed'));
+                return;
+            }
+            if (!pendingTemplateRemovals.has(key) && templateLibraryModule.find(templateLibraryState, key)) {
+                return true;
+            }
+        });
+        if (needsArchive) chooseTemplateArchive();
     }
 
     /** 页内确认框：window.confirm 的默认样式和这一页毫不相干，插值也归这里管。 */
@@ -7249,8 +7265,9 @@
     }
 
     async function bakePackJobs(jobs, preview = {}) {
+        const generation = preview.generation ?? spineRendererGeneration;
         return queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'export',
-            () => bakePackJobsNow(jobs, preview));
+            () => generation === spineRendererGeneration ? bakePackJobsNow(jobs, preview) : []);
     }
 
     async function bakePackJobsNow(jobs, preview = {}) {
@@ -7452,6 +7469,7 @@
     }
 
     async function buildPngtuberPackage() {
+        const generation = spineRendererGeneration;
         const packFormat = state.packFormat;
         const packModule = window.NekoEmotePngtuberPack;
         if (!packModule || !window.NekoEmoteGifEncoder || !hasSpineRenderer()) {
@@ -7554,7 +7572,7 @@
         setPackBusy(true);
         try {
             await stageImagesReady;
-            const baked = await bakePackJobs(jobs, { format: packFormat });
+            const baked = await bakePackJobs(jobs, { format: packFormat, generation });
             if (!baked.length) {
                 showToast(t('emoteMaker.packZipFailed'));
                 return null;
@@ -8369,8 +8387,7 @@
      * 决定要不要退回下一条路，所以失败路径也必须返回 false 而不是静默。
      */
     function importTemplateFile(file, options = {}) {
-        return queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 20, 'template',
-            () => importTemplateFileNow(file, options));
+        return queueTemplateChange(() => importTemplateFileNow(file, options));
     }
 
     async function importTemplateFileNow(file, {

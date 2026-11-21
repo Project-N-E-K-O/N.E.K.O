@@ -24,6 +24,7 @@ def editor(page, running_server):
         applyTemplateFromRegistry, currentTemplateKey, setPackBusy, buildPngtuberPackage, flatStates, exportGroup,
         captureStageSource, openStateStage,
         renderer: () => spineRenderer,
+        generation: () => spineRendererGeneration,
     };
 """
     assert source.count(marker) == 1
@@ -569,6 +570,108 @@ def test_standalone_gif_after_group_preview_uses_selected_animation_and_restores
     assert set(editor.evaluate('reviewExportAnimations')) == {'idle0'}
     assert editor.evaluate('reviewEditor.state.animationId') == 'idle0'
     assert editor.evaluate('reviewEditor.renderLook().transform.x') == 130
+
+
+@pytest.mark.parametrize('outcome', ['success', 'failure', 'selection_cancel', 'selection_choose'])
+def test_template_import_blocks_exports_and_keeps_resource_selection_usable(editor, outcome):
+    _import(editor, spine_zip(), 'A.zip')
+    original_key = editor.evaluate('reviewEditor.currentTemplateKey()')
+    candidate = spine_zip('other', invalid_image=outcome == 'failure')
+    if outcome.startswith('selection_'):
+        result = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(candidate)) as source, zipfile.ZipFile(result, 'w') as target:
+            for entry in source.infolist():
+                target.writestr(entry, source.read(entry))
+            target.writestr('assets/second.json', source.read('assets/other.json'))
+        candidate = result.getvalue()
+    downloads = []
+    editor.on('download', lambda download: downloads.append(download))
+    editor.evaluate('''encoded => {
+        const original=window.fetch;
+        let held=false;
+        window.fetch=async (...args)=>{
+            if(!held && args[0]==='/api/emote-maker/import'){
+                held=true;
+                await new Promise(resolve=>{window.reviewReleaseImport=resolve;});
+            }
+            return original(...args);
+        };
+        window.reviewImportReadbacks=0;
+        window.reviewCaptureHook=()=>{reviewImportReadbacks+=1;};
+        window.reviewPendingImport=reviewEditor.importTemplateFile(new File([
+            Uint8Array.from(atob(encoded),c=>c.charCodeAt(0))],'B.zip'));
+    }''', base64.b64encode(candidate).decode('ascii'))
+    editor.wait_for_function('Boolean(window.reviewReleaseImport)')
+    for selector in ['#export-png-btn', '#pack-export-btn', '#export-group-open-btn']:
+        assert editor.locator(selector).is_disabled()
+        editor.locator(selector).dispatch_event('click')
+    editor.keyboard.press('Control+s')
+    assert editor.evaluate('reviewImportReadbacks') == 0
+    assert downloads == []
+    editor.evaluate('reviewReleaseImport()')
+    if outcome.startswith('selection_'):
+        dialog = editor.locator('.emote-template-resource-choice')
+        dialog.wait_for(state='visible')
+        assert dialog.locator('.emote-confirm-cancel').is_enabled()
+        if outcome == 'selection_choose':
+            dialog.locator('select').select_option('assets/other.json')
+            dialog.locator('.emote-confirm-ok').click()
+        else:
+            dialog.locator('.emote-confirm-cancel').click()
+    succeeded = outcome in ('success', 'selection_choose')
+    assert editor.evaluate('reviewPendingImport') is succeeded
+    assert (editor.evaluate('reviewEditor.currentTemplateKey()') != original_key) is succeeded
+    assert editor.evaluate('reviewImportReadbacks') == 0
+    assert downloads == []
+    assert editor.locator('#export-png-btn').is_enabled()
+    editor.evaluate("reviewEditor.state.exportFormat='png'")
+    with editor.expect_download(timeout=15000):
+        editor.keyboard.press('Control+s')
+
+
+def test_template_activation_does_not_overtake_an_already_queued_export(editor):
+    _import(editor, spine_zip(), 'A.zip')
+    original_key = editor.evaluate('reviewEditor.currentTemplateKey()')
+    result = editor.evaluate('''async encoded => {
+        const q=reviewEditor;
+        let release;
+        const barrier=q.queueStageCapture(Symbol(),1000,'barrier',()=>new Promise(r=>{release=r;}));
+        const captured=[];
+        window.reviewCaptureHook=()=>captured.push(q.currentTemplateKey());
+        const exported=q.captureGifFrames({maxFrames:1,maxDimension:32});
+        const imported=q.importTemplateFile(new File([
+            Uint8Array.from(atob(encoded),c=>c.charCodeAt(0))],'B.zip'));
+        release();
+        const [,frames,success]=await Promise.all([barrier,exported,imported]);
+        delete window.reviewCaptureHook;
+        return {captured,count:frames.length,success,key:q.currentTemplateKey()};
+    }''', base64.b64encode(spine_zip('other')).decode('ascii'))
+    assert result['captured'] == [original_key]
+    assert result['count'] == 1
+    assert result['success']
+    assert result['key'] != original_key
+
+
+def test_stale_template_pack_jobs_are_discarded_before_applying_their_look(editor):
+    _import(editor, _two_skins(), 'A.zip')
+    result = editor.evaluate('''async encoded => {
+        const q=reviewEditor, generation=q.generation(), scene=q.getImportedScenes()[0];
+        const look=q.currentLookDefaults();
+        look.skins=[{group:'skin',value:'alternate'}];
+        look.transform.x=170;
+        const jobs=[{stateKey:'idle_image',sceneId:scene.id,look,frames:1}];
+        await q.importTemplateFile(new File([
+            Uint8Array.from(atob(encoded),c=>c.charCodeAt(0))],'B.zip'));
+        q.state.adjustments.x=-35;
+        let readbacks=0;
+        window.reviewCaptureHook=()=>{readbacks+=1;};
+        try {
+            const baked=await q.bakePackJobs(jobs,{generation});
+            return {count:baked.length,readbacks,x:q.state.adjustments.x,skin:q.state.templateSkins[0].value,
+                sameScene:q.getImportedScenes()[0].id===scene.id};
+        } finally {delete window.reviewCaptureHook;}
+    }''', base64.b64encode(spine_zip('other')).decode('ascii'))
+    assert result == {'count': 0, 'readbacks': 0, 'x': -35, 'skin': 'default', 'sameScene': True}
 
 
 @pytest.mark.parametrize(('fmt', 'edge'), [('png', 512), ('png', 1024), ('gif', 512)])
