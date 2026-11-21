@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from config.nekoclaw_settings import DISPATCH_FIRST_ROUND_SECONDS as _SHIPPED_DISPATCH_FIRST_ROUND_SECONDS
 from nekoclaw.host import call_audit
 from tests.unit.nekoclaw.fakes import ScriptedLLM
 from tests.unit.nekoclaw.host_fakes import (
@@ -578,9 +579,9 @@ async def test_fast_first_round_that_fails_raises_to_the_caller(server, hosts, t
 
 
 async def test_first_round_budget_is_about_one_second():
-    from config.nekoclaw_settings import DISPATCH_FIRST_ROUND_SECONDS
-
-    assert DISPATCH_FIRST_ROUND_SECONDS == 1.0
+    # Read at import time: the autouse fixture in conftest.py raises the budget
+    # for every test, this one included.
+    assert _SHIPPED_DISPATCH_FIRST_ROUND_SECONDS == 1.0
 
 
 async def test_dispatch_text_is_capped_in_tokens_before_it_is_stored(server, hosts, tmp_path):
