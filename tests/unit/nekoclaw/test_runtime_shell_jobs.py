@@ -769,3 +769,31 @@ async def test_refused_job_output_is_unread_until_delivered(tmp_path):
         assert "preserved-data" in replies["read-1"] and "no new output" in replies["read-2"]
     finally:
         await session.close()
+
+
+async def test_closing_collects_pending_notices_after_process_settlement():
+    from types import SimpleNamespace
+
+    reporting = asyncio.Event()
+    released = asyncio.Event()
+
+    async def report(job):
+        reporting.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            released.set()
+
+    registry = JobRegistry(report)
+    finished = asyncio.Event()
+    finished.set()
+    process = SimpleNamespace(wait=finished.wait, kill_requested=False, signal_name=None, returncode=0)
+    settled = registry.start("bash", "finished", process, foreground=False)
+    await asyncio.wait_for(reporting.wait(), 2)
+    stopping = asyncio.Event()
+    pending = SimpleNamespace(wait=stopping.wait, kill=stopping.set, kill_requested=True, signal_name=None)
+    running = registry.start("bash", "running", pending, foreground=False)
+    registry.close()
+    await registry.wait_closed(timeout_seconds=0.5)
+    assert settled.settled.is_set() and running.settled.is_set()
+    assert released.is_set()

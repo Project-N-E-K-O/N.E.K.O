@@ -133,7 +133,7 @@ class JobRegistry:
     def __init__(self, on_finished: Callable[[Job], Awaitable[None] | None]) -> None:
         self._on_finished = on_finished
         self._jobs: dict[str, Job] = {}
-        self._watchers: set[asyncio.Task[None]] = set()
+        self._watchers: dict[asyncio.Task[None], Job] = {}
         self._counter = 0
         self._closing = False
         self.pending_notices: dict[str, PendingNotice] = {}
@@ -164,8 +164,8 @@ class JobRegistry:
         )
         self._jobs[job.id] = job
         watcher = asyncio.ensure_future(self._watch(job))
-        self._watchers.add(watcher)
-        watcher.add_done_callback(self._watchers.discard)
+        self._watchers[watcher] = job
+        watcher.add_done_callback(self._watchers.pop)
         return job
 
     async def _watch(self, job: Job) -> None:
@@ -224,16 +224,17 @@ class JobRegistry:
 
     def close(self) -> None:
         """Stop every running job; no completion notices are produced afterwards."""
-        self._closing = True
+        if not self._closing:
+            self._closing = True
+            for watcher, job in self._watchers.items():
+                if job.settled.is_set():
+                    watcher.cancel()
         self.stop_all("session closed")
 
     async def wait_closed(self, timeout_seconds: float = KILL_SETTLE_SECONDS) -> None:
-        pending = [job.settled.wait() for job in self._jobs.values() if not job.settled.is_set()]
-        if pending:
-            try:
-                await asyncio.wait_for(asyncio.gather(*pending), timeout_seconds)
-            except asyncio.TimeoutError:
-                pass
+        if self._watchers:
+            # Unsettled processes must still be collected after the caller's deadline.
+            await asyncio.wait(tuple(self._watchers), timeout=timeout_seconds)
 
     # -- reading and control ---------------------------------------------------
 
