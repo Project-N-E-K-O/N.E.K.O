@@ -725,3 +725,46 @@ def test_short_keys_do_not_disable_the_url_and_label_rules(key):
     message = 'GET https://user:privatepass@host.test/private-id?sid=s1 token=privatetok'
     redacted = preparation.redact_error_message(message, secrets=(key,))
     assert 'privatepass' not in redacted and 'private-id' not in redacted and 'privatetok' not in redacted
+
+
+@pytest.mark.parametrize('key', ['a', '1', '123', '1234', '12345678'[:7]])
+def test_placeholder_keys_do_not_mask_ordinary_words_or_ports(key):
+    message = 'Failed to establish a new connection to http://h:1234/x 123 1'
+    assert preparation.redact_error_message(message, secrets=(key,)) == \
+        'Failed to establish a new connection to http://h:1234 123 1'
+
+
+def test_short_key_floor_still_masks_real_short_keys():
+    assert preparation.redact_error_message('auth abcd failed', secrets=('abcd',)) == 'auth *** failed'
+    assert preparation.redact_error_message('auth ab12 failed', secrets=('ab12',)) == 'auth *** failed'
+
+
+def test_ipv6_host_keeps_brackets_when_the_port_is_invalid():
+    assert preparation.redact_error_message('GET http://[::1]:70000/v1 x') == 'GET http://[::1] x'
+
+
+@pytest.mark.asyncio
+async def test_save_failure_detail_masks_the_key_without_vision_fields(tmp_path, monkeypatch):
+    class Engine:
+        def __init__(self, root, *args, **kwargs):
+            self.root = root
+            self.diagnostic_secrets = ('saved-key-123456',)
+            self.vision_endpoint = {'host': 'api.example.test', 'model': 'm'}
+            self.last_vision_request = {'images': 3}
+        async def vision_config(self):
+            return {}
+        async def prepare(self, job, *args, **kwargs):
+            (self.root / job['id']).mkdir(parents=True)
+            raise RuntimeError('vision broke')
+    def fail_import(*args, **kwargs):
+        raise RuntimeError('db rejected saved-key-123456')
+    monkeypatch.setattr(preparation, 'Engine', Engine)
+    monkeypatch.setattr(preparation, 'application_library', lambda: SimpleNamespace(root=tmp_path, import_sources=fail_import))
+    monkeypatch.setattr(preparation, 'tasks', set())
+    monkeypatch.setattr(preparation, 'jobs', {})
+    manager = SimpleNamespace(preflight_game_speech_audio=speech_ready,
+                              game_speech_audio_cache_identity=lambda *args, **kwargs: ('key', 'voice'))
+    result = await preparation.prepare('video', manager, 'cat')
+    await asyncio.gather(*preparation.tasks)
+    assert preparation.jobs[result['id']]['error_detail'] == {
+        'chain': [{'type': 'RuntimeError', 'errno': None, 'message': 'db rejected ***'}]}

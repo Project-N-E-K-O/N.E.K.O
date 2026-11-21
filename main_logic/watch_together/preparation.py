@@ -52,6 +52,7 @@ def _url_origin(match):
         # An unreadable port must not cost the host name as well.
         try:
             host = urlparse(url).hostname
+            host = f"[{host}]" if host and ":" in host else host
         except ValueError:
             host = None
     return f"{match.group(1)}://{host or '?'}{closing}"
@@ -71,8 +72,11 @@ def _secret_variants(secrets):
                 # Also as a bytes/str repr escapes it and as a URL encodes it.
                 forms = (value, repr(value)[1:-1], repr(value.encode("utf-8", "replace"))[2:-1], quote(value, safe=""))
                 variants.update(form for form in forms if len(form.strip()) >= _SHORT_SECRET_CHARS)
-            if 0 < len(secret.strip()) < _SHORT_SECRET_CHARS:
-                words.add(secret.strip())
+            short = secret.strip()
+            # Placeholder keys (``a``, ``1234``) would mask ordinary words and
+            # ports, the very details these diagnostics are for.
+            if 4 <= len(short) < _SHORT_SECRET_CHARS and not short.isdigit():
+                words.add(short)
     return sorted(variants, key=len, reverse=True), sorted(words, key=len, reverse=True)
 
 
@@ -155,8 +159,12 @@ def error_cause_chain(exc, limit=MAX_CAUSE_DEPTH, secrets=()):
     return chain
 
 
-def preparation_error_detail(exc, engine=None) -> dict:
-    """Structural failure detail: no prompt, danmaku, model output or frame data."""
+def preparation_error_detail(exc, engine=None, *, vision=True) -> dict:
+    """Structural failure detail: no prompt, danmaku, model output or frame data.
+
+    ``vision=False`` still masks the engine's credentials but leaves out the
+    vision request and endpoint, for failures that are not about them.
+    """
     secrets = getattr(engine, "diagnostic_secrets", None)
     secrets = tuple(secrets) if isinstance(secrets, (tuple, list)) else ()
     detail = {"chain": error_cause_chain(exc, secrets=secrets)}
@@ -164,7 +172,7 @@ def preparation_error_detail(exc, engine=None) -> dict:
     endpoint = getattr(engine, "vision_endpoint", None)
     # Only a failure with a vision request in flight is about the vision
     # endpoint; speech or download failures must not read as one.
-    if isinstance(request, dict):
+    if vision and isinstance(request, dict):
         detail["last_vision_request"] = dict(request)
         if isinstance(endpoint, dict):
             host, model = endpoint.get("host"), endpoint.get("model")
@@ -306,7 +314,7 @@ async def prepare(url, manager, character, *, automatic=False, confirmed_duratio
                 job.update(status="error", stage="Saving preparation failed", stage_key="saveFailed", error=type(exc).__name__)
                 # The detail must describe this failure, not an earlier preparation error.
                 try:
-                    job["error_detail"] = preparation_error_detail(exc)
+                    job["error_detail"] = preparation_error_detail(exc, engine, vision=False)
                 except Exception as detail_error:
                     job["error_detail"] = {"chain": [{"type": type(exc).__name__}],
                                            "detail_error": type(detail_error).__name__}
