@@ -787,7 +787,7 @@ async def test_explicit_runtime_refusal_settles_the_answer_and_retries_once(host
         release.set()
 
 
-@pytest.mark.parametrize("when", ["before_open", "during_open"])
+@pytest.mark.parametrize("when", ["before_open", "during_open", "parent_run_ended"])
 async def test_opening_an_ask_copy_rechecks_its_parent_loan(hosts, tmp_path, monkeypatch, when):
     release, held = _held()
     scripts = {BUILD: held, PHOTOS: _photos(), QUESTION: ScriptedLLM([[say("unused"), finish()]])}
@@ -811,6 +811,8 @@ async def test_opening_an_ask_copy_rechecks_its_parent_loan(hosts, tmp_path, mon
         await start(spec)
         if when == "during_open":
             await host.permission_store.set_mode("outside_read", "deny")
+        elif when == "parent_run_ended":
+            host.permissions.end_run(asker.id)
 
     monkeypatch.setattr(manager, "_spec", spec)
     monkeypatch.setattr(runtime, "start", opening)
@@ -819,7 +821,7 @@ async def test_opening_an_ask_copy_rechecks_its_parent_loan(hosts, tmp_path, mon
             await manager._callbacks().call(asker.session_id, "session_ask", {"session": "photos", "question": QUESTION})
         child, = await host.ledger.select(parent_id=asker.id)
         assert child.status in ("failed", "cancelled")
-        assert opened == ([child.session_id] if when == "during_open" else [])
+        assert opened == ([] if when == "before_open" else [child.session_id])
         assert not scripts[QUESTION].requests
         assert await host.ledger.run(lambda db: db.execute("SELECT status FROM messages WHERE kind='ask'").fetchone()[0]) == "void"
 

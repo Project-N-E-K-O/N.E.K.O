@@ -162,6 +162,30 @@ async def test_what_was_kept_is_handed_to_the_next_task_agent(hosts, tmp_path):
     assert second.requests[0][-1]["content"].startswith(f"Commission {again.commission_id}\nrename the videos by date\n")
 
 
+async def test_a_blocked_commission_reads_its_current_space_brief_on_restart(hosts, tmp_path, monkeypatch):
+    from nekoclaw.host import call_audit
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("blocked", "need a location"), _report()]))
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_status(host, receipt.commission_id, "blocked")
+    await wait_until(lambda: receipt.commission_id not in host.task_agents._sessions, what="first session closed")
+    await host.space.write_rules("Check the photo index before resuming.")
+    runtime = host.task_agents._runtimes.builtin()
+    start = runtime.start
+    specs = []
+
+    async def capture(spec):
+        specs.append(spec)
+        await start(spec)
+
+    monkeypatch.setattr(runtime, "start", capture)
+    assert await host.tell(receipt.commission_id, "the photos are here")
+    await wait_status(host, receipt.commission_id, "done")
+    assert len(specs) == 1 and "Check the photo index before resuming." in specs[0].instructions
+    rows = await host.ledger.run(lambda db: call_audit.read_trace(db, receipt.commission_id, now=0))
+    assert [r["status"] for r in rows if r["target"] == "space_brief"] == ["completed", "completed"]
+
+
 async def test_a_lesson_rests_on_the_files_of_the_folder_the_task_agent_works_in(hosts, tmp_path):
     written = _tool("write", {"file_path": "notes.txt", "content": "sorted by EXIF date\n"}, "w1")
     seen = _tool(

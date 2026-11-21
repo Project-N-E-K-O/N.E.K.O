@@ -2191,9 +2191,6 @@ class TaskAgentManager:
                 )
                 gateway_spec = GatewaySpec(url=url, token=token)
 
-            spec = await self._spec(
-                commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec
-            )
             if unwanted():
                 # Everything was stopped while this was being set up, and
                 # the stop left a commission that was over alone: it stays
@@ -2214,6 +2211,11 @@ class TaskAgentManager:
                 # Stopped while it was being prepared.
                 self._discard(commission.id)
                 return False
+            # A blocked or failed commission must be working again before its
+            # opening brief can reserve a call against the new run.
+            spec = await self._spec(
+                commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec
+            )
             # On record with the session from here on: a later commission of
             # it is opened in the same place. (That the session is at work
             # was written with the commission's status.)
