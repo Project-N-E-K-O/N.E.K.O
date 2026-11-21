@@ -1834,10 +1834,6 @@ class TestVectorDecodeCache(unittest.IsolatedAsyncioTestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 # ── emb_svc log label ────────────────────────────────────────────────
 
 
@@ -1874,3 +1870,7 @@ def test_embedding_service_state_disabled_and_errors():
 
     with patch("memory.embeddings.get_embedding_service", side_effect=RuntimeError("x")):
         assert hr._embedding_service_state() == "unknown(RuntimeError)"
+
+
+if __name__ == "__main__":
+    unittest.main()

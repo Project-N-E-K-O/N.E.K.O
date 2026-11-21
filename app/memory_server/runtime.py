@@ -1394,7 +1394,9 @@ def _log_startup_identity() -> None:
         # Same detection as launcher_core.bootstrap.IS_FROZEN (PyInstaller
         # sets sys.frozen, Nuitka injects __compiled__).
         frozen = bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
-        install_dir = os.path.dirname(os.path.abspath(sys.executable or ""))
+        install_dir = (
+            os.path.dirname(os.path.abspath(sys.executable)) if sys.executable else "unknown"
+        )
         logger.info(
             "[Memory] N.E.K.O %s frozen=%s install_dir=%s data_root=%s memory_dir=%s",
             APP_VERSION,
