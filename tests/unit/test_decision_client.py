@@ -7,7 +7,6 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
 from utils.decision_client import (
@@ -25,6 +24,15 @@ from utils.decision_client import (
     is_native_decision_protocol,
     resolve_decision_endpoint,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_native_cooldown():
+    clear_native_cooldown()
+    try:
+        yield
+    finally:
+        clear_native_cooldown()
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +116,7 @@ def test_all_assist_providers_have_decision_fields():
         "gemini": ("gemini-decision-1", "gemini_decisions"),
         "openrouter": ("google/gemini-decision-1", "openrouter_decisions"),
     }
+    assert set(native_expected.keys()).issubset(providers.keys())
     for key, profile in providers.items():
         assert "decision_model" in profile, f"{key} missing decision_model"
         assert "decision_protocol" in profile, f"{key} missing decision_protocol"
@@ -291,10 +300,59 @@ def test_chat_fallback_parser_strips_thinking_and_fences():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
+def test_score_question_missing_score_is_omitted_while_explicit_zero_is_preserved():
+    qs = {
+        "missing": ScoreQuestion(instructions="Rate", levels=("low", "med", "high")),
+        "zero": ScoreQuestion(instructions="Rate", levels=("low", "med", "high")),
+    }
+
+    sys_resp = SystemOneAdapter("systemone").parse_response(
+        {
+            "results": {
+                "missing": {"confidence": 0.9},
+                "zero": {"score": 0, "confidence": 0.9},
+            }
+        },
+        qs,
+        "decision-model-preview",
+    )
+    assert "missing" not in sys_resp.answers
+    assert sys_resp.answers["zero"].value == pytest.approx(0.0)
+    assert sys_resp.answers["zero"].score_norm == pytest.approx(0.0)
+
+    oai_resp = OpenAIDecisionsAdapter().parse_response(
+        {
+            "answers": [
+                {"name": "missing", "confidence": 0.8},
+                {"name": "zero", "score_index": 0, "confidence": 0.8},
+            ]
+        },
+        qs,
+        "gpt-6-luna",
+    )
+    assert "missing" not in oai_resp.answers
+    assert oai_resp.answers["zero"].value == pytest.approx(0.0)
+    assert oai_resp.answers["zero"].score_norm == pytest.approx(0.0)
+
+    gem_resp = GeminiDecisionsAdapter().parse_response(
+        {
+            "answers": {
+                "missing": {"confidence": 0.8},
+                "zero": {"score": 1, "confidence": 0.8},  # 1-based -> 0.0
+            }
+        },
+        qs,
+        "gemini-decision-1",
+    )
+    assert "missing" not in gem_resp.answers
+    assert gem_resp.answers["zero"].value == pytest.approx(0.0)
+    assert gem_resp.answers["zero"].score_norm == pytest.approx(0.0)
+
+
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_decision_client_native_failure_falls_back_and_caches_cooldown():
-    clear_native_cooldown()
     qs = {"ok": BoolQuestion(instructions="Is it ok?")}
     native_cfg = {
         "model": "decision-model-preview",
@@ -305,20 +363,21 @@ async def test_decision_client_native_failure_falls_back_and_caches_cooldown():
         "fallback_model": "qwen3.6-flash",
     }
 
-    native_calls = 0
-
-    async def _fake_native_execute(self, **kwargs):
-        nonlocal native_calls
-        native_calls += 1
-        raise DecisionProtocolError("HTTP 404 model retired", status_code=404, protocol="systemone", permanent_route_error=True)
-
+    fake_native = AsyncMock(
+        side_effect=DecisionProtocolError(
+            "HTTP 404 model retired",
+            status_code=404,
+            protocol="systemone",
+            permanent_route_error=True,
+        )
+    )
     fake_llm = SimpleNamespace(
         ainvoke=AsyncMock(return_value=SimpleNamespace(content='{"ok": {"value": true, "probability": 0.9}}')),
         aclose=AsyncMock(),
     )
 
     with (
-        patch.object(SystemOneAdapter, "execute", _fake_native_execute),
+        patch.object(SystemOneAdapter, "execute", fake_native),
         patch("utils.llm_client.create_chat_llm_async", AsyncMock(return_value=fake_llm)),
     ):
         client = DecisionClient()
@@ -326,14 +385,117 @@ async def test_decision_client_native_failure_falls_back_and_caches_cooldown():
         assert r1.used_fallback is True
         assert r1.protocol == "chat_fallback"
         assert r1.answers["ok"].value is True
-        assert native_calls == 1
+        assert fake_native.await_count == 1
 
         # Second call hits negative cooldown -> skips doomed native HTTP call immediately
         r2 = await client.decide(state="hello", questions=qs, config=native_cfg)
         assert r2.used_fallback is True
-        assert native_calls == 1
+        assert fake_native.await_count == 1
 
-    clear_native_cooldown()
+        # Business callers passing allow_fallback=False still honor cooldown by default
+        with pytest.raises(DecisionProtocolError):
+            await client.decide(state="hello", questions=qs, config=native_cfg, allow_fallback=False)
+        assert fake_native.await_count == 1
+
+        # Manual probes passing respect_cooldown=False bypass cooldown and hit the wire
+        with pytest.raises(DecisionProtocolError):
+            await client.decide(
+                state="hello",
+                questions=qs,
+                config=native_cfg,
+                allow_fallback=False,
+                respect_cooldown=False,
+            )
+        assert fake_native.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_decision_client_records_native_usage_via_real_token_tracker(clean_user_data_dir):
+    from utils.decision_client.schema import DecisionAnswer, DecisionResponse
+    from utils.token_tracker import TokenTracker
+
+    tracker = TokenTracker.get_instance()
+    qs = {"ok": BoolQuestion(instructions="Is it ok?")}
+    native_cfg = {
+        "model": "decision-model-preview",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "sk-test",
+        "decision_protocol": "systemone",
+        "decision_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/systemone",
+    }
+    fake_resp = DecisionResponse(
+        answers={"ok": DecisionAnswer(question_type="bool", value=True, probability=0.95)},
+        model="decision-model-preview",
+        protocol="systemone",
+        prompt_tokens=88,
+        completion_tokens=0,
+        cached_tokens=16,
+    )
+
+    with (
+        patch.object(SystemOneAdapter, "execute", AsyncMock(return_value=fake_resp)),
+        patch.object(tracker, "record", wraps=tracker.record) as spy_record,
+    ):
+        client = DecisionClient()
+        resp = await client.decide(
+            state="hello",
+            questions=qs,
+            config=native_cfg,
+            call_type="memory_recall_rerank",
+        )
+
+    assert resp.answers["ok"].value is True
+    spy_record.assert_called_once_with(
+        model="decision-model-preview",
+        prompt_tokens=88,
+        completion_tokens=0,
+        total_tokens=88,
+        cached_tokens=16,
+        call_type="memory_recall_rerank",
+        source="decision:systemone",
+        success=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_decision_client_fallback_avoids_complete_native_endpoint_url():
+    qs = {"ok": BoolQuestion(instructions="Is it ok?")}
+    native_cfg = {
+        "model": "decision-model-preview",
+        "base_url": "https://my-gw.example/v1/systemone",
+        "api_key": "sk-native",
+        "decision_protocol": "systemone",
+        "decision_url": "https://my-gw.example/v1/systemone",
+        "fallback_model": "qwen3.7-flash",
+    }
+    fake_cm = MagicMock()
+    fake_cm.aget_model_api_config = AsyncMock(return_value={
+        "model": "emotion-chat-model",
+        "base_url": "https://chat-gw.example/v1",
+        "api_key": "sk-chat",
+        "provider_type": "openai_compatible",
+    })
+    fake_llm = SimpleNamespace(
+        ainvoke=AsyncMock(return_value=SimpleNamespace(content='{"ok": {"value": true, "probability": 0.9}}')),
+        aclose=AsyncMock(),
+    )
+
+    with (
+        patch.object(
+            SystemOneAdapter,
+            "execute",
+            AsyncMock(side_effect=DecisionProtocolError("HTTP 404", status_code=404, protocol="systemone", permanent_route_error=True)),
+        ),
+        patch("utils.llm_client.create_chat_llm_async", AsyncMock(return_value=fake_llm)) as mock_create_llm,
+    ):
+        client = DecisionClient(config_manager=fake_cm)
+        resp = await client.decide(state="hello", questions=qs, config=native_cfg)
+
+    assert resp.used_fallback is True
+    assert mock_create_llm.await_args.kwargs["base_url"] == "https://chat-gw.example/v1"
+    assert mock_create_llm.await_args.kwargs["model"] == "emotion-chat-model"
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +553,52 @@ def test_config_manager_decision_slot_defaults_and_cross_provider(clean_user_dat
     assert mixed_dec["decision_url"] == "https://generativelanguage.googleapis.com/v1beta/decisions"
     assert mixed_dec["api_key"] == "sk-gem-custom"
 
+    # Empty decisionModelId under follow_core resolves the core provider's DECISION_MODEL
+    _set_cfg({
+        "coreApi": "openai",
+        "assistApi": "qwen",
+        "coreApiKey": "sk-oai-core",
+        "assistApiKeyQwen": "sk-qwen",
+        "enableCustomApi": True,
+        "decisionModelProvider": "follow_core",
+        "decisionModelId": "",
+    })
+    follow_core_dec = cm.get_model_api_config("decision")
+    assert follow_core_dec["model"] == "gpt-6-luna"
+    assert follow_core_dec["decision_protocol"] == "openai_decisions"
+    assert follow_core_dec["decision_url"] == "https://api.openai.com/v1/decisions"
+
+    # Custom gateway URL under named provider must NOT leak requests to the official host
+    _set_cfg({
+        "coreApi": "qwen",
+        "assistApi": "deepseek",
+        "assistApiKeyDeepseek": "sk-ds",
+        "enableCustomApi": True,
+        "decisionModelProvider": "gemini",
+        "decisionModelUrl": "https://my-gateway.internal/v1",
+        "decisionModelId": "gemini-decision-1",
+        "decisionModelApiKey": "sk-gateway",
+    })
+    gw_dec = cm.get_model_api_config("decision")
+    assert gw_dec["decision_protocol"] == "gemini_decisions"
+    assert gw_dec["decision_url"] == "https://my-gateway.internal/v1/decisions"
+    assert "generativelanguage.googleapis.com" not in gw_dec["decision_url"]
+
+    _set_cfg({
+        "coreApi": "qwen",
+        "assistApi": "deepseek",
+        "assistApiKeyDeepseek": "sk-ds",
+        "enableCustomApi": True,
+        "decisionModelProvider": "openrouter",
+        "decisionModelUrl": "https://my-gateway.internal/api/v1",
+        "decisionModelId": "google/gemini-decision-1",
+        "decisionModelApiKey": "sk-gateway",
+    })
+    or_gw_dec = cm.get_model_api_config("decision")
+    assert or_gw_dec["decision_protocol"] == "openrouter_decisions"
+    assert or_gw_dec["decision_url"] == "https://my-gateway.internal/api/alpha/decisions"
+    assert "openrouter.ai" not in or_gw_dec["decision_url"]
+
 
 # ---------------------------------------------------------------------------
 # Connectivity probe for native decision endpoints
@@ -400,13 +608,18 @@ def test_config_manager_decision_slot_defaults_and_cross_provider(clean_user_dat
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_connectivity_decision_probe_success_and_auth_error():
-    from main_routers.config_router.connectivity import _test_decision_endpoint
+    from main_routers.config_router.connectivity import (
+        ConnectivityTestRequest,
+        _test_connectivity_candidates,
+        _test_decision_endpoint,
+        test_connectivity,
+    )
 
     with patch.object(
         DecisionClient,
         "decide",
         AsyncMock(return_value=SimpleNamespace(answers={"ok": SimpleNamespace(value=True)})),
-    ):
+    ) as mock_decide:
         ok = await _test_decision_endpoint(
             "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "sk-ok",
@@ -414,6 +627,36 @@ async def test_connectivity_decision_probe_success_and_auth_error():
             protocol="systemone",
         )
         assert ok == {"success": True}
+        assert mock_decide.await_args.kwargs["respect_cooldown"] is False
+
+    # False is still a valid boolean answer
+    with patch.object(
+        DecisionClient,
+        "decide",
+        AsyncMock(return_value=SimpleNamespace(answers={"ok": SimpleNamespace(value=False)})),
+    ):
+        ok_false = await _test_decision_endpoint(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "sk-ok",
+            model="decision-model-preview",
+            protocol="systemone",
+        )
+        assert ok_false == {"success": True}
+
+    # Empty answers dict must fail connectivity probe
+    with patch.object(
+        DecisionClient,
+        "decide",
+        AsyncMock(return_value=SimpleNamespace(answers={})),
+    ):
+        empty_res = await _test_decision_endpoint(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "sk-ok",
+            model="decision-model-preview",
+            protocol="systemone",
+        )
+        assert empty_res["success"] is False
+        assert empty_res["error_code"] == "invalid_response"
 
     with patch.object(
         DecisionClient,
@@ -429,9 +672,48 @@ async def test_connectivity_decision_probe_success_and_auth_error():
         assert bad["success"] is False
         assert bad["error_code"] == "auth_failed"
 
+    # Regular openai_compatible chat slots must NOT be redirected to native decision probe by prefix
+    with (
+        patch(
+            "main_routers.config_router.connectivity._test_openai_compatible",
+            AsyncMock(return_value={"success": True}),
+        ) as mock_oai,
+        patch(
+            "main_routers.config_router.connectivity._test_decision_endpoint",
+            AsyncMock(return_value={"success": True}),
+        ) as mock_dec_probe,
+    ):
+        chat_res = await _test_connectivity_candidates(
+            ["https://my-gw.example/v1"],
+            "sk-chat",
+            model="gpt-6-luna-chat",
+            provider_type="openai_compatible",
+            is_free=False,
+        )
+        assert chat_res["success"] is True
+        assert mock_oai.await_count == 1
+        assert mock_dec_probe.await_count == 0
+
+    # Built-in Mode 1 provider_scope='decision' tests the provider's decision model & protocol
+    with patch(
+        "main_routers.config_router.connectivity._test_decision_endpoint",
+        AsyncMock(return_value={"success": True}),
+    ) as mock_dec_probe:
+        scope_res = await test_connectivity(
+            ConnectivityTestRequest(
+                provider_key="qwen",
+                provider_scope="decision",
+                api_key="sk-qwen",
+            )
+        )
+        assert scope_res["success"] is True
+        assert mock_dec_probe.await_count == 1
+        assert mock_dec_probe.await_args.kwargs["model"] == "decision-model-preview"
+        assert mock_dec_probe.await_args.kwargs["protocol"] == "systemone"
+
 
 # ---------------------------------------------------------------------------
-# Pilot 1: MemoryRecallReranker._llm_rerank native fast path + chat fallback
+# Pilot 1: MemoryRecallReranker._fine_rank native fast path + summary fallback
 # ---------------------------------------------------------------------------
 
 
@@ -474,4 +756,104 @@ async def test_memory_recall_reranker_uses_native_decision_and_ranks_by_score():
             lang="en",
         )
     assert mock_decide.await_count == 1
+    assert mock_decide.await_args.kwargs["respect_cooldown"] is True
     assert [r["id"] for r in ranked] == ["m2", "m3"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_memory_recall_reranker_keeps_summary_tier_for_non_native_providers():
+    from memory.recall import MemoryRecallReranker
+
+    async def _get_cfg(tier: str):
+        if tier == "decision":
+            return {
+                "model": "free-mini-model",
+                "base_url": "https://www.lanlan.tech/text/v1",
+                "api_key": "free-access",
+                "decision_protocol": "chat_fallback",
+            }
+        return {
+            "model": "user-custom-summary-model",
+            "base_url": "https://local-summary.example/v1",
+            "api_key": "sk-local",
+            "provider_type": "openai_compatible",
+        }
+
+    cm = MagicMock()
+    cm.aget_model_api_config = AsyncMock(side_effect=_get_cfg)
+    fake_llm = SimpleNamespace(
+        ainvoke=AsyncMock(return_value=SimpleNamespace(content='[{"id": "m2"}, {"id": "m1"}]')),
+        aclose=AsyncMock(),
+    )
+    candidates = [
+        {"id": "m1", "text": "likes apples", "score": 1.0},
+        {"id": "m2", "text": "allergic to peanuts", "score": 1.0},
+    ]
+
+    with patch("utils.llm_client.create_chat_llm_async", AsyncMock(return_value=fake_llm)) as mock_create_llm:
+        reranker = MemoryRecallReranker()
+        ranked = await reranker._fine_rank(
+            candidates,
+            query_texts=["allergies?"],
+            budget=2,
+            config_manager=cm,
+            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
+            lang="en",
+        )
+
+    assert [r["id"] for r in ranked] == ["m2", "m1"]
+    assert mock_create_llm.await_args.args[0] == "user-custom-summary-model"
+    assert mock_create_llm.await_args.args[1] == "https://local-summary.example/v1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_memory_recall_reranker_aligns_questions_with_bounded_native_state():
+    from memory.recall import MemoryRecallReranker
+    from utils.decision_client.schema import DecisionAnswer, DecisionResponse
+
+    cm = MagicMock()
+    cm.aget_model_api_config = AsyncMock(return_value={
+        "model": "decision-model-preview",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "sk-test",
+        "decision_protocol": "systemone",
+        "decision_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/systemone",
+    })
+    # Build 80 long candidates (~180 tokens each -> >14,000 tokens total, > 6,000 native state cap)
+    long_text = " ".join(["memorydetail"] * 120)
+    candidates = [
+        {"id": f"m{i}", "text": f"entry {i} {long_text}", "score": float(80 - i)}
+        for i in range(80)
+    ]
+
+    captured: dict = {}
+
+    async def _capture_decide(self, *, state, questions, **kwargs):
+        captured["state"] = state
+        captured["question_ids"] = list(questions.keys())
+        return DecisionResponse(
+            answers={
+                qid: DecisionAnswer(question_type="score", value=2.0, score_norm=0.67)
+                for qid in questions
+            },
+            model="decision-model-preview",
+            protocol="systemone",
+        )
+
+    with patch.object(DecisionClient, "decide", _capture_decide):
+        reranker = MemoryRecallReranker()
+        ranked = await reranker._fine_rank(
+            candidates,
+            query_texts=["what is entry 0?"],
+            budget=5,
+            config_manager=cm,
+            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
+            lang="en",
+        )
+
+    assert len(ranked) == 5
+    assert 0 < len(captured["question_ids"]) < len(candidates)
+    for qid in captured["question_ids"]:
+        assert f"[{qid}]" in captured["state"]

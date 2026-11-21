@@ -59,6 +59,7 @@ calls* — RFC §3.4 stays unchanged in shape.
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -637,21 +638,25 @@ class MemoryRecallReranker:
         # The id-keyed indirection prevents the LLM from inventing
         # ids that aren't in the candidate set.
         from config import (
+            DECISION_STATE_MAX_TOKENS,
             RECALL_PER_CANDIDATE_MAX_TOKENS,
             RECALL_CANDIDATES_TOTAL_MAX_TOKENS,
         )
-        from utils.tokenize import truncate_to_tokens
+        from utils.tokenize import count_tokens, truncate_to_tokens
         cand_lines = []
+        cand_entries: list[tuple[str, str]] = []
         id_to_obs: dict[str, dict] = {}
         for c in candidates:
             cid = c.get('id') or c.get('raw_id')
-            if not cid:
+            if not cid or cid in id_to_obs:
                 continue
             id_to_obs[cid] = c
             score = c.get('score', 0.0)
             # Truncate each candidate text to RECALL_PER_CANDIDATE_MAX_TOKENS.
             txt = truncate_to_tokens(c.get('text', '') or '', RECALL_PER_CANDIDATE_MAX_TOKENS)
-            cand_lines.append(f"[{cid}] (score={score:.2f}) {txt}")
+            line = f"[{cid}] (score={score:.2f}) {txt}"
+            cand_lines.append(line)
+            cand_entries.append((cid, line))
         if not cand_lines:
             return []
 
@@ -682,16 +687,34 @@ class MemoryRecallReranker:
 
         # Fast path: native zero-output Decisions API (e.g. Qwen decision-model-preview,
         # Gemini gemini-decision-1, OpenAI gpt-6-luna, OpenRouter Decisions). Evaluates
-        # all candidates in one parallel forward pass (~150-250ms, 0 output tokens) and
-        # falls through to the chat-LLM rerank path on any error.
+        # bounded candidates in one parallel forward pass (~150-250ms, 0 output tokens)
+        # and falls through to the `summary` chat-LLM rerank path on any error or cooldown.
         if (
             isinstance(decision_config, dict)
             and is_native_decision_protocol(decision_config.get('decision_protocol'))
             and decision_config.get('model')
         ):
             try:
-                candidate_ids = list(id_to_obs.keys())
-                state_text = f"Query:\n{query_text}\n\nCandidates:\n{candidates_text}"
+                state_header = f"Query:\n{query_text}\n\nCandidates:\n"
+                avail_tokens = max(
+                    256,
+                    DECISION_STATE_MAX_TOKENS - count_tokens(state_header) - 64,
+                )
+                native_lines: list[str] = []
+                native_candidate_ids: list[str] = []
+                used_tokens = 0
+                for cid, line in cand_entries:
+                    line_tokens = count_tokens(line) + 1
+                    if used_tokens + line_tokens > avail_tokens:
+                        if not native_lines:
+                            native_lines.append(truncate_to_tokens(line, avail_tokens))
+                            native_candidate_ids.append(cid)
+                        break
+                    native_lines.append(line)
+                    native_candidate_ids.append(cid)
+                    used_tokens += line_tokens
+
+                state_text = state_header + "\n".join(native_lines)
                 questions = {
                     cid: ScoreQuestion(
                         instructions=(
@@ -706,20 +729,24 @@ class MemoryRecallReranker:
                             "highly_relevant",
                         ),
                     )
-                    for cid in candidate_ids
+                    for cid in native_candidate_ids
                 }
                 dec_client = DecisionClient(config_manager=config_manager)
-                dec_resp = await dec_client.decide(
-                    state=state_text,
-                    questions=questions,
-                    config=decision_config,
+                dec_resp = await asyncio.wait_for(
+                    dec_client.decide(
+                        state=state_text,
+                        questions=questions,
+                        config=decision_config,
+                        timeout=5.0,
+                        allow_fallback=False,
+                        respect_cooldown=True,
+                        call_type="memory_recall_rerank",
+                    ),
                     timeout=5.0,
-                    allow_fallback=False,
-                    call_type="memory_recall_rerank",
                 )
                 if dec_resp.answers:
                     scored_rows: list[tuple[float, int, str]] = []
-                    for idx, cid in enumerate(candidate_ids):
+                    for idx, cid in enumerate(native_candidate_ids):
                         ans = dec_resp.answers.get(cid)
                         if ans is not None and ans.score_norm is not None:
                             scored_rows.append((float(ans.score_norm), idx, cid))
@@ -744,19 +771,14 @@ class MemoryRecallReranker:
                         return ranked_native
             except Exception as exc:
                 logger.warning(
-                    "[MemoryRecall] native decision rerank failed (%s); falling back to chat LLM",
+                    "[MemoryRecall] native decision rerank failed (%s); falling back to summary chat LLM",
                     type(exc).__name__,
                 )
 
-        if (
-            isinstance(decision_config, dict)
-            and not is_native_decision_protocol(decision_config.get('decision_protocol'))
-            and decision_config.get('model')
-            and decision_config.get('base_url')
-        ):
-            api_config = decision_config
-        else:
-            api_config = await config_manager.aget_model_api_config('summary')
+        # Non-native providers and native fallback always keep the established `summary`
+        # tier for chat-LLM reranking (matching project tier policy and avoiding silent
+        # model downgrades when the user has not configured a native decision provider).
+        api_config = await config_manager.aget_model_api_config('summary')
         # timeout=8: recall runs in query_memory, whose upstream plugin/core/context.py
         # defaults to 5 s. Local 8 s allows connection/one failure; timeout raises
         # APITimeoutError, with outer handlers already falling back to coarse ranks.

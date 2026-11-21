@@ -62,12 +62,34 @@ def _mark_native_cooldown(key: tuple[str, str, str]) -> None:
     _native_cooldown_until[key] = time.monotonic() + _NATIVE_COOLDOWN_SECONDS
 
 
+def _is_complete_native_decision_url(url: str) -> bool:
+    """Return True when *url* already points at a complete native decision route."""
+    cleaned = str(url or "").strip().rstrip("/").lower()
+    return cleaned.endswith(("/systemone", "/decisions"))
+
+
+def _derive_chat_base_url_from_native(url: str) -> str:
+    """Best-effort derivation of an OpenAI-compatible chat base URL from a native decision endpoint."""
+    cleaned = str(url or "").strip().rstrip("/")
+    lower = cleaned.lower()
+    if lower.endswith("/systemone"):
+        candidate = cleaned[: -len("/systemone")]
+        return candidate if candidate.lower().endswith(("/v1", "/openai")) else ""
+    if lower.endswith("/api/alpha/decisions"):
+        return cleaned[: -len("/api/alpha/decisions")] + "/api/v1"
+    if lower.endswith("/v1beta/decisions") and "generativelanguage.googleapis.com" in lower:
+        return cleaned[: -len("/v1beta/decisions")] + "/v1beta/openai/"
+    if lower.endswith("/v1/decisions"):
+        return cleaned[: -len("/decisions")]
+    return ""
+
+
 def _record_native_usage(response: DecisionResponse, *, call_type: str | None) -> None:
     try:
-        from utils.token_tracker import get_call_type, get_token_tracker
+        from utils.token_tracker import TokenTracker, _current_call_type
 
-        tracker = get_token_tracker()
-        ct = call_type or get_call_type() or "decision"
+        tracker = TokenTracker.get_instance()
+        ct = call_type or _current_call_type.get() or "decision"
         tracker.record(
             model=response.model,
             prompt_tokens=response.prompt_tokens,
@@ -78,9 +100,9 @@ def _record_native_usage(response: DecisionResponse, *, call_type: str | None) -
             source=f"decision:{response.protocol}",
             success=True,
         )
-    except Exception:
+    except Exception as exc:
         # Telemetry must never break decision execution.
-        pass
+        logger.debug("[DecisionClient] failed to record native token usage: %s", exc)
 
 
 class DecisionClient:
@@ -108,7 +130,9 @@ class DecisionClient:
         base_url = str(primary_cfg.get("base_url") or "").strip()
         api_key = str(primary_cfg.get("api_key") or "").strip()
         provider_type = primary_cfg.get("provider_type")
-        if fallback_model and base_url:
+        is_complete_native_url = _is_complete_native_decision_url(base_url)
+
+        if fallback_model and base_url and not is_complete_native_url:
             return {
                 "model": fallback_model,
                 "base_url": base_url,
@@ -122,22 +146,33 @@ class DecisionClient:
                 from utils.config_manager import get_config_manager
 
                 cm = get_config_manager()
-            except Exception:
+            except Exception as exc:
+                logger.debug("[DecisionClient] unable to load config_manager for fallback: %s", exc)
                 cm = None
-        if cm is None:
-            return None
+        if cm is not None:
+            for tier in ("emotion", "summary"):
+                try:
+                    cfg = (
+                        await cm.aget_model_api_config(tier)
+                        if hasattr(cm, "aget_model_api_config")
+                        else cm.get_model_api_config(tier)
+                    )
+                except Exception as exc:
+                    logger.debug("[DecisionClient] fallback tier=%s lookup failed: %s", tier, exc)
+                    continue
+                tier_base = str((cfg or {}).get("base_url") or "").strip()
+                if cfg and cfg.get("model") and tier_base and not _is_complete_native_decision_url(tier_base):
+                    return dict(cfg)
 
-        for tier in ("emotion", "summary"):
-            try:
-                cfg = (
-                    await cm.aget_model_api_config(tier)
-                    if hasattr(cm, "aget_model_api_config")
-                    else cm.get_model_api_config(tier)
-                )
-            except Exception:
-                continue
-            if cfg and cfg.get("model") and cfg.get("base_url"):
-                return dict(cfg)
+        if fallback_model and is_complete_native_url:
+            derived_base = _derive_chat_base_url_from_native(base_url)
+            if derived_base:
+                return {
+                    "model": fallback_model,
+                    "base_url": derived_base,
+                    "api_key": api_key,
+                    "provider_type": provider_type,
+                }
         return None
 
     async def decide(
@@ -149,6 +184,7 @@ class DecisionClient:
         config_manager: Any | None = None,
         timeout: float = 8.0,
         allow_fallback: bool = True,
+        respect_cooldown: bool = True,
         call_type: str | None = None,
     ) -> DecisionResponse:
         """Evaluate *questions* against *state* using the configured decision slot.
@@ -158,7 +194,11 @@ class DecisionClient:
         dispatches to the matching REST adapter and records token usage.
         If the native endpoint fails (or is in negative cooldown) and
         ``allow_fallback=True``, transparently falls back to
-        :class:`ChatFallbackDecisionAdapter`.
+        :class:`ChatFallbackDecisionAdapter`. When ``allow_fallback=False`` and
+        ``respect_cooldown=True`` (the default), calls during cooldown fail
+        immediately with :class:`DecisionProtocolError` so callers owning their
+        own fallback skip doomed HTTP retries. Pass ``respect_cooldown=False``
+        for manual connectivity probes that must always hit the live endpoint.
         """
         if not questions:
             return DecisionResponse(answers={}, model="", protocol="noop")
@@ -179,13 +219,31 @@ class DecisionClient:
                 from utils.token_tracker import set_call_type
 
                 set_call_type(call_type)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[DecisionClient] failed to set call_type=%s: %s", call_type, exc)
 
         if is_native_decision_protocol(protocol):
             endpoint = resolve_decision_endpoint(protocol, base_url, decision_url)
             cooldown_key = (protocol, endpoint, model)
-            if not allow_fallback or not _is_native_in_cooldown(cooldown_key):
+            in_cooldown = respect_cooldown and _is_native_in_cooldown(cooldown_key)
+            if in_cooldown:
+                if not allow_fallback:
+                    logger.debug(
+                        "[DecisionClient] native protocol=%s model=%s in cooldown; skipping native request",
+                        protocol,
+                        model,
+                    )
+                    raise DecisionProtocolError(
+                        f"native decision endpoint {protocol} ({model}) is in cooldown after permanent error",
+                        protocol=protocol,
+                        permanent_route_error=True,
+                    )
+                logger.debug(
+                    "[DecisionClient] native protocol=%s model=%s in cooldown; using chat fallback",
+                    protocol,
+                    model,
+                )
+            else:
                 adapter = get_decision_adapter(protocol)
                 try:
                     resp = await adapter.execute(
@@ -198,6 +256,7 @@ class DecisionClient:
                         provider_type=provider_type,
                         timeout=timeout,
                     )
+                    _native_cooldown_until.pop(cooldown_key, None)
                     _record_native_usage(resp, call_type=call_type)
                     return resp
                 except Exception as exc:
@@ -211,12 +270,6 @@ class DecisionClient:
                         model,
                         type(exc).__name__,
                     )
-            else:
-                logger.debug(
-                    "[DecisionClient] native protocol=%s model=%s in cooldown; using chat fallback",
-                    protocol,
-                    model,
-                )
 
             fb_cfg = await self._resolve_fallback_chat_config(cfg, config_manager)
             if not fb_cfg:
@@ -249,7 +302,7 @@ class DecisionClient:
         chat_base_url = base_url
         chat_api_key = api_key
         chat_provider_type = provider_type
-        if not (chat_model and chat_base_url):
+        if not (chat_model and chat_base_url) or _is_complete_native_decision_url(chat_base_url):
             fb_cfg = await self._resolve_fallback_chat_config(cfg, config_manager)
             if not fb_cfg:
                 raise DecisionProtocolError(
@@ -281,6 +334,7 @@ async def decide(
     config_manager: Any | None = None,
     timeout: float = 8.0,
     allow_fallback: bool = True,
+    respect_cooldown: bool = True,
     call_type: str | None = None,
 ) -> DecisionResponse:
     """Convenience entry point wrapping :meth:`DecisionClient.decide`."""
@@ -292,5 +346,6 @@ async def decide(
         config_manager=config_manager,
         timeout=timeout,
         allow_fallback=allow_fallback,
+        respect_cooldown=respect_cooldown,
         call_type=call_type,
     )

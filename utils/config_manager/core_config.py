@@ -140,6 +140,7 @@ class CoreConfigMixin:
         'gameSummary': 'SUMMARY_MODEL',
         'correction': 'CORRECTION_MODEL',
         'emotion': 'EMOTION_MODEL',
+        'decision': 'DECISION_MODEL',
         'vision': 'VISION_MODEL',
         'agent': 'AGENT_MODEL',
     }
@@ -2077,9 +2078,18 @@ class CoreConfigMixin:
                 or ''
             ).strip()
 
-            # Preserve region-rewritten base_url for free/dashscope when computing endpoint;
-            # only apply profile_decision_url when the provider declares a distinct decision path
-            # (e.g. Gemini /v1beta/decisions, OpenRouter /api/alpha/decisions).
+            profile_url_candidates = self._provider_url_candidates(
+                profile, 'OPENROUTER_URL', 'OPENROUTER_URLS'
+            )
+            base_url_matches_profile = (
+                not base_url
+                or any(same_endpoint(base_url, c) for c in profile_url_candidates)
+                or (bool(profile_decision_url) and same_endpoint(base_url, profile_decision_url))
+            )
+
+            # Preserve custom/gateway base_url instead of forcing the profile's fixed
+            # DECISION_URL onto a different host; only apply profile_decision_url when
+            # base_url still targets the profile's default service.
             decision_protocol = infer_decision_protocol(
                 model_name,
                 base_url,
@@ -2089,7 +2099,7 @@ class CoreConfigMixin:
             decision_url = resolve_decision_endpoint(
                 decision_protocol,
                 base_url,
-                profile_decision_url if decision_protocol != 'chat_fallback' else '',
+                profile_decision_url if (decision_protocol != 'chat_fallback' and base_url_matches_profile) else '',
             )
             fallback_model = str(
                 profile.get('EMOTION_MODEL')

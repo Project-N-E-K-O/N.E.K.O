@@ -4714,14 +4714,18 @@ function updateErrorMessage(errorDisplayElement, errorCode, errorDetail) {
     errorDisplayElement.style.display = 'inline';
 }
 
-function buildConnectivityCacheId(scope, providerKey, key, url) {
+function buildConnectivityCacheId(scope, providerKey, key, url, model = '') {
     // 内置 provider 的 cacheId 故意不带 url：URL 会在第一次 testKey 成功后从
     // 候选值翻成 rememberResolvedProviderUrl 写入的 resolved_url，
     // 把 url 带进 cacheId 会让指示灯/错误面板的注册 key 凭空换一份，
     // 导致后续刷新打不到原 DOM，表现成检测灯卡住或丢状态。
     // 同一组 scope+providerKey 在 key 也是空（free 端点专用）时退到空字符串占位，
     // 也不要回退到 url，保持 cacheId 在 URL 翻新时稳定。
+    // decision 槽位使用独立 scope + model 维度的缓存键，避免与普通聊天 assist 灯混用。
     if (scope && providerKey) {
+        if (scope === 'decision') {
+            return `${scope}|${providerKey}|${key || ''}|${model || ''}`;
+        }
         return `${scope}|${providerKey}|${key || ''}`;
     }
     return key || url || '';
@@ -4885,7 +4889,10 @@ const ConnectivityManager = {
                     result.secretMasked = coreResult.secretMasked;
                     result.providerType = getProviderType(coreProvider);
                     result.providerKey = coreProvider;
-                    result.providerScope = 'assist';
+                    result.providerScope = (mt === 'decision') ? 'decision' : 'assist';
+                    if (mt === 'decision') {
+                        result.model = getResolvedCustomModelId(mt, provider);
+                    }
                 }
             } else if (provider === 'follow_assist') {
                 // 跟随辅助 API
@@ -4895,13 +4902,16 @@ const ConnectivityManager = {
                 result.url = assistResult.url;
                 result.providerType = assistResult.providerType;
                 result.providerKey = assistResult.providerKey;
-                result.providerScope = assistResult.providerScope;
+                result.providerScope = (mt === 'decision') ? 'decision' : assistResult.providerScope;
+                if (mt === 'decision') {
+                    result.model = getResolvedCustomModelId(mt, provider);
+                }
             } else if (provider === 'custom') {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.providerType = (mt === 'omni')
                     ? 'websocket'
-                    : (mt === 'tts' ? 'tts' : 'openai_compatible');
+                    : (mt === 'tts' ? 'tts' : (mt === 'decision' ? 'decision' : 'openai_compatible'));
                 if (mt === 'tts') {
                     result.subType = 'openai_tts';
                     result.voiceId = document.getElementById('ttsVoiceId')?.value?.trim() || '';
@@ -4990,14 +5000,17 @@ const ConnectivityManager = {
                     result.url = getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: false }) || getProviderCoreUrl(provider, pInfo);
                     result.providerType = getProviderType(provider);
                     result.providerKey = provider;
-                    result.providerScope = 'assist';
+                    result.providerScope = (mt === 'decision') ? 'decision' : 'assist';
+                    if (mt === 'decision') {
+                        result.model = getResolvedCustomModelId(mt, provider);
+                    }
                 }
             }
 
             omitMaskedSecretFromConnectivity(result);
             if (result.key || result.url || result.secretMasked) {
                 if (result.providerKey && result.providerScope) {
-                    result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
+                    result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url, result.model || '');
                 } else {
                     result.cacheId = buildCustomConnectivityCacheId(
                         result.providerType,
@@ -5120,6 +5133,9 @@ const ConnectivityManager = {
                     // Built-in provider mode
                     body.provider_key = provider_key;
                     body.provider_scope = provider_scope;
+                    if (provider_scope === 'decision' && model) {
+                        body.model = model;
+                    }
                     if (provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
                         body.url = overrideUrl;
                     }
@@ -5196,7 +5212,7 @@ const ConnectivityManager = {
 
             const result = await sendRequest(url);
             cleanupRequest();
-            if (result.success && result.resolved_url && provider_key && provider_scope) {
+            if (result.success && result.resolved_url && provider_key && (provider_scope === 'core' || provider_scope === 'assist')) {
                 rememberResolvedProviderUrl(provider_scope, provider_key, result.resolved_url);
             }
             return result;
@@ -5275,9 +5291,9 @@ const ConnectivityManager = {
                     let isFree = false;
                     if (provider === 'follow_core' && coreSelect && coreSelect.value === 'free') isFree = true;
                     else if (provider === 'follow_assist' && assistSelect && assistSelect.value === 'free') isFree = true;
-                    // For custom provider, also pass model from the input
+                    // For custom/decision slots, prefer resolved model ID from resolveEffectiveKey
                     const modelInput = document.getElementById(`${mt}ModelId`);
-                    const model = modelInput ? modelInput.value.trim() : '';
+                    const model = customResult.model || (modelInput ? modelInput.value.trim() : '');
                     keyConfigs[customCacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
@@ -5352,7 +5368,7 @@ const ConnectivityManager = {
                     return;
                 } else if (value.success) {
                     summary.succeeded += 1;
-                    if (value.provider_key && value.provider_scope && value.resolved_url) {
+                    if (value.provider_key && (value.provider_scope === 'core' || value.provider_scope === 'assist') && value.resolved_url) {
                         summary.resolvedProviderUrls[`${value.provider_scope}:${value.provider_key}`] = value.resolved_url;
                     }
                 } else {
@@ -5430,7 +5446,7 @@ const ConnectivityManager = {
                         isFree = true;
                     }
                     const modelInput = document.getElementById(`${mt}ModelId`);
-                    const model = modelInput ? modelInput.value.trim() : '';
+                    const model = customResult.model || (modelInput ? modelInput.value.trim() : '');
                     keyConfigs[cacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,

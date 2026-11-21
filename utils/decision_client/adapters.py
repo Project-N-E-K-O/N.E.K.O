@@ -19,10 +19,13 @@ from __future__ import annotations
 
 import abc
 import json
+import math
 import re
 from typing import Any, Mapping
 
 import httpx
+
+from utils.logger_config import get_module_logger
 
 from .schema import (
     BoolQuestion,
@@ -35,6 +38,8 @@ from .schema import (
     resolve_decision_endpoint,
 )
 
+logger = get_module_logger(__name__)
+
 
 def _clamp_prob(val: Any, default: float | None = None) -> float | None:
     if val is None or isinstance(val, bool):
@@ -43,20 +48,20 @@ def _clamp_prob(val: Any, default: float | None = None) -> float | None:
         f = float(val)
     except (TypeError, ValueError):
         return default
-    if f != f:  # NaN
+    if math.isnan(f) or math.isinf(f):
         return default
     return max(0.0, min(1.0, f))
 
 
-def _clamp_float(val: Any, lo: float, hi: float, default: float) -> float:
+def _extract_numeric_score(val: Any, lo: float, hi: float) -> float | None:
     if val is None or isinstance(val, bool):
-        return default
+        return None
     try:
         f = float(val)
     except (TypeError, ValueError):
-        return default
-    if f != f:
-        return default
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
     return max(lo, min(hi, f))
 
 
@@ -98,8 +103,9 @@ def _extract_error_detail(resp: httpx.Response) -> str:
                 return str(err)[:200]
             if data.get("message"):
                 return str(data["message"])[:200]
-    except Exception:
-        pass
+    except Exception as exc:
+        # Non-JSON error bodies are common on gateway/proxy failures; fall back to raw text.
+        logger.debug("[DecisionAdapter] non-JSON error body: %s", exc)
     return (resp.text or "")[:200]
 
 
@@ -221,14 +227,20 @@ class SystemOneAdapter(DecisionAdapter):
                     )
             elif isinstance(q, ScoreQuestion):
                 max_idx = float(len(q.levels) - 1)
-                raw_score = item.get("score")
-                score_val = _clamp_float(raw_score, 0.0, max_idx, 0.0)
-                if raw_score is None and probs:
-                    # Expected value from per-level probabilities
-                    score_val = sum(
-                        idx * probs.get(lbl, 0.0)
-                        for idx, lbl in enumerate(q.levels)
-                    )
+                score_val = _extract_numeric_score(item.get("score"), 0.0, max_idx)
+                if score_val is None:
+                    matched_probs = {lbl: probs[lbl] for lbl in q.levels if lbl in probs}
+                    if matched_probs:
+                        score_val = _extract_numeric_score(
+                            sum(
+                                idx * matched_probs.get(lbl, 0.0)
+                                for idx, lbl in enumerate(q.levels)
+                            ),
+                            0.0,
+                            max_idx,
+                        )
+                if score_val is None:
+                    continue
                 answers[qid] = DecisionAnswer(
                     question_type="score",
                     value=score_val,
@@ -419,13 +431,20 @@ class OpenAIDecisionsAdapter(DecisionAdapter):
                 raw_score = item.get("score")
                 if raw_score is None:
                     raw_score = item.get("score_index")
-                if raw_score is None and probs:
-                    score_val = sum(
-                        idx * probs.get(lbl, 0.0)
-                        for idx, lbl in enumerate(q.levels)
-                    )
-                else:
-                    score_val = _clamp_float(raw_score, 0.0, max_idx, 0.0)
+                score_val = _extract_numeric_score(raw_score, 0.0, max_idx)
+                if score_val is None:
+                    matched_probs = {lbl: probs[lbl] for lbl in q.levels if lbl in probs}
+                    if matched_probs:
+                        score_val = _extract_numeric_score(
+                            sum(
+                                idx * matched_probs.get(lbl, 0.0)
+                                for idx, lbl in enumerate(q.levels)
+                            ),
+                            0.0,
+                            max_idx,
+                        )
+                if score_val is None:
+                    continue
                 answers[qid] = DecisionAnswer(
                     question_type="score",
                     value=score_val,
@@ -600,17 +619,24 @@ class GeminiDecisionsAdapter(DecisionAdapter):
                         p = probs.get(lbl)
                     if p is not None:
                         label_probs[lbl] = p
-                raw_score = item.get("score")
-                if raw_score is not None and not isinstance(raw_score, bool):
-                    # Gemini returns 1-based expected score in [1, N]
-                    score_val = _clamp_float(float(raw_score) - 1.0, 0.0, max_idx, 0.0)
+                raw_one_based = _extract_numeric_score(
+                    item.get("score"), 1.0, float(len(q.levels))
+                )
+                if raw_one_based is not None:
+                    score_val: float | None = max(0.0, min(max_idx, raw_one_based - 1.0))
                 elif label_probs:
-                    score_val = sum(
-                        idx * label_probs.get(lbl, 0.0)
-                        for idx, lbl in enumerate(q.levels)
+                    score_val = _extract_numeric_score(
+                        sum(
+                            idx * label_probs.get(lbl, 0.0)
+                            for idx, lbl in enumerate(q.levels)
+                        ),
+                        0.0,
+                        max_idx,
                     )
                 else:
-                    score_val = 0.0
+                    score_val = None
+                if score_val is None:
+                    continue
                 answers[qid] = DecisionAnswer(
                     question_type="score",
                     value=score_val,
@@ -835,9 +861,9 @@ class ChatFallbackDecisionAdapter(DecisionAdapter):
                         raw_score = item.get("value")
                     conf = _clamp_prob(item.get("confidence"))
                     probs = _normalize_probs_map(item.get("probabilities"))
-                if raw_score is None:
+                score_val = _extract_numeric_score(raw_score, 0.0, max_idx)
+                if score_val is None:
                     continue
-                score_val = _clamp_float(raw_score, 0.0, max_idx, 0.0)
                 answers[qid] = DecisionAnswer(
                     question_type="score",
                     value=score_val,
