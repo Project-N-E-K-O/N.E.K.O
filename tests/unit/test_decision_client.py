@@ -1810,15 +1810,30 @@ async def test_connectivity_decision_probe_follows_resolved_region():
     assert mock_dec.await_count == 0
     assert mock_oai.await_args.args[0] == us
 
-    # A URL that is not one of the provider's own endpoints is refused.
+    # A URL that is not one of the provider's own endpoints (e.g. stale after the
+    # candidate list changed) is never requested: it is ignored and the probe
+    # uses the provider defaults.
     p_oai, p_dec = _patches()
     with p_oai as mock_oai, p_dec as mock_dec:
         res = await test_connectivity(ConnectivityTestRequest(
             provider_key="qwen_intl", provider_scope="decision", api_key="sk",
             workspace_id="llm-sg", url="https://evil.example/compatible-mode/v1",
         ))
-    assert res["success"] is False
-    assert mock_oai.await_count == 0 and mock_dec.await_count == 0
+    assert res["success"] is True
+    assert mock_oai.await_count == 0
+    assert mock_dec.await_args.args[0] == (
+        "https://llm-sg.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone"
+    )
+    p_oai, p_dec = _patches()
+    with p_oai as mock_oai, p_dec as mock_dec:
+        res = await test_connectivity(ConnectivityTestRequest(
+            provider_key="qwen_intl", provider_scope="decision", api_key="sk",
+            url="https://evil.example/compatible-mode/v1",
+        ))
+    assert res["success"] is True
+    assert res["decision_fallback"] == "workspace_missing"
+    assert mock_dec.await_count == 0
+    assert "evil.example" not in mock_oai.await_args.args[0]
 
 
 @pytest.mark.unit
@@ -1958,3 +1973,21 @@ async def test_memory_recall_falls_back_when_one_batch_has_no_valid_scores():
     assert slow_cancelled.is_set()
     assert mock_create.await_count == 1
     assert [r["id"] for r in ranked] == ["m0", "m1"]
+
+
+@pytest.mark.unit
+def test_auth_errors_are_permanent_only_for_bailian_systemone():
+    from utils.decision_client.adapters import _http_error_is_permanent
+
+    for status in (400, 404, 405, 422):
+        assert _http_error_is_permanent(status, "systemone")
+        assert _http_error_is_permanent(status, "openrouter_decisions")
+        assert _http_error_is_permanent(status)
+    # Bailian: rejected key / model not enabled for the workspace stays rejected.
+    assert _http_error_is_permanent(401, "systemone")
+    assert _http_error_is_permanent(403, "systemone")
+    # OpenRouter answers 403 for a single moderated input: no global pause.
+    assert not _http_error_is_permanent(403, "openrouter_decisions")
+    assert not _http_error_is_permanent(401, "openrouter_decisions")
+    assert not _http_error_is_permanent(403)
+    assert not _http_error_is_permanent(500, "systemone")

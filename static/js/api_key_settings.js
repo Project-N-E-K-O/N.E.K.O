@@ -5562,11 +5562,15 @@ const ConnectivityManager = {
             };
         };
         const entries = Object.entries(keyConfigs);
-        const firstWave = entries.filter(([, config]) => !isBailianDecision(config)).map(runOne);
+        const firstWaveEntries = entries.filter(([, config]) => !isBailianDecision(config));
+        const firstWave = firstWaveEntries.map(runOne);
+        // 只需等辅助 API 那一项（地域结果来自它），不必等第一批里其他可能很慢的检测。
+        const assistIndex = firstWaveEntries.findIndex(([, config]) => config.provider_scope === 'assist');
+        const assistDone = assistIndex >= 0 ? Promise.allSettled([firstWave[assistIndex]]) : Promise.resolve();
         // 地域按 Key 定：只有和辅助 API 用同一把 Key 时，才沿用它刚解析出的地域端点。
         const assistProbeKey = assistResult.providerKey && !assistResult.secretMasked ? (assistResult.key || '') : null;
         const deferredWave = entries.filter(([, config]) => isBailianDecision(config)).map(async ([cacheId, config]) => {
-            await Promise.allSettled(firstWave);
+            await assistDone;
             const sameKeyAsAssist = assistProbeKey !== null
                 && assistResult.providerKey === config.provider_key
                 && assistProbeKey === (config.api_key || '');

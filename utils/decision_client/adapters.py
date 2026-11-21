@@ -107,14 +107,19 @@ def _truncate_state_for_decision(state: Any) -> Any:
     return truncate_head_tail_tokens(state, half, half)
 
 
-def _http_error_is_permanent(status_code: int) -> bool:
+def _http_error_is_permanent(status_code: int, protocol: str = "") -> bool:
     """HTTP statuses that will not change until the route, model or API key changes.
 
-    Covers unsupported/retired endpoints (400/404/405/422) and rejected
-    credentials or a model not enabled for the workspace (401/403). The
-    cooldown key includes the API key fingerprint, so a new key retries at once.
+    Covers unsupported/retired endpoints (400/404/405/422). For the Bailian
+    ``systemone`` route, 401/403 also mean rejected credentials or a model not
+    enabled for the workspace; the cooldown key includes the API key
+    fingerprint, so a new key retries at once. Other gateways (e.g. OpenRouter)
+    also answer 403 for a single moderated input, which must not pause every
+    later decision, so there 401/403 stay non-permanent.
     """
-    return status_code in (400, 401, 403, 404, 405, 422)
+    if status_code in (400, 404, 405, 422):
+        return True
+    return protocol == "systemone" and status_code in (401, 403)
 
 
 def _extract_error_detail(resp: httpx.Response) -> str:
@@ -389,7 +394,7 @@ class SystemOneAdapter(DecisionAdapter):
                 f"{self.protocol} HTTP {resp.status_code}: {_extract_error_detail(resp)}",
                 status_code=resp.status_code,
                 protocol=self.protocol,
-                permanent_route_error=_http_error_is_permanent(resp.status_code),
+                permanent_route_error=_http_error_is_permanent(resp.status_code, self.protocol),
             )
         try:
             body = resp.json()

@@ -1035,16 +1035,19 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 from utils.http.url import same_endpoint
 
                 # The page may pass the chat endpoint the key actually resolved to
-                # (e.g. qwen_intl on the US host). It must be one of the provider's
-                # own candidates; only the primary one has a workspace decision host.
+                # (e.g. qwen_intl on the US host); only the primary one has a
+                # workspace decision host. An endpoint that is not one of the
+                # provider's own candidates (e.g. a stale saved one after the
+                # candidate list changed) is never requested: it is ignored and
+                # the probe falls back to the provider defaults.
                 regional_url = (req.url or "").strip()
                 if regional_url:
+                    decision_url_override_consumed = True
                     if not any(
                         same_endpoint(regional_url, c)
                         for c in _normalize_provider_url_candidates(profile, "openrouter_url")
                     ):
-                        return {"success": False, "error": "无效的 provider URL override", "error_code": "missing_params"}
-                    decision_url_override_consumed = True
+                        regional_url = ""
             if (
                 is_native_decision_protocol(resolved_protocol)
                 and profile_decision_url_template
@@ -1090,7 +1093,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 url_stripped = profile_openrouter_url
                 url_candidates = (
                     [profile_openrouter_url]
-                    if decision_url_override_consumed and profile_openrouter_url
+                    if regional_url and profile_openrouter_url
                     else _normalize_provider_url_candidates(profile, "openrouter_url")
                 )
                 provider_type = _normalize_provider_type(profile, url_stripped)
