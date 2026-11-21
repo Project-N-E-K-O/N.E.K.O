@@ -763,7 +763,7 @@ def get_model_files(model_name: str):
         expression_files = []
 
         # Recursively search all subfolders.
-        def search_files_recursive(directory, target_ext, result_list):
+        def search_files_recursive(directory, target_ext, result_list, ancestors=()):
             """
             Recursively search for files with the given extension.
             args:
@@ -772,6 +772,10 @@ def get_model_files(model_name: str):
             - result_list: list to store results
             """
             try:
+                # Real paths of the directories on the current recursion chain. A link back
+                # to one of them (e.g. ``loop -> .``) is not entered; links to other inside
+                # directories are still listed, so alias folders keep showing up twice.
+                chain = ancestors + (os.path.normcase(os.path.realpath(directory)),)
                 for item in os.listdir(directory):
                     item_path = os.path.join(directory, item)
                     if not _is_inside_model_dir(model_root_real, item_path):
@@ -784,8 +788,10 @@ def get_model_files(model_name: str):
                             relative_path = relative_path.replace('\\', '/')
                             result_list.append(relative_path)
                     elif os.path.isdir(item_path):
+                        if os.path.normcase(os.path.realpath(item_path)) in chain:
+                            continue
                         # Search subdirectories recursively.
-                        search_files_recursive(item_path, target_ext, result_list)
+                        search_files_recursive(item_path, target_ext, result_list, chain)
             except Exception as e:
                 logger.warning(f"搜索目录 {directory} 时出错: {e}")
         
@@ -1100,7 +1106,7 @@ def get_model_files_by_id(model_id: str):
         expression_files = []
         
         # Recursively search all subfolders.
-        def search_files_recursive(directory, target_ext, result_list):
+        def search_files_recursive(directory, target_ext, result_list, ancestors=()):
             """
             Recursively search for files with the given extension.
             args:
@@ -1109,6 +1115,10 @@ def get_model_files_by_id(model_id: str):
             - result_list: list to store the found file paths
             """
             try:
+                # Real paths of the directories on the current recursion chain. A link back
+                # to one of them (e.g. ``loop -> .``) is not entered; links to other inside
+                # directories are still listed, so alias folders keep showing up twice.
+                chain = ancestors + (os.path.normcase(os.path.realpath(directory)),)
                 for item in os.listdir(directory):
                     item_path = os.path.join(directory, item)
                     if not _is_inside_model_dir(model_root_real, item_path):
@@ -1121,8 +1131,10 @@ def get_model_files_by_id(model_id: str):
                             relative_path = relative_path.replace('\\', '/')
                             result_list.append(relative_path)
                     elif os.path.isdir(item_path):
+                        if os.path.normcase(os.path.realpath(item_path)) in chain:
+                            continue
                         # Search subdirectories recursively.
-                        search_files_recursive(item_path, target_ext, result_list)
+                        search_files_recursive(item_path, target_ext, result_list, chain)
             except Exception as e:
                 logger.warning(f"搜索目录 {directory} 时出错: {e}")
         

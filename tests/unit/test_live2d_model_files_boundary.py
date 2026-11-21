@@ -174,3 +174,24 @@ def test_skipped_entry_is_logged(monkeypatch, tmp_path, outside, caplog):
     with caplog.at_level("INFO"):
         _by_name(monkeypatch, model_dir)
     assert any("out_dir" in r.getMessage() for r in caplog.records)
+
+
+def _add_loops(model_dir: Path) -> None:
+    """Links back to the folder itself and to an ancestor of a subfolder."""
+    _link(model_dir, model_dir / "loop")
+    _link(model_dir / "motions", model_dir / "motions" / "sub" / "back")
+
+
+def test_model_files_by_name_does_not_recurse_into_ancestor_links(monkeypatch, tmp_path, outside):
+    model_dir = tmp_path / "user_live2d" / "m"
+    _build_model(model_dir, outside)
+    _add_loops(model_dir)
+    # Alias links still list their files twice; loop links add nothing.
+    _assert_listing(_by_name(monkeypatch, model_dir))
+
+
+def test_model_files_by_id_does_not_recurse_into_ancestor_links(monkeypatch, tmp_path, outside):
+    item_dir = tmp_path / "workshop" / "124"
+    _build_model(item_dir, outside)
+    _add_loops(item_dir)
+    _assert_listing(_by_id(monkeypatch, item_dir, "124"))
