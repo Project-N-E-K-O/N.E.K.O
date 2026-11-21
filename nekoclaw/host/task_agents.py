@@ -409,11 +409,36 @@ class _Session:
     # The host ended the commission itself when those were used, and closes
     # the session: what the run says as it is stopped decides nothing.
     wound_up: bool = False
+    # The session is a copy of a project's session that a commission of
+    # that project is carried on in, the session itself being at another
+    # one (``_carry_on_in_copy``): which session it was copied from.
+    carries_on_for: str | None = None
+    # The tool whose call in such a copy hands the commission back to the
+    # session itself, once one was called; the requests the copy has left
+    # to write down what it found, once it was told to (None before); and
+    # what it wrote since.
+    hand_back: str | None = None
+    hand_back_left: int | None = None
+    findings: list[str] = field(default_factory=list)
+    # Set once it is handed back, with what is carried back: the session is
+    # closed, and what its runs say as they end decides nothing; the
+    # commission goes on in the session itself once the copy is closed.
+    handing_back: str | None = None
 
 
 # How many ends of runs a session keeps at the most (``_Session.ends``):
 # a backstop, far above what texts are ever open at once.
 _ENDS_KEPT_MAX = 64
+
+
+def _carried_on(commission: Commission) -> bool:
+    """Whether a commission is of the kind that is carried on in a copy of its session while that one is held.
+
+    One that she dispatched (or promised), and nothing else: not a task
+    agent another one started, a question another session asked, or what
+    another session wrote, which are at home in a session of their own.
+    """
+    return commission.parent_id is None and commission.source in ("dispatch", "promised")
 
 
 def _number(value: Any) -> int | None:
@@ -1064,6 +1089,16 @@ class TaskAgentManager:
         # the newest is looked at, the ledger written and the count
         # noted with nothing of the same session in between.
         self._usage_locks: dict[str, asyncio.Lock] = {}
+        # When each session last made a model request (the loop's clock):
+        # whether a provider most likely still has the head of its requests
+        # in its cache, for a copy of it (``_carry_on_in_copy``).
+        self._last_request_at: dict[str, float] = {}
+        # Sessions a copy is being made of right now for commissions that
+        # are to be carried on in it, each with those commissions.
+        self._copying_for: dict[str, set[str]] = {}
+        # For a commission whose opening message tells its session what
+        # copies of it finished: those commissions (``_copies_said``).
+        self._forks_said: dict[str, list[str]] = {}
         self._starting: set[asyncio.Task[Any]] = set()
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pump: asyncio.Task[None] | None = None
@@ -1336,6 +1371,9 @@ class TaskAgentManager:
                 # as failed while it still has its place in the queue, and
                 # be started from there later.
                 logger.warning("noting that commission %s is queued failed", commission.id, exc_info=True)
+            # Queued behind another commission of its session: it may be
+            # carried on in a copy of the session meanwhile.
+            self._try_carry_on(commission)
             return True
         # Started as a task of its own: whoever handed the commission over may
         # be cancelled (the host shutting down), and a session half set up
@@ -1654,6 +1692,9 @@ class TaskAgentManager:
         capped = truncate_to_tokens("\n\n".join(parts), TASK_AGENT_BRIEF_MAX_TOKENS) if parts else ""
         opening = "\n\n".join(part for part in (whole, capped) if part)
         # After the cap above, each within a cap of its own.
+        copies = await self._copies_said(commission)
+        if copies:
+            opening += "\n\n" + copies
         if excerpt:
             opening += "\n\n" + excerpt
         picked = await self._picked_entries(commission)
@@ -1672,6 +1713,50 @@ class TaskAgentManager:
             # what the host writes in to her and on the HUD.
             opening += "\n\n" + REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", language)
         return opening
+
+    async def _copies_said(self, commission: Commission) -> str:
+        """Return what the message that opens a commission says of copies of its session; empty for nothing.
+
+        Worked on in a copy of its project's session (``_carry_on_in_copy``):
+        that it is one, what it can do there, and how it goes back to the
+        session itself. Worked on in a project's session that copies of it
+        finished commissions in since it took an opening message last:
+        which, and what came of them (``TASK_AGENT_FORKED_WORK_MAX_ITEMS``,
+        within ``TASK_AGENT_FORKED_WORK_MAX_TOKENS``). What was said in
+        them did not come back to it.
+        """
+        from config import nekoclaw_settings as settings
+        from config.prompts import prompts_nekoclaw_brain as texts
+        from utils.tokenize import truncate_to_tokens
+
+        self._forks_said.pop(commission.id, None)
+        if not _carried_on(commission) or not commission.session_id:
+            return ""
+        place = await self._ledger.get_session(commission.session_id)
+        if place is None:
+            return ""
+        if place.kind == "fork":
+            return texts.TASK_AGENT_COMMISSION_IN_COPY if place.forked_from else ""
+        if place.kind != "project":
+            return ""
+        done = [
+            item
+            for item in await self._ledger.forked_work(place.id, limit=settings.TASK_AGENT_FORKED_WORK_MAX_ITEMS)
+            if item.id != commission.id
+        ]
+        if not done:
+            return ""
+        # Told once the session took the message that says it (``_note_opened``).
+        self._forks_said[commission.id] = [item.id for item in done]
+        items = "\n".join(
+            texts.TASK_AGENT_FORKED_WORK_ITEM.format(
+                title=item.title, status=item.status, result=" ".join((item.result_summary or item.status_reason or "").split())
+            )
+            for item in done
+        )
+        return truncate_to_tokens(
+            texts.TASK_AGENT_FORKED_WORK.format(items=items), settings.TASK_AGENT_FORKED_WORK_MAX_TOKENS
+        )
 
     async def _opening_of_question(self, commission: Commission) -> str:
         """Return what opens the commission in which a copy of a session answers a question another session asked it.
@@ -1960,6 +2045,11 @@ class TaskAgentManager:
             if kept is None:
                 raise RuntimeError("the session of the commission is not on record")
             session.cleared_before = kept.status == "cleared"
+            if kept.kind == "fork" and kept.forked_from and _carried_on(commission):
+                # A commission of the project carried on in a copy of its
+                # session (``_carry_on_in_copy``), also when it is taken
+                # up again there.
+                session.carries_on_for = kept.forked_from
             # Where a session is kept and where its task agent works are the
             # session's, on record from when it was first opened. Until then
             # they follow from what its first commission brings: the working
@@ -1984,7 +2074,9 @@ class TaskAgentManager:
             # it is the one its session is at: a commission that was stuck
             # lets the session go on with the next, and what it is told
             # after that reads as part of that other one.
-            opened_at = await self._ledger.first_event_at(commission.id, "opened")
+            # (In this session: one begun in a copy of it and handed back
+            # took its opening message there, which this one never saw.)
+            opened_at = await self._ledger.opened_in(commission.id, session.session_id)
             opened = opened_at is not None
             at_it = opened and await self._ledger.opened_last(session.session_id) == commission.id
 
@@ -2947,6 +3039,8 @@ class TaskAgentManager:
                 # what the run took without word, and the session's place
                 # held. That the commission was opened is noted later.
                 logger.warning("noting that a commission was opened failed; its run's end is acted on all the same", exc_info=True)
+        if session.carries_on_for is not None:
+            self._watch_copy(session, event)
         if kind == "text":
             delta = str(event.get("delta") or "")
             session.text.append(delta)
@@ -3002,6 +3096,12 @@ class TaskAgentManager:
             # Not on record: noted with the next event of the session.
             session.opening_sent = True
             raise
+        for told in self._forks_said.pop(session.commission_id, ()):
+            # What copies of the session finished, said with that message.
+            try:
+                await self._ledger.append_event(told, "told_to_session", {"commission_id": session.commission_id})
+            except Exception:  # noqa: BLE001 - told again with the next commission, which does little harm
+                logger.warning("noting that a session was told of what a copy of it did failed", exc_info=True)
 
     def _summary(self, text: str) -> str:
         from config.nekoclaw_settings import TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS
@@ -3225,6 +3325,13 @@ class TaskAgentManager:
         # gone, ends what lasted for the run.
         if not (reason == "completed" and isinstance(inputs, int) and inputs < session.sent):
             self._run_over(commission_id)
+        if session.handing_back is not None:
+            # A copy that handed its commission back (``_hand_back``): what
+            # its run says as it stops decides nothing, and once it is
+            # closed the commission goes on in the session itself.
+            if reason == "closed":
+                await self._handed_back(session)
+            return
         if reason == "closed":
             # An answer kept for a run that never came is not lost with the
             # session: it takes the commission up again from its transcript.
@@ -3268,6 +3375,10 @@ class TaskAgentManager:
                 session.held_end = event
                 return
             session.held_end = None
+            if session.hand_back_left is not None and await self._hand_back(session, said=str(event.get("text") or "")):
+                # A copy that was told to write down what it found for the
+                # session itself did, and ended its run: handed back.
+                return
             if commission.status == "waiting_user" and session.awaiting_prompt:
                 # It asked for an answer and stopped; the session stays for the answer.
                 session.run_ended = True
@@ -4075,6 +4186,13 @@ class TaskAgentManager:
         once per request, after the request, so the request that uses the
         last unit still completes.
         """
+        if not event.get("summary"):
+            # A copy begins its requests as the session it was copied from
+            # does: what a provider keeps of the one is the other's too.
+            now = asyncio.get_running_loop().time()
+            self._last_request_at[session.session_id] = now
+            if session.carries_on_for is not None:
+                self._last_request_at[session.carries_on_for] = now
         await self._note_usage(session.session_id, session.commission_id, event)
         if self._meter is None or session.closing or event.get("summary"):
             return
@@ -6669,6 +6787,13 @@ class TaskAgentManager:
         limit = int(TASK_AGENT_USAGE_LIMIT_TOKENS or 0)
         commission_id = self._held_by.get(session_id)
         session = self._sessions.get(commission_id or "")
+        if session is not None and session.carries_on_for is not None and not session.closing:
+            # A copy that a commission is carried on in: one that called a
+            # tool which changes something is handed back (``_watch_copy``,
+            # seen once what the session said before it asked is handled).
+            await self._caught_up()
+            if self._sessions.get(commission_id or "") is session and session.hand_back is not None and not session.closing:
+                return await self._hand_back_step(session)
         if limit <= 0 or commission_id is None or session is None or session.closing:
             return None
         # Always, however far from the line the account stands: what is
@@ -6854,6 +6979,259 @@ class TaskAgentManager:
             "limit": allowed if limit > 0 else None,
             "session": ({**counted(kept), "context_tokens": kept.context_tokens} if kept is not None else None),
         }
+
+    # -- carrying on in a copy of a project's session ---------------------
+
+    def _carrying_on(self, session_id: str) -> int:
+        """How many commissions are carried on in copies of a session, or are about to be."""
+        return sum(1 for item in self._sessions.values() if item.carries_on_for == session_id) + len(
+            self._copying_for.get(session_id, ())
+        )
+
+    def _waits_for(self, commission_id: str, session_id: str) -> bool:
+        """Whether a commission is queued for a session that another commission holds, and nothing else."""
+        return (
+            commission_id in self._queue
+            and commission_id not in self._sessions
+            and commission_id not in self._resume
+            and self._session_of.get(commission_id) == session_id
+            and not self._session_free_for(commission_id)
+        )
+
+    def _try_carry_on(self, commission: Commission) -> None:
+        """Have a commission that was queued behind another one of its session carried on in a copy, if it may be.
+
+        Looked at once, as it is queued, with nothing awaited: whether it
+        is of the kind that is (``_carried_on``), whether its session is
+        held by another commission, and whether that many are carried on
+        in copies of it already (``TASK_AGENT_FORK_CONTINUE_MAX_PER_SESSION``).
+        The rest is looked at by ``_carry_on_in_copy``, which runs by itself:
+        the commission stays queued meanwhile, and is started in its
+        session as ever should that be free first.
+        """
+        from config import nekoclaw_settings as settings
+
+        if not settings.TASK_AGENT_FORK_CONTINUE_ENABLED or self._closed or not _carried_on(commission):
+            return
+        main = self._session_of.get(commission.id)
+        if main is None or not self._waits_for(commission.id, main):
+            return
+        if self._carrying_on(main) >= settings.TASK_AGENT_FORK_CONTINUE_MAX_PER_SESSION:
+            return
+        waiting = self._copying_for.setdefault(main, set())
+        waiting.add(commission.id)
+
+        def over(_done: Any) -> None:
+            waiting.discard(commission.id)
+            if not waiting and self._copying_for.get(main) is waiting:
+                del self._copying_for[main]
+
+        self._spawn(self._carry_on_in_copy(commission.id, main)).add_done_callback(over)
+
+    async def _carry_on_in_copy(self, commission_id: str, main: str) -> None:
+        """Carry a queued commission on in a copy of the session it waits for, if that is worth it.
+
+        Only a project's session of the built-in runtime is copied, and
+        only while the commission that holds it is at work or waits for the
+        user (one that rests lets the session go). Its conversation is sent
+        with every request of the copy: from a provider's cache, most
+        likely, while the session made a request lately
+        (``TASK_AGENT_FORK_CONTINUE_HOT_SECONDS``); past that, it is not
+        copied when it is long (``TASK_AGENT_FORK_CONTINUE_COLD_MAX_TOKENS``),
+        and the commission waits as it would have. Nor while no place is
+        free, NekoClaw is switched off, or everything is being stopped.
+
+        Copied (``fork_session``), and looked at again with nothing awaited
+        from there to where it takes its place: still queued for the
+        session, which is still held, with a place free. Then it is taken
+        out of the queue and started in the copy, which the ledger has as
+        its session from then on. Otherwise the copy is removed at once and
+        the commission waits on.
+        """
+        from config import nekoclaw_settings as settings
+
+        if not self._waits_for(commission_id, main):
+            return
+        kept = await self._ledger.get_session(main)
+        if kept is None or kept.kind != "project" or kept.runtime == RUNTIME_DSH or kept.status == "cleared":
+            return
+        holder = self._held_by.get(main)
+        stands = await self._ledger.get(holder) if holder is not None else None
+        if stands is None or stands.status not in ("working", "waiting_user") or stands.resting:
+            return
+        last = self._last_request_at.get(main)
+        hot = last is not None and asyncio.get_running_loop().time() - last <= settings.TASK_AGENT_FORK_CONTINUE_HOT_SECONDS
+        if not hot and kept.context_tokens > settings.TASK_AGENT_FORK_CONTINUE_COLD_MAX_TOKENS:
+            return
+
+        def may() -> bool:
+            return (
+                self._waits_for(commission_id, main)
+                and not self._closed
+                and len(self._sessions) < self.limit
+                and self._is_switched_on()
+                and not getattr(self._waker, "stopping", False)
+            )
+
+        if not may():
+            return
+        try:
+            copy = await self.fork_session(main)
+        except ForkRefused as exc:
+            logger.info("commission %s waits for its session: it could not be copied (%s)", commission_id, exc)
+            return
+        if not may():
+            await self._discard_copy(copy)
+            return
+        self._queue.remove(commission_id)
+        self._session_of[commission_id] = copy.id
+        if not self._take_place(commission_id):
+            # (Not to be: a place is free, and the copy is held by nobody.)
+            self._session_of[commission_id] = main
+            self._queue.append(commission_id)
+            await self._discard_copy(copy)
+            return
+        self._sessions[commission_id].carries_on_for = main
+        try:
+            # On record with the copy from here on: what it is at, what it
+            # used, and where it is taken up again.
+            await self._ledger.update(commission_id, session_id=copy.id)
+            await self._ledger.append_event(
+                commission_id, "carried_on_in_copy", {"session_id": copy.id, "of": main, "behind": holder}
+            )
+        except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
+            logger.warning("carrying commission %s on in a copy of its session failed: %s", commission_id, exc)
+            # Its place is given back; the copy, once it is over.
+            self._discard(commission_id)
+            await self._fail(commission_id, f"the task agent could not be started: {exc}", said="start", detail=str(exc))
+            return
+        await self._launch(commission_id)
+
+    def _watch_copy(self, session: _Session, event: dict[str, Any]) -> None:
+        """Note, of a copy a commission is carried on in, a call that hands the commission back, and what it writes down after.
+
+        The call itself is answered by what stands in for the tool (it is
+        not carried out); before its next request the copy is told to
+        write down what it found (``_hand_back_step``).
+        """
+        from config.nekoclaw_settings import TASK_AGENT_FORK_HAND_BACK_TOOLS
+
+        kind = event.get("type")
+        if kind == "tool_start" and session.hand_back is None:
+            name = str(event.get("tool_name") or "")
+            if name in TASK_AGENT_FORK_HAND_BACK_TOOLS:
+                session.hand_back = name
+        elif kind == "text" and session.hand_back_left is not None:
+            session.findings.append(str(event.get("delta") or ""))
+
+    async def _hand_back_step(self, session: _Session) -> dict[str, Any] | None:
+        """Answer a copy that called a tool which changes something, before its next request.
+
+        First it is told to write down what it found, and has
+        ``TASK_AGENT_FORK_HAND_BACK_REQUESTS`` requests for that. When they
+        are made and its run goes on, it is handed back with what it wrote
+        (``_hand_back``) and the run ends. A copy whose commission ended
+        meanwhile (it reported) goes on as any session does.
+        """
+        from config.nekoclaw_settings import TASK_AGENT_FORK_HAND_BACK_REQUESTS
+        from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_FORK_HAND_BACK
+
+        if session.hand_back_left is None:
+            left = max(1, int(TASK_AGENT_FORK_HAND_BACK_REQUESTS))
+            session.hand_back_left = left - 1
+            session.findings = []
+            try:
+                await self._ledger.append_event(session.commission_id, "hand_back_told", {"tool": session.hand_back})
+            except Exception:  # noqa: BLE001 - the note is for the record; the copy is told all the same
+                logger.warning("noting that a copy is to hand its commission back failed", exc_info=True)
+            return {"notice": TASK_AGENT_FORK_HAND_BACK.format(tool=session.hand_back, requests=left)}
+        if session.hand_back_left > 0:
+            session.hand_back_left -= 1
+            return None
+        if await self._hand_back(session):
+            return {"stop": True}
+        return None
+
+    async def _hand_back(self, session: _Session, *, said: str = "") -> bool:
+        """Hand a commission carried on in a copy back to the session the copy was made of. Returns whether it was.
+
+        ``said`` is what the copy's run ended with; else what it wrote
+        since it was told to write down what it found. Only a commission
+        that is still at work is handed back. The copy is closed; once it
+        is, the commission goes on in the session itself (``_handed_back``).
+        """
+        if session.handing_back is not None or session.closing or session.carries_on_for is None:
+            return False
+        commission = await self._ledger.get(session.commission_id)
+        if commission is None or commission.status != "working" or session.closing:
+            return False
+        session.handing_back = (said or "".join(session.findings)).strip()
+        try:
+            await self._ledger.append_event(
+                session.commission_id, "handed_back", {"tool": session.hand_back, "to": session.carries_on_for}
+            )
+        except Exception:  # noqa: BLE001 - the note is for the record; it is handed back all the same
+            logger.warning("noting that a copy handed its commission back failed", exc_info=True)
+        await self._close_session(session)
+        return True
+
+    async def _handed_back(self, session: _Session) -> None:
+        """Go on, in the session itself, with a commission a copy handed back, the copy being closed.
+
+        The copy lets go of its place and its session; the ledger has the
+        session itself as the commission's from here on; the commission is
+        queued for it (``_wake_working``), with what the copy wrote down,
+        framed as no word of the user's, and then what the user said to it
+        while it was in the copy (which the session itself never saw).
+        """
+        import secrets
+
+        from config.nekoclaw_settings import TASK_AGENT_FORK_FINDINGS_MAX_TOKENS
+        from config.prompts import prompts_nekoclaw_brain as texts
+        from config.prompts.prompts_nekoclaw_sessions import frame
+        from utils.tokenize import truncate_to_tokens
+
+        commission_id, copy_id, main = session.commission_id, session.session_id, str(session.carries_on_for)
+        candidates = self._candidates.get(commission_id)
+        self._discard(commission_id)
+        if self._held_by.get(copy_id) == commission_id:
+            # Let go of here: the commission is not over, and the look at
+            # the hold ``_discard`` has made would leave it held.
+            del self._held_by[copy_id]
+        if candidates is not None:
+            self._candidates[commission_id] = candidates
+        self._session_of[commission_id] = main
+        if self._closed:
+            return
+        try:
+            await self._ledger.update_session(copy_id, status="closed")
+            await self._ledger.update(commission_id, session_id=main)
+            # Everything the user said to it so far went to the copy: what
+            # came while it was queued went with the work it was given
+            # there. (It is handed back once: from then on it is the
+            # session's own.)
+            told = [
+                str(event.payload.get("text") or "")
+                for event in await self._ledger.events(commission_id)
+                if event.type == "told" and str(event.payload.get("text") or "").strip()
+            ]
+        except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
+            logger.warning("handing commission %s back to its session failed: %s", commission_id, exc)
+            await self._fail(commission_id, f"it could not be handed back to its session: {exc}", said="run", detail=str(exc))
+            return
+        nonce = secrets.token_hex(8)
+        message = _Unsaid(
+            frame(
+                texts.TASK_AGENT_FORK_HANDED_BACK.format(tool=session.hand_back, nonce=nonce),
+                truncate_to_tokens(session.handing_back or "", TASK_AGENT_FORK_FINDINGS_MAX_TOKENS)
+                or texts.TASK_AGENT_FORK_FOUND_NOTHING,
+                nonce,
+            )
+        )
+        if await self._wake_working(commission_id, message, reason="handed back by a copy of its session"):
+            self._notes.setdefault(commission_id, []).extend(told)
+        elif self._queue and len(self._sessions) < self.limit:
+            self._spawn(self._start_next())
 
     # -- copying a session ------------------------------------------------
 
