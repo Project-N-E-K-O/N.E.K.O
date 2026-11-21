@@ -558,12 +558,15 @@ def test_queued_proactive_does_not_claim_server_vad_reply(published):
             await arbiter.wait_until_idle(timeout=1)
             await stub.send_lanlan_response("actual proactive reply")
             stub._flush_ai_turn_text_to_tracker()
-            await stub.drain()
         finally:
             # tests/conftest.py routes asyncio.run through nest_asyncio, which
-            # does not cancel leftover tasks; stop the queue consumer here so
-            # it is not finalized later on a closed loop.
-            await arbiter.shutdown()
+            # does not cancel leftover tasks; await the publish tasks and stop
+            # the queue consumer here (on failure paths too) so neither is
+            # finalized later on a closed loop.
+            try:
+                await stub.drain()
+            finally:
+                await arbiter.shutdown()
 
     asyncio.run(scenario())
     assert [record["turn_type"] for record in published] == ["assistant_message", "proactive_reply"]
