@@ -1200,6 +1200,86 @@ def _cost(definition: dict[str, Any]) -> int:
     return count_tokens(json.dumps(definition, ensure_ascii=False))
 
 
+async def test_compaction_keeps_only_groups_actually_used_and_rediscovery_restores_one(builtin_host):
+    host = builtin_host
+    commission = await _commission(host)
+    token = host.gateway.issue(commission.id, supports_images=True, first_turn_groups=BUILTIN_GROUPS)
+    grant = host.gateway._grant(token)
+    await host.permission_store.set_mode("browser", "allow")
+
+    async def listed(count, wanted=()):
+        meta = {"nekoclaw/compactions": count, "nekoclaw/deviceIntent": list(wanted)}
+        reply = await _rpc(host, grant, "tools/list", {"_meta": meta})
+        return {item["name"] for item in reply["result"]["tools"]}
+
+    assert {"computer", "browser_take_screenshot"} <= await listed(0)
+    assert not (await _call(host, grant, "browser_take_screenshot"))["isError"]
+    kept = await listed(1)
+    assert "browser_take_screenshot" in kept and "computer" not in kept
+    assert await listed(1) == kept
+    assert await listed(2) == {SEARCH_TOOL, CALL_TOOL}
+    assert await listed(1, ("browser",)) == {SEARCH_TOOL, CALL_TOOL}
+    # Naming an old non-first tool no longer skips the group's guidance.
+    refused = await _call(host, grant, "browser_take_screenshot")
+    assert refused["isError"] and len(host.provider.calls) == 1
+    assert not (await _call(host, grant, SEARCH_TOOL, {"group": "browser"}))["isError"]
+    assert set(await _tool_names(host, grant)) == kept
+    assert "computer" in await listed(3, ("keyboard_mouse",))
+    assert await listed(4) == {SEARCH_TOOL, CALL_TOOL}
+
+
+async def test_restored_compaction_count_alone_does_not_discard_a_used_group(builtin_host):
+    host = builtin_host
+    commission = await _commission(host)
+    token = host.gateway.issue(commission.id, supports_images=True, first_turn_groups=("browser",))
+    grant = host.gateway._grant(token)
+    await host.permission_store.set_mode("browser", "allow")
+    await _tool_names(host, grant)
+    assert not (await _call(host, grant, "browser_take_screenshot"))["isError"]
+    resumed = await host.gateway.tool_definitions(grant, compactions=100)
+    assert "browser_take_screenshot" in {tool["name"] for tool in resumed}
+    assert not (await _call(host, grant, "browser_take_screenshot"))["isError"]
+    folded = await host.gateway.tool_definitions(grant, compactions=102, idle_device_cycle=True)
+    assert {tool["name"] for tool in folded} == {SEARCH_TOOL, CALL_TOOL}
+
+
+@pytest.mark.parametrize("idle_cycle", [False, True])
+async def test_compaction_during_permission_preflight_and_device_execution(builtin_host, idle_cycle):
+    host = builtin_host
+    commission = await _commission(host)
+    token = host.gateway.issue(commission.id, supports_images=True, first_turn_groups=("browser",))
+    grant = host.gateway._grant(token)
+    original = set(await _tool_names(host, grant))
+    asked, answer = asyncio.Event(), asyncio.Event()
+
+    async def ask(*_):
+        asked.set()
+        await answer.wait()
+        return "once"
+
+    async def listed(count):
+        tools = await host.gateway.tool_definitions(grant, compactions=count, idle_device_cycle=idle_cycle)
+        return {tool["name"] for tool in tools}
+
+    host.permissions.set_asker(ask)
+    preflight = asyncio.create_task(host.gateway.clear_call(commission.id, "browser_take_screenshot", {}))
+    await asyncio.wait_for(asked.wait(), 5)
+    assert await listed(1) == original
+    answer.set()
+    await preflight
+    assert await listed(2) == original
+    host.provider.hold = asyncio.Event()
+    work = asyncio.create_task(_call(host, grant, "browser_take_screenshot"))
+    try:
+        await asyncio.wait_for(host.provider.started.wait(), 5)
+        assert await listed(3) == original
+        assert await listed(4) == original
+    finally:
+        host.provider.hold.set()
+        assert not (await work)["isError"]
+    assert await listed(5) == {SEARCH_TOOL, CALL_TOOL}
+
+
 def _found(text: str) -> list[str]:
     """The names of the definitions a search returned."""
     return [json.loads(line)["name"] for line in text.splitlines() if line.startswith("{")]
