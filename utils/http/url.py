@@ -43,6 +43,19 @@ def is_utf8_text(value: str) -> bool:
     return True
 
 
+def drop_non_utf8_entries(entries: list) -> tuple[list, int]:
+    """Return ``(kept, skipped_count)``, dropping dict entries with a non-UTF-8 string value.
+
+    Only top-level string values are checked, so entries must be flat dicts
+    (as the model-list routes build them); nested containers are not inspected.
+    """
+    kept = []
+    for entry in entries:
+        values = entry.values() if isinstance(entry, dict) else (entry,)
+        if all(is_utf8_text(value) for value in values if isinstance(value, str)):
+            kept.append(entry)
+    return kept, len(entries) - len(kept)
+
 # The scheme's optional default port: specifying or omitting it identifies the same endpoint.
 _DEFAULT_PORTS = {'http': '80', 'https': '443', 'ws': '80', 'wss': '443'}
 

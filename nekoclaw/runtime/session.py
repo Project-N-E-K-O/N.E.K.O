@@ -500,6 +500,9 @@ class TaskAgentSession(SessionInbox):
         self._tools: list[AgentTool] = []
         # Those there are now.
         self._executors: list[AgentTool] = []
+        # These gateway tools follow a commission, not its persistent session.
+        # They belong to live requests but never to the shared system snapshot.
+        self._commission_tools: list[AgentTool] = []
         # What the model is told of, as the snapshot has it.
         self._wire_tools: list[AgentTool] = []
         self._workdir = Path(".")
@@ -619,6 +622,7 @@ class TaskAgentSession(SessionInbox):
                 )
             except GatewayError as exc:
                 raise SessionError(f"the capability gateway cannot be reached: {exc}") from exc
+            self._commission_tools = [tool for tool in gateway_tools if tool.name in self._gateway.commission_tools]
             executors = sorted([*executors, *gateway_tools], key=lambda tool: tool.name)
         self._executors = executors
         self._workdir, self._session_dir = workdir, session_dir
@@ -737,28 +741,33 @@ class TaskAgentSession(SessionInbox):
         it is called.
         """
         by_name = {tool.name: tool for tool in self._executors}
+        scoped = {tool.name for tool in self._commission_tools}
         wire: list[AgentTool] = []
         for definition in snapshot.tools:
+            if definition.name in scoped:
+                continue
             tool = by_name.get(definition.name) or _stand_in(definition)
             wire.append(
                 dataclasses.replace(tool, description=definition.description, parameters=definition.parameters)
             )
         self._system = snapshot.system
-        self._wire_tools = wire
+        self._wire_tools = [*wire, *self._commission_tools]
 
     async def _renew_snapshot(self, reason: str) -> None:
         """Put the system prompt and the tool definitions together from what there is now, and keep them."""
         spec = self.spec
+        scoped = {tool.name for tool in self._commission_tools}
+        baseline = [tool for tool in self._executors if tool.name not in scoped]
         self._system = build_system_prompt(
-            tool_names=[tool.name for tool in self._executors],
+            tool_names=[tool.name for tool in baseline],
             workdir=str(self._workdir),
             platform=self._platform,
             instructions=spec.instructions,
         )
-        self._wire_tools = list(self._executors)
+        self._wire_tools = [*baseline, *self._commission_tools]
         snapshot = SystemSnapshot(
             self._system,
-            definitions_of(self._wire_tools),
+            definitions_of(baseline),
             reason,
             time.time(),
             workdir=str(self._workdir),

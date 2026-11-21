@@ -488,18 +488,81 @@ declare namespace NekoMiniGame {
     readonly timestamp: number;
   }
 
+  /** How a voice command relates to the host microphone start it reports on. */
+  type VoiceStartAttribution = 'command' | 'observed' | 'already_active' | 'none';
+
+  /** How the start issued by this command ended, as far as the host knows at reply time.
+   * The host replies once the start has settled, or when its wait runs out; only in the
+   * latter case is it `pending` (paired with `reason: 'start_pending'`, or with `started`
+   * if capture committed but the start had not finished yet). `pending` is neither a
+   * failure nor a cancellation: whether capture is on is `start_committed` /
+   * `start_capture_live` / `host_capture_active`.
+   * `superseded` means the start finished but its own capture lost to one something else owns.
+   */
+  type VoiceStartOutcome =
+    | 'pending'
+    | 'started'
+    | 'superseded'
+    | 'failed'
+    | 'cancelled'
+    | 'not_started'
+    | 'not_applicable'
+    | 'unknown';
+
+  /** Host voice-control state. Command replies (`start`/`stop`/`toggle`) carry `request_id`. */
+  interface VoiceControlState {
+    readonly type: 'game_voice_control_state';
+    /** The command result for this route. `false` with `reason: 'route_superseded'` means the
+     * route the command was addressed to ended while it ran; it does NOT mean the microphone
+     * is off -- read the `start_*` and `host_capture_*` fields for that. */
+    readonly ok?: boolean;
+    /** E.g. `started`, `stopped`, `start_failed`, `route_superseded`, `route_mismatch`, `busy`,
+     * and `start_pending` (the host was still starting when its wait ran out: unknown, not failed). */
+    readonly reason?: string;
+    readonly request_id?: string;
+    readonly available: boolean;
+    readonly route_active: boolean;
+    readonly game_type: string;
+    readonly session_id: string;
+    readonly sdk_route_instance_id: string;
+    /** Voice is active for this route (always false once the route is gone). */
+    readonly active: boolean;
+    readonly starting: boolean;
+    readonly muted: boolean;
+    readonly busy: boolean;
+    readonly capture_owner: 'host';
+    readonly transcription_mode: string;
+    readonly provider: string;
+    readonly ready: boolean;
+    readonly transcription_reason: string;
+    /** Command replies only. */
+    readonly start_attribution?: VoiceStartAttribution;
+    readonly start_outcome?: VoiceStartOutcome;
+    /** The capture this command started committed at some point (it may have stopped since). */
+    readonly start_committed?: boolean;
+    /** The capture this command started is the host's live capture right now. */
+    readonly start_capture_live?: boolean;
+    /** Snapshot of the host microphone, independent of route and of who started it.
+     * `host_capture_active` means the host microphone is live right now (its capture pipeline,
+     * or the browser recogniser while a game STT gate holds it); while the host is
+     * reopening it (e.g. switching device) it reads `host_capture_starting` instead. */
+    readonly host_capture_active?: boolean;
+    readonly host_capture_starting?: boolean;
+    readonly [key: string]: unknown;
+  }
+
   interface VoiceInput {
     readonly connected: boolean;
-    request(action: 'query' | 'start' | 'stop' | 'toggle', options?: RequestOptions): Promise<unknown>;
-    query(options?: RequestOptions): Promise<unknown>;
-    start(options?: RequestOptions): Promise<unknown>;
-    stop(options?: RequestOptions): Promise<unknown>;
-    toggle(options?: RequestOptions): Promise<unknown>;
+    request(action: 'query' | 'start' | 'stop' | 'toggle', options?: RequestOptions): Promise<VoiceControlState>;
+    query(options?: RequestOptions): Promise<VoiceControlState>;
+    start(options?: RequestOptions): Promise<VoiceControlState>;
+    stop(options?: RequestOptions): Promise<VoiceControlState>;
+    toggle(options?: RequestOptions): Promise<VoiceControlState>;
     /** Replays the current route's verified snapshot synchronously, if available.
      * The SDK queries state after route activation; games need not call query to initialize UI.
      * Snapshots are discarded when the route leaves its active phase. Sync failures reach onError.
      */
-    onState(handler: (state: Readonly<Record<string, unknown>>) => void): () => void;
+    onState(handler: (state: VoiceControlState) => void): () => void;
     onTranscript(handler: (transcript: VoiceTranscript) => void): () => void;
     onError(handler: (error: Readonly<Record<string, unknown>>) => void): () => void;
   }

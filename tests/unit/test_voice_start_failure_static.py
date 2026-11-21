@@ -1109,26 +1109,36 @@ def test_cat_return_commit_always_publishes_complete_or_abort_terminal_event():
     brace = source.index("{", start)
     handler = source[start : _balanced_js_block_end(source, brace) + 1]
 
+    guard_index = handler.index("let returnTerminalPublished = false;")
+    abort_helper_index = handler.index("const publishReturnAbort =", guard_index)
+    abort_helper_brace = handler.index("{", abort_helper_index)
+    abort_helper_end = _balanced_js_block_end(handler, abort_helper_brace)
+    abort_helper = handler[abort_helper_brace : abort_helper_end + 1]
+    abort_index = abort_helper.index("new CustomEvent('neko:cat-return-abort'")
+    abort_guard_index = abort_helper.index(
+        "if (returnTerminalPublished || returnAbortPublished) return;"
+    )
+    abort_published_index = abort_helper.index("returnAbortPublished = true;")
+    cancel_index = handler.index("returnOperation.cancel = publishReturnAbort;")
     commit_index = handler.index("new CustomEvent('neko:cat-return-commit'")
-    guard_index = handler.index("let returnTerminalPublished = false;", commit_index)
-    try_index = handler.index("try {", guard_index)
+    try_index = handler.index("try {", commit_index)
     failed_model_return = handler.index("if (modelDisplayReady === false) {", try_index)
     finally_index = handler.index("} finally {", failed_model_return)
-    abort_index = handler.index("new CustomEvent('neko:cat-return-abort'", finally_index)
+    published_index = handler.index("returnTerminalPublished = true;", try_index)
     complete_index = handler.index(
         "new CustomEvent('neko:cat-return-complete'",
-        try_index,
-    )
-    published_index = handler.index(
-        "returnTerminalPublished = true;",
-        complete_index,
+        published_index,
     )
     finally_brace = handler.index("{", finally_index)
     finally_end = _balanced_js_block_end(handler, finally_brace)
+    finally_block = handler[finally_brace : finally_end + 1]
+    finally_guard_index = finally_block.index("if (!returnTerminalPublished) {")
+    finally_abort_index = finally_block.index("publishReturnAbort();")
 
-    assert commit_index < guard_index < try_index < failed_model_return < finally_index < abort_index
-    assert try_index < complete_index < published_index < finally_index
-    assert finally_brace < abort_index <= finally_end
+    assert guard_index < abort_helper_index < abort_helper_end < cancel_index < commit_index
+    assert abort_guard_index < abort_published_index < abort_index
+    assert commit_index < try_index < failed_model_return < published_index < complete_index < finally_index
+    assert finally_guard_index < finally_abort_index
 
 
 def test_voice_auto_screen_stops_owned_share_even_after_setting_is_disabled():

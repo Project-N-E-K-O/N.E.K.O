@@ -1816,7 +1816,7 @@ Live2DManager.prototype._performSnapAnimation = function (model, snapInfo, optio
             : () => true;
 
         const startTime = performance.now();
-        const animationToken = {};
+        const animationToken = { isCurrentSettlement };
 
         // 标记正在执行吸附动画，防止其他操作干扰
         this._isSnapping = true;
@@ -1828,6 +1828,7 @@ Live2DManager.prototype._performSnapAnimation = function (model, snapInfo, optio
             }
             resolve(result);
         };
+        animationToken.cancel = () => finish(false);
 
         const animate = (currentTime) => {
             // 检查模型是否仍然有效
@@ -1878,7 +1879,10 @@ Live2DManager.prototype._checkAndPerformSnap = async function (model, options = 
     if (!this._isModelReadyForInteraction && !options.allowWhenNotReady) {
         return false;
     }
-    // 如果正在执行吸附动画，跳过
+    // A retired return must not block its successor while its paced frame waits.
+    const previousSnap = this._live2DActiveSnapAnimation;
+    if (previousSnap?.isCurrentSettlement?.() === false) previousSnap.cancel();
+    // 如果正在执行仍有效的吸附动画，跳过
     if (this._isSnapping) {
         return false;
     }

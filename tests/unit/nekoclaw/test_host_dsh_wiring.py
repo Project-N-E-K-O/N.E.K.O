@@ -196,6 +196,52 @@ async def _fallbacks(host: Any, commission_id: str) -> list[dict[str, Any]]:
     return [event.payload for event in await host.ledger.events(commission_id) if event.type == "runtime_fallback"]
 
 
+@pytest.mark.parametrize(
+    ("enabled", "runtime", "native", "text", "has_browser"),
+    [
+        (False, "builtin", False, "Open the browser", False),
+        (True, "builtin", False, "Open the browser", True),
+        (True, "builtin", False, "Explain the browser", False),
+        (True, "auto", False, "Open the browser", False),
+        (True, "auto", True, "Open the browser", True),
+    ],
+)
+async def test_dispatch_only_mounts_devices_on_a_supported_related_route(
+    hosts, tmp_path, monkeypatch, enabled, runtime, native, text, has_browser
+):
+    from config import nekoclaw_settings
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    monkeypatch.setattr(nekoclaw_settings, "FIRST_TURN_DEVICE_TOOLS", enabled)
+    if native:
+        monkeypatch.setattr(Dsh, "supports_device_schemas", lambda self, model: True, raising=False)
+    llm = ScriptedLLM([_report("ready", "done")])
+    host = _host(hosts, tmp_path, llm, Installation(preference=runtime),
+                 builtins=BuiltinToolProvider(state=lambda group: (True, "")))
+    await wait_status(host, await _dispatch(host, text), "done")
+    names = {tool["function"]["name"] for tool in llm.overrides[0]["tools"]}
+    assert ("browser_navigate_page" in names) == has_browser
+    assert "computer" not in names and {"capability_call", "capability_search"} <= names
+
+
+@pytest.mark.parametrize("follow_up", ["点击登录按钮", "继续"])
+async def test_relaunch_keeps_the_device_context_of_the_same_commission(hosts, tmp_path, follow_up):
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    llm = ScriptedLLM([_report("blocked", "waiting for login"), _report("ready", "done")])
+    host = _host(hosts, tmp_path, llm, Installation(preference="builtin"),
+                 builtins=BuiltinToolProvider(state=lambda group: (True, "")))
+    commission_id = await _dispatch(host, "打开浏览器")
+    await wait_status(host, commission_id, "blocked")
+    await wait_until(lambda: host.task_agents.running == [], what="the blocked session being released")
+    assert await host.task_agents.tell(commission_id, follow_up)
+    await wait_status(host, commission_id, "done")
+    assert len(llm.overrides) == 2
+    for request in llm.overrides:
+        names = {tool["function"]["name"] for tool in request["tools"]}
+        assert "browser_click" in names and "computer" not in names
+
+
 # ---------------------------------------------------------------------------
 # Which runtime
 # ---------------------------------------------------------------------------
@@ -810,6 +856,31 @@ async def test_the_switch_and_the_plugins_are_read_and_set_through_the_host(host
     assert (await host.install_dsh())["installed"] is True and installation.installs == 0
     installation.is_installed = False
     assert (await host.install_dsh())["installed"] is True and installation.installs == 1
+
+
+async def test_selected_dsh_stays_in_use_during_gateway_setup(hosts, tmp_path, monkeypatch):
+    import asyncio
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "done")]), Installation())
+    setting_up, resume = asyncio.Event(), asyncio.Event()
+    start = host.gateway.start
+
+    async def wait_for_setup():
+        setting_up.set()
+        await resume.wait()
+        return await start()
+
+    monkeypatch.setattr(host.gateway, "start", wait_for_setup)
+    dispatch = asyncio.create_task(_dispatch(host, "Open the browser"))
+    try:
+        await asyncio.wait_for(setting_up.wait(), 5)
+        with pytest.raises(DshUnavailable, match="in use"):
+            await host.uninstall_dsh()
+        assert not host.fake.dsh[0].shut_down
+    finally:
+        resume.set()
+        commission_id = await dispatch
+    await wait_status(host, commission_id, "done")
 
 
 async def test_shutting_the_host_down_ends_every_runtime_that_was_started(hosts, tmp_path):

@@ -159,6 +159,9 @@
         gameVoiceSttSessionId: '',
         gameVoiceSttRecognition: null,
         gameVoiceSttListening: false,
+        // Set only once the recogniser confirms it started (onstart);
+        // gameVoiceSttListening is already true while start() is pending.
+        gameVoiceSttCapturing: false,
         gameVoiceSttStopping: false,
         gameVoiceSttRestartTimer: null,
         gameVoiceSttUnsupportedNotified: false,

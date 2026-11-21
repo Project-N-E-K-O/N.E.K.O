@@ -210,7 +210,9 @@ class Desk:
             builtin_tool(BUILTIN_GROUP_BROWSER, self.SNAPSHOT),
         ]
 
-    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any], still_allowed=None) -> BuiltinOutcome:
+        if still_allowed is not None and not still_allowed():
+            return BuiltinOutcome(False, "permission denied")
         self.calls.append((capability.tool_name, commission_id, dict(arguments)))
         if self.observe is not None:
             self.observed.append(self.observe())
@@ -275,7 +277,9 @@ class ShippedBrowser:
     def available(self) -> list[Any]:
         return [builtin_tool(BUILTIN_GROUP_BROWSER, definition) for definition in BROWSER_TOOLS]
 
-    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any], still_allowed=None) -> BuiltinOutcome:
+        if still_allowed is not None and not still_allowed():
+            return BuiltinOutcome(False, "permission denied")
         if self.error is not None:
             return BuiltinOutcome(False, self.error)
         return BuiltinOutcome(True, self.page)
@@ -872,8 +876,9 @@ async def test_task_agent_that_calls_a_tool_before_loading_its_group_is_handed_t
     host = _task_agent_host(hosts, tmp_path, server, llm, builtins=desk)
     await host.permission_store.set_mode("browser", "allow")
 
-    receipt = await host.dispatch("read the opening hours off the page", lanlan_name="Lan", lang="en")
+    receipt = await host.dispatch("find the opening hours", lanlan_name="Lan", lang="en")
     await wait_status(host, receipt.commission_id, "done")
+    assert "browser_take_snapshot" not in _offered(llm)
 
     # The first call did nothing and came back with the group: how it is
     # used and the definition the call was written without.
@@ -907,8 +912,9 @@ async def test_task_agent_whose_reply_holds_two_calls_to_a_group_it_has_not_read
     host = _task_agent_host(hosts, tmp_path, server, llm, builtins=desk)
     await host.permission_store.set_mode("browser", "allow")
 
-    receipt = await host.dispatch("read the opening hours off the page", lanlan_name="Lan", lang="en")
+    receipt = await host.dispatch("find the opening hours", lanlan_name="Lan", lang="en")
     await wait_status(host, receipt.commission_id, "done")
+    assert "browser_take_snapshot" not in _offered(llm)
 
     # The first came back with the group. The second was written before
     # that answer could be read: it was not carried out either, and was

@@ -108,6 +108,18 @@ class Capability:
     # only to a task agent whose model can.
     needs_images: bool = False
 
+    def matches_entry(self, plugin: dict[str, Any], entry: dict[str, Any]) -> bool:
+        """Verify the catalog identity visible to the host, including the MCP server and tool."""
+        if plugin.get("id") != self.plugin_id or entry.get("id") != self.entry_id or plugin.get("passive"):
+            return False
+        if self.plugin_id != MCP_ADAPTER_PLUGIN_ID:
+            return self.kind == KIND_PLUGIN_ENTRY
+        candidates = capabilities_of_plugin({**plugin, "entries": [entry]})
+        return any(
+            item.available and item.id == self.id and item.kind == self.kind and item.permission_key == self.permission_key
+            for item in candidates
+        )
+
 
 # The two groups of built-in tools. A group's name is also its permission
 # category and the thing one commission occupies at a time.
@@ -182,8 +194,11 @@ class BuiltinCapabilities(Protocol):
     def available(self) -> list[Capability]:
         """Return the built-in tools, each with its availability as of now. Must not block."""
 
-    async def run(self, capability: Capability, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
-        """Carry out one call. Cancelling it must stop what it started."""
+    async def run(
+        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any],
+        still_allowed: Callable[[], bool] | None = None,
+    ) -> BuiltinOutcome:
+        """Recheck still_allowed after queueing and before the device action. Cancellation stops work."""
 
     async def released(self, group: str, commission_id: str) -> None:
         """A commission no longer occupies a group: drop what was kept for it."""
@@ -446,7 +461,8 @@ class CapabilityRegistry:
             return []
 
     async def run_builtin(
-        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any], reopen_agreement: Any = None
+        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any], reopen_agreement: Any = None,
+        still_allowed: Callable[[], bool] | None = None,
     ) -> BuiltinOutcome:
         """Carry out one call of a built-in tool through the provider.
 
@@ -457,11 +473,12 @@ class CapabilityRegistry:
         """
         if self._builtins is None:
             return BuiltinOutcome(False, "this capability is not offered by this process")
-        if reopen_agreement is None:
-            return await self._builtins.run(capability, commission_id=commission_id, arguments=arguments)
-        return await self._builtins.run(
-            capability, commission_id=commission_id, arguments=arguments, reopen_agreement=reopen_agreement
-        )
+        options: dict[str, Any] = {}
+        if still_allowed is not None:
+            options["still_allowed"] = still_allowed
+        if reopen_agreement is not None:
+            options["reopen_agreement"] = reopen_agreement
+        return await self._builtins.run(capability, commission_id=commission_id, arguments=arguments, **options)
 
     def browser_closed_by_user(self) -> bool:
         """Whether the user closed the browser the built-in tools started and it has no window since. Must not block."""

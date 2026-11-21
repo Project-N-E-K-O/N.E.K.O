@@ -582,6 +582,7 @@ async def get_mmd_models():
         config_mgr = get_config_manager()
         models = []
         seen_urls = set()
+        skipped = 0  # Non-UTF-8 names cannot be serialized or requested (#3230).
 
         # 1. Project static/mmd/, recursively.
         project_root = config_mgr.project_root
@@ -589,7 +590,12 @@ async def get_mmd_models():
         if static_mmd_dir.exists():
             for ext in ALLOWED_MODEL_EXTENSIONS:
                 for model_file in static_mmd_dir.rglob(f'*{ext}'):
+                    if not model_file.is_file():  # dangling or looping link
+                        continue
                     rel_path = model_file.relative_to(static_mmd_dir)
+                    if not is_utf8_text(rel_path.as_posix()):
+                        skipped += 1
+                        continue
                     url = f"/static/mmd/{rel_path.as_posix()}"
                     if url in seen_urls:
                         continue
@@ -607,22 +613,28 @@ async def get_mmd_models():
         # 2. User mmd/, recursively, skipping reserved directories.
         mmd_dir = _ensure_mmd_directory(config_mgr)
         if mmd_dir and mmd_dir.exists():
-            found_top_dirs = set()  # Record top-level subdirectories containing valid models.
+            found_top_dirs = set()  # Top-level subdirectories holding a model file, listed or skipped.
             for ext in ALLOWED_MODEL_EXTENSIONS:
                 for model_file in mmd_dir.rglob(f'*{ext}'):
+                    if not model_file.is_file():  # dangling or looping link
+                        continue
                     try:
                         rel_path = model_file.relative_to(mmd_dir)
                         if rel_path.parts and rel_path.parts[0] in RESERVED_DIRS:
                             continue
                     except (ValueError, IndexError):
                         continue
+                    # Record the folder before the UTF-8 skip: a folder whose only model
+                    # has a non-UTF-8 name is not import residue (and is counted once).
+                    if rel_path.parts:
+                        found_top_dirs.add(rel_path.parts[0])
+                    if not is_utf8_text(rel_path.as_posix()):
+                        skipped += 1
+                        continue
                     url = f"{MMD_USER_PATH}/{rel_path.as_posix()}"
                     if url in seen_urls:
                         continue
                     seen_urls.add(url)
-                    # Record top-level subdirectories containing models.
-                    if rel_path.parts:
-                        found_top_dirs.add(rel_path.parts[0])
                     models.append({
                         "name": model_file.stem,
                         "filename": model_file.name,
@@ -637,6 +649,9 @@ async def get_mmd_models():
             # Usually failed-import residue; list so users can delete.
             for item in mmd_dir.iterdir():
                 if item.is_dir() and item.name not in RESERVED_DIRS and item.name not in found_top_dirs:
+                    if not is_utf8_text(item.name):
+                        skipped += 1
+                        continue
                     models.append({
                         "name": item.name,
                         "filename": "",
@@ -661,9 +676,14 @@ async def get_mmd_models():
                         installed_path = Path(installed_folder)
                         for ext in ALLOWED_MODEL_EXTENSIONS:
                             for model_file in installed_path.rglob(f'*{ext}'):
+                                if not model_file.is_file():  # dangling or looping link
+                                    continue
                                 try:
                                     rel_path = model_file.relative_to(installed_path)
                                 except ValueError:
+                                    continue
+                                if not is_utf8_text(rel_path.as_posix()):
+                                    skipped += 1
                                     continue
                                 url = f"/workshop/{item_id}/{rel_path.as_posix()}"
                                 if url in seen_urls:
@@ -683,6 +703,8 @@ async def get_mmd_models():
         except Exception as e:
             logger.error(f"获取创意工坊MMD模型时出错: {e}")
 
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 MMD 模型")
         return JSONResponse(content={"success": True, "models": models})
     except Exception as e:
         logger.error(f"获取 MMD 模型列表失败: {e}")

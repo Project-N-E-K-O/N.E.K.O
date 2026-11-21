@@ -69,6 +69,7 @@ from nekoclaw.host.model_capabilities import ModelCapabilityStore
 from nekoclaw.host.outbox import OutboxSender, SendReport
 from nekoclaw.host.paths import HostPaths
 from nekoclaw.host.runtimes import RUNTIME_DSH
+from nekoclaw.host.delivery import ManagedDelivery
 from nekoclaw.host.permissions import PermissionGate, PermissionStore
 from nekoclaw.host.plugin_runs import ClientFactory, PluginCatalog, PluginRunner
 from nekoclaw.host.preferences import PreferenceStore
@@ -153,6 +154,7 @@ class NekoClawHost:
         self.preferences = PreferenceStore(self.ledger)
         self.permission_store = PermissionStore(self.paths.permissions_json)
         self.permissions = PermissionGate(self.permission_store)
+        self.delivery = ManagedDelivery(self.ledger, self.permissions)
         # What the user allowed "for this session" ends with the commission.
         self.ledger.subscribe(self._on_commission_change)
         if on_commission is not None:
@@ -247,6 +249,7 @@ class NekoClawHost:
             decision=self.decision,
             reporter=self.reporter,
             permission_store=self.permission_store,
+            permissions=self.permissions,
             task_agents=self.task_agents,
             enabled=enabled,
             on_progress=on_progress,

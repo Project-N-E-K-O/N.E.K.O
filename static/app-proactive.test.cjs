@@ -649,3 +649,30 @@ test('typing pushes a nearer proactive tick to 30s after the last input at any i
     assert.ok(deferred, 'tick must re-arm for the rest of the input window');
     assert.equal(deferred.ms, 15000);
 });
+
+
+test('reconnect reports the same live consent a settings save does', () => {
+    const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
+    const start = websocketSource.indexOf('    function syncProactiveVisionConsent(');
+    const end = websocketSource.indexOf('    function ensureWebSocketOpen(', start);
+    const run = (local, appSettings) => {
+        const sent = [];
+        const state = {
+            proactiveVisionEnabled: local,
+            socket: { readyState: 1, send(raw) { sent.push(JSON.parse(raw).enabled); } },
+        };
+        const mod = {};
+        vm.runInNewContext(websocketSource.slice(start, end), {
+            window: { appSettings }, S: state, mod, WebSocket: { OPEN: 1 }, console: { warn() {} },
+        });
+        mod.syncProactiveVisionConsent();
+        return sent;
+    };
+    // app-settings owns the rule (an unseen revocation from another window wins).
+    assert.deepEqual(run(true, { visionConsentForBackend: () => false }), [false]);
+    assert.deepEqual(run(true, { visionConsentForBackend: () => true }), [true]);
+    // Without app-settings, or with an unknown local value, behave as before.
+    assert.deepEqual(run(true, undefined), [true]);
+    assert.deepEqual(run(false, undefined), [false]);
+    assert.deepEqual(run(undefined, { visionConsentForBackend: () => true }), []);
+});

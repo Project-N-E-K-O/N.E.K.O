@@ -191,8 +191,9 @@ class BuiltinToolProvider:
         commission_id: str,
         arguments: dict[str, Any],
         reopen_agreement: int | None = None,
+        still_allowed: Callable[[], bool] | None = None,
     ) -> BuiltinOutcome:
-        """Carry out one call. Cancelling it stops what it started.
+        """Carry out one call, rechecking authorization inside the device queue. Cancelling it stops work.
 
         ``reopen_agreement``: the user's agreement to this call opening a
         browser they closed (``browser_reopen_agreed``).
@@ -204,10 +205,10 @@ class BuiltinToolProvider:
         if capability.tool_name not in self._tools.get(group or "", {}):
             return BuiltinOutcome(False, f"unknown tool {capability.tool_name}")
         if group == BUILTIN_GROUP_KEYBOARD_MOUSE:
-            return await self._run_desktop(dict(arguments or {}))
-        return await self._run_browser(capability.tool_name, dict(arguments or {}), reopen_agreement)
+            return await self._run_desktop(dict(arguments or {}), still_allowed)
+        return await self._run_browser(capability.tool_name, dict(arguments or {}), reopen_agreement, still_allowed)
 
-    async def _run_desktop(self, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def _run_desktop(self, arguments: dict[str, Any], still_allowed: Callable[[], bool] | None = None) -> BuiltinOutcome:
         from nekoclaw.builtin.desktop import DesktopActionError, DesktopStopped
 
         if self._desktop_lock is None:
@@ -218,6 +219,8 @@ class BuiltinToolProvider:
             ready, reason = self._ready(BUILTIN_GROUP_KEYBOARD_MOUSE)
             if not ready:
                 return BuiltinOutcome(False, f"keyboard and mouse control is {reason or 'switched off'}")
+            if still_allowed is not None and not still_allowed():
+                return BuiltinOutcome(False, "permission denied")
             loop = asyncio.get_running_loop()
             stop = threading.Event()
             # Sending input and grabbing the screen block; they run in a worker thread.
@@ -256,12 +259,15 @@ class BuiltinToolProvider:
         return BuiltinOutcome(True, result.text, images)
 
     async def _run_browser(
-        self, tool_name: str, arguments: dict[str, Any], reopen_agreement: int | None = None
+        self, tool_name: str, arguments: dict[str, Any], reopen_agreement: int | None = None,
+        still_allowed: Callable[[], bool] | None = None,
     ) -> BuiltinOutcome:
         def still_on() -> str | None:
             # Asked when the call's turn has come: the browser may have been
             # switched off while it waited (or the process begun to shut
             # down), and must not be started again.
+            if still_allowed is not None and not still_allowed():
+                return "permission denied"
             ready, reason = self._ready(BUILTIN_GROUP_BROWSER)
             if not ready:
                 return f"browser control is {reason or 'switched off'}"

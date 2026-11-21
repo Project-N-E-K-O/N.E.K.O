@@ -41,6 +41,8 @@ from fastapi.responses import JSONResponse
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json_async, read_json_async
+from utils.config_manager import get_steam_workshop_path
+from utils.frontend_utils import _resolve_workshop_search_dir
 from utils.url_utils import is_utf8_text
 from utils.logger_config import get_module_logger
 
@@ -51,6 +53,7 @@ logger = get_module_logger(__name__, "Main")
 VRM_USER_PATH = "/user_vrm"  
 VRM_STATIC_PATH = "/static/vrm"
 VRM_STATIC_ANIMATION_PATH = "/static/vrm/animation"
+VRM_WORKSHOP_PATH = "/workshop"
 
 # File-upload constants.
 MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
@@ -255,12 +258,16 @@ async def get_vrm_models():
 
         models = []
         seen_urls = set()  # Use a set to deduplicate by URL.
+        skipped = 0  # Non-UTF-8 names cannot be quoted or serialized (#3230).
 
         # 1. Find project VRM files (static/vrm/).
         project_root = config_mgr.project_root
         static_vrm_dir = project_root / "static" / "vrm"
         if static_vrm_dir.exists():
             for vrm_file in _iter_vrm_model_files(static_vrm_dir):
+                if not is_utf8_text(vrm_file.name):
+                    skipped += 1
+                    continue
                 url = f"/static/vrm/{quote(vrm_file.name, safe='')}"
                 # Skip existing URLs to avoid duplicates.
                 if url in seen_urls:
@@ -282,6 +289,9 @@ async def get_vrm_models():
         vrm_dir = config_mgr.vrm_dir
         if vrm_dir.exists():
             for vrm_file in _iter_vrm_model_files(vrm_dir):
+                if not is_utf8_text(vrm_file.name):
+                    skipped += 1
+                    continue
                 url = f"{VRM_USER_PATH}/{quote(vrm_file.name, safe='')}"
                 # Skip existing URLs to avoid duplicates.
                 if url in seen_urls:
@@ -311,6 +321,11 @@ async def get_vrm_models():
                         # Check installation directory for .vrm files.
                         for filename in os.listdir(installed_folder):
                             if filename.lower().endswith('.vrm'):
+                                if not os.path.isfile(os.path.join(installed_folder, filename)):
+                                    continue  # dangling or looping link
+                                if not is_utf8_text(filename):
+                                    skipped += 1
+                                    continue
                                 url = f"/workshop/{item_id}/{quote(filename, safe='')}"
                                 if url in seen_urls:
                                     continue
@@ -333,6 +348,11 @@ async def get_vrm_models():
                             if os.path.isdir(subdir_path):
                                 for filename in os.listdir(subdir_path):
                                     if filename.lower().endswith('.vrm'):
+                                        if not os.path.isfile(os.path.join(subdir_path, filename)):
+                                            continue  # dangling or looping link
+                                        if not (is_utf8_text(subdir) and is_utf8_text(filename)):
+                                            skipped += 1
+                                            continue
                                         url = f"/workshop/{item_id}/{quote(subdir, safe='')}/{quote(filename, safe='')}"
                                         if url in seen_urls:
                                             continue
@@ -352,6 +372,8 @@ async def get_vrm_models():
         except Exception as e:
             logger.error(f"获取创意工坊VRM模型时出错: {e}")
 
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VRM 模型")
         return JSONResponse(content={
             "success": True,
             "models": models
@@ -672,12 +694,90 @@ def _get_model_path(model_name: str) -> tuple[Path | None, str]:
             config_mgr.ensure_vrm_directory()
         try:
             model_path = _find_vrm_model_file(vrm_dir, model_name)
-        except ValueError:
-            return None, ""
+        except (OSError, RuntimeError, ValueError):
+            # An escaping candidate is refused, never returned; like a looping or
+            # unreadable entry it must not hide the same name in later directories.
+            continue
         if model_path is not None:
             return model_path, url_prefix
 
+    # /models lists Workshop VRMs too, so the emotion manager can pick them (#3379).
+    for item_dir in _iter_workshop_vrm_dirs():
+        try:
+            model_path = _find_vrm_model_file(item_dir, model_name)
+        except (OSError, RuntimeError, ValueError):
+            # An unreadable, looping or escaping entry must not hide models in later items.
+            continue
+        if model_path is not None:
+            return model_path, VRM_WORKSHOP_PATH
+
     return None, ""
+
+
+def _workshop_roots() -> list[Path]:
+    """Workshop roots to search, the Steam root first.
+
+    Startup mounts /workshop at the Steam install root derived from the
+    subscribed items (the same folders /models lists); the configured root
+    (user_mod_folder, cached or default folder) is the fallback mount when
+    Steam is unavailable. Both are searched so a mapping can be saved in either
+    case without a Steam query.
+    """
+    roots = []
+    for getter in (get_steam_workshop_path, _resolve_workshop_search_dir):
+        try:
+            root = getter()
+        except Exception as e:
+            logger.warning(f"获取创意工坊目录失败: {e}")
+            continue
+        if not root:
+            continue
+        try:
+            resolved = Path(root).resolve()
+        except (OSError, RuntimeError):  # Python 3.11 raises RuntimeError on symlink loops
+            continue
+        if resolved.is_dir() and resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def _iter_workshop_vrm_dirs():
+    """Yield installed Workshop item folders and their direct subfolders.
+
+    Mirrors the depth /models scans. Each yielded folder is resolved and must
+    stay inside its parent (item inside root, subfolder inside item), so a
+    symlinked folder cannot widen the boundary _find_vrm_model_file checks.
+    """
+    for root in _workshop_roots():
+        try:
+            item_dirs = sorted(p for p in root.iterdir() if p.name.isascii() and p.name.isdigit())
+        except OSError as e:
+            logger.warning(f"读取创意工坊目录失败: {e}")
+            continue
+        for item_dir in item_dirs:
+            item_dir = _resolved_child_dir(item_dir, root)
+            if item_dir is None:
+                continue
+            yield item_dir
+            try:
+                children = sorted(item_dir.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                child = _resolved_child_dir(child, item_dir)
+                if child is not None:
+                    yield child
+
+
+def _resolved_child_dir(path: Path, parent: Path) -> Path | None:
+    """Resolved directory path, or None if it is not a directory under ``parent``."""
+    try:
+        resolved = path.resolve()
+        if resolved != parent and resolved.is_relative_to(parent) and resolved.is_dir():
+            return resolved
+    except (OSError, RuntimeError):  # Python 3.11 raises RuntimeError on symlink loops
+        pass
+    return None
 
 
 def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:
@@ -687,7 +787,11 @@ def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:
         yield from (path for path in _iter_vrm_model_files(vrm_dir)
                     if path.stem == model_name and path != canonical_path)
     for candidate in candidates():
-        resolved = candidate.resolve()
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError):
+            # A looping link (RuntimeError on 3.11) must not hide a valid case variant.
+            continue
         if not resolved.is_relative_to(vrm_dir.resolve()):
             logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
             raise ValueError("路径越界")

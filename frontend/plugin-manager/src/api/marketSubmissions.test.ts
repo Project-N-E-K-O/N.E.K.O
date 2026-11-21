@@ -14,6 +14,7 @@ import {
   createSubmissionDraft,
   createSubmissionRevision,
   getSubmissionWorkspace,
+  listMarketPublicationReceipts,
   listMarketSubmissions,
   listMarketZones,
   marketSubmissionUrl,
@@ -99,6 +100,19 @@ describe('listMarketSubmissions', () => {
     const result = await listMarketSubmissions('owner/repo')
     expect(result.items.filter((item) => submissionMatchesRepository(item, 'owner/repo'))).toEqual([exact])
     expect(fetchBridge.mock.calls[1]![0]).toContain('page=2')
+  })
+})
+
+describe('listMarketPublicationReceipts', () => {
+  it('sends an exact request ID for the task and an unfiltered page for a replacement', async () => {
+    fetchBridge.mockImplementation(async () => jsonResponse(200, []))
+    await listMarketPublicationReceipts(7, 55)
+    await listMarketPublicationReceipts(7, undefined, 20)
+    const [taskPath, historyPath] = fetchBridge.mock.calls.map(([path]) => new URL(path, 'http://localhost'))
+    expect(taskPath!.pathname).toBe('/market/publication-requests/7')
+    expect(Object.fromEntries(taskPath!.searchParams)).toEqual({ request_id: '55' })
+    expect(historyPath!.pathname).toBe(taskPath!.pathname)
+    expect(Object.fromEntries(historyPath!.searchParams)).toEqual({ limit: '20', offset: '20' })
   })
 })
 

@@ -11,6 +11,42 @@ const source = fs.readFileSync(PAGE_CONTROLLER_JS, 'utf8');
 const CORE_JS = path.join(PROJECT_ROOT, 'static', 'pngtuber-core.js');
 const coreSource = fs.readFileSync(CORE_JS, 'utf8');
 
+test('a newer goodbye cancels PNG setup before it can reveal or publish the returning model', async () => {
+    let resolveSetup;
+    const setup = new Promise(resolve => { resolveSetup = resolve; });
+    let current = true;
+    let writes = 0;
+    const events = [];
+    const sandbox = {
+        pngtuberLoadSequence: 0,
+        normalizeConfig: config => config,
+        hideOtherAvatarRuntimesForPNGTuber: async () => {},
+        document: { body: { classList: { contains: () => false } } },
+        CustomEvent: class { constructor(type) { this.type = type; } },
+        window: { dispatchEvent: event => events.push(event) },
+    };
+    vm.createContext(sandbox);
+    const loadMethod = extractSlice('        async load(config, options = {}) {', '        stateToSrc(state)', coreSource);
+    const loader = extractSlice('    async function loadPNGTuberAvatar(', '    function playPNGTuberAnimation(', coreSource);
+    vm.runInContext(`globalThis.manager = { _loadGeneration: 0, _latestLifecycleLoadToken: 0, ${loadMethod} };\n${loader}`, sandbox);
+    const manager = sandbox.manager;
+    sandbox.window.pngtuberManager = manager;
+    manager.setupLayeredAdapter = () => setup;
+    for (const method of ['detachDragListeners', 'clearEmotion']) manager[method] = () => {};
+    for (const method of ['ensureContainer', 'preloadImages', 'attachSpeechListeners',
+        'attachDragListeners', 'setState', 'applyTransform', 'syncGlobalConfig', 'setupHTMLLockIcon', 'show']) {
+        manager[method] = () => { writes++; };
+    }
+    const loading = sandbox.loadPNGTuberAvatar({ idle_image: 'test.png' }, { isCurrent: () => current });
+    await new Promise(resolve => setImmediate(resolve));
+    current = false;
+    resolveSetup(true);
+    await loading;
+    assert.equal(writes, 0);
+    assert.equal(events.filter(event => event.type === 'pngtuber-model-loaded').length, 0);
+    assert.equal(events.filter(event => event.type === 'pngtuber-model-load-finished').length, 1);
+});
+
 function extractSlice(startMarker, endMarker, src = source) {
     const start = src.indexOf(startMarker);
     assert.ok(start >= 0, `找不到区块起点: ${startMarker}`);
@@ -670,7 +706,7 @@ test('live2d.deleteSkippedBound 在全部 8 个语言文件中就位', () => {
 test('hideOther：removeModel 挂起期间被取消/切走后，不得隐藏刚显示的 live2d（CodeRabbit Minor）', async () => {
     const slice = extractSlice(
         'async function hideOtherAvatarRuntimesForPNGTuber(options = {}) {',
-        'async function loadPNGTuberAvatar(config) {',
+        'async function loadPNGTuberAvatar(',
         coreSource);
 
     function makeHelperSandbox() {
@@ -786,7 +822,8 @@ test('角色自动加载链携带手动选择世代号：同模式手选使自�
     assert.ok(live2dBumpIdx > live2dNullCheckIdx,
         'live2d 自增必须落在语音检查与空匹配拒绝之后');
     // vrmModelSelect 同理：自增在语音检查之后，且以非 suppress 为门槛
-    const vrmHandler = source.indexOf("vrmModelSelect.addEventListener('change', async (e) => {");
+    const vrmHandler = source.indexOf('async function handleSelectedVrmModel(');
+    assert.ok(source.includes("vrmModelSelect.addEventListener('change', loadSelectedVrmModel)"));
     assert.ok(vrmHandler > 0);
     const vrmVoiceIdx = source.indexOf('const voiceStatus = await checkVoiceModeStatus();', vrmHandler);
     const vrmBumpIdx = source.indexOf('userModelSelectionGeneration += 1;', vrmHandler);

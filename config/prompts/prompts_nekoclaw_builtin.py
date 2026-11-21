@@ -34,7 +34,8 @@ request carries only one line about each group (``BUILTIN_GROUP_SUMMARIES``,
 in the description of the gateway's search tool). Loading a group hands over
 how it is used (``BUILTIN_GROUP_GUIDANCE``) followed by the definitions of
 its tools, and the tools are then called by name through the gateway's call
-tool.
+tool. When a group is selected up front for one commission, the gateway
+includes its guidance once alongside its native tool definitions instead.
 
 All of it is English text read by the model and is deliberately not
 translated; the language a task agent uses towards the user is set elsewhere.
@@ -413,8 +414,8 @@ BUILTIN_GROUP_FIRST_CALLS: dict[str, dict] = {
 # Put in front of the lines about the groups, in the description of the
 # gateway's search tool. Rendered with str.format.
 TOOL_GROUPS_INTRO = (
-    "Tool groups, not among your tools until used. To use one, make its first call below through "
-    "{call_tool}: the answer also brings the group's other tools and how to use them."
+    "Use listed device tools directly. For an unlisted group, its first call below through "
+    "{call_tool} also returns the group's tools and guidance."
 )
 
 # What the search tool's ``group`` argument is said to be: the way to a
