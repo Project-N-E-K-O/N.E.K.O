@@ -613,7 +613,13 @@ async def test_one_handed_back_goes_before_those_handed_over_after_it(hosts, tmp
 
 
 async def test_a_commission_put_in_a_copy_by_other_means_is_not_carried_on(hosts, tmp_path):
-    scripts = {EXPORT: ScriptedLLM([_report("export added")]), FILES: ScriptedLLM([_report("tables.py")])}
+    scripts = {
+        EXPORT: ScriptedLLM([_report("export added")]),
+        # A call that changes something is answered as in any copy, and hands nothing back.
+        FILES: ScriptedLLM(
+            [[call("write", {"file_path": "x.py", "content": "x"}, "call-w"), finish("tool_calls")], _report("tables.py")]
+        ),
+    }
     host = _host(hosts, tmp_path, scripts)
     await host.space.touch_project("Budget app")
     first = await wait_status(host, (await _dispatch(host, EXPORT)).id, "done")
@@ -624,5 +630,18 @@ async def test_a_commission_put_in_a_copy_by_other_means_is_not_carried_on(hosts
         lang="en",
     )
     await host.task_agents.submit(item)
-    await wait_status(host, item.id, "done")
+    done = await wait_status(host, item.id, "done")
     assert brain_texts.TASK_AGENT_COMMISSION_IN_COPY not in _said(scripts[FILES].requests[0])[-1]
+    assert done.session_id == copy.id and "handed_back" not in await _types(host, item.id)
+    assert "was not carried out" not in json.dumps(scripts[FILES].requests[1], ensure_ascii=False)
+
+
+def test_a_commission_is_counted_once_while_it_is_both_copied_for_and_at_work_in_its_copy(tmp_path):
+    from nekoclaw.host.task_agents import _Session
+
+    host = make_host(tmp_path, None)
+    manager = host.task_agents
+    manager._sessions["c1"] = _Session("c1", session_id="copy-1", carries_on_for="main")
+    manager._copying_for["main"] = {"c1", "c2"}
+    assert manager._carrying_on("main") == 2
+    del manager._sessions["c1"]
