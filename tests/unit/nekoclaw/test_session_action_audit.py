@@ -105,7 +105,8 @@ async def test_deny_reads_but_do_not_ask_for_an_intrinsic_session_action(env):
     assert not asked
 
 
-async def test_cancelled_reader_never_reports_a_delivered_result(env, monkeypatch):
+@pytest.mark.parametrize("failed_correction", [False, True])
+async def test_cancelled_reader_never_reports_a_delivered_result(env, monkeypatch, failed_correction):
     host, (source, sender), _ = env
     requested = asyncio.Event()
     finish = call_audit.finish_call
@@ -115,6 +116,16 @@ async def test_cancelled_reader_never_reports_a_delivered_result(env, monkeypatc
         requested.set()
         await asyncio.Event().wait()
 
+    corrections = []
+    correct = call_audit.Call.withhold_read
+
+    async def fail_once(record, *args):
+        corrections.append(record.call_id)
+        if failed_correction and len(corrections) == 1:
+            raise OSError("temporary ledger failure")
+        await correct(record, *args)
+
+    monkeypatch.setattr(call_audit.Call, "withhold_read", fail_once)
     monkeypatch.setattr(call_audit, "finish_call", delay_return)
     read = asyncio.create_task(host.task_agents._callbacks().call(sender.id, "session_list", {}))
     try:
@@ -123,7 +134,12 @@ async def test_cancelled_reader_never_reports_a_delivered_result(env, monkeypatc
         read.cancel()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(read, 5)
-    assert (await trace(host, source))[-1]["status"] == "cancelled"
+    if failed_correction:
+        monkeypatch.setattr(call_audit, "finish_call", finish)
+        await host.task_agents._callbacks().call(sender.id, "session_list", {})
+        assert corrections == [corrections[0], corrections[0]]
+    rows = await trace(host, source)
+    assert next(row for row in rows if row["call_id"] == corrections[0])["status"] == "cancelled"
 
 
 async def test_no_release_to_reused_session_after_audit_write(env, monkeypatch):
@@ -313,6 +329,41 @@ async def test_shutdown_attempts_each_unused_copy_after_a_cleanup_failure(env, m
     monkeypatch.setattr(manager, "_discard_copy", discard)
     await manager.shutdown()
     assert attempted == [sender.id, recipient.id]
+
+
+@pytest.mark.parametrize("blocked", ["start", "unused_copy"])
+async def test_shutdown_finishes_while_an_io_worker_still_needs_time(env, monkeypatch, blocked):
+    from nekoclaw.host import task_agents
+
+    host, (_, sender), _ = env
+    manager = host.task_agents
+    entered, release = asyncio.Event(), asyncio.Event()
+    monkeypatch.setattr(task_agents, "_SHUTDOWN_START_WAIT_SECONDS", 0.02)
+
+    async def wait_for_io(*args):
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            raise
+
+    if blocked == "start":
+        worker = manager._spawn(wait_for_io())
+    else:
+        manager._unused_ask_copies[sender.id] = sender
+        monkeypatch.setattr(manager, "_discard_copy", wait_for_io)
+    closing = asyncio.create_task(manager.shutdown())
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        done, _ = await asyncio.wait([closing], timeout=0.5)
+        assert closing in done
+        assert (await host.ledger.get_session(sender.id)).status != "cleared"
+    finally:
+        release.set()
+        await closing
+        if blocked == "start":
+            await asyncio.gather(worker, return_exceptions=True)
 
 
 async def test_session_read_loan_survives_prompt_mode_changes_and_never_revives_after_deny(env):

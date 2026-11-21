@@ -67,6 +67,7 @@ import contextlib
 import dataclasses
 import json
 import logging
+import sqlite3
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
@@ -1102,6 +1103,7 @@ class TaskAgentManager:
         self._usage_locks: dict[str, asyncio.Lock] = {}
         self._starting: set[asyncio.Task[Any]] = set()
         self._control_settlements: set[asyncio.Task[None]] = set()
+        self._read_corrections: dict[str, tuple[call_audit.Call, str, str | None]] = {}
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pump: asyncio.Task[None] | None = None
         self._closed = False
@@ -1279,10 +1281,23 @@ class TaskAgentManager:
 
         return invoke
 
+    async def _correct_undelivered_read(self, record: call_audit.Call, status: str, reason: str | None = None) -> None:
+        # A cancelled caller must still observe cancellation if SQLite is temporarily
+        # unavailable. Keep only the receipt and the intended terminal status.
+        correction = self._read_corrections.setdefault(record.call_id, (record, status, reason))
+        try:
+            await record.withhold_read(correction[1], correction[2])
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
+            logger.warning("could not correct undelivered read %s (%s)", record.call_id, type(exc).__name__)
+        else:
+            self._read_corrections.pop(record.call_id, None)
+
     async def _perform_action(
         self, commission_id: str, tool: str, perform, live: Callable[[], bool],
         handing_over: asyncio.Event | None = None,
     ):
+        if self._read_corrections:
+            await self._correct_undelivered_read(*next(iter(self._read_corrections.values())))
         category = "outside_read" if tool in ("ask_session", "read_session") else "session_action"
         kind = "working_memory" if tool in ("space_brief", "note_lesson") else "session_action"
         scope = SessionActionScope("host:session", tool, commission_id)
@@ -1315,12 +1330,12 @@ class TaskAgentManager:
                     raise RuntimeError("session records could not be audited")
                 # Closing the row also awaited SQLite. Check again before releasing the result.
                 if not live() or not self._permissions.grant_active(grant):
-                    await record.withhold_read("denied", "delivery_revoked")
+                    await self._correct_undelivered_read(record, "denied", "delivery_revoked")
                     raise RuntimeError("session records could not be delivered")
             return result
         except asyncio.CancelledError:
             if reads and record is not None and record.closed and record.status == "completed":
-                await record.withhold_read("cancelled")
+                await self._correct_undelivered_read(record, "cancelled")
             raise
         finally:
             self._permissions.release_grant(grant)
@@ -2091,7 +2106,7 @@ class TaskAgentManager:
 
         async def open_if_authorized(runtime, spec) -> bool:
             brief = await self._space_brief(commission, receiving)
-            if self._sessions.get(commission_id) is not session:
+            if self._closed or self._sessions.get(commission_id) is not session:
                 return False
             if session.closing or (session.stands is not None and session.stands.status in ENDED_STATUSES):
                 self._discard(commission_id)
@@ -2356,7 +2371,7 @@ class TaskAgentManager:
 
             async def stopped_meanwhile() -> bool:
                 current = await self._ledger.get(commission.id)
-                if self._sessions.get(commission.id) is not session or current is None or current.status != "working":
+                if self._closed or self._sessions.get(commission.id) is not session or current is None or current.status != "working":
                     return True
                 if unwanted():
                     # Everything was stopped while its status was being
@@ -7997,7 +8012,10 @@ class TaskAgentManager:
             _done, pending = await asyncio.wait(list(self._starting), timeout=_SHUTDOWN_START_WAIT_SECONDS)
             for task in pending:
                 task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            if pending:
+                # A cancelled start may still be settling a SQLite transaction.
+                # _starting owns it until completion, even if the grace period expires.
+                await asyncio.wait(pending, timeout=_SHUTDOWN_START_WAIT_SECONDS)
         if self._fork_records:
             # Copies that are being put on record: waited for as long as
             # a start is, and left to go on after that. A ledger that is
@@ -8056,10 +8074,18 @@ class TaskAgentManager:
         # Let pending control and delivery receipts settle while the ledger is open.
         if self._control_settlements:
             await asyncio.wait(list(self._control_settlements), timeout=_SHUTDOWN_START_WAIT_SECONDS)
+        for correction in list(self._read_corrections.values()):
+            await self._correct_undelivered_read(*correction)
         self._held_by.clear()
         unused_copies, self._unused_ask_copies = self._unused_ask_copies, {}
-        for copy in unused_copies.values():
-            await recorded("unused question copy " + copy.id, lambda copy=copy: self._discard_copy(copy))
+        if unused_copies:
+            cleanups = [
+                self._spawn(recorded("unused question copy " + copy.id, lambda copy=copy: self._discard_copy(copy)))
+                for copy in unused_copies.values()
+            ]
+            # A slow filesystem worker retains the file claim until it finishes.
+            # Uncleared copies stay on the ledger for the ordinary session cleanup.
+            await asyncio.wait(cleanups, timeout=_SHUTDOWN_START_WAIT_SECONDS)
         self._unsubscribe()
         # And once more, now that no run ends any more: the sessions that
         # were closed above ended their turns meanwhile, and one whose word
