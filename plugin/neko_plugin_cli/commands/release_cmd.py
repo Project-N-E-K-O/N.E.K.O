@@ -654,6 +654,9 @@ def _print_issues(
             fix = _suggest_fix(message, plugin_id=plugin_id, plugin_dir=plugin_dir)
             if fix:
                 print(f"    fix: {fix}", file=stream)
+                # On its own line, so the fix line stays one command to copy.
+                if plugin_dir is not None and _PLUGIN_DIR_PLACEHOLDER in fix:
+                    print(f"    plugin directory: {plugin_dir}", file=stream)
 
 
 _WINDOWS_SHELL = os.name == "nt"
@@ -692,6 +695,12 @@ def _plugin_dir_argument(plugin_dir: Path | None, label: str) -> str:
 def _placeholder_path(plugin_dir: Path) -> str | None:
     """The path to fill in when _plugin_dir_argument printed the placeholder."""
     return str(plugin_dir) if _shell_quote(str(plugin_dir)) is None else None
+
+
+def _placeholder_note(plugin_dir: Path | None) -> str:
+    """Names the directory after a command that shows the placeholder, else ''."""
+    fill_in = _placeholder_path(plugin_dir) if plugin_dir is not None else None
+    return f" (plugin directory: {fill_in})" if fill_in else ""
 
 
 def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> str:

@@ -121,6 +121,28 @@ def test_manual_steps_when_gh_is_unavailable(tmp_path, monkeypatch, capsys):
     assert "setup-repo" not in out
 
 
+def test_manual_steps_name_the_directory_behind_a_placeholder(tmp_path, monkeypatch, capsys):
+    # No Windows quoting keeps %VAR% literal, so the commands show a placeholder.
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+    plugin_dir = _make_plugin_dir(tmp_path / "%USERPROFILE%" / "plugins")
+    monkeypatch.setattr(init_cmd, "_gh_available", lambda: False)
+    monkeypatch.setattr(init_cmd, "_existing_origin_url", lambda _dir: None)
+
+    assert init_cmd.handle_create_repo(_args(plugin_dir)) == MANUAL
+    out = capsys.readouterr().out
+    assert 'git -C "<plugin directory>" remote add origin <repository-url>' in out
+    assert out.count(f"(plugin directory: {plugin_dir})") == 1
+
+
+def test_manual_steps_do_not_add_a_directory_note_to_quoted_commands(tmp_path, monkeypatch, capsys):
+    plugin_dir = _make_plugin_dir(tmp_path / "plugins")
+    monkeypatch.setattr(init_cmd, "_gh_available", lambda: False)
+    monkeypatch.setattr(init_cmd, "_existing_origin_url", lambda _dir: None)
+
+    assert init_cmd.handle_create_repo(_args(plugin_dir)) == MANUAL
+    assert "plugin directory:" not in capsys.readouterr().out
+
+
 def test_manual_steps_for_a_committed_repo_only_wire_and_push(tmp_path, monkeypatch, capsys):
     plugin_dir = _make_plugin_dir(tmp_path / "plugins")
     _commit_all(plugin_dir, branch="trunk")

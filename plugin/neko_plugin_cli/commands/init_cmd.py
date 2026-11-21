@@ -566,11 +566,29 @@ def _print_push_next_step(plugin_dir: Path) -> None:
             "ブランチを push して上流ブランチを設定します：",
         )
     )
-    for command in [
-        *_first_commit_steps(plugin_dir),
-        _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
-    ]:
+    _print_git_commands(
+        plugin_dir,
+        [
+            *_first_commit_steps(plugin_dir),
+            _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
+        ],
+    )
+
+
+def _print_git_commands(plugin_dir: Path, commands: list[str]) -> None:
+    for command in commands:
         print(f"       {command}")
+    fill_in = release_cmd._placeholder_path(plugin_dir)
+    if fill_in and commands:
+        # The commands show "<plugin directory>": say which one it is.
+        print(
+            "       "
+            + _tri(
+                f"(plugin directory: {fill_in})",
+                f"（插件目录：{fill_in}）",
+                f"（プラグインディレクトリ：{fill_in}）",
+            )
+        )
 
 
 def _gh_available() -> bool:
@@ -703,12 +721,14 @@ def _print_manual_repo_steps(plugin_dir: Path, *, repo_name: str) -> None:
             "その URL をコピーして origin に設定し、push します：",
         )
     )
-    for command in [
-        *_first_commit_steps(plugin_dir),
-        _git_command(plugin_dir, "remote add origin <repository-url>"),
-        _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
-    ]:
-        print(f"       {command}")
+    _print_git_commands(
+        plugin_dir,
+        [
+            *_first_commit_steps(plugin_dir),
+            _git_command(plugin_dir, "remote add origin <repository-url>"),
+            _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
+        ],
+    )
 
 
 def _resolve_plugins_root(args: argparse.Namespace, *, defaults: CliDefaults) -> Path:
@@ -758,6 +778,7 @@ def _existing_repository_remote_message(target_dir: Path, remote: str) -> str:
     return (
         "--remote can only be used when initializing a new git repository; "
         f"to add origin to the existing one run: {_git_command(target_dir, f'remote add origin {remote}')}"
+        f"{release_cmd._placeholder_note(target_dir)}"
     )
 
 

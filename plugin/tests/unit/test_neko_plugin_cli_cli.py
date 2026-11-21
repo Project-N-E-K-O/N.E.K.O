@@ -2222,6 +2222,33 @@ def test_suggested_setup_repo_fix_works_outside_the_plugins_root(
     assert "--github-actions" not in capsys.readouterr().out
 
 
+def test_fix_lines_name_the_directory_behind_a_placeholder_on_their_own_line(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+    plugin_dir = Path(r"C:\work\%K%\demo")
+    issues = [
+        ("warning", "README.md is missing"),
+        ("warning", "plugin source directory does not have its own git repository"),
+        ("warning", "git remote 'origin' is not configured"),
+    ]
+    release_cmd._print_issues(issues, plugin_id="demo", plugin_dir=plugin_dir, show_fixes=True)
+    lines = capsys.readouterr().out.splitlines()
+    note = f"    plugin directory: {plugin_dir}"
+    # The fix lines themselves never carry a path cmd would expand.
+    assert lines[1] == '    fix: neko-plugin setup-repo "<plugin directory>" --github-actions'
+    assert lines[2] == note
+    assert lines[4] == '    fix: git -C "<plugin directory>" init'
+    assert lines[5] == note
+    # No placeholder, no note.
+    assert lines[7:] == ["    fix: git remote add origin <repo-url>"]
+
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", False)
+    release_cmd._print_issues(issues[:1], plugin_id="demo", plugin_dir=Path("/work/demo"), show_fixes=True)
+    assert "plugin directory:" not in capsys.readouterr().out
+
+
 def test_suggested_setup_repo_fix_falls_back_to_the_id_without_a_directory() -> None:
     assert (
         release_cmd._suggest_fix("README.md is missing", plugin_id="demo", plugin_dir=None)
