@@ -24,7 +24,9 @@ Dependency hierarchy: utils layer -> config layer (one-way; no dependency on the
 import asyncio
 import os
 import pathlib
-from typing import Optional, List, Dict, Any
+from typing import Callable, Iterable, Optional, List, Dict, Any
+
+from starlette.staticfiles import StaticFiles
 
 from utils.logger_config import get_module_logger
 
@@ -37,7 +39,9 @@ from utils.config_manager import (
     save_workshop_config,
     save_workshop_path,
     persist_user_workshop_folder,
-    get_workshop_path
+    get_workshop_path,
+    register_steam_workshop_library_roots,
+    get_steam_workshop_library_roots,
 )
 
 
@@ -140,6 +144,107 @@ def extract_workshop_root_from_items(items: List[Dict[str, Any]]) -> Optional[st
         return None
 
 
+def extract_workshop_roots_from_items(items: Optional[List[Dict[str, Any]]]) -> List[str]:
+    """
+    Extract the Workshop root of every Steam library that holds a subscribed item
+
+    Steam can install items into several libraries; each item's installedFolder is
+    ``<library>/steamapps/workshop/content/<appid>/<item_id>``, so its parent is the
+    root that ``/workshop/<item_id>/...`` URLs are resolved against.
+
+    Args:
+        items: list of Workshop items; each contains an installedFolder field
+
+    Returns:
+        list[str]: existing roots, de-duplicated, in item order
+    """
+    roots: List[str] = []
+    seen = set()
+    for item in items or ():
+        if not isinstance(item, dict):
+            continue
+        installed_folder = item.get('installedFolder')
+        if not installed_folder or not isinstance(installed_folder, str):
+            continue
+        parent = pathlib.Path(installed_folder).parent
+        key = os.path.normcase(os.path.normpath(str(parent)))
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if parent.is_dir():
+                roots.append(str(parent))
+        except OSError:
+            continue
+    return roots
+
+
+def register_workshop_roots_from_items(items: Optional[List[Dict[str, Any]]]) -> None:
+    """Remember the Workshop roots of all Steam libraries found in ``items`` (runtime only)."""
+    try:
+        roots = extract_workshop_roots_from_items(items)
+        if roots:
+            register_steam_workshop_library_roots(roots)
+    except Exception as e:
+        logger.warning(f"登记Steam创意工坊库目录失败: {e}")
+
+
+def get_workshop_library_roots() -> List[str]:
+    """Workshop roots of all known Steam libraries, in registration order (runtime only)."""
+    try:
+        return list(get_steam_workshop_library_roots())
+    except Exception as e:
+        logger.warning(f"获取Steam创意工坊库目录失败: {e}")
+        return []
+
+
+class WorkshopStaticFiles(StaticFiles):
+    """
+    Static files for ``/workshop`` that also look in the other Steam libraries
+
+    The mounted directory is tried first, so single-library installs behave exactly as
+    a plain ``StaticFiles(directory=...)``. Then the roots returned by
+    ``extra_directories`` (read on every request, so libraries registered later are
+    served too) are tried in order. Starlette's own ``lookup_path`` does the lookup,
+    which rejects absolute paths and anything whose real path (after following
+    symlinks) leaves the root being tried.
+    """
+
+    def __init__(
+        self,
+        *,
+        directory: str,
+        extra_directories: Optional[Callable[[], Iterable[str]]] = None,
+        **kwargs: Any,
+    ) -> None:
+        self._extra_directories = extra_directories or get_workshop_library_roots
+        super().__init__(directory=directory, **kwargs)
+
+    @property
+    def all_directories(self) -> List[Any]:
+        base = list(getattr(self, '_base_directories', []))
+        seen = {os.path.normcase(os.path.realpath(str(d))) for d in base}
+        try:
+            extras = list(self._extra_directories() or ())
+        except Exception as e:
+            logger.warning(f"获取额外的创意工坊目录失败: {e}")
+            extras = []
+        for extra in extras:
+            if not extra:
+                continue
+            key = os.path.normcase(os.path.realpath(str(extra)))
+            if key in seen or not os.path.isdir(extra):
+                continue
+            seen.add(key)
+            base.append(str(extra))
+        return base
+
+    @all_directories.setter
+    def all_directories(self, value: List[Any]) -> None:
+        # StaticFiles.__init__ assigns the configured directories here.
+        self._base_directories = list(value)
+
+
 def get_workshop_root(subscribed_items: Optional[List[Dict[str, Any]]] = None) -> str:
     """
     Get the Workshop root directory path and save it into the config file
@@ -160,6 +265,8 @@ def get_workshop_root(subscribed_items: Optional[List[Dict[str, Any]]] = None) -
     
     # If an item list is provided, try extracting the root from it.
     if subscribed_items:
+        # Items in other Steam libraries live under other roots; remember them all.
+        register_workshop_roots_from_items(subscribed_items)
         workshop_path = extract_workshop_root_from_items(subscribed_items)
         if workshop_path:
             from_steam = True

@@ -19,14 +19,17 @@ import asyncio
 import importlib
 import os
 
-from fastapi.staticfiles import StaticFiles
 from main_routers.workshop_router import (
     get_subscribed_workshop_items,
     sync_workshop_character_cards,
     warmup_ugc_cache,
 )
 from utils.cloudsave_runtime import is_write_fence_active
-from utils.workshop_utils import get_workshop_path_async, get_workshop_root_async
+from utils.workshop_utils import (
+    WorkshopStaticFiles,
+    get_workshop_path_async,
+    get_workshop_root_async,
+)
 
 from ._shared import runtime
 
@@ -137,7 +140,7 @@ async def _init_and_mount_workshop():
         ):
             try:
                 app.mount(
-                    "/workshop", StaticFiles(directory=workshop_path), name="workshop"
+                    "/workshop", WorkshopStaticFiles(directory=workshop_path), name="workshop"
                 )
                 logger.info(f"✅ 成功挂载创意工坊目录: {workshop_path}")
             except Exception as e:
@@ -158,7 +161,7 @@ async def _init_and_mount_workshop():
         ):
             try:
                 app.mount(
-                    "/workshop", StaticFiles(directory=workshop_path), name="workshop"
+                    "/workshop", WorkshopStaticFiles(directory=workshop_path), name="workshop"
                 )
                 logger.info(f"✅ 降级模式下成功挂载创意工坊目录: {workshop_path}")
             except Exception as mount_err:

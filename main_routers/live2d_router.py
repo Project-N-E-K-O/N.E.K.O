@@ -46,7 +46,12 @@ from .workshop_router import get_subscribed_workshop_items
 from contextlib import suppress
 
 from utils.file_utils import atomic_write_json_async, read_json_async
-from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
+from utils.frontend_utils import (
+    _resolve_workshop_search_dirs,
+    find_model_directory,
+    find_models,
+    find_workshop_item_by_id,
+)
 from utils.logger_config import get_module_logger
 from utils.url_utils import drop_non_utf8_entries, encode_url_path, is_utf8_text
 from utils.workshop_utils import get_workshop_path
@@ -145,8 +150,38 @@ def _resolve_model_url_to_file_path(path: str, config_manager) -> Path | None:
     if parts[0] == "static":
         return Path("static") / Path(*parts[1:]) if len(parts) > 1 else None
     if parts[0] == "workshop":
-        workshop_root = get_workshop_path()
-        return Path(workshop_root) / Path(*parts[1:]) if workshop_root and len(parts) > 1 else None
+        roots = _workshop_url_roots()
+        if not roots or len(parts) <= 1:
+            return None
+        relative = Path(*parts[1:])
+        # /workshop serves every Steam library; use the one that holds the file.
+        found = _find_workshop_url_file(relative, roots)
+        return found if found is not None else Path(roots[0]) / relative
+    return None
+
+
+def _workshop_url_roots() -> list[str]:
+    """Directories a /workshop URL can resolve to: the configured root, then the other Steam libraries."""
+    roots = []
+    primary = get_workshop_path()
+    if primary:
+        roots.append(str(primary))
+    for root in _resolve_workshop_search_dirs():
+        if root not in roots:
+            roots.append(root)
+    return roots
+
+
+def _find_workshop_url_file(relative: Path, roots: list[str]) -> Path | None:
+    """First existing file ``root/relative`` whose real path stays inside its root."""
+    for root in roots:
+        try:
+            root_real = Path(root).resolve()
+            candidate = (Path(root) / relative).resolve()
+            if candidate.is_relative_to(root_real) and candidate.is_file():
+                return candidate
+        except (OSError, RuntimeError, ValueError):
+            continue
     return None
 
 
@@ -160,13 +195,17 @@ def _resolve_sync_model_file(path: str, config_manager) -> Path | None:
     parts = normalized.split("/")
     if not normalized or ":" in normalized or any(part in {".", ".."} for part in parts):
         return None
+    if parts[0] == "workshop":
+        # Every Steam library /workshop serves; each candidate stays inside its own root.
+        if len(parts) <= 1:
+            return None
+        return _find_workshop_url_file(Path(*parts[1:]), _workshop_url_roots())
     direct = _resolve_model_url_to_file_path(path, config_manager)
     if direct is not None:
         roots = {
             'user_live2d': getattr(config_manager, 'readable_live2d_dir', None) or getattr(config_manager, 'live2d_dir', None),
             'user_live2d_local': getattr(config_manager, 'live2d_dir', None),
             'static': 'static',
-            'workshop': get_workshop_path(),
         }
         root = roots.get(parts[0])
         if root is None:

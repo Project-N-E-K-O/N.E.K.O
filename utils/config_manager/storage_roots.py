@@ -181,6 +181,7 @@ class StorageRootsMixin:
         self.avatar_tools_dir = self.app_docs_dir / "avatar_tools"
         self.workshop_dir = self.app_docs_dir / "workshop"
         self._steam_workshop_path = None
+        self._steam_workshop_library_roots = []
         self._user_workshop_folder_persisted = False
         self.chara_dir = self.app_docs_dir / "character_cards"
         self.card_faces_dir = self.app_docs_dir / "card_faces"
