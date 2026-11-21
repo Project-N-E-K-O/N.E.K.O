@@ -340,6 +340,109 @@ async def test_break_reminder_delivers_without_ban(monkeypatch):
     mgr.finish_proactive_delivery.assert_awaited_once()
 
 
+_COMBO_PROMPT = "Invite the user to play a game during the break."
+_PLAIN_PROMPT = "Remind the user to drink water."
+
+
+async def _deliver_combo(mgr, config_manager):
+    return await break_reminders._deliver_break_reminder_via_llm(
+        lanlan_name="Neko",
+        mgr=mgr,
+        config_manager=config_manager,
+        system_prompt=_COMBO_PROMPT,
+        channel="work_break_game_invite",
+        lang="zh",
+        directive_fallback=(_PLAIN_PROMPT, "work_break"),
+    )
+
+
+def _system_prompts(make_llm_calls):
+    return [call.args[0][0].content for call in make_llm_calls]
+
+
+@pytest.mark.asyncio
+async def test_combo_reminder_ban_falls_back_to_plain_reminder(monkeypatch):
+    _install_directives(monkeypatch, ["游戏"])
+    mgr, config_manager, _corpus, _record = _break_harness(
+        monkeypatch,
+        _FakeStreamingLlm("休息一下，一起玩个小游戏吧？"),
+        _FakeStreamingLlm("记得起来喝口水。"),
+    )
+    streams = []
+    original = break_reminders.create_chat_llm_async
+
+    async def recording(*args, **kwargs):
+        llm = await original(*args, **kwargs)
+        astream = llm.astream
+
+        async def record_stream(messages):
+            streams.append(messages[0].content)
+            async for chunk in astream(messages):
+                yield chunk
+
+        llm.astream = record_stream
+        return llm
+
+    monkeypatch.setattr(break_reminders, "create_chat_llm_async", recording)
+
+    result = await _deliver_combo(mgr, config_manager)
+
+    assert result.delivered_text == "记得起来喝口水。"
+    assert result.delivered_channel == "work_break"
+    assert result.consumes_source is False
+    # Exactly two model calls: the combo draft, then the plain reminder.
+    assert streams == [_COMBO_PROMPT, _PLAIN_PROMPT]
+    mgr.feed_tts_chunk.assert_awaited_once()
+    assert mgr.feed_tts_chunk.await_args.args[0] == "记得起来喝口水。"
+    mgr.finish_proactive_delivery.assert_awaited_once()
+    # The turn stayed claimed across the switch.
+    mgr.handle_new_message.assert_not_awaited()
+    mgr.prepare_proactive_delivery.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_combo_reminder_without_ban_delivers_combo(monkeypatch):
+    _install_directives(monkeypatch, ["股票"])
+    mgr, config_manager, _corpus, _record = _break_harness(
+        monkeypatch, _FakeStreamingLlm("休息一下，一起玩个小游戏吧？"),
+    )
+
+    result = await _deliver_combo(mgr, config_manager)
+
+    assert result.delivered_text == "休息一下，一起玩个小游戏吧？"
+    assert result.delivered_channel == "work_break_game_invite"
+    assert break_reminders.create_chat_llm_async.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_combo_reminder_fallback_that_also_hits_is_consumed(monkeypatch):
+    _install_directives(monkeypatch, ["游戏", "喝水"])
+    mgr, config_manager, corpus, _record = _break_harness(
+        monkeypatch,
+        _FakeStreamingLlm("休息一下，一起玩个小游戏吧？"),
+        _FakeStreamingLlm("记得起来喝水。"),
+    )
+
+    result = await _deliver_combo(mgr, config_manager)
+
+    assert result.directive_blocked is True
+    assert result.consumes_source is True
+    # Bounded at two calls: no third attempt after the fallback hits.
+    assert break_reminders.create_chat_llm_async.await_count == 2
+    mgr.feed_tts_chunk.assert_not_awaited()
+    mgr.finish_proactive_delivery.assert_not_awaited()
+    mgr.handle_new_message.assert_awaited_once_with()
+    corpus.score_unanswered_proactive_draft.assert_not_called()
+
+
+def test_service_wires_combo_fallback_to_plain_reminder():
+    source = inspect.getsource(service.handle_proactive_chat)
+    assert 'directive_fallback=(wb_system_prompt, "work_break")' in source
+    assert 'reminder_delivery.delivered_channel == "work_break"' in source
+    # Both the fallback and the plain branch finish through one helper.
+    assert source.count("return await _end_work_break_delivered()") == 2
+
+
 @pytest.mark.parametrize("label", ["anti-slack reminder", "work-break reminder"])
 def test_break_reminder_ban_reports_directive_not_duplicate(label):
     blocked = service._suppressed_break_reminder_body(
@@ -504,8 +607,9 @@ _GATE = "_proactive_delivery_directive_block"
 def test_every_proactive_feed_is_preceded_by_the_gate():
     """A new channel that speaks without the shared gate reopens R2."""
     package = pathlib.Path(inspect.getfile(service)).parent
+    game_router = package.parents[1] / "main_routers" / "game_router"
     checked = []
-    for path in sorted(package.glob("*.py")):
+    for path in sorted([*package.glob("*.py"), *game_router.glob("*.py")]):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -524,10 +628,11 @@ def test_every_proactive_feed_is_preceded_by_the_gate():
             assert gate_lines and min(gate_lines) < min(feed_lines), (
                 f"{path.name}:{node.name} feeds proactive TTS without {_GATE}"
             )
-    # Phase 2 commit, break reminders, mini-game invite. If this shrinks the
+    # Phase 2 commit, break reminders, mini-game invite, postgame bubble. If this shrinks the
     # scan lost its target; if it grows, the new channel was checked above.
     assert {
         "delivery.py:_commit_proactive_delivery",
         "break_reminders.py:_deliver_break_reminder_via_llm",
         "mini_game_invite.py:_attempt_mini_game_invite_delivery",
+        "postgame.py:_deliver_postgame_text_bubble",
     } <= set(checked)

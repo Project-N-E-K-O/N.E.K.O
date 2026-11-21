@@ -1184,6 +1184,45 @@ async def handle_proactive_chat(
                         if gi_prompt is not None:
                             branch_game_invite = True
 
+            # Rendered up front: the combo branch falls back to it in the same
+            # turn when its draft hits a user ban-topic directive.
+            wb_prompt, wb_seed = _render_work_break_prompt(
+                pending=water_pending,
+                master_name=master_name_current,
+                lang=_break_lang,
+            )
+            wb_system_prompt = _compose_break_system_prompt(
+                _break_character_prompt,
+                wb_prompt,
+            )
+
+            async def _end_work_break_delivered() -> ProactiveChatResult:
+                try:
+                    mgr._activity_tracker.mark_work_break_used()
+                except Exception as _mark_err:
+                    logger.warning(
+                        "[%s] mark_work_break_used failed: %s",
+                        lanlan_name,
+                        _mark_err,
+                    )
+                # Same chats-since-response counter as anti_slack branch.
+                _mini_game_invite_count_post_response_chat(lanlan_name)
+                await _increment_proactive_chat_total(
+                    lanlan_name, **state_storage_kwargs
+                )
+                return await _end_proactive(
+                    ProactiveChatResult(
+                        body={
+                            "success": True,
+                            "action": "chat",
+                            "reason_code": PROACTIVE_REASON_CHAT_DELIVERED,
+                            "message": "work-break reminder delivered",
+                            "channel": "work_break",
+                            "seed": wb_seed,
+                        }
+                    )
+                )
+
             if (
                 branch_game_invite
                 and chosen_game_type is not None
@@ -1200,6 +1239,7 @@ async def handle_proactive_chat(
                     channel="work_break_game_invite",
                     lang=_break_lang,
                     round_id=lifecycle.screenshot_request_id,
+                    directive_fallback=(wb_system_prompt, "work_break"),
                 )
                 delivered_text = reminder_delivery.delivered_text
                 if reminder_delivery.consumes_source:
@@ -1215,6 +1255,9 @@ async def handle_proactive_chat(
                             )
                         )
                     )
+                if delivered_text and reminder_delivery.delivered_channel == "work_break":
+                    # The invite hit a ban and the plain reminder went out instead.
+                    return await _end_work_break_delivered()
                 if delivered_text:
                     invite_session_id = str(uuid4())
                     _mini_game_invite_record_delivered(lanlan_name, invite_session_id)
@@ -1310,19 +1353,11 @@ async def handle_proactive_chat(
                 )
 
             # Regular drink/stretch nudge branch
-            wb_prompt, wb_seed = _render_work_break_prompt(
-                pending=water_pending,
-                master_name=master_name_current,
-                lang=_break_lang,
-            )
             reminder_delivery = await _deliver_break_reminder_via_llm(
                 lanlan_name=lanlan_name,
                 mgr=mgr,
                 config_manager=break_config_manager_provider(),
-                system_prompt=_compose_break_system_prompt(
-                    _break_character_prompt,
-                    wb_prompt,
-                ),
+                system_prompt=wb_system_prompt,
                 channel="work_break",
                 lang=_break_lang,
                 round_id=lifecycle.screenshot_request_id,
@@ -1342,31 +1377,7 @@ async def handle_proactive_chat(
                     )
                 )
             if delivered_text:
-                try:
-                    mgr._activity_tracker.mark_work_break_used()
-                except Exception as _mark_err:
-                    logger.warning(
-                        "[%s] mark_work_break_used failed: %s",
-                        lanlan_name,
-                        _mark_err,
-                    )
-                # Same chats-since-response counter as anti_slack branch.
-                _mini_game_invite_count_post_response_chat(lanlan_name)
-                await _increment_proactive_chat_total(
-                    lanlan_name, **state_storage_kwargs
-                )
-                return await _end_proactive(
-                    ProactiveChatResult(
-                        body={
-                            "success": True,
-                            "action": "chat",
-                            "reason_code": PROACTIVE_REASON_CHAT_DELIVERED,
-                            "message": "work-break reminder delivered",
-                            "channel": "work_break",
-                            "seed": wb_seed,
-                        }
-                    )
-                )
+                return await _end_work_break_delivered()
             return await _end_proactive(
                 ProactiveChatResult(
                     body={

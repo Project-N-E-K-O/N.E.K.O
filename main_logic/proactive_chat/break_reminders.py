@@ -31,6 +31,7 @@ from config.prompts.prompts_proactive import BEGIN_GENERATE
 from config.prompts.prompts_sys import _loc
 from main_logic.proactive_chat.directive_gate import (
     _proactive_delivery_directive_block,
+    _proactive_delivery_directive_hit_count,
 )
 from main_logic.proactive_chat.state import (
     _proactive_feed_rejected_for_takeover,
@@ -63,6 +64,7 @@ class BreakReminderDeliveryResult:
     proactive_sid: str | None = None
     repeat_suppressed: bool = False
     directive_blocked: bool = False
+    delivered_channel: str | None = None
 
     @property
     def consumes_source(self) -> bool:
@@ -287,6 +289,7 @@ async def _deliver_break_reminder_via_llm(
     lang: str,
     timeout_seconds: float = 25.0,
     round_id: str | None = None,
+    directive_fallback: tuple[str, str] | None = None,
 ) -> BreakReminderDeliveryResult:
     """Minimal Phase 2 LLM stream delivery for break reminders.
 
@@ -305,6 +308,14 @@ async def _deliver_break_reminder_via_llm(
         etc — leave the source pending alone, next round can retry)
       * LLM error / timeout / preempt
       * Empty output / [PASS] emission (defensive)
+
+    ``directive_fallback`` is an optional ``(system_prompt, channel)`` pair.
+    When the first draft hits a user ban-topic directive, the fallback is
+    generated once in the same claimed turn and goes through every check the
+    first draft would have; a fallback that also hits is dropped as usual.
+    ``delivered_channel`` tells the caller which one was delivered. The
+    work-break + game-invite combo passes the plain work-break reminder here,
+    so a ban on games does not cost the user the break reminder itself.
 
     Caller is responsible for ``mark_*_used`` on success and for any follow-up
     UI push (e.g. the mini-game options popup in the
@@ -367,97 +378,123 @@ async def _deliver_break_reminder_via_llm(
     # ``BEGIN_GENERATE`` matches what normal Phase 2 uses, so the model
     # interprets the cue identically.
     begin_text = _loc(BEGIN_GENERATE, lang)
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=begin_text),
-    ]
-
-    print(
-        f"\n{'=' * 60}\n[BREAK-REMINDER] channel={channel} lang={lang} "
-        f"model={correction_model}\n{'=' * 60}\n{system_prompt}\n{'=' * 60}\n"
-    )
-
     from utils.token_tracker import set_call_type
 
     set_call_type("proactive")
-    full_text = ""
-    aborted = False
-    pass_probe = ""
-    pass_probe_len = 5  # len("[PASS]") - 1
+    attempts = [(system_prompt, channel)]
+    if directive_fallback is not None:
+        attempts.append(directive_fallback)
+    for attempt_index, (system_prompt, channel) in enumerate(attempts):
+        if attempt_index:
+            # Same ownership checks the first draft passed before its stream.
+            if _round_retired():
+                return BreakReminderDeliveryResult()
+            if mgr.state.is_proactive_preempted(proactive_sid):
+                if _proactive_turn_still_owned(mgr, proactive_sid):
+                    await mgr.handle_new_message()
+                return BreakReminderDeliveryResult()
+            silence_since_before_generation = _break_reminder_silence_since(mgr)
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=begin_text),
+        ]
 
-    try:
-        async with asyncio.timeout(timeout_seconds):
-            async with await create_chat_llm_async(
-                correction_model,
-                correction_base_url,
-                correction_api_key,
-                provider_type=correction_provider_type,
-                temperature=1.0,
-                max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                streaming=True,
-                timeout=timeout_seconds,
-            ) as llm:
-                async for chunk in llm.astream(messages):
-                    if mgr.state.is_proactive_preempted(proactive_sid):
-                        aborted = True
-                        break
-                    content = chunk.content if hasattr(chunk, "content") else ""
-                    if not content:
-                        continue
-                    combined = pass_probe + content
-                    if "[PASS]" in combined.upper():
-                        aborted = True
-                        break
-                    safe_text = (
-                        combined[:-pass_probe_len]
-                        if len(combined) > pass_probe_len
-                        else ""
-                    )
-                    pass_probe = (
-                        combined[-pass_probe_len:]
-                        if len(combined) >= pass_probe_len
-                        else combined
-                    )
-                    if safe_text:
-                        # Token-budget cap mirrors the normal Phase 2 path —
-                        # break-reminder output should be short in any case,
-                        # but defensive.
-                        n_tokens = count_tokens(full_text + safe_text)
-                        if n_tokens > PHASE2_OUTPUT_MAX_TOKENS:
+        print(
+            f"\n{'=' * 60}\n[BREAK-REMINDER] channel={channel} lang={lang} "
+            f"model={correction_model}\n{'=' * 60}\n{system_prompt}\n{'=' * 60}\n"
+        )
+
+        full_text = ""
+        aborted = False
+        pass_probe = ""
+        pass_probe_len = 5  # len("[PASS]") - 1
+
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                async with await create_chat_llm_async(
+                    correction_model,
+                    correction_base_url,
+                    correction_api_key,
+                    provider_type=correction_provider_type,
+                    temperature=1.0,
+                    max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                    streaming=True,
+                    timeout=timeout_seconds,
+                ) as llm:
+                    async for chunk in llm.astream(messages):
+                        if mgr.state.is_proactive_preempted(proactive_sid):
                             aborted = True
                             break
-                        full_text += safe_text
-        # Flush remaining pass_probe (if it doesn't itself contain [PASS]).
-        if not aborted and pass_probe and "[PASS]" not in pass_probe.upper():
-            full_text += pass_probe
-    except (asyncio.TimeoutError, Exception) as exc:
-        logger.warning(
-            "[%s] break reminder LLM stream failed (channel=%s): %s: %s",
-            lanlan_name,
-            channel,
-            type(exc).__name__,
-            exc,
-        )
-        aborted = True
+                        content = chunk.content if hasattr(chunk, "content") else ""
+                        if not content:
+                            continue
+                        combined = pass_probe + content
+                        if "[PASS]" in combined.upper():
+                            aborted = True
+                            break
+                        safe_text = (
+                            combined[:-pass_probe_len]
+                            if len(combined) > pass_probe_len
+                            else ""
+                        )
+                        pass_probe = (
+                            combined[-pass_probe_len:]
+                            if len(combined) >= pass_probe_len
+                            else combined
+                        )
+                        if safe_text:
+                            # Token-budget cap mirrors the normal Phase 2 path —
+                            # break-reminder output should be short in any case,
+                            # but defensive.
+                            n_tokens = count_tokens(full_text + safe_text)
+                            if n_tokens > PHASE2_OUTPUT_MAX_TOKENS:
+                                aborted = True
+                                break
+                            full_text += safe_text
+            # Flush remaining pass_probe (if it doesn't itself contain [PASS]).
+            if not aborted and pass_probe and "[PASS]" not in pass_probe.upper():
+                full_text += pass_probe
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning(
+                "[%s] break reminder LLM stream failed (channel=%s): %s: %s",
+                lanlan_name,
+                channel,
+                type(exc).__name__,
+                exc,
+            )
+            aborted = True
 
-    if aborted or not full_text.strip():
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
-        return BreakReminderDeliveryResult()
+        if aborted or not full_text.strip():
+            if _proactive_turn_still_owned(mgr, proactive_sid):
+                await mgr.handle_new_message()
+            return BreakReminderDeliveryResult()
 
-    text = full_text.strip()
-    silence_since_after_generation = _break_reminder_silence_since(mgr)
-    if silence_since_after_generation is not None and (
-        silence_since_before_generation is None
-        or silence_since_after_generation > silence_since_before_generation
-    ):
-        logger.info(
-            "[%s] break reminder abandoned after user interaction during generation",
-            lanlan_name,
-        )
-        if _proactive_turn_still_owned(mgr, proactive_sid):
-            await mgr.handle_new_message()
-        return BreakReminderDeliveryResult()
+        text = full_text.strip()
+        silence_since_after_generation = _break_reminder_silence_since(mgr)
+        if silence_since_after_generation is not None and (
+            silence_since_before_generation is None
+            or silence_since_after_generation > silence_since_before_generation
+        ):
+            logger.info(
+                "[%s] break reminder abandoned after user interaction during generation",
+                lanlan_name,
+            )
+            if _proactive_turn_still_owned(mgr, proactive_sid):
+                await mgr.handle_new_message()
+            return BreakReminderDeliveryResult()
+
+        # A first draft that hits a ban switches to the fallback in the same
+        # turn. Hit count only: the turn stays claimed for the fallback, and
+        # the gate below handles the last draft like any other reminder.
+        if attempt_index + 1 < len(attempts) and _proactive_delivery_directive_hit_count(
+            lanlan_name, text,
+        ):
+            print(
+                f"[{lanlan_name}] 休息提醒命中用户明确要求回避的话题，改发普通提醒 "
+                f"(channel={channel})"
+            )
+            continue
+        break
 
     # Ban-topic gate before the anti-repeat checks: their drops persist draft
     # fragments, and a banned term must not reach that record either. Same
@@ -685,6 +722,7 @@ async def _deliver_break_reminder_via_llm(
     return BreakReminderDeliveryResult(
         delivered_text=text,
         proactive_sid=proactive_sid,
+        delivered_channel=channel,
     )
 
 
