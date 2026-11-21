@@ -112,7 +112,7 @@ Mode is inferred from the entry extension:
 from plugin.sdk.plugin import (
     NekoPluginBase,  # Default plugin base class.
     neko_plugin,     # Default decorator for plugin discovery.
-    plugin_entry,    # Default backend entry and LLM-visible tool.
+    plugin_entry,    # Default backend entry, callable by the Agent and other plugins.
     ui,              # Hosted UI decorators: context and action.
     tr,              # Recommended: plugin-local i18n reference.
     Ok,              # Recommended result helper for successful entries.
@@ -146,7 +146,7 @@ class MyPlugin(NekoPluginBase):
         id="refresh_item",
         name=tr("entries.refresh.name", default="Refresh Item"),
         description=tr("entries.refresh.description", default="Refresh an item."),
-        # Recommended: schema drives forms, validation hints, and LLM tool metadata.
+        # Recommended: schema drives forms and validation hints, and is published to callers.
         input_schema={
             "type": "object",
             "properties": {
@@ -157,7 +157,7 @@ class MyPlugin(NekoPluginBase):
             },
             "required": ["item_id"],
         },
-        # Optional: tells the LLM-facing layer which result fields matter.
+        # Optional: result fields the model reading the result sees.
         llm_result_fields=["message"],
     )
     async def refresh_item(self, item_id: str, **_):
@@ -168,7 +168,8 @@ This gives the UI two things:
 
 - `@ui.context(id="dashboard")` returns the `props.state` payload.
 - `@ui.action(...)` exposes a backend entry as a UI action.
-- `@plugin_entry(...)` is still the callable backend entry and the LLM-visible tool metadata.
+- `@plugin_entry(...)` is still the callable backend entry; the Agent and other plugins can call it too. It is not a tool of the main dialogue model: see [Choosing between `@plugin_entry` and `@llm_tool`](/plugins/tool-calling#choosing-an-entry-type).
+- `llm_result_fields` limits which result fields the model reading the result sees; see [Controlling what the AI sees](./entries#controlling-what-the-ai-sees).
 - `tr(...)` declares a plugin-local i18n key with an English default.
 - `refresh_context=True` asks the hosted UI to refresh context after the action succeeds.
 
@@ -286,6 +287,8 @@ tr("actions.refresh.label", default="Refresh")
 self.i18n.t("messages.done", default="Done")
 ```
 
+`self.i18n.t(...)` does not follow the viewer's language: without `locale=` it uses the plugin `default_locale`, then its base language (for example `fr` for `fr-CA`), then `en`, then the `default` argument or key name. Text that must appear in each user's language belongs in `tr(...)` declarations (resolved by the host per user) or in TSX `props.t(...)`.
+
 ```tsx
 // TSX runtime: use props.t(...) for visible UI text.
 props.t("panel.subtitle")
@@ -373,6 +376,8 @@ type HostedApi = {
   ```toml
   permissions = ["state:read", "document:parse"]
   ```
+
+  `neko-plugin check` currently still warns that `document:parse` is not a recognized UI permission ([#3809](https://github.com/Project-N-E-K-O/N.E.K.O/issues/3809)). The runtime accepts it; this warning does not fail the check and can be ignored.
 
   Call it directly from a real user event handler, such as a file input's `onChange`, a click, or a drop. The Hosted UI runtime marks synchronous calls from those handlers as user initiated; a call made after unrelated asynchronous work is rejected.
 - `api.refresh()` fetches the latest context and re-renders the surface.

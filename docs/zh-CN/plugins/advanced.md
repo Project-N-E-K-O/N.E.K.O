@@ -102,6 +102,8 @@ async def async_task(self, url: str, **_):
             return Ok({"data": await response.json()})
 ```
 
+像上面这样，在使用异步 client（如 `aiohttp.ClientSession`）的那次调用里创建它：`startup`、入口调用和 `shutdown` 运行在不同的事件循环里。`aiohttp` 是第三方包，请在插件的 `pyproject.toml` 的 `[project].dependencies` 中声明，并运行 `neko-plugin sync <plugin>`。
+
 ---
 
 ## 线程安全

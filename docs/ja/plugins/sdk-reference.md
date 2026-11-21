@@ -49,7 +49,7 @@ class MyPlugin(NekoPluginBase):
 | `self.config_dir` | `Path` | `self.plugin_dir` の互換エイリアス |
 | `self.storage_dir` | `Path` | このプラグインに割り当てられたユーザーストレージルート |
 | `self.runtime_config_path` | `Path` | 外部ランタイム設定ファイルのパス |
-| `self.metadata` | `dict` | `plugin.toml` からのプラグインメタデータ |
+| `self.metadata` | `dict` | 現在、プラグインプロセスでは常に `{}`（`plugin.toml` の内容は渡されません）。設定は `await self.config.dump()` で読みます |
 | `self.bus` | `SdkBusContext` | host state の read/watch facade。publish/emit API はありません |
 | `self.plugins` | `Plugins` | プラグイン間呼び出しヘルパー |
 | `self.system_info` | `SystemInfo` | ホストシステムのメタデータ |
@@ -59,7 +59,7 @@ class MyPlugin(NekoPluginBase):
 `NekoPluginBase` は、追加設定なしでログと実行時設定を提供します：
 
 ```python
-self.logger.info("Processing request: {}", request_id)
+self.logger.info("Processing request: %s", request_id)
 timeout = await self.config.get_int("my_settings.timeout", default=30)
 ```
 
@@ -93,6 +93,8 @@ async with unwrap(await self.db.session()) as session:
 ```python
 message = self.i18n.t("greeting", name="Alice")
 ```
+
+`self.i18n.t(...)` はユーザーの言語に従いません。`locale=` を渡さない場合、プラグインの `default_locale`、その基本言語（例：`fr-CA` なら `fr`）、`en` の順に探し、最後に `default` 引数またはキー名を返します。ホストが登録するユーザー向け文字列（プラグインやエントリーの名前、説明、スキーマのラベル、UI アクションのラベル）には `tr("key", default="...")` を使ってください。こちらはホストがユーザーごとの言語で解決します。
 
 ### メソッド
 
@@ -170,13 +172,18 @@ cities = self.shared_path_of("weather", "cities.json")
 実行時にエントリーポイントを登録します（デコレーター経由ではなく）。
 
 ```python
+async def greet(name: str = "World", **_):
+    return Ok({"msg": f"Hi {name}"})
+
 self.register_dynamic_entry(
     entry_id="dynamic_greet",
-    handler=lambda name="World", **_: Ok({"msg": f"Hi {name}"}),
+    handler=greet,
     name="Dynamic Greet",
     description="動的に登録された挨拶",
 )
 ```
+
+handler は `async def` 関数である必要があります。登録時は呼び出し可能かどうかしか確認しませんが、handler がコルーチン関数でないエントリーを呼び出すと `Entry must be 'async def'` で失敗します。
 
 #### `unregister_dynamic_entry(entry_id) -> bool`
 
@@ -202,7 +209,7 @@ self.register_static_ui("static")  # <plugin_dir>/static/index.html を配信
 
 大規模または機能分割された通常 Plugin を整理するために `PluginRouter` を mount します。
 
-関連 method は `exclude_router(router_or_name) -> bool`、`get_router(name)`、`list_routers()` です。Router は manifest `[plugin].entry` にはできず、この mount path は `on_mount` / `on_unmount` を自動実行しません。
+各 router クラスはプラグインのクラス属性 `__routers__` にも列挙してください。ホストの静的エントリースキャンはこのリストだけを読みます（[PluginRouter](./router) を参照）。ここに列挙した router クラスに `prefix` を組み合わせないでください。一覧の ID が呼び出せなくなります（[prefix 付き Router](./router#prefixed-routers) を参照）。関連 method は `exclude_router(router_or_name) -> bool`、`get_router(name)`、`list_routers()` です。Router は manifest `[plugin].entry` にはできません。`on_mount` / `on_unmount` はホストから呼ばれないため、オーバーライドしないでください。
 
 #### Hosted/static UI と list action
 
@@ -353,7 +360,7 @@ chain.allows("memory.read")
 
 ## PluginStore（永続ストレージ）
 
-`self.store` 経由でアクセスします（ホストがプラグイン構築時に事前生成して注入するため、自分でインスタンス化する必要はありません）。
+`self.store` 経由でアクセスします（ホストがプラグイン構築時に事前生成して注入するため、自分でインスタンス化する必要はありません）。`plugin.toml` の `[plugin.store]` で `enabled = true` にしない限り無効で、無効の間は `set()` は何も保存せず、`get()` はデフォルト値を返します。
 
 `PluginStore` のすべてのメソッドは `Result` を返すため、`unwrap_or(...)` で展開してください。
 
@@ -386,7 +393,7 @@ python_env = unwrap_or(await self.system_info.get_python_env(), {})
 | `ctx.config_path` | `Path` | `plugin.toml` へのパス |
 | `ctx.logger` | `Logger` | ロガーインスタンス |
 | `ctx.bus` | `SdkBusContext` | host state の read/watch facade |
-| `ctx.metadata` | `dict` | プラグインメタデータ |
+| `ctx.metadata` | `dict` | `__init__` に渡される元の `ctx` には `metadata` 属性がありません（読むと `AttributeError`）。ラップ後の `self.ctx.metadata` は `{}` を返します。設定は `await self.config.dump()` で読みます |
 
 ### Bus と Memory
 
