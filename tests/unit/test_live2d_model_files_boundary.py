@@ -166,3 +166,11 @@ def test_subdir_link_leaving_model_dir_is_not_entered_even_if_config_links_back(
     _link(item_dir / "store" / "deep" / "m.model3.json", elsewhere / "m.model3.json")
     _link(elsewhere, item_dir / "out")
     assert live2d_router._locate_model_config(str(item_dir)) == (None, None, None)
+
+
+def test_skipped_entry_is_logged(monkeypatch, tmp_path, outside, caplog):
+    model_dir = tmp_path / "user_live2d" / "m"
+    _build_model(model_dir, outside)
+    with caplog.at_level("INFO"):
+        _by_name(monkeypatch, model_dir)
+    assert any("out_dir" in r.getMessage() for r in caplog.records)

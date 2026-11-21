@@ -338,14 +338,18 @@ def _upsert_model(
 def _is_inside_model_dir(model_dir_real: str, path: str) -> bool:
     """
     Whether the real path of *path* (links resolved) stays inside *model_dir_real*,
-    the real path of the model folder. Same boundary rule as
-    ``find_workshop_item_model_file``: links pointing inside the folder keep
-    working, entries whose real path leaves it are skipped.
+    the real path of the model folder, checked with ``utils.frontend_utils._is_within``
+    (the same boundary rule the Workshop model-file lookup in #3912 uses): links
+    pointing inside the folder keep working, entries whose real path leaves it are
+    skipped. Skipped entries are logged so a missing motion or expression can be traced.
     """
     try:
-        return _is_within(model_dir_real, os.path.realpath(path))
+        inside = _is_within(model_dir_real, os.path.realpath(path))
     except (OSError, ValueError):
-        return False
+        inside = False
+    if not inside:
+        logger.info("跳过真实路径不在模型目录内的条目: %s (模型目录: %s)", path, model_dir_real)
+    return inside
 
 
 def _locate_model_config(model_dir: str):
