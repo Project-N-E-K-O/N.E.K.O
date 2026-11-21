@@ -560,6 +560,10 @@ class KnowledgeService:
                 job = ImportJob(**fields)
                 if path.stem != job.job_id or len(job.job_id) != 32:
                     continue
+                if not isinstance(job.created_at, str) or not isinstance(job.updated_at, str):
+                    # The restart order below sorts by these; one damaged
+                    # record must be skipped, not fail the whole start.
+                    continue
                 if job.state in ACTIVE_JOB_STATES:
                     record = self._registry.packs.get(job.pack_id)
                     # A pack the startup reconcile found broken was not
@@ -1846,8 +1850,11 @@ class KnowledgeService:
             await self._discard_staging(job.job_id)
             raise
         if self._stopping:
-            # The runner is gone; a queued job would never run.
+            # The runner is gone; a queued job would never run. No task record
+            # exists yet, so nothing else could reclaim its frozen retry input.
             await self._discard_staging(job.job_id)
+            with contextlib.suppress(OSError):
+                await self._thread((self.root / "jobs" / (job.job_id + ".pack.json")).unlink, missing_ok=True)
             return {"ok": False, "reason": "knowledge_stopping"}
         job.arrived_at = arrived_at
         self._remember_job(job)
@@ -2517,7 +2524,7 @@ class KnowledgeService:
         """Fail closed if on-disk resources changed after the matrix was loaded."""
         provider = getattr(self.embedder, "spec", None)
         if snapshot is not None and callable(provider):
-            current = await self._thread(provider)
+            current = await self._query_thread(provider)
             if current is None or current != snapshot.specification:
                 return None
         return snapshot
@@ -2697,7 +2704,12 @@ class KnowledgeService:
         counts = self._store.chunk_stats(None)
         registry = self._registry
         for pack_id, record in registry.packs.items():
-            registry = registry.with_pack(replace(record, chunks=counts.get(pack_id, {}).get("total", 0)))
+            chunks = counts.get(pack_id, {}).get("total", 0)
+            if pack_id in self._broken_packs:
+                # A pack awaiting repair keeps its reservation, as at startup:
+                # max(registered count, rows kept), never its dropped rows' 0.
+                chunks = max(chunks, record.chunks)
+            registry = registry.with_pack(replace(record, chunks=chunks))
         save_registry(self.root, registry)
         self._publish_registry(registry)
         self._pending_chunk_reconcile = False
