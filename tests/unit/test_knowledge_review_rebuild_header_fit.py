@@ -89,3 +89,90 @@ async def test_startup_rebuild_keeps_the_database_when_the_header_cannot_fit(tmp
         assert reopened._registry.packs["imp.long"].chunks == 1
     finally:
         await reopened.stop()
+
+
+class VectorTokenizingEmbedder(TokenizingEmbedder):
+    """Same tokenizer budget, producing vectors of the specification's size."""
+
+    def model_id(self):
+        return specification()["model_id"]
+
+    async def embed_batch(self, texts):
+        return [[1.0] + [0.0] * 63 for _ in texts]
+
+    embed_documents = embed_batch
+
+
+async def test_index_rounds_refuse_an_unfittable_replan_once_and_embed_the_rest(tmp_path):
+    # Admitted without a tokenizer: one entry whose header alone cannot fit,
+    # and one whose legacy input already fits the later token budget.
+    installer = KnowledgeService(tmp_path, embedder=FakeEmbedder())
+    await installer.start()
+    try:
+        await _stop_automatic_indexer(installer)
+        assert (await _import(installer, _pack("imp.long", entries=[
+            _LONG, {"title": "N", "content": "ok body"}])))["state"] == "active"
+    finally:
+        await installer.stop()
+    service = KnowledgeService(tmp_path, embedder=VectorTokenizingEmbedder())
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        replans = []
+        replan = service._replan_vector_inputs
+
+        async def observed(pack_ids):
+            replans.append(list(pack_ids))
+            return await replan(pack_ids)
+
+        service._replan_vector_inputs = observed
+        await service._index_round()
+        generation = service._vector_generation
+        stats = service._store.chunk_stats(specification()["model_id"], specification=VectorTokenizingEmbedder().spec())
+        assert stats["imp.long"]["ready"] == 1  # The fitting entry still gets its vector.
+        for _round in range(3):
+            await service._index_round()
+        # Re-tokenizing the whole pack cannot change the outcome; it must not
+        # be retried, nor invalidate the library's vector snapshot, each round.
+        assert replans == [["imp.long"]]
+        assert service._vector_generation == generation
+        # A changed pack reopens the refusal and gets a fresh token plan.
+        assert (await _import(service, _pack("imp.long", entries=[
+            {"title": "L", "content": "fixed body"}, {"title": "N", "content": "ok body"}])))["state"] == "active"
+        await service._index_round()
+        assert "imp.long" not in service._refused_replans
+        stats = service._store.chunk_stats(specification()["model_id"], specification=VectorTokenizingEmbedder().spec())
+        assert stats["imp.long"]["ready"] == stats["imp.long"]["total"] == 2
+    finally:
+        await service.stop()
+
+
+async def test_new_import_reports_an_unfittable_header_as_invalid_entry(tmp_path):
+    service = KnowledgeService(tmp_path, embedder=TokenizingEmbedder())
+    await service.start()
+    try:
+        result = await service.import_pack(_raw(_pack("imp.long", entries=[_LONG])))
+        assert result == {"ok": False, "reason": "invalid_entry"}
+        assert "imp.long" not in service._registry.packs
+    finally:
+        await service.stop()
+
+
+async def test_commit_reports_an_unfittable_header_when_assets_arrive_after_admission(tmp_path, monkeypatch):
+    service = KnowledgeService(tmp_path, embedder=TokenizingEmbedder())
+    await service.start()
+    try:
+        fit = service._chunk_fit
+        calls = []
+
+        def assets_arrive_after_admission():
+            calls.append(True)
+            return None if len(calls) == 1 else fit()
+
+        monkeypatch.setattr(service, "_chunk_fit", assets_arrive_after_admission)
+        job = await _import(service, _pack("imp.long", entries=[_LONG]))
+        assert len(calls) >= 2
+        assert job["state"] == "failed" and job["reason"] == "invalid_entry"
+        assert "imp.long" not in service._registry.packs
+    finally:
+        await service.stop()

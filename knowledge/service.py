@@ -275,6 +275,21 @@ def _budgeted_plan(pack: KnowledgePack, options: dict[str, Any], others: int) ->
     return None
 
 
+def _count_admitted_chunks(pack: KnowledgePack, *, fit, seed_vectors: Sequence[Mapping] = ()) -> int:
+    """Chunk count for admission and commit, rejecting an unfittable header.
+
+    An entry whose title/summary header alone exceeds the token budget can
+    never be split to fit; report it as the stable ``invalid_entry`` reason
+    instead of a generic failure.
+    """
+    try:
+        return count_pack_chunks(pack, fit=fit, seed_vectors=seed_vectors)
+    except ValueError as exc:
+        if fit is not None and str(exc) == "embedding_input_too_large":
+            raise KnowledgePackError("invalid_entry") from None
+        raise
+
+
 def _file_identity(path: Path) -> tuple[int, ...] | None:
     """Cache key for a file's state, or None when it cannot be read.
 
@@ -1931,7 +1946,7 @@ class KnowledgeService:
 
     def _prepare_import(self, raw: bytes, *, seed_vectors: Sequence[Mapping] = ()) -> tuple[KnowledgePack, bytes, int]:
         pack = decode_pack_bytes(raw)
-        return pack, canonical_pack_bytes(pack), count_pack_chunks(pack, fit=self._chunk_fit(), seed_vectors=seed_vectors)
+        return pack, canonical_pack_bytes(pack), _count_admitted_chunks(pack, fit=self._chunk_fit(), seed_vectors=seed_vectors)
 
     def _chunk_fit(self) -> Callable[[str], bool] | None:
         """Called only in workers; token counting never loads an ONNX session."""
@@ -2297,7 +2312,7 @@ class KnowledgeService:
             # Assets may become available between admission and commit. Use
             # this single fit for capacity, registry metadata and SQLite.
             fit = self._chunk_fit()
-            chunks = count_pack_chunks(pack, fit=fit, seed_vectors=job.seed_vectors)
+            chunks = _count_admitted_chunks(pack, fit=fit, seed_vectors=job.seed_vectors)
             if chunks > MAX_CHUNKS_PER_PACK:
                 raise KnowledgePackError("too_many_chunks")
             # Admission checked capacity without the lock; two imports racing
@@ -2836,7 +2851,18 @@ class KnowledgeService:
                                 deferred_packs.add(pack_id)
                             if self._pending_chunk_reconcile:
                                 return processed  # Reconcile before planning or encoding another pack.
-                        except (OSError, ValueError):
+                        except ValueError as exc:
+                            if str(exc) == "embedding_input_too_large" and key is not None:
+                                # An entry header alone exceeds the token budget:
+                                # like a limit refusal, re-tokenizing the pack
+                                # cannot change it until the pack or encoder does.
+                                self._refused_replans[pack_id] = (key, "embedding_input_too_large")
+                                refused.add(pack_id)
+                            else:
+                                deferred_packs.add(pack_id)
+                            if self._pending_chunk_reconcile:
+                                return processed  # Reconcile before planning or encoding another pack.
+                        except OSError:
                             # One missing source cannot starve unrelated packs.
                             # Exclude it for this round so re-reading the same
                             # rows cannot spin forever.
