@@ -2240,8 +2240,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             if (!hasMoved && clickDuration < CLICK_THRESHOLD_TIME) {
                 // 这是一个点击
                 console.log(`[Interaction] 检测到点击（时长: ${clickDuration}ms）`);
-                // 即时反馈：先原地颤一下，不等下面 300ms 后的动作/表情
-                window.NekoAvatarClickShake?.play(this.pixi_app?.view);
+                // 即时反馈：先原地颤一下（连点会逐级加大、第 4 下生气），不等下面 300ms 后的动作/表情
+                const clickCombo = window.NekoAvatarClickShake?.tap(this.pixi_app?.view);
                 // 只在教程模式下，通过点击检测触发随机动画
                 // 非教程模式下，通过 hit 事件处理
                 await new Promise(resolve => setTimeout(resolve, 300));
@@ -2249,6 +2249,9 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                 if(window.live2dManager.touchSetHitEventLock){
                     window.live2dManager.touchSetHitEventLock = false;
                 }
+                // 第 2 下起表情由连点写死（happy/surprised/angry），生气后 30 秒内点击完全不给反馈：
+                // 这些情况都不再播点击动作/表情。等待的这 300ms 里若已连上下一下，首击也不再播
+                if (clickCombo && !window.NekoAvatarClickShake.stillAllowsTouchSet(clickCombo)) return;
                 const customAreaId = this._lastPointerDownCustomTouchAreaId ||
                     (typeof this._getCustomTouchAreaIdAtPoint === 'function'
                         ? this._getCustomTouchAreaIdAtPoint(clickStartX, clickStartY)
@@ -3384,12 +3387,18 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, dura
             }
         }
 
+        // 动作可能是被新的点击/连点抢占中止才返回 false 的，这时不能再落到表情兜底
+        if (!isCurrentPlayAttempt()) {
+            triggerLog.reason = 'superseded_before_expression';
+            return false;
+        }
+
         // 2. 动作不可用或播放失败时，再用表情兜底
         if (!didPlayEffect && expressionFiles.length > 0) {
             const choiceFile = this.getRandomElement(expressionFiles);
             if (choiceFile && typeof this.playExpression === 'function') {
                 console.log(`[ClickEffect] 播放临时表情: ${choiceFile}`);
-                const expressionPlayed = await this.playExpression(emotion, choiceFile);
+                const expressionPlayed = await this.playExpression(emotion, choiceFile, { isCurrent: isCurrentPlayAttempt });
                 if (!isCurrentPlayAttempt()) {
                     // 已被新的点击接管，不要继续写共享状态
                     triggerLog.reason = 'superseded_after_expression';
@@ -4591,6 +4600,8 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
         failedMotions: [],
         failedExpressions: []
     };
+    // 连点抢占（preemptForClickComboEmotion）后，本次点击的后续步骤一律作废
+    const clickComboGeneration = this._clickComboPreemptGeneration || 0;
 
     if (this._isHandlingTouchInteraction) {
         console.log('[TouchSet] 动作正在加载中，忽略频繁连击防止状态污染');
@@ -4730,7 +4741,10 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
                             return false;
                         }
 
-                        const result = await this.playActionMotion(groupName, 0);
+                        // 动作启动前也要认连点抢占：loadMotion 期间被抢占的旧调用不能再把动作播出来
+                        const result = await this.playActionMotion(groupName, 0, {
+                            isCurrent: () => (this._clickComboPreemptGeneration || 0) === clickComboGeneration
+                        });
 
                         if (result) {
                             triggerLog.motions.push({
@@ -4783,6 +4797,12 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
                         }
                     }
             }
+        }
+
+        // 动作被连点抢占中止后会返回 false，不能再落到表情兜底去盖连点写死的表情
+        if ((this._clickComboPreemptGeneration || 0) !== clickComboGeneration) {
+            triggerLog.reason = 'superseded_by_click_combo';
+            return false;
         }
 
         if (triggerLog.motions.length === 0 && expressions.length > 0) {
@@ -4870,3 +4890,45 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
         this._isHandlingTouchInteraction = false;
     }
 };
+
+/**
+ * 连点写死表情前的抢占（static/avatar/avatar-click-shake.js 派发 neko:avatar-click-combo-emotion）。
+ * setEmotion 在"情绪切换中"或"有动作在播"时会直接拒绝新请求，而连点的 happy/surprised/angry
+ * 间隔只有几百毫秒、首击的点击动作也可能刚开始播：先撤掉这些，写死的表情才能接管。
+ * 有演出锁（剧场/教程等）时什么都不动。
+ */
+Live2DManager.prototype.preemptForClickComboEmotion = function() {
+    if (!this.currentModel) return false;
+    if (typeof this.isAvatarPerformanceCapabilityLocked === 'function'
+            && (this.isAvatarPerformanceCapabilityLocked('expression')
+                || this.isAvatarPerformanceCapabilityLocked('motion'))) {
+        return false;
+    }
+    try {
+        // 让进行中的首击点击效果 / touch set 失效：它们的动作被下面中止后不得再落到表情兜底
+        this._clickComboPreemptGeneration = (this._clickComboPreemptGeneration || 0) + 1;
+        this._clickEffectRestoreToken = (this._clickEffectRestoreToken || 0) + 1;
+        if (typeof this._cancelTouchSetExpressionRestore === 'function') this._cancelTouchSetExpressionRestore();
+        if (typeof this._stopClickEffectAction === 'function') this._stopClickEffectAction();
+        // 中止进行中的情绪切换 / 点击动作 / 临时表情（abort 会同步复位 isEmotionChanging 并停掉 SDK 动作）
+        if (typeof this._cancelAvatarOperations === 'function') this._cancelAvatarOperations();
+        // 简单情绪动作只靠定时器维持，不在 operation 里，单独清
+        if (typeof this.clearEmotionEffects === 'function') this.clearEmotionEffects();
+    } catch (error) {
+        console.warn('[ClickCombo] 抢占点击动作失败:', error);
+        return false;
+    }
+    return true;
+};
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function'
+        && !window.__nekoLive2DClickComboEmotionBound) {
+    window.__nekoLive2DClickComboEmotionBound = true;
+    window.addEventListener('neko:avatar-click-combo-emotion', (event) => {
+        const manager = window.live2dManager;
+        const element = event && event.detail && event.detail.element;
+        // 只处理点在 Live2D 画布上的连点
+        if (!manager || !element || manager.pixi_app?.view !== element) return;
+        if (typeof manager.preemptForClickComboEmotion === 'function') manager.preemptForClickComboEmotion();
+    });
+}
