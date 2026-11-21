@@ -383,3 +383,146 @@ def test_the_module_keeps_clear_of_the_agent_process():
     source = (Path(__file__).resolve().parents[3] / "app" / "agent_server" / "api_console.py").read_text(encoding="utf-8")
     assert "api_shared" not in source and "from ._shared" not in source
     assert json.dumps("api_runtime") not in source
+
+
+# ---------------------------------------------------------------------------
+# The task agent space
+# ---------------------------------------------------------------------------
+
+
+async def test_the_rules_are_read_and_written_for_the_space_and_for_a_project_apart(console):
+    client, host, _ = console
+    assert (await client.get("/console/space/rules", headers=HEADERS)).json() == {"success": True, "text": ""}
+    written = await client.put("/console/space/rules", headers=HEADERS, json={"text": "- answer in Chinese\n"})
+    assert written.json()["text"] == "- answer in Chinese\n"
+    await client.put("/console/space/rules", headers=HEADERS, json={"text": "- use Decimal\n", "project": "ledger-tool"})
+
+    assert await host.space.read_rules() == "- answer in Chinese\n"
+    assert await host.space.read_rules("ledger-tool") == "- use Decimal\n"
+    of_project = await client.get("/console/space/rules", headers=HEADERS, params={"project": "ledger-tool"})
+    assert of_project.json()["text"] == "- use Decimal\n"
+
+
+@pytest.mark.parametrize(
+    ("payload", "code"),
+    [
+        ({"text": 3}, "bad_text"),
+        ({}, "bad_text"),
+        ({"text": "x", "project": ""}, "bad_name"),
+        ({"text": "x", "project": 7}, "bad_name"),
+        ({"text": "x", "project": "../outside"}, "bad_name"),
+    ],
+)
+async def test_rules_that_are_no_text_or_name_no_project_are_refused(console, payload, code):
+    client, host, _ = console
+    refused = await client.put("/console/space/rules", headers=HEADERS, json=payload)
+    assert refused.status_code == 400 and refused.json()["detail"]["code"] == code
+    assert await host.space.read_rules() == ""
+
+
+async def test_an_entry_is_kept_listed_read_changed_and_removed(console):
+    client, host, _ = console
+    kept = await client.post(
+        "/console/space/entries", headers=HEADERS,
+        json={"title": "Python lives in D:/py312", "content": "Use D:/py312/python.exe.", "description": "where python is"},
+    )
+    entry = kept.json()["entry"]
+    assert kept.status_code == 200 and entry["title"] == "Python lives in D:/py312" and entry["type"] == "lesson"
+
+    listed = (await client.get("/console/space/entries", headers=HEADERS)).json()["entries"]
+    assert [item["id"] for item in listed] == [entry["id"]] and listed[0]["content"] == ""
+    read = (await client.get(f"/console/space/entries/{entry['id']}", headers=HEADERS)).json()["entry"]
+    assert "D:/py312/python.exe" in read["content"]
+    assert "Python lives in D:/py312" in (await client.get("/console/space/index", headers=HEADERS)).json()["text"]
+
+    changed = await client.patch(
+        f"/console/space/entries/{entry['id']}", headers=HEADERS, json={"title": "Where Python is", "kind": "reference"},
+    )
+    assert changed.json()["entry"]["title"] == "Where Python is" and changed.json()["entry"]["type"] == "reference"
+    assert (await host.space.read_entry(entry["id"])).title == "Where Python is"
+
+    assert (await client.delete(f"/console/space/entries/{entry['id']}", headers=HEADERS)).json() == {"success": True}
+    assert (await client.get("/console/space/entries", headers=HEADERS)).json()["entries"] == []
+    # What the user removed is remembered, so that it is not kept again.
+    removed = (await client.get("/console/space/removed", headers=HEADERS)).json()["removed"]
+    assert len(removed) == 1
+    for request in (
+        client.get(f"/console/space/entries/{entry['id']}", headers=HEADERS),
+        client.patch(f"/console/space/entries/{entry['id']}", headers=HEADERS, json={"title": "again"}),
+        client.delete(f"/console/space/entries/{entry['id']}", headers=HEADERS),
+    ):
+        gone = await request
+        assert gone.status_code == 404 and gone.json()["detail"]["code"] == "no_entry"
+
+
+@pytest.mark.parametrize(
+    ("payload", "code"),
+    [
+        ({"title": "t"}, "bad_text"),
+        ({"content": "c"}, "bad_text"),
+        ({"title": "  ", "content": "c"}, "bad_text"),
+        ({"title": "t", "content": "c", "kind": "skill"}, "bad_kind"),
+        ({"title": "t", "content": "c", "project": ""}, "bad_name"),
+        ({"title": "t", "content": "x" * 200_001}, "bad_text"),
+    ],
+)
+async def test_an_entry_that_is_not_one_is_refused_and_nothing_is_kept(console, payload, code):
+    client, host, _ = console
+    refused = await client.post("/console/space/entries", headers=HEADERS, json=payload)
+    assert refused.status_code == 400 and refused.json()["detail"]["code"] == code
+    assert await host.space.list_entries() == []
+
+
+async def test_changing_an_entry_needs_something_to_change_and_a_title_that_says_something(console):
+    client, host, _ = console
+    entry, _new = await host.space.file_entry(None, title="A note", content="What it says.")
+    for payload, code in (({}, "nothing_to_change"), ({"title": " "}, "bad_text"), ({"kind": "skill"}, "bad_kind")):
+        refused = await client.patch(f"/console/space/entries/{entry.id}", headers=HEADERS, json=payload)
+        assert refused.status_code == 400 and refused.json()["detail"]["code"] == code
+    assert (await host.space.read_entry(entry.id)).title == "A note"
+
+
+async def test_projects_and_reviews_are_listed_and_what_is_not_there_is_said_to_be_missing(console):
+    client, _, _ = console
+    assert (await client.get("/console/space/projects", headers=HEADERS)).json() == {"success": True, "projects": []}
+    assert (await client.get("/console/space/reviews", headers=HEADERS)).json() == {"success": True, "reviews": []}
+    for request in (
+        client.get("/console/space/reviews/c-missing", headers=HEADERS),
+        client.delete("/console/space/reviews/c-missing", headers=HEADERS),
+    ):
+        missing = await request
+        assert missing.status_code == 404 and missing.json()["detail"]["code"] == "no_review"
+
+
+# ---------------------------------------------------------------------------
+# How the user wants tasks done
+# ---------------------------------------------------------------------------
+
+
+async def test_a_preference_is_listed_changed_switched_off_and_forgotten(console):
+    client, host, _ = console
+    stated = await host.preferences.state("Tell me the result when it is done", kind="report", lanlan_name="Lan")
+    listed = (await client.get("/console/preferences", headers=HEADERS)).json()["preferences"]
+    assert [(item["id"], item["text"], item["active"], item["origin"]) for item in listed] == [
+        (stated.id, "Tell me the result when it is done", True, "stated"),
+    ]
+
+    changed = await client.patch(
+        f"/console/preferences/{stated.id}", headers=HEADERS, json={"text": "Report in one line", "active": False},
+    )
+    preference = changed.json()["preference"]
+    assert (preference["text"], preference["active"], preference["origin"]) == ("Report in one line", False, "console")
+    assert [item.text for item in await host.preferences.list(active_only=True)] == []
+
+    for payload, code in (({}, "nothing_to_change"), ({"active": "no"}, "bad_flag"), ({"text": "  "}, "bad_text")):
+        refused = await client.patch(f"/console/preferences/{stated.id}", headers=HEADERS, json=payload)
+        assert refused.status_code == 400 and refused.json()["detail"]["code"] == code
+
+    assert (await client.delete(f"/console/preferences/{stated.id}", headers=HEADERS)).json() == {"success": True}
+    assert await host.preferences.list() == []
+    for request in (
+        client.patch(f"/console/preferences/{stated.id}", headers=HEADERS, json={"active": True}),
+        client.delete(f"/console/preferences/{stated.id}", headers=HEADERS),
+    ):
+        gone = await request
+        assert gone.status_code == 404 and gone.json()["detail"]["code"] == "no_preference"

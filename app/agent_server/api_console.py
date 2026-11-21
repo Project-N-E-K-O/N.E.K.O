@@ -57,6 +57,9 @@ _SHOWN_CATEGORIES: tuple[str, ...] = (
     "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other",
 )
 _UNSET = object()
+# The longest text a page may send for one field (rules, an entry): what
+# is kept is a file a person wrote, not a store of documents.
+_TEXT_LIMIT = 200_000
 
 
 def _refuse(status: int, code: str, **more: Any) -> HTTPException:
@@ -311,6 +314,218 @@ def build_console_router(
         except Exception as exc:  # noqa: BLE001 - NativeDirectoryError, with its own code
             logger.warning("showing a directory failed (exc_type=%s)", type(exc).__name__)
             raise _refuse(500, "open_failed") from None
+        return {"success": True}
+
+    # -- the task agent space ---------------------------------------------
+    #
+    # ``project`` names a project, none of it the space all projects share;
+    # an archived project is named by its directory and ``archive_year``.
+
+    def scope(project: Any, archive_year: Any = None) -> tuple[str | None, str | None]:
+        for value in (project, archive_year):
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise _refuse(400, "bad_name")
+        return project, archive_year
+
+    async def space_call(work: Awaitable[Any]) -> Any:
+        """Await a call into the space; what it refuses is told with a code."""
+        from nekoclaw.host.space import SpaceError
+
+        try:
+            return await work
+        except SpaceError as exc:
+            raise _refuse(400, "space_refused", message=str(exc)) from None
+        except ValueError:
+            # A name that is no name of a directory (``safe_segment``).
+            raise _refuse(400, "bad_name") from None
+
+    def text_of(payload: dict[str, Any], name: str, *, required: bool = False) -> str | None:
+        value = payload.get(name)
+        if value is None and not required:
+            return None
+        if not isinstance(value, str) or len(value) > _TEXT_LIMIT:
+            raise _refuse(400, "bad_text", field=name)
+        return value
+
+    @router.get("/space/projects")
+    async def list_projects() -> dict[str, Any]:
+        """Return the projects, the archived ones last."""
+        host = await get_host()
+        projects = await space_call(host.space.list_projects())
+        return {"success": True, "projects": [project.to_json() for project in projects]}
+
+    @router.get("/space/rules")
+    async def read_rules(project: str | None = None) -> dict[str, Any]:
+        """Return the rules the user wrote for a project, or for every task agent."""
+        host = await get_host()
+        project, _ = scope(project)
+        return {"success": True, "text": await space_call(host.space.read_rules(project))}
+
+    @router.put("/space/rules")
+    async def write_rules(payload: dict[str, Any]) -> dict[str, Any]:
+        """Write the rules as the user gave them."""
+        payload = payload or {}
+        project, _ = scope(payload.get("project"))
+        text = text_of(payload, "text", required=True)
+        host = await get_host()
+        await space_call(host.space.write_rules(text, project))
+        return {"success": True, "text": await space_call(host.space.read_rules(project))}
+
+    @router.get("/space/index")
+    async def read_index(project: str | None = None) -> dict[str, Any]:
+        """Return the index a task agent is given when it starts."""
+        host = await get_host()
+        project, _ = scope(project)
+        return {"success": True, "text": await space_call(host.space.read_index(project))}
+
+    @router.get("/space/entries")
+    async def list_entries(project: str | None = None, archive_year: str | None = None) -> dict[str, Any]:
+        """Return the entries of a project or of the space, without their text."""
+        host = await get_host()
+        project, archive_year = scope(project, archive_year)
+        entries = await space_call(host.space.list_entries(project, archive_year=archive_year))
+        return {"success": True, "entries": [entry.to_json() for entry in entries]}
+
+    @router.post("/space/entries")
+    async def file_entry(payload: dict[str, Any]) -> dict[str, Any]:
+        """Keep an entry the user wrote."""
+        from nekoclaw.host.space import ENTRY_TYPES
+
+        payload = payload or {}
+        project, _ = scope(payload.get("project"))
+        title = text_of(payload, "title", required=True)
+        content = text_of(payload, "content", required=True)
+        kind = payload.get("kind", ENTRY_TYPES[0])
+        if kind not in ENTRY_TYPES:
+            raise _refuse(400, "bad_kind")
+        if not title.strip():
+            raise _refuse(400, "bad_text", field="title")
+        host = await get_host()
+        entry, _new = await space_call(host.space.file_entry(
+            project, title=title, content=content, kind=kind, description=text_of(payload, "description") or "",
+        ))
+        return {"success": True, "entry": entry.to_json()}
+
+    @router.get("/space/entries/{entry_id}")
+    async def read_entry(entry_id: str, project: str | None = None, archive_year: str | None = None) -> dict[str, Any]:
+        """Return one entry with its text."""
+        host = await get_host()
+        project, archive_year = scope(project, archive_year)
+        entry = await space_call(host.space.read_entry(entry_id, project, archive_year=archive_year))
+        if entry is None:
+            raise _refuse(404, "no_entry")
+        return {"success": True, "entry": entry.to_json()}
+
+    @router.patch("/space/entries/{entry_id}")
+    async def edit_entry(entry_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Change an entry: each of ``title``, ``description``, ``kind``, ``content`` that is given."""
+        from nekoclaw.host.space import ENTRY_TYPES
+
+        payload = payload or {}
+        project, archive_year = scope(payload.get("project"), payload.get("archive_year"))
+        changes = {name: text_of(payload, name) for name in ("title", "description", "content")}
+        changes = {name: value for name, value in changes.items() if value is not None}
+        if payload.get("kind") is not None:
+            if payload["kind"] not in ENTRY_TYPES:
+                raise _refuse(400, "bad_kind")
+            changes["kind"] = payload["kind"]
+        if not changes:
+            raise _refuse(400, "nothing_to_change")
+        if "title" in changes and not changes["title"].strip():
+            raise _refuse(400, "bad_text", field="title")
+        host = await get_host()
+        entry = await space_call(host.space.edit_entry(entry_id, project, archive_year=archive_year, **changes))
+        if entry is None:
+            raise _refuse(404, "no_entry")
+        return {"success": True, "entry": entry.to_json()}
+
+    @router.delete("/space/entries/{entry_id}")
+    async def delete_entry(entry_id: str, project: str | None = None, archive_year: str | None = None) -> dict[str, Any]:
+        """Remove an entry. The same note is not kept again when a task agent files it."""
+        host = await get_host()
+        project, archive_year = scope(project, archive_year)
+        if not await space_call(host.space.delete_entry(entry_id, project, archive_year=archive_year)):
+            raise _refuse(404, "no_entry")
+        return {"success": True}
+
+    @router.get("/space/removed")
+    async def read_removed(project: str | None = None, archive_year: str | None = None) -> dict[str, Any]:
+        """Return what is remembered of the entries the user removed, which are not kept again."""
+        host = await get_host()
+        project, archive_year = scope(project, archive_year)
+        notes = await space_call(host.space.read_notes(project, archive_year=archive_year))
+        return {"success": True, "removed": notes.get("removed", [])}
+
+    @router.get("/space/reviews")
+    async def list_reviews(project: str | None = None, limit: int = 100) -> dict[str, Any]:
+        """Return the reviews of a project, or of every project, newest first, without their text."""
+        host = await get_host()
+        project, _ = scope(project)
+        reviews = await space_call(host.space.list_reviews(project, limit=max(1, min(int(limit), 500))))
+        return {"success": True, "reviews": [review.to_json() for review in reviews]}
+
+    @router.get("/space/reviews/{commission_id}")
+    async def read_review(commission_id: str) -> dict[str, Any]:
+        """Return the review of a commission with its text."""
+        host = await get_host()
+        review = await space_call(host.space.read_review(commission_id))
+        if review is None:
+            raise _refuse(404, "no_review")
+        return {"success": True, "review": review.to_json()}
+
+    @router.delete("/space/reviews/{commission_id}")
+    async def delete_review(commission_id: str) -> dict[str, Any]:
+        """Remove the review of a commission."""
+        host = await get_host()
+        if not await space_call(host.space.delete_review(commission_id)):
+            raise _refuse(404, "no_review")
+        return {"success": True}
+
+    # -- how she likes tasks done -----------------------------------------
+
+    def preference_json(preference: Any) -> dict[str, Any]:
+        return {
+            "id": preference.id, "kind": preference.kind, "text": preference.text, "origin": preference.origin,
+            "observations": preference.observations, "active": preference.active,
+            "lanlan_name": preference.lanlan_name, "updated_at": preference.updated_at,
+        }
+
+    @router.get("/preferences")
+    async def list_preferences() -> dict[str, Any]:
+        """Return what was kept of how the user wants tasks done."""
+        host = await get_host()
+        return {"success": True, "preferences": [preference_json(item) for item in await host.preferences.list()]}
+
+    @router.patch("/preferences/{preference_id}")
+    async def edit_preference(preference_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        """Change a preference: its ``text``, and whether it is ``active``."""
+        payload = payload or {}
+        text = text_of(payload, "text")
+        active = payload.get("active")
+        if active is not None and not isinstance(active, bool):
+            raise _refuse(400, "bad_flag")
+        if text is None and active is None:
+            raise _refuse(400, "nothing_to_change")
+        if text is not None and not text.strip():
+            raise _refuse(400, "bad_text", field="text")
+        host = await get_host()
+        preference = await host.preferences.get(preference_id)
+        if preference is None:
+            raise _refuse(404, "no_preference")
+        if text is not None:
+            preference = await host.preferences.edit(preference_id, text=text)
+        if active is not None and preference is not None:
+            preference = await host.preferences.set_active(preference_id, active)
+        if preference is None:
+            raise _refuse(404, "no_preference")
+        return {"success": True, "preference": preference_json(preference)}
+
+    @router.delete("/preferences/{preference_id}")
+    async def remove_preference(preference_id: int) -> dict[str, Any]:
+        """Forget a preference."""
+        host = await get_host()
+        if not await host.preferences.remove(preference_id):
+            raise _refuse(404, "no_preference")
         return {"success": True}
 
     return router
