@@ -496,6 +496,8 @@ async def test_combo_reminder_fallback_that_also_hits_is_consumed(monkeypatch):
 
     assert result.directive_blocked is True
     assert result.consumes_source is True
+    # The plain reminder is what got dropped; the caller reports it as such.
+    assert result.blocked_channel == "work_break"
     # Bounded at two calls: no third attempt after the fallback hits.
     assert break_reminders.create_chat_llm_async.await_count == 2
     mgr.feed_tts_chunk.assert_not_awaited()
@@ -579,10 +581,17 @@ async def test_mini_game_invite_ban_falls_through_without_claiming(
         lambda *_args, **_kwargs: "要不要一起踢足球？",
     )
     _install_directives(monkeypatch, ["足球"])
+    skip_log = MagicMock()
+    monkeypatch.setattr(invites.logger, "info", skip_log)
     mgr = _invite_mgr()
 
     out = await _attempt_invite(mgr)
 
+    # The log says the invite was skipped, not that a delivery was blocked:
+    # the round goes on and may well speak.
+    messages = [call.args[0] for call in skip_log.call_args_list]
+    assert any("mini-game invite skipped" in m for m in messages)
+    assert not any("delivery blocked" in m for m in messages)
     # None hands the round back to the normal pipeline instead of ending it,
     # so a ban on games cannot silence the force-first branch forever.
     assert out is None
@@ -701,7 +710,9 @@ async def test_theater_invite_clean_story_is_composed_and_delivered(
 # ---------------------------------------------------------------------------
 
 
-_GATE = "_proactive_delivery_directive_block"
+# Either form of the shared gate: the delivery block, or its bare hit count
+# where a hit only skips an optional invite and the round goes on.
+_GATES = {"_proactive_delivery_directive_block", "_proactive_delivery_directive_hit_count"}
 
 
 def test_every_proactive_feed_is_preceded_by_the_gate():
@@ -720,13 +731,13 @@ def test_every_proactive_feed_is_preceded_by_the_gate():
                     feed_lines.append(sub.lineno)
                 elif isinstance(sub, ast.Constant) and sub.value == "feed_tts_chunk":
                     feed_lines.append(sub.lineno)
-                elif isinstance(sub, ast.Name) and sub.id == _GATE:
+                elif isinstance(sub, ast.Name) and sub.id in _GATES:
                     gate_lines.append(sub.lineno)
             if not feed_lines:
                 continue
             checked.append(f"{path.name}:{node.name}")
             assert gate_lines and min(gate_lines) < min(feed_lines), (
-                f"{path.name}:{node.name} feeds proactive TTS without {_GATE}"
+                f"{path.name}:{node.name} feeds proactive TTS without the shared ban-topic gate"
             )
     # Phase 2 commit, break reminders, mini-game invite, postgame bubble. If this shrinks the
     # scan lost its target; if it grows, the new channel was checked above.

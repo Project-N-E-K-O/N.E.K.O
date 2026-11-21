@@ -53,10 +53,7 @@ from .contracts import (
     _proactive_chat_body,
     _proactive_pass_body,
 )
-from .directive_gate import (
-    _proactive_delivery_directive_block,
-    _proactive_delivery_directive_hit_count,
-)
+from .directive_gate import _proactive_delivery_directive_hit_count
 from .state import (
     _enter_proactive_phase2,
     _ensure_proactive_chat_totals_loaded,
@@ -458,6 +455,24 @@ def _pick_mini_game_type(
     return _random.choice(candidates)
 
 
+def _log_mini_game_invite_skipped(lanlan_name: str, hit_count: int, *, stage: str) -> None:
+    """Record an invite skipped by a ban; the round continues as ordinary chat.
+
+    Count and stage only, never the term or the invite / story text.
+    """
+    logger.info(
+        "[%s] mini-game invite skipped by user ban-topic directive "
+        "(stage=%s, %d term(s) matched); continuing with ordinary proactive chat",
+        lanlan_name,
+        stage,
+        hit_count,
+    )
+    print(
+        f"[{lanlan_name}] 迷你游戏邀请命中用户明确要求回避的话题，跳过邀请，"
+        f"本轮改走普通主动搭话 (stage={stage}, {hit_count} 项)"
+    )
+
+
 def _mini_game_invite_surface_text(
     fallback_line: str, selected_story: dict[str, Any] | None,
 ) -> str:
@@ -631,25 +646,25 @@ async def _attempt_mini_game_invite_delivery(
     # than ending the round: the force-first branch retries the invite on
     # every round until one is delivered, so ending the round here would
     # silence proactive chat for as long as a ban like "games" stays active.
-    if await _proactive_delivery_directive_block(
-        mgr=mgr,
-        proactive_sid=None,
-        lanlan_name=lanlan_name,
-        text=_mini_game_invite_surface_text(fallback_line, selected_theater),
-        channel="mini_game",
-    ) is not None:
+    # Hit count, not the delivery-block helper: nothing is blocked here, the
+    # round goes on to ordinary proactive chat, and the log must say so.
+    surface_hits = _proactive_delivery_directive_hit_count(
+        lanlan_name, _mini_game_invite_surface_text(fallback_line, selected_theater),
+    )
+    if surface_hits:
+        _log_mini_game_invite_skipped(lanlan_name, surface_hits, stage="surface")
         return None
     composed_line = await _compose_theater_invite_line(
         selected_theater, invite_lang, character_prompt=character_prompt, master_name=master_name,
     ) if selected_theater else ""
     # A composed line that hits a ban usually means the story itself is about
     # the topic, so the invite is dropped as a whole, the same as above.
-    if composed_line and _proactive_delivery_directive_hit_count(
-        lanlan_name, composed_line,
-    ):
-        print(
-            f"[{lanlan_name}] 剧场邀请词命中用户明确要求回避的话题，放弃本次邀请"
-        )
+    composed_hits = (
+        _proactive_delivery_directive_hit_count(lanlan_name, composed_line)
+        if composed_line else 0
+    )
+    if composed_hits:
+        _log_mini_game_invite_skipped(lanlan_name, composed_hits, stage="composed")
         return None
     invite_text = composed_line or fallback_line
     if not invite_text:

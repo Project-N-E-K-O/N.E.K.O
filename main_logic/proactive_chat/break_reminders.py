@@ -66,6 +66,9 @@ class BreakReminderDeliveryResult:
     repeat_suppressed: bool = False
     directive_blocked: bool = False
     delivered_channel: str | None = None
+    # Channel of the draft a ban blocked: with a fallback, the plain reminder
+    # rather than the channel the caller asked for.
+    blocked_channel: str | None = None
 
     @property
     def consumes_source(self) -> bool:
@@ -514,7 +517,7 @@ async def _deliver_break_reminder_via_llm(
         text=text,
         channel=channel,
     ) is not None:
-        return BreakReminderDeliveryResult(directive_blocked=True)
+        return BreakReminderDeliveryResult(directive_blocked=True, blocked_channel=channel)
 
     anti_repeat_corpus = None
     unanswered_repeat_signal = None
@@ -641,7 +644,7 @@ async def _deliver_break_reminder_via_llm(
             text=cleaned,
             channel=channel,
         ) is not None:
-            return BreakReminderDeliveryResult(directive_blocked=True)
+            return BreakReminderDeliveryResult(directive_blocked=True, blocked_channel=channel)
 
         regen_signal = _score_unanswered_break_reminder(
             corpus=anti_repeat_corpus,

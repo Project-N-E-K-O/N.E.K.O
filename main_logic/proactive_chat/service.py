@@ -1289,7 +1289,11 @@ async def handle_proactive_chat(
                     return await _end_proactive(
                         ProactiveChatResult(
                             body=_suppressed_break_reminder_body(
-                                reminder_delivery, "work-break game invite",
+                                reminder_delivery,
+                                # Blocked after falling back: the plain reminder was dropped.
+                                "work-break reminder"
+                                if reminder_delivery.blocked_channel == "work_break"
+                                else "work-break game invite",
                             )
                         )
                     )

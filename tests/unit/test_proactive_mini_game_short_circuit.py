@@ -396,7 +396,7 @@ def test_work_break_never_invites_an_unidentified_theater_story():
 
 
 async def _run_work_break_round(
-    monkeypatch, tmp_path, *, delivered_channel, banned_terms=(),
+    monkeypatch, tmp_path, *, delivered_channel, banned_terms=(), result=None,
 ):
     """Drive one water-break round through the real router with a stubbed delivery."""
     import memory.user_directives as user_directives_module
@@ -486,7 +486,7 @@ async def _run_work_break_round(
     bump_total = AsyncMock()
     monkeypatch.setattr(proactive_service, "_increment_proactive_chat_total", bump_total)
     deliver = AsyncMock(
-        return_value=break_reminders.BreakReminderDeliveryResult(
+        return_value=result or break_reminders.BreakReminderDeliveryResult(
             delivered_text="记得起来喝口水。",
             proactive_sid="break-sid",
             delivered_channel=delivered_channel,
@@ -558,3 +558,29 @@ async def test_work_break_combo_skipped_when_invited_game_is_banned(
     assert run.body["channel"] == "work_break"
     run.record_invite.assert_not_called()
     run.push_options.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("blocked_channel", "label"),
+    (("work_break", "work-break reminder"), ("work_break_game_invite", "work-break game invite")),
+)
+@pytest.mark.asyncio
+async def test_work_break_combo_block_message_names_the_dropped_reminder(
+    monkeypatch, tmp_path: Path, blocked_channel, label,
+) -> None:
+    """After falling back, a ban on the plain reminder is reported as the
+    plain reminder being blocked, not the game invite."""
+    from main_logic.proactive_chat import break_reminders
+
+    run = await _run_work_break_round(
+        monkeypatch,
+        tmp_path,
+        delivered_channel=None,
+        result=break_reminders.BreakReminderDeliveryResult(
+            directive_blocked=True, blocked_channel=blocked_channel,
+        ),
+    )
+
+    assert run.body["action"] == "pass"
+    assert run.body["message"] == f"{label} blocked by user ban-topic directive"
+    run.tracker.mark_work_break_used.assert_called_once_with()
