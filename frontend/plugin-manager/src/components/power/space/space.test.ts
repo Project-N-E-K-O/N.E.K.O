@@ -13,7 +13,7 @@ import ReviewsPane from './ReviewsPane.vue'
 import RulesPane from './RulesPane.vue'
 
 const api = vi.hoisted(() => ({
-  listProjects: vi.fn(), readRules: vi.fn(), writeRules: vi.fn(), readIndex: vi.fn(),
+  listProjects: vi.fn(), setProjectWorkdir: vi.fn(), pickDirectory: vi.fn(), readRules: vi.fn(), writeRules: vi.fn(), readIndex: vi.fn(),
   listEntries: vi.fn(), readEntry: vi.fn(), fileEntry: vi.fn(), editEntry: vi.fn(), deleteEntry: vi.fn(), listRemoved: vi.fn(),
   listReviews: vi.fn(), readReview: vi.fn(), deleteReview: vi.fn(),
   listPreferences: vi.fn(), editPreference: vi.fn(), removePreference: vi.fn(),
@@ -256,6 +256,42 @@ describe('the familiar space page', () => {
     expect(api.readRules).toHaveBeenLastCalledWith({ project: 'moving-list', archive_year: '2026' })
     expect(byTest('space-project')?.textContent).toContain(words.space.workdirDefault)
     expect(byTest('rules-save')).toBeNull()
+  })
+
+  it('changes where a project works with a folder that was chosen or typed, and says why when it cannot', async () => {
+    route.query = { project: 'Ledger tool' }
+    await mount(FamiliarSpace)
+    await click(byTest('workdir-change'))
+    // What it is now is offered, and saving that again is not offered.
+    expect((document.querySelector('input[data-testid="workdir-path"], [data-testid="workdir-path"] input') as HTMLInputElement).value).toBe('D:/code/ledger-tool')
+    expect((byTest('workdir-save') as HTMLButtonElement).disabled).toBe(true)
+
+    api.pickDirectory.mockResolvedValueOnce({ cancelled: true })
+    await click(byTest('workdir-pick'))
+    expect(api.pickDirectory).toHaveBeenCalledWith('D:/code/ledger-tool')
+    // Closed without choosing: what was in the field stays.
+    expect((document.querySelector('input[data-testid="workdir-path"], [data-testid="workdir-path"] input') as HTMLInputElement).value).toBe('D:/code/ledger-tool')
+    expect((byTest('workdir-save') as HTMLButtonElement).disabled).toBe(true)
+    api.pickDirectory.mockResolvedValueOnce({ path: 'D:/code/ledger-v2' })
+    await click(byTest('workdir-pick'))
+
+    api.setProjectWorkdir.mockRejectedValueOnce(refusal('project_busy'))
+    await click(byTest('workdir-save'))
+    expect(api.setProjectWorkdir).toHaveBeenCalledWith('Ledger tool', 'D:/code/ledger-v2')
+    expect(byTest('workdir-error')?.textContent).toContain(words.errors.project_busy)
+    expect(byTest('space-project')?.textContent).toContain('D:/code/ledger-tool')
+
+    api.setProjectWorkdir.mockResolvedValueOnce({ project: project({ workdir: 'D:/code/ledger-v2' }) })
+    await click(byTest('workdir-save'))
+    expect(byTest('space-project')?.textContent).toContain('D:/code/ledger-v2')
+    expect(byTest('workdir-error')).toBeNull()
+  })
+
+  it('offers no change of folder for an archived project', async () => {
+    route.query = { project: 'moving-list', year: '2026' }
+    await mount(FamiliarSpace)
+    expect(byTest('space-project')).toBeTruthy()
+    expect(byTest('workdir-change')).toBeNull()
   })
 
   it('takes the project and the tab from the address', async () => {

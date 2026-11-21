@@ -49,9 +49,40 @@
             <div>
               <dt>{{ t('power.space.workdir') }}</dt>
               <dd>{{ selected.workdir || t('power.space.workdirDefault') }}</dd>
+              <el-button v-if="!isArchived" size="small" data-testid="workdir-change" @click="askWorkdir">
+                {{ t('power.space.workdirChange') }}
+              </el-button>
             </div>
           </dl>
         </section>
+
+        <el-dialog
+          v-model="changing"
+          :title="t('power.space.workdirTitle', { project: selected?.name ?? '' })"
+          width="560px"
+        >
+          <p class="muted">{{ t('power.space.workdirHint') }}</p>
+          <div class="pick">
+            <el-input
+              v-model="workdir"
+              :placeholder="t('power.space.workdirPlaceholder')"
+              :aria-label="t('power.space.workdirPath')"
+              data-testid="workdir-path"
+            />
+            <el-button :loading="picking" data-testid="workdir-pick" @click="pick">{{ t('power.space.workdirPick') }}</el-button>
+          </div>
+          <el-alert v-if="workdirError" :title="workdirError" type="error" :closable="false" show-icon class="block" data-testid="workdir-error" />
+          <template #footer>
+            <el-button @click="changing = false">{{ t('common.cancel') }}</el-button>
+            <el-button
+              type="primary"
+              :loading="saving"
+              :disabled="!workdir.trim() || workdir.trim() === (selected?.workdir ?? '')"
+              data-testid="workdir-save"
+              @click="saveWorkdir"
+            >{{ t('power.space.workdirSave') }}</el-button>
+          </template>
+        </el-dialog>
 
         <el-tabs v-model="tab">
           <el-tab-pane :label="t('power.space.tabs.rules')" name="rules">
@@ -76,7 +107,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { listProjects } from '@/api/console'
+import { listProjects, pickDirectory, setProjectWorkdir } from '@/api/console'
 import type { SpaceProject, SpaceScope } from '@/api/console'
 import NotesPane from '@/components/power/space/NotesPane.vue'
 import PreferencesPane from '@/components/power/space/PreferencesPane.vue'
@@ -90,6 +121,11 @@ const router = useRouter()
 const projects = ref<SpaceProject[]>([])
 const loading = ref(false)
 const error = ref('')
+const changing = ref(false)
+const workdir = ref('')
+const workdirError = ref('')
+const picking = ref(false)
+const saving = ref(false)
 
 const active = computed(() => projects.value.filter(project => !project.archive_year))
 const archived = computed(() => projects.value.filter(project => project.archive_year))
@@ -143,6 +179,42 @@ async function load() {
   }
 }
 
+function askWorkdir() {
+  workdir.value = selected.value?.workdir ?? ''
+  workdirError.value = ''
+  changing.value = true
+}
+
+async function pick() {
+  picking.value = true
+  try {
+    const chosen = await pickDirectory(workdir.value.trim() || selected.value?.workdir)
+    if (chosen.path) workdir.value = chosen.path
+    workdirError.value = ''
+  } catch (failure) {
+    workdirError.value = describeConsoleError(failure, t, te)
+  } finally {
+    picking.value = false
+  }
+}
+
+async function saveWorkdir() {
+  const project = selected.value
+  if (!project) return
+  saving.value = true
+  try {
+    const changed = (await setProjectWorkdir(project.name, workdir.value.trim())).project
+    // The one that was changed, as the service has it now; the rest of the list is as it was.
+    projects.value = projects.value.map(other => (other === project ? { ...other, ...changed } : other))
+    workdirError.value = ''
+    changing.value = false
+  } catch (failure) {
+    workdirError.value = describeConsoleError(failure, t, te)
+  } finally {
+    saving.value = false
+  }
+}
+
 onMounted(() => void load())
 </script>
 
@@ -163,7 +235,8 @@ h1 { margin: 0 0 8px; font-size: 26px; }
 .project { background: var(--el-bg-color); border: 1px solid var(--surface-border, var(--el-border-color-lighter)); border-radius: var(--radius-card, 10px); padding: 16px 20px; margin-bottom: 14px; }
 .project h2 { margin: 0 0 6px; font-size: 18px; overflow-wrap: anywhere; }
 .project dl { margin: 10px 0 0; font-size: 13px; }
-.project dl > div { display: flex; gap: 16px; }
+.project dl > div { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.pick { display: flex; gap: 8px; margin: 12px 0; }
 .project dt { color: var(--el-text-color-secondary); flex: none; }
 .project dd { margin: 0; overflow-wrap: anywhere; }
 .muted { color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.6; margin: 0; }

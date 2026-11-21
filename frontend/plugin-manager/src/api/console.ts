@@ -305,6 +305,11 @@ export const openPlace = (key: string) => send<{ success: boolean }>('post', '/c
 // -- the task agent space -------------------------------------------------------
 
 export const listProjects = () => get<{ projects: SpaceProject[] }>('/console/space/projects')
+export const setProjectWorkdir = (project: string, workdir: string) =>
+  send<{ project: SpaceProject }>('post', '/console/space/projects/workdir', { project, workdir })
+/** Show the system's dialog for choosing a folder; `path` is absent when the user closed it. */
+export const pickDirectory = (start?: string | null) =>
+  send<{ path?: string; cancelled?: boolean }>('post', '/console/space/pick-directory', { start: start || undefined })
 export const readRules = (scope?: SpaceScope) => get<{ text: string }>('/console/space/rules', scopeParams(scope))
 export const writeRules = (text: string, scope: SpaceScope = {}) =>
   send<{ text: string }>('put', '/console/space/rules', { text, project: scope.project || undefined })
