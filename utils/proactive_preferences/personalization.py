@@ -134,16 +134,24 @@ class SyncedChatInterest:
     game: bool
 
 
-def parse_synced_chat_interests(payload: object, now: int) -> list[SyncedChatInterest]:
+def parse_synced_chat_interests(
+    payload: object, now: int
+) -> tuple[list[SyncedChatInterest], bool]:
     """Parse an account snapshot, skipping entries this client cannot trust.
 
     Import is additive (INSERT OR IGNORE), so a skipped entry is simply not
     imported this cycle. Rejecting the whole snapshot instead would keep the
     sync retrying forever on one clock-skewed or newer-version entry.
+
+    The second value reports whether a valid entry was deferred only because
+    its timestamp is ahead of this clock; such entries become importable later,
+    so the caller must not acknowledge the snapshot revision. Entries rejected
+    for any other reason stay invalid and do not block the acknowledgement.
     """
     if not isinstance(payload, list) or len(payload) > SYNC_SNAPSHOT_LIMIT:
         raise ValueError("invalid_chat_interests")
     events = []
+    deferred = False
     fields = ("id", "feature", "scope", "kind", "direction", "at")
     required = set(fields)
     for value in payload:
@@ -164,9 +172,12 @@ def parse_synced_chat_interests(payload: object, now: int) -> list[SyncedChatInt
             or (kind == "allow" and direction != 1)
             or (kind == "exclude" and direction != -1)
             or type(at) is not int
-            or not 0 <= at <= now + 300
+            or at < 0
             or type(game) is not bool
         ):
+            continue
+        if at > now + 300:
+            deferred = True
             continue
         events.append(
             SyncedChatInterest(
@@ -174,4 +185,4 @@ def parse_synced_chat_interests(payload: object, now: int) -> list[SyncedChatInt
                 game,
             )
         )
-    return events
+    return events, deferred

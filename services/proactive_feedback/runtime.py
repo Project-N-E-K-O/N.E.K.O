@@ -385,7 +385,7 @@ class ProactiveFeedbackRuntime:
                 not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{64}", revision)
             ):
                 return
-            received = parse_synced_chat_interests(reply.get("events"), int(time.time()))
+            received, deferred = parse_synced_chat_interests(reply.get("events"), int(time.time()))
             if not await privacy_enabled():
                 # Importing a full account snapshot can evict old local rows.
                 # Drain any remaining eligible uploads before merging it.
@@ -395,12 +395,11 @@ class ProactiveFeedbackRuntime:
                 if sent or received:
                     if not await asyncio.to_thread(self._commit_chat_interests, owner, token, sent, received):
                         return
-                # Acknowledge the revision only after a complete import. With
-                # skipped entries, omit known_revision so the next cycle gets
-                # the full snapshot again and can retry them.
-                complete = len(received) == len(reply.get("events") or [])
+                # Entries deferred for a future timestamp become importable
+                # later: omit known_revision so the next cycle gets the full
+                # snapshot again. Permanently invalid entries do not block it.
                 self._chat_interest_revision = (
-                    (owner["key"], revision) if revision and complete else None
+                    (owner["key"], revision) if revision and not deferred else None
                 )
         except (SyncFailure, httpx.HTTPError, OSError, sqlite3.Error, RuntimeError, TimeoutError, ValueError, LockException):
             # The next cycle retries from SQLite without altering feedback sync state.

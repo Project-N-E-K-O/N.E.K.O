@@ -594,13 +594,14 @@ async def test_sync_imports_valid_snapshot_entries_and_skips_untrusted_ones(
             "蛙泳换气",
             "夜景摄影",
         }
-        # Skipped entries keep the revision unacknowledged so they are retried.
+        # A future-dated entry keeps the revision unacknowledged so it is retried.
         assert runtime._chat_interest_revision is None
 
-        import time as time_module
+        import services.proactive_feedback.runtime as runtime_module
+        from tests.fake_clock import patch_module_clock
 
-        real_time = time_module.time
-        monkeypatch.setattr(time_module, "time", lambda: real_time() + 3600)
+        # Advance only the clock the sync runtime reads, not the process-wide one.
+        patch_module_clock(monkeypatch, runtime_module, time=lambda: time() + 3600)
         await runtime._sync_chat_interests()
     assert all("known_revision" not in body for body in requests)
     assert len(requests) == 2
@@ -609,8 +610,8 @@ async def test_sync_imports_valid_snapshot_entries_and_skips_untrusted_ones(
         "夜景摄影",
         "独立解谜",
     }
-    # The newer-schema entry is still skipped, so the snapshot stays unacknowledged.
-    assert runtime._chat_interest_revision is None
+    # The newer-schema entry stays invalid but must not block acknowledgement.
+    assert runtime._chat_interest_revision == (owner["key"], "f" * 64)
 
 
 @pytest.mark.asyncio
