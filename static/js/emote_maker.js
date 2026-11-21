@@ -6648,6 +6648,11 @@
      * 那套校验（只接受仍然存在的槽位名等）不该在库里再写第二份。
      */
     function applyTemplateFromRegistry(key) {
+        return queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 20, 'template',
+            () => applyTemplateFromRegistryNow(key));
+    }
+
+    function applyTemplateFromRegistryNow(key) {
         const held = loadedTemplates.get(key);
         const entry = findTemplateLibraryEntry(key);
         if (!held || !entry) return false;
@@ -6696,11 +6701,10 @@
         if (!templateLibraryModule || !key || packBusy || pendingTemplateRemovals.has(key)) return;
         if (key === currentTemplateKey()) return;
         if (!findTemplateLibraryEntry(key)) return;
-        if (applyTemplateFromRegistry(key)) {
+        if (await applyTemplateFromRegistry(key)) {
             showToast(t('emoteMaker.templateSwitched'));
             return;
         }
-        persistTemplateToLibrary();
         // 内存里没有（重启过）就先试本地副本：有副本就不该再让用户去认一遍路径。
         // 旧条目第一次没有副本，走完重新定位导入后副本自然就有了。
         if (await tryRestoreTemplateFromArchive(key)) {
@@ -7250,6 +7254,7 @@
     }
 
     async function bakePackJobsNow(jobs, preview = {}) {
+        const generation = spineRendererGeneration;
         const previewFps = Number(preview.fps) || 0;
         const previewEdge = Number(preview.edge) || 0;
         const packFormat = preview.format || state.packFormat;
@@ -7275,6 +7280,7 @@
         const previousPlaying = state.animationPlaying;
         try {
             for (let index = 0; index < jobs.length; index += 1) {
+                if (generation !== spineRendererGeneration) return [];
                 const job = jobs[index];
                 // 图片统一按预览时间轴裁切：PNG 每张停留一个预览帧，
                 // GIF 保留源时长，再按输出格式采样。
@@ -7296,6 +7302,7 @@
                         if (!imageFrames.has(image)) imageFrames.set(image, await framesFromStageImage(image, edge));
                         decoded.push(...imageFrames.get(image));
                     }
+                    if (generation !== spineRendererGeneration) return [];
                     if (!decoded.length) {
                         if (!previewFps) missingImages += 1;
                         continue;
@@ -7323,6 +7330,7 @@
                 if (!scene) continue;
                 if (!previewFps) setPackStatus(`${t('emoteMaker.packBakingProgress')} ${index + 1}/${jobs.length}`);
                 await yieldToBrowser();
+                if (generation !== spineRendererGeneration) return [];
                 applyLookToState(job.look);
                 const frames = await captureGifFramesNow({
                     scene,
@@ -7332,6 +7340,7 @@
                     maxDimension: edge,
                     timeWindow: job.timeWindow,
                 });
+                if (generation !== spineRendererGeneration) return [];
                 if (!frames.length) continue;
                 results.push({
                     stateKey: job.stateKey,
@@ -7345,11 +7354,13 @@
                 });
             }
         } finally {
-            if (!previewFps) setPackStatus('');
-            state.selectedSceneId = previousSceneId;
-            state.animationId = previousAnimationId;
-            Object.assign(state, previousLook);
-            syncLiveCanvas({ autoplay: previousPlaying });
+            if (generation === spineRendererGeneration) {
+                if (!previewFps) setPackStatus('');
+                state.selectedSceneId = previousSceneId;
+                state.animationId = previousAnimationId;
+                Object.assign(state, previousLook);
+                syncLiveCanvas({ autoplay: previousPlaying });
+            }
         }
         if (missingImages > 0) {
             showToast(interpolate(t('emoteMaker.stageImagesMissing'), { count: missingImages }));
@@ -7721,7 +7732,8 @@
     }
 
     async function captureGifFramesNow(options = {}) {
-        const scene = options.scene || null;
+        const generation = spineRendererGeneration;
+        const scene = options.scene || getSelectedScene();
         const animationId = scene ? (scene.animation?.id || state.animationId) : state.animationId;
         const duration = Math.max(
             0.05,
@@ -7781,11 +7793,13 @@
                 const cycles = Math.min(2, Math.max(1, Math.floor(8 / duration)));
                 loopOffset = cycles * duration + 1e-7;
                 for (let warmupTime = 2; warmupTime < loopOffset; warmupTime += 2) {
+                    if (generation !== spineRendererGeneration) return [];
                     spineRenderer.setTime(warmupTime, { render: false });
                     await yieldToBrowser();
                 }
             }
             for (let index = 0; index < frameCount; index += 1) {
+                if (generation !== spineRendererGeneration) return [];
                 // 采集时间落在 timeWindow 里，进度条与 setTime 都按同一秒数走，
                 // 否则旧渲染器（靠 animationProgress 反算秒）会和 Spine 路径烘出不同的帧。
                 const at = windowFrom + (span * index) / frameCount;
@@ -7799,6 +7813,7 @@
                     // may load a selected PNG layer.
                     await renderCanvas();
                 }
+                if (generation !== spineRendererGeneration) return [];
                 const frame = captureCurrentEditorFrame(options.maxDimension);
                 frames.push({ ...frame, delayMs });
                 // Let the browser paint between readbacks. This keeps the
@@ -7809,25 +7824,31 @@
         } finally {
             captureLook = null;
             capturingFrames = false;
-            if (colorDraft) applyNativeCharacterState({ render: false });
-            state.animationProgress = previousProgress;
-            if (templatePackage && hasSpineRenderer()) {
-                spineRenderer.setTime(previousTime, { render: false });
-                spineRenderer.render();
-                renderNativeOverlays();
-                if (wasPlaying) {
-                    spineRenderer.play();
-                    state.animationPlaying = true;
-                    startSpineAnimationLoop();
+            if (generation === spineRendererGeneration) {
+                if (colorDraft) applyNativeCharacterState({ render: false });
+                state.animationProgress = previousProgress;
+                if (templatePackage && hasSpineRenderer()) {
+                    if (!options.scene && groupPreview?.scene) {
+                        syncLiveCanvas({ autoplay: false });
+                    } else {
+                        spineRenderer.setTime(previousTime, { render: false });
+                        spineRenderer.render();
+                        renderNativeOverlays();
+                    }
+                    if (wasPlaying) {
+                        spineRenderer.play();
+                        state.animationPlaying = true;
+                        startSpineAnimationLoop();
+                    } else {
+                        spineRenderer.pause();
+                        state.animationPlaying = false;
+                    }
                 } else {
-                    spineRenderer.pause();
                     state.animationPlaying = false;
                 }
-            } else {
-                state.animationPlaying = false;
+                updateAnimationControls();
+                void renderCanvas();
             }
-            updateAnimationControls();
-            void renderCanvas();
         }
     }
 
@@ -8347,7 +8368,12 @@
      * @returns {Promise<boolean>} 导入是否成功。重开（从副本/重新定位）依赖这个返回值
      * 决定要不要退回下一条路，所以失败路径也必须返回 false 而不是静默。
      */
-    async function importTemplateFile(file, {
+    function importTemplateFile(file, options = {}) {
+        return queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 20, 'template',
+            () => importTemplateFileNow(file, options));
+    }
+
+    async function importTemplateFileNow(file, {
         displayName = '', fromArchive = false, restoreKey = '', sourceName = '', selection = {},
         builtinPackage = null,
     } = {}) {
@@ -8376,7 +8402,7 @@
                 if (payload.code === 'selection_required') {
                     const path = await chooseSpineResource(payload);
                     if (!path) return false;
-                    return await importTemplateFile(file, { displayName, fromArchive, restoreKey, sourceName,
+                    return await importTemplateFileNow(file, { displayName, fromArchive, restoreKey, sourceName,
                         selection: { ...selection, [payload.role]: path } });
                 }
                 if (!response.ok || !payload.success || !payload.package) {
@@ -8445,6 +8471,7 @@
             const firstScene = Array.isArray(nextPackage.scenes) ? nextPackage.scenes[0] : null;
 
             const previousAssetStore = templateAssetStore;
+            persistTemplateToLibrary();
             groupPreview = null;
             spineRendererGeneration += 1;
             disposeSpineRenderer();

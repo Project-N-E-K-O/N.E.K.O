@@ -22,6 +22,7 @@ def editor(page, running_server):
         queueStageCapture, captureGifFrames, bakePackJobs, produceGroupFile, currentLookDefaults,
         importStageImages, persistExportSettings, previewGroupMember, renderLook,
         applyTemplateFromRegistry, currentTemplateKey, setPackBusy, buildPngtuberPackage, flatStates, exportGroup,
+        captureStageSource, openStateStage,
         renderer: () => spineRenderer,
     };
 """
@@ -452,6 +453,122 @@ def test_failed_import_keeps_the_current_group_preview(editor):
         return {imported, x:q.renderLook()?.transform.x, loaded:q.renderer().loaded};
     }''')
     assert result == {'imported': False, 'x': 170, 'loaded': True}
+
+
+@pytest.mark.parametrize('path', ['registry', 'import'])
+@pytest.mark.parametrize('fail', [False, True])
+def test_template_change_waits_for_closed_stage_capture_before_saving_appearances(editor, path, fail):
+    original = _two_skins()
+    _import(editor, original, 'A.zip')
+    a_key = editor.evaluate('reviewEditor.currentTemplateKey()')
+    editor.evaluate('''() => {
+        reviewEditor.state.adjustments = {x:23,y:-8,rotation:31,scale:123};
+        reviewEditor.persistTemplateToLibrary();
+    }''')
+    other = spine_zip(model='other')
+    _import(editor, other, 'B.zip')
+    b_key = editor.evaluate('reviewEditor.currentTemplateKey()')
+    editor.evaluate('''() => {
+        reviewEditor.state.adjustments = {x:-35,y:12,rotation:-9,scale:87};
+        reviewEditor.persistTemplateToLibrary();
+    }''')
+    editor.evaluate('key => reviewEditor.applyTemplateFromRegistry(key)', a_key)
+    editor.wait_for_function('Boolean(reviewEditor.renderer()?.loaded)')
+    result = editor.evaluate('''async ([path, fail, aKey, bKey, encoded]) => {
+        const q=reviewEditor, model=NekoEmoteNodeGraph;
+        const saved=JSON.parse(localStorage.getItem('neko-emote-maker-template-library'));
+        const before=Object.fromEntries(saved.entries.map(e=>[e.key,JSON.stringify({
+            character:e.session.character,adjustments:e.session.adjustments})]));
+        q.state.nodeGraph=model.normalizeGraph({schemaVersion:1,nodes:[
+            {id:'root',type:'source.default',params:{}},
+            {id:'skin',type:'mod.skin',params:{groups:[{group:'skin',value:'alternate'}]}},
+            {id:'move',type:'mod.transform',params:{x:170}},
+            {id:'idle',type:'output.state',params:{stateKey:'idle_image'}},
+        ],links:[['root','skin'],['skin','move'],['move','idle']].map(([from,to])=>({
+            from,to,fromSocket:'look',toSocket:'look'}))});
+        let release, change, readbacks=0, temporary=false;
+        const barrier=q.queueStageCapture(Symbol(),1000,'barrier',()=>new Promise(r=>{release=r;}));
+        q.openStateStage();
+        const pending=q.captureStageSource('root:idle_image','full',100).catch(()=>[]);
+        window.reviewCaptureHook=()=>{
+            readbacks+=1;
+            if(readbacks===1){
+                temporary=q.state.templateSkins.some(s=>s.value==='alternate') && q.state.adjustments.x!==23;
+                queueMicrotask(()=>{
+                    document.querySelector('.st-close').click();
+                    change=path==='registry' ? q.applyTemplateFromRegistry(bKey)
+                        : q.importTemplateFile(new File([Uint8Array.from(atob(encoded),c=>c.charCodeAt(0))],'B.zip'));
+                });
+            }
+            if(fail && readbacks>2) throw new Error('expected-preview-failure');
+        };
+        try {
+            release();
+            await Promise.all([barrier,pending]);
+            if(!change) throw new Error('template change did not start');
+            await change;
+            await q.queueStageCapture(Symbol(),0,'barrier',()=>{});
+            q.persistTemplateToLibrary();
+            const after=JSON.parse(localStorage.getItem('neko-emote-maker-template-library'));
+            const snapshot=key=>{
+                const s=after.entries.find(e=>e.key===key).session;
+                return JSON.stringify({character:s.character,adjustments:s.adjustments});
+            };
+            return {temporary,closed:!document.querySelector('.st-close'),key:q.currentTemplateKey(),
+                aUnchanged:snapshot(aKey)===before[aKey],bUnchanged:snapshot(bKey)===before[bKey],
+                activeX:q.state.adjustments.x,activeSkin:q.state.templateSkins[0].value};
+        } finally {delete window.reviewCaptureHook;}
+    }''', [path, fail, a_key, b_key, base64.b64encode(other).decode('ascii')])
+    assert result == {'temporary': True, 'closed': True, 'key': b_key, 'aUnchanged': True,
+                      'bUnchanged': True, 'activeX': -35, 'activeSkin': 'default'}
+
+
+@pytest.mark.parametrize('trigger', ['button', 'shortcut'])
+def test_standalone_gif_after_group_preview_uses_selected_animation_and_restores_preview(editor, trigger):
+    from PIL import Image
+
+    changed = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(spine_zip())) as source, zipfile.ZipFile(changed, 'w') as target:
+        for entry in source.infolist():
+            content = source.read(entry)
+            if entry.filename.endswith('.json'):
+                model = json.loads(content)
+                model['animations']['idle1']['bones']['root']['rotate'][-1] = {'time':2,'value':120}
+                content = json.dumps(model).encode()
+            target.writestr(entry, content)
+    _import(editor, changed.getvalue())
+    baseline = editor.evaluate('''async () => {
+        const q=reviewEditor, scenes=q.getImportedScenes();
+        Object.assign(q.state,{selectedSceneId:scenes[0].id,animationId:scenes[0].animation.id,
+            exportFormat:'gif',exportResolution:64,exportFps:20});
+        const frames=await q.captureGifFrames({scene:scenes[0],fps:20,maxDimension:64});
+        const bytes=q.flatStates([{stateKey:'idle_image',edge:64,fps:20,frames}])[0].bytes;
+        const look=q.currentLookDefaults();
+        look.transform.x=130;
+        q.previewGroupMember({kind:'scene',ref:scenes[1].id},look);
+        window.reviewExportAnimations=[];
+        window.reviewCaptureHook=r=>reviewExportAnimations.push(r.currentAnimation);
+        return btoa(String.fromCharCode(...bytes));
+    }''')
+    with editor.expect_download(timeout=15000) as download:
+        if trigger == 'shortcut':
+            editor.keyboard.press('Control+s')
+        else:
+            editor.locator('#export-png-btn').click()
+    assert download.value.suggested_filename == 'neko-emote-idle0.gif'
+    with Image.open(download.value.path()) as actual, Image.open(io.BytesIO(base64.b64decode(baseline))) as expected:
+        assert actual.n_frames == expected.n_frames == 20
+        elapsed = 0
+        for index in range(actual.n_frames):
+            actual.seek(index)
+            expected.seek(index)
+            assert actual.convert('RGBA').getchannel('A').tobytes() == expected.convert('RGBA').getchannel('A').tobytes()
+            elapsed += actual.info['duration']
+        assert elapsed == 1000
+    editor.wait_for_function('reviewEditor.renderer()?.currentAnimation === "idle1"')
+    assert set(editor.evaluate('reviewExportAnimations')) == {'idle0'}
+    assert editor.evaluate('reviewEditor.state.animationId') == 'idle0'
+    assert editor.evaluate('reviewEditor.renderLook().transform.x') == 130
 
 
 @pytest.mark.parametrize(('fmt', 'edge'), [('png', 512), ('png', 1024), ('gif', 512)])
