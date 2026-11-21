@@ -3070,18 +3070,18 @@ class Ledger:
         """Return the commissions copies of a session finished that the session was not told of yet, the most recent first.
 
         Those a commission of the session's project was carried on in
-        (``TaskAgentManager``), not the copies that answered a question
-        (``source`` ``"ask"``) or task agents started in a copy: done or
-        stuck, with what came of them. One the session was told of has a
-        ``told_to_session`` event (written once the session took the
-        message that told it).
+        (``TaskAgentManager``): no task agent's, which leaves out the
+        copies that answered a question (filed under the commission that
+        asked) as well. Done or stuck, with what came of them. One the
+        session was told of has a ``told_to_session`` event (written once
+        the session took the message that told it).
         """
 
         def work(conn: sqlite3.Connection) -> list[Commission]:
             rows = conn.execute(
                 "SELECT commissions.* FROM commissions JOIN sessions ON sessions.id = commissions.session_id "
                 "WHERE sessions.forked_from = ? AND sessions.kind = 'fork' AND commissions.parent_id IS NULL "
-                "AND commissions.source != 'ask' AND commissions.status IN ('done', 'blocked') "
+                "AND commissions.status IN ('done', 'blocked') "
                 "AND NOT EXISTS (SELECT 1 FROM events WHERE events.commission_id = commissions.id "
                 "AND events.type = 'told_to_session') "
                 "ORDER BY commissions.updated_at DESC LIMIT ?",

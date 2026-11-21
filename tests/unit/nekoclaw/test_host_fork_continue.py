@@ -295,7 +295,8 @@ async def test_a_commission_waits_for_its_session_where_it_is_not_carried_on(hos
     scripts = {
         EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
         FILES: ScriptedLLM([_report("tables.py")]),
-        "list the reports": ScriptedLLM([_report("reports")]),
+        # At work in its copy until the first lets the session go.
+        "list the reports": ScriptedLLM([[wait, *_report("reports")]]),
     }
     if why == "switched_off":
         monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_ENABLED", False)

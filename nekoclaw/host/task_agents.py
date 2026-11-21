@@ -7495,7 +7495,8 @@ class TaskAgentManager:
             self._queue.append(commission_id)
             await self._discard_copy(copy)
             return
-        self._sessions[commission_id].carries_on_for = main
+        # (Counted among those carried on in copies of the session from here
+        # on: by ``_copying_for`` until it is started, by its place after.)
         try:
             # On record with the copy from here on: what it is at, what it
             # used, and where it is taken up again.
