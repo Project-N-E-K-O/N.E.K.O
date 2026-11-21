@@ -1042,12 +1042,22 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     scripts = {"add a CSV export": export, "add a chart": ScriptedLLM([_report("ready", "chart added")])}
     host = _host(hosts, tmp_path, _scripts_by_session(scripts), task_agent_model=_small_window, task_agent_meter=meter)
     await host.space.touch_project("Budget app")
+    await host.space.write_rules("Original rule: file photos by year.")
+    read_brief = host.space.brief
+    reads = []
+
+    async def workspace_brief(project):
+        reads.append(project)
+        return await read_brief(project)
+
+    monkeypatch.setattr(host.space, "brief", workspace_brief)
     manager = host.task_agents
     first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
     await wait_status(host, first.id, "done")
     await _let_go(host)
     # Let go, the session is set to be summed up once it has been idle for as long as is set.
     await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    await host.space.write_rules("While idle: file photos by month.")
     before = await host.ledger.get(first.id)
     requests_before, counted_before = len(export.requests), len(counted)
     assert requests_before == 5
@@ -1064,6 +1074,8 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     summary = export.requests[-1]
     # It begins as the session's requests did, so that what a provider kept of them is used.
     assert _system_of(summary) == _system_of(export.requests[0])
+    assert "Original rule: file photos by year." in _system_of(summary)
+    assert len(reads) == 1  # Only the first real commission read workspace rules.
     assert export.overrides[-1]["tools"] == export.overrides[0]["tools"]
     assert "condense the conversation above" in str(summary[-1]["content"]).lower()
     # What it used is the session's, and no commission's: nothing of the commission changed.
@@ -1077,10 +1089,14 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     assert len(host.task_agents._idle_compacted_at) == 1
     assert host.task_agents._service == {} and host.task_agents._held_by == {}
 
-    # The next commission of the project goes on from the summary and what was said last.
+    # Work may change again after the idle summary. Read it as the new commission.
+    await host.space.write_rules("Current rule: file photos by date.")
     second = (await _dispatch(host, "add a chart to the budget app")).commissions[0]
     await wait_status(host, second.id, "done")
     request = scripts["add a chart"].requests[0]
+    assert len(reads) == 2
+    assert "Current rule: file photos by date." in _system_of(request)
+    assert "While idle: file photos by month." not in _system_of(request)
     said = json.dumps(request, ensure_ascii=False)
     assert "the CSV export is added and reported" in said
     assert "s0w10 s0w11" not in said

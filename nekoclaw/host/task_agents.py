@@ -1619,13 +1619,6 @@ class TaskAgentManager:
             parts.append(texts.TASK_AGENT_SESSION_FRAME.format(lanlan_name=commission.lanlan_name))
         return truncate_to_tokens("\n\n".join(parts), TASK_AGENT_BRIEF_MAX_TOKENS)
 
-    async def _instructions(self, commission: Commission, *, with_gateway: bool) -> str:
-        own = self._base_instructions(commission, with_gateway=with_gateway)
-        kept = await self._space_brief(commission)
-        # After the cap above and with one of its own (``SPACE_BRIEF_MAX_TOKENS``):
-        # neither part can push the other out.
-        return own + "\n\n" + kept if kept else own
-
     def note_filed(self, commission: Commission) -> None:
         """Keep what she and the user said just before a commission that was filed this moment.
 
@@ -2239,7 +2232,6 @@ class TaskAgentManager:
             # opening brief can reserve a call against the new run.
             spec = await self._spec(
                 commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec,
-                include_space=False,
             )
             # On record with the session from here on: a later commission of
             # it is opened in the same place. (That the session is at work
@@ -2495,7 +2487,7 @@ class TaskAgentManager:
 
     async def _spec(
         self, commission: Commission, kept: Session, model: Any, *, workdir: str, session_dir: str, gateway: Any,
-        include_space: bool = True,
+        idle_compaction: bool = False,
     ) -> Any:
         """Return what a runtime is given to open a session with, for the commission that is worked on in it.
 
@@ -2528,16 +2520,13 @@ class TaskAgentManager:
             withheld.update(TASK_AGENT_FORK_WITHHELD_TOOLS)
         # A copy that answers a question makes no more requests than this.
         limits = RuntimeLimits(max_turns=SESSION_ASK_MAX_REQUESTS) if commission.source == "ask" else RuntimeLimits()
-        if include_space:
-            instructions = await self._instructions(commission, with_gateway=gateway is not None)
-        else:
-            instructions = self._base_instructions(commission, with_gateway=gateway is not None)
         return TaskAgentSpec(
             session_id=kept.id,
             workdir=workdir,
             session_dir=session_dir,
             model=model,
-            instructions=instructions,
+            instructions=self._base_instructions(commission, with_gateway=gateway is not None),
+            idle_compaction=idle_compaction,
             top_level=commission.parent_id is None,
             disabled_tools=sorted(withheld),
             image_retention=image_retention,
@@ -7687,16 +7676,17 @@ class TaskAgentManager:
             model = await self._model_of(config)
             gateway_spec = None
             if self._gateway is not None:
-                # As a commission's session is opened: after the summary the
-                # runtime puts the system prompt and the tool definitions
-                # together anew from what it has, and that has to be what
-                # the next commission is to find.
+                # Make gateway tools available for the summary request. The next
+                # real commission supplies its own workspace rules when it opens.
                 url = await self._gateway.start()
                 gateway_spec = GatewaySpec(
                     url=url,
                     token=self._gateway.issue(grant, candidate_plugin_ids=(), supports_images=model.supports_images),
                 )
-            spec = await self._spec(commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec)
+            spec = await self._spec(
+                commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec,
+                idle_compaction=True,
+            )
             runtime = self._runtimes.builtin()
             if self._pump is None:
                 self._pump = asyncio.ensure_future(self._pump_events())
