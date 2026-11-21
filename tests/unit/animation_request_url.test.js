@@ -75,11 +75,15 @@ for (const { label, toRequestUrl, prefixes, ext } of CASES) {
 
 test('VRM: configured VRM_PATHS prefixes are escaped too', () => {
     const custom = loadContext();
-    custom.VRM_PATHS = { user_vrm: '/custom_vrm', static_vrm: '/static/vrm' };
-    assert.equal(
-        vm.runInContext('VRMAnimation.toRequestUrl', custom)('/custom_vrm/animation/a#b.vrma'),
-        '/custom_vrm/animation/a%23b.vrma',
-    );
+    custom.VRM_PATHS = { user_vrm: '/custom_vrm', static_vrm: '/custom_static_vrm/' };
+    const toRequestUrl = vm.runInContext('VRMAnimation.toRequestUrl', custom);
+    assert.equal(toRequestUrl('/custom_vrm/animation/a#b.vrma'), '/custom_vrm/animation/a%23b.vrma');
+    assert.equal(toRequestUrl('/custom_static_vrm/animation/a#b.vrma'), '/custom_static_vrm/animation/a%23b.vrma');
+});
+
+test('MMD / VRM: workshop animation paths are escaped per segment', () => {
+    assert.equal(mmdToRequestUrl('/workshop/123/Folder #1/a?.vmd'), '/workshop/123/Folder%20%231/a%3F.vmd');
+    assert.equal(vrmToRequestUrl('/workshop/123/Folder #1/a?.vrma'), '/workshop/123/Folder%20%231/a%3F.vrma');
 });
 
 test('MMD player hands the escaped URL to VMDLoader', async () => {

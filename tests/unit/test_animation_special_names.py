@@ -12,6 +12,7 @@ of that contract with synthetic files under ``tmp_path``:
 * the MMD delete endpoint (URL in the JSON body) deletes such a file.
 """
 
+import sys
 from types import SimpleNamespace
 from urllib.parse import quote
 
@@ -26,6 +27,9 @@ from main_routers import mmd_router, vrm_router
 pytestmark = pytest.mark.unit
 
 SPECIAL_STEMS = ["Dance #1", "what?", "50%", "two words", "全身展示", "a+b", "比 V 手势#2?%"]
+if sys.platform == "win32":
+    # '?' is not allowed in Windows file names; '#', '%', spaces, CJK and '+' still run there.
+    SPECIAL_STEMS = [stem for stem in SPECIAL_STEMS if "?" not in stem]
 
 
 def _request_path(url: str) -> str:
