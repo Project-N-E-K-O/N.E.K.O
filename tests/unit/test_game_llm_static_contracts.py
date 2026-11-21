@@ -757,6 +757,12 @@ def test_soccer_voice_chat_uses_official_host_microphone_bridge():
     assert "soccerGame.session" not in script
     assert "soccerGame.voice.onState" in script
     assert "soccerGame.voice.toggle()" in script
+    # #3003: a reply for a route that ended mid-command describes that route,
+    # so it must not be rendered over the current one.
+    toggle_reply = script.split("const state = await soccerGame.voice.toggle();", 1)[1]
+    assert toggle_reply.index("state.reason === 'route_superseded') return;") < toggle_reply.index(
+        "_renderGameVoiceChatControl(state);"
+    )
     assert "game_voice_control_toggle" in script
     assert "new BroadcastChannel(" not in script
     assert "document.getElementById('micButton')" not in script

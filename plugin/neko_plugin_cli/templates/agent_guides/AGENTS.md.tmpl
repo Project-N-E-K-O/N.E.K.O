@@ -109,6 +109,8 @@ Details: `.agents/skills/neko-plugin/references/runtime-model.md`.
 ```
 
 While iterating, run `check`; `check -r` adds `tests/` and a package build.
+`check` also prints advisory lines for code that breaks the constraints above;
+they never change its exit code, but fix them anyway.
 Before reporting done, run the four lines in order; `precheck` is the Market CI
 gate (lint, `sync --clean`, `check -r`). Outside the checkout's built-in plugin
 folder, `check -r` and `precheck` stop on uncommitted changes before any test

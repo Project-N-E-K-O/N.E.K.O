@@ -65,6 +65,8 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, TypeVar
 
+from nekoclaw.host import call_audit
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -146,7 +148,7 @@ HOST_ENDED_REASON = "the host process ended before this finished"
 
 # (5: the notes sessions write to one another and what a session asked to be
 # woken for have tables of their own, and a commission may rest.)
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 # The first version in which a commission is worked on in a session that is a
 # row of its own; a ledger of an earlier one has its commissions given theirs.
 _SESSIONS_SINCE_VERSION = 3
@@ -859,7 +861,7 @@ class Ledger:
             conn.execute("PRAGMA synchronous=NORMAL")
             # As the ledger was left: 0 for one that is made now.
             version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-            conn.executescript(_SCHEMA)
+            conn.executescript(_SCHEMA + call_audit.SCHEMA)
             self._add_columns(conn)
             # Not in the script above: in a ledger of an earlier build the
             # column is only there once it was added.
@@ -894,7 +896,8 @@ class Ledger:
     @staticmethod
     def _add_columns(conn: sqlite3.Connection) -> None:
         """Give a ledger made by an earlier build the columns added since (``_ADDED_COLUMNS``, ``_ADDED_SESSION_COLUMNS``)."""
-        for table, added in (("commissions", _ADDED_COLUMNS), ("sessions", _ADDED_SESSION_COLUMNS)):
+        for table, added in (("commissions", _ADDED_COLUMNS), ("sessions", _ADDED_SESSION_COLUMNS),
+                             ("host_calls", (("grant_id", "TEXT"), ("scope_ref", "TEXT")))):
             present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             for name, kind in added:
                 if name not in present:
@@ -1000,6 +1003,9 @@ class Ledger:
         """
         conn.execute("BEGIN IMMEDIATE")
         try:
+            conn.execute("UPDATE host_calls SET status='interrupted', ended_at=? WHERE status='running'",
+                         (self._clock(),))
+            call_audit.reclaim(conn, self._clock())
             marks = ", ".join("?" for _ in LIVE_SESSION_STATUSES)
             conn.execute(
                 f"UPDATE sessions SET status = 'closed' WHERE status IN ({marks})", sorted(LIVE_SESSION_STATUSES)
@@ -1225,7 +1231,7 @@ class Ledger:
 
     # -- commissions ------------------------------------------------------
 
-    def _insert(self, conn: sqlite3.Connection, values: dict[str, Any]) -> Commission:
+    def _insert(self, conn: sqlite3.Connection, values: dict[str, Any], *, source_message_ref: str | None = None) -> Commission:
         now = self._clock()
         row: dict[str, Any] = {name: None for name in _COMMISSION_COLUMNS}
         row.update(
@@ -1249,7 +1255,14 @@ class Ledger:
             f"INSERT INTO commissions ({columns}) VALUES ({marks})",
             [row[name] for name in _COMMISSION_COLUMNS],
         )
-        self._event(conn, row["id"], "created", {"source": row["source"], "title": row["title"]})
+        filed = {"source": row["source"], "title": row["title"]}
+        try:
+            call_audit.file_source(conn, row["id"], source_message_ref, now)
+        except call_audit.AuditFull:
+            # Filing ordinary work can continue. Preserve why the known
+            # reference was lost in the existing filing event, never its value.
+            filed["audit"] = call_audit.SOURCE_NOT_RECORDED
+        self._event(conn, row["id"], "created", filed)
         commission = _commission(conn.execute("SELECT * FROM commissions WHERE id = ?", (row["id"],)).fetchone())
         assert commission is not None
         return commission
@@ -1258,6 +1271,7 @@ class Ledger:
         self,
         *,
         unless: Callable[[list[Commission]], Commission | None] | None = None,
+        source_message_ref: str | None = None,
         **values: Any,
     ) -> tuple[Commission, bool]:
         """File a commission. Returns ``(commission, created)``.
@@ -1277,7 +1291,7 @@ class Ledger:
                 existing = unless(active)
                 if existing is not None:
                     return existing, False
-            return self._insert(conn, values), True
+            return self._insert(conn, values, source_message_ref=source_message_ref), True
 
         commission, created = await self.run(work)
         if created:
@@ -1290,6 +1304,16 @@ class Ledger:
                 conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone()
             )
         )
+
+    async def permission_parent(self, commission_id: str) -> tuple[str | None, bool]:
+        """Return the active parent link and whether this commission received another session's words."""
+        row = await self.run(lambda db: db.execute(
+            "SELECT c.parent_id, c.status, EXISTS (SELECT 1 FROM messages WHERE delivered_to = c.id) AS received "
+            "FROM commissions c WHERE c.id = ?", (commission_id,),
+        ).fetchone())
+        if row is None or row["status"] not in ACTIVE_STATUSES:
+            raise LookupError("the commission has ended or is unknown")
+        return row["parent_id"], bool(row["received"])
 
     @staticmethod
     def _select(
@@ -1365,6 +1389,10 @@ class Ledger:
             return Transition(False, current, current.status, refusal)
 
         now = self._clock()
+        if (current.status in ENDED_STATUSES and current.ended_at is not None
+                and current.ended_at <= now - call_audit.RETENTION):
+            # Resuming it or setting a later end time must not bring expired calls back.
+            call_audit.reclaim(conn, now, force=True)
         changes: dict[str, Any] = dict(values)
         changes.update(status=status, status_reason=reason, updated_at=now, host_instance=self.instance)
         if status == "working":

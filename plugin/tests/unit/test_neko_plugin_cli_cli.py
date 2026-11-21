@@ -2941,3 +2941,193 @@ def test_external_test_import_hook_does_not_require_a_checkout_pytest_ini(tmp_pa
     assert "-c" not in command
     assert command[command.index("-p") + 1] == "plugin.neko_plugin_cli.plugin_import_alias"
     assert kwargs["env"][release_cmd.PLUGIN_SOURCE_ENV] == str(source)
+
+
+def _validate_with_extra_toml(tmp_path: Path, extra: str) -> list[tuple[str, str]]:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            "[plugin_runtime]",
+            f"{extra}\n\n[plugin_runtime]",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    return validate_plugin_dir(plugin_dir, strict=True)
+
+
+@pytest.mark.parametrize("backend", ["file", "memory", "off", "File", ""])
+def test_validate_plugin_dir_accepts_runtime_plugin_state_backends(tmp_path: Path, backend: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\nbackend = "{backend}"')
+
+    assert not any("[plugin_state].backend" in message for _level, message in issues)
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "disabled"])
+def test_validate_plugin_dir_rejects_plugin_state_backend_runtime_refuses(tmp_path: Path, backend: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\nbackend = "{backend}"')
+
+    assert ("error", "[plugin_state].backend must be one of: file, memory, off") in issues
+
+
+def test_plugin_state_backends_match_sdk_runtime() -> None:
+    from plugin.sdk.shared.models.exceptions import InvalidArgumentError
+    from plugin.sdk.shared.storage.state import PluginStatePersistence
+
+    for backend in ("file", "memory", "off", "File", ""):
+        PluginStatePersistence.normalize_backend(backend)
+    for backend in ("sqlite", "disabled"):
+        with pytest.raises(InvalidArgumentError):
+            PluginStatePersistence.normalize_backend(backend)
+
+
+@pytest.mark.parametrize("persist_mode", ["auto", "manual", "off"])
+def test_validate_plugin_dir_accepts_runtime_plugin_state_persist_modes(tmp_path: Path, persist_mode: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\npersist_mode = "{persist_mode}"')
+
+    assert not any("[plugin_state].persist_mode" in message for _level, message in issues)
+
+
+@pytest.mark.parametrize("persist_mode", ["always", "disabled", "Auto"])
+def test_validate_plugin_dir_rejects_plugin_state_persist_mode_runtime_ignores(
+    tmp_path: Path, persist_mode: str
+) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\npersist_mode = "{persist_mode}"')
+
+    errors = [message for level, message in issues if level == "error" and "[plugin_state].persist_mode" in message]
+    assert len(errors) == 1
+    assert errors[0].split("\n")[0] == "[plugin_state].persist_mode must be one of: auto, manual, off"
+
+
+@pytest.mark.parametrize(("persist_mode", "replacement"), [("always", "auto"), ("disabled", "off")])
+def test_plugin_state_persist_mode_error_adds_eight_locale_migration_hint(
+    tmp_path: Path, persist_mode: str, replacement: str
+) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin_state]\npersist_mode = "{persist_mode}"')
+
+    (message,) = [m for level, m in issues if level == "error" and "[plugin_state].persist_mode" in m]
+    lines = message.split("\n")
+    assert lines[0] == "[plugin_state].persist_mode must be one of: auto, manual, off"
+    hint = dict(line.strip().split(": ", 1) for line in lines[1:])
+    assert list(hint) == ["en", "zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt"]
+    assert hint["en"] == f'use "{replacement}" instead of "{persist_mode}"'
+    assert all(f'"{replacement}"' in text and f'"{persist_mode}"' in text for text in hint.values())
+
+
+def test_plugin_state_persist_mode_error_without_migration_is_one_line(tmp_path: Path) -> None:
+    issues = _validate_with_extra_toml(tmp_path, '[plugin_state]\npersist_mode = "Auto"')
+
+    assert ("error", "[plugin_state].persist_mode must be one of: auto, manual, off") in issues
+
+
+def test_host_applies_the_persist_modes_check_accepts() -> None:
+    from plugin.sdk.shared.storage.state import PluginStatePersistence
+
+    assert PluginStatePersistence.VALID_PERSIST_MODES == ("auto", "manual", "off")
+    # Read the source instead of importing the host module.
+    source = (Path(__file__).resolve().parents[2] / "core" / "host.py").read_text(encoding="utf-8")
+    # The host reads both [plugin_state] and the legacy [plugin_checkpoint] through the shared constant.
+    assert source.count("in valid_persist_modes") == 2
+    assert '("auto", "manual", "off")' not in source
+
+
+def test_validate_plugin_dir_accepts_plugin_database_table(tmp_path: Path) -> None:
+    baseline = validate_plugin_dir(_make_plugin_dir(tmp_path / "baseline"), strict=True)
+    issues = _validate_with_extra_toml(tmp_path, '[plugin.database]\nenabled = true\nname = "notes.db"')
+
+    assert issues == baseline
+    assert not any("database" in message for _level, message in issues)
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        ("[plugin.database]\nname = 5", ("error", "[plugin.database].name must be a string")),
+        ("[plugin.database]\nenabled = 3", ("error", "[plugin.database].enabled must be a boolean")),
+        ("[plugin_state]\nbackend = 1", ("error", "[plugin_state].backend must be one of: file, memory, off")),
+    ],
+)
+def test_validate_plugin_dir_rejects_non_string_storage_values(
+    tmp_path: Path, extra: str, expected: tuple[str, str]
+) -> None:
+    assert expected in _validate_with_extra_toml(tmp_path, extra)
+
+
+def test_validate_plugin_dir_rejects_non_table_plugin_database(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    plugin_toml_path = plugin_dir / "plugin.toml"
+    plugin_toml_path.write_text(
+        plugin_toml_path.read_text(encoding="utf-8").replace(
+            'type = "plugin"', 'type = "plugin"\ndatabase = "plugin.db"', 1
+        ),
+        encoding="utf-8",
+    )
+
+    assert ("error", "[plugin.database] must be a table") in validate_plugin_dir(plugin_dir, strict=True)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../escape.db", "sub/notes.db", ".", "C:notes.db", "C:\\\\notes.db", "notes?.db", "a|b.db", "CON", "nul.db", "com1.db", "COM\u00b9.db", "lpt\u00b2.db", "CONIN$", "notes.db.", "notes.db "],
+)
+def test_validate_plugin_dir_rejects_plugin_database_name_runtime_refuses(tmp_path: Path, name: str) -> None:
+    from plugin.sdk.shared.storage.database import PluginDatabase
+
+    if name in {"../escape.db", "sub/notes.db", ".", "C:\\\\notes.db"}:  # refused by the SDK on every OS
+        with pytest.raises(ValueError):
+            PluginDatabase._normalize_db_name(name)
+
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin.database]\nname = "{name}"')
+
+    (message,) = [m for level, m in issues if level == "error" and "[plugin.database].name" in m]
+    lines = message.split("\n")
+    assert lines[0].startswith("[plugin.database].name must be a plain file name that also works on Windows")
+    assert [line.strip().split(":", 1)[0] for line in lines[1:]] == ["zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt"]
+    assert all(line.strip().split(": ", 1)[1].startswith("[plugin.database].name") for line in lines[1:])
+
+
+@pytest.mark.parametrize("name", ["", "notes.db", "console.db", "com10.db", "lpt.db"])
+def test_validate_plugin_dir_accepts_windows_safe_plugin_database_name(tmp_path: Path, name: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin.database]\nname = "{name}"')
+
+    assert not any("[plugin.database]" in message for _level, message in issues)
+
+
+def test_validate_plugin_dir_warns_unknown_plugin_database_key(tmp_path: Path) -> None:
+    issues = _validate_with_extra_toml(tmp_path, '[plugin.database]\nenabled = true\npath = "x.db"')
+
+    assert ("warning", "[plugin.database].path is not a recognized plugin.toml field") in issues
+
+
+@pytest.mark.parametrize("table", ["plugin.database", "plugin.store"])
+@pytest.mark.parametrize("enabled", ['"false"', '"no"'])
+def test_validate_plugin_dir_rejects_string_storage_enabled(tmp_path: Path, table: str, enabled: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f"[{table}]\nenabled = {enabled}")
+
+    assert (
+        "error",
+        f"[{table}].enabled must be true/false, not a string; the SDK reads any non-empty string as true",
+    ) in issues
+
+
+@pytest.mark.parametrize("table", ["plugin.database", "plugin.store"])
+@pytest.mark.parametrize("enabled", ["true", "false"])
+def test_validate_plugin_dir_accepts_boolean_storage_enabled(tmp_path: Path, table: str, enabled: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f"[{table}]\nenabled = {enabled}")
+
+    assert not any(f"[{table}]" in message for _level, message in issues)
+
+
+@pytest.mark.parametrize("backend", ["file", "sqlite", "anything"])
+def test_validate_plugin_dir_warns_plugin_store_backend_is_not_read(tmp_path: Path, backend: str) -> None:
+    issues = _validate_with_extra_toml(tmp_path, f'[plugin.store]\nenabled = true\nbackend = "{backend}"')
+
+    store_issues = [(level, message) for level, message in issues if "[plugin.store]" in message]
+    assert len(store_issues) == 1
+    level, message = store_issues[0]
+    assert level == "warning"
+    lines = message.split("\n")
+    assert lines[0] == "[plugin.store].backend is not read by the runtime and has no effect"
+    assert [line.strip().split(":", 1)[0] for line in lines[1:]] == ["zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt"]
+    assert all(line.strip().split(": ", 1)[1].startswith("[plugin.store].backend") for line in lines[1:])

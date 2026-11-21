@@ -16,13 +16,29 @@ on:
       - 'scripts/wake_word/patches/sherpa-onnx-kws-*.patch'
       - 'main_logic/voice_input/wake_word/**'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: >-
+          Optional. When set (must start with wake-word-runtime-v), also publish
+          the wheel, build-manifest.json and the sherpa-onnx license as a new
+          prerelease with this tag. The run fails if the tag or a release with
+          it already exists; assets are never replaced. Leave empty to only
+          upload the Actions artifact.
+        type: string
+        required: false
+        default: ''
 
+# Job-level permissions below; only the publish job gets contents: write.
 permissions:
   contents: read
 
 concurrency:
-  group: wake-word-runtime-${{ github.ref }}
-  cancel-in-progress: true
+  # Publishing runs use their own group with cancel-in-progress off, so a later
+  # push to the same ref cannot cancel a half-finished release. GitHub keeps at
+  # most one pending run per group: a newer queued publish run replaces an
+  # older queued one, but never the one in progress.
+  group: wake-word-runtime-${{ github.ref }}${{ (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') && '-publish' || '' }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
 
 jobs:
   windows-wheel:
@@ -30,8 +46,33 @@ jobs:
     # Match the pinned CMake 3.x / Visual Studio 2022 generator.
     runs-on: windows-2022
     timeout-minutes: 60
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v5
+      - name: Validate release tag before building
+        # Fail fast on a bad or taken tag instead of after the long build.
+        # The publish job re-checks with write access right before creating.
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^wake-word-runtime-v[0-9][0-9A-Za-z._-]*$ ]] ||
+             ! git check-ref-format "refs/tags/$RELEASE_TAG"; then
+            echo "::error::release_tag must match ^wake-word-runtime-v[0-9][0-9A-Za-z._-]*\$ and be a valid tag name"
+            exit 1
+          fi
+          status=0
+          git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null || status=$?
+          if [[ $status -eq 0 ]]; then
+            echo "::error::Tag $RELEASE_TAG already exists; pick a new tag (assets are never replaced)"
+            exit 1
+          elif [[ $status -ne 2 ]]; then
+            echo "::error::git ls-remote failed with status $status"
+            exit 1
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -49,5 +90,130 @@ jobs:
             C:\kw\sherpa-onnx\dist\*.whl
             C:\kw\build-manifest.json
             C:\kw\native\*
+            C:\kw\sherpa-onnx\LICENSE
           if-no-files-found: error
           retention-days: 14
+
+  publish:
+    name: Publish prerelease
+    needs: windows-wheel
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      # Serialize publishing across refs so two runs cannot race on one tag.
+      # Only one publish job waits at a time; a newer one replaces an older
+      # waiting one (that run is cancelled, nothing is published by it).
+      group: wake-word-runtime-publish
+      cancel-in-progress: false
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wake-word-runtime-windows-py311-${{ github.sha }}
+          path: artifact
+      - name: Stage release assets
+        id: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(artifact/sherpa-onnx/dist/*.whl)
+          if [[ ${#wheels[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one wheel in the artifact, found ${#wheels[@]}"
+            exit 1
+          fi
+          for required in artifact/build-manifest.json artifact/sherpa-onnx/LICENSE; do
+            [[ -f "$required" ]] || { echo "::error::Missing $required in the artifact"; exit 1; }
+          done
+          mkdir release-assets
+          cp "${wheels[0]}" release-assets/
+          cp artifact/build-manifest.json release-assets/build-manifest.json
+          # LICENSE of the pinned upstream k2-fsa/sherpa-onnx checkout.
+          cp artifact/sherpa-onnx/LICENSE release-assets/SHERPA-LICENSE.txt
+          wheel="release-assets/$(basename "${wheels[0]}")"
+          sha256=$(sha256sum "$wheel" | cut -d' ' -f1)
+          bytes=$(stat -c %s "$wheel")
+          manifest_sha256=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8-sig"))["wheel"]["sha256"].lower())' release-assets/build-manifest.json)
+          if [[ "$manifest_sha256" != "$sha256" ]]; then
+            echo "::error::build-manifest.json wheel sha256 ($manifest_sha256) does not match the wheel ($sha256)"
+            exit 1
+          fi
+          runtime_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8-sig"))["runtime_version"])' release-assets/build-manifest.json)
+          {
+            echo "runtime_version=$runtime_version"
+            echo "wheel_name=$(basename "$wheel")"
+            echo "wheel_sha256=$sha256"
+            echo "wheel_bytes=$bytes"
+          } >> "$GITHUB_OUTPUT"
+      - name: Create prerelease (fails if the tag or release exists)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RUNTIME_VERSION: ${{ steps.stage.outputs.runtime_version }}
+          WHEEL_NAME: ${{ steps.stage.outputs.wheel_name }}
+          WHEEL_SHA256: ${{ steps.stage.outputs.wheel_sha256 }}
+          WHEEL_BYTES: ${{ steps.stage.outputs.wheel_bytes }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^wake-word-runtime-v[0-9][0-9A-Za-z._-]*$ ]] ||
+             ! git check-ref-format "refs/tags/$RELEASE_TAG"; then
+            echo "::error::release_tag must match ^wake-word-runtime-v[0-9][0-9A-Za-z._-]*\$ and be a valid tag name"
+            exit 1
+          fi
+          # Assets cannot be replaced, so the tag must name the version that was
+          # actually built (build-manifest.json runtime_version, "+" written as "-").
+          version_prefix="wake-word-runtime-v${RUNTIME_VERSION//+/-}"
+          if [[ -z "$RUNTIME_VERSION" || ( "$RELEASE_TAG" != "$version_prefix" && "$RELEASE_TAG" != "$version_prefix"-* ) ]]; then
+            echo "::error::release_tag $RELEASE_TAG does not match the built runtime_version $RUNTIME_VERSION; expected $version_prefix or $version_prefix-<suffix>"
+            exit 1
+          fi
+          status=0
+          git ls-remote --exit-code --tags "$GITHUB_SERVER_URL/$GH_REPO.git" "refs/tags/$RELEASE_TAG" >/dev/null || status=$?
+          if [[ $status -eq 0 ]]; then
+            echo "::error::Tag $RELEASE_TAG already exists; refusing to publish (assets are never replaced)"
+            exit 1
+          elif [[ $status -ne 2 ]]; then
+            echo "::error::git ls-remote failed with status $status"
+            exit 1
+          fi
+          # Draft releases have no tag yet; list them too (needs contents: write).
+          existing=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[].tag_name')
+          if grep -Fxq -- "$RELEASE_TAG" <<<"$existing"; then
+            echo "::error::A release (possibly a draft) with tag $RELEASE_TAG already exists; refusing to publish"
+            exit 1
+          fi
+          url="$GITHUB_SERVER_URL/$GH_REPO/releases/download/$RELEASE_TAG/$WHEEL_NAME"
+          {
+            echo "Custom sherpa-onnx wake-word runtime built by $RUN_URL from commit $GITHUB_SHA."
+            echo
+            echo "- Runtime version: \`$RUNTIME_VERSION\`"
+            echo "- Wheel: \`$WHEEL_NAME\`"
+            echo "- Size: $WHEEL_BYTES bytes"
+            echo "- SHA256: \`$WHEEL_SHA256\`"
+            echo "- \`build-manifest.json\`: build provenance (upstream commit, patches, CMake options)."
+            echo "- \`SHERPA-LICENSE.txt\`: license of the upstream k2-fsa/sherpa-onnx source."
+            echo
+            echo "Clients only use this build after WHEEL_URL / WHEEL_SHA256 / WHEEL_BYTES in"
+            echo "main_logic/voice_input/wake_word/runtime_bundle.py are updated to:"
+            echo
+            echo '```python'
+            echo "WHEEL_URL = \"$url\""
+            echo "WHEEL_SHA256 = \"$WHEEL_SHA256\""
+            echo "WHEEL_BYTES = $WHEEL_BYTES"
+            echo '```'
+          } > release-notes.md
+          # A new tag is created at the commit this run built from. gh release
+          # create never replaces assets of an existing release.
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_TAG" \
+            --notes-file release-notes.md \
+            --prerelease \
+            --latest=false
+          cat release-notes.md >> "$GITHUB_STEP_SUMMARY"

@@ -748,28 +748,41 @@ async def test_commands_allowed_for_the_session_do_not_cover_one_that_points_at_
     from nekoclaw.host.permissions import SPACE_COMMAND
 
     root = _space_root(tmp_path)
-    host = _host(hosts, tmp_path, ScriptedLLM([_report()]))
+    import asyncio
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def wait():
+        entered.set()
+        await release.wait()
+
+    host = _host(hosts, tmp_path, ScriptedLLM([[wait, *_report()]]))
     await host.space.file_entry(None, title="Use uv", content="Run Python through uv.")
+    receipt = await _dispatch(host, "sort the photos")
+    await asyncio.wait_for(entered.wait(), 10)
+    active = await host.ledger.get(receipt.commission_id)
     await host.permission_store.set_mode("run_command", "first_ask")
     asker = _Asker("session")
     host.permissions.set_asker(asker)
 
     async def decide(command: str) -> dict[str, Any]:
-        return await host.task_agents._cb_permission("no-such-session", _command(command, tmp_path))
+        return await host.task_agents._cb_permission(active.session_id, _command(command, tmp_path))
 
-    # Commands are allowed for the rest of the session at the first question.
+    # The same command and working directory reuse approval; a different command asks.
+    assert (await decide("ls"))["allow"] is True
     assert (await decide("ls"))["allow"] is True
     assert (await decide("ls -la"))["allow"] is True
-    assert [ask.category for ask in asker.asked] == ["run_command"]
+    assert [ask.category for ask in asker.asked] == ["run_command", "run_command"]
 
     assert (await decide(f"cat '{root.as_posix()}/MEMORY.md'"))["allow"] is True
     assert (await decide(f"cat '{root.as_posix()}/MEMORY.md'"))["allow"] is True
 
     # Asked about each time all the same, and with the two answers only.
-    assert [ask.category for ask in asker.asked] == ["run_command", SPACE_COMMAND, SPACE_COMMAND]
+    assert [ask.category for ask in asker.asked] == ["run_command", "run_command", SPACE_COMMAND, SPACE_COMMAND]
     assert asker.asked[-1].options == ("once", "deny")
-    # And that answer did nothing for other commands, which were allowed already.
-    assert (await decide("ls"))["allow"] is True and len(asker.asked) == 3
+    assert (await decide("ls"))["allow"] is True and len(asker.asked) == 4
+    release.set()
+    await wait_status(host, active.id, "done")
 
 
 async def test_commands_forbidden_while_the_question_was_open_are_not_run(hosts, tmp_path):

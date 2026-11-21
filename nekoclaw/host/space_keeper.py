@@ -58,6 +58,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from nekoclaw.host import call_audit
 from nekoclaw.host.decision import TIER_ARCHIVE, TIER_CONSOLIDATE, TIER_REVIEW
 from nekoclaw.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger, LedgerEvent
 from nekoclaw.host.paths import DEFAULT_PROJECT, SYSTEM_SNAPSHOT_NAME, TRANSCRIPT_NAME, safe_segment
@@ -1059,6 +1060,7 @@ class SpaceKeeper:
             for name, step in (
                 # First, and with no model: what is archived and reviewed
                 # after it reads indexes that no longer list what expired.
+                ("call audit", lambda: self._ledger.run(lambda conn: call_audit.reclaim(conn, now))),
                 ("evidence", self._check_evidence),
                 ("late reviews", lambda: self._late_reviews(now, float(since))),
                 ("archiving", lambda: self._archive_idle(now)),

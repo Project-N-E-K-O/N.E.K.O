@@ -23,6 +23,8 @@ from typing import Any
 
 import pytest
 
+from config.nekoclaw_settings import DISPATCH_FIRST_ROUND_SECONDS as _SHIPPED_DISPATCH_FIRST_ROUND_SECONDS
+from nekoclaw.host import call_audit
 from tests.unit.nekoclaw.fakes import ScriptedLLM
 from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
@@ -93,7 +95,9 @@ async def test_accepted_then_the_plugin_is_called_directly(server, hosts, tmp_pa
     llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today", {"city": "Shanghai"})])
     host = _host(hosts, tmp_path, server, llm)
 
-    receipt = await _dispatch(host, "查一下上海的天气", user_text="上海今天天气怎么样", conversation_id="conv-9")
+    source_ref = "conversation_input:" + "f" * 32
+    receipt = await _dispatch(host, "查一下上海的天气", user_text="上海今天天气怎么样", conversation_id="conv-9",
+                              source_message_ref=source_ref)
 
     assert receipt.kind == "accepted"
     assert receipt.model_calls == 0
@@ -109,11 +113,47 @@ async def test_accepted_then_the_plugin_is_called_directly(server, hosts, tmp_pa
     assert ctx["lanlan_name"] == "Lan"
     assert ctx["conversation_id"] == "conv-9"
     assert ctx["latest_user_request"] == "上海今天天气怎么样"
+    await host.brain.settle()
+    root, direct, plugin_call = await host.ledger.run(lambda db: call_audit.read_trace(db, done.id, now=host.ledger._clock()))
+    assert (root["source_message_ref"], root["session_id"], root["status"]) == (source_ref, None, "done")
+    assert direct["parent_call_id"] == root["call_id"] == done.id
+    assert plugin_call["parent_call_id"] == direct["call_id"]
+    assert plugin_call["run_id"] and plugin_call["target"] == "plugin:weather:today"
+    assert "Shanghai" not in json.dumps([root, direct, plugin_call])
     # One fine selection in total for the whole dispatch.
     assert llm.tiers() == ["fine"]
     (report,) = await outbox(host, "task_result")
     assert report.payload["summary"] == "sunny in Shanghai"
     assert report.payload["task_id"] == receipt.commission_id
+
+
+@pytest.mark.parametrize("finish", ["deny", "abort", "disable_plugins"])
+async def test_direct_plugin_never_runs_after_decline_or_late_answer(server, hosts, tmp_path, finish):
+    _weather(server)
+    llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today")])
+    plugins_enabled = True
+    host = _host(hosts, tmp_path, server, llm, plugins_enabled=lambda: plugins_enabled)
+    await host.permission_store.set_mode("plugin_entry", "first_ask")
+    receipt = await _dispatch(host, "查今天的天气")
+    waiting = await wait_status(host, receipt.commission_id, "waiting_user")
+    question = waiting.question()
+    assert waiting.route == "plugin" and not waiting.session_id
+    assert question["detail"]["capability"] == "plugin:weather:today"
+    assert not server.run_requests
+    if finish == "abort":
+        await host.abort(waiting.id)
+        assert not await host.answer(waiting.id, "", choice="once", question_id=question["id"])
+    elif finish == "disable_plugins":
+        plugins_enabled = False
+        assert await host.answer(waiting.id, "", choice="once", question_id=question["id"])
+    else:
+        assert await host.answer(waiting.id, "", choice="deny", question_id=question["id"])
+    await host.brain.settle()
+    assert not server.run_requests and llm.tiers() == ["fine"]
+    if finish == "disable_plugins":
+        assert (await host.ledger.get(waiting.id)).status == "failed"
+        (correction,) = await outbox(host, "correction")
+        assert correction.payload["detail"] == "not_enabled"
 
 
 async def test_the_result_is_stored_with_the_status_not_after_it(server, hosts, tmp_path, monkeypatch):
@@ -234,6 +274,33 @@ def _mcp_notes(server: FakePluginServer, calls: list[str]) -> None:
     )
 
 
+async def test_visible_mcp_owner_change_during_direct_approval_stops_submission(server, hosts, tmp_path):
+    registered = entry("mcp_team_docs_search", "Search docs", name="[team_docs] search")
+    server.add_plugin(plugin("mcp_adapter", "MCP", [registered]), mcp_team_docs_search=_recording_tool([], "search"))
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(fine=[pick_plugin("mcp_adapter", registered["id"])]))
+    receipt = await _dispatch(host, "search docs")
+    pending = await wait_status(host, receipt.commission_id, "waiting_user")
+    assert pending.question()["category"] == "mcp_server"
+    # The public entry ID remains valid for both spellings, but the approved server differs.
+    registered["name"] = "[team] docs_search"
+    host.catalog.invalidate()
+    assert await host.answer(pending.id, "", choice="once", question_id=pending.question()["id"])
+    await host.brain.settle()
+    assert not server.run_requests and (await host.ledger.get(pending.id)).status == "failed"
+
+
+async def test_generic_mcp_entry_is_not_offered_even_without_a_denied_server(server, hosts, tmp_path):
+    _mcp_notes(server, [])
+    llm = FakeDecisionLLM(fine=[pick_plugin("mcp_adapter", "mcp_notes_search")])
+    host = _host(hosts, tmp_path, server, llm)
+    await host.permission_store.set_mode("mcp_server", "allow", key="notes")
+    receipt = await _dispatch(host, "search my notes")
+    await host.brain.settle()
+    offered = json.dumps(next(messages for tier, messages in llm.calls if tier == "fine"))
+    assert "call_tool" not in offered and "mcp_notes_search" in offered
+    assert (await host.ledger.get(receipt.commission_id)).status == "done"
+
+
 async def test_a_denied_mcp_server_is_not_reached_by_a_dispatch(server, hosts, tmp_path):
     calls: list[str] = []
     _mcp_notes(server, calls)
@@ -300,6 +367,9 @@ async def test_denying_the_unnamed_slot_leaves_named_servers_to_their_category(s
     await host.permission_store.set_mode("mcp_server", "deny", key="*")
 
     receipt = await _dispatch(host, "go open a github issue about the crash")
+    pending = await wait_status(host, receipt.commission_id, "waiting_user")
+    assert pending.question()["key"] == "github" and calls == []
+    assert await host.answer(receipt.commission_id, "", choice="once")
     await host.brain.settle()
 
     # "*" is what a request naming no server reads: the entries that can reach
@@ -509,9 +579,9 @@ async def test_fast_first_round_that_fails_raises_to_the_caller(server, hosts, t
 
 
 async def test_first_round_budget_is_about_one_second():
-    from config.nekoclaw_settings import DISPATCH_FIRST_ROUND_SECONDS
-
-    assert DISPATCH_FIRST_ROUND_SECONDS == 1.0
+    # Read at import time: the autouse fixture in conftest.py raises the budget
+    # for every test, this one included.
+    assert _SHIPPED_DISPATCH_FIRST_ROUND_SECONDS == 1.0
 
 
 async def test_dispatch_text_is_capped_in_tokens_before_it_is_stored(server, hosts, tmp_path):
@@ -814,6 +884,10 @@ async def test_nekoclaw_switched_off_after_a_plugin_was_chosen_and_before_it_is_
     # No request for a run is sent, and the commission is put down as not started because
     # NekoClaw is off: not as a call that failed.
     assert calling == [True] and server.calls == [] and server.run_requests == []
+    _root, direct, plugin_call = await host.ledger.run(
+        lambda db: call_audit.read_trace(db, receipt.commission_id, now=host.ledger._clock())
+    )
+    assert direct["status"] == plugin_call["status"] == "cancelled" and plugin_call["run_id"] is None
     failed = await host.ledger.get(receipt.commission_id)
     assert failed.status == "failed" and "switched off" in failed.status_reason
     (correction,) = await outbox(host, "correction")
@@ -1164,6 +1238,16 @@ async def test_a_new_dispatch_is_not_taken_for_a_repeat_of_a_child_task_agent(se
 # ---------------------------------------------------------------------------
 # Deferred results
 # ---------------------------------------------------------------------------
+
+
+async def test_deferred_binding_skipped_when_audit_is_full(server, hosts, tmp_path, monkeypatch, caplog):
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    item, _ = await host.ledger.create(lanlan_name="Lan", title="reminder", dispatch_text="later", source="dispatch")
+    await host.ledger.transition(item.id, "working")
+    monkeypatch.setattr(call_audit, "BUDGET_BYTES", call_audit.RECORD_BYTES)
+    await host.brain._bind_deferred(item, "reminder", "reminder-id")
+    assert "deferred binding skipped" in caplog.text
+    assert server.run_requests == []
 
 
 async def test_deferred_work_stopped_before_it_is_bound_does_not_call_the_plugin(server, hosts, tmp_path):
@@ -1622,10 +1706,12 @@ async def test_run_is_cancelled_when_its_caller_is_cancelled_while_the_request_i
         async def get(self, url: str, **kwargs: Any) -> Any:
             return await self._client.get(url, **kwargs)
 
-    host = _host(hosts, tmp_path, server, FakeDecisionLLM(), client_factory=SlowAnswers)
+    from nekoclaw.host.plugin_runs import audited_run_entry
 
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(), client_factory=SlowAnswers)
+    await host.ledger.create(id="c1", lanlan_name="Lan", title="weather", dispatch_text="weather", source="dispatch")
     calling = asyncio.ensure_future(
-        host.runner.run_entry(commission_id="c1", plugin_id="weather", entry_id="today", args={})
+        audited_run_entry(host.ledger, host.runner, commission_id="c1", plugin_id="weather", entry_id="today", args={})
     )
     await asyncio.wait_for(started.wait(), 5)
     (run,) = server.runs()
@@ -1638,8 +1724,10 @@ async def test_run_is_cancelled_when_its_caller_is_cancelled_while_the_request_i
 
     answer_may_return.set()
 
-    # The answer is still read, and the run it names is cancelled.
+    # The answer is still read, and the run it names is cancelled and linked to the original call.
     await wait_until(lambda: server.cancelled == [("weather", run.run_id)], what="the run being cancelled")
+    _root, step = await host.ledger.run(lambda db: call_audit.read_trace(db, "c1", now=host.ledger._clock()))
+    assert (step["status"], step["run_id"], step["target"]) == ("cancelled", run.run_id, "plugin:weather:today")
 
 
 async def test_run_is_cancelled_when_its_caller_is_cancelled_right_after_it_was_created(server, hosts, tmp_path):

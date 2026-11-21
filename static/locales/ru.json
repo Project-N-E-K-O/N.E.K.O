@@ -4545,76 +4545,76 @@
         "model_manager": {
             "common": {
                 "step1": {
-                    "title": "🎨 Select Model Type",
-                    "desc": "First, choose the model type you want to use: Live2D (2D animation) or VRM (3D model)."
+                    "title": "🎨 Выбор типа модели",
+                    "desc": "Сначала выберите тип модели, которую хотите использовать: Live2D (2D-анимация) или VRM (3D-модель)."
                 },
                 "step2": {
-                    "title": "📤 Upload Model",
-                    "desc": "Click here to upload your model file. Supports Live2D and VRM formats."
+                    "title": "📤 Загрузка модели",
+                    "desc": "Нажмите здесь, чтобы загрузить файл модели. Поддерживаются форматы Live2D и VRM."
                 }
             },
             "live2d": {
                 "step1": {
-                    "title": "🎭 Select Live2D Model",
-                    "desc": "Choose a Live2D model from the uploaded models."
+                    "title": "🎭 Выбор модели Live2D",
+                    "desc": "Выберите модель Live2D из загруженных моделей."
                 },
                 "step2": {
-                    "title": "💃 Select Motion",
-                    "desc": "Select a motion for the Live2D model. Click \"Play Motion\" to preview."
+                    "title": "💃 Выбор движения",
+                    "desc": "Выберите движение для модели Live2D. Нажмите «Воспроизвести движение» для предпросмотра."
                 },
                 "step3": {
-                    "title": "😊 Select Expression",
-                    "desc": "Select an expression for the Live2D model. You can set a persistent expression."
+                    "title": "😊 Выбор выражения",
+                    "desc": "Выберите выражение для модели Live2D. Вы можете задать постоянное выражение."
                 },
                 "step4": {
-                    "title": "🧷 Persistent Expression",
-                    "desc": "Select a persistent expression to keep the model in that expression until changed."
+                    "title": "🧷 Постоянное выражение",
+                    "desc": "Выберите постоянное выражение, чтобы модель сохраняла его, пока вы его не измените."
                 },
                 "step5": {
-                    "title": "😄 Emotion Configuration",
-                    "desc": "Configure emotion expressions for the Live2D model. Set different expressions and motions for different emotions."
+                    "title": "😄 Настройка эмоций",
+                    "desc": "Настройте выражения эмоций для модели Live2D. Задайте разные выражения и движения для разных эмоций."
                 },
                 "step6": {
-                    "title": "✨ Face Customization",
-                    "desc": "Enter the face customization system to fine-tune Live2D model parameters for your unique Neko."
+                    "title": "✨ Настройка лица",
+                    "desc": "Откройте систему настройки лица, чтобы точно настроить параметры модели Live2D для вашей уникальной Neko."
                 }
             },
             "vrm": {
                 "step1": {
-                    "title": "🎭 Select VRM Model",
-                    "desc": "Choose a VRM 3D model from the uploaded models."
+                    "title": "🎭 Выбор модели VRM",
+                    "desc": "Выберите 3D-модель VRM из загруженных моделей."
                 },
                 "step2": {
-                    "title": "💃 Select Animation",
-                    "desc": "Select an animation for the VRM model. VRM supports rich 3D animations."
+                    "title": "💃 Выбор анимации",
+                    "desc": "Выберите анимацию для модели VRM. VRM поддерживает разнообразные 3D-анимации."
                 },
                 "step3": {
-                    "title": "▶️ Play Animation",
-                    "desc": "Click to preview the selected VRM animation."
+                    "title": "▶️ Воспроизведение анимации",
+                    "desc": "Нажмите, чтобы просмотреть выбранную анимацию VRM."
                 },
                 "step4": {
-                    "title": "😊 Select Expression",
-                    "desc": "Select an expression for the VRM model. VRM supports multiple facial expressions."
+                    "title": "😊 Выбор выражения",
+                    "desc": "Выберите выражение для модели VRM. VRM поддерживает несколько выражений лица."
                 },
                 "step5": {
-                    "title": "💡 Lighting System",
-                    "desc": "VRM supports professional 3D lighting. Adjust ambient light, main light, fill light and rim light."
+                    "title": "💡 Система освещения",
+                    "desc": "VRM поддерживает профессиональное 3D-освещение. Настройте окружающий, основной, заполняющий и контурный свет."
                 },
                 "step6": {
-                    "title": "🌟 Ambient Light",
-                    "desc": "Adjust ambient light intensity. Higher values make the model brighter."
+                    "title": "🌟 Окружающее освещение",
+                    "desc": "Настройте интенсивность окружающего освещения. Чем выше значение, тем ярче модель."
                 },
                 "step7": {
-                    "title": "☀️ Main Light",
-                    "desc": "Adjust main light intensity. Main light is the primary light source affecting contrast."
+                    "title": "☀️ Основной свет",
+                    "desc": "Настройте интенсивность основного света. Основной свет — главный источник освещения, влияющий на контраст."
                 },
                 "step8": {
-                    "title": "🌞 Exposure",
-                    "desc": "Adjust overall exposure. Higher values brighten the image, lower values darken it."
+                    "title": "🌞 Экспозиция",
+                    "desc": "Настройте общую экспозицию. Более высокие значения делают изображение ярче, более низкие — темнее."
                 },
                 "step9": {
-                    "title": "🎞️ Tone Mapping",
-                    "desc": "Select different tone mapping algorithms to control highlight and shadow rendering."
+                    "title": "🎞️ Тональная компрессия",
+                    "desc": "Выберите алгоритм тональной компрессии, чтобы управлять отображением светов и теней."
                 }
             },
             "mmd": {
@@ -4638,38 +4638,38 @@
         },
         "parameter_editor": {
             "step1": {
-                "title": "🎭 Select Model",
-                "desc": "First select the Live2D model to edit. You can only adjust parameters after selecting a model."
+                "title": "🎭 Выбор модели",
+                "desc": "Сначала выберите модель Live2D для редактирования. Настраивать параметры можно только после выбора модели."
             },
             "step2": {
-                "title": "🎨 Parameter List",
-                "desc": "Shows all adjustable parameters for the model. Each parameter controls different parts like eye size, mouth shape, head angle, etc."
+                "title": "🎨 Список параметров",
+                "desc": "Здесь показаны все доступные параметры модели. Каждый параметр управляет разными частями: размером глаз, формой рта, углом поворота головы и т. д."
             },
             "step3": {
-                "title": "👁️ Real-time Preview",
-                "desc": "Left side is the preview area. See model changes in real-time as you adjust parameters."
+                "title": "👁️ Предпросмотр в реальном времени",
+                "desc": "Слева находится область предпросмотра. Изменения модели отображаются в реальном времени по мере настройки параметров."
             },
             "step4": {
-                "title": "🔄 Reset All Parameters",
-                "desc": "Click to reset all parameters to default values. Use this if you're not satisfied with adjustments."
+                "title": "🔄 Сброс всех параметров",
+                "desc": "Нажмите, чтобы сбросить все параметры к значениям по умолчанию. Используйте это, если вас не устраивают результаты настройки."
             }
         },
         "emotion_manager": {
             "step1": {
-                "title": "🎭 Select Model",
-                "desc": "First select the Live2D model to configure emotions. Each model can have independent emotion settings."
+                "title": "🎭 Выбор модели",
+                "desc": "Сначала выберите модель Live2D, для которой нужно настроить эмоции. У каждой модели могут быть независимые настройки эмоций."
             },
             "step_pick": {
-                "title": "👇 Pick a Model",
-                "desc": "Click any item in the dropdown list to choose a model. You must pick one to proceed."
+                "title": "👇 Выберите модель",
+                "desc": "Выберите модель в раскрывающемся списке. Чтобы продолжить, необходимо выбрать одну модель."
             },
             "step2": {
-                "title": "😊 Emotion Configuration Area",
-                "desc": "Configure expressions and motion combinations for different emotions. Your Neko will automatically switch emotions based on conversation."
+                "title": "😊 Область настройки эмоций",
+                "desc": "Настройте сочетания выражений и движений для разных эмоций. Ваша Neko будет автоматически переключать эмоции в зависимости от разговора."
             },
             "step3": {
-                "title": "🔄 Reset Configuration",
-                "desc": "Click to reset emotion configuration to default values."
+                "title": "🔄 Сброс настроек",
+                "desc": "Нажмите, чтобы сбросить настройки эмоций к значениям по умолчанию."
             }
         },
         "chara_manager": {
@@ -4678,126 +4678,126 @@
                 "desc": "Это ваш профиль. Имя профиля обязательно, остальная информация необязательна. Это влияет на то, как Neko обращается к вам."
             },
             "step2": {
-                "title": "📝 Set Profile Name",
-                "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 60 characters."
+                "title": "📝 Имя профиля",
+                "desc": "Введите своё имя или никнейм. Ваша Neko будет использовать его при обращении к вам. Максимум 60 символов."
             },
             "step3": {
-                "title": "👥 Gender Setting",
-                "desc": "Optional. Enter your gender or related information. This affects how your Neko addresses you."
+                "title": "👥 Пол",
+                "desc": "Необязательно. Укажите свой пол или связанную информацию. Это влияет на то, как Neko обращается к вам."
             },
             "step4": {
-                "title": "💬 Nickname Setting",
-                "desc": "Optional. Set a nickname for yourself. Your Neko may use this nickname to address you."
+                "title": "💬 Никнейм",
+                "desc": "Необязательно. Задайте себе никнейм. Neko может использовать его при обращении к вам."
             },
             "step5": {
-                "title": "🔑 API Key Settings",
-                "desc": "Click here to configure AI service API keys. Required for your Neko to chat."
+                "title": "🔑 Настройки API-ключей",
+                "desc": "Нажмите здесь, чтобы настроить API-ключи сервисов ИИ. Они необходимы, чтобы ваша Neko могла общаться."
             },
             "step6": {
-                "title": "🐱 Character Profile",
-                "desc": "Create and manage multiple Neko characters. Each has unique personality, Live2D appearance and voice. Switch between them anytime."
+                "title": "🐱 Профиль персонажа",
+                "desc": "Создавайте несколько персонажей Neko и управляйте ими. У каждого есть уникальные характер, внешность Live2D и голос. Переключайтесь между ними в любое время."
             },
             "step7": {
-                "title": "➕ Add New Character",
-                "desc": "Click to create a new Neko character. Set name, personality, appearance and voice. Each character is independent with own memory."
+                "title": "➕ Добавить нового персонажа",
+                "desc": "Нажмите, чтобы создать нового персонажа Neko. Задайте имя, характер, внешность и голос. Каждый персонаж независим и имеет собственную память."
             },
             "step8": {
-                "title": "📋 Character Card",
-                "desc": "Click character name to expand/collapse details. Each character has independent settings including basic info and advanced config."
+                "title": "📋 Карточка персонажа",
+                "desc": "Нажмите на имя персонажа, чтобы развернуть или свернуть сведения. У каждого персонажа есть независимые настройки, включая основную информацию и расширенную конфигурацию."
             },
             "step9": {
-                "title": "📝 Character Name",
-                "desc": "This is the character's name and unique identifier. Can be changed later via \"Rename\" button."
+                "title": "📝 Имя персонажа",
+                "desc": "Это имя и уникальный идентификатор персонажа. Его можно изменить позже с помощью кнопки «Переименовать»."
             },
             "step10": {
-                "title": "✨ Custom Attributes",
-                "desc": "Character personality settings like personality, background, hobbies, catchphrases, etc. Customize freely for unique personality."
+                "title": "✨ Пользовательские атрибуты",
+                "desc": "Настройки характера персонажа: личность, предыстория, увлечения, коронные фразы и т. д. Настройте их по своему вкусу, чтобы создать уникальный характер."
             },
             "step11": {
-                "title": "🔄 Switch Character",
-                "desc": "Click to set this character as active. After switching, home and chat will use this character's appearance and personality."
+                "title": "🔄 Переключить персонажа",
+                "desc": "Нажмите, чтобы сделать этого персонажа активным. После переключения на главной странице и в чате будут использоваться его внешность и характер."
             },
             "step12": {
-                "title": "⚙️ Advanced Settings",
-                "desc": "Click to expand advanced settings. Configure Live2D model, voice ID, and add custom personality attributes."
+                "title": "⚙️ Расширенные настройки",
+                "desc": "Нажмите, чтобы развернуть расширенные настройки. Настройте модель Live2D, идентификатор голоса и добавьте пользовательские черты характера."
             },
             "step13": {
-                "title": "🎨 Model Settings",
-                "desc": "Click to select or change the character's Live2D appearance or VRM model. Different models provide different visual experiences."
+                "title": "🎨 Настройки модели",
+                "desc": "Нажмите, чтобы выбрать или изменить внешность Live2D или модель VRM персонажа. Разные модели обеспечивают разные визуальные впечатления."
             },
             "step14": {
-                "title": "🎤 Voice Settings",
-                "desc": "Select your Neko's voice. Different voice_ids correspond to different voice characteristics for unique sound."
+                "title": "🎤 Настройки голоса",
+                "desc": "Выберите голос вашей Neko. Разные voice_id соответствуют разным характеристикам голоса и создают уникальное звучание."
             }
         },
         "settings": {
             "step1": {
-                "title": "🎯 Beginner Recommended",
-                "desc": "If you don't have an API Key, select \"Free Version\" to start without registration!"
+                "title": "🎯 Рекомендуется новичкам",
+                "desc": "Если у вас нет API-ключа, выберите «Бесплатная версия», чтобы начать без регистрации!"
             },
             "step2": {
-                "title": "🔑 Core API Provider",
-                "desc": "Most important setting. Core API handles conversation."
+                "title": "🔑 Основной поставщик API",
+                "desc": "Самая важная настройка. Основной API отвечает за диалог."
             },
             "step3": {
-                "title": "📝 Core API Key",
-                "desc": "Paste your chosen API provider's API Key here. Can be left empty if using Free version."
+                "title": "📝 Ключ основного API",
+                "desc": "Вставьте сюда API-ключ выбранного поставщика API. При использовании бесплатной версии поле можно оставить пустым."
             },
             "step4": {
-                "title": "⚙️ Advanced Options",
-                "desc": "Click to expand advanced options including auxiliary API and custom API configuration."
+                "title": "⚙️ Дополнительные параметры",
+                "desc": "Нажмите, чтобы развернуть дополнительные параметры, включая вспомогательный API и настройку пользовательского API."
             },
             "step5": {
-                "title": "🔧 Auxiliary API Provider",
+                "title": "🔧 Вспомогательный поставщик API",
                 "desc": "Вспомогательный API отвечает за управление памятью, текстовый чат и режим Агента.\n\n• Бесплатно: Полностью бесплатно, API Key не требуется\n• Alibaba: Рекомендуется, наиболее полный функционал\n• Zhipu: Поддерживает режим Агента\n• OpenAI: Мощное управление памятью\n\nПримечание: пользовательский голос (клонирование голоса) достаточно включить, сохранив ключ соответствующего оператора в справочнике API — переключать основной или вспомогательный API не нужно."
             },
             "step6": {
-                "title": "🔑 Auxiliary API Key",
+                "title": "🔑 Ключ вспомогательного API",
                 "desc": "Введите API-ключ выбранного поставщика вспомогательного API. Если поле пустое, обычно используется ключ основного API; поставщикам, которым нужен отдельный ключ, такая замена недоступна."
             },
             "step7": {
-                "title": "🔧 Custom API Configuration",
-                "desc": "Click to expand custom API options. Configure your own API server or other compatible services."
+                "title": "🔧 Настройка пользовательского API",
+                "desc": "Нажмите, чтобы развернуть параметры пользовательского API. Настройте собственный API-сервер или другие совместимые сервисы."
             },
             "step8": {
-                "title": "✅ Enable Custom API",
-                "desc": "Check to enable custom API configuration. Then configure independent APIs for different modules like summarization, correction, emotion analysis, etc."
+                "title": "✅ Включить пользовательский API",
+                "desc": "Установите флажок, чтобы включить пользовательскую конфигурацию API. Затем настройте независимые API для разных модулей: сводки, исправления, анализа эмоций и т. д."
             },
             "step9": {
                 "title": "📝 Модель сводки",
-                "desc": "Summary model generates conversation summaries and manages memory. Configure independent API service for summary tasks."
+                "desc": "Модель сводки создаёт краткие содержания диалогов и управляет памятью. Настройте отдельный API-сервис для задач суммаризации."
             }
         },
         "voice_clone": {
             "step1": {
-                "title": "⚠️ Important Notice",
+                "title": "⚠️ Важная информация",
                 "desc": "Клонирование голоса требует настроенного API-ключа провайдера. Сохраните необходимый API-ключ в настройках API."
             },
             "step2": {
-                "title": "🌍 Select Reference Audio Language",
-                "desc": "Select the language of your uploaded audio file. Helps system accurately identify and clone voice characteristics."
+                "title": "🌍 Язык референсного аудио",
+                "desc": "Выберите язык загруженного аудиофайла. Это поможет системе точно распознать и клонировать особенности голоса."
             },
             "step3": {
-                "title": "🏷️ Custom Prefix",
-                "desc": "Enter a prefix up to 10 characters (numbers and English letters only). This prefix identifies the cloned voice."
+                "title": "🏷️ Пользовательский префикс",
+                "desc": "Введите префикс длиной до 10 символов (только цифры и английские буквы). Этот префикс идентифицирует клонированный голос."
             },
             "step4": {
-                "title": "✨ Register Voice",
-                "desc": "Click to start cloning your voice. System processes audio and generates unique voice ID."
+                "title": "✨ Регистрация голоса",
+                "desc": "Нажмите, чтобы начать клонирование голоса. Система обработает аудио и создаст уникальный идентификатор голоса."
             },
             "step5": {
-                "title": "📋 Registered Voices List",
-                "desc": "Shows all successfully cloned voices. Select these in character manager to voice your Neko."
+                "title": "📋 Список зарегистрированных голосов",
+                "desc": "Здесь показаны все успешно клонированные голоса. Выберите их в менеджере персонажей, чтобы озвучить вашу Neko."
             }
         },
         "steam_workshop": {
             "step1": {
-                "title": "📦 Subscriptions List",
-                "desc": "Shows all your Steam Workshop subscriptions. Click cards to view details or perform actions."
+                "title": "📦 Список подписок",
+                "desc": "Здесь показаны все ваши подписки в Мастерской Steam. Нажимайте на карточки, чтобы просмотреть подробности или выполнить действия."
             },
             "step2": {
-                "title": "💡 Usage Tips",
-                "desc": "To use Steam Workshop voices, go to Live2D settings page to manually register them."
+                "title": "💡 Советы по использованию",
+                "desc": "Чтобы использовать голоса из Мастерской Steam, перейдите на страницу настроек Live2D и зарегистрируйте их вручную."
             }
         },
         "memory_browser": {
@@ -6359,13 +6359,13 @@
         "mouseStealEscaped": "Получилось вырваться!",
         "mouseStealReleased": "{name} отпустила",
         "mouseStealStatus": "{name} уводит курсор",
-        "voiceOpening": ["Готов? Я не буду поддаваться."],
-        "voiceChaos": ["Лови ещё!"],
-        "voiceScore": ["Легко."],
-        "voiceHit": ["Эй, бей по мячу!"],
-        "voiceMouseSteal": ["Одолжи мне курсор!"],
-        "voiceWin": ["Этот раунд мой."],
-        "voiceLose": ["Ладно, в этот раз ты победил."],
+        "voiceOpening": ["Давай, посмотрим, кто первым войдёт во вкус.", "Готов? Я не буду поддаваться."],
+        "voiceChaos": ["Лови!", "Лови ещё!"],
+        "voiceScore": ["Легко.", "Видел? Попала."],
+        "voiceHit": ["Эй, бей по мячу!", "Эй! Это баскетбол, а не игра «бей кошку»."],
+        "voiceMouseSteal": ["Одолжи мне курсор!", "Поймала. Теперь он мой."],
+        "voiceWin": ["Этот раунд мой.", "Спасибо за игру. Продолжим в следующем раунде."],
+        "voiceLose": ["Ладно, в этот раз ты победил.", "В следующем раунде я буду серьёзнее."],
         "arenaLabel": "Баскетбольная площадка с общим кольцом",
         "playerArcadeLabel": "Сторона игрока на общей площадке",
         "opponentArcadeLabel": "Сторона Нэко на общей площадке",

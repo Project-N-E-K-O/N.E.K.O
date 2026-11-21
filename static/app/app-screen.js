@@ -1088,6 +1088,36 @@
     mod.captureFrameFromStream = captureFrameFromStream;
 
     // ======================== acquireOrReuseCachedStream ========================
+    // A cached capture stream is usable while it is active and has a live video track.
+    function isLiveCaptureStream(stream) {
+        if (!stream || !stream.active || typeof stream.getVideoTracks !== 'function') {
+            return false;
+        }
+        return stream.getVideoTracks().some(function (track) {
+            return track.readyState === 'live';
+        });
+    }
+
+    // Another acquisition (a manual share or another proactive capture) may have
+    // cached a live stream while this one was still waiting for its own. Keep the
+    // stream already in use: stop the redundant new one and hand back the cached
+    // one instead of overwriting it, which would orphan the cached stream's tracks
+    // and cut off the share sending from it.
+    function reuseLiveCachedStreamInsteadOf(newStream) {
+        var cached = S.screenCaptureStream;
+        if (!cached || cached === newStream || !isLiveCaptureStream(cached)) {
+            return null;
+        }
+        try {
+            newStream.getTracks().forEach(function (track) {
+                try { track.stop(); } catch (_) { }
+            });
+        } catch (_) { }
+        S.screenCaptureStreamLastUsed = Date.now();
+        scheduleScreenCaptureIdleCheck();
+        return cached;
+    }
+
     /**
      * 统一的流获取函数：优先缓存流 → Electron sourceId → getDisplayMedia → null
      * @param {Object} opts
@@ -1154,13 +1184,12 @@
         }
 
         // 1. 缓存流有效且 tracks live → 直接返回（~0ms）
+        if (isLiveCaptureStream(S.screenCaptureStream)) {
+            S.screenCaptureStreamLastUsed = Date.now();
+            scheduleScreenCaptureIdleCheck();
+            return S.screenCaptureStream;
+        }
         if (S.screenCaptureStream && S.screenCaptureStream.active) {
-            var tracks = S.screenCaptureStream.getVideoTracks();
-            if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
-                S.screenCaptureStreamLastUsed = Date.now();
-                scheduleScreenCaptureIdleCheck();
-                return S.screenCaptureStream;
-            }
             // tracks 已结束，废弃流
             console.warn('[acquireStream] 缓存流 tracks 已结束，废弃');
             try { S.screenCaptureStream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) { } }); } catch (e) { }
@@ -1249,6 +1278,11 @@
                 ]);
 
                 if (newStream) {
+                    var liveCachedStream = reuseLiveCachedStreamInsteadOf(newStream);
+                    if (liveCachedStream) {
+                        console.warn('[acquireStream] 已有正在使用的缓存流，释放并发取到的 Electron 流');
+                        return liveCachedStream;
+                    }
                     S.screenCaptureStream = newStream;
                     S.screenCaptureStreamLastUsed = Date.now();
                     S.screenCaptureAutoPromptFailed = false;
@@ -1302,6 +1336,12 @@
                         try { track.stop(); } catch (_) { }
                     });
                     return null;
+                }
+
+                var liveCachedDisplayStream = reuseLiveCachedStreamInsteadOf(displayStream);
+                if (liveCachedDisplayStream) {
+                    console.warn('[acquireStream] 已有正在使用的缓存流，释放并发取到的 picker 流');
+                    return liveCachedDisplayStream;
                 }
 
                 S.screenCaptureStream = displayStream;
@@ -1687,6 +1727,23 @@
                 return;
             }
             S.videoSenderInterval = senderInterval;
+        }, function (playError) {
+            // Without playback no sender is installed and no frame is ever sent.
+            // Stop the share fully so the UI does not stay on "sharing" and the
+            // backend gets screen_share_stopped, like the native capture failures.
+            if (!isCurrentStream()) return;
+            console.warn('[屏幕分享] 视频播放失败，停止屏幕分享:', playError);
+            stopScreenSharing(true).catch(function (stopError) {
+                console.warn('[屏幕分享] 视频播放失败后停止屏幕分享出错:', stopError);
+            }).then(function () {
+                window.showStatusToast(
+                    safeT(
+                        'app.screenSource.captureFailed',
+                        '屏幕捕获已停止，请检查系统权限或重新选择来源'
+                    ),
+                    5000
+                );
+            });
         }); // 每1000ms一帧
     }
     mod.startScreenVideoStreaming = startScreenVideoStreaming;
@@ -2700,6 +2757,17 @@
 
             if (discardCancelledScreenSharingStart(attempt)) return;
             if (captureStream !== attempt.initialStream) {
+                // A proactive capture may have cached its own stream while this
+                // start was acquiring. The user's explicit pick replaces it; stop
+                // the replaced stream so its tracks do not leak.
+                var replacedStream = S.screenCaptureStream;
+                if (captureStream && replacedStream && replacedStream !== captureStream) {
+                    try {
+                        replacedStream.getTracks().forEach(function (track) {
+                            try { track.stop(); } catch (_) { }
+                        });
+                    } catch (_) { }
+                }
                 S.screenCaptureStream = captureStream;
             }
 

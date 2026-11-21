@@ -219,7 +219,7 @@ cd ../../..
 uv run neko-plugin publish hello_world
 ```
 
-The Market makes the newly published stable version the latest version. It chooses `latest` by the time a version was published to the Market, not by comparing version numbers. Do not publish an older version after publishing a newer one.
+Anonymous publication requires a PEP 440 version higher than the current stable version. If the current version has a legacy label, open the Market link printed by the CLI and submit the Release once as its author. A superseded receipt exits with an error because this submission has been replaced. A platform_attention receipt also exits with an error and requires Market operator attention.
 
 ## 8. Publish a beta or add release notes
 

@@ -180,7 +180,7 @@ def test_cat_mind_return_lifecycle_uses_committed_and_completed_boundaries():
 
     viewport_guard = handler.index("if (!preReturnViewportReady.ready) {")
     commit = handler.index("I.publishCatLocalActive(false")
-    show_model = handler.index("modelDisplayReady = await I.showCurrentModel()")
+    show_model = handler.index("modelDisplayReady = await I.showCurrentModel(")
     show_model_guard = handler.index("if (modelDisplayReady === false) {")
     composer_restore = handler.index(
         "postGoodbyeChatComposerHiddenState(false, 'return-complete')"

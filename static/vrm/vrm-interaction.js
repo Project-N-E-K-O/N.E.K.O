@@ -1612,7 +1612,8 @@ class VRMInteraction {
     /**
      * 执行模型回弹动画
      */
-    _animateModelToPosition(startPosition, targetPosition) {
+    _animateModelToPosition(startPosition, targetPosition, { isCurrentSettlement = () => true } = {}) {
+        if (!isCurrentSettlement()) return Promise.resolve(false);
         if (!this.manager.currentModel?.scene) {
             return Promise.resolve(false);
         }
@@ -1640,13 +1641,26 @@ class VRMInteraction {
         this._isSnappingModel = true;
 
         return new Promise((resolve) => {
-            this._snapResolve = resolve;
-            const animate = (currentTime) => {
-                if (this.manager.currentModel?.scene !== scene || interactionToken !== this.movementToken) {
+            const animationToken = { isCurrentSettlement };
+            this._activeSnapAnimation = animationToken;
+            const finish = (result) => {
+                if (this._activeSnapAnimation === animationToken) {
+                    this._activeSnapAnimation = null;
                     this._isSnappingModel = false;
                     this._snapCancelFrame = null;
                     this._snapResolve = null;
-                    resolve(false);
+                }
+                resolve(result);
+            };
+            animationToken.cancel = () => {
+                if (this._activeSnapAnimation === animationToken) this._snapCancelFrame?.();
+                finish(false);
+            };
+            this._snapResolve = finish;
+            const animate = (currentTime) => {
+                if (this._activeSnapAnimation !== animationToken || !isCurrentSettlement() ||
+                    this.manager.currentModel?.scene !== scene || interactionToken !== this.movementToken) {
+                    finish(false);
                     return;
                 }
                 const elapsed = currentTime - startTime;
@@ -1663,10 +1677,7 @@ class VRMInteraction {
                     this._snapCancelFrame = this._scheduleSnapFrame(animate);
                 } else {
                     scene.position.copy(targetPosition);
-                    this._isSnappingModel = false;
-                    this._snapCancelFrame = null;
-                    this._snapResolve = null;
-                    resolve(true);
+                    finish(true);
                 }
             };
 
@@ -1677,7 +1688,10 @@ class VRMInteraction {
     /**
      * 出界回弹：保持原有边界检查逻辑不变，仅在需要时执行回弹动画
      */
-    async _snapModelIntoScreen({ animate = true } = {}) {
+    async _snapModelIntoScreen({ animate = true, isCurrentSettlement = () => true } = {}) {
+        if (!isCurrentSettlement()) return false;
+        const previousSnap = this._activeSnapAnimation;
+        if (previousSnap?.isCurrentSettlement?.() === false) previousSnap.cancel();
         if (this._isSnappingModel) return false;
         if (!this.manager.currentModel?.scene || !this.manager.camera || !this.manager.renderer) return false;
         if (!THREE) return false;
@@ -1703,7 +1717,7 @@ class VRMInteraction {
             return true;
         }
 
-        return await this._animateModelToPosition(startPosition, targetPosition);
+        return await this._animateModelToPosition(startPosition, targetPosition, { isCurrentSettlement });
     }
 
     /**

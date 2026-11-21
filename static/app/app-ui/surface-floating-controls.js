@@ -19,6 +19,14 @@
     const PROGRAMMATIC_GOODBYE_RETURN_TIMEOUT_MS = 15000;
     let programmaticGoodbyeReturnPromise = null;
 
+    I.cancelGoodbyeReturn = function cancelGoodbyeReturn(reason = 'goodbye') {
+        const operation = I.nekoCatReturnOperation;
+        I.nekoCatReturnOperation = null;
+        I.nekoCatReturnInProgress = false;
+        I.cancelModelReturnEnter?.(reason);
+        operation?.cancel(reason);
+    };
+
     function getVisibleGoodbyeReturnContainer() {
         if (typeof I.getVisibleIdleReturnBallContainer === 'function') {
             const container = I.getVisibleIdleReturnBallContainer();
@@ -37,6 +45,7 @@
             (window.live2dManager && window.live2dManager._goodbyeClicked)
             || (window.vrmManager && window.vrmManager._goodbyeClicked)
             || (window.mmdManager && window.mmdManager._goodbyeClicked)
+            || (window.pngtuberManager && window.pngtuberManager._goodbyeClicked)
         );
     }
 
@@ -1500,6 +1509,9 @@
                 console.log('[App] 模型/猫切换进行中，忽略本次请她离开点击');
                 return;
             }
+            // A new departure owns the UI immediately. Old awaits/animations
+            // must neither move its hidden model nor retain the return lock.
+            I.cancelGoodbyeReturn('new-goodbye');
             // 第零步：在任何状态变更之前立即捕获模型位置。
             // return-ball 会以这个位置为锚点，再限制到屏幕内。
             const requestedRestoreRect = event && event.detail && event.detail.restoreSavedGoodbyeRect;
@@ -2110,17 +2122,28 @@
                 return;
             }
             I.nekoCatReturnInProgress = true;
-            const publishReturnAbort = () => {
+            const returnOperation = {};
+            I.nekoCatReturnOperation = returnOperation;
+            const isCurrentReturn = () => I.nekoCatReturnOperation === returnOperation;
+            let returnTerminalPublished = false;
+            let returnAbortPublished = false;
+            const publishReturnAbort = (reason = 'return-incomplete') => {
+                if (returnTerminalPublished || returnAbortPublished) return;
+                returnAbortPublished = true;
                 window.dispatchEvent(new CustomEvent('neko:cat-return-abort', {
                     detail: {
                         source: event && event.type ? event.type : 'return-click',
-                        reason: 'return-incomplete',
+                        reason,
                         timestamp: Date.now()
                     }
                 }));
             };
+            returnOperation.cancel = publishReturnAbort;
             const abortReturnBeforeTerminalGuard = () => {
-                I.nekoCatReturnInProgress = false;
+                if (isCurrentReturn()) {
+                    I.nekoCatReturnOperation = null;
+                    I.nekoCatReturnInProgress = false;
+                }
                 publishReturnAbort();
             };
             let live2DPeekRestoreAnchor = null;
@@ -2138,7 +2161,8 @@
                 window._goodbyeHideTimerId = null;
                 console.log('[App] handleReturnClick: 已取消 goodbye 延迟隐藏定时器');
             }
-            const preReturnViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel();
+            const preReturnViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel({ isCurrent: isCurrentReturn });
+            if (!isCurrentReturn()) return;
             if (!preReturnViewportReady.ready) {
                 let retryViewportReady = preReturnViewportReady;
                 if (returnDetail.retryViewportRestore === true) {
@@ -2146,7 +2170,9 @@
                     // 托盘触发时额外给有限次数重试，避免 resize 通知略晚于首轮等待。
                     for (let attempt = 0; attempt < 2 && !retryViewportReady.ready; attempt += 1) {
                         await new Promise((resolve) => window.setTimeout(resolve, 50));
-                        retryViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel();
+                        if (!isCurrentReturn()) return;
+                        retryViewportReady = await I.ensureModelViewportReadyBeforeShowCurrentModel({ isCurrent: isCurrentReturn });
+                        if (!isCurrentReturn()) return;
                     }
                 }
                 if (retryViewportReady.ready) {
@@ -2193,8 +2219,8 @@
                 abortReturnBeforeTerminalGuard();
                 throw error;
             }
-            let returnTerminalPublished = false;
             try {
+            if (!isCurrentReturn()) return;
             const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
             if (I.multiWindowReturnBallDragState) {
                 I.multiWindowReturnBallDragState.dragSessionToken += 1;
@@ -2290,16 +2316,19 @@
             // 使用 showCurrentModel() 做最终裁决
             let modelDisplayReady = true;
             try {
-                modelDisplayReady = await I.showCurrentModel();
+                modelDisplayReady = await I.showCurrentModel({ isCurrent: isCurrentReturn });
             } catch (error) {
+                if (!isCurrentReturn()) return;
                 console.error('[App] showCurrentModel 失败:', error);
                 I.showLive2d();
             }
+            if (!isCurrentReturn()) return;
             if (modelDisplayReady === false) {
                 return;
             }
 
-            await I.settleReturnedModelBounds(returnModelWasMoved);
+            await I.settleReturnedModelBounds(returnModelWasMoved, { isCurrentSettlement: isCurrentReturn });
+            if (!isCurrentReturn()) return;
 
             // 恢复 VRM canvas 的可见性
             const vrmCanvas = document.getElementById('vrm-canvas');
@@ -2658,6 +2687,8 @@
 
             // 延迟重置模式切换标志
             setTimeout(() => {
+                if (I.nekoCatReturnOperation && !isCurrentReturn()) return;
+                if (isGoodbyeRuntimeActive()) return;
                 I.S.isSwitchingMode = false;
             }, 500);
 
@@ -2676,25 +2707,22 @@
                     window.nekoLive2DPeek.restoreAnchor(live2DPeekRestoreAnchor).catch(() => {});
                 } catch (_) {}
             }
+            returnTerminalPublished = true;
             window.dispatchEvent(new CustomEvent('neko:cat-return-complete', {
                 detail: {
                     source: event && event.type ? event.type : 'return-click',
                     timestamp: Date.now()
                 }
             }));
-            returnTerminalPublished = true;
 
             console.log('[App] 请她回来完成，未自动开始会话，等待用户主动发起对话');
             } finally {
-                I.nekoCatReturnInProgress = false;
+                if (isCurrentReturn()) {
+                    I.nekoCatReturnOperation = null;
+                    I.nekoCatReturnInProgress = false;
+                }
                 if (!returnTerminalPublished) {
-                    window.dispatchEvent(new CustomEvent('neko:cat-return-abort', {
-                        detail: {
-                            source: event && event.type ? event.type : 'return-click',
-                            reason: 'return-incomplete',
-                            timestamp: Date.now()
-                        }
-                    }));
+                    publishReturnAbort();
                 }
             }
         };

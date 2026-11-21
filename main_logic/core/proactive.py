@@ -51,6 +51,7 @@ from main_logic.proactive_delivery import (
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language_full
 from utils.desktop_capture import capture_desktop_screenshot
+from utils.loopback import is_direct_loopback_peer
 import main_logic.core as _core_facade
 from uuid import uuid4
 from ._shared import (
@@ -319,10 +320,15 @@ class ProactiveMixin:
         if not scoped:
             request_id = uuid4().hex
             self._proactive_screenshot_request_id = request_id
+        # A revocation while capturing ends this request for good, even if consent
+        # is granted again before the image would be returned (same rule as the
+        # round-level consent checker).
+        vision_epoch = getattr(self, "_proactive_vision_revocation_epoch", 0)
 
         def still_owned() -> bool:
             return (
                 getattr(self, "_proactive_screenshot_request_id", None) == request_id
+                and getattr(self, "_proactive_vision_revocation_epoch", 0) == vision_epoch
                 and (not scoped or getattr(getattr(self, "state", None), "proactive_round_id", request_id) == request_id)
             )
 
@@ -402,7 +408,16 @@ class ProactiveMixin:
         try:
             ws = self.websocket
             if ws and hasattr(ws, 'client') and ws.client:
-                is_local = ws.client.host in ('127.0.0.1', '::1', 'localhost')
+                # Same entry point as the screenshot route; imported lazily like
+                # manager.py does, since main_logic.activity's package init is heavy.
+                from main_logic.activity.system_signals import is_remote_backend_deployment
+                # Same policy as the backend screenshot route: a direct loopback
+                # peer (dual-stack ::ffff:127.0.0.1 included), no proxy-forwarded
+                # connection in proxy mode, and never in remote deployments.
+                is_local = (
+                    is_direct_loopback_peer(ws.client.host, getattr(ws, 'headers', None) or {})
+                    and not is_remote_backend_deployment()
+                )
         except Exception:
             # Introspection failure just means "not local" — keep the False default.
             pass

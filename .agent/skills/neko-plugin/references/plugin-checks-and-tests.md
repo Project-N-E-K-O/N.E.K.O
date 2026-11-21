@@ -32,6 +32,12 @@ Source: [validate_cmd.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/p
 - Optional support files (`README.md`, `tests/test_smoke.py`, `.vscode/*`,
   `.github/workflows/verify.yml`, `.gitignore`); errors with `--strict`.
 
+- Advisory only (plain `check`, not `check -r`, `precheck`, or Market CI;
+  `vendor/` and `tests/` skipped): `print`, `eval`/`exec`, `pickle` loads,
+  `shell=True`, `verify=False`, host-internal imports, and `time.sleep`,
+  `requests`, or `subprocess` calls directly in an `async def`. They match
+  names only and never change the exit code, but should still be fixed.
+
 `check -r` adds the strict mode, the plugin's tests, the package build, and
 hash verification; Market-specific rules are in `dependencies-and-market.md`.
 

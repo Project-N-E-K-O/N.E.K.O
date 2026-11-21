@@ -1281,3 +1281,255 @@ def test_superseded_mic_start_does_not_tear_down_the_winner_harness():
         f"stderr:\n{result.stderr}"
     )
     assert "HARNESS_OK" in result.stdout
+
+
+_START_ATTRIBUTION_CASES = r"""
+function receipt() {
+  return { accepted: true, voiceStartEpoch: 1, captureToken: null, committed: false, outcome: 'pending' };
+}
+
+async function attributedCommitCase() {
+  // A game-issued start parked in getUserMedia while its route ends, then
+  // released: nothing on the route-exit path cancels it, and the capture
+  // commits. The receipt must record that THIS attempt committed and that its
+  // capture is the live one -- the fact the bridge's route_superseded reply
+  // used to deny.
+  const env = loadModule();
+  const r = receipt();
+  const release = env.parkGetUserMedia();
+  env.mod.offerVoiceStartReceipt(r);
+  const attempt = env.mod.startMicCapture();
+  assert(env.mod.takeVoiceStartReceipt() === null,
+         'startMicCapture must consume an offered receipt synchronously on entry');
+  assert(typeof r.captureToken === 'number' && r.captureToken > 0,
+         'the receipt must be bound to the attempt it describes before the first await');
+  await settle();
+  assert(r.committed === false, 'nothing has committed while getUserMedia is parked');
+  release();
+  assert((await attempt) === true, 'the attributed attempt should commit');
+  assert(r.committed === true, 'the commit fact must be recorded on the attempt receipt');
+  assert(env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === true,
+         "the attributed attempt's capture is the live one");
+  assert(env.mod.hostMicrophoneCaptureLive() === true, 'the host capture is live');
+
+  // A device switch drops the graph but keeps S.isRecording set until the
+  // replacement commits; the host snapshot must not read that as live.
+  const keptStream = env.S.stream;
+  const keptWorklet = env.S.workletNode;
+  env.S.workletNode = null;
+  env.S.stream = null;
+  assert(env.S.isRecording === true && env.mod.hostMicrophoneCaptureLive() === false,
+         'a recording flag without a live pipeline is not a live host capture');
+  assert(env.mod.hostMicrophoneCaptureReopening() === true,
+         'a released graph under a standing recording intent is a reopen');
+  env.S.voiceInputRouteBlocked = true;
+  assert(env.mod.hostMicrophoneCaptureReopening() === false,
+         'a fail-closed route is not reopening anything');
+  env.S.voiceInputRouteBlocked = false;
+  // The game STT gate released the ordinary pipeline and the browser
+  // recogniser now holds the microphone: live, not reopening.
+  env.S.gameVoiceSttGateActive = true;
+  // start() has returned (listening is set to guard a duplicate start) but
+  // the recogniser has not confirmed onstart: the ordinary pipeline is
+  // already gone and nothing is capturing yet.
+  env.S.gameVoiceSttListening = true;
+  env.S.gameVoiceSttCapturing = false;
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === false
+         && env.mod.hostMicrophoneCaptureReopening() === true,
+         'a recogniser that has not confirmed onstart is not a live capture');
+  env.S.gameVoiceSttCapturing = true;
+  assert(env.mod.hostMicrophoneCaptureLive() === true
+         && env.mod.hostMicrophoneCaptureReopening() === false,
+         'a listening game STT gate is a live host capture, not a reopen');
+  assert(env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === true,
+         "the gate took over this attempt's capture; no newer start published one");
+  // Gate active but its recogniser not (yet / any longer) listening: that is
+  // a restart in progress.
+  env.S.gameVoiceSttListening = false;
+  env.S.gameVoiceSttCapturing = false;
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.hostMicrophoneCaptureReopening() === true,
+         'a game STT gate between recogniser runs is reopening');
+  env.S.gameVoiceSttGateActive = false;
+  env.S.workletNode = keptWorklet;
+  env.S.stream = keptStream;
+  // The device goes away: the graph is still published but its track ended.
+  keptStream.getTracks()[0].readyState = 'ended';
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.hostMicrophoneCaptureReopening() === false,
+         'an ended device is neither live nor reopening');
+  keptStream.getTracks()[0].readyState = 'live';
+
+  // Turning the microphone off keeps the history but not the liveness.
+  env.mod.stopRecording({ notifyServer: false });
+  assert(r.committed === true, 'a later stop must not erase that the attempt committed');
+  assert(env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === false,
+         'a stopped capture is no longer live');
+  assert(env.mod.hostMicrophoneCaptureLive() === false, 'a stopped host capture is not live');
+}
+
+async function attributedTakeoverCase() {
+  // The attributed attempt is parked in getUserMedia while an UNattributed
+  // start (the host's own route-exit resume) commits first. The loser returns
+  // true to protect the winner, and S.isRecording is true -- neither may be
+  // read as "this command's capture committed".
+  const env = loadModule();
+  const r = receipt();
+  const release = env.parkGetUserMedia();
+  env.mod.offerVoiceStartReceipt(r);
+  const first = env.mod.startMicCapture();
+  await settle();
+  env.unparkGetUserMedia();
+  const second = env.mod.startMicCapture();
+  await settle();
+  assert((await second) === true && env.S.isRecording === true, 'the unattributed start should win');
+  release();
+  assert((await first) === true, 'the superseded loser reports the live winner (existing behaviour)');
+  assert(r.committed === false,
+         'a superseded attempt must not be recorded as committed because someone else is recording');
+  assert(env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === false,
+         "the live capture is not the attributed attempt's");
+  assert(env.mod.micStartTokenOwnsLiveCapture(r.captureToken + 1) === true,
+         "the winner's own token owns the live capture");
+}
+
+async function attributedFailureCases() {
+  // A worklet failure BEFORE the publish: no commit.
+  let env = loadModule();
+  let r = receipt();
+  env.failAddModule(new Error('boom'));
+  env.mod.offerVoiceStartReceipt(r);
+  let threw = false;
+  try { await env.mod.startMicCapture(); } catch (_) { threw = true; }
+  assert(threw && r.committed === false, 'a pre-commit worklet failure must not record a commit');
+
+  // A throw AFTER the publish: the capture did commit, whatever the caller
+  // does with the error next.
+  env = loadModule();
+  r = receipt();
+  env.failAfterCommit();
+  env.mod.offerVoiceStartReceipt(r);
+  threw = false;
+  try { await env.mod.startMicCapture(); } catch (_) { threw = true; }
+  assert(threw && r.committed === true, 'a post-commit failure still committed');
+}
+
+async function receiptDoesNotLeakCase() {
+  // An offered receipt is consumed by the next startMicCapture even when it
+  // refuses before minting a generation, so it cannot attach to a later,
+  // unrelated start (the user's own press, or the route-exit resume).
+  const env = loadModule();
+  const r = receipt();
+  env.S.voiceInputRouteBlocked = true;
+  env.mod.offerVoiceStartReceipt(r);
+  assert((await env.mod.startMicCapture()) === false, 'a blocked route refuses the start');
+  env.S.voiceInputRouteBlocked = false;
+  assert((await env.mod.startMicCapture()) === true, 'the next, unattributed start commits');
+  assert(r.captureToken === null && r.committed === false,
+         'a receipt consumed by a refused start must not describe a later one');
+}
+
+async function gameSttGateConfirmsBeforeLiveCase() {
+  // The real gate: start() returning is not a live capture. The ordinary
+  // pipeline is released synchronously, but the recogniser only holds the
+  // microphone once it fires onstart (#3871 review).
+  const env = loadModule();
+  const r = receipt();
+  env.mod.offerVoiceStartReceipt(r);
+  assert((await env.mod.startMicCapture()) === true, 'the attributed start should commit');
+  const recognisers = [];
+  env.win.SpeechRecognition = class {
+    constructor() { recognisers.push(this); }
+    start() {}
+    stop() { if (this.onend) this.onend(); }
+    abort() {}
+  };
+  env.S.gameVoiceSttGateActive = true;
+  assert(env.mod.startGameVoiceSttGate() === true, 'the gate should start');
+  assert(env.S.stream === null, 'the gate releases the ordinary pipeline');
+  assert(env.S.gameVoiceSttListening === true, 'start() returned: the duplicate-start guard is set');
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === false
+         && env.mod.hostMicrophoneCaptureReopening() === true,
+         'before onstart the host is reopening, not capturing');
+  recognisers[0].onstart();
+  assert(env.mod.hostMicrophoneCaptureLive() === true
+         && env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === true
+         && env.mod.hostMicrophoneCaptureReopening() === false,
+         "after onstart the recogniser holds this attempt's microphone");
+  // Audio capture ends before the service does: no longer live, while the
+  // duplicate-start guard stays set until onend.
+  recognisers[0].onaudioend();
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.micStartTokenOwnsLiveCapture(r.captureToken) === false
+         && env.S.gameVoiceSttListening === true,
+         'after audioend the recogniser no longer holds the microphone');
+  // The recogniser ends (the gate schedules a restart): no longer live.
+  recognisers[0].onend();
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.hostMicrophoneCaptureReopening() === true,
+         'a recogniser between runs is reopening, not live');
+  // onend without a preceding onstart (start rejected asynchronously) must
+  // not leave a confirmed flag behind either.
+  env.mod.startGameVoiceSttGate();
+  recognisers[recognisers.length - 1].onend();
+  assert(env.S.gameVoiceSttCapturing === false, 'an unconfirmed recogniser that ended left capture confirmed');
+  // Stopping a confirmed gate: stop() detaches the recogniser first, so its
+  // onend is ignored as stale -- the gate itself must clear the flag.
+  env.mod.startGameVoiceSttGate();
+  recognisers[recognisers.length - 1].onstart();
+  assert(env.S.gameVoiceSttCapturing === true, 'the restarted recogniser confirmed');
+  recognisers[0].onaudioend();
+  assert(env.S.gameVoiceSttCapturing === true,
+         "a superseded recogniser's audioend must not clear the current one's capture");
+  // Muting pauses capture on purpose: neither live nor reopening.
+  env.S.isMicMuted = true;
+  assert(env.mod.hostMicrophoneCaptureLive() === false
+         && env.mod.hostMicrophoneCaptureReopening() === false,
+         'a muted STT gate is not reopening its capture');
+  // Outside the gate, a muted device switch (stream dropped) still reopens.
+  const gateWasActive = env.S.gameVoiceSttGateActive;
+  const streamBefore = env.S.stream;
+  env.S.gameVoiceSttGateActive = false;
+  env.S.stream = null;
+  assert(env.S.isRecording === true && env.mod.hostMicrophoneCaptureReopening() === true,
+         'a muted ordinary device switch is still reported as reopening');
+  env.S.gameVoiceSttGateActive = gateWasActive;
+  env.S.stream = streamBefore;
+  env.S.isMicMuted = false;
+  env.mod.stopGameVoiceSttGate({ restoreOrdinaryMic: false });
+  assert(env.S.gameVoiceSttCapturing === false, 'stopping the gate must clear the confirmed flag');
+}
+
+(async () => {
+  await attributedCommitCase();
+  await gameSttGateConfirmsBeforeLiveCase();
+  await attributedTakeoverCase();
+  await attributedFailureCases();
+  await receiptDoesNotLeakCase();
+  console.log('HARNESS_OK');
+})().catch((error) => {
+  console.log('HARNESS_FAILED: ' + (error && error.message ? error.message : error));
+  process.exitCode = 1;
+});
+"""
+
+
+@pytest.mark.unit
+def test_game_issued_start_records_its_own_commit_harness():
+    # #3003: a start a mini-game issued can commit after its route ended. The
+    # bridge's report depends on a per-attempt commit fact recorded at the real
+    # publish point -- not on startMicCapture's return value or S.isRecording,
+    # both of which read true for a superseded attempt.
+    prelude = textwrap.dedent(_HARNESS).split("(async () => {", 1)[0]
+    harness = (prelude + textwrap.dedent(_START_ATTRIBUTION_CASES)).replace(
+        "__APP_AUDIO_CAPTURE_PATH__", json.dumps(str(APP_AUDIO_CAPTURE_PATH))
+    )
+    result = _run_mic_capture_harness(harness)
+    assert result.returncode == 0, (
+        "start-attribution harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout

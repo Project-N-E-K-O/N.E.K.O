@@ -230,6 +230,87 @@
     // so async ownership checks cannot lose intermediate changes.
     let microphoneSelectionGeneration = 0;
 
+    // Start attribution for host-mediated (mini-game) microphone starts.
+    //
+    // A receipt is a plain object owned by its requester; this module only
+    // writes facts onto it. It travels by a one-shot hand-off slot that is
+    // always consumed synchronously by the very next consumer (the mic-button
+    // handler, then startMicCapture), so it cannot leak onto an unrelated
+    // start. While an attempt is in flight its receipt is indexed by that
+    // attempt's own immutable token -- never by "the latest start" -- and the
+    // entry is dropped in the attempt's finally, so the table is bounded by
+    // the attempts in flight. The commit fact is recorded at the single
+    // publish point inside startAudioWorklet, which is the only place a
+    // capture ever becomes live: neither startMicCapture's return value (a
+    // superseded attempt returns true to protect the live winner) nor the
+    // global S.isRecording can prove that THIS attempt committed.
+    let voiceStartReceiptHandoff = null;
+    const micStartReceipts = new Map();
+    let publishedMicStartToken = 0;
+
+    function offerVoiceStartReceipt(receipt) {
+        voiceStartReceiptHandoff = receipt && typeof receipt === 'object' ? receipt : null;
+    }
+
+    function takeVoiceStartReceipt() {
+        const receipt = voiceStartReceiptHandoff;
+        voiceStartReceiptHandoff = null;
+        return receipt;
+    }
+
+    // Whether a capture pipeline is actually live right now, whoever owns it.
+    // S.isRecording alone is not enough: a device switch tears the old graph
+    // down and keeps the flag set until the replacement commits.
+    // The game STT gate is the one sanctioned "recording without the ordinary
+    // pipeline" state: startGameVoiceSttGate() releases the pipeline (S.stream
+    // goes null) and the browser recogniser holds the microphone instead. That
+    // is a live host capture, not a reopen -- but only once the recogniser has
+    // CONFIRMED it started (onstart -> S.gameVoiceSttCapturing).
+    // S.gameVoiceSttListening is set as soon as start() returns, to guard
+    // against a duplicate start, while the ordinary pipeline is already gone;
+    // that window is a reopen.
+    function gameVoiceSttHoldsMicrophone() {
+        return (
+            S.isRecording === true
+            && S.gameVoiceSttGateActive === true
+            && S.gameVoiceSttCapturing === true
+            && S.isMicMuted !== true
+        );
+    }
+
+    function hostMicrophoneCaptureLive() {
+        return hasLiveCommittedMicrophonePipeline() || gameVoiceSttHoldsMicrophone();
+    }
+
+    // A host capture that is being reopened: the recording intent stands but
+    // the old graph has been released and the replacement has not committed
+    // (a device switch drops S.stream first). Not a reopen: a fail-closed
+    // route, or a live graph whose device went away (its track ended, S.stream
+    // still set) -- nothing is going to bring either back on its own.
+    function hostMicrophoneCaptureReopening() {
+        return (
+            S.isRecording === true
+            && S.voiceInputRouteBlocked !== true
+            // A muted STT gate is a deliberate pause, not a reopen: the gate
+            // stops its recogniser on mute and released the ordinary
+            // pipeline. A muted ordinary device switch still reopens.
+            && !(S.isMicMuted === true && S.gameVoiceSttGateActive === true)
+            && !S.stream
+            && !hostMicrophoneCaptureLive()
+        );
+    }
+
+    function micStartTokenOwnsLiveCapture(token) {
+        return (
+            typeof token === 'number'
+            && token > 0
+            && token === publishedMicStartToken
+            // Still this attempt's capture when the game STT gate took the
+            // microphone over from its pipeline: no newer publish happened.
+            && hostMicrophoneCaptureLive()
+        );
+    }
+
     function invalidatePendingMicStart() {
         micStartGeneration += 1;
     }
@@ -930,6 +1011,7 @@
         recognition.onstart = function () {
             if (S.gameVoiceSttRecognition !== recognition) return;
             S.gameVoiceSttListening = true;
+            S.gameVoiceSttCapturing = true;
             S.gameVoiceSttStopping = false;
             publishGameVoiceBrowserTranscriptionState(true, 'browser_ready');
             console.log('[GameVoiceSTT][Diag] recognition start');
@@ -951,6 +1033,11 @@
         };
         recognition.onaudioend = function () {
             console.log('[GameVoiceSTT][Diag] audio end');
+            // Audio capture is over even though the service has not ended yet
+            // (onend follows). Only the report flag: the duplicate-start
+            // guard (gameVoiceSttListening) stays until onend.
+            if (S.gameVoiceSttRecognition !== recognition) return;
+            S.gameVoiceSttCapturing = false;
         };
         recognition.onnomatch = function (event) {
             console.warn('[GameVoiceSTT][Diag] no match:', event);
@@ -1001,6 +1088,7 @@
         recognition.onend = function () {
             if (S.gameVoiceSttRecognition !== recognition) return;
             S.gameVoiceSttListening = false;
+            S.gameVoiceSttCapturing = false;
             if (S.gameVoiceSttRestartTimer) {
                 clearTimeout(S.gameVoiceSttRestartTimer);
                 S.gameVoiceSttRestartTimer = null;
@@ -1011,6 +1099,8 @@
             S.gameVoiceSttStopping = false;
         };
         S.gameVoiceSttRecognition = recognition;
+        // A new recogniser has not confirmed anything yet.
+        S.gameVoiceSttCapturing = false;
 
         try {
             S.gameVoiceSttStopping = false;
@@ -1028,6 +1118,7 @@
             }
             console.warn('[GameVoiceSTT] recognition start failed:', error);
             S.gameVoiceSttListening = false;
+            S.gameVoiceSttCapturing = false;
             publishGameVoiceBrowserTranscriptionState(false, 'browser_start_failed');
             restoreOrdinaryMicCaptureAfterGameVoiceSttFailure('recognition_start_failed', error);
             return false;
@@ -1057,6 +1148,7 @@
             }
         }
         S.gameVoiceSttListening = false;
+        S.gameVoiceSttCapturing = false;
         S.gameVoiceSttStopping = false;
         if (!keepActive && restoreOrdinaryMic) {
             restoreOrdinaryMicCaptureAfterGameVoiceSttStop('gate stop');
@@ -1955,6 +2047,11 @@
             S.micGainNode = ownGainNode;
             S.inputAnalyser = ownAnalyser;
             S.workletNode = ownWorkletNode;
+            // Same synchronous boundary as the publish above: from here on this
+            // attempt's capture is (or was) live, whatever happens next.
+            publishedMicStartToken = startToken;
+            const attributedStartReceipt = micStartReceipts.get(startToken);
+            if (attributedStartReceipt) attributedStartReceipt.committed = true;
 
             // 用户主动开麦，意味着要讲话；focus mode 的 isPlaying guard 此刻必须让路。
             // 切档案后自动触发的 greeting 音频播完如果没把 isPlaying 复位（finalize
@@ -2248,6 +2345,11 @@
     }
 
     async function startMicCapture() {
+        // Consumed first, before any early return, so an offered receipt can
+        // never outlive this synchronous call and attach to a later start.
+        const startReceipt = typeof window.takeVoiceStartReceipt === 'function'
+            ? window.takeVoiceStartReceipt()
+            : null;
         if (typeof window.isNekoVisitVoiceBlocked === 'function' && window.isNekoVisitVoiceBlocked()) {
             return false;
         }
@@ -2279,6 +2381,7 @@
         // getUserMedia() half of the window as well.
         micStartGeneration += 1;
         const micStartToken = micStartGeneration;
+        if (startReceipt) startReceipt.captureToken = micStartToken;
         // Bind capture constraints, Worklet output and the wire header before
         // permission/player awaits or selected-device fallback can interleave.
         const captureTargetSampleRate = window.appUtils.isMobile() ? 16000 : 48000;
@@ -2303,6 +2406,9 @@
         // UI reported a failed start while the browser microphone stayed live.
         let ownStream = null;
         try {
+            // Indexed inside the try so its finally always drops the entry,
+            // even if something between here and the first await throws.
+            if (startReceipt) micStartReceipts.set(micStartToken, startReceipt);
             // 开始录音前添加录音状态类到两个按钮
             if (_mic) _mic.classList.add('recording');
 
@@ -2518,6 +2624,7 @@
             stopGameVoiceSttGate({ restoreOrdinaryMic: false });
             throw err;
         } finally {
+            micStartReceipts.delete(micStartToken);
             if (pendingMicStartUiOwnerToken === micStartToken) {
                 pendingMicStartUiOwnerToken = null;
             }
@@ -3209,6 +3316,11 @@
     window.stopMicCapture = stopMicCapture;
     window.abortVoiceStartForBlockedRoute = abortVoiceStartForBlockedRoute;
     window.invalidatePendingMicStart = invalidatePendingMicStart;
+    window.offerVoiceStartReceipt = offerVoiceStartReceipt;
+    window.takeVoiceStartReceipt = takeVoiceStartReceipt;
+    window.micStartTokenOwnsLiveCapture = micStartTokenOwnsLiveCapture;
+    window.hostMicrophoneCaptureLive = hostMicrophoneCaptureLive;
+    window.hostMicrophoneCaptureReopening = hostMicrophoneCaptureReopening;
     window.stopRecording = stopRecording;
     // Only same-origin, same-Session storage events carry device preferences.
     // Electron partitions retain their separately salted device identifiers.
@@ -3345,6 +3457,11 @@
     mod.startMicCapture = startMicCapture;
     mod.stopMicCapture = stopMicCapture;
     mod.invalidatePendingMicStart = invalidatePendingMicStart;
+    mod.offerVoiceStartReceipt = offerVoiceStartReceipt;
+    mod.takeVoiceStartReceipt = takeVoiceStartReceipt;
+    mod.micStartTokenOwnsLiveCapture = micStartTokenOwnsLiveCapture;
+    mod.hostMicrophoneCaptureLive = hostMicrophoneCaptureLive;
+    mod.hostMicrophoneCaptureReopening = hostMicrophoneCaptureReopening;
     mod.stopRecording = stopRecording;
     mod.sampleMicVolumeLevel = sampleMicVolumeLevel;
     mod.startSettingsMicVolumeTest = startSettingsMicVolumeTestFromSettings;

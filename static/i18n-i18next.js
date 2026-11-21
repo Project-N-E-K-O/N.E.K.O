@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 远程配对页新增八种语言的密钥获取说明，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-17-remote-pairing-key-help';
+    // 补齐八语言 airBasketball 台词并同步 zh-CN 文案，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-11-19-eight-locale-gap-fill';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

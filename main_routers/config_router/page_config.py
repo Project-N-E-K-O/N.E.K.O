@@ -152,7 +152,12 @@ def _resolve_vrm_path(vrm_path: str, _config_manager, target_name: str) -> str:
 
 
 def _resolve_mmd_path(mmd_path: str, _config_manager, target_name: str) -> str:
-    """Resolve the MMD model path, verify the file exists, and return a usable URL or an empty string."""
+    """Resolve the MMD model path, verify the file exists, and return a usable URL or an empty string.
+
+    Unlike VRM, the result stays a raw path: the MMD frontend keys preferences
+    and emotion configs by the raw path and escapes it only when requesting the
+    file (MMDCore.toRequestUrl), so encoding here would split that identity.
+    """
     if mmd_path.startswith('http://') or mmd_path.startswith('https://'):
         logger.debug(f"获取页面配置 - 角色: {target_name}, MMD模型HTTP路径: {mmd_path}")
         return mmd_path

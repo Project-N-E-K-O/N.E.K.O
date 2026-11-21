@@ -28,9 +28,9 @@ What the gateway serves:
 * MCP tools of the servers the user configured (through the ``mcp_adapter``
   plugin, see ``capabilities.py``);
 * the built-in tools (keyboard and mouse, browser) while they are available.
-  They come in groups and are never listed up front: their definitions would
-  be sent with every request of every task agent, whether it touches a
-  browser or not. The search tool's description carries one line about each
+  The host lists the groups relevant to a commission up front, with
+  their usage guidance. Other groups remain discoverable and load on demand.
+  The search tool's description carries one line about each
   group on offer, with the group's first call. A group is handed over, how
   it is used and then the definitions of its tools (within
   ``GATEWAY_TOOL_GROUP_MAX_TOKENS``), in one of three ways, and its tools
@@ -108,12 +108,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from nekoclaw.host import call_audit
 from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER, KIND_BUILTIN, Capability, CapabilityRegistry
 from nekoclaw.host.leases import BuiltinLeases
 from nekoclaw.host.ledger import Commission, Ledger
-from nekoclaw.host.permissions import BROWSER_REOPEN, DENIED_BY_SETTINGS, DENIED_BY_USER, PermissionGate
+from nekoclaw.host.permissions import BROWSER_REOPEN, DENIED_BY_SETTINGS, DENIED_BY_USER, GrantScope, PermissionGate
 from nekoclaw.host.plugin_runs import (
     PluginRunner,
+    audited_run_entry,
     describe_result,
     llm_result_fields,
     plugin_terminal_status,
@@ -185,8 +187,10 @@ class _Cleared:
 
     # What the call is answered with instead of being carried out, or None.
     refusal: dict[str, Any] | None = None
+    reason: str | None = None
     # The user's agreement to this call opening a browser they closed, if one was needed.
     agreement: Any = None
+    grant_id: str | None = None
     # Drops it when it has waited for its call long enough.
     expiry: asyncio.TimerHandle | None = None
 
@@ -214,6 +218,10 @@ class Grant:
     # session, in that one's working directory): capabilities are found
     # with it, and none is called or handed over.
     reads_only: bool = False
+    # Requested for this commission, and the exact tools actually declared
+    # to its runtime. A later switch-on still goes through discovery.
+    first_turn_groups: tuple[str, ...] = ()
+    declared_devices: set[str] = field(default_factory=set)
     # The groups of built-in tools that were handed over through this token:
     # how they are used and their tools' definitions. A new token starts
     # without any, as the session it is for may no longer hold them.
@@ -474,6 +482,7 @@ class CapabilityGateway:
         candidate_plugin_ids: Any = (),
         supports_images: bool = False,
         reads_only: bool = False,
+        first_turn_groups: tuple[str, ...] = (),
     ) -> str:
         """Return a new token for a commission, replacing any earlier one.
 
@@ -489,6 +498,7 @@ class CapabilityGateway:
             candidate_plugin_ids=tuple(str(item) for item in candidate_plugin_ids),
             supports_images=bool(supports_images),
             reads_only=bool(reads_only),
+            first_turn_groups=() if reads_only else first_turn_groups,
         )
         self._grants[grant.token] = grant
         self._by_commission[commission_id] = grant
@@ -747,21 +757,22 @@ class CapabilityGateway:
     # -- tools ------------------------------------------------------------
 
     async def tool_definitions(self, grant: Grant) -> list[dict[str, Any]]:
-        """Return the tools a task agent is offered: the search and the call tool, always.
+        """Offer discovery and call to every session, plus devices selected for this commission."""
+        from config.nekoclaw_settings import GATEWAY_COMMISSION_TOOL_META_KEY
+        from config.prompts.prompts_nekoclaw_builtin import BUILTIN_GROUP_GUIDANCE
 
-        The same for every commission, and whether or not anything can be
-        called right now. A session keeps the tools it was opened with for
-        as long as it lasts, and what can be called changes meanwhile (a
-        plugin is installed, the browser is switched on): offered only
-        while there is something to call, the two would be missing from a
-        session opened before that, which could then reach none of it.
-        Nothing else is listed: what was picked for a commission is told
-        with the commission (``candidate_definitions``); the built-in tools
-        are told of in the search tool's description, a group at a time,
-        and a group is handed over when it is first used.
-        """
         callable_now = self._offered(grant, await self._registry.callable_by_task_agents())
-        return [_search_tool_definition(callable_now), _CALL_TOOL_DEFINITION]
+        listed = [_search_tool_definition(callable_now), _CALL_TOOL_DEFINITION]
+        described: set[str] = set()
+        for item in callable_now:
+            if item.kind == KIND_BUILTIN and item.group in grant.first_turn_groups:
+                tool = _definition(item)
+                if item.group not in described:
+                    tool["description"] += "\n\n" + BUILTIN_GROUP_GUIDANCE[item.group]
+                    described.add(item.group)
+                listed.append({**tool, "_meta": {GATEWAY_COMMISSION_TOOL_META_KEY: True}})
+                grant.declared_devices.add(item.tool_name)
+        return listed
 
     async def candidate_definitions(self, commission_id: str) -> list[dict[str, Any]]:
         """Return the entries picked for a commission, as its opening message tells of them.
@@ -854,7 +865,7 @@ class CapabilityGateway:
         if commission is None or not commission.active:
             return _text("this commission is no longer under way", error=True)
         group = capability.group
-        if not group or _in_hand(grant, group, reply):
+        if not group or capability.tool_name in grant.declared_devices or _in_hand(grant, group, reply):
             return await self._call_capability(commission, capability, arguments)
         # A tool of a group the task agent did not have in hand when it
         # wrote this call: how the group is used has not been read, and but
@@ -1026,12 +1037,16 @@ class CapabilityGateway:
         if commission is None or not commission.active:
             return
         group = capability.group
-        if group and group not in grant.loaded_groups and not _is_first_call(capability, arguments):
+        if (
+            group and name not in grant.declared_devices and group not in grant.loaded_groups
+            and not _is_first_call(capability, arguments)
+        ):
             return
         key = _call_key(capability.id, arguments)
         cleared = await self._permit(commission, capability)
         if self._by_commission.get(commission_id) is not grant:
             # The token was taken back while the user was asked: no call will come for it.
+            self._permissions.release_grant(cleared.grant_id)
             if cleared.agreement is not None:
                 self._registry.browser_reopen_agreement_over(cleared.agreement)
             return
@@ -1047,6 +1062,7 @@ class CapabilityGateway:
         cleared = grant.cleared.pop(key, None)
         if cleared is None:
             return
+        self._permissions.release_grant(cleared.grant_id)
         if cleared.expiry is not None:
             # Its time is not to run out on whatever is ruled on for the same call next.
             cleared.expiry.cancel()
@@ -1070,34 +1086,62 @@ class CapabilityGateway:
             commission.id,
             capability.permission,
             key=capability.permission_key,
+            scope=GrantScope(capability.kind, capability.group or capability.id),
+            hold_once=True,
             detail={"tool": capability.tool_name, "capability": capability.id, "title": capability.title},
         )
         if not decision.allow:
             await self._ledger.append_event(
                 commission.id, "capability_denied", {"capability": capability.id, "reason": decision.reason}
             )
-            return _Cleared(refusal=_text(decision.reason or "permission denied", error=True))
+            reason = {DENIED_BY_SETTINGS: "settings", DENIED_BY_USER: "user"}.get(decision.reason, "no_approval")
+            return _Cleared(refusal=_text(decision.reason or "permission denied", error=True), reason=reason)
         if capability.kind == KIND_BUILTIN and capability.group == BUILTIN_GROUP_BROWSER:
-            refusal, agreement = await self._ask_before_reopening(commission, capability, just_asked=decision.asked)
-            return _Cleared(refusal=refusal, agreement=agreement)
-        return _Cleared()
+            try:
+                refusal, agreement = await self._ask_before_reopening(commission, capability, just_asked=decision.asked)
+            except BaseException:
+                self._permissions.release_grant(decision.grant_id)
+                raise
+            return _Cleared(
+                refusal=refusal, agreement=agreement, reason="browser_reopen" if refusal else None,
+                grant_id=decision.grant_id,
+            )
+        return _Cleared(grant_id=decision.grant_id)
 
     async def _call_capability(
-        self,
-        commission: Commission,
-        capability: Capability,
-        arguments: dict[str, Any],
+        self, commission: Commission, capability: Capability, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        kind = "device" if capability.kind == KIND_BUILTIN else "gateway"
+        try:
+            async with call_audit.call(self._ledger, commission.id, kind, capability.id) as record:
+                result = await self._execute(commission, capability, arguments, record)
+                if result.get("isError") and record.status == "completed":
+                    record.status = "failed"
+                return result
+        except (call_audit.AuditFull, call_audit.CommissionEnded) as exc:
+            return _text(str(exc), error=True)
+
+    async def _execute(
+        self, commission: Commission, capability: Capability, arguments: dict[str, Any], record: call_audit.Call
+    ) -> dict[str, Any]:
+        # Ruled on before the call was made (``clear_call``), or now.
+        permitted = self._take_cleared(commission.id, capability.id, arguments)
+        if permitted is None:
+            permitted = await self._permit(commission, capability)
+        record.grant_id = self._permissions.authorization_ref(permitted.grant_id)
+        try:
+            return await self._run_permitted(commission, capability, arguments, record, permitted)
+        finally:
+            self._permissions.release_grant(permitted.grant_id)
+
+    async def _run_permitted(
+        self, commission: Commission, capability: Capability, arguments: dict[str, Any],
+        record: call_audit.Call, permitted: _Cleared,
     ) -> dict[str, Any]:
         from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
-        # Ruled on before the call was made (``clear_call``), or now.
-        permitted = self._take_cleared(commission.id, capability.id, arguments)
-        if (
-            permitted is not None
-            and permitted.refusal is None
-            and await self._permissions.forbidden(capability.permission, capability.permission_key)
-        ):
+        if permitted.refusal is None and not self._permissions.grant_active(permitted.grant_id):
             # Allowed a moment ago, forbidden by the settings since: a deny
             # set meanwhile wins, as it does over an answer. Nobody is asked again.
             if permitted.agreement is not None:
@@ -1105,10 +1149,10 @@ class CapabilityGateway:
             await self._ledger.append_event(
                 commission.id, "capability_denied", {"capability": capability.id, "reason": DENIED_BY_SETTINGS}
             )
+            record.status, record.reason = "denied", "settings"
             return _text(DENIED_BY_SETTINGS, error=True)
-        if permitted is None:
-            permitted = await self._permit(commission, capability)
         if permitted.refusal is not None:
+            record.status, record.reason = "denied", permitted.reason
             return permitted.refusal
 
         if capability.kind == KIND_BUILTIN:
@@ -1118,14 +1162,14 @@ class CapabilityGateway:
                     # browser: the agreement goes with it, and no other
                     # call opens the browser on the strength of it.
                     return await self._call_builtin(
-                        commission, capability, arguments, reopen_agreement=permitted.agreement
+                        commission, capability, arguments, record, permitted.grant_id, reopen_agreement=permitted.agreement
                     )
                 finally:
                     # Should it have ended before it got to the browser
                     # (stopped, or the browser stayed in use by another
                     # task): the agreement ends with it.
                     self._registry.browser_reopen_agreement_over(permitted.agreement)
-            return await self._call_builtin(commission, capability, arguments)
+            return await self._call_builtin(commission, capability, arguments, record, permitted.grant_id)
 
         async def run_created(run_id: str) -> None:
             await self._ledger.append_event(
@@ -1137,7 +1181,8 @@ class CapabilityGateway:
         # The entry's result contract as it stands for this call: the plugin
         # list may no longer show the entry once the run is over.
         _plugin, entry = find_entry(await self._registry.plugins(), str(capability.plugin_id), capability.entry_id)
-        outcome = await self._runner.run_entry(
+        outcome = await audited_run_entry(
+            self._ledger, self._runner,
             commission_id=commission.id,
             plugin_id=capability.plugin_id,
             entry_id=capability.entry_id,
@@ -1146,7 +1191,12 @@ class CapabilityGateway:
             conversation_id=commission.conversation_id,
             latest_user_request=commission.user_text,
             on_run_created=run_created,
+            matches_entry=capability.matches_entry,
+            still_wanted=lambda: self._registry.plugins_enabled() and self._permissions.grant_active(permitted.grant_id),
         )
+        if outcome.reason == "entry_changed":
+            record.status, record.reason = "denied", "settings"
+            return _text(str(outcome.error), error=True)
         text = describe_result(entry, outcome, lang=commission.lang)
         terminal = plugin_terminal_status(outcome.success, outcome.data)
         await self._ledger.append_event(
@@ -1253,48 +1303,62 @@ class CapabilityGateway:
         return None, self._registry.browser_reopen_agreed()
 
     async def _call_builtin(
-        self, commission: Commission, capability: Capability, arguments: dict[str, Any], *, reopen_agreement: Any = None
+        self, commission: Commission, capability: Capability, arguments: dict[str, Any],
+        record: call_audit.Call, grant_id: str | None, *, reopen_agreement: Any = None
     ) -> dict[str, Any]:
         """Carry out one call of a built-in tool for a commission.
 
         The commission occupies the tool's group first and keeps it until its
         run ends, it waits for the user or it is over (``leases.py``). The
-        call itself is not written to the ledger: the task agent's own
-        ``tool_start`` and ``tool_end`` events already show it, and a task
-        of many small steps would double its rows.
+        enclosing host call records the device identifier and outcome.
         """
         from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
         group = capability.group or ""
-        if self._leases is not None and group:
-            in_the_way = await self._leases.acquire(group, commission.id, title=commission.title)
-            if in_the_way is not None:
-                await self._ledger.append_event(
-                    commission.id, "builtin_occupied", {"capability": capability.id, "by": in_the_way.team}
-                )
-                what = _group_name(group)
-                return _text(
-                    f"The {what} is in use by another task ({in_the_way.title or 'no title'}) and did not come "
-                    "free in time. Nothing was done. Go on with what does not need it, try again later, or "
-                    "report that you are waiting for it.",
-                    error=True,
-                )
-            # The wait can be long; the commission may have been stopped or
-            # have started waiting for the user meanwhile.
-            current = await self._ledger.get(commission.id)
-            if current is None or current.status != "working":
-                self._leases.release(commission.id)
-                return _text("this commission is no longer under way", error=True)
+        claim = object()
+        keep = False
         try:
-            outcome = await self._registry.run_builtin(
-                capability, commission_id=commission.id, arguments=arguments, reopen_agreement=reopen_agreement
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - the task agent is told and decides how to go on
-            logger.exception("built-in tool %s failed", capability.id)
-            return _text(f"{capability.tool_name} failed: {type(exc).__name__}", error=True)
+            if self._leases is not None and group:
+                in_the_way = await self._leases.acquire(group, commission.id, title=commission.title, claim=claim)
+                if in_the_way is not None:
+                    await self._ledger.append_event(
+                        commission.id, "builtin_occupied", {"capability": capability.id, "by": in_the_way.team}
+                    )
+                    what = _group_name(group)
+                    return _text(
+                        f"The {what} is in use by another task ({in_the_way.title or 'no title'}) and did not come "
+                        "free in time. Nothing was done. Go on with what does not need it, try again later, or "
+                        "report that you are waiting for it.",
+                        error=True,
+                    )
+                # The wait can be long; the commission may have been stopped or
+                # have started waiting for the user meanwhile.
+                current = await self._ledger.get(commission.id)
+                if current is None or current.status != "working":
+                    self._leases.release(commission.id)
+                    return _text("this commission is no longer under way", error=True)
+            if not self._permissions.grant_active(grant_id):
+                record.status, record.reason = "denied", "settings"
+                return _text(DENIED_BY_SETTINGS, error=True)
+            keep = True
+            try:
+                outcome = await self._registry.run_builtin(
+                    capability, commission_id=commission.id, arguments=arguments, reopen_agreement=reopen_agreement,
+                    still_allowed=lambda: self._permissions.grant_active(grant_id),
+                )
+            except asyncio.CancelledError:
+                # The device may have started. Its run returns the lease once the worker stops.
+                raise
+            except Exception as exc:  # noqa: BLE001 - the task agent is told and decides how to go on
+                logger.exception("built-in tool %s failed", capability.id)
+                return _text(f"{capability.tool_name} failed: {type(exc).__name__}", error=True)
+            if not outcome.success and outcome.text == "permission denied":
+                keep = False
+                record.status, record.reason = "denied", "settings"
+        finally:
+            if self._leases is not None and group:
+                self._leases.finish_claim(group, commission.id, claim, keep=keep)
         text = truncate_to_tokens(outcome.text or ("done" if outcome.success else "failed"), GATEWAY_RESULT_MAX_TOKENS)
         if not outcome.images:
             return _text(text, error=not outcome.success)
