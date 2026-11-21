@@ -112,7 +112,7 @@ from nekoclaw.host import call_audit
 from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER, KIND_BUILTIN, Capability, CapabilityRegistry
 from nekoclaw.host.leases import BuiltinLeases
 from nekoclaw.host.ledger import Commission, Ledger
-from nekoclaw.host.permissions import BROWSER_REOPEN, DENIED_BY_SETTINGS, DENIED_BY_USER, PermissionGate
+from nekoclaw.host.permissions import BROWSER_REOPEN, DENIED_BY_SETTINGS, DENIED_BY_USER, GrantScope, PermissionGate
 from nekoclaw.host.plugin_runs import (
     PluginRunner,
     audited_run_entry,
@@ -190,6 +190,7 @@ class _Cleared:
     reason: str | None = None
     # The user's agreement to this call opening a browser they closed, if one was needed.
     agreement: Any = None
+    grant_id: str | None = None
     # Drops it when it has waited for its call long enough.
     expiry: asyncio.TimerHandle | None = None
 
@@ -1045,6 +1046,7 @@ class CapabilityGateway:
         cleared = await self._permit(commission, capability)
         if self._by_commission.get(commission_id) is not grant:
             # The token was taken back while the user was asked: no call will come for it.
+            self._permissions.release_grant(cleared.grant_id)
             if cleared.agreement is not None:
                 self._registry.browser_reopen_agreement_over(cleared.agreement)
             return
@@ -1060,6 +1062,7 @@ class CapabilityGateway:
         cleared = grant.cleared.pop(key, None)
         if cleared is None:
             return
+        self._permissions.release_grant(cleared.grant_id)
         if cleared.expiry is not None:
             # Its time is not to run out on whatever is ruled on for the same call next.
             cleared.expiry.cancel()
@@ -1083,6 +1086,8 @@ class CapabilityGateway:
             commission.id,
             capability.permission,
             key=capability.permission_key,
+            scope=GrantScope(capability.kind, capability.group or capability.id),
+            hold_once=True,
             detail={"tool": capability.tool_name, "capability": capability.id, "title": capability.title},
         )
         if not decision.allow:
@@ -1092,9 +1097,16 @@ class CapabilityGateway:
             reason = {DENIED_BY_SETTINGS: "settings", DENIED_BY_USER: "user"}.get(decision.reason, "no_approval")
             return _Cleared(refusal=_text(decision.reason or "permission denied", error=True), reason=reason)
         if capability.kind == KIND_BUILTIN and capability.group == BUILTIN_GROUP_BROWSER:
-            refusal, agreement = await self._ask_before_reopening(commission, capability, just_asked=decision.asked)
-            return _Cleared(refusal=refusal, agreement=agreement, reason="browser_reopen" if refusal else None)
-        return _Cleared()
+            try:
+                refusal, agreement = await self._ask_before_reopening(commission, capability, just_asked=decision.asked)
+            except BaseException:
+                self._permissions.release_grant(decision.grant_id)
+                raise
+            return _Cleared(
+                refusal=refusal, agreement=agreement, reason="browser_reopen" if refusal else None,
+                grant_id=decision.grant_id,
+            )
+        return _Cleared(grant_id=decision.grant_id)
 
     async def _call_capability(
         self, commission: Commission, capability: Capability, arguments: dict[str, Any]
@@ -1112,16 +1124,24 @@ class CapabilityGateway:
     async def _execute(
         self, commission: Commission, capability: Capability, arguments: dict[str, Any], record: call_audit.Call
     ) -> dict[str, Any]:
+        # Ruled on before the call was made (``clear_call``), or now.
+        permitted = self._take_cleared(commission.id, capability.id, arguments)
+        if permitted is None:
+            permitted = await self._permit(commission, capability)
+        record.grant_id = self._permissions.authorization_ref(permitted.grant_id)
+        try:
+            return await self._run_permitted(commission, capability, arguments, record, permitted)
+        finally:
+            self._permissions.release_grant(permitted.grant_id)
+
+    async def _run_permitted(
+        self, commission: Commission, capability: Capability, arguments: dict[str, Any],
+        record: call_audit.Call, permitted: _Cleared,
+    ) -> dict[str, Any]:
         from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
-        # Ruled on before the call was made (``clear_call``), or now.
-        permitted = self._take_cleared(commission.id, capability.id, arguments)
-        if (
-            permitted is not None
-            and permitted.refusal is None
-            and await self._permissions.forbidden(capability.permission, capability.permission_key)
-        ):
+        if permitted.refusal is None and not self._permissions.grant_active(permitted.grant_id):
             # Allowed a moment ago, forbidden by the settings since: a deny
             # set meanwhile wins, as it does over an answer. Nobody is asked again.
             if permitted.agreement is not None:
@@ -1131,8 +1151,6 @@ class CapabilityGateway:
             )
             record.status, record.reason = "denied", "settings"
             return _text(DENIED_BY_SETTINGS, error=True)
-        if permitted is None:
-            permitted = await self._permit(commission, capability)
         if permitted.refusal is not None:
             record.status, record.reason = "denied", permitted.reason
             return permitted.refusal
@@ -1144,14 +1162,14 @@ class CapabilityGateway:
                     # browser: the agreement goes with it, and no other
                     # call opens the browser on the strength of it.
                     return await self._call_builtin(
-                        commission, capability, arguments, reopen_agreement=permitted.agreement
+                        commission, capability, arguments, record, permitted.grant_id, reopen_agreement=permitted.agreement
                     )
                 finally:
                     # Should it have ended before it got to the browser
                     # (stopped, or the browser stayed in use by another
                     # task): the agreement ends with it.
                     self._registry.browser_reopen_agreement_over(permitted.agreement)
-            return await self._call_builtin(commission, capability, arguments)
+            return await self._call_builtin(commission, capability, arguments, record, permitted.grant_id)
 
         async def run_created(run_id: str) -> None:
             await self._ledger.append_event(
@@ -1173,7 +1191,12 @@ class CapabilityGateway:
             conversation_id=commission.conversation_id,
             latest_user_request=commission.user_text,
             on_run_created=run_created,
+            matches_entry=capability.matches_entry,
+            still_wanted=lambda: self._registry.plugins_enabled() and self._permissions.grant_active(permitted.grant_id),
         )
+        if outcome.reason == "entry_changed":
+            record.status, record.reason = "denied", "settings"
+            return _text(str(outcome.error), error=True)
         text = describe_result(entry, outcome, lang=commission.lang)
         terminal = plugin_terminal_status(outcome.success, outcome.data)
         await self._ledger.append_event(
@@ -1280,7 +1303,8 @@ class CapabilityGateway:
         return None, self._registry.browser_reopen_agreed()
 
     async def _call_builtin(
-        self, commission: Commission, capability: Capability, arguments: dict[str, Any], *, reopen_agreement: Any = None
+        self, commission: Commission, capability: Capability, arguments: dict[str, Any],
+        record: call_audit.Call, grant_id: str | None, *, reopen_agreement: Any = None
     ) -> dict[str, Any]:
         """Carry out one call of a built-in tool for a commission.
 
@@ -1292,34 +1316,49 @@ class CapabilityGateway:
         from utils.tokenize import truncate_to_tokens
 
         group = capability.group or ""
-        if self._leases is not None and group:
-            in_the_way = await self._leases.acquire(group, commission.id, title=commission.title)
-            if in_the_way is not None:
-                await self._ledger.append_event(
-                    commission.id, "builtin_occupied", {"capability": capability.id, "by": in_the_way.team}
-                )
-                what = _group_name(group)
-                return _text(
-                    f"The {what} is in use by another task ({in_the_way.title or 'no title'}) and did not come "
-                    "free in time. Nothing was done. Go on with what does not need it, try again later, or "
-                    "report that you are waiting for it.",
-                    error=True,
-                )
-            # The wait can be long; the commission may have been stopped or
-            # have started waiting for the user meanwhile.
-            current = await self._ledger.get(commission.id)
-            if current is None or current.status != "working":
-                self._leases.release(commission.id)
-                return _text("this commission is no longer under way", error=True)
+        claim = object()
+        keep = False
         try:
-            outcome = await self._registry.run_builtin(
-                capability, commission_id=commission.id, arguments=arguments, reopen_agreement=reopen_agreement
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - the task agent is told and decides how to go on
-            logger.exception("built-in tool %s failed", capability.id)
-            return _text(f"{capability.tool_name} failed: {type(exc).__name__}", error=True)
+            if self._leases is not None and group:
+                in_the_way = await self._leases.acquire(group, commission.id, title=commission.title, claim=claim)
+                if in_the_way is not None:
+                    await self._ledger.append_event(
+                        commission.id, "builtin_occupied", {"capability": capability.id, "by": in_the_way.team}
+                    )
+                    what = _group_name(group)
+                    return _text(
+                        f"The {what} is in use by another task ({in_the_way.title or 'no title'}) and did not come "
+                        "free in time. Nothing was done. Go on with what does not need it, try again later, or "
+                        "report that you are waiting for it.",
+                        error=True,
+                    )
+                # The wait can be long; the commission may have been stopped or
+                # have started waiting for the user meanwhile.
+                current = await self._ledger.get(commission.id)
+                if current is None or current.status != "working":
+                    self._leases.release(commission.id)
+                    return _text("this commission is no longer under way", error=True)
+            if not self._permissions.grant_active(grant_id):
+                record.status, record.reason = "denied", "settings"
+                return _text(DENIED_BY_SETTINGS, error=True)
+            keep = True
+            try:
+                outcome = await self._registry.run_builtin(
+                    capability, commission_id=commission.id, arguments=arguments, reopen_agreement=reopen_agreement,
+                    still_allowed=lambda: self._permissions.grant_active(grant_id),
+                )
+            except asyncio.CancelledError:
+                # The device may have started. Its run returns the lease once the worker stops.
+                raise
+            except Exception as exc:  # noqa: BLE001 - the task agent is told and decides how to go on
+                logger.exception("built-in tool %s failed", capability.id)
+                return _text(f"{capability.tool_name} failed: {type(exc).__name__}", error=True)
+            if not outcome.success and outcome.text == "permission denied":
+                keep = False
+                record.status, record.reason = "denied", "settings"
+        finally:
+            if self._leases is not None and group:
+                self._leases.finish_claim(group, commission.id, claim, keep=keep)
         text = truncate_to_tokens(outcome.text or ("done" if outcome.success else "failed"), GATEWAY_RESULT_MAX_TOKENS)
         if not outcome.images:
             return _text(text, error=not outcome.success)

@@ -142,6 +142,8 @@ export function apply(ctx, config) {
     if (!asked.has(exec.name) && (unasked.has(exec.name) || prefixes.some(prefix => exec.name.startsWith(prefix)))) {
       return next()
     }
+    const native = await next()
+    if (native.kind !== 'allow') return native
     return { kind: 'ask', reason: 'the N.E.K.O host decides' }
   })
   process.stderr.write('%s\\n')

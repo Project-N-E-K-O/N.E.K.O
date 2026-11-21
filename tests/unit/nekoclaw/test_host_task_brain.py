@@ -126,6 +126,35 @@ async def test_accepted_then_the_plugin_is_called_directly(server, hosts, tmp_pa
     assert report.payload["task_id"] == receipt.commission_id
 
 
+@pytest.mark.parametrize("finish", ["deny", "abort", "disable_plugins"])
+async def test_direct_plugin_never_runs_after_decline_or_late_answer(server, hosts, tmp_path, finish):
+    _weather(server)
+    llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today")])
+    plugins_enabled = True
+    host = _host(hosts, tmp_path, server, llm, plugins_enabled=lambda: plugins_enabled)
+    await host.permission_store.set_mode("plugin_entry", "first_ask")
+    receipt = await _dispatch(host, "查今天的天气")
+    waiting = await wait_status(host, receipt.commission_id, "waiting_user")
+    question = waiting.question()
+    assert waiting.route == "plugin" and not waiting.session_id
+    assert question["detail"]["capability"] == "plugin:weather:today"
+    assert not server.run_requests
+    if finish == "abort":
+        await host.abort(waiting.id)
+        assert not await host.answer(waiting.id, "", choice="once", question_id=question["id"])
+    elif finish == "disable_plugins":
+        plugins_enabled = False
+        assert await host.answer(waiting.id, "", choice="once", question_id=question["id"])
+    else:
+        assert await host.answer(waiting.id, "", choice="deny", question_id=question["id"])
+    await host.brain.settle()
+    assert not server.run_requests and llm.tiers() == ["fine"]
+    if finish == "disable_plugins":
+        assert (await host.ledger.get(waiting.id)).status == "failed"
+        (correction,) = await outbox(host, "correction")
+        assert correction.payload["detail"] == "not_enabled"
+
+
 async def test_the_result_is_stored_with_the_status_not_after_it(server, hosts, tmp_path, monkeypatch):
     # A report stored in a transaction of its own could be lost between the
     # two writes; the direct route stores it with the status change instead.
@@ -244,6 +273,33 @@ def _mcp_notes(server: FakePluginServer, calls: list[str]) -> None:
     )
 
 
+async def test_visible_mcp_owner_change_during_direct_approval_stops_submission(server, hosts, tmp_path):
+    registered = entry("mcp_team_docs_search", "Search docs", name="[team_docs] search")
+    server.add_plugin(plugin("mcp_adapter", "MCP", [registered]), mcp_team_docs_search=_recording_tool([], "search"))
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(fine=[pick_plugin("mcp_adapter", registered["id"])]))
+    receipt = await _dispatch(host, "search docs")
+    pending = await wait_status(host, receipt.commission_id, "waiting_user")
+    assert pending.question()["category"] == "mcp_server"
+    # The public entry ID remains valid for both spellings, but the approved server differs.
+    registered["name"] = "[team] docs_search"
+    host.catalog.invalidate()
+    assert await host.answer(pending.id, "", choice="once", question_id=pending.question()["id"])
+    await host.brain.settle()
+    assert not server.run_requests and (await host.ledger.get(pending.id)).status == "failed"
+
+
+async def test_generic_mcp_entry_is_not_offered_even_without_a_denied_server(server, hosts, tmp_path):
+    _mcp_notes(server, [])
+    llm = FakeDecisionLLM(fine=[pick_plugin("mcp_adapter", "mcp_notes_search")])
+    host = _host(hosts, tmp_path, server, llm)
+    await host.permission_store.set_mode("mcp_server", "allow", key="notes")
+    receipt = await _dispatch(host, "search my notes")
+    await host.brain.settle()
+    offered = json.dumps(next(messages for tier, messages in llm.calls if tier == "fine"))
+    assert "call_tool" not in offered and "mcp_notes_search" in offered
+    assert (await host.ledger.get(receipt.commission_id)).status == "done"
+
+
 async def test_a_denied_mcp_server_is_not_reached_by_a_dispatch(server, hosts, tmp_path):
     calls: list[str] = []
     _mcp_notes(server, calls)
@@ -310,6 +366,9 @@ async def test_denying_the_unnamed_slot_leaves_named_servers_to_their_category(s
     await host.permission_store.set_mode("mcp_server", "deny", key="*")
 
     receipt = await _dispatch(host, "go open a github issue about the crash")
+    pending = await wait_status(host, receipt.commission_id, "waiting_user")
+    assert pending.question()["key"] == "github" and calls == []
+    assert await host.answer(receipt.commission_id, "", choice="once")
     await host.brain.settle()
 
     # "*" is what a request naming no server reads: the entries that can reach

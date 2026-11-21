@@ -896,7 +896,8 @@ class Ledger:
     @staticmethod
     def _add_columns(conn: sqlite3.Connection) -> None:
         """Give a ledger made by an earlier build the columns added since (``_ADDED_COLUMNS``, ``_ADDED_SESSION_COLUMNS``)."""
-        for table, added in (("commissions", _ADDED_COLUMNS), ("sessions", _ADDED_SESSION_COLUMNS)):
+        for table, added in (("commissions", _ADDED_COLUMNS), ("sessions", _ADDED_SESSION_COLUMNS),
+                             ("host_calls", (("grant_id", "TEXT"), ("scope_ref", "TEXT")))):
             present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             for name, kind in added:
                 if name not in present:
@@ -1303,6 +1304,16 @@ class Ledger:
                 conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone()
             )
         )
+
+    async def permission_parent(self, commission_id: str) -> tuple[str | None, bool]:
+        """Return the active parent link and whether this commission received another session's words."""
+        row = await self.run(lambda db: db.execute(
+            "SELECT c.parent_id, c.status, EXISTS (SELECT 1 FROM messages WHERE delivered_to = c.id) AS received "
+            "FROM commissions c WHERE c.id = ?", (commission_id,),
+        ).fetchone())
+        if row is None or row["status"] not in ACTIVE_STATUSES:
+            raise LookupError("the commission has ended or is unknown")
+        return row["parent_id"], bool(row["received"])
 
     @staticmethod
     def _select(

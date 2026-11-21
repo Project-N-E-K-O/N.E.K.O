@@ -90,6 +90,7 @@ from nekoclaw.host.paths import DEFAULT_PROJECT, DSH_SESSION_NAME, TRANSCRIPT_NA
 from nekoclaw.host.permissions import (
     CHOICES,
     DENIED_BY_SETTINGS,
+    GrantScope,
     SPACE_COMMAND,
     USAGE_LIMIT,
     PermissionAsk,
@@ -894,6 +895,8 @@ class TaskAgentManager:
             **({"dsh_factory": dsh_runtime_factory} if dsh_runtime_factory is not None else {}),
         )
         self._sessions: dict[str, _Session] = {}
+        # Direct /runs may ask without starting a model runtime or taking a session slot.
+        self._direct_questions: dict[str, _Session] = {}
         self._queue: deque[str] = deque()
         # The session each commission this manager has in hand is worked on
         # in (``ledger.Session.id``), from the moment it is handed over.
@@ -929,7 +932,7 @@ class TaskAgentManager:
         # What was ruled on a commission's web search before the call was
         # made (``_rule_on_host_tool``): the queries it was for, the refusal
         # or None, and until when it waits for the call (event loop time).
-        self._search_rulings: dict[str, tuple[tuple[str, ...], str | None, float]] = {}
+        self._search_rulings: dict[str, tuple[tuple[str, ...], PermissionDecision, float]] = {}
         # Commissions whose review is being written down right now
         # (``hold_session``); a start of one of them waits for that.
         self._held: dict[str, asyncio.Event] = {}
@@ -1068,7 +1071,7 @@ class TaskAgentManager:
         permissions.set_asker(self.ask_permission)
         # A task agent started by another is covered by what the user allowed
         # for that one's session.
-        permissions.set_parent_lookup(self._parent_of)
+        permissions.set_parent_lookup(self._ledger.permission_parent)
         # A commission that holds a session without having it open (it waits
         # for an answer) can end without a word from a runtime: stopped, say.
         self._unsubscribe = ledger.subscribe(self._on_commission_change)
@@ -2612,7 +2615,7 @@ class TaskAgentManager:
         session = self._sessions.pop(commission_id, None)
         self._candidates.pop(commission_id, None)
         self._excerpts.pop(commission_id, None)
-        self._search_rulings.pop(commission_id, None)
+        self._drop_search_ruling(commission_id)
         if self._gateway is not None:
             self._gateway.revoke(commission_id)
         session_id = session.session_id if session is not None else self._session_of.get(commission_id)
@@ -4722,7 +4725,7 @@ class TaskAgentManager:
         is turned away with nothing changed. Not said (None), the
         answer is for whichever question waits.
         """
-        session = self._sessions.get(commission_id)
+        session = self._sessions.get(commission_id) or self._direct_questions.get(commission_id)
         if session is None:
             return await self._answer_closed(commission_id, text, question_id=question_id)
         if question_id is not None and question_id != session.question_id:
@@ -4833,7 +4836,8 @@ class TaskAgentManager:
             self._answering_closed.discard(commission_id)
 
     async def _ask(
-        self, commission_id: str, question: dict[str, Any], *, at_answer: Callable[[], None] | None = None
+        self, commission_id: str, question: dict[str, Any], *, at_answer: Callable[[], None] | None = None,
+        direct: _Session | None = None,
     ) -> dict[str, Any]:
         """Put a question to the user and wait for the answer.
 
@@ -4842,7 +4846,7 @@ class TaskAgentManager:
         question is in (``answer``), with nothing awaited before: this
         gets to go on only a while later.
         """
-        session = self._sessions.get(commission_id)
+        session = direct or self._sessions.get(commission_id)
         if session is None:
             raise RuntimeError("the commission has no session to ask for")
         async with session.ask_lock:
@@ -4886,16 +4890,24 @@ class TaskAgentManager:
 
     async def ask_permission(self, commission_id: str, ask: PermissionAsk) -> str:
         """Ask the user to approve something; the ``Asker`` of the permission gate."""
-        answer = await self._ask(commission_id, ask.to_json(), at_answer=ask.at_answer)
+        direct = None
+        if commission_id not in self._sessions:
+            commission = await self._ledger.get(commission_id)
+            if commission is None or commission.route != "plugin" or commission.status != "working":
+                raise RuntimeError("the commission has no session to ask for")
+            direct = _Session(commission_id)
+            if commission_id in self._direct_questions:
+                return "deny"
+            self._direct_questions[commission_id] = direct
+        try:
+            answer = await self._ask(commission_id, ask.to_json(), at_answer=ask.at_answer, direct=direct)
+        finally:
+            if direct is not None:
+                self._direct_questions.pop(commission_id, None)
         choice = answer.get("choice")
         # Anything that is not one of the four answers is a refusal. An
         # approval wider than the question offered is narrowed by the gate.
         return choice if choice in CHOICES else "deny"
-
-    async def _parent_of(self, commission_id: str) -> str | None:
-        """Return the commission that started this one; the permission gate's lookup."""
-        commission = await self._ledger.get(commission_id)
-        return commission.parent_id if commission is not None else None
 
     # -- host callbacks ---------------------------------------------------
 
@@ -5004,7 +5016,12 @@ class TaskAgentManager:
                     # Forbidden while the question was open.
                     return PermissionDecision(False, DENIED_BY_SETTINGS).to_json()
                 return decision.to_json()
-        decision = await self._permissions.check(session_id, category, detail=detail)
+        session = self._sessions.get(session_id)
+        if session is None or session.runtime_name != RUNTIME_BUILTIN:
+            # ACP and unbound callbacks expose no verified tool registration.
+            decision = await self._permissions.check_native(session_id, category, detail=detail)
+        else:
+            decision = await self._permissions.check_builtin(session_id, category, detail=detail, writes=writes)
         return decision.to_json()
 
     async def _rule_on_gateway_call(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -5042,35 +5059,35 @@ class TaskAgentManager:
             if commission is not None and session_id in self._sessions:
                 arguments = payload.get("arguments")
                 queries = _search_queries(arguments if isinstance(arguments, dict) else {})
-                refusal = await self._search_refusal(commission)
+                decision = await self._search_permission(commission)
                 if session_id in self._sessions:
-                    # Waits for its call as long as a ruling on a gateway tool does.
+                    self._drop_search_ruling(session_id)
                     until = asyncio.get_running_loop().time() + GATEWAY_CLEARED_CALL_SECONDS
-                    self._search_rulings[session_id] = (queries, refusal, until)
+                    self._search_rulings[session_id] = (queries, decision, until)
+                else:
+                    self._permissions.release_grant(decision.grant_id)
         return PermissionDecision(True).to_json()
 
-    async def _search_refusal(self, commission: Commission) -> str | None:
-        """Return why a commission's task agent may not search the web, or None; the user is asked where the settings say so.
+    def _drop_search_ruling(self, commission_id: str) -> None:
+        ruled = self._search_rulings.pop(commission_id, None)
+        if ruled is not None:
+            self._permissions.release_grant(ruled[1].grant_id)
+
+    async def _search_permission(self, commission: Commission) -> PermissionDecision:
+        """Decide whether the task agent may send this batch of web queries.
 
         The search is a plugin entry: the plugin switch and the
         ``plugin_entry`` permission apply as they do through the gateway.
         """
         if not self._registry.plugins_enabled():
-            return "web search is not available: plugins are switched off"
-        decision = await self._permissions.check(
+            return PermissionDecision(False, "web search is not available: plugins are switched off")
+        return await self._permissions.check(
             commission.id,
             "plugin_entry",
+            hold_once=True,
+            scope=GrantScope("plugin_entry", f"plugin:{WEB_SEARCH_PLUGIN_ID}:{WEB_SEARCH_ENTRY_ID}"),
             detail={"tool": "web_search", "capability": f"plugin:{WEB_SEARCH_PLUGIN_ID}:{WEB_SEARCH_ENTRY_ID}"},
         )
-        return None if decision.allow else (decision.reason or "permission denied")
-
-    async def _search_forbidden_now(self) -> str | None:
-        """Return why the settings forbid the web search as of now, or None; nobody is asked."""
-        if not self._registry.plugins_enabled():
-            return "web search is not available: plugins are switched off"
-        if await self._permissions.forbidden("plugin_entry"):
-            return DENIED_BY_SETTINGS
-        return None
 
     async def _cb_ask_user(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         session_id = self._at_work_in(session_id)
@@ -5109,14 +5126,18 @@ class TaskAgentManager:
             # Ruled on before the call was made (a task agent in dsh): the
             # user was asked then, if they had to be. Only for what they
             # were asked about: an allowance for once is not another search's.
-            refusal = ruled[1]
-            if refusal is None:
-                # Settings changed since win, as they do over an answer
-                # (plugins switched off, the entry denied). Nobody is asked again.
-                refusal = await self._search_forbidden_now()
+            decision = ruled[1]
         else:
-            refusal = await self._search_refusal(commission)
+            if ruled is not None:
+                self._permissions.release_grant(ruled[1].grant_id)
+            decision = await self._search_permission(commission)
+        refusal = decision.reason
+        if not self._registry.plugins_enabled():
+            refusal = "web search is not available: plugins are switched off"
+        elif decision.allow and not self._permissions.grant_active(decision.grant_id):
+            refusal = DENIED_BY_SETTINGS
         if refusal is not None:
+            self._permissions.release_grant(decision.grant_id)
             await self._ledger.append_event(
                 commission.id, "capability_denied", {"capability": capability, "reason": refusal}
             )
@@ -5134,6 +5155,7 @@ class TaskAgentManager:
                     lanlan_name=commission.lanlan_name,
                     conversation_id=commission.conversation_id,
                     latest_user_request=commission.user_text,
+                    still_wanted=lambda: self._registry.plugins_enabled() and self._permissions.grant_active(decision.grant_id),
                 )
             if not outcome.success:
                 raise RuntimeError(f"web search failed: {outcome.error or 'the web_search plugin is not available'}")
@@ -5152,7 +5174,10 @@ class TaskAgentManager:
                 result["answer"] = data["summary"]
             return result
 
-        return {"results": list(await asyncio.gather(*(one(query) for query in queries)))}
+        try:
+            return {"results": list(await asyncio.gather(*(one(query) for query in queries)))}
+        finally:
+            self._permissions.release_grant(decision.grant_id)
 
     # -- child task agents ----------------------------------------------------
 
@@ -5607,7 +5632,7 @@ class TaskAgentManager:
                 # it, and is asked again for whatever it does from here on.
                 # (A time the commission set for itself brings none of
                 # another's words.)
-                self._permissions.end_session(commission_id)
+                self._permissions.received_external_input(commission_id)
             if chosen == "steer":
                 assert session is not None
                 if commission_id in self._prepaid_starts:

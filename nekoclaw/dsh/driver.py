@@ -795,9 +795,15 @@ class DshRuntime:
         session = process.by_dsh_id.get(str(params.get("sessionId") or ""))
         call = params.get("toolCall")
         call_id = str(call.get("toolCallId") or "") if isinstance(call, dict) else ""
-        if session is None or call_id not in session.tool_calls:
-            # Nothing is known of what it would allow.
-            return _REJECT
+        options = params.get("options")
+        offered = {
+            (option.get("optionId"), option.get("kind"))
+            for option in options if isinstance(option, dict)
+            and isinstance(option.get("optionId"), str) and isinstance(option.get("kind"), str)
+        } if isinstance(options, list) else set()
+        if ("allow-once", "allow_once") not in offered or session is None or call_id not in session.tool_calls:
+            # ACP may narrow the offered choices. A host loan cannot add one.
+            return _REJECT if ("reject-once", "reject_once") in offered else _CANCELLED
         task = asyncio.current_task()
         assert task is not None
         session.asks.add(task)

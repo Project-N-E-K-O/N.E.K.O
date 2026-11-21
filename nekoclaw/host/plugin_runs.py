@@ -421,8 +421,12 @@ async def audited_run_entry(
         outcome = await runner.run_entry(
             commission_id=commission_id, plugin_id=plugin_id, entry_id=entry_id, audit_call=record, **kwargs
         )
-        record.status = ("cancelled" if getattr(outcome, "reason", None) == "not_wanted"
-                         else plugin_terminal_status(outcome.success, outcome.data))
+        refusal = getattr(outcome, "reason", None)
+        if refusal == "entry_changed":
+            record.status, record.reason = "denied", "settings"
+        else:
+            record.status = ("cancelled" if refusal == "not_wanted"
+                             else plugin_terminal_status(outcome.success, outcome.data))
         return outcome
 
 
@@ -574,6 +578,7 @@ class PluginRunner:
         on_run_created: Callable[[str], Awaitable[None]] | None = None,
         audit_call: call_audit.Call | None = None,
         housekeeping: bool = False,
+        matches_entry: Callable[[dict[str, Any], dict[str, Any]], bool] | None = None,
         still_wanted: Callable[[], bool] | None = None,
     ) -> RunOutcome:
         """Call one plugin entry and wait for the run to end.
@@ -653,6 +658,10 @@ class PluginRunner:
                 )
 
         resolved_entry = str(requested_entry or "run")
+        if matches_entry is not None:
+            matching = [item for item in listed if str(item.get("id")) == resolved_entry]
+            if len(matching) != 1 or not matches_entry(plugin, matching[0]):
+                return rejected("the approved plugin entry has changed", "entry_changed")
         safe_args = dict(plugin_args)
         entry_timeout = resolve_entry_timeout(plugin, requested_entry, self._default_entry_timeout())
         try:
