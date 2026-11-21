@@ -181,12 +181,17 @@ def test_unrelated_input_preserves_an_unknown_click_target_until_the_registry_an
 
 @pytest.mark.parametrize(("text", "groups", "focus"), [
     ("在浏览器中切换到深色模式并点击确认", (BROWSER,), True),
+    ("Switch to Dark Mode in the browser", (BROWSER,), True),
+    ("切换到深色模式（在浏览器中）", (BROWSER,), True),
     ("在浏览器中切换到 Word，然后点击保存", (DESKTOP,), False),
+    ("Switch to Word from the browser, then click Save", (DESKTOP,), False),
 ])
 def test_a_source_browser_locates_a_setting_but_an_explicit_destination_takes_over(text, groups, focus):
     from nekoclaw.device_intent import classify_device_intent
 
     assert classify_device_intent(text, browser_context=None) == (groups, focus)
+    assert classify_device_intent(text, browser_context=False) == (groups, focus)
+    assert select_device_groups("Click OK", browser_context=focus) == groups
 
 
 def test_receipts_can_distinguish_unrelated_input_from_an_explicit_target():

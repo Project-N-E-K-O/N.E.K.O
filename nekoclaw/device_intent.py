@@ -168,7 +168,8 @@ def classify_device_intent(
             device_actions = clause[:switch.start()] + " " + remaining
             # A setting can still be changed "in the browser"; a named
             # destination instead establishes where the user is going.
-            surface = _CODE_FILE.sub(" ", remaining if destination or desktop_target else device_actions)
+            if destination or desktop_target:
+                surface = _CODE_FILE.sub(" ", remaining)
         # "Code" in the app name is not a request to work on source code.
         code_text = clause
         if destination and destination["name"]:
