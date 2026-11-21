@@ -39,6 +39,9 @@ from typing import Any
 from .contracts import PROACTIVE_REASON_PASS_USER_DIRECTIVE, _proactive_pass_body
 from .generation import _proactive_directive_hits
 from .state import _proactive_turn_still_owned
+from utils.logger_config import get_module_logger
+
+logger = get_module_logger(__name__, "Main")
 
 # Card fields the frontend renders as text: source cards show ``title`` and
 # ``source`` (site name), falling back to ``url`` when there is no title;
@@ -109,6 +112,15 @@ async def _proactive_delivery_directive_block(
     )
     if not hit_count:
         return None
+    # Channel and count only, which is what makes a missing reminder
+    # traceable from the log file; same shape as the Phase 2 output gate.
+    logger.info(
+        "[%s] proactive delivery blocked by user ban-topic directive "
+        "(channel=%s, %d term(s) matched)",
+        lanlan_name,
+        channel,
+        hit_count,
+    )
     print(
         f"[{lanlan_name}] 主动搭话命中用户明确要求回避的话题，已拦截 "
         f"(channel={channel}, {hit_count} 项)"

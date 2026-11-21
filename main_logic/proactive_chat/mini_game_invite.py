@@ -458,6 +458,24 @@ def _pick_mini_game_type(
     return _random.choice(candidates)
 
 
+def _mini_game_invite_surface_text(
+    fallback_line: str, selected_story: dict[str, Any] | None,
+) -> str:
+    """Everything an invite is about, for the ban-topic gate.
+
+    The fixed invite line (game or story title) plus, for a theater story,
+    the public opening the user would step into: its background and the
+    author's invitation. Both invite channels (standalone and the work-break
+    combo) check the same text.
+    """
+    parts = [fallback_line or ""]
+    for key in ("title", "background", "invitation"):
+        value = (selected_story or {}).get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value)
+    return "\n".join(parts)
+
+
 async def _attempt_mini_game_invite_delivery(
     *,
     lanlan_name: str,
@@ -599,31 +617,35 @@ async def _attempt_mini_game_invite_delivery(
     fallback_line = _render_mini_game_invite_line(
         game_type, invite_lang, master_name, selected_story=selected_theater,
     )
-    # Ban-topic gate. The fixed line names the game or the theater story, so
-    # it is checked first: a banned game or story never pays for the compose
-    # call below. It runs before the turn is claimed, so there is nothing to
-    # release.
+    # Ban-topic gate on what the invite is about, not just on what it says:
+    # the fixed line names the game or story, and a theater story's public
+    # opening is what the user steps into on "yes". Checked before the compose
+    # call, so a banned game or story never pays for it. It runs before the
+    # turn is claimed, so there is nothing to release.
     # ⚠️ A blocked invite falls through to the normal pipeline (None) rather
     # than ending the round: the force-first branch retries the invite on
     # every round until one is delivered, so ending the round here would
     # silence proactive chat for as long as a ban like "games" stays active.
-    if fallback_line and await _proactive_delivery_directive_block(
+    if await _proactive_delivery_directive_block(
         mgr=mgr,
         proactive_sid=None,
         lanlan_name=lanlan_name,
-        text=fallback_line,
+        text=_mini_game_invite_surface_text(fallback_line, selected_theater),
         channel="mini_game",
     ) is not None:
         return None
     composed_line = await _compose_theater_invite_line(
         selected_theater, invite_lang, character_prompt=character_prompt, master_name=master_name,
     ) if selected_theater else ""
-    # A composed line that hits a ban is discarded like any other rejected
-    # composition, and the fixed line already checked above is spoken instead.
+    # A composed line that hits a ban usually means the story itself is about
+    # the topic, so the invite is dropped as a whole, the same as above.
     if composed_line and _proactive_delivery_directive_hit_count(
         lanlan_name, composed_line,
     ):
-        composed_line = ""
+        print(
+            f"[{lanlan_name}] 剧场邀请词命中用户明确要求回避的话题，放弃本次邀请"
+        )
+        return None
     invite_text = composed_line or fallback_line
     if not invite_text:
         return None

@@ -29,6 +29,7 @@ from config import (
 from config.prompts.prompts_activity import BREAK_REMINDER_REGEN_INSTRUCTION
 from config.prompts.prompts_proactive import BEGIN_GENERATE
 from config.prompts.prompts_sys import _loc
+from main_logic.proactive_chat.generation import _append_directives_section
 from main_logic.proactive_chat.directive_gate import (
     _proactive_delivery_directive_block,
     _proactive_delivery_directive_hit_count,
@@ -316,8 +317,10 @@ async def _deliver_break_reminder_via_llm(
     ``delivered_channel`` tells the caller which one was delivered. The
     work-break + game-invite combo passes the plain work-break reminder here,
     so a ban on games does not cost the user the break reminder itself.
-    Model calls per round: one per draft, at most two drafts, plus the
-    existing anti-repeat rewrite of the delivered draft — three at worst.
+    Only a first draft that hits switches to the fallback; an anti-repeat
+    rewrite of the first draft that hits is dropped like any other reminder,
+    which keeps the round at three model calls at worst (two drafts plus the
+    existing anti-repeat rewrite of the delivered one).
 
     Caller is responsible for ``mark_*_used`` on success and for any follow-up
     UI push (e.g. the mini-game options popup in the
@@ -392,12 +395,15 @@ async def _deliver_break_reminder_via_llm(
             if _round_retired():
                 return BreakReminderDeliveryResult()
             if mgr.state.is_proactive_preempted(proactive_sid):
-                if _proactive_turn_still_owned(mgr, proactive_sid):
-                    await mgr.handle_new_message()
                 return BreakReminderDeliveryResult()
             silence_since_before_generation = _break_reminder_silence_since(mgr)
+        # Soft constraint: the active ban-topic block, as Phase 2 has it, so
+        # the model avoids banned topics up front and the hard gate below is
+        # only the backstop. Adds input tokens only while a ban is active.
         messages = [
-            SystemMessage(content=system_prompt),
+            SystemMessage(
+                content=_append_directives_section(system_prompt, lanlan_name, lang),
+            ),
             HumanMessage(content=begin_text),
         ]
 
@@ -561,7 +567,9 @@ async def _deliver_break_reminder_via_llm(
             lang,
         )
         regen_messages = [
-            SystemMessage(content=system_prompt),
+            SystemMessage(
+                content=_append_directives_section(system_prompt, lanlan_name, lang),
+            ),
             HumanMessage(content=f"{instruction}\n\n{begin_text}"),
         ]
         if mgr.state.is_proactive_preempted(proactive_sid):

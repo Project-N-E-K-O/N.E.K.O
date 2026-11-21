@@ -42,6 +42,7 @@ from main_logic.proactive_chat.directive_gate import (
 def _install_directives(monkeypatch, terms):
     manager = MagicMock()
     manager.get_active_terms.return_value = list(terms)
+    manager.render_prompt_block.return_value = ""
     monkeypatch.setattr(
         user_directives_module, "get_user_directives_manager", lambda: manager,
     )
@@ -340,6 +341,71 @@ async def test_break_reminder_delivers_without_ban(monkeypatch):
     mgr.finish_proactive_delivery.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_break_reminder_prompts_carry_the_directive_block(monkeypatch):
+    """Soft constraint: every break-reminder prompt, rewrite included, gets
+    the same ban-topic block Phase 2 gets."""
+    manager = _install_directives(monkeypatch, ["股票"])
+    manager.render_prompt_block.return_value = "\n[BAN-BLOCK]"
+    mgr, config_manager, corpus, _record = _break_harness(
+        monkeypatch,
+        _FakeStreamingLlm("记得起来喝水休息一下。"),
+        _FakeRegenLlm("先望望远处，让眼睛放松一会儿吧。"),
+        initial_repeats=True,
+    )
+    seen = []
+
+    class _Recording(_FakeStreamingLlm):
+        async def astream(self, messages):
+            seen.append(messages[0].content)
+            async for chunk in super().astream(messages):
+                yield chunk
+
+    class _RecordingRegen(_FakeRegenLlm):
+        async def ainvoke(self, messages):
+            seen.append(messages[0].content)
+            return await super().ainvoke(messages)
+
+    monkeypatch.setattr(
+        break_reminders,
+        "create_chat_llm_async",
+        AsyncMock(side_effect=[
+            _Recording("记得起来喝水休息一下。"),
+            _RecordingRegen("先望望远处，让眼睛放松一会儿吧。"),
+        ]),
+    )
+
+    result = await _deliver_break(mgr, config_manager)
+
+    assert result.delivered_text == "先望望远处，让眼睛放松一会儿吧。"
+    assert seen == [
+        "Generate one reminder.\n[BAN-BLOCK]",
+        "Generate one reminder.\n[BAN-BLOCK]",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_break_reminder_prompt_unchanged_without_bans(monkeypatch):
+    _install_directives(monkeypatch, [])
+    mgr, config_manager, _corpus, _record = _break_harness(monkeypatch)
+    seen = []
+
+    class _Recording(_FakeStreamingLlm):
+        async def astream(self, messages):
+            seen.append(messages[0].content)
+            async for chunk in super().astream(messages):
+                yield chunk
+
+    monkeypatch.setattr(
+        break_reminders, "create_chat_llm_async",
+        AsyncMock(side_effect=[_Recording("记得起来喝水休息一下。")]),
+    )
+
+    await _deliver_break(mgr, config_manager)
+
+    assert seen == ["Generate one reminder."]
+
+
 _COMBO_PROMPT = "Invite the user to play a game during the break."
 _PLAIN_PROMPT = "Remind the user to drink water."
 
@@ -391,7 +457,7 @@ async def test_combo_reminder_ban_falls_back_to_plain_reminder(monkeypatch):
     assert result.delivered_channel == "work_break"
     assert result.consumes_source is False
     # Exactly two model calls: the combo draft, then the plain reminder.
-    assert streams == [_COMBO_PROMPT, _PLAIN_PROMPT]
+    assert streams == [_COMBO_PROMPT, _PLAIN_PROMPT]  # no bans rendered here
     mgr.feed_tts_chunk.assert_awaited_once()
     assert mgr.feed_tts_chunk.await_args.args[0] == "记得起来喝口水。"
     mgr.finish_proactive_delivery.assert_awaited_once()
@@ -574,18 +640,57 @@ async def test_theater_invite_banned_story_skips_compose_call(
 
 
 @pytest.mark.asyncio
-async def test_theater_invite_banned_composition_falls_back_to_fixed_line(
+async def test_theater_invite_banned_composition_drops_the_invite(
     monkeypatch, _invite_harness,
 ):
-    _theater_harness(monkeypatch, "下雨天最适合聊加班的烦恼了，来演一段吧？")
+    # A composed line that hits usually means the story is about the topic,
+    # so the story is not offered at all (no fallback to the fixed line).
+    compose = _theater_harness(monkeypatch, "下雨天最适合聊加班的烦恼了，来演一段吧？")
     _install_directives(monkeypatch, ["加班"])
     mgr = _invite_mgr()
 
     out = await _attempt_invite(mgr)
 
+    assert out is None
+    compose.assert_awaited_once()
+    mgr.prepare_proactive_delivery.assert_not_awaited()
+    mgr.feed_tts_chunk.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["background", "invitation"])
+async def test_theater_invite_banned_story_content_skips_compose_call(
+    monkeypatch, _invite_harness, field,
+):
+    # The title is neutral; the story's public opening is about the topic.
+    compose = _theater_harness(monkeypatch, "今晚想和你演一个下雨天的故事。")
+    invites._select_theater_story.return_value = {
+        "title": "雨夜来信", "background": "一个故事", "invitation": "来吧",
+        field: "一个关于恐怖怪谈的夜晚",
+    }
+    _install_directives(monkeypatch, ["恐怖"])
+    mgr = _invite_mgr()
+
+    out = await _attempt_invite(mgr)
+
+    assert out is None
+    compose.assert_not_awaited()
+    mgr.prepare_proactive_delivery.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_theater_invite_clean_story_is_composed_and_delivered(
+    monkeypatch, _invite_harness,
+):
+    compose = _theater_harness(monkeypatch, "今晚想和你演一个下雨天的故事。")
+    _install_directives(monkeypatch, ["恐怖"])
+    mgr = _invite_mgr()
+
+    out = await _attempt_invite(mgr)
+
     assert out is not None and out["action"] == "chat"
-    spoken = mgr.feed_tts_chunk.await_args.args[0]
-    assert spoken == "要不要一起演《雨夜来信》？"
+    compose.assert_awaited_once()
+    assert mgr.feed_tts_chunk.await_args.args[0] == "今晚想和你演一个下雨天的故事。"
 
 
 # ---------------------------------------------------------------------------

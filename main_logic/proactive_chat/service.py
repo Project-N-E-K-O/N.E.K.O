@@ -117,8 +117,13 @@ from main_logic.proactive_chat.mini_game_invite import (
     _mini_game_invite_count_post_response_chat,
     _mini_game_invite_get_state,
     _mini_game_invite_record_delivered,
+    _mini_game_invite_surface_text,
     _pick_mini_game_type,
+    _render_mini_game_invite_line,
     _select_theater_story,
+)
+from main_logic.proactive_chat.directive_gate import (
+    _proactive_delivery_directive_hit_count,
 )
 from main_logic.proactive_chat.music_recommendation import (
     _build_music_dynamic_context,
@@ -1181,6 +1186,27 @@ async def handle_proactive_chat(
                             lang=_break_lang,
                             theater_story=selected_theater,
                         )
+                        # Same invite-surface ban check as the standalone
+                        # invite: a banned game or story never gets offered,
+                        # even if the model's line would not name it. Plain
+                        # reminder instead; no model call spent on the combo.
+                        if gi_prompt is not None and _proactive_delivery_directive_hit_count(
+                            lanlan_name,
+                            _mini_game_invite_surface_text(
+                                _render_mini_game_invite_line(
+                                    chosen_game_type,
+                                    _break_invite_lang,
+                                    master_name_current,
+                                    selected_story=selected_theater,
+                                ),
+                                selected_theater,
+                            ),
+                        ):
+                            print(
+                                f"[{lanlan_name}] 休息+游戏邀请的游戏/故事命中用户明确要求回避的话题，"
+                                "改发普通提醒"
+                            )
+                            gi_prompt = None
                         if gi_prompt is not None:
                             branch_game_invite = True
 

@@ -395,17 +395,23 @@ def test_work_break_never_invites_an_unidentified_theater_story():
         master_name='主人', lang='zh') is None
 
 
-@pytest.mark.parametrize("delivered_channel", ("work_break", "work_break_game_invite"))
-@pytest.mark.asyncio
-async def test_work_break_combo_bookkeeping_follows_delivered_channel(
-    monkeypatch,
-    delivered_channel,
-    tmp_path: Path,
-) -> None:
-    """#3013: a combo invite that hit a ban and fell back to the plain reminder
-    must be booked as a plain work-break reminder: no invite recorded, no
-    invite options pushed, the counter bumped once."""
+async def _run_work_break_round(
+    monkeypatch, tmp_path, *, delivered_channel, banned_terms=(),
+):
+    """Drive one water-break round through the real router with a stubbed delivery."""
+    import memory.user_directives as user_directives_module
     from main_logic.proactive_chat import break_reminders
+
+    directives = MagicMock()
+    directives.get_active_terms.return_value = list(banned_terms)
+    directives.render_prompt_block.return_value = ""
+    monkeypatch.setattr(
+        user_directives_module, "get_user_directives_manager", lambda: directives,
+    )
+    monkeypatch.setattr(
+        proactive_service, "_render_mini_game_invite_line",
+        lambda *_args, **_kwargs: "休息一下，要不要一起踢足球？",
+    )
 
     state = SimpleNamespace(
         try_start_proactive=AsyncMock(return_value=True),
@@ -489,8 +495,33 @@ async def test_work_break_combo_bookkeeping_follows_delivered_channel(
     monkeypatch.setattr(proactive_service, "_deliver_break_reminder_via_llm", deliver)
 
     response = await proactive_chat_flow.proactive_chat(request)
+    return SimpleNamespace(
+        body=json.loads(response.body),
+        deliver=deliver,
+        tracker=tracker,
+        record_invite=record_invite,
+        push_options=push_options,
+        bump_total=bump_total,
+    )
 
-    body = json.loads(response.body)
+
+@pytest.mark.parametrize("delivered_channel", ("work_break", "work_break_game_invite"))
+@pytest.mark.asyncio
+async def test_work_break_combo_bookkeeping_follows_delivered_channel(
+    monkeypatch,
+    delivered_channel,
+    tmp_path: Path,
+) -> None:
+    """#3013: a combo invite that hit a ban and fell back to the plain reminder
+    must be booked as a plain work-break reminder: no invite recorded, no
+    invite options pushed, the counter bumped once."""
+    run = await _run_work_break_round(
+        monkeypatch, tmp_path, delivered_channel=delivered_channel,
+    )
+    body, deliver, tracker = run.body, run.deliver, run.tracker
+    record_invite, push_options, bump_total = (
+        run.record_invite, run.push_options, run.bump_total,
+    )
     deliver.assert_awaited_once()
     kwargs = deliver.await_args.kwargs
     assert kwargs["channel"] == "work_break_game_invite"
@@ -507,3 +538,23 @@ async def test_work_break_combo_bookkeeping_follows_delivered_channel(
         assert body["channel"] == "work_break_game_invite"
         record_invite.assert_called_once()
         push_options.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_work_break_combo_skipped_when_invited_game_is_banned(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """#3013: a banned game or story is never offered by the combo, even when
+    the model's line would not name it; the plain reminder goes out instead,
+    without spending the combo model call."""
+    run = await _run_work_break_round(
+        monkeypatch, tmp_path, delivered_channel="work_break", banned_terms=["足球"],
+    )
+
+    run.deliver.assert_awaited_once()
+    kwargs = run.deliver.await_args.kwargs
+    assert kwargs["channel"] == "work_break"
+    assert "directive_fallback" not in kwargs
+    assert run.body["channel"] == "work_break"
+    run.record_invite.assert_not_called()
+    run.push_options.assert_not_awaited()
