@@ -483,7 +483,8 @@ async def test_each_dsh_process_has_a_token_of_its_own_that_ends_with_it(endpoin
     assert await status(other[:-1]) == 401
 
 
-async def test_a_call_dsh_gives_up_is_stopped_at_the_host(tmp_path: Path) -> None:
+@pytest.mark.parametrize("retained", [False, True])
+async def test_a_call_dsh_gives_up_is_stopped_at_the_host(tmp_path: Path, retained: bool) -> None:
     started = asyncio.Event()
     stopped = asyncio.Event()
 
@@ -499,13 +500,14 @@ async def test_a_call_dsh_gives_up_is_stopped_at_the_host(tmp_path: Path) -> Non
     tools = HostTools(HostCallbacks(web_search=search))
     _open(tools, tmp_path)
     forwarder = ModelForwarder(lambda session_id, usage: None, report_tool="mcp__host__report")
-    listener = LocalEndpoint(forwarder=forwarder, tools=tools)
+    listener = LocalEndpoint(forwarder=forwarder, tools=tools, retained_output=search if retained else None)
     await listener.start()
     try:
-        token = listener.issue("s1")
+        token = listener.issue_process_token() if retained else listener.issue("s1")
+        url = f"http://127.0.0.1:{listener.port}/internal/retained-output" if retained else listener.tools_url
         call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "web_search", "arguments": {"queries": ["q"]}}}
         async with httpx.AsyncClient(trust_env=False, timeout=0.5) as client:
-            request = asyncio.ensure_future(client.post(listener.tools_url, headers={"Authorization": f"Bearer {token}"}, json=call))
+            request = asyncio.ensure_future(client.post(url, headers={"Authorization": f"Bearer {token}"}, json=call))
             await asyncio.wait_for(started.wait(), 5)
             with pytest.raises(httpx.TimeoutException):
                 await request

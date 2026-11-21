@@ -85,6 +85,7 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
                 reply = await host.call(session, "execution_action", {
                     "phase": "finish", "receipt": receipt, "status": status,
                     **({"retain_source": True} if (output and output.retained) or (protected and protected.retained) else {}),
+                    **({"started_job": True} if output and output.retained else {}),
                 })
             except Exception as exc:
                 logging.getLogger(__name__).warning("closing a tool call failed (%s)", type(exc).__name__)
@@ -156,6 +157,9 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
                     handoff.acknowledge()
                 # These registered tools have only a model-content recipient.
                 return result if result.details is None else result.model_copy(update={"details": None})
+        finally:
+            if handoff and handoff.release:
+                handoff.release()
         raise ToolError("The tool result could not be delivered.") from None
 
     return replace(tool, execute_fn=execute)

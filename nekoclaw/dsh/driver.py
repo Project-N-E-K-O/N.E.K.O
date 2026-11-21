@@ -924,6 +924,8 @@ class DshRuntime:
             try:
                 reply = await self._host.call(session.id, "native_execution_action", {
                     "phase": "finish", "receipt": receipt, "status": phase, "retain_source": True,
+                    **({"started_job": True} if session.tool_calls[original][0] in {"bash", "pwsh"}
+                       and receipt in session.job_origins.values() else {}),
                 })
             except Exception as exc:
                 # Keep the receipt for the terminal ACP event's cancellation.

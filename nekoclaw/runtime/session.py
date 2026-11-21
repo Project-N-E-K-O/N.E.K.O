@@ -1512,20 +1512,21 @@ class TaskAgentSession(SessionInbox):
         return isinstance(handle, CustomMessage) and self.harness.remove_queued(handle)
 
     async def _job_finished(self, job: Job) -> None:
-        if job.origin:
-            try:
-                decision = await self._host.call(self.session_id, "execution_action", {
-                    "phase": "job_notice", "receipt": job.origin,
-                })
-            except Exception:
+        async with job.output_lock:
+            if job.origin:
+                try:
+                    decision = await self._host.call(self.session_id, "execution_action", {
+                        "phase": "job_notice", "receipt": job.origin,
+                    })
+                except Exception:
+                    return
+                if decision.get("allow") is not True:
+                    return
+            if self._closing or job.notice_suppressed or job.waiters or job.id in self.jobs.pending_notices:
                 return
-            if decision.get("allow") is not True:
-                return
-        if self._closing or job.notice_suppressed or job.waiters or job.id in self.jobs.pending_notices:
-            return
-        text, held = completion_notice(self.jobs, job)
-        handle = self.deliver_notice("job", text)
-        self.jobs.pending_notices[job.id] = PendingNotice(handle, held)
+            text, held = completion_notice(self.jobs, job)
+            handle = self.deliver_notice("job", text)
+            self.jobs.pending_notices[job.id] = PendingNotice(handle, held)
 
     # ------------------------------------------------------------------
     # Commands

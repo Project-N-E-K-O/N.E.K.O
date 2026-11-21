@@ -4954,12 +4954,15 @@ class TaskAgentManager:
         if payload.get("phase") == "check":
             return {"allow": self._execution_audit.active(commission, session_id, payload.get("receipt"), kind=kind)}
         if payload.get("phase") == "finish":
-            allowed = await self._execution_audit.finish(
+            outcome = await self._execution_audit.finish(
                 commission, session_id, payload.get("receipt", ""), payload.get("status", ""), kind=kind
             )
-            if not allowed or payload.get("retain_source") is not True:
+            if outcome is None:
+                return {"allow": False}
+            keep_job = outcome.command_completed and payload.get("started_job") is True
+            if not (keep_job or (outcome.delivered and payload.get("retain_source") is True)):
                 session.job_sources.pop(payload.get("receipt"), None)
-            return {"allow": allowed}
+            return {"allow": outcome.delivered}
         tool = payload.get("tool")
         if payload.get("phase") == "native_failure":
             from nekoclaw.dsh.profile import GATED_TOOLS

@@ -221,8 +221,11 @@ def test_established_gbk_is_used_for_a_line_also_valid_as_utf8(tmp_path):
     from nekoclaw.runtime.tools import search
 
     document = tmp_path / "routes.txt"
-    document.write_bytes(("配置说明：这是一个使用国标编码保存的文本文件。\n" * 2000 + "route 路\n").encode("gbk"))
-    matches = search.grep_files(document, regex.compile("路"), None, tmp_path,
+    lead = "route 路\n"
+    text = lead + "配置说明：这是一个使用国标编码保存的文本文件。\n" * 2000
+    text += "a" * search.GREP_LINE_MAX_BYTES + "路 skipped-tail\n" + lead
+    document.write_bytes(text.encode("gbk"))
+    matches = search.grep_files(document, regex.compile("路|skipped-tail"), None, tmp_path,
                                 search._Budget(threading.Event(), time.monotonic() + 15),
                                 case_insensitive_globs=False)
-    assert [m.line for m in matches] == ["route 路"]
+    assert [(m.line_number, m.line) for m in matches] == [(1, "route 路"), (2003, "route 路")]

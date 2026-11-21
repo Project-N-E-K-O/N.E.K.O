@@ -257,7 +257,20 @@ class LocalEndpoint:
                 request = json.loads(body)
                 if not isinstance(request, dict) or self._process_of(token) != process:
                     raise ValueError()
-                result = await self._retained_output(process, request)
+                work = asyncio.create_task(self._retained_output(process, request))
+                gone = asyncio.create_task(_wait_disconnect(receive))
+                try:
+                    await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
+                    if gone.done():
+                        return
+                    result = work.result()
+                finally:
+                    gone.cancel()
+                    # A save may already be writing through a worker thread.
+                    # Let it finish under the private store's lock.
+                    if not work.done() and request.get("action") != "save":
+                        work.cancel()
+                    await asyncio.gather(work, gone, return_exceptions=True)
             except (ValueError, OSError, KeyError):
                 await respond_json(send, 403, {"error": "output unavailable"})
                 return

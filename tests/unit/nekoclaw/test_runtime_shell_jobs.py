@@ -797,3 +797,40 @@ async def test_closing_collects_pending_notices_after_process_settlement():
     await registry.wait_closed(timeout_seconds=0.5)
     assert settled.settled.is_set() and running.settled.is_set()
     assert released.is_set()
+
+
+@pytest.mark.parametrize("receive", [False, True])
+async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monkeypatch, receive):
+    from types import SimpleNamespace
+
+    stop = asyncio.Event()
+    stdout = procs.OutputBuffer(1024, lambda: None)
+    stdout.feed(b"first-part\n")
+    async def audit(_, payload):
+        if payload["phase"] == "begin":
+            return {"allow": True, "receipt": "job-read"}
+        if payload["phase"] == "finish":
+            stdout.feed(b"second-part\n")
+            stop.set()
+            await asyncio.wait_for(job.settled.wait(), 2)
+            await asyncio.sleep(0)
+            return {"allow": receive}
+        return {"allow": True}
+    llm = ScriptedLLM([[call("job_output", {"job_id": "job-1"}, "result"), finish("tool_calls")],
+                       [say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=audit))
+    notices = []
+    monkeypatch.setattr(session, "deliver_notice", lambda kind, text: notices.append(text))
+    process = SimpleNamespace(stdout=stdout, stderr=procs.OutputBuffer(1024, lambda: None),
+                              wait=stop.wait, kill=stop.set, kill_requested=False, signal_name=None, returncode=0)
+    job = session.jobs.start(SHELL, "fixture", process, foreground=False)
+    job.origin = "original"
+    try:
+        session.prompt("Read the current output")
+        await events.wait_ended("s1")
+        assert len(notices) == 1 and "second-part" in notices[0]
+        assert ("first-part" in notices[0]) == (not receive)
+        result = next(m["content"] for m in llm.requests[1] if m.get("tool_call_id") == "result")
+        assert ("first-part" in result) == receive
+    finally:
+        await session.close()

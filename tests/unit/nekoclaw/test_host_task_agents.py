@@ -4012,3 +4012,27 @@ async def test_space_read_uses_workdir_rule_at_delivery(hosts, tmp_path, monkeyp
     await wait_status(host, receipt.commission_id, "done")
     result = next(m["content"] for m in llm.requests[1] if m.get("tool_call_id") == "space-file")
     assert ("knowledge fixture" in result) == (not tighten_at_delivery)
+
+
+async def test_completed_job_keeps_its_source_when_first_delivery_fails(hosts, tmp_path, monkeypatch):
+    import os
+    tool, command = ("pwsh", "Write-Output held-job") if os.name == "nt" else ("bash", "echo held-job")
+    llm = ScriptedLLM([[call(tool, {"command": command, "description": "fixture", "run_in_background": True}, "start"),
+                        finish("tool_calls")],
+                       [call("job_list", {}, "list"), finish("tool_calls")],
+                       [call("job_output", {"job_id": "job-1", "wait": True}, "output"), finish("tool_calls")],
+                       _report("ready", "done")])
+    host = _host(hosts, tmp_path, llm)
+    await host.permission_store.set_mode("run_command", "allow")
+    audit = host.task_agents._execution_audit
+    original = audit.begin
+    async def begin(commission, session, kind, target, permit, deliver, live):
+        async def refuse(record):
+            return False
+        return await original(commission, session, kind, target, permit, refuse if target == tool else deliver, live)
+    monkeypatch.setattr(audit, "begin", begin)
+    receipt = await _dispatch(host, "Collect the example job")
+    await wait_status(host, receipt.commission_id, "done")
+    replies = {m["tool_call_id"]: m["content"] for batch in llm.requests for m in batch if m.get("tool_call_id")}
+    assert "could not be delivered" in replies["start"]
+    assert "job-1" in replies["list"] and "held-job" in replies["output"]

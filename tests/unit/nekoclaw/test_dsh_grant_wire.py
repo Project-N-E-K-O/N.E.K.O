@@ -225,8 +225,8 @@ async def test_pinned_dsh_fetch_uses_prepared_host_receipt(tmp_path, monkeypatch
     if not binary:
         pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to the pinned dsh executable")
     phases = []
-    async def audit(_, payload):
-        phases.append(payload["phase"])
+    async def audit(session_id, payload):
+        phases.append((session_id, payload["phase"], payload.get("receipt")))
         return {"allow": True, "receipt": "prepared-web"}
     async def fetch(url):
         return "local web fixture"
@@ -246,6 +246,7 @@ async def test_pinned_dsh_fetch_uses_prepared_host_receipt(tmp_path, monkeypatch
             await runtime.prompt(spec.session_id, "Fetch the fixture.")
             await events.wait_ended(spec.session_id, timeout=60)
         assert "local web fixture" in str(server.requests[-1]["messages"][-1])
-        assert phases == ["begin", "check", "finish"]
+        assert phases == [(spec.session_id, "begin", None), (spec.session_id, "check", "prepared-web"),
+                          (spec.session_id, "finish", "prepared-web")]
     finally:
         await runtime.shutdown()

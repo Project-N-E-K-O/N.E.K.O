@@ -43,6 +43,7 @@ from nekoclaw.runtime.tools.procs import ShellProcess
 class JobHandoff:
     visible_origins: frozenset[str]
     acknowledge: Callable[[], None] | None = None
+    release: Callable[[], None] | None = None
 
 
 JOB_HANDOFF: ContextVar[JobHandoff | None] = ContextVar("job_handoff", default=None)
@@ -82,6 +83,7 @@ class Job:
     stop_reason: str | None = None
     origin: str | None = None
     settled: asyncio.Event = field(default_factory=asyncio.Event)
+    output_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def active(self) -> bool:
@@ -346,6 +348,10 @@ def build_job_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> lis
                 raise ToolError("wait aborted")
             if outcome == "interrupted":
                 released = "user steered"
+        handoff = JOB_HANDOFF.get()
+        if handoff is not None:
+            await job.output_lock.acquire()
+            handoff.release = job.output_lock.release
         body, cursors = registry.peek(job)
         notice = registry.pending_notices.get(job.id)
 
@@ -356,7 +362,6 @@ def build_job_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> lis
                 return ctx.inbox.withdraw_notice(notice.handle)
             return False
 
-        handoff = JOB_HANDOFF.get()
         if handoff is None:
             collect_notice = acknowledge()
         else:

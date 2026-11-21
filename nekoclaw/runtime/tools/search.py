@@ -432,6 +432,10 @@ def preview_line(line: str, max_bytes: int = GREP_MAX_LINE_BYTES, *, match_start
     return f"{kept} (line truncated)"
 
 
+class _RestartSearch(Exception):
+    """Earlier non-ASCII lines must be interpreted using the detected document encoding."""
+
+
 def _legacy_readline(source):
     # ASCII headers can extend beyond the leading sample. Detect on the first
     # non-UTF-8 line. Distinguish a damaged UTF-8 line from a legacy document.
@@ -440,15 +444,17 @@ def _legacy_readline(source):
     encoding = None
     detected = False
     document_encoding = False
+    seen_non_ascii = False
 
     def readline(size):
-        nonlocal legacy, encoding, detected, document_encoding
+        nonlocal legacy, encoding, detected, document_encoding, seen_non_ascii
         raw = source.readline(size)
-        end = not raw or raw.endswith(b"\n")
+        end = len(raw) < size or raw.endswith(b"\n")
         if legacy is None:
             try:
                 utf8.decode(raw, final=end)
-                return raw
+                seen_non_ascii |= not raw.isascii()
+                return raw, not end
             except UnicodeDecodeError as exc:
                 utf8.reset()
                 raw = exc.object
@@ -466,12 +472,15 @@ def _legacy_readline(source):
                         document_encoding = invalid > 1 and invalid * 2 >= sum(not c.isascii() for c in decoded)
                     detected = True
                 if encoding is None:
-                    return raw
+                    return raw, not end
                 legacy = codecs.getincrementaldecoder(encoding)(errors="replace")
+                if document_encoding and seen_non_ascii:
+                    source.seek(0)
+                    raise _RestartSearch()
         converted = legacy.decode(raw, final=end).encode("utf-8")
         if end and not document_encoding:
             legacy = None
-        return converted
+        return converted, not end
 
     return readline
 
@@ -490,11 +499,17 @@ def _grep_lines(path, protected):
             elif protected is None and os.fstat(source.fileno()).st_size > READ_MAX_BYTES:
                 yield _legacy_readline(source)
             else:
-                yield source.readline
+                def read_bytes(size):
+                    raw = source.readline(size)
+                    return raw, len(raw) == size and not raw.endswith(b"\n")
+                yield read_bytes
             return
         text = io.TextIOWrapper(source, encoding=encoding, errors="replace")
         try:
-            yield lambda size: text.readline(size).encode("utf-8")
+            def read_text(size):
+                line = text.readline(size)
+                return line.encode("utf-8"), len(line) == size and not line.endswith("\n")
+            yield read_text
         finally:
             text.detach()
 
@@ -519,22 +534,26 @@ def _search_file(
             if readline is None:
                 return 0
             number = 0
+            first_match = len(out)
             while True:
-                raw = readline(GREP_LINE_MAX_BYTES + 1)
-                if not raw:
+                try:
+                    raw, more = readline(GREP_LINE_MAX_BYTES + 1)
+                    cut = more or len(raw.rstrip(b"\r\n")) > GREP_LINE_MAX_BYTES
+                    while more:
+                        budget.check()
+                        _, more = readline(GREP_LINE_MAX_BYTES)
+                except _RestartSearch:
+                    budget.check()
+                    del out[first_match:]
+                    number = added = 0
+                    continue
+                if not raw and not cut:
                     break
                 number += 1
                 if number % _BUDGET_CHECK_LINES == 0:
                     budget.check()
-                cut = len(raw) > GREP_LINE_MAX_BYTES and not raw.endswith(b"\n")
                 if cut:
                     raw = raw[:GREP_LINE_MAX_BYTES]
-                    # Skip the rest of the line without holding it in memory.
-                    while True:
-                        budget.check()
-                        rest = readline(GREP_LINE_MAX_BYTES)
-                        if not rest or rest.endswith(b"\n"):
-                            break
                 if raw.endswith(b"\n"):
                     raw = raw[:-1]
                 if raw.endswith(b"\r"):

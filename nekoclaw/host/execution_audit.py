@@ -14,6 +14,15 @@ from nekoclaw.host import call_audit
 from nekoclaw.host.ledger import Ledger
 
 
+@dataclass(frozen=True)
+class ExecutionOutcome:
+    delivered: bool
+    command_completed: bool
+
+    def __bool__(self) -> bool:
+        return self.delivered
+
+
 @dataclass
 class _Action:
     commission: str
@@ -21,6 +30,8 @@ class _Action:
     kind: str
     ended: asyncio.Future[str]
     worker: asyncio.Task[bool]
+    record: call_audit.Call
+    tool: str
     live: Callable[[], bool]
 
 
@@ -49,7 +60,7 @@ class ExecutionAudit:
                     record.reason = "execution_denied"
                     ready.set_result({**ruling, "allow": False})
                     return False
-                self._actions[record.call_id] = _Action(commission, session, kind, ended, worker, live)
+                self._actions[record.call_id] = _Action(commission, session, kind, ended, worker, record, target, live)
                 ready.set_result({"allow": True, "receipt": record.call_id})
                 try:
                     record.status = await ended
@@ -85,15 +96,17 @@ class ExecutionAudit:
         return bool(action and (action.commission, action.session, action.kind) == (commission, session, kind)
                     and not action.ended.done() and action.live())
 
-    async def finish(self, commission: str, session: str, receipt: str, status: str, *, kind: str) -> bool:
+    async def finish(self, commission: str, session: str, receipt: str, status: str, *, kind: str) -> ExecutionOutcome | None:
         action = self._actions.get(receipt)
         if (
             action is None or (action.commission, action.session, action.kind) != (commission, session, kind)
             or action.ended.done() or status not in {"completed", "failed", "cancelled"}
         ):
-            return False
+            return None
         action.ended.set_result(status)
-        return await action.worker
+        delivered = await action.worker
+        command_completed = action.record.closed and status == "completed" and action.tool in {"pwsh", "bash"}
+        return ExecutionOutcome(delivered, command_completed)
 
     async def end_run(self, commission: str) -> None:
         pending = [action for action in self._actions.values() if action.commission == commission]
