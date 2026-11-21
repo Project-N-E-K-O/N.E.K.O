@@ -2473,3 +2473,22 @@ async def test_what_git_left_holding_its_pipes_is_killed_after_git_exited(
             break
         await asyncio.sleep(0.05)
     assert not psutil.pid_exists(child) or psutil.Process(child).status() == psutil.STATUS_ZOMBIE
+
+
+async def test_preparing_does_not_overwrite_an_ignored_file_of_the_worktree(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "debug.log", "the worktree's own, ignored\n")
+    write(tree.path / "a.txt", "worktree\n")
+    write(repo / "debug.log", "the project's, force-added\n")
+    git(repo, "add", "-f", "debug.log")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    with pytest.raises(WorktreeError) as raised:
+        await manager.prepare_conflicts(tree, conflict)
+    assert "debug.log" in str(raised.value)
+    assert read(tree.path / "debug.log") == b"the worktree's own, ignored\n"
+    assert read(tree.path / "a.txt") == b"worktree\n"
+    assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == tree.start

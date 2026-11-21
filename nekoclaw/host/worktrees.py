@@ -523,12 +523,19 @@ class WorktreeManager:
             programs = await self._programs(worktree.path, names, source=conflict.merged_tree)
             if programs:
                 raise WorktreeUnavailable(*programs)
-            if now.skipped:
+            # What only the worktree has is in no snapshot: left out (too
+            # large, a repository of its own) or ignored. A forced checkout
+            # would overwrite it wherever the merge has something.
+            ignored = await self._git(
+                worktree.path, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"
+            )
+            only_here = [*now.skipped, *(_decode(name) for name in ignored.stdout.split(b"\0") if name)]
+            if only_here:
                 paths = [_decode(name) for name in names]
-                hit = [name for name in now.skipped if any(_overlap(path, name.rstrip("/")) for path in paths)]
+                hit = [name for name in only_here if any(_overlap(path, name.rstrip("/")) for path in paths)]
                 if hit:
                     raise WorktreeError(
-                        f"preparing would overwrite what only the worktree has (left out as too large, or a "
+                        f"preparing would overwrite what only the worktree has (ignored, too large, or a "
                         f"repository of its own): {', '.join(hit)}"
                     )
             half_done = await self._commit_tree(
