@@ -138,6 +138,7 @@ class _Given(str):
     """A text a session was given, and which one it is, counted from 1 in the order they were given."""
 
     number: int
+    device_groups: tuple[str, ...] = ()
 
     def __new__(cls, text: str, number: int) -> "_Given":
         made = super().__new__(cls, text)
@@ -1211,20 +1212,28 @@ class DshRuntime:
         # Numbered as it is given, like the host numbers what it sends: a
         # text that is dropped before dsh has it leaves its number unused.
         session.given += 1
+        given = _Given(text, session.given)
         if (human or opening) and session.process and session.process.native_device_schemas and session.spec.gateway:
             from config.nekoclaw_settings import BUILTIN_GROUPS
             from nekoclaw.device_intent import select_device_groups
 
             # The gateway intersects the opening hint with the actual initial group set.
-            groups = BUILTIN_GROUPS if opening else select_device_groups(text)
-            for group in groups:
-                if session.registered_device_groups is None or group in session.registered_device_groups:
-                    session.device_intents[group] = session.given
-        session.queue.append(_Given(text, session.given))
+            given.device_groups = BUILTIN_GROUPS if opening else select_device_groups(text)
+        session.queue.append(given)
         session.arrived.set()
         if session.run is None:
             session.aborting = False
             session.run = asyncio.ensure_future(self._run(session))
+
+    @staticmethod
+    def _accept_device_inputs(session: _Session, texts: list[str]) -> None:
+        # An abort can discard queued texts. Activate only what is handed to
+        # the ACP turn or delivered with the result of its wait_agent call.
+        for text in texts:
+            if isinstance(text, _Given):
+                for group in text.device_groups:
+                    if session.registered_device_groups is None or group in session.registered_device_groups:
+                        session.device_intents[group] = max(text.number, session.device_intents.get(group, 0))
 
     async def _take_input(self, session: _Session, seconds: float) -> list[str]:
         """Hand a waiting session the texts queued for it; see ``host_tools.TakeInput``."""
@@ -1285,6 +1294,8 @@ class DshRuntime:
             outcome: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             session.answering.append((outcome, numbers))
             on_answered.append(lambda delivered: self._answered(session, texts, of_run, outcome, delivered))
+        else:
+            self._accept_device_inputs(session, texts)
         return texts
 
     def _answered(
@@ -1302,6 +1313,8 @@ class DshRuntime:
         """
         if not outcome.done():
             outcome.set_result(delivered)
+        if delivered:
+            self._accept_device_inputs(session, texts)
         left = session.unsettled.pop(outcome, None)
         late = left is not None
         if not delivered:
@@ -1441,6 +1454,7 @@ class DshRuntime:
                 texts, session.queue = session.queue, []
                 sent = _numbers_of(texts)
                 session.taken = max([session.taken, *sent])
+                self._accept_device_inputs(session, texts)
                 work = "\n\n".join(texts)
                 first = not session.briefed
                 if first:

@@ -13,6 +13,7 @@ from config.prompts.prompts_nekoclaw_builtin import BUILTIN_GROUP_GUIDANCE
 from nekoclaw.builtin.provider import BuiltinToolProvider
 from nekoclaw.dsh import profile
 from nekoclaw.dsh.driver import DshRuntime, _Session
+from nekoclaw.dsh.host_tools import ON_ANSWERED
 from nekoclaw.runtime.protocol import GatewaySpec, ModelConfig
 from nekoclaw.runtime.tools.gateway import GatewayClient
 from tests.unit.nekoclaw.fake_openai_server import FakeOpenAIServer, sse_finish, sse_text, sse_tool_call, sse_usage
@@ -29,6 +30,7 @@ async def test_device_refresh_does_not_consume_a_new_identical_instruction_or_re
     session.process = process
     # An active run accepts further instructions without starting a new task.
     session.run = asyncio.current_task()
+    session.in_turn = True
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []
 
@@ -40,19 +42,20 @@ async def test_device_refresh_does_not_consume_a_new_identical_instruction_or_re
 
     monkeypatch.setattr(GatewayClient, "list_tools", list_tools)
     runtime._queue(session, "Open the browser", human=True)
-    session.taken = session.given
+    await runtime._take_input(session, 0)
     first = asyncio.create_task(runtime._device_view("process", "dsh", 2, True))
     await entered.wait()
     runtime._queue(session, "Open the browser", human=True)
     runtime._queue(session, "Take a desktop screenshot", human=True)
+    await runtime._take_input(session, 0)
     stale = asyncio.create_task(runtime._device_view("process", "dsh", 1, True))
     release.set()
     assert await first == await stale == ["browser_navigate_page"]
     assert session.device_intents == {"browser": 2, "keyboard_mouse": 3}
-    # The second steer is still pending, even if two summaries finished together.
-    await runtime._device_view("process", "dsh", 4, True, idle_cycle=True, shown=("browser",), same_turn=True)
+    # A receipt from the earlier turn cannot settle the newer instructions.
+    session.device_completed_input = 1
+    await runtime._device_view("process", "dsh", 4, True, idle_cycle=True, shown=("browser",))
     assert session.device_intents == {"browser": 2, "keyboard_mouse": 3}
-    session.taken = session.given
     await runtime._device_view("process", "dsh", 5, True, shown=("browser",), same_turn=True)
     assert calls == [(2, ("browser",)), (4, ("browser", "keyboard_mouse")), (5, ("keyboard_mouse",))]
     assert session.device_intents == {"keyboard_mouse": 3}
@@ -60,8 +63,29 @@ async def test_device_refresh_does_not_consume_a_new_identical_instruction_or_re
     assert session.device_intents == {}
 
 
+async def test_device_input_from_wait_activates_only_when_its_answer_is_delivered(tmp_path):
+    runtime = DshRuntime(Recorder(), launch=lambda: pytest.fail("No dsh process is required"))
+    session = _Session(make_spec(tmp_path, gateway=GatewaySpec(url="http://127.0.0.1", token="fixture")),
+                       asyncio.get_running_loop().create_future())
+    session.process = SimpleNamespace(native_device_schemas=True)
+    session.run = asyncio.current_task()
+    session.in_turn = True
+    runtime._sessions[session.id] = session
+    runtime._queue(session, "Open the browser", human=True)
+    callbacks = []
+    context = ON_ANSWERED.set(callbacks)
+    try:
+        for delivered in (False, True):
+            assert await runtime._take_input(session, 0) == ["Open the browser"]
+            assert session.device_intents == {}
+            callbacks.pop()(delivered)
+        assert session.device_intents == {"browser": 1}
+    finally:
+        ON_ANSWERED.reset(context)
+
+
 @pytest.mark.parametrize(
-    "scenario", ["search", "new_instruction", "queued", "queued_synthetic", "synthetic", "failure",
+    "scenario", ["search", "new_instruction", "queued", "queued_synthetic", "queued_abort", "synthetic", "failure",
                  "consecutive", "incomplete_profile"]
 )
 async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path, monkeypatch, record_property, scenario):
@@ -87,10 +111,14 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
     snapshots = []
     list_calls = []
     control_calls = []
+    before_request, resume_request = asyncio.Event(), asyncio.Event()
     original_view = runtime._endpoint._device_view
 
     async def count_control_calls(process, session, epoch, refresh, idle_cycle, shown, same_turn, registered):
         control_calls.append((epoch, refresh, idle_cycle))
+        if phase == "queued_abort":
+            before_request.set()
+            await resume_request.wait()
         return await original_view(process, session, epoch, refresh, idle_cycle, shown, same_turn, registered)
 
     monkeypatch.setattr(runtime._endpoint, "_device_view", count_control_calls)
@@ -132,7 +160,11 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
             # Pressure on the next turn, then a provider-declared overflow on
             # its first ordinary request. The retry reuses the frozen header.
             ordinary = sum(not sample["summary"] for sample in snapshots)
-            usage = {1: 9000, 2: 11000, 3: 9000}.get(ordinary, 100)
+            if ordinary == 2:
+                snapshots[-1]["http_status"] = 400
+                return 400, {"error": {"message": "This model's maximum context length is 10000 tokens.",
+                                       "type": "invalid_request_error", "code": "context_length_exceeded"}}
+            usage = 9000 if ordinary in (1, 3) else 100
         return [sse_text("Done."), sse_finish(), sse_usage(usage, 10)]
 
     async def turn(text, *, opening=False, human=True):
@@ -158,7 +190,7 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
                 assert not runtime.supports_device_schemas(config)
                 return
             assert runtime.supports_device_schemas(config)
-            queued = scenario in ("queued", "queued_synthetic")
+            queued = scenario in ("queued", "queued_synthetic", "queued_abort")
             groups = ("browser", "keyboard_mouse") if queued else ("browser",)
             token = host.gateway.issue("commission", supports_images=True, first_turn_groups=groups)
             spec = make_spec(tmp_path, model=config, gateway=GatewaySpec(url=url, token=token))
@@ -171,6 +203,8 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
                 assert control_calls == [(2, True, True), (3, True, False)]
                 assert len(list_calls) == 2
                 assert list_calls[0]["wanted"] == ("browser",) and list_calls[0]["idle_device_cycle"] is True
+                assert [("summary" if sample["summary"] else sample.get("http_status", 200))
+                        for sample in snapshots if sample["phase"] == "second"] == ["summary", "summary", 400, "summary", 200]
                 regular = [names for stage, summary, names, _ in seen if stage == "second" and not summary]
                 assert len(regular) == 2 and all("mcp__gateway__browser_navigate_page" in names for names in regular)
                 # The successful retry showed the instruction and its schemas.
@@ -197,6 +231,22 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
                 assert browser not in seen[-1][2] and computer not in seen[-1][2]
                 start = len(recorder.events)
                 await runtime.prompt(spec.session_id, "帮我打开浏览器")
+                if scenario == "queued_abort":
+                    await asyncio.wait_for(before_request.wait(), 10)
+                    session = runtime._sessions[spec.session_id]
+                    accepted = session.taken
+                    await runtime.steer(spec.session_id, "再打开浏览器")
+                    await runtime.follow_up(spec.session_id, "也截个桌面图")
+                    await runtime.abort(spec.session_id)
+                    await runtime.steer(spec.session_id, "也截个桌面图")
+                    resume_request.set()
+                    result = await recorder.wait_ended(spec.session_id, timeout=40, start=start)
+                    assert result["reason"] == "aborted", result
+                    assert session.device_intents == {"browser": accepted}
+                    phase = "after_abort"
+                    await turn("做完后告诉我")
+                    assert browser in seen[-1][2] and computer not in seen[-1][2]
+                    return
                 await runtime.steer(spec.session_id, "也截个桌面图", human=scenario == "queued")
                 await runtime.follow_up(spec.session_id, "做完后告诉我")
                 result = await recorder.wait_ended(spec.session_id, timeout=40, start=start)
