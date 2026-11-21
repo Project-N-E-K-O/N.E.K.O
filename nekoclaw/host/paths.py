@@ -116,9 +116,9 @@ def worktree_name(value: str) -> str:
 
     The name is a directory's and a part of a ref name too: letters, digits,
     ``-`` and ``_`` only, starting with a letter or digit, at most 64
-    characters.
+    characters, and not a name Windows reads as a device (``CON``, ``NUL``...).
     """
-    if not isinstance(value, str) or not _WORKTREE_NAME.fullmatch(value):
+    if not isinstance(value, str) or not _WORKTREE_NAME.fullmatch(value) or _reserved(value):
         raise ValueError(f"worktree name {value!r} must be letters, digits, '-' and '_' (at most 64)")
     return value
 

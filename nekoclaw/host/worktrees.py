@@ -513,11 +513,7 @@ class WorktreeManager:
             if now.skipped:
                 listed = await self._git(worktree.path, "ls-tree", "-r", "-z", "--name-only", conflict.merged_tree)
                 paths = [_decode(name) for name in listed.stdout.split(b"\0") if name]
-                hit = [
-                    name
-                    for name in now.skipped
-                    if any(path == name.rstrip("/") or path.startswith(name.rstrip("/") + "/") for path in paths)
-                ]
+                hit = [name for name in now.skipped if any(_overlap(path, name.rstrip("/")) for path in paths)]
                 if hit:
                     raise WorktreeError(
                         f"preparing would overwrite what only the worktree has (left out as too large, or a "
@@ -892,7 +888,9 @@ class WorktreeManager:
                 result_tree=result.tree,
                 base=base,
             )
-        current = await self._snapshot(root, "nekoclaw: project before landing")
+        # A large file landed earlier is the project's now too: kept, not
+        # taken for deleted on this side either.
+        current = await self._snapshot(root, "nekoclaw: project before landing", base)
         merged = await self._git(
             root,
             "merge-tree",
@@ -1004,7 +1002,11 @@ class WorktreeManager:
             left = restoring.result()
             keep = bool(left)
             if cancelled:
-                raise asyncio.CancelledError
+                stopped = asyncio.CancelledError()
+                stopped.add_note(f"the landing failed ({detail}) and its files were put back")
+                if left:
+                    stopped.add_note(f"not put back: {', '.join(left)}; their copies are in {backup}")
+                raise stopped
             return MergeResult(
                 "failed", detail=detail, left_changed=tuple(left), kept_copies=str(backup) if keep else "", **counted
             )
@@ -1254,6 +1256,11 @@ def parse_git_version(text: str) -> tuple[int, int, int] | None:
 def _worktree_id(target: Path) -> str:
     """Return the id a worktree at ``target`` has: its directory's name (``paths.worktree_name``)."""
     return worktree_name(target.name)
+
+
+def _overlap(left: str, right: str) -> bool:
+    """Return whether two repository paths are the same, or one is inside the other."""
+    return left == right or left.startswith(right + "/") or right.startswith(left + "/")
 
 
 def _start_ref(worktree_id: str) -> str:

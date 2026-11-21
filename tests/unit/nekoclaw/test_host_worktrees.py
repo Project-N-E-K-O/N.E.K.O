@@ -2081,3 +2081,91 @@ def test_worktree_dir_takes_only_worktree_names(tmp_path: Path) -> None:
         with pytest.raises(ValueError):
             paths.worktree_dir(bad)
     assert paths.worktree_dir("ok-1_A").name == "ok-1_A"
+
+
+# -- review round 8 -------------------------------------------------------------
+
+
+async def test_a_large_landed_file_changed_again_lands_again(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_UNTRACKED_MAX_BYTES", 1000)
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "data.bin", b"s" * 500)
+    assert (await manager.merge_back(tree)).status == "landed"
+    write(tree.path / "data.bin", b"L" * 2000)
+    assert (await manager.merge_back(tree)).status == "landed"
+    write(tree.path / "data.bin", b"M" * 2000)
+    third = await manager.merge_back(tree)
+    assert third.status == "landed", third.conflicts
+    assert read(repo / "data.bin") == b"M" * 2000
+
+
+async def test_preparing_does_not_replace_a_directory_holding_what_only_the_worktree_has(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_UNTRACKED_MAX_BYTES", 1000)
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "data" / "blob.bin", b"W" * 2000)
+    write(tree.path / "a.txt", "worktree\n")
+    write(repo / "data", "a file where the worktree has a directory\n")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    with pytest.raises(WorktreeError) as raised:
+        await manager.prepare_conflicts(tree, conflict)
+    assert "data/blob.bin" in str(raised.value)
+    assert read(tree.path / "data" / "blob.bin") == b"W" * 2000
+
+
+def test_paths_overlap() -> None:
+    assert worktrees._overlap("data", "data")
+    assert worktrees._overlap("data/blob.bin", "data")
+    assert worktrees._overlap("data", "data/blob.bin")
+    assert not worktrees._overlap("database", "data")
+    assert not worktrees._overlap("data", "database/x")
+
+
+async def test_cancelled_while_putting_back_says_what_could_not_be(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    import threading
+    import time
+
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "merged a\n")
+    write(tree.path / "b.txt", "merged b\n")
+    original = manager._apply
+
+    async def then_fail(root: Path, patch: bytes) -> Any:
+        await original(root, patch)
+        return worktrees._Run(1, b"", b"simulated")
+
+    real_restore_one = worktrees._restore_one
+    started = threading.Event()
+
+    def slow_and_stuck_on_b(root: Path, entry: Any) -> bool:
+        started.set()
+        time.sleep(0.3)
+        return False if entry.name == "b.txt" else real_restore_one(root, entry)
+
+    monkeypatch.setattr(manager, "_apply", then_fail)
+    monkeypatch.setattr(worktrees, "_restore_one", slow_and_stuck_on_b)
+    landing = asyncio.ensure_future(manager.merge_back(tree))
+    await asyncio.to_thread(started.wait, 30)
+    landing.cancel()
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await landing
+    notes = " ".join(getattr(raised.value, "__notes__", []))
+    assert "b.txt" in notes and "copies are in" in notes
+    kept = notes.split("copies are in ")[1].strip()
+    assert (Path(kept) / "manifest.json").exists()
+    shutil.rmtree(kept)
+
+
+@pytest.mark.parametrize("name", ["CON", "nul", "COM1", "Aux"])
+def test_worktree_names_are_not_devices(name: str) -> None:
+    from nekoclaw.host.paths import worktree_name
+
+    with pytest.raises(ValueError):
+        worktree_name(name)
