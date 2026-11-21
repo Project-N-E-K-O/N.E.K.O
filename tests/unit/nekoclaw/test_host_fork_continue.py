@@ -907,3 +907,57 @@ async def test_a_copy_no_runtime_holds_any_more_is_handed_back_at_once(hosts, tm
     monkeypatch.setattr(manager, "_runtime_of", runtime_of)
     release.set()
     assert (await wait_status(host, second.id, "done")).session_id == first.session_id
+
+
+
+async def test_a_copy_still_knows_which_commission_it_opened_last_once_that_one_was_handed_back(ledger):
+    first, _ = await ledger.create(lanlan_name="Lan", title="a", dispatch_text="a", user_text="a", source="dispatch")
+    stuck, _ = await ledger.create(lanlan_name="Lan", title="b", dispatch_text="b", user_text="b", source="dispatch")
+    later, _ = await ledger.create(lanlan_name="Lan", title="c", dispatch_text="c", user_text="c", source="dispatch")
+    first, main = await ledger.give_session(first.id, kind="project", name="p")
+    copy = await ledger.create_session(lanlan_name="Lan", kind="fork", forked_from=main.id, name="p/fork", project="p")
+    await ledger.update(stuck.id, session_id=copy.id)
+    await ledger.update(later.id, session_id=copy.id)
+    await ledger.append_event(stuck.id, "opened", {"session_id": copy.id})
+    await ledger.append_event(later.id, "opened", {"session_id": copy.id})
+    # The later one was handed back to the session itself: the copy was at it last all the same.
+    await ledger.update(later.id, session_id=main.id)
+    assert await ledger.opened_last(copy.id) == later.id
+    assert await ledger.opened_last(main.id) is None
+
+
+async def test_a_copy_whose_run_is_over_and_cannot_be_closed_at_once_is_closed_by_the_host(hosts, tmp_path, monkeypatch):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        RENAME: ScriptedLLM(
+            [
+                [call("write", {"file_path": "chart.py", "content": "x"}, "call-1"), finish("tool_calls")],
+                # Writes down what it found and ends its run.
+                [say("It is in chart.py."), finish()],
+                _report("renamed", "call-2"),
+            ]
+        ),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    first = await _export_at_work(host, scripts)
+    runtime = host.task_agents._runtimes.builtin()
+    close = runtime.close
+    failed: list[str] = []
+
+    async def failing_once(session_id: str) -> None:
+        if session_id != first.session_id and not failed:
+            failed.append(session_id)
+            raise RuntimeError("the runtime is busy")
+        await close(session_id)
+
+    monkeypatch.setattr(runtime, "close", failing_once)
+    second = await _dispatch(host, RENAME)
+    await wait_until(lambda: _handed_back(host, second.id), what="the hand-back")
+    assert failed and len(scripts[RENAME].requests) == 2
+    release.set()
+    done = await wait_status(host, second.id, "done")
+    assert done.session_id == first.session_id
+    # Handed back once: queued for the session itself once.
+    queued = [event for event in await host.ledger.events(second.id) if event.type == "status" and event.payload.get("to") == "queued"]
+    assert len([event for event in queued if "handed back" in str(event.payload.get("reason"))]) == 1
