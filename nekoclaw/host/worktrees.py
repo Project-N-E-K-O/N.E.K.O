@@ -1319,7 +1319,7 @@ async def _settle(future: asyncio.Future) -> bool:  # type: ignore[type-arg]
             await asyncio.shield(future)
         except asyncio.CancelledError:
             cancelled = True
-        except BaseException:  # the future's own failure; the caller reads it
+        except Exception:  # the future's own failure; the caller reads it
             break
     return cancelled
 

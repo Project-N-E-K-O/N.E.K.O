@@ -1974,7 +1974,8 @@ async def test_putting_back_after_a_failed_write_is_not_cut_short(
     started = threading.Event()
     slow_restore(monkeypatch, started)
     landing = asyncio.ensure_future(manager.merge_back(tree))
-    assert await asyncio.to_thread(started.wait, 30)  # written, failed, putting back
+    began = await asyncio.to_thread(started.wait, 30)
+    assert began  # written, failed, putting back
     assert read(repo / "a.txt") == b"merged\n"
     landing.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -2006,7 +2007,8 @@ async def test_a_second_cancellation_does_not_keep_the_start_from_going_back(
     landing = asyncio.ensure_future(manager.merge_back(tree))
     await asyncio.wait_for(moved.wait(), 30)
     landing.cancel()  # the first: putting back begins
-    assert await asyncio.to_thread(started.wait, 30)
+    began = await asyncio.to_thread(started.wait, 30)
+    assert began
     landing.cancel()  # the second, while putting back
     with pytest.raises(asyncio.CancelledError):
         await landing
@@ -2155,7 +2157,8 @@ async def test_cancelled_while_putting_back_says_what_could_not_be(
     monkeypatch.setattr(manager, "_apply", then_fail)
     monkeypatch.setattr(worktrees, "_restore_one", slow_and_stuck_on_b)
     landing = asyncio.ensure_future(manager.merge_back(tree))
-    assert await asyncio.to_thread(started.wait, 30)
+    began = await asyncio.to_thread(started.wait, 30)
+    assert began
     landing.cancel()
     with pytest.raises(asyncio.CancelledError) as raised:
         await landing
