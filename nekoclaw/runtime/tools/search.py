@@ -434,14 +434,15 @@ def preview_line(line: str, max_bytes: int = GREP_MAX_LINE_BYTES, *, match_start
 
 def _legacy_readline(source):
     # ASCII headers can extend beyond the leading sample. Detect on the first
-    # non-UTF-8 line. Valid UTF-8 lines keep their original encoding.
+    # non-UTF-8 line. Distinguish a damaged UTF-8 line from a legacy document.
     utf8 = codecs.getincrementaldecoder("utf-8")()
     legacy = None
     encoding = None
     detected = False
+    document_encoding = False
 
     def readline(size):
-        nonlocal legacy, encoding, detected
+        nonlocal legacy, encoding, detected, document_encoding
         raw = source.readline(size)
         end = not raw or raw.endswith(b"\n")
         if legacy is None:
@@ -454,13 +455,21 @@ def _legacy_readline(source):
                 if not detected:
                     sample = raw + source.peek(BINARY_SAMPLE_BYTES)[:BINARY_SAMPLE_BYTES]
                     complete, separator, _ = sample.rpartition(b"\n")
-                    encoding = detect_legacy_encoding(complete if separator and complete else raw)
+                    sample = complete if separator and complete else raw
+                    encoding = detect_legacy_encoding(sample)
+                    if encoding:
+                        decoded = sample.decode("utf-8", errors="surrogateescape")
+                        invalid = sum(0xDC80 <= ord(char) <= 0xDCFF for char in decoded)
+                        # A single bad byte is local damage. When most non-ASCII
+                        # characters fail UTF-8, use the detected file encoding
+                        # even for byte pairs that happen to be valid in both.
+                        document_encoding = invalid > 1 and invalid * 2 >= sum(not c.isascii() for c in decoded)
                     detected = True
                 if encoding is None:
                     return raw
                 legacy = codecs.getincrementaldecoder(encoding)(errors="replace")
         converted = legacy.decode(raw, final=end).encode("utf-8")
-        if end:
+        if end and not document_encoding:
             legacy = None
         return converted
 

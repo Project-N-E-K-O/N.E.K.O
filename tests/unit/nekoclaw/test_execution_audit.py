@@ -212,3 +212,17 @@ def test_bad_byte_in_large_utf8_log_preserves_later_utf8_lines(tmp_path, monkeyp
                                 search._Budget(threading.Event(), time.monotonic() + 15),
                                 case_insensitive_globs=False)
     assert [m.line for m in matches] == ["café résumé"]
+
+
+def test_established_gbk_is_used_for_a_line_also_valid_as_utf8(tmp_path):
+    import threading
+    import time
+    import regex
+    from nekoclaw.runtime.tools import search
+
+    document = tmp_path / "routes.txt"
+    document.write_bytes(("配置说明：这是一个使用国标编码保存的文本文件。\n" * 2000 + "route 路\n").encode("gbk"))
+    matches = search.grep_files(document, regex.compile("路"), None, tmp_path,
+                                search._Budget(threading.Event(), time.monotonic() + 15),
+                                case_insensitive_globs=False)
+    assert [m.line for m in matches] == ["route 路"]
