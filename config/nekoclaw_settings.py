@@ -437,6 +437,59 @@ with, and a wake would keep a commission in it under way. The tools stay in
 what the model is told of (as in the session they were copied from, so a
 provider's cache of that is used) and answer that they are not available."""
 
+# -- carrying on in a copy of a project's session ------------------------------
+
+TASK_AGENT_FORK_CONTINUE_ENABLED = True
+"""Whether a commission of a project whose session is held by another one (at
+work, or waiting for the user) is worked on in a copy of that session
+(``fork_session``) instead of waiting for it. The copy reads, searches and
+answers, as every copy does (``TASK_AGENT_FORK_WITHHELD_TOOLS``); a commission
+that needs a change there is handed back to the session itself, with what the
+copy found, and waits for it there as it would have. One that rests does not
+hold its session, so nothing waits behind it in the first place."""
+
+TASK_AGENT_FORK_CONTINUE_MAX_PER_SESSION = 3
+"""How many commissions may be carried on in copies of one session at once,
+looked at when a copy is to be made for one: past it, the next waits for the
+session itself. Each takes a place among the task agents at work like any
+other; one that finds no place free waits too. Not a limit on what is at work
+in copies made before: a commission taken up again in its copy (the user
+answered it, or said more of one that is done there) is, and counts against
+the places of all task agents only."""
+
+TASK_AGENT_FORK_CONTINUE_HOT_SECONDS = 300.0
+"""A session whose last model request was made this recently has the head of
+its requests in a provider's cache, most likely (Anthropic keeps it five
+minutes, OpenAI five to ten): a copy reads it from there, whatever its length."""
+
+TASK_AGENT_FORK_CONTINUE_COLD_MAX_TOKENS = 60000
+"""Past that time, a session whose conversation is longer than this is not
+copied, and the commission waits for it: every request of the copy would send
+all of it at full price, where waiting sends it from the cache of the
+commission at work before it."""
+
+TASK_AGENT_FORK_HAND_BACK_TOOLS = ("write", "edit", "bash", "pwsh", "subagent", "capability_call")
+"""The tools whose call in a copy hands the commission back to the session
+itself: it needs a file written, a command run, a capability called, or a
+task agent started, which a copy does not do. The others the copy is opened
+without (writing to the task agents' space, to other sessions, setting a
+wake, asking another session) answer that they are not available, and the
+commission goes on in the copy."""
+
+TASK_AGENT_FORK_HAND_BACK_REQUESTS = 1
+"""How many model requests a copy gets, once it called one of those tools, to
+write down what it found for the session itself."""
+
+TASK_AGENT_FORK_FINDINGS_MAX_TOKENS = 1500
+"""How much of what the copy wrote down is carried back to the session
+itself (as much as one note from another session)."""
+
+TASK_AGENT_FORKED_WORK_MAX_ITEMS = 5
+TASK_AGENT_FORKED_WORK_MAX_TOKENS = 600
+"""What a session is told of the commissions copies of it finished while
+another was at work in it, with the next commission opened in it: at most
+this many, the most recent first, within this many tokens."""
+
 # -- summing up a session nothing is at work in -------------------------------
 
 TASK_AGENT_IDLE_COMPACT_ENABLED = True

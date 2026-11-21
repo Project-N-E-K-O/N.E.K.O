@@ -748,6 +748,24 @@ def _hour_used(conn: sqlite3.Connection, from_session: str, kind: str, now: floa
     return min(3600.0, max(0.0, float(freed["created_at"]) + 3600.0 - now))
 
 
+# The session an ``opened`` event was taken in: the one it names, or else
+# the one its commission is worked on in (in a query that joins the two).
+_OPENED_IN = (
+    "COALESCE(CASE WHEN json_valid(events.payload) THEN json_extract(events.payload, '$.session_id') END, "
+    "commissions.session_id)"
+)
+# Whether a session (``copy``, an SQL expression) is a copy the host made to
+# carry a commission on in: that commission's ``carried_on_in_copy`` event
+# names it. The commission is the copy's, or the session's it was copied from
+# (``source``) once it was handed back; looked for among those two sessions'
+# commissions only, which the ledger finds by session.
+_CARRIED_IN = (
+    "EXISTS (SELECT 1 FROM commissions AS made JOIN events AS carried ON carried.commission_id = made.id "
+    "WHERE made.session_id IN ({copy}, {source}) AND carried.type = 'carried_on_in_copy' "
+    "AND json_valid(carried.payload) AND json_extract(carried.payload, '$.session_id') = {copy})"
+)
+
+
 def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
@@ -3079,17 +3097,108 @@ class Ledger:
         the opening message it took last. A commission that got stuck lets
         its session go on with the next; taken up again after that, it is
         no longer the one its session is at.
+
+        Only what this session took counts: a commission that was begun in
+        a copy of it and handed back (``TaskAgentManager``) took its
+        opening message there, which this session never saw. An ``opened``
+        event names the session it was taken in.
         """
 
         def work(conn: sqlite3.Connection) -> str | None:
+            # Among the commissions of this session and of the session it was
+            # copied from, if it is a copy: one that took its opening message
+            # in a copy and was handed back is the other one's by now.
             row = conn.execute(
                 "SELECT events.commission_id FROM events "
                 "JOIN commissions ON commissions.id = events.commission_id "
-                "WHERE commissions.session_id = ? AND events.type = 'opened' "
+                "WHERE commissions.session_id IN (?, (SELECT forked_from FROM sessions WHERE id = ?)) "
+                f"AND events.type = 'opened' AND {_OPENED_IN} = ? "
                 "ORDER BY events.rowid DESC LIMIT 1",
-                (session_id,),
+                (session_id, session_id, session_id),
             ).fetchone()
             return str(row["commission_id"]) if row is not None else None
+
+        return await self.run(work)
+
+    async def opened_in(self, commission_id: str, session_id: str) -> float | None:
+        """Return when a session first took the opening message of a commission; None when it never did.
+
+        Like ``first_event_at(commission_id, "opened")``, for one session:
+        a commission begun in a copy of a session and handed back to the
+        session itself is opened anew there.
+        """
+
+        def work(conn: sqlite3.Connection) -> float | None:
+            row = conn.execute(
+                "SELECT events.ts FROM events JOIN commissions ON commissions.id = events.commission_id "
+                f"WHERE events.commission_id = ? AND events.type = 'opened' AND {_OPENED_IN} = ? "
+                "ORDER BY events.seq LIMIT 1",
+                (commission_id, session_id),
+            ).fetchone()
+            return row["ts"] if row is not None else None
+
+        return await self.run(work)
+
+    async def filed_order(self, commission_ids: list[str]) -> dict[str, int]:
+        """Return, for each of these commissions on record, a number that says in which order they were filed.
+
+        The order the ledger took them in (its row numbers): no two share
+        one, also where they were filed within the same tick of the clock.
+        """
+        ids = list(dict.fromkeys(commission_ids))
+        if not ids:
+            return {}
+
+        def work(conn: sqlite3.Connection) -> dict[str, int]:
+            marks = ", ".join("?" for _ in ids)
+            rows = conn.execute(f"SELECT id, rowid AS filed FROM commissions WHERE id IN ({marks})", ids).fetchall()
+            return {str(row["id"]): int(row["filed"]) for row in rows}
+
+        return await self.run(work)
+
+    async def carried_on_in(self, session_id: str) -> bool:
+        """Return whether a session is a copy the host made to carry a commission on in (``TaskAgentManager``).
+
+        Told by the ``carried_on_in_copy`` event of the commission it was
+        made for, which names the copy: that commission may be the session
+        itself's by now (handed back), and a later one that follows it up
+        in the copy has no such event of its own.
+        """
+
+        def work(conn: sqlite3.Connection) -> bool:
+            row = conn.execute(
+                f"SELECT 1 FROM sessions WHERE id = ? AND {_CARRIED_IN.format(copy='sessions.id', source='sessions.forked_from')}",
+                (session_id,),
+            ).fetchone()
+            return row is not None
+
+        return await self.run(work)
+
+    async def forked_work(self, session_id: str, *, limit: int) -> list[Commission]:
+        """Return the commissions copies of a session finished that the session was not told of yet, the most recent first.
+
+        Those a commission of the session's project was carried on in
+        (``TaskAgentManager``): no task agent's, which leaves out the
+        copies that answered a question (filed under the commission that
+        asked) as well. Done or stuck, with what came of them. One the
+        session was told of has a ``told_to_session`` event (written once
+        the session took the message that told it).
+        """
+
+        def work(conn: sqlite3.Connection) -> list[Commission]:
+            rows = conn.execute(
+                "SELECT commissions.* FROM commissions JOIN sessions ON sessions.id = commissions.session_id "
+                "WHERE sessions.forked_from = ? AND sessions.kind = 'fork' AND commissions.parent_id IS NULL "
+                "AND commissions.status IN ('done', 'blocked') "
+                # In a copy made to carry a commission on in, not one made
+                # by other means.
+                f"AND {_CARRIED_IN.format(copy='sessions.id', source='sessions.forked_from')} "
+                "AND NOT EXISTS (SELECT 1 FROM events WHERE events.commission_id = commissions.id "
+                "AND events.type = 'told_to_session') "
+                "ORDER BY commissions.updated_at DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+            return [item for item in (_commission(row) for row in rows) if item is not None]
 
         return await self.run(work)
 
