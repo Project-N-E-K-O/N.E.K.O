@@ -129,6 +129,34 @@ async def test_a_line_the_user_wrote_is_not_written_over_and_the_others_are(worl
     assert (await world.reviews(commission.id))[0]["card"] == ["duty", "summary"]
 
 
+async def test_what_the_session_said_it_takes_is_not_written_over_and_the_review_is_told_which_lines_are_not_its(world):
+    commission = await _in_project(world, "Budget app", description="a budget")
+    await world.space.describe_project("Budget app", "我们家的记账本", by="user")
+    await world.ledger.write_card(commission.session_id, by="self", duty="the budget app and its charts")
+    await world.ledger.write_card(commission.session_id, by="user", title="记账管家")
+    await world.ledger.write_card(commission.session_id, by="review", summary="Made the table.")
+    world.llm.answers[TIER_REVIEW] = [{"review": "It was done.", "card": {**CARD, "description": "Something else."}}]
+    await world.work(commission.id)
+
+    await world.end(commission.id)
+
+    # What the user wrote and what the session said of itself stay; the summary is the review's to write.
+    assert await _card(world, commission.session_id) == (
+        "记账管家", "user", "the budget app and its charts", "self",
+        "Sorted the Downloads photos by month. Renaming is still open.", "review",
+    )
+    assert (await world.reviews(commission.id))[0]["card"] == ["summary"]
+    assert (await world.space.get_project("Budget app")).description == "我们家的记账本"
+    user = world.llm.last(TIER_REVIEW)[1]["content"]
+    kept = " (not yours to change: leave it empty)"
+    assert (
+        f"title: 记账管家{kept}\n"
+        f"duty: the budget app and its charts{kept}\n"
+        "summary: Made the table.\n"
+        f"description: 我们家的记账本{kept}\n\n"
+    ) in user
+
+
 async def test_a_line_the_review_leaves_empty_is_left_as_it_is(world):
     world.llm.answers[TIER_REVIEW] = [{"review": "It was done.", "card": {"title": "", "duty": "  ", "summary": "Sorted them."}}]
     commission = await world.file()
@@ -202,8 +230,10 @@ async def test_what_a_project_is_for_is_written_by_one_of_three_and_only_where_t
     await world.space.touch_project("Budget app")
     assert (await world.space.get_project("Budget app")).description_by == ""
 
-    with pytest.raises(ValueError, match="unknown author"):
-        await world.space.describe_project("Budget app", "x", by="model")
+    for nobody in ("model", "self"):
+        # (A session says what it takes itself, not what its project is for.)
+        with pytest.raises(ValueError, match="unknown author"):
+            await world.space.describe_project("Budget app", "x", by=nobody)
     assert await world.space.describe_project("No such project", "x", by="review") is None
     assert not (world.root / "projects" / "No such project").exists()
     # Nor of the folder commissions of no project are filed under, which is there and has a record.

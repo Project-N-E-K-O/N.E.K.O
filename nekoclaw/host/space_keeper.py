@@ -857,19 +857,27 @@ class SpaceKeeper:
         if session is None:
             return texts.TASK_AGENT_REVIEW_NO_CARD
         nothing = texts.TASK_AGENT_REVIEW_NOTHING
-        about = ""
+        about, about_by = "", ""
         project = commission.project or DEFAULT_PROJECT
         if project != DEFAULT_PROJECT:
             try:
                 found = await self._space.get_project(project)
             except (SpaceError, OSError, ValueError):
                 found = None
-            about = found.description if found is not None else ""
+            if found is not None:
+                about, about_by = found.description, found.description_by
+        # A line the user wrote, or the session said of itself, is not a
+        # review's to write (``Ledger.write_card``): the model is told so,
+        # and spends nothing on a line that would be dropped.
+
+        def shown(text: str, by: str) -> str:
+            return (text or nothing) + (texts.TASK_AGENT_REVIEW_CARD_KEPT if by in ("user", "self") else "")
+
         return texts.TASK_AGENT_REVIEW_CARD.format(
-            title=session.title or nothing,
-            duty=session.duty or nothing,
-            summary=session.summary or nothing,
-            description=about or nothing,
+            title=shown(session.title, session.title_by),
+            duty=shown(session.duty, session.duty_by),
+            summary=shown(session.summary, session.summary_by),
+            description=shown(about, about_by),
         )
 
     async def _keep_card(self, commission: Commission, data: dict[str, Any], project: str) -> list[str]:
@@ -879,7 +887,7 @@ class SpaceKeeper:
         session's card (``Ledger.write_card``), and what the project is
         for to the project's record (``TaskAgentSpace.describe_project``),
         each as written by a review: a line the user wrote stays as it
-        is. A line the model left empty, or gave as something other than
+        is, and so does what the session said it takes. A line the model left empty, or gave as something other than
         a text, is left alone. A card that is missing or is not an object
         writes nothing; the review itself is kept all the same.
         """

@@ -1017,10 +1017,11 @@ included. (600 of it came with the card of the session, which the review is
 shown and writes anew in the same call: some 340 tokens of instructions,
 and the card as it stands.)"""
 
-TASK_AGENT_REVIEW_CARD_MAX_TOKENS = 300
+TASK_AGENT_REVIEW_CARD_MAX_TOKENS = 330
 """Cap on the card of the session as the review is shown it: its title,
 what it takes, its summary and what its project is about, each within the
-cap it is kept with, and the words around them."""
+cap it is kept with, the words around them, and after a line that is not
+the review's to write a few words that say so."""
 
 TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS = 3100
 """Cap on the account of what the task agent did within that input. Of a

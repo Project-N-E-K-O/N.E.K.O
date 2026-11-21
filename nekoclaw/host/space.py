@@ -76,7 +76,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 
-from nekoclaw.host.ledger import CARD_AUTHORS, Commission
+from nekoclaw.host.ledger import Commission
 from nekoclaw.host.paths import DEFAULT_PROJECT, SpacePaths, safe_segment
 
 logger = logging.getLogger(__name__)
@@ -193,6 +193,10 @@ class Entry:
         return data
 
 
+# Who may have written what a project is for; see ``Project.description_by``.
+DESCRIPTION_AUTHORS: tuple[str, ...] = ("creator", "review", "user")
+
+
 @dataclass(frozen=True, slots=True)
 class Project:
     """One project: ``project.json`` of its directory."""
@@ -201,7 +205,7 @@ class Project:
     description: str = ""
     # Where its files are: the working directory of the commission it began with.
     workdir: str | None = None
-    # Who wrote ``description`` (``ledger.CARD_AUTHORS``): whoever made the
+    # Who wrote ``description`` (``DESCRIPTION_AUTHORS``): whoever made the
     # project, the review of one of its commissions, or the user, whose
     # words no review writes over (``TaskAgentSpace.describe_project``).
     # Empty while there is none, and in a record written before this.
@@ -5810,7 +5814,7 @@ class TaskAgentSpace:
             name=str(data.get("name") or directory.name) if archive_year is not None else directory.name,
             description=_one_line(data.get("description")),
             workdir=str(data["workdir"]) if isinstance(data.get("workdir"), str) and data["workdir"] else None,
-            description_by=str(data["description_by"]) if data.get("description_by") in CARD_AUTHORS else "",
+            description_by=str(data["description_by"]) if data.get("description_by") in DESCRIPTION_AUTHORS else "",
             status=PROJECT_ARCHIVED if archive_year is not None else PROJECT_ACTIVE,
             created_at=number("created_at"),
             last_commission_at=number("last_commission_at"),
@@ -6149,7 +6153,7 @@ class TaskAgentSpace:
     async def describe_project(self, name: str, description: str, *, by: str) -> Project | None:
         """Write what a project is for, and who says so; returns the project, or None when nothing was written.
 
-        ``by`` is one of ``ledger.CARD_AUTHORS``. What the user wrote is
+        ``by`` is one of ``DESCRIPTION_AUTHORS``. What the user wrote is
         the user's: only ``by="user"`` writes over it. Nothing is written
         for a project that is not there (archived ones are not brought
         back for this), for ``_daily``, for an empty description, or when
@@ -6158,7 +6162,7 @@ class TaskAgentSpace:
         """
         from config.nekoclaw_settings import SPACE_PROJECT_DESCRIPTION_MAX_TOKENS
 
-        if by not in CARD_AUTHORS:
+        if by not in DESCRIPTION_AUTHORS:
             raise ValueError(f"unknown author of a description {by!r}")
         safe_segment(name, "project")
         text = _cut(_one_line(redact(description)), SPACE_PROJECT_DESCRIPTION_MAX_TOKENS)

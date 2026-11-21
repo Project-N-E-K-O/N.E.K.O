@@ -494,9 +494,133 @@ async def test_a_card_is_written_line_by_line_and_what_the_user_wrote_stays(tmp_
             await ledger.write_card(session.id, by="user", preset="scout")
         # A session that is not there: nothing is written, and nothing raised.
         assert await ledger.write_card("nobody", by="user", title="x") == (None, ())
-        assert CARD_AUTHORS == ("creator", "review", "user")
+        assert CARD_AUTHORS == ("creator", "review", "self", "user")
     finally:
         await ledger.close()
+
+
+async def test_what_a_session_says_it_takes_is_written_over_by_itself_and_the_user_and_by_no_review(tmp_path):
+    ledger = Ledger(tmp_path / "ledger.db")
+    try:
+        session = await ledger.create_session(lanlan_name="Lan", name="reports", kind="project", project="reports", duty="reports")
+        assert session.duty_by == "creator"
+
+        # A review writes over what whoever made the session wrote, and over what a review wrote.
+        kept, written = await ledger.write_card(session.id, by="review", duty="the report page")
+        assert written == ("duty",) and (kept.duty, kept.duty_by) == ("the report page", "review")
+        kept, written = await ledger.write_card(session.id, by="review", duty="the report page and its exports")
+        assert written == ("duty",) and kept.duty_by == "review"
+        # The session says it itself: from then on a review leaves it, and whoever made it too.
+        kept, written = await ledger.write_card(session.id, by="self", duty="monthly reports and their exports")
+        assert written == ("duty",) and (kept.duty, kept.duty_by) == ("monthly reports and their exports", "self")
+        kept, written = await ledger.write_card(session.id, by="review", duty="reports", title="Report keeper")
+        assert written == ("title",) and (kept.duty, kept.duty_by) == ("monthly reports and their exports", "self")
+        kept, written = await ledger.write_card(session.id, by="creator", duty="reports")
+        assert written == () and kept.duty_by == "self"
+        # It says it anew; then the user does, and it cannot any more.
+        kept, written = await ledger.write_card(session.id, by="self", duty="all reports")
+        assert written == ("duty",) and (kept.duty, kept.duty_by) == ("all reports", "self")
+        kept, written = await ledger.write_card(session.id, by="user", duty="报表和导出")
+        assert written == ("duty",) and (kept.duty, kept.duty_by) == ("报表和导出", "user")
+        kept, written = await ledger.write_card(session.id, by="self", duty="all reports")
+        assert written == () and (kept.duty, kept.duty_by) == ("报表和导出", "user")
+
+        # What it takes is the one line a session writes itself.
+        for line in ("title", "summary"):
+            with pytest.raises(ValueError, match=f"a session does not write the {line} of its card itself"):
+                await ledger.write_card(session.id, by="self", **{line: "x"})
+        with pytest.raises(ValueError, match="a session does not write the title of its card itself"):
+            await ledger.create_session(lanlan_name="Lan", name="x", kind="single", title="x", title_by="self")
+        made = await ledger.create_session(lanlan_name="Lan", name="y", kind="single", duty="odd jobs", duty_by="self")
+        assert made.duty_by == "self"
+    finally:
+        await ledger.close()
+
+
+async def test_a_session_says_what_it_takes_with_its_report(hosts, tmp_path):
+    llm = ScriptedLLM(
+        [
+            [call("report", {"status": "ready", "summary": "sorted", "duty": "sorting and renaming photo folders"}), finish("tool_calls")],
+            [call("report", {"status": "ready", "summary": "sorted again"}), finish("tool_calls")],
+        ]
+    )
+    host = _host(hosts, tmp_path, lambda spec: llm)
+
+    done = await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "done")
+
+    session = await host.ledger.get_session(done.session_id)
+    assert (session.kind, session.duty, session.duty_by) == ("single", "sorting and renaming photo folders", "self")
+    # The report itself is as it always was: what it says the session takes is no part of the outcome.
+    assert done.result_summary == "sorted"
+    reported = [event.payload for event in await host.ledger.events(done.id) if event.type == "report"]
+    assert all("duty" not in payload for payload in reported)
+    assert "duty" in {tool["function"]["name"]: tool["function"] for tool in llm.overrides[0]["tools"]}["report"]["parameters"]["properties"]
+
+
+async def test_what_a_session_says_it_takes_does_not_write_over_the_users_and_it_is_told_so(hosts, tmp_path):
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM())
+    commission, _created = await host.ledger.create(
+        dispatch_text="sort the photos", lanlan_name="Lan", title="sort the photos", source="dispatch", route="task_agent"
+    )
+    commission, session = await host.ledger.give_session(commission.id, kind="single", name="photos", duty="sort the photos")
+    report = host.task_agents._cb_report
+
+    # Nothing said, or nothing that is a text: nothing is written and nothing told.
+    for nothing in ({}, {"duty": ""}, {"duty": "   "}, {"duty": 5}, {"duty": None}, {"duty": ["photos"]}):
+        assert await report(commission.id, {"status": "ready", "summary": "x", **nothing}) is None
+    assert (await host.ledger.get_session(session.id)).duty_by == "creator"
+    assert await report(commission.id, {"status": "ready", "summary": "x", "duty": "photo folders"}) is None
+    assert (await host.ledger.get_session(session.id)).duty_by == "self"
+
+    await host.ledger.write_card(session.id, by="user", duty="我的相册")
+    told = await report(commission.id, {"status": "ready", "summary": "x", "duty": "photo folders"})
+
+    assert told == {"message": presets.CARD_DUTY_IS_THE_USERS}
+    kept = await host.ledger.get_session(session.id)
+    assert (kept.duty, kept.duty_by) == ("我的相册", "user")
+
+
+async def test_a_task_agent_of_another_and_a_copy_do_not_say_what_a_session_takes(hosts, tmp_path, caplog):
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM())
+    lead, _created = await host.ledger.create(
+        dispatch_text="check the tests", lanlan_name="Lan", title="check the tests", source="dispatch", route="task_agent",
+        project="Budget app",
+    )
+    lead, session = await host.ledger.give_session(lead.id, kind="project", name="Budget app", duty="the budget app")
+    child, _created = await host.ledger.create(
+        dispatch_text="look", lanlan_name="Lan", title="look", source="task_agent", route="task_agent", parent_id=lead.id, name="agent-1"
+    )
+    child, theirs = await host.ledger.give_session(child.id, kind="child", name="lead/agent-1", parent_id=session.id, duty="look")
+    copy = await host.ledger.create_session(lanlan_name="Lan", name="Budget app/fork", kind="fork", forked_from=session.id)
+    asked, _created = await host.ledger.create(
+        dispatch_text="where is it", lanlan_name="Lan", title="where is it", source="dispatch", route="task_agent", session_id=copy.id
+    )
+    report = host.task_agents._cb_report
+
+    for commission_id in (child.id, asked.id, "no-such-commission"):
+        assert await report(commission_id, {"status": "ready", "summary": "x", "duty": "everything"}) is None
+    # Left alone, not tried and failed.
+    assert "writing what a session says it takes failed" not in caplog.text
+
+    # A copy is offered the parameter (it has the tools of the session it was copied from), and writes nothing.
+    assert [(await host.ledger.get_session(item.id)).duty for item in (session, theirs, copy)] == ["the budget app", "look", ""]
+    assert await report(lead.id, {"status": "ready", "summary": "x", "duty": "the budget app and its charts"}) is None
+    assert (await host.ledger.get_session(session.id)).duty == "the budget app and its charts"
+
+
+async def test_a_card_that_cannot_be_written_does_not_keep_a_report_from_going_through(hosts, tmp_path, monkeypatch, caplog):
+    llm = ScriptedLLM([[call("report", {"status": "ready", "summary": "sorted", "duty": "photo folders"}), finish("tool_calls")]])
+    host = _host(hosts, tmp_path, lambda spec: llm)
+
+    async def failing(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(host.ledger, "write_card", failing)
+
+    done = await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "done")
+
+    assert done.result_summary == "sorted"
+    assert "writing what a session says it takes failed" in caplog.text
 
 
 async def test_the_lines_of_a_card_are_kept_on_one_line_and_within_their_caps(tmp_path):

@@ -190,6 +190,9 @@ TASK_AGENT_REVIEW_NOTHING = "(none)"
 # The card as the review is shown it. Rendered with str.format; a line
 # nobody wrote reads as TASK_AGENT_REVIEW_NOTHING.
 TASK_AGENT_REVIEW_CARD = "title: {title}\nduty: {duty}\nsummary: {summary}\ndescription: {description}"
+# After a line of the card the review is shown that is not its to write: the
+# user wrote it, or the session said it of itself.
+TASK_AGENT_REVIEW_CARD_KEPT = " (not yours to change: leave it empty)"
 # In place of the card, for a commission whose session has none to write (it
 # was worked on in a copy of a session).
 TASK_AGENT_REVIEW_NO_CARD = "(it has none: leave the lines of card empty)"

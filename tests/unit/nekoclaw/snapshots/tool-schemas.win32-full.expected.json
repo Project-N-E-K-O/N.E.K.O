@@ -504,6 +504,10 @@
       "passive",
       "silent"
      ]
+    },
+    "duty": {
+     "type": "string",
+     "description": "Optional. One line on the kind of work this session takes from now on, for the card the user sees it by: its area and the kind of task, not what was just done. Only when this commission changed that; otherwise leave it out."
     }
    },
    "required": [

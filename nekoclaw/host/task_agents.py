@@ -6487,8 +6487,41 @@ class TaskAgentManager:
 
     async def _cb_report(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         # The report arrives as an event as well; that is where it is acted on.
-        del session_id, payload
-        return None
+        # What it says the session takes from now on (``duty``) is no part of
+        # that event: it is for the session's card, and written here.
+        duty = payload.get("duty")
+        if not isinstance(duty, str) or not duty.strip():
+            return None
+        try:
+            return await self._own_duty(session_id, duty)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the report goes through whatever becomes of the card
+            logger.warning("writing what a session says it takes failed", exc_info=True)
+            return None
+
+    async def _own_duty(self, session_id: str, duty: str) -> dict[str, Any] | None:
+        """Write what a session says it takes on its card; returns what its task agent is told, if anything.
+
+        Only a session with a card of its own to say it on: that of a
+        project, or of a single commission. Not a task agent another one
+        started, and not a copy,
+        which is offered the parameter because it is opened with the
+        tools of the session it was copied from. A line the user wrote
+        stays, and the task agent is told so.
+        """
+        from config.prompts.prompts_nekoclaw_presets import CARD_DUTY_IS_THE_USERS
+
+        commission = await self._ledger.get(self._at_work_in(session_id))
+        if commission is None:
+            return None
+        session = await self._ledger.get_session(commission.session_id)
+        # (Of the kinds another session can address: neither a task agent
+        # another one started nor a copy is one.)
+        if session is None or session.kind not in _ADDRESSED_KINDS:
+            return None
+        _kept, written = await self._ledger.write_card(session.id, by="self", duty=duty)
+        return None if written else {"message": CARD_DUTY_IS_THE_USERS}
 
     async def _cb_note_lesson(
         self, session_id: str, payload: dict[str, Any], action: _SessionAction | None = None,

@@ -128,8 +128,15 @@ SESSION_KINDS: tuple[str, ...] = ("project", "single", "child", "fork")
 # template: it is opened as the session it was copied from, and reads only.
 PRESET_OF_KIND: dict[str, str] = {"project": "boss", "single": "general", "child": "worker", "fork": "shadow"}
 # Who wrote a line of a session's card: whoever made the session, the review
-# of a commission worked on in it, or the user. Empty for a line nobody wrote.
-CARD_AUTHORS: tuple[str, ...] = ("creator", "review", "user")
+# of a commission worked on in it, the session itself (in a report), or the
+# user. Empty for a line nobody wrote. In that order of standing: a line is
+# written over only by one who stands no lower than whoever wrote it
+# (``_CARD_STANDING``). So what the user wrote is the user's, and what the
+# session said of itself a review leaves alone.
+CARD_AUTHORS: tuple[str, ...] = ("creator", "review", "self", "user")
+_CARD_STANDING: dict[str, int] = {"": 0, "creator": 0, "review": 0, "self": 1, "user": 2}
+# The lines a session writes itself: what it takes, and no other.
+CARD_SELF_WRITTEN: frozenset[str] = frozenset({"duty"})
 # The lines of a card, each with a column of its own that says who wrote it
 # (``<line>_by``).
 CARD_FIELDS: tuple[str, ...] = ("title", "duty", "summary")
@@ -527,7 +534,8 @@ class Session:
     # somebody writes one; the name of the preset is shown meanwhile), what
     # kind of work it takes, and what it has done so far. Each with who
     # wrote it (``CARD_AUTHORS``; empty while the line is). Written by
-    # ``Ledger.write_card`` only: what the user wrote stays the user's.
+    # ``Ledger.write_card`` only: what the user wrote stays the user's, and
+    # what the session said it takes is not written over by a review.
     title: str = ""
     title_by: str = ""
     duty: str = ""
@@ -573,6 +581,15 @@ _SESSION_UPDATABLE: frozenset[str] = (
 )
 # How long the name of a preset may be: that of a template (``templates.py``).
 _PRESET_NAME_MAX = 64
+
+
+def _card_author(name: str, by: Any) -> str:
+    """Return who wrote a line of a card, as it is given; raises for one that cannot have written that line."""
+    if by not in CARD_AUTHORS:
+        raise ValueError(f"unknown author of a card line {by!r}")
+    if by == "self" and name not in CARD_SELF_WRITTEN:
+        raise ValueError(f"a session does not write the {name} of its card itself")
+    return str(by)
 
 
 def _card_line(name: str, value: Any) -> str:
@@ -1658,9 +1675,7 @@ class Ledger:
         row["preset"] = preset
         for name in CARD_FIELDS:
             row[name] = _card_line(name, row[name])
-            by = row[f"{name}_by"] or ""
-            if by and by not in CARD_AUTHORS:
-                raise ValueError(f"unknown author of a card line {by!r}")
+            by = _card_author(name, row[f"{name}_by"]) if row[f"{name}_by"] else ""
             # Written by whoever makes the session, unless it says who did.
             row[f"{name}_by"] = (by or "creator") if row[name] else ""
         row["name"] = self._free_name(conn, row["lanlan_name"], row["name"])
@@ -1679,8 +1694,8 @@ class Ledger:
         and ``summary``, each cut to its cap, and ``title_by``, ``duty_by``
         and ``summary_by`` (``CARD_AUTHORS``), which say who wrote the line
         and are ``"creator"`` for a line given without one. A line the
-        user wrote (``"user"``) is not written over by a review later
-        (``write_card``).
+        user wrote (``"user"``) is not written over by a review or by the
+        session later (``write_card``).
         """
         unknown = set(values) - set(_SESSION_COLUMNS)
         if unknown:
@@ -1830,18 +1845,23 @@ class Ledger:
         """Write lines of a session's card; returns the session and which lines were written.
 
         ``lines`` are ``title``, ``duty`` and ``summary`` (``CARD_FIELDS``);
-        ``by`` says who writes (``CARD_AUTHORS``). A line the user wrote is
-        the user's: only ``by="user"`` writes over it, and whatever else
-        is given for it is dropped, with the other lines still written. A
-        line given as None is left alone; an empty one empties the line
-        (and it has no author then). Read and written in one go.
+        ``by`` says who writes (``CARD_AUTHORS``). A line is written over
+        only by one who stands no lower than whoever wrote it: what the
+        user wrote only by the user, what the session wrote of itself
+        (``"self"``, its ``duty`` and no other line) by itself and the
+        user, and what a review or whoever made the session wrote by
+        anyone. What is given for a line that is not to be written over
+        is dropped, with the other lines still written. A line given as
+        None is left alone; an empty one empties the line (and it has no
+        author then). Read and written in one go.
         """
-        if by not in CARD_AUTHORS:
-            raise ValueError(f"unknown author of a card line {by!r}")
         unknown = set(lines) - set(CARD_FIELDS)
         if unknown:
             raise ValueError(f"unknown card lines: {sorted(unknown)}")
         wanted = {name: _card_line(name, value) for name, value in lines.items() if value is not None}
+        for name in wanted:
+            # Whoever writes is one who may write that line.
+            _card_author(name, by)
 
         def work(conn: sqlite3.Connection) -> tuple[Session | None, tuple[str, ...]]:
             current = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
@@ -1850,7 +1870,7 @@ class Ledger:
             changes: dict[str, Any] = {}
             written: list[str] = []
             for name, value in wanted.items():
-                if getattr(current, f"{name}_by") == "user" and by != "user":
+                if _CARD_STANDING[by] < _CARD_STANDING.get(getattr(current, f"{name}_by"), 0):
                     continue
                 changes[name] = value
                 changes[f"{name}_by"] = by if value else ""

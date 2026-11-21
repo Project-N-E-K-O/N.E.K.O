@@ -156,6 +156,10 @@ PRESET_UNKNOWN = "unknown preset {name!r}; the presets a task agent can be start
 # Rendered with str.format: name, reason.
 PRESET_UNUSABLE = "the preset {name!r} cannot be used: {reason}"
 
+# What a task agent is told when it says what its session takes (``duty`` of
+# ``report``) and the user has written that line of the card.
+CARD_DUTY_IS_THE_USERS = "The user wrote what this session takes; that line of its card is left as it is."
+
 # ---------------------------------------------------------------------------
 # The lines of a session's card, as both calls that write one are told of
 # them: one wording, so a card reads the same whoever wrote it.
