@@ -2006,6 +2006,37 @@ async def test_a_session_that_waited_is_not_summed_up_when_the_task_model_is_ano
     assert (await host.ledger.get_session(first.id)).compacted_at is not None
 
 
+async def test_a_length_that_was_owed_from_before_a_summary_does_not_come_back_after_it(hosts, tmp_path, monkeypatch):
+    _idle_on(monkeypatch, after=30.0)
+    summary = [say("## Current Work\n- export added"), _used(7_000, 60), finish()]
+    export = ScriptedLLM([*_long_work("export added"), summary])
+    host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=_small_window)
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    manager._drop_idle_timer(first.id)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
+    # A request of the commission made before the summary, whose usage the ledger could not take then:
+    # it is owed (under the commission's name, not the session's alone, so the summary's own usage
+    # does not take it along), with the length it said, and that is newer than what was written.
+    manager._context_said += 1
+    manager._owe((first.id, first.id), (1, 100, 20, 0, 0), 9_500, manager._context_said)
+    before = await host.ledger.get_session(first.id)
+
+    assert await manager._idle_compact(first.id) is True
+    await wait_until(lambda: not manager._usage_owed, what="what was owed being written")
+    await manager.settle()
+
+    # What it used is counted, and how long the conversation was is not known (the old length is not
+    # written over the unknown one).
+    session = await host.ledger.get_session(first.id)
+    assert session.requests == before.requests + 2
+    assert session.context_tokens == 0
+
+
 async def test_a_session_a_commission_took_while_the_time_was_looked_up_gets_no_timer(hosts, tmp_path, monkeypatch):
     _idle_on(monkeypatch, after=30.0)
     manager = _host(hosts, tmp_path, ScriptedLLM()).task_agents

@@ -423,7 +423,7 @@ async def test_the_user_sets_how_long_a_session_is_idle_before_it_is_summed_up_a
     assert json.loads(path.read_text(encoding="utf-8"))["models"] == {}
 
 
-@pytest.mark.parametrize("seconds", [0, 59, -5, float("nan"), float("inf"), True, "600", 31 * 24 * 3600])
+@pytest.mark.parametrize("seconds", [0, 59, -5, float("nan"), float("inf"), True, "600", 31 * 24 * 3600, 10**400])
 async def test_a_time_that_is_no_usable_number_of_seconds_is_not_set(path, seconds):
     store = ModelCapabilityStore(path)
 
@@ -432,7 +432,7 @@ async def test_a_time_that_is_no_usable_number_of_seconds_is_not_set(path, secon
     assert await store.idle_compact_after(URL, "m") == 24 * 60.0 and not path.exists()
 
 
-@pytest.mark.parametrize("written", ["soon", 5, -1, True, None, [600], 10**12])
+@pytest.mark.parametrize("written", ["soon", 5, -1, True, None, [600], 10**12, 10**400])
 async def test_a_time_written_by_hand_that_is_no_usable_number_of_seconds_counts_as_not_set(path, written):
     _write(path, {"version": 1, "models": {model_key(URL, "m"): {"idle_compact_after": written}}})
     store = ModelCapabilityStore(path)

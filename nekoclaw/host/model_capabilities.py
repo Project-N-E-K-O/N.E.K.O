@@ -355,8 +355,8 @@ class ModelCapabilityStore:
 
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
-        if not math.isfinite(value):
-            return None
+        # The bounds first, and not ``math.isfinite``: that turns an integer into a float, which one
+        # of 400 digits does not survive. A number that is no number (nan) is outside them as well.
         if not TASK_AGENT_IDLE_COMPACT_AFTER_MIN_SECONDS <= value <= TASK_AGENT_IDLE_COMPACT_AFTER_MAX_SECONDS:
             return None
         return float(value)

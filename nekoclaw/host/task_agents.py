@@ -7957,6 +7957,18 @@ class TaskAgentManager:
         elif asked and not cut_short:
             self._idle_compact_failures[session_id] = self._idle_compact_failures.get(session_id, 0) + 1
 
+    async def _length_is_stale(self, session_id: str) -> None:
+        """Have whatever was said of a session's length so far count as older than what is said from now on.
+
+        For a session that was summed up (``Ledger.end_compacting`` writes
+        its length as unknown): what a request made before the summary said
+        of it, and that is owed because the ledger could not take it then,
+        would be written afterwards as the newest and put the old length
+        back. The usage owed stays owed; only its length no longer counts.
+        """
+        async with self._usage_locks.setdefault(session_id, asyncio.Lock()):
+            self._context_written[session_id] = max(self._context_said, self._context_written.get(session_id, 0))
+
     async def _idle_compact_over(
         self,
         session_id: str,
@@ -7989,6 +8001,8 @@ class TaskAgentManager:
             self._note_idle_compact_result(session_id, compacted=compacted, asked=asked, cut_short=cut_short)
             if self._gateway is not None:
                 self._gateway.revoke(grant)
+            if marked and compacted:
+                await self._length_is_stale(session_id)
             if marked:
                 try:
                     await self._ledger.end_compacting(session_id, compacted=compacted)
