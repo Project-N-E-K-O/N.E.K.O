@@ -32,7 +32,7 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary'];
+const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary', 'decision'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
@@ -64,6 +64,7 @@ const MODEL_CONFIG_EXPANSION_PATHS = {
     gameSummary: ['game', 'game-summary'],
     correction: ['correction'],
     emotion: ['emotion'],
+    decision: ['decision'],
     vision: ['vision'],
     agent: ['agent'],
     omni: ['omni'],
@@ -76,6 +77,7 @@ const MODEL_PROVIDER_FIELD_BY_TYPE = {
     gameSummary: 'summary_model',
     correction: 'correction_model',
     emotion: 'emotion_model',
+    decision: 'decision_model',
     vision: 'vision_model',
     agent: 'agent_model',
     omni: 'core_model',
@@ -2891,6 +2893,10 @@ async function loadCurrentApiKey() {
             setSecretInputValue('emotionModelApiKey', data.emotionModelApiKey);
 
             loadImageSettings(data);
+
+            setInputValue('decisionModelUrl', data.decisionModelUrl);
+            setInputValue('decisionModelId', data.decisionModelId);
+            setSecretInputValue('decisionModelApiKey', data.decisionModelApiKey);
             setInputValue('visionModelUrl', data.visionModelUrl);
             setInputValue('visionModelId', data.visionModelId);
             setSecretInputValue('visionModelApiKey', data.visionModelApiKey);
@@ -3659,6 +3665,10 @@ async function save_button_down(e) {
     const emotionModelId = getVal('emotionModelId');
     const emotionModelApiKey = getKeyVal('emotionModelApiKey');
 
+    const decisionModelUrl = getVal('decisionModelUrl');
+    const decisionModelId = getVal('decisionModelId');
+    const decisionModelApiKey = getKeyVal('decisionModelApiKey');
+
     const visionModelUrl = getVal('visionModelUrl');
     const visionModelId = getVal('visionModelId');
     const visionModelApiKey = getKeyVal('visionModelApiKey');
@@ -3738,6 +3748,7 @@ async function save_button_down(e) {
         gameSummaryModelUrl, gameSummaryModelId, gameSummaryModelApiKey,
         correctionModelUrl, correctionModelId, correctionModelApiKey,
         emotionModelUrl, emotionModelId, emotionModelApiKey,
+        decisionModelUrl, decisionModelId, decisionModelApiKey,
         visionModelUrl, visionModelId, visionModelApiKey,
         agentModelUrl, agentModelId, agentModelApiKey,
         omniModelUrl, omniModelId, omniModelApiKey,
@@ -4436,7 +4447,7 @@ function navigateToCustomModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'correction', 'emotion', 'vision', 'image', 'agent', 'omni', 'tts', 'gptsovits'];
+    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'correction', 'emotion', 'decision', 'vision', 'image', 'agent', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
@@ -4547,6 +4558,7 @@ function getCustomModelDisplayLabel(modelType) {
         gameSummary: ['api.gameSummaryModelConfig', '小游戏摘要模型配置'],
         correction: ['api.correctionModelConfig', '纠错模型'],
         emotion: ['api.emotionModelConfig', '情感模型'],
+        decision: ['api.decisionModelConfig', '决策模型'],
         vision: ['api.visionModelConfig', '视觉聊天模型'],
         agent: ['api.agentApiConfigTitle', 'Agent API（需支持视觉功能）'],
         omni: ['api.realtimeModelConfig', '实时全模态模型（Local模式）'],

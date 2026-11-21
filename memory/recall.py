@@ -668,7 +668,95 @@ class MemoryRecallReranker:
         )
 
         set_call_type("memory_recall_rerank")
-        api_config = await config_manager.aget_model_api_config('summary')
+        decision_config: dict | None = None
+        try:
+            decision_config = await config_manager.aget_model_api_config('decision')
+        except Exception:
+            decision_config = None
+
+        from utils.decision_client import (
+            DecisionClient,
+            ScoreQuestion,
+            is_native_decision_protocol,
+        )
+
+        # Fast path: native zero-output Decisions API (e.g. Qwen decision-model-preview,
+        # Gemini gemini-decision-1, OpenAI gpt-6-luna, OpenRouter Decisions). Evaluates
+        # all candidates in one parallel forward pass (~150-250ms, 0 output tokens) and
+        # falls through to the chat-LLM rerank path on any error.
+        if (
+            isinstance(decision_config, dict)
+            and is_native_decision_protocol(decision_config.get('decision_protocol'))
+            and decision_config.get('model')
+        ):
+            try:
+                candidate_ids = list(id_to_obs.keys())
+                state_text = f"Query:\n{query_text}\n\nCandidates:\n{candidates_text}"
+                questions = {
+                    cid: ScoreQuestion(
+                        instructions=(
+                            f"Rate how relevant memory candidate [{cid}] is for answering or "
+                            "supporting the Query above. Higher evidence score in parentheses "
+                            "indicates stronger user confirmation."
+                        ),
+                        levels=(
+                            "irrelevant",
+                            "weakly_relevant",
+                            "relevant",
+                            "highly_relevant",
+                        ),
+                    )
+                    for cid in candidate_ids
+                }
+                dec_client = DecisionClient(config_manager=config_manager)
+                dec_resp = await dec_client.decide(
+                    state=state_text,
+                    questions=questions,
+                    config=decision_config,
+                    timeout=5.0,
+                    allow_fallback=False,
+                    call_type="memory_recall_rerank",
+                )
+                if dec_resp.answers:
+                    scored_rows: list[tuple[float, int, str]] = []
+                    for idx, cid in enumerate(candidate_ids):
+                        ans = dec_resp.answers.get(cid)
+                        if ans is not None and ans.score_norm is not None:
+                            scored_rows.append((float(ans.score_norm), idx, cid))
+                    if scored_rows:
+                        scored_rows.sort(key=lambda item: (-item[0], item[1]))
+                        ranked_native: list[dict] = []
+                        seen_native: set[str] = set()
+                        for _score, _idx, cid in scored_rows:
+                            ranked_native.append(id_to_obs[cid])
+                            seen_native.add(cid)
+                            if len(ranked_native) >= budget:
+                                break
+                        if len(ranked_native) < budget:
+                            for c in candidates:
+                                cid = c.get('id') or c.get('raw_id')
+                                if cid in seen_native or not cid:
+                                    continue
+                                ranked_native.append(c)
+                                seen_native.add(cid)
+                                if len(ranked_native) >= budget:
+                                    break
+                        return ranked_native
+            except Exception as exc:
+                logger.warning(
+                    "[MemoryRecall] native decision rerank failed (%s); falling back to chat LLM",
+                    type(exc).__name__,
+                )
+
+        if (
+            isinstance(decision_config, dict)
+            and not is_native_decision_protocol(decision_config.get('decision_protocol'))
+            and decision_config.get('model')
+            and decision_config.get('base_url')
+        ):
+            api_config = decision_config
+        else:
+            api_config = await config_manager.aget_model_api_config('summary')
         # timeout=8: recall runs in query_memory, whose upstream plugin/core/context.py
         # defaults to 5 s. Local 8 s allows connection/one failure; timeout raises
         # APITimeoutError, with outer handlers already falling back to coarse ranks.

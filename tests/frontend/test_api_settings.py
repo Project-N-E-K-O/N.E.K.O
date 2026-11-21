@@ -383,6 +383,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "tts-model-content",
         "game-model-content",
         "image-model-content",
+        "decision-model-content",
     ]
     assert desktop["titleKeys"] == [
         "api.conversationModelConfig",
@@ -395,6 +396,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "api.ttsModelConfig",
         "api.gameModelsConfig",
         "api.imageModelConfig",
+        "api.decisionModelConfig",
     ]
     assert desktop["summaryTypes"] == [
         "conversation",
@@ -407,6 +409,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "tts",
         "gameMain",
         "gameSummary",
+        "decision",
     ]
     assert desktop["rowPairs"] == {
         "conversation": "vision",

@@ -559,11 +559,80 @@ def _looks_like_anthropic_messages_url(url: str | None) -> bool:
 
 def _normalize_provider_type(profile: dict[str, Any] | None, url: str | None = None) -> str:
     provider_type = str((profile or {}).get("provider_type") or "openai_compatible").strip().lower()
-    if provider_type not in ("openai_compatible", "anthropic", "websocket", "tts"):
+    if provider_type not in ("openai_compatible", "anthropic", "websocket", "tts", "decision"):
         return "openai_compatible"
     if provider_type == "openai_compatible" and _looks_like_anthropic_messages_url(url):
         return "anthropic"
     return provider_type
+
+
+async def _test_decision_endpoint(
+    url: str,
+    api_key: str,
+    model: str = "",
+    protocol: str = "",
+    is_free: bool = False,
+) -> dict:
+    """Test a native Decisions API endpoint with a minimal single-question probe."""
+    import httpx
+    from utils.decision_client import (
+        BoolQuestion,
+        DecisionClient,
+        DecisionProtocolError,
+        infer_decision_protocol,
+        is_native_decision_protocol,
+    )
+
+    resolved_protocol = str(protocol or "").strip().lower()
+    if not is_native_decision_protocol(resolved_protocol):
+        resolved_protocol = infer_decision_protocol(model, url)
+    if not is_native_decision_protocol(resolved_protocol):
+        return await _test_openai_compatible(url, api_key, model=model, is_free=is_free)
+
+    if not str(model or "").strip():
+        return {"success": False, "error": "缺少模型 ID", "error_code": "missing_params"}
+
+    client = DecisionClient()
+    try:
+        await client.decide(
+            state="ping",
+            questions={"ok": BoolQuestion(instructions="Is this a connectivity check?")},
+            config={
+                "model": model,
+                "base_url": url,
+                "api_key": api_key,
+                "decision_protocol": resolved_protocol,
+                "decision_url": url if url.rstrip("/").lower().endswith(("/systemone", "/decisions")) else "",
+            },
+            timeout=10.0,
+            allow_fallback=False,
+            call_type="connectivity_test",
+        )
+        return {"success": True}
+    except DecisionProtocolError as e:
+        status = e.status_code
+        if status in (401, 403):
+            return {"success": False, "error": "API Key无效或已过期", "error_code": "auth_failed"}
+        if status == 429:
+            return {"success": True}
+        if is_free and status == 400:
+            return {"success": True}
+        if status is not None:
+            return {"success": False, "error": f"HTTP {status}", "error_code": "unknown"}
+        return {"success": False, "error": str(e), "error_code": "unknown"}
+    except (httpx.TimeoutException, TimeoutError, asyncio.TimeoutError):
+        return {"success": False, "error": "请求超时（10秒）", "error_code": "timeout"}
+    except ssl.SSLError:
+        return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+    except httpx.ConnectError as e:
+        err_str = str(e).lower()
+        if "getaddrinfo" in err_str or "name or service not known" in err_str or "nodename nor servname" in err_str:
+            return {"success": False, "error": "域名解析失败", "error_code": "dns_error"}
+        if "ssl" in err_str or "certificate" in err_str:
+            return {"success": False, "error": "SSL证书验证失败", "error_code": "ssl_error"}
+        return {"success": False, "error": "无法连接到目标服务器", "error_code": "connection_refused"}
+    except Exception as e:
+        return {"success": False, "error": str(e), "error_code": "unknown"}
 
 
 async def _test_connectivity_candidates(
@@ -611,8 +680,28 @@ async def _test_connectivity_candidates(
                 result = {"success": False, "error": "不支持的 TTS 探测协议", "error_code": "unsupported"}
         elif provider_type == "anthropic":
             result = await _test_anthropic(candidate_url, api_key, model=model, is_free=is_free)
+        elif provider_type == "decision":
+            result = await _test_decision_endpoint(
+                candidate_url,
+                api_key,
+                model=model,
+                protocol=sub_type,
+                is_free=is_free,
+            )
         else:
-            result = await _test_openai_compatible(candidate_url, api_key, model=model, is_free=is_free)
+            from utils.decision_client.schema import infer_decision_protocol, is_native_decision_protocol
+
+            inferred_decision_proto = infer_decision_protocol(model, candidate_url)
+            if is_native_decision_protocol(inferred_decision_proto):
+                result = await _test_decision_endpoint(
+                    candidate_url,
+                    api_key,
+                    model=model,
+                    protocol=inferred_decision_proto,
+                    is_free=is_free,
+                )
+            else:
+                result = await _test_openai_compatible(candidate_url, api_key, model=model, is_free=is_free)
         return result
 
     result = await race_candidate_requests(urls, _run_one)
@@ -717,7 +806,7 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
     if core_cfg.get("enableCustomApi", False):
         model_types = [
             "conversation", "summary", "gameMain", "gameSummary", "correction", "emotion",
-            "vision", "agent", "omni", "tts",
+            "decision", "vision", "agent", "omni", "tts",
         ]
         def _add_model_target(model_type: str, provider: str, seen: set[str] | None = None) -> None:
             seen = seen or set()

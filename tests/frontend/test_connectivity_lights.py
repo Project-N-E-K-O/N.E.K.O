@@ -352,6 +352,7 @@ def test_custom_api_summary_lights_navigate_to_model_config(mock_page: Page, run
         "gameSummary": "game-summary-model-content",
         "correction": "correction-model-content",
         "emotion": "emotion-model-content",
+        "decision": "decision-model-content",
         "vision": "vision-model-content",
         "agent": "agent-model-content",
         "omni": "omni-model-content",
