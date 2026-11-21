@@ -969,6 +969,9 @@ def test_the_side_question_request_says_the_user_words_only_where_they_differ():
 
     assert build_side_question_request(task="look", user_said=" look ") == "Request: look"
     assert build_side_question_request(task="look", user_said="") == "Request: look"
+    assert build_side_question_request(task="look", user_said="", waiting_for=" Which table? ") == (
+        'Request: look\nThe agent is waiting for the user to answer: "Which table?"'
+    )
 
 
 def test_every_language_of_the_fine_selection_keeps_the_identifiers_it_parses():

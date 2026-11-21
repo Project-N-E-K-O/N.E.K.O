@@ -1293,18 +1293,22 @@ async def test_whether_it_is_a_side_question_is_not_asked_where_it_is_not_carrie
 
 
 async def test_a_copy_is_told_the_question_its_session_waits_for_the_user_to_answer(hosts, tmp_path):
+    decisions = FakeDecisionLLM()
     scripts = {
         EXPORT: ScriptedLLM(
             [[call("report", {"status": "waiting", "summary": "Which columns?"}, "call-w"), finish("tool_calls")]]
         ),
         FILES: ScriptedLLM([_report("tables.py")]),
     }
-    host = _host(hosts, tmp_path, scripts)
+    host = _host(hosts, tmp_path, scripts, decision_llm=decisions)
     await host.space.touch_project("Budget app")
     first = await _dispatch(host, EXPORT)
     await wait_status(host, first.id, "waiting_user")
     second = await _filed(host, FILES)
     await wait_status(host, second.id, "done")
+    # Whether it is a side question was asked with that question: going on with it is work.
+    [asked] = decisions.side_calls
+    assert 'The agent is waiting for the user to answer: "Which columns?"' in asked[1]["content"]
     opening = _said(scripts[FILES].requests[0])[-1]
     assert brain_texts.TASK_AGENT_COMMISSION_IN_COPY in opening
     assert brain_texts.TASK_AGENT_COPY_SESSION_WAITS.format(question="Which columns?") in opening
@@ -1314,13 +1318,15 @@ async def test_a_copy_is_told_the_question_its_session_waits_for_the_user_to_ans
 
 async def test_a_copy_of_a_session_at_work_is_told_of_no_question(hosts, tmp_path):
     release, wait = _gate()
+    decisions = FakeDecisionLLM()
     scripts = {EXPORT: ScriptedLLM([[wait, *_report("export added")]]), FILES: ScriptedLLM([_report("tables.py")])}
-    host = _host(hosts, tmp_path, scripts)
+    host = _host(hosts, tmp_path, scripts, decision_llm=decisions)
     await _export_at_work(host, scripts)
     second = await _dispatch(host, FILES)
     await wait_status(host, second.id, "done")
     opening = _said(scripts[FILES].requests[0])[-1]
     assert brain_texts.TASK_AGENT_COPY_SESSION_WAITS.split("{question}")[0] not in opening
+    assert "waiting for the user to answer" not in decisions.side_calls[0][1]["content"]
     release.set()
 
 
@@ -1487,7 +1493,7 @@ async def test_a_commission_waits_for_its_session_where_nothing_tells_it_is_a_si
     scripts = {EXPORT: ScriptedLLM([[wait, *_report("export added")]]), FILES: ScriptedLLM([_report("tables.py")])}
     host = _host(hosts, tmp_path, scripts)
 
-    async def failing(dispatch_text: str, user_text: str) -> bool | None:
+    async def failing(dispatch_text: str, user_text: str, waiting_for: str = "") -> bool | None:
         raise RuntimeError("down")
 
     host.task_agents.set_side_question_judge(failing if judge == "fails" else None)
@@ -1898,7 +1904,7 @@ async def test_more_said_to_it_while_it_is_told_to_be_a_side_question_keeps_it_w
     manager = host.task_agents
     asking, answer = asyncio.Event(), asyncio.Event()
 
-    async def slow(dispatch_text: str, user_text: str) -> bool | None:
+    async def slow(dispatch_text: str, user_text: str, waiting_for: str = "") -> bool | None:
         if when == "judged":
             asking.set()
             await answer.wait()
@@ -2061,3 +2067,52 @@ async def test_what_was_said_to_a_taking_up_that_was_called_off_is_not_told_as_s
     said = "\n".join(_said(scripts[FILES].requests[1]))
     assert "look under data/" in said and "tables.py is not there" in said
     assert "try the docs folder" not in said
+
+
+async def test_what_came_of_it_in_the_copy_is_told_once_however_much_is_said_while_it_is_taken_up(hosts, tmp_path, monkeypatch):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        FILES: ScriptedLLM(
+            [
+                [call("report", {"status": "blocked", "summary": "tables.py is not there"}, "call-b"), finish("tool_calls")],
+                _report("found it in data/tables.py", "call-r"),
+            ]
+        ),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    manager = host.task_agents
+    first = await _export_at_work(host, scripts)
+    second = await _dispatch(host, FILES)
+    await wait_status(host, second.id, "blocked")
+    release.set()
+    await wait_status(host, first.id, "done")
+    # Its taking up in the session itself waits a moment while it is made ready.
+    choose = manager._choose_runtime
+    choosing, chosen = asyncio.Event(), asyncio.Event()
+
+    async def slow(*args: Any, **kwargs: Any) -> Any:
+        choosing.set()
+        await chosen.wait()
+        return await choose(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "_choose_runtime", slow)
+    first_said = asyncio.ensure_future(manager.tell(second.id, "look under data/"))
+    await asyncio.wait_for(choosing.wait(), 10)
+    # Said while that is under way: it goes along with it, once that is ready.
+    more = asyncio.ensure_future(manager.tell(second.id, "and in docs/ as well"))
+
+    async def said_more() -> bool:
+        return any(
+            event.type == "told" and event.payload.get("text") == "and in docs/ as well"
+            for event in await host.ledger.events(second.id)
+        )
+
+    await wait_until(said_more, what="the second sentence on record")
+    chosen.set()
+    assert await first_said and await more
+    await wait_status(host, second.id, "done")
+    said = "\n".join(text for request in scripts[FILES].requests[1:] for text in dict.fromkeys(_said(request)))
+    head = brain_texts.TASK_AGENT_TAKEN_UP_FROM_COPY.split("{session}")[0]
+    assert said.count(head) == 1
+    assert "look under data/" in said and "and in docs/ as well" in said

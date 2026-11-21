@@ -736,7 +736,7 @@ class LexicalDecisionModel:
     def __init__(self, llm: DecisionLLM) -> None:
         self._llm = llm
 
-    async def side_question(self, dispatch_text: str, user_text: str) -> bool | None:
+    async def side_question(self, dispatch_text: str, user_text: str, waiting_for: str = "") -> bool | None:
         """Say whether a commission is a side question: answered by looking, with nothing changed. None when it cannot be told.
 
         One request on the small tier (``TIER_SIDE_QUESTION``). Asked only
@@ -744,6 +744,8 @@ class LexicalDecisionModel:
         another one holds, which a side question need not wait for
         (``TaskAgentManager._carry_on_in_copy``). Anything else, an answer
         that cannot be read included, is work, and waits for the session.
+        ``waiting_for`` is the question the session waits for the user to
+        answer, if it does: a request that goes on with it is work.
         """
         from config.nekoclaw_settings import DISPATCH_TEXT_MAX_TOKENS, DISPATCH_USER_TEXT_MAX_TOKENS
         from config.prompts.prompts_nekoclaw_brain import TASK_BRAIN_SIDE_QUESTION_PROMPT, build_side_question_request
@@ -756,6 +758,8 @@ class LexicalDecisionModel:
                 "content": build_side_question_request(
                     task=truncate_to_tokens(dispatch_text, DISPATCH_TEXT_MAX_TOKENS),
                     user_said=truncate_to_tokens(user_text, DISPATCH_USER_TEXT_MAX_TOKENS),
+                    # (Cut already: ``TASK_AGENT_FORK_PENDING_QUESTION_MAX_TOKENS``.)
+                    waiting_for=waiting_for,
                 ),
             },
         ]

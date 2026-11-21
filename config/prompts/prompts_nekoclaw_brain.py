@@ -1427,11 +1427,13 @@ TASK_BRAIN_SIDE_QUESTION_PROMPT = (
 )
 
 
-def build_side_question_request(*, task: str, user_said: str) -> str:
-    """Return the user message of that question: the request, and the user's own words when they differ."""
+def build_side_question_request(*, task: str, user_said: str, waiting_for: str = "") -> str:
+    """Return the user message of that question: the request, the user's own words when they differ, and what the agent waits for the user to answer, if anything."""
     lines = [f"Request: {task}"]
     if user_said and user_said.strip() != task.strip():
         lines.append(f"What the user said: {user_said}")
+    if waiting_for.strip():
+        lines.append(f'The agent is waiting for the user to answer: "{waiting_for.strip()}"')
     return "\n".join(lines)
 
 

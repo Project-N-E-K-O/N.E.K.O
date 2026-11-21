@@ -1235,7 +1235,7 @@ class TaskAgentManager:
         # (``LexicalDecisionModel.side_question``), and, for a commission it
         # was asked of, what it was asked about and what it said: asked once
         # for the same words (``_is_side_question``).
-        self._side_question_judge: Callable[[str, str], Awaitable[bool | None]] | None = None
+        self._side_question_judge: Callable[[str, str, str], Awaitable[bool | None]] | None = None
         self._side_said: dict[str, tuple[str, tuple[str, ...], bool]] = {}
         # Project sessions that copies of them have news for (a commission
         # they finished, or handed back), to be told while at work
@@ -1492,11 +1492,13 @@ class TaskAgentManager:
         finally:
             self._permissions.release_grant(grant)
 
-    def set_side_question_judge(self, judge: Callable[[str, str], Awaitable[bool | None]] | None) -> None:
+    def set_side_question_judge(self, judge: Callable[[str, str, str], Awaitable[bool | None]] | None) -> None:
         """Set what tells whether a commission is a side question (``LexicalDecisionModel.side_question``).
 
-        Without one, no commission is carried on in a copy of its session:
-        each waits for the session.
+        It is given what was dispatched, the user's words (with what they
+        said to it since), and the question the session waits for the user
+        to answer, if any. Without one, no commission is carried on in a
+        copy of its session: each waits for the session.
         """
         self._side_question_judge = judge
 
@@ -5521,6 +5523,10 @@ class TaskAgentManager:
             # Moved before, and not opened in the session itself since (its
             # taking up was called off then): told now what it was to be told.
             main = commission.session_id
+            if self._in_hand(commission.id):
+                # Being taken up by what was said just before this, which
+                # brings it: this goes along as more of what is said.
+                return None
             moved = await self._last_back_from_copy(commission.id, main)
             if moved is None or await self._ledger.opened_in(commission.id, main) is not None:
                 return None
@@ -8339,13 +8345,22 @@ class TaskAgentManager:
         if commission is None or (still is not None and not still()):
             # (Nor asked of one that would not be carried on by now.)
             return False
-        words = f"{commission.dispatch_text}\x00{commission.user_text}"
+        # What the session waits for the user to answer, if it does: a
+        # request that goes on with that is work, which the judge cannot
+        # tell without it.
+        main = self._session_of.get(commission_id)
+        waiting_for = await self._waited_on(main) if main else ""
+        if still is not None and not still():
+            return False
+        words = f"{commission.dispatch_text}\x00{commission.user_text}\x00{waiting_for}"
         added = self._said_meanwhile(commission_id)
         said = self._side_said.get(commission_id)
         if said is not None and said[0] == words and said[1] == added:
             return said[2]
         try:
-            verdict = await judge(commission.dispatch_text, "\n".join([commission.user_text, *added]).strip())
+            verdict = await judge(
+                commission.dispatch_text, "\n".join([commission.user_text, *added]).strip(), waiting_for
+            )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - not told: it waits for its session, as work does
