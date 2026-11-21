@@ -70,3 +70,32 @@ uv run pytest tests/unit/test_check_llm_budget.py -q
 最终装箱仍超限时，可将最新完整角色原文中确证保留的待确认邀约副本替换为 `story_so_far` 引用，撤下的旧邀请不适用；Review 的公开去向引文表若与最新完整回合的全部对白/旁白逐字一致，也可只替换副本为明确引用，程序验证仍使用完整原始引文表。Review 的接受授权邀约与最新历史回合编号、完整内容及顺序一致时，也可引用该历史原文；比对仅归一化历史已省略的默认猫娘说话人，其他差异保留副本。均保留玩家输入、状态、完整候选和最新历史，不提高容量或增加调用；仍超限继续拒绝发送。
 
 新增 LLM 调用时同时回答：输入各段上限是多少、输出上限是多少、timeout 是多少、失败如何降级、审计是否泄露正文。
+
+### NekoClaw plugin query planning and schema projection
+
+The main dialogue resolves the current request into a dispatched task; the task
+brain receives that task and the user's original wording separately. The existing
+`DISPATCH_TEXT_MAX_TOKENS` and `DISPATCH_USER_TEXT_MAX_TOKENS` limits remain 300
+tokens each. Fine selection retains separate `TASK` and `USER_SAID` fields and the
+existing bounded ledger/preferences view. It does not regain the removed analyzer's
+12,000-token conversation buffer or splice a latest-request marker across old turns.
+
+The selection prompt asks the model to derive search queries and other semantic
+parameters from `TASK` and the entry schema, and to copy `USER_SAID` verbatim only
+for fields whose schema calls for the user's original wording. These are prompt
+requirements, not a programmatic guarantee: selection does not compare the generated
+value with `USER_SAID`. `AGENT_PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS` caps each
+projected property description at 80 tokens; the eight-property and twelve-value
+enum limits remain unchanged. The generated arguments are not rewritten to force
+verbatim text. `PluginRunner` adds the user's wording to `_ctx.latest_user_request`
+only when that key is absent; its existing `setdefault` behavior preserves a value
+already supplied in the generated `_ctx`. Plugins must therefore not treat this
+field as an independently verified copy of the user's original wording.
+
+Coarse screening sends its bounded matching text only in the user message; system
+messages contain the plugin summaries and screening rules, without a second copy.
+A timeout, provider error or malformed ID array preserves the full visible catalog
+for fine selection, including when the early no-local-match probe fails. An explicit
+empty array remains an empty semantic selection, cancellation propagates, and an
+early coarse result or fallback is reused rather than requesting it again. The
+existing model tiers, output limits and timeouts are unchanged.

@@ -433,7 +433,8 @@ async def test_coarse_screen_reads_short_descriptions(impl):
     long_line = next(line for line in coarse.system.splitlines() if line.startswith("- bulk01: "))
     assert long_line.endswith("...")
     assert count_tokens(long_line[len("- bulk01: ") :]) <= AGENT_PLUGIN_SHORTDESC_MAX_TOKENS
-    assert "make me laugh" in coarse.system
+    assert coarse.user == "make me laugh"
+    assert "make me laugh" not in coarse.system
 
 
 # ---------------------------------------------------------------------------

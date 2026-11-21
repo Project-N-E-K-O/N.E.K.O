@@ -67,6 +67,9 @@ USER_NOTIFICATION_ERROR_MAX_CHARS = 500
 - Why characters: pure frontend display, outside LLM context; the field goes
   directly into browser WS frames."""
 
+AGENT_PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS = 80
+"""Per-property description ceiling in the planner's schema projection."""
+
 AGENT_PLUGIN_DESC_BM25_THRESHOLD = 3000
 """plugins_desc token threshold enabling parallel stage1 BM25 + LLM coarse screening.
 - Purpose: go directly to stage2 at ≤ threshold; use two-stage screening above it.
