@@ -45,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import filecmp
+import json
 import os
 import re
 import shutil
@@ -59,7 +60,7 @@ from pathlib import Path
 from typing import Literal
 
 import config.nekoclaw_settings as settings
-from nekoclaw.host.paths import safe_segment
+from nekoclaw.host.paths import worktree_name
 from nekoclaw.host.repo_docs import repository_root
 
 REF_PREFIX = "refs/nekoclaw/worktrees/"
@@ -85,6 +86,7 @@ SUBMODULES = "submodules"
 OPERATION_IN_PROGRESS = "operation_in_progress"
 NESTED_REPOSITORY = "nested_repository"
 CONTENT_FILTERS = "content_filters"
+MERGE_DRIVERS = "merge_drivers"
 PARTIAL_CLONE = "partial_clone"
 SPARSE_CHECKOUT = "sparse_checkout"
 # ``create`` only.
@@ -102,6 +104,9 @@ _IN_PROGRESS = (
 
 # Environment variables that would point git at another repository, index or
 # configuration than the one asked for.
+# The merge drivers git has itself; any other is a program the user configured.
+_BUILT_IN_MERGE = frozenset({b"unspecified", b"set", b"unset", b"text", b"binary", b"union"})
+
 _REDIRECTING_ENV = frozenset(
     {
         "GIT_DIR",
@@ -245,10 +250,12 @@ class MergeResult:
     * ``failed``: the changes could not be written or did not read back as
       merged (``detail`` says which). Every file the attempt changed was put
       back, except the ones in ``left_changed``, which are as the failed
-      attempt left them.
+      attempt left them; their copies from before are then kept in
+      ``kept_copies`` (``manifest.json`` there says which is which).
 
     ``skipped`` lists files in the worktree that were not carried over
-    because they are not under version control and too large.
+    because they are not under version control and too large, or are a
+    repository of their own. ``base`` is the start the merge was from.
     """
 
     status: Literal["landed", "unchanged", "conflict", "failed"]
@@ -263,6 +270,8 @@ class MergeResult:
     result: str = ""
     result_tree: str = ""
     merged_tree: str = ""
+    base: str = ""
+    kept_copies: str = ""
 
 
 @dataclass
@@ -318,12 +327,13 @@ class FromRef(Start):
 
     async def commit(self, manager: WorktreeManager, repo_root: Path) -> str:
         commit = await manager._resolve_commit(repo_root, self.ref)
-        listed = await manager._git(repo_root, "ls-tree", "-r", "-z", "--name-only", commit)
-        filtered = await manager._filtered(
-            repo_root, [name for name in listed.stdout.split(b"\0") if name], source=commit
-        )
-        if filtered:
-            raise WorktreeUnavailable(CONTENT_FILTERS, f"{filtered} in {self.ref} goes through a content filter")
+        listed = await manager._git(repo_root, "ls-tree", "-r", "-z", commit)
+        entries = [entry.split(b"\t", 1) for entry in listed.stdout.split(b"\0") if entry]
+        if any(info.startswith(b"160000 ") for info, _name in entries):
+            raise WorktreeUnavailable(SUBMODULES, f"{self.ref} has submodules")
+        programs = await manager._programs(repo_root, [name for _info, name in entries], source=commit)
+        if programs:
+            raise WorktreeUnavailable(programs[0], f"in {self.ref}: {programs[1]}")
         return commit
 
 
@@ -438,12 +448,19 @@ class WorktreeManager:
         except BaseException:
             with contextlib.suppress(Exception):
                 await self._forget(repo_root, target, worktree_id, remove_directory=not existed)
+                if existed:
+                    await asyncio.to_thread(target.mkdir, exist_ok=True)
             raise
         return Worktree(worktree_id, repo_root, target, subpath, commit)
 
     async def open(self, project_dir: Path | str, path: Path | str) -> Worktree:
-        """Return the worktree at ``path`` made earlier for ``project_dir``, after a restart for instance."""
-        found = await self._usable(project_dir)
+        """Return the worktree at ``path`` made earlier for ``project_dir``, after a restart for instance.
+
+        The project need not qualify for a new worktree now (a merge may be
+        under way); it must be in the repository the worktree belongs to.
+        Raises ValueError for a name no worktree can have.
+        """
+        found = await self._usable(project_dir, qualify=False)
         assert found.repo_root is not None
         target = await asyncio.to_thread(_absolute, Path(path))
         worktree_id = _worktree_id(target)
@@ -456,8 +473,24 @@ class WorktreeManager:
     async def merge_back(self, worktree: Worktree, landing: Landing | None = None) -> MergeResult:
         """Land what was done in ``worktree``; see ``MergeResult`` for the outcomes. Raises GitError when git fails."""
         async with await self._lock(worktree.repo_root):
-            result = await self._snapshot(worktree.path, "nekoclaw: worktree result")
+            start = await self._start(worktree)
+            result = await self._snapshot(worktree.path, "nekoclaw: worktree result", start)
             return await (landing or WorkingFiles()).land(self, worktree, result)
+
+    async def _put_start_back(self, worktree: Worktree, start: str, error: BaseException) -> None:
+        """Set a worktree's start ref back to ``start`` even when cancelled meanwhile; say so on ``error`` if it fails."""
+        back = await _to_the_end(
+            self._git(worktree.repo_root, "update-ref", _start_ref(worktree.id), start, check=False)
+        )
+        if not back.ok:
+            error.add_note(
+                f"the start of worktree {worktree.id} could not be set back to {start} "
+                f"({_failure('update-ref', back.stderr)}); merging it again would take what was not landed for landed"
+            )
+
+    async def _start(self, worktree: Worktree) -> str:
+        """Return where the next landing of ``worktree`` merges from: its ref, else the handle's."""
+        return await self._try_resolve(worktree.repo_root, _start_ref(worktree.id)) or worktree.start
 
     async def prepare_conflicts(self, worktree: Worktree, conflict: MergeResult) -> Worktree:
         """Put the half-done merge of a ``conflict`` result into the worktree, with conflict markers.
@@ -471,36 +504,65 @@ class WorktreeManager:
         if conflict.status != "conflict":
             raise WorktreeError("only a conflicting merge can be prepared")
         async with await self._lock(worktree.repo_root):
-            now = await self._snapshot(worktree.path, "nekoclaw: worktree result")
+            start = await self._start(worktree)
+            if start != conflict.base:
+                raise WorktreeError("the worktree landed or was prepared since this merge was tried; merge again")
+            now = await self._snapshot(worktree.path, "nekoclaw: worktree result", start)
             if now.tree != conflict.result_tree:
                 raise WorktreeError("the worktree changed after the merge was tried; merge again")
+            if now.skipped:
+                listed = await self._git(worktree.path, "ls-tree", "-r", "-z", "--name-only", conflict.merged_tree)
+                paths = [_decode(name) for name in listed.stdout.split(b"\0") if name]
+                hit = [
+                    name
+                    for name in now.skipped
+                    if any(path == name.rstrip("/") or path.startswith(name.rstrip("/") + "/") for path in paths)
+                ]
+                if hit:
+                    raise WorktreeError(
+                        f"preparing would overwrite what only the worktree has (left out as too large, or a "
+                        f"repository of its own): {', '.join(hit)}"
+                    )
             half_done = await self._commit_tree(
                 worktree.path, conflict.merged_tree, conflict.current, "nekoclaw: conflicts to resolve"
             )
-            # The host's own worktree, not the user's checkout.
-            await self._git(
-                worktree.path,
-                "checkout",
-                "--force",
-                "--detach",
-                "--no-recurse-submodules",
-                half_done,
-                timeout=settings.WORKTREE_GIT_WORK_SECONDS,
-            )
             try:
-                await self._git(worktree.repo_root, "update-ref", _start_ref(worktree.id), conflict.current)
-            except BaseException:
-                # Its files as they were (the result snapshot holds them), so
-                # that the same conflict can be prepared again.
+                # The host's own worktree, not the user's checkout.
                 await self._git(
                     worktree.path,
                     "checkout",
                     "--force",
                     "--detach",
                     "--no-recurse-submodules",
-                    conflict.result,
+                    half_done,
                     timeout=settings.WORKTREE_GIT_WORK_SECONDS,
                 )
+                await self._git(worktree.repo_root, "update-ref", _start_ref(worktree.id), conflict.current)
+            except BaseException as error:
+                # Its files as they were (the result snapshot holds them) and
+                # its start as it was, so the same conflict can be prepared
+                # again: one piece no further cancellation cuts.
+                async def put_back() -> None:
+                    back = await self._git(
+                        worktree.path,
+                        "checkout",
+                        "--force",
+                        "--detach",
+                        "--no-recurse-submodules",
+                        conflict.result,
+                        check=False,
+                        timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+                    )
+                    if not back.ok:
+                        error.add_note(f"the worktree could not be put back: {_failure('checkout', back.stderr)}")
+                    await self._put_start_back(worktree, start, error)
+
+                putting = asyncio.ensure_future(put_back())
+                cancelled = await _settle(putting)
+                if putting.exception() is not None:
+                    error.add_note(f"putting the worktree back failed: {putting.exception()}")
+                if cancelled and not isinstance(error, asyncio.CancelledError):
+                    raise asyncio.CancelledError from error
                 raise
         return replace(worktree, start=conflict.current)
 
@@ -529,9 +591,10 @@ class WorktreeManager:
         refs below ``REF_PREFIX``. One whose id is not in ``known`` is
         removed when it holds no changes (or its directory is gone) and kept
         and reported when it does. Directories in ``base_dir`` this
-        repository does not know are left alone: they may be another's.
+        repository does not know are left alone: they may be another's. The
+        project need not qualify for a new worktree now.
         """
-        found = await self._usable(project_dir)
+        found = await self._usable(project_dir, qualify=False)
         assert found.repo_root is not None
         repo_root = found.repo_root
         known_ids = set(known)
@@ -561,7 +624,11 @@ class WorktreeManager:
             for worktree_id in await self._ref_ids(repo_root):
                 if worktree_id in known_ids or worktree_id in registered_ids:
                     continue
-                await self._delete_refs(repo_root, worktree_id)
+                try:
+                    await self._delete_refs(repo_root, worktree_id)
+                except WorktreeError as error:
+                    report.failed.append((Path(f"{REF_PREFIX}{worktree_id}"), str(error)))
+                    continue
                 report.refs_removed.append(worktree_id)
         return report
 
@@ -584,13 +651,27 @@ class WorktreeManager:
 
     # -- probing ---------------------------------------------------------------
 
-    async def _usable(self, directory: Path | str) -> Probe:
-        found = await self.probe(directory)
+    async def _usable(self, directory: Path | str, *, qualify: bool = True) -> Probe:
+        """Return the probe of ``directory``, raising WorktreeUnavailable when it is not usable.
+
+        With ``qualify`` False only the repository is looked for (git runs,
+        the directory is in a work tree, not a bare one): enough to find or
+        clean up worktrees made earlier, whatever state the project is in now.
+        """
+        if qualify:
+            found = await self.probe(directory)
+        else:
+            version = await self.git_version()
+            found = (
+                Probe(GIT_MISSING, f"{self._git_program!r} could not be run")
+                if version is None
+                else await self._probe_repository(Path(directory), version, qualify=False)
+            )
         if not found.usable:
             raise WorktreeUnavailable(str(found.reason), found.detail)
         return found
 
-    async def _probe_repository(self, directory: Path, version: tuple[int, int, int]) -> Probe:
+    async def _probe_repository(self, directory: Path, version: tuple[int, int, int], qualify: bool = True) -> Probe:
         def unusable(reason: str, detail: str = "", root: Path | None = None, subpath: str = "") -> Probe:
             return Probe(reason, detail, root, subpath, version)
 
@@ -612,6 +693,8 @@ class WorktreeManager:
         subpath = _relative(resolved, top)
         if subpath is None:
             return unusable(NOT_A_REPOSITORY, f"{directory} is outside {top}")
+        if not qualify:
+            return Probe(None, "", top, subpath, version)
         try:
             found = await self._qualify(top, subpath, Path(git_dir))
         except GitError as error:
@@ -636,8 +719,11 @@ class WorktreeManager:
             return unusable(SPARSE_CHECKOUT, "the repository uses a sparse checkout")
         # Objects missing from a partial clone are fetched when read; git
         # before 2.44 does not let that be turned off (GIT_NO_LAZY_FETCH).
-        promisor = await self._git(top, "config", "--get", "extensions.partialClone", check=False)
-        if promisor.decode().strip():
+        extension = await self._git(top, "config", "--get", "extensions.partialClone", check=False)
+        promisors = await self._git(
+            top, "config", "--type=bool", "--get-regexp", r"^remote\..*\.promisor$", check=False
+        )
+        if extension.decode().strip() or any(line.endswith(" true") for line in promisors.lines()):
             return unusable(PARTIAL_CLONE, "the repository is a partial clone")
         if await self._has_submodules(top):
             return unusable(SUBMODULES, "the repository has submodules")
@@ -651,9 +737,9 @@ class WorktreeManager:
         nested = [_decode(name) for name in names if name.endswith(b"/")]
         if nested:
             return unusable(NESTED_REPOSITORY, f"{nested[0]} is a repository of its own")
-        filtered = await self._filtered(top, names)
-        if filtered:
-            return unusable(CONTENT_FILTERS, f"{filtered} goes through a content filter (Git LFS, git-crypt, ...)")
+        programs = await self._programs(top, names)
+        if programs:
+            return unusable(*programs)
         return None
 
     async def _has_submodules(self, root: Path) -> bool:
@@ -662,14 +748,21 @@ class WorktreeManager:
         staged = await self._git(root, "ls-files", "-z", "--stage")
         return any(entry.startswith(b"160000 ") for entry in staged.stdout.split(b"\0"))
 
-    async def _filtered(self, root: Path, names: list[bytes], source: str | None = None) -> str | None:
-        """Return a path git would pass through a ``filter`` (from any attributes file), or None.
+    async def _programs(self, root: Path, names: list[bytes], source: str | None = None) -> tuple[str, str] | None:
+        """Return why git would run a program the user configured on these paths, or None.
 
-        Such filters are programs the user configured: a snapshot would run
-        them, and what they make in a worktree need not match the project.
-        With ``source`` the attributes are read from that tree, as a
-        checkout of it would.
+        That is a content filter (``filter`` attribute: Git LFS, git-crypt,
+        ...) or a merge driver other than git's own (``merge`` attribute, or
+        ``merge.default``). A snapshot, a merge or a checkout would run it;
+        the host does not run the user's programs, and what one makes in a
+        worktree need not match the project. With ``source`` the attributes
+        are read from that tree, as a checkout of it would. Returns a reason
+        key and what it applies to.
         """
+        default = await self._git(root, "config", "--get", "merge.default", check=False)
+        driver = default.stdout.strip()
+        if driver and driver not in _BUILT_IN_MERGE:
+            return MERGE_DRIVERS, f"merge.default is {_decode(driver)}"
         checked = await self._git(
             root,
             "check-attr",
@@ -677,18 +770,27 @@ class WorktreeManager:
             "--stdin",
             "-z",
             "filter",
+            "merge",
             input=b"".join(name + b"\0" for name in names),
             timeout=settings.WORKTREE_GIT_WORK_SECONDS,
         )
         fields = checked.stdout.split(b"\0")
         for index in range(0, len(fields) - 2, 3):
-            if fields[index + 2] not in (b"unspecified", b"unset"):
-                return _decode(fields[index])
+            path, attribute, value = fields[index : index + 3]
+            if attribute == b"filter" and value not in (b"unspecified", b"unset"):
+                return CONTENT_FILTERS, f"{_decode(path)} goes through a content filter (Git LFS, git-crypt, ...)"
+            if attribute == b"merge" and value not in _BUILT_IN_MERGE:
+                return MERGE_DRIVERS, f"{_decode(path)} is merged by the program {_decode(value)}"
         return None
 
     # -- snapshots -------------------------------------------------------------
 
-    async def _snapshot(self, root: Path, message: str) -> Snapshot:
+    async def _snapshot(self, root: Path, message: str, start: str | None = None) -> Snapshot:
+        """Write what ``root`` holds as a commit (see ``Snapshot``).
+
+        A file ``start`` (a worktree's start) has is taken whatever its size:
+        it is the worktree's own, and leaving it out would read as deleting it.
+        """
         head = await self._try_resolve(root, "HEAD")
         scratch = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="nekoclaw-index-"))
         try:
@@ -721,16 +823,21 @@ class WorktreeManager:
             # would be recorded as a submodule link and its files lost.
             nested = [name for name in names if name.endswith("/")]
             files = [name for name in names if not name.endswith("/")]
-            skipped = nested + await asyncio.to_thread(_too_large, root, files, settings.WORKTREE_UNTRACKED_MAX_BYTES)
+            large = await asyncio.to_thread(_too_large, root, files, settings.WORKTREE_UNTRACKED_MAX_BYTES)
+            if large and start:
+                known = await self._git(root, "ls-tree", "-r", "-z", "--name-only", start)
+                had = {_decode(name) for name in known.stdout.split(b"\0") if name}
+                large = [name for name in large if name not in had]
+            skipped = nested + large
             specs = ["."] + [f":(exclude,literal,top){name.rstrip('/')}" for name in skipped]
             # What is to be added is checked again each time: a filter may
             # have been set up, or a file it applies to made, since.
             cached = await self._git(root, "ls-files", "-z", "--cached", env=env)
             adding = [name for name in cached.stdout.split(b"\0") if name]
             adding += [name.encode("utf-8", "surrogateescape") for name in files if name not in skipped]
-            filtered = await self._filtered(root, adding)
-            if filtered:
-                raise WorktreeUnavailable(CONTENT_FILTERS, f"{filtered} goes through a content filter")
+            programs = await self._programs(root, adding)
+            if programs:
+                raise WorktreeUnavailable(*programs)
             await self._git(
                 root,
                 "add",
@@ -762,7 +869,7 @@ class WorktreeManager:
 
     async def _has_changes(self, repo_root: Path, path: Path, worktree_id: str, start: str) -> bool:
         start = await self._try_resolve(repo_root, _start_ref(worktree_id)) or start
-        now = await self._snapshot(path, "nekoclaw: worktree result")
+        now = await self._snapshot(path, "nekoclaw: worktree result", start)
         # Files left out of the snapshot (large, or a repository of its own)
         # were made in the worktree: the project's are never copied into it.
         return bool(now.skipped) or now.tree != await self._resolve_commit(path, f"{start}^{{tree}}", kind="tree")
@@ -771,7 +878,20 @@ class WorktreeManager:
 
     async def _land_on_working_files(self, worktree: Worktree, result: Snapshot) -> MergeResult:
         root = worktree.repo_root
-        base = await self._try_resolve(root, _start_ref(worktree.id)) or worktree.start
+        base = await self._start(worktree)
+        # The user's files may hold conflict markers of their own then: no
+        # landing on top of them.
+        git_dir = (await self._git(root, "rev-parse", "--absolute-git-dir")).lines()[0]
+        operation = await asyncio.to_thread(_operation_in_progress, Path(git_dir))
+        if operation:
+            return MergeResult(
+                "failed",
+                detail=f"a {operation} is in progress in the project; land when it is done",
+                skipped=result.skipped,
+                result=result.commit,
+                result_tree=result.tree,
+                base=base,
+            )
         current = await self._snapshot(root, "nekoclaw: project before landing")
         merged = await self._git(
             root,
@@ -797,6 +917,7 @@ class WorktreeManager:
             result=result.commit,
             result_tree=result.tree,
             merged_tree=merged_tree,
+            base=base,
         )
         if merged.returncode == 1:
             return MergeResult("conflict", conflicts=tuple(dict.fromkeys(parts[1:])), **common)
@@ -806,6 +927,15 @@ class WorktreeManager:
             await self._git(root, "update-ref", _start_ref(worktree.id), result.commit)
             return MergeResult("unchanged", **common)
         files = await self._changes(root, current.tree, merged_tree)
+        # A filter and a file it applies to may meet only in the merge (one
+        # from each side); writing them would run it.
+        programs = await self._programs(
+            root,
+            [change.path.encode("utf-8", "surrogateescape") for change in files if change.status != "deleted"],
+            source=merged_tree,
+        )
+        if programs:
+            raise WorktreeUnavailable(*programs)
         counted = dict(
             files=files,
             lines_added=sum(change.added or 0 for change in files),
@@ -833,6 +963,7 @@ class WorktreeManager:
         if checked.returncode != 0:
             return MergeResult("failed", detail=_failure("the changes do not apply", checked.stderr), **counted)
         backup = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="nekoclaw-landing-"))
+        keep = False
         try:
             try:
                 saved = await asyncio.to_thread(_back_up, root, [change.path for change in files], backup)
@@ -847,18 +978,39 @@ class WorktreeManager:
                 else:
                     await self._git(root, "update-ref", _start_ref(worktree.id), result.commit)
                     return MergeResult("landed", **counted)
-            except BaseException:
+            except BaseException as error:
                 # Cancelled, timed out or git failed after writing may have
-                # begun: the files go back before the error goes on.
-                await _uninterrupted(_restore, root, saved)
-                # The start may have moved on already (cancelled while that
-                # was being written): it goes back with the files.
-                await _to_the_end(self._git(root, "update-ref", _start_ref(worktree.id), base, check=False))
+                # begun: the files go back, and the start too (it may have
+                # moved on already), as one piece no further cancellation
+                # cuts, before the error goes on.
+                async def put_back() -> list[str]:
+                    left = await asyncio.to_thread(_restore, root, saved)
+                    await self._put_start_back(worktree, base, error)
+                    return left
+
+                putting = asyncio.ensure_future(put_back())
+                cancelled = await _settle(putting)
+                if putting.exception() is not None:
+                    keep = True
+                    error.add_note(f"putting back failed ({putting.exception()}); copies are in {backup}")
+                elif putting.result():
+                    keep = True
+                    error.add_note(f"not put back: {', '.join(putting.result())}; their copies are in {backup}")
+                if cancelled and not isinstance(error, asyncio.CancelledError):
+                    raise asyncio.CancelledError from error
                 raise
-            left = await asyncio.to_thread(_restore, root, saved)
-            return MergeResult("failed", detail=detail, left_changed=tuple(left), **counted)
+            restoring = asyncio.ensure_future(asyncio.to_thread(_restore, root, saved))
+            cancelled = await _settle(restoring)
+            left = restoring.result()
+            keep = bool(left)
+            if cancelled:
+                raise asyncio.CancelledError
+            return MergeResult(
+                "failed", detail=detail, left_changed=tuple(left), kept_copies=str(backup) if keep else "", **counted
+            )
         finally:
-            await asyncio.to_thread(shutil.rmtree, backup, True)
+            if not keep:
+                await asyncio.to_thread(shutil.rmtree, backup, True)
 
     async def _apply(self, root: Path, patch: bytes) -> _Run:
         return await self._git(
@@ -924,6 +1076,8 @@ class WorktreeManager:
     async def _forget(self, repo_root: Path, path: Path, worktree_id: str, *, remove_directory: bool) -> None:
         """Drop a worktree's registration, its directory when registered (or ``remove_directory``), and its refs."""
         registered = any(_same_path(known, path) for known in await self._registered(repo_root))
+        common = Path((await self._git(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0])
+        removed_by_git = False
         if registered:
             removed = await self._git(
                 repo_root,
@@ -934,11 +1088,15 @@ class WorktreeManager:
                 check=False,
                 timeout=settings.WORKTREE_GIT_WORK_SECONDS,
             )
-            if removed.returncode != 0:
-                common = Path((await self._git(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0])
-                await asyncio.to_thread(_drop_registration, common, path)
-        if registered or remove_directory:
+            removed_by_git = removed.returncode == 0
+        # Ours: registered, made by this call, or (git dropped the
+        # registration before it gave up) its .git file still points here.
+        if registered or remove_directory or await asyncio.to_thread(_points_into, path, common):
             await asyncio.to_thread(_remove_tree, path)
+            if await asyncio.to_thread(os.path.lexists, _fs(path)):
+                raise WorktreeError(f"{path} could not be removed entirely; its registration and refs are kept")
+        if registered and not removed_by_git:
+            await asyncio.to_thread(_drop_registration, common, path)
         await self._delete_refs(repo_root, worktree_id)
 
     async def _delete_refs(self, repo_root: Path, worktree_id: str) -> None:
@@ -1093,19 +1251,9 @@ def parse_git_version(text: str) -> tuple[int, int, int] | None:
     return int(match.group(1)), int(match.group(2)), int(match.group(3) or 0)
 
 
-_WORKTREE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
-
-
 def _worktree_id(target: Path) -> str:
-    """Return the id a worktree at ``target`` has: its directory's name, which must also make a ref name.
-
-    Raises ValueError for any other name: letters, digits, ``-`` and ``_``
-    only, starting with a letter or digit, at most 64 characters.
-    """
-    name = target.name
-    if not _WORKTREE_ID.fullmatch(name):
-        raise ValueError(f"worktree name {name!r} must be letters, digits, '-' and '_' (at most 64)")
-    return safe_segment(name, "worktree name")
+    """Return the id a worktree at ``target`` has: its directory's name (``paths.worktree_name``)."""
+    return worktree_name(target.name)
 
 
 def _start_ref(worktree_id: str) -> str:
@@ -1128,30 +1276,33 @@ def _failure(what: str, stderr: bytes) -> str:
     return f"{what}: {stderr.decode('utf-8', 'replace').strip()[:500]}"
 
 
-async def _uninterrupted(function, *args):  # type: ignore[no-untyped-def]
-    """Run ``function`` in a worker thread to the end, even when cancelled meanwhile; re-raise the cancellation after."""
-    return await _to_the_end(asyncio.to_thread(function, *args))
-
-
 async def _to_the_end(awaitable):  # type: ignore[no-untyped-def]
     """Await ``awaitable`` to the end, even when cancelled meanwhile; re-raise the cancellation after."""
     future = asyncio.ensure_future(awaitable)
+    if await _settle(future):
+        raise asyncio.CancelledError
+    return future.result()
+
+
+async def _settle(future: asyncio.Future) -> bool:  # type: ignore[type-arg]
+    """Wait until ``future`` is done, cancelled or not meanwhile; return whether a cancellation came."""
     cancelled = False
     while not future.done():
         try:
             await asyncio.shield(future)
         except asyncio.CancelledError:
             cancelled = True
-    if cancelled:
-        raise asyncio.CancelledError
-    return future.result()
+        except BaseException:  # the future's own failure; the caller reads it
+            break
+    return cancelled
 
 
 async def _stop(process: asyncio.subprocess.Process) -> None:
+    """Kill ``process`` and read what is left of its output, which is what lets it be reaped, to the end."""
     with contextlib.suppress(ProcessLookupError):
         process.kill()
     with contextlib.suppress(Exception):
-        await process.wait()
+        await _to_the_end(process.communicate())
 
 
 # -- file system helpers, run in a worker thread --------------------------------
@@ -1260,6 +1411,18 @@ def _remove_tree(path: Path) -> None:
     shutil.rmtree(_fs(path), onerror=clear_read_only)
 
 
+def _points_into(path: Path, common_dir: Path) -> bool:
+    """Return whether ``path`` holds a worktree of the repository whose git directory is ``common_dir``."""
+    try:
+        text = (path / ".git").read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    if not text.startswith("gitdir:"):
+        return False
+    pointed = Path(text[len("gitdir:") :].strip())
+    return _same_path(pointed.parent, common_dir / "worktrees")
+
+
 def _drop_registration(common_dir: Path, path: Path) -> None:
     """Remove the registration of a worktree of ours git would not remove, matched by where it was."""
     admin = common_dir / "worktrees"
@@ -1283,6 +1446,7 @@ class _Saved:
 
 def _back_up(root: Path, names: list[str], backup: Path) -> list[_Saved]:
     saved = []
+    manifest: dict[str, str] = {}
     for index, name in enumerate(names):
         source = _fs(root / name)
         # A directory where a file is to go is put back through its own files.
@@ -1290,6 +1454,7 @@ def _back_up(root: Path, names: list[str], backup: Path) -> list[_Saved]:
             copy = backup / str(index)
             shutil.copy2(source, _fs(copy), follow_symlinks=False)
             saved.append(_Saved(name, copy))
+            manifest[str(index)] = name
             continue
         made = []
         parent = (root / name).parent
@@ -1297,6 +1462,7 @@ def _back_up(root: Path, names: list[str], backup: Path) -> list[_Saved]:
             made.append(_relative(parent, root) or "")
             parent = parent.parent
         saved.append(_Saved(name, None, tuple(made)))
+    (backup / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
     return saved
 
 
