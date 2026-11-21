@@ -246,6 +246,14 @@ def test_texture_staging_shares_unchanged_files_and_detaches_replacements(store,
     store.save('linked', _zip(), originals)
     final = store._entry_dir('linked')
     publish = store._publish_copy
+    if hardlinks:
+        probe = store.root / '.hardlink-probe'
+        try:
+            store_module.os.link(final / store_module.ARCHIVE_NAME, probe)
+        except OSError:
+            pytest.skip('temporary filesystem does not support hardlinks')
+        finally:
+            probe.unlink(missing_ok=True)
     if not hardlinks:
         def unavailable(*args, **kwargs):
             raise OSError('hardlinks unsupported')
