@@ -121,9 +121,9 @@ async def test_index_rounds_refuse_an_unfittable_replan_once_and_embed_the_rest(
         replans = []
         replan = service._replan_vector_inputs
 
-        async def observed(pack_ids):
+        async def observed(pack_ids, **kwargs):
             replans.append(list(pack_ids))
-            return await replan(pack_ids)
+            return await replan(pack_ids, **kwargs)
 
         service._replan_vector_inputs = observed
         await service._index_round()

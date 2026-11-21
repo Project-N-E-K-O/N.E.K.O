@@ -1013,6 +1013,20 @@ class KnowledgeStore:
                 (json.dumps(list(chunk_ids)),),
             )}
 
+    def chunks_current(self, pack_id: str, rows: Sequence[tuple[int, str]]) -> bool:
+        """Whether every ``(id, text_hash)`` row still belongs to ``pack_id``.
+
+        No rows is never current, so an empty trigger cannot start a rebuild.
+        """
+        if not rows:
+            return False
+        with self._read() as conn:
+            current = {(int(row[0]), str(row[1])) for row in conn.execute(
+                "SELECT id, text_hash FROM chunks WHERE pack_id = ? AND id IN (SELECT value FROM json_each(?))",
+                (pack_id, json.dumps([int(row_id) for row_id, _hash in rows])),
+            )}
+        return all((int(row_id), str(text_hash)) in current for row_id, text_hash in rows)
+
     def chunk_stats(
         self, model_id: str | None, *, specification: Mapping | None = None, include_export_readiness: bool = False,
     ) -> dict[str, dict[str, int]]:

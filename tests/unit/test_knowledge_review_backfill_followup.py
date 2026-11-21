@@ -69,7 +69,7 @@ async def test_replaced_row_is_not_exhausted_by_old_replan_snapshot(tmp_path, mo
         old = service._store.pending_chunks(model_id=service.embedder.model_id(), pack_ids=["imp.race"], limit=1)[0]
         replans = []
 
-        async def replace_before_refusal(pack_ids):
+        async def replace_before_refusal(pack_ids, **kwargs):
             replans.append(pack_ids)
             replacement = decode_pack_bytes(_raw(_pack("imp.race", entries=[{"title": "Same", "content": "New short text."}])))
             # Reproduce the commit interleaving at the actual awaited replan.
@@ -133,9 +133,9 @@ async def test_capacity_refusal_resumes_when_another_pack_is_removed(tmp_path, m
         replan = service._replan_vector_inputs
         calls = []
 
-        async def observed(pack_ids):
+        async def observed(pack_ids, **kwargs):
             calls.append(pack_ids)
-            await replan(pack_ids)
+            await replan(pack_ids, **kwargs)
 
         monkeypatch.setattr(service, "_replan_vector_inputs", observed)
         await service._index_round()

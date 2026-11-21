@@ -323,6 +323,19 @@ def _job_files(jobs: Sequence[ImportJob], *, installing: Registry | None) -> fro
     return frozenset(names)
 
 
+def _retain_revision(history: Path, raw: bytes, expected_sha256: str) -> None:
+    """Keep a pack revision in history without ever replacing a good copy.
+
+    History file names carry the revision digest, so an existing copy is
+    only overwritten by bytes that match the registry. A damaged active file
+    is still kept when no copy exists yet, and never blocks the caller.
+    """
+    if pack_sha256(raw) != expected_sha256 and history.exists():
+        return
+    history.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(history, raw)
+
+
 def _batch_pause(inference_seconds: float) -> float:
     """Pause after an index batch: idle at least (1 - duty) / duty times as long
     as the batch computed, so indexing stays at or below INDEX_TARGET_DUTY."""
@@ -1013,9 +1026,8 @@ class KnowledgeService:
                     if original.is_file():
                         # Pack removal changes the active registry selection;
                         # retain its immutable revision before dropping a name.
-                        history = self.root / "history" / pack_id / file_name
-                        history.parent.mkdir(parents=True, exist_ok=True)
-                        atomic_write_bytes(history, _read_bounded(original))
+                        _retain_revision(self.root / "history" / pack_id / file_name,
+                                         _read_bounded(original), record.pack_sha256)
                         original.unlink(missing_ok=True)
                 except OSError:
                     logger.warning("[Knowledge] could not delete the file of %s", pack_id)
@@ -2371,13 +2383,12 @@ class KnowledgeService:
                 # directory before committing its replacement. History is not
                 # charged as current searchable pack content.
                 history = self.root / "history" / previous.pack_id / previous.file_name
-                history.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     previous_raw = _read_bounded(self.root / PACKS_DIR / previous.file_name)
                 except FileNotFoundError:
                     previous_raw = None  # A broken pack can be repaired by a new revision.
                 if previous_raw is not None:
-                    atomic_write_bytes(history, previous_raw)
+                    _retain_revision(history, previous_raw, previous.pack_sha256)
             atomic_write_bytes(final_path, raw)
             indexed = False
             try:
@@ -2618,15 +2629,26 @@ class KnowledgeService:
         return [record.pack_id for record in self._registry.packs.values()
                 if record.local_embedding and record.pack_id not in self._broken_packs]
 
-    async def _replan_vector_inputs(self, pack_ids: list[str]) -> None:
+    async def _replan_vector_inputs(
+        self, pack_ids: list[str], *, triggers: Mapping[str, Sequence[tuple[int, str]]] | None = None,
+    ) -> None:
         """Rebuild chunks after a tokenizer becomes available, retaining text.
 
         Imports made with missing model assets stay keyword-searchable. Before
         any later encoding, full input counts may require smaller chunks. The
         same total/per-pack limits remain authoritative for that rebuild.
+        ``triggers`` are the over-long ``(id, text_hash)`` rows that asked for
+        the replan; a pack whose rows were replaced meanwhile (for example by
+        a newly installed revision with seeded vectors) is left untouched.
         """
         async def run():
             def rebuild():
+                targets = list(pack_ids)
+                if triggers is not None:
+                    targets = [pack_id for pack_id in targets
+                               if self._store.chunks_current(pack_id, triggers.get(pack_id, ()))]
+                    if not targets:
+                        return None  # Nothing rebuilt: the caller re-reads its batch.
                 # A previous pack may have committed SQLite before its
                 # registry flush failed. Capacity must use those real counts.
                 self._reconcile_chunk_counts_blocking()
@@ -2634,7 +2656,7 @@ class KnowledgeService:
                 if fit is None:
                     return self._registry
                 planned = []
-                for pack_id in pack_ids:
+                for pack_id in targets:
                     record = self._registry.packs.get(pack_id)
                     if record is None:
                         continue
@@ -2659,17 +2681,23 @@ class KnowledgeService:
                 self._pending_chunk_reconcile = False
                 return registry
 
+            stale = False
             try:
-                self._publish_registry(await self._thread(rebuild))
+                registry = await self._thread(rebuild)
+                if registry is None:
+                    stale = True
+                    return
+                self._publish_registry(registry)
             finally:
-                # Even a failed registry flush may follow committed row-ID
-                # changes. Old snapshots and previous seeding attempts cannot
-                # describe those new rows; reconcile before further encoding.
-                self._vectors = None
-                self._vectors_built_for = None
-                self._vector_generation += 1
-                self._seeded_artifacts.clear()
-                self._seed_failures.clear()
+                if not stale:
+                    # Even a failed registry flush may follow committed row-ID
+                    # changes. Old snapshots and previous seeding attempts cannot
+                    # describe those new rows; reconcile before further encoding.
+                    self._vectors = None
+                    self._vectors_built_for = None
+                    self._vector_generation += 1
+                    self._seeded_artifacts.clear()
+                    self._seed_failures.clear()
         await self._locked(run, wait=True)
 
     async def _reopen_refused_replans(self, specification: Mapping) -> None:
@@ -2853,8 +2881,10 @@ class KnowledgeService:
                             # Entries whose inputs changed were reopened above.
                             refused.add(pack_id)
                             continue
+                        trigger_rows = [(row[0], row[1]) for row, size in zip(rows, counts)
+                                        if size > specification["max_length"] and owners.get(row[0]) == pack_id]
                         try:
-                            await self._replan_vector_inputs([pack_id])
+                            await self._replan_vector_inputs([pack_id], triggers={pack_id: trigger_rows})
                         except KnowledgePackError as exc:
                             if exc.reason in {"too_many_chunks", "capacity_chunks"} and key is not None:
                                 # Remember the limit refusal: re-tokenizing the

@@ -203,9 +203,9 @@ async def test_one_overcapacity_replan_does_not_starve_a_normal_pack(tmp_path, m
         replan = service._replan_vector_inputs
         owners = service._store.chunk_pack_ids
 
-        async def observed_replan(pack_ids):
+        async def observed_replan(pack_ids, **kwargs):
             replanned.append(pack_ids)
-            return await replan(pack_ids)
+            return await replan(pack_ids, **kwargs)
 
         def observed_owners(chunk_ids):
             result = owners(chunk_ids)
@@ -263,9 +263,9 @@ async def test_refused_replan_is_retried_only_when_its_inputs_change(tmp_path, m
         replanned = []
         replan = service._replan_vector_inputs
 
-        async def observed_replan(pack_ids):
+        async def observed_replan(pack_ids, **kwargs):
             replanned.append(pack_ids)
-            return await replan(pack_ids)
+            return await replan(pack_ids, **kwargs)
 
         monkeypatch.setattr(service, "_replan_vector_inputs", observed_replan)
         await service._index_round()
