@@ -192,6 +192,8 @@ OpenClaw 这类个人 Agent 证明了一件事：人们想要一个属于自己�
 - [uv](https://docs.astral.sh/uv/)；
 - Node.js `^22.12.0 || >=24.0.0`（构建前端需要）。
 
+> **Windows 7 用户**：官方 Python 3.11 / uv / Node 均不支持 Win7。目前有实验性适配：用非官方 Win7 版 Python 3.11 + `setup_win7.bat`（纯 pip，不需要 uv/Node）安装依赖，聊天窗口等前端构建产物需在其他系统构建后拷贝，详见 [Windows 7 支持说明](zh-CN/guide/windows-7.md)。
+
 ```bash
 # 部分克隆：历史里有大量已废弃的二进制资源（.git 约 390 MB），文件用到时才下载
 git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
