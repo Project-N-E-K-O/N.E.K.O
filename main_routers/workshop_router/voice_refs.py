@@ -22,7 +22,7 @@ from ._shared import logger, router
 from .config_files import _assert_under_base
 from .content_gate import ContentFolderBusy, claim_reference_pair
 from .publish import _resolve_workshop_export_child
-from .ugc import _find_subscribed_item_by_id
+from .ugc import SubscribedItemsUnavailable, _find_subscribed_item_by_id
 from .voice_manifest import (
     WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES,
     WORKSHOP_REFERENCE_AUDIO_EXTENSIONS,
@@ -353,7 +353,10 @@ async def get_workshop_voice_reference(item_id: str):
     """Return the reference-voice manifest inside a subscribed workshop item, by publishedFileId."""
     try:
         item = await _find_subscribed_item_by_id(item_id)
-    except RuntimeError as e:
+    except SubscribedItemsUnavailable as e:
+        # The message is one of the fixed strings returned by /subscribed-items
+        # (e.g. "Steamworks not initialized"), never raw exception text, so it is safe
+        # to show; see get_subscribed_workshop_items.
         return JSONResponse({
             "success": False,
             "error": str(e),
@@ -377,16 +380,29 @@ async def get_workshop_voice_reference(item_id: str):
     try:
         voice_ref = await asyncio.to_thread(resolve_voice_reference_serialized, install_folder)
     except FileNotFoundError as e:
+        # Fixed messages for both branches: the ValueError can wrap an OSError whose message
+        # carries server paths. The details go to the log only.
+        logger.warning(f"工坊物品 {item_id!r} 的参考语音文件不存在: {e}")
         return JSONResponse({
             "success": False,
             "available": False,
-            "error": str(e),
+            "error": "参考语音文件不存在",
         }, status_code=404)
     except ValueError as e:
+        logger.warning(f"读取工坊物品 {item_id!r} 的参考语音清单失败: {e}")
         return JSONResponse({
             "success": False,
             "available": False,
-            "error": str(e),
+            "error": "读取参考语音清单失败",
+        }, status_code=400)
+    except OSError as e:
+        # e.g. PermissionError from _assert_under_base when the audio is a
+        # symlink pointing outside the item folder.
+        logger.warning(f"读取工坊物品 {item_id!r} 的参考语音文件失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "available": False,
+            "error": "读取参考语音文件失败",
         }, status_code=400)
 
     if not voice_ref:
@@ -411,7 +427,10 @@ async def get_workshop_voice_reference_audio(item_id: str):
     """Return the reference-voice audio stream from a subscribed workshop item."""
     try:
         item = await _find_subscribed_item_by_id(item_id)
-    except RuntimeError as e:
+    except SubscribedItemsUnavailable as e:
+        # The message is one of the fixed strings returned by /subscribed-items
+        # (e.g. "Steamworks not initialized"), never raw exception text, so it is safe
+        # to show; see get_subscribed_workshop_items.
         return JSONResponse({
             "success": False,
             "error": str(e),
@@ -433,14 +452,24 @@ async def get_workshop_voice_reference_audio(item_id: str):
     try:
         voice_ref = await asyncio.to_thread(resolve_voice_reference_serialized, install_folder)
     except FileNotFoundError as e:
+        # Same fixed messages as the manifest route; details in the log only.
+        logger.warning(f"工坊物品 {item_id!r} 的参考语音文件不存在: {e}")
         return JSONResponse({
             "success": False,
-            "error": str(e),
+            "error": "参考语音文件不存在",
         }, status_code=404)
     except ValueError as e:
+        logger.warning(f"读取工坊物品 {item_id!r} 的参考语音清单失败: {e}")
         return JSONResponse({
             "success": False,
-            "error": str(e),
+            "error": "读取参考语音清单失败",
+        }, status_code=400)
+    except OSError as e:
+        # Same as the manifest route.
+        logger.warning(f"读取工坊物品 {item_id!r} 的参考语音文件失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": "读取参考语音文件失败",
         }, status_code=400)
 
     if not voice_ref:
