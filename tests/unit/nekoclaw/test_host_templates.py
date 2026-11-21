@@ -516,6 +516,37 @@ def test_what_was_read_is_kept_until_a_file_changes(space, monkeypatch):
         store.resolve("doc-writer")
 
 
+def test_a_file_that_could_not_be_read_for_a_moment_is_read_again_and_not_kept_as_wrong(space, monkeypatch):
+    # Held by another program, say. Nothing about the file shows that it can be read again: its name,
+    # date and size are as they were. Kept, the preset would be out of use until the file is edited.
+    store = TemplateStore(lambda: space)
+    path = _put(space, _text(name="general", more="withhold: [bash]\n"), name="general")
+    _put(space, _text(name="wrong", more="nope: 1\n"), name="wrong")
+    real = Path.read_text
+    held = [True]
+    reads: list[str] = []
+
+    def read_text(self: Path, *args: object, **kwargs: object) -> str:
+        reads.append(self.name)
+        if self == path and held[0]:
+            raise PermissionError(13, "The process cannot access the file", str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    with pytest.raises(TemplateError, match=r"the file cannot be read \(PermissionError\)"):
+        store.resolve("general")
+    before = store.signature()
+    held[0] = False
+
+    assert store.signature() == before
+    assert store.resolve("general").withhold == ("bash",)
+    # From here on it is kept, as any listing is; so is a file that is wrong for what it says.
+    read_so_far = len(reads)
+    assert store.resolve("general").withhold == ("bash",) and not store.listing()[-1].valid
+    assert len(reads) == read_so_far
+
+
 def test_a_task_agent_is_started_with_any_template_but_the_lead_and_a_session_of_its_own(space):
     store = TemplateStore(lambda: space)
     _put(space, _text())

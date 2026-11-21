@@ -262,10 +262,20 @@ TASK_AGENT_SESSION_INSTRUCTIONS_MAX_TOKENS = 3600
 """Cap on the host's own part of a session's system prompt: how the gateway is
 reached, whom the task agent works for, the presets it may start a task agent
 with and what its own preset says of its role. With every part at its cap
-(the list of presets ``TEMPLATE_DESCRIPTIONS_TOTAL_MAX_TOKENS`` and its
-names, a role ``TEMPLATE_BODY_MAX_TOKENS``) that comes to some 2700; the built-in
+(the list of presets ``TASK_AGENT_PRESET_ROSTER_MAX_TOKENS``, a role
+``TEMPLATE_BODY_MAX_TOKENS``) that comes to some 3200; the built-in
 presets alone make it some 670 for the session of a project. What the task
 agent space adds has a cap of its own (``SPACE_BRIEF_MAX_TOKENS``)."""
+
+TASK_AGENT_PRESET_ROSTER_MAX_TOKENS = 2200
+"""Cap on the list of presets in a session's system prompt, its opening words
+and the names included: whole lines, as many as fit. The descriptions may come
+to ``TEMPLATE_DESCRIPTIONS_TOTAL_MAX_TOKENS``; names and the words around
+them come on top and are counted here, so with very many templates the last
+of them are left out of the list (they can still be named). With this and
+a role at its cap the host's part stays within
+``TASK_AGENT_SESSION_INSTRUCTIONS_MAX_TOKENS``, so the list never cuts off
+what the session is told of its own role, which comes after it."""
 
 TEMPLATE_DESCRIPTION_MAX_TOKENS = 100
 """Cap on the one sentence of a template that says when it is used. A longer

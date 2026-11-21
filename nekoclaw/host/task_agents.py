@@ -1914,11 +1914,14 @@ class TaskAgentManager:
         (The runtime puts what it says itself of one session, its working
         directory, behind all of this: ``runtime/prompt.py``.)
         """
-        from config.nekoclaw_settings import TASK_AGENT_SESSION_INSTRUCTIONS_MAX_TOKENS
+        from config.nekoclaw_settings import (
+            TASK_AGENT_PRESET_ROSTER_MAX_TOKENS,
+            TASK_AGENT_SESSION_INSTRUCTIONS_MAX_TOKENS,
+        )
         from config.prompts import prompts_nekoclaw_brain as texts
         from config.prompts import prompts_nekoclaw_presets as presets
         from nekoclaw.host.templates import model_name
-        from utils.tokenize import truncate_to_tokens
+        from utils.tokenize import count_tokens, truncate_to_tokens
 
         parts = [texts.TASK_AGENT_BRIEF_GATEWAY_NOTE] if with_gateway else []
         if commission.parent_id is not None:
@@ -1926,11 +1929,20 @@ class TaskAgentManager:
         else:
             parts.append(texts.TASK_AGENT_SESSION_FRAME.format(lanlan_name=commission.lanlan_name))
         if roster:
-            lines = [
-                presets.PRESET_ROSTER_LINE.format(name=model_name(item.name), description=item.description)
-                for item in roster
-            ]
-            parts.append("\n".join([presets.PRESET_ROSTER_INTRO, *lines]))
+            # Within a cap of its own, whole lines only: the names and the
+            # words around them are not counted in the cap on the templates'
+            # descriptions, and what the session is told of its own role
+            # comes after this and is not to be cut off by it. A preset
+            # that is left out can still be named.
+            lines = [presets.PRESET_ROSTER_INTRO]
+            room = TASK_AGENT_PRESET_ROSTER_MAX_TOKENS - count_tokens(presets.PRESET_ROSTER_INTRO)
+            for item in roster:
+                line = presets.PRESET_ROSTER_LINE.format(name=model_name(item.name), description=item.description)
+                room -= count_tokens(line) + 1
+                if room < 0:
+                    break
+                lines.append(line)
+            parts.append("\n".join(lines))
         if template is not None and template.body:
             parts.append(template.body)
         return truncate_to_tokens("\n\n".join(parts), TASK_AGENT_SESSION_INSTRUCTIONS_MAX_TOKENS)

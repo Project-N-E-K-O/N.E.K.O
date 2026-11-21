@@ -222,6 +222,10 @@ class Listed:
     # in effect and not offered can still be named, and a session of it is
     # opened as before: only the list has no room for its sentence.
     offered: bool = True
+    # Its file could not be read just now (held by another program, say),
+    # which nothing about the file shows once it can be read again: a
+    # listing with such a one is not kept, and the file is read anew.
+    unread: bool = False
 
     @property
     def valid(self) -> bool:
@@ -499,8 +503,10 @@ def _read_directory(directory: Path, source: str) -> dict[str, Listed]:
             template = parse_template(path.read_text(encoding="utf-8-sig"), name=name, source=source)
         except TemplateError as exc:
             found[name] = Listed(name, source, error=str(exc))
-        except (OSError, UnicodeDecodeError) as exc:
+        except UnicodeDecodeError as exc:
             found[name] = Listed(name, source, error=f"the file cannot be read ({type(exc).__name__})")
+        except OSError as exc:
+            found[name] = Listed(name, source, error=f"the file cannot be read ({type(exc).__name__})", unread=True)
         else:
             found[name] = Listed(name, source, template)
     return found
@@ -597,7 +603,8 @@ class TemplateStore:
             used += size
         rank = {name: at for at, name in enumerate(PRESETS)}
         listed = sorted(effective.values(), key=lambda item: (rank.get(item.name, len(rank)), item.name))
-        self._listed[key] = (signature, listed)
+        if not any(item.unread for item in listed):
+            self._listed[key] = (signature, listed)
         return list(listed)
 
     def resolve(self, name: str, project: str | None = None) -> Template:

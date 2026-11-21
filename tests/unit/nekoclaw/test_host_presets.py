@@ -167,6 +167,43 @@ async def test_the_session_of_a_project_is_its_lead_and_is_opened_as_it_always_w
     assert "Your role: lead of this project." in _system(llm)
 
 
+async def test_the_list_of_presets_has_a_cap_of_its_own_and_never_cuts_off_the_sessions_role(hosts, tmp_path, monkeypatch):
+    from utils.tokenize import count_tokens
+
+    monkeypatch.setattr("config.nekoclaw_settings.TASK_AGENT_PRESET_ROSTER_MAX_TOKENS", 130)
+    llm = ScriptedLLM([_report()])
+    host = _host(hosts, tmp_path, lambda spec: llm)
+    await host.space.touch_project("Budget app")
+
+    await wait_status(host, (await _dispatch(host, "add a chart to the budget app")).commission_id, "done")
+
+    system = _system(llm)
+    listed = system.split(presets.PRESET_ROSTER_INTRO + "\n", 1)[1].split("\n\n", 1)[0]
+    # Whole lines, as many as fit, in the order they are listed in: none is cut in the middle.
+    whole = _roster("worker", "scout", "inspector", "planner").split("\n")[1:]
+    assert 0 < len(listed.split("\n")) < 4 and listed.split("\n") == whole[: len(listed.split("\n"))]
+    assert count_tokens(presets.PRESET_ROSTER_INTRO + "\n" + listed) <= 130
+    # What the session is told of its own role comes after the list, and is all there.
+    assert builtin_templates()["boss"].body + "\n\n" in system
+    # A preset the list has no room for can still be named.
+    assert await host.task_agents._preset_wanted(
+        await host.ledger.get((await host.ledger.select(limit=1))[0].id), "planner"
+    ) == "planner"
+
+
+def test_the_host_part_of_the_instructions_holds_the_list_and_a_role_at_their_caps():
+    from config import nekoclaw_settings as settings
+    from utils.tokenize import count_tokens
+
+    frames = count_tokens(brain.TASK_AGENT_BRIEF_GATEWAY_NOTE) + count_tokens(
+        brain.TASK_AGENT_SESSION_FRAME.format(lanlan_name="a rather long name of a character")
+    )
+    full = frames + settings.TASK_AGENT_PRESET_ROSTER_MAX_TOKENS + settings.TEMPLATE_BODY_MAX_TOKENS + 8
+    assert full <= settings.TASK_AGENT_SESSION_INSTRUCTIONS_MAX_TOKENS
+    # The descriptions at their cap fit into the list with their names and the words around them.
+    assert settings.TEMPLATE_DESCRIPTIONS_TOTAL_MAX_TOKENS < settings.TASK_AGENT_PRESET_ROSTER_MAX_TOKENS
+
+
 async def test_a_task_agent_started_without_a_preset_is_a_worker_and_is_opened_as_it_always_was(hosts, tmp_path):
     team = _Team({})
     host = _host(hosts, tmp_path, team.pick)
