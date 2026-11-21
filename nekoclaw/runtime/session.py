@@ -73,6 +73,7 @@ from nekoclaw.runtime.loop.events import (
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
+    TurnEndEvent,
 )
 from nekoclaw.runtime.loop.harness import AgentHarness, AgentHarnessConfig, SimpleCancellationToken
 from nekoclaw.runtime.loop.loop import _provider_context
@@ -2044,6 +2045,12 @@ class TaskAgentSession(SessionInbox):
         reason: protocol.EndReason = "completed"
         error: str | None = None
         self._last_assistant = None
+        # Model requests made in this run. The limit on them
+        # (``RuntimeLimits.max_turns``) is on the run, and a run is as many
+        # stretches of work as its goal and the notices that come in call
+        # for: counted for each alone, a goal would multiply the limit by
+        # its rounds.
+        requests = 0
         try:
             stream: AsyncIterator[AgentEvent] | None
             if self._abort_requested:
@@ -2061,8 +2068,9 @@ class TaskAgentSession(SessionInbox):
                 # text stays the last thing the model reads.
                 self._context_due = True
                 self._inject_runtime_context()
-                async for _event in stream:
-                    pass
+                async for event in stream:
+                    if isinstance(event, TurnEndEvent):
+                        requests += 1
                 last = self._last_assistant
                 if self._abort_requested or (last is not None and last.stop_reason == "aborted"):
                     reason = "aborted"
@@ -2079,14 +2087,15 @@ class TaskAgentSession(SessionInbox):
                     break
                 if self.harness.has_queued_messages():
                     # A notice arrived while the run was ending: keep going.
-                    stream = self.harness.continue_()
+                    stream = self.harness.continue_(turns_taken=requests)
                     continue
                 following = next_goal_round(self.goals)
                 if following is None:
                     break
                 prompt, goal_round = following
                 stream = self.harness.prompt_message(
-                    CustomMessage(custom_type="notice:goal_round", content=prompt, display=False)
+                    CustomMessage(custom_type="notice:goal_round", content=prompt, display=False),
+                    turns_taken=requests,
                 )
         except asyncio.CancelledError:
             if not (self._abort_requested or self._closing):

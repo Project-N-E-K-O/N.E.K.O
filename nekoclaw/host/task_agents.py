@@ -1885,9 +1885,21 @@ class TaskAgentManager:
             # after. It has what every copy has, and no role of its own.
             return builtin_templates()["general"]
         try:
-            return await asyncio.to_thread(self.templates.resolve, source.preset, source.project)
+            template = await asyncio.to_thread(self.templates.resolve, source.preset, source.project)
         except TemplateError as exc:
             raise RuntimeError(PRESET_UNUSABLE.format(name=source.preset, reason=exc)) from exc
+        if source.kind == "child" and source.parent_id:
+            # A task agent another one started is that one's hands: it works
+            # in the same directory, on the same commission, with what the
+            # user allowed that commission. What the starter's preset keeps
+            # from it, its task agent does not hand back. (No built-in preset
+            # both withholds a tool and starts task agents; a template of the
+            # user's may.) A starter that is not on record any more withholds
+            # nothing that can be told.
+            starter = await self._ledger.get_session(source.parent_id)
+            if starter is not None:
+                template = template.under(await self._template_of(starter))
+        return template
 
     def _base_instructions(
         self, commission: Commission, *, with_gateway: bool, template: Any = None, roster: tuple[Any, ...] = ()
@@ -2509,16 +2521,19 @@ class TaskAgentManager:
         lines = [json.dumps(definition, ensure_ascii=False) for definition in definitions]
         return "\n".join([texts.TASK_AGENT_COMMISSION_CANDIDATES_HEADER, *lines])
 
-    async def _space_brief(self, commission: Commission, receiving: Callable[[], bool] = lambda: True) -> str | None:
+    async def _space_brief(
+        self, commission: Commission, receiving: Callable[[], bool] = lambda: True, *, rules_only: bool = False
+    ) -> str | None:
         """Return workspace context, an empty string for an empty space, or None if unavailable.
 
         A space that cannot be read does not keep a task agent from starting.
+        ``rules_only``: the user's rules without the indexes (``TaskAgentSpace.brief``).
         """
         if self._space is None:
             return ""
         async def read(action: _SessionAction) -> str:
             action.record.scope_ref = commission.session_id
-            return await self._space.brief(commission.project)
+            return await self._space.brief(commission.project, rules_only=rules_only)
 
         for attempt in range(2):
             if not receiving():
@@ -2708,9 +2723,10 @@ class TaskAgentManager:
             )
 
         async def open_if_authorized(runtime, spec) -> bool:
-            # A preset without memory is told nothing of the space: it works
-            # with what it is handed and nothing that was noted before.
-            brief = await self._space_brief(commission, receiving) if template.remembers else ""
+            # A preset without memory is told nothing that was noted before:
+            # it works with what it is handed. The user's rules it is told
+            # like any other; they are no memory, and it may run commands.
+            brief = await self._space_brief(commission, receiving, rules_only=not template.remembers)
             if self._closed or self._sessions.get(commission_id) is not session:
                 return False
             if session.closing or (session.stands is not None and session.stands.status in ENDED_STATUSES):

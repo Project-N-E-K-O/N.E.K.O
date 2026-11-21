@@ -266,7 +266,7 @@ async def test_a_space_that_cannot_be_read_does_not_keep_a_task_agent_from_start
     llm = ScriptedLLM([_report()])
     host = _host(hosts, tmp_path, llm)
 
-    async def broken(_project: Any) -> str:
+    async def broken(_project: Any, **_kwargs: Any) -> str:
         raise OSError("the disk is gone")
 
     monkeypatch.setattr(host.space, "brief", broken)

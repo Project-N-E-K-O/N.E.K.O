@@ -159,6 +159,30 @@ async def test_rounds_stop_at_the_limit_and_the_goal_is_marked_blocked(tmp_path:
         await session.close()
 
 
+async def test_the_limit_on_requests_is_on_the_run_and_not_on_each_round_of_its_goal(tmp_path: Path) -> None:
+    llm = ScriptedLLM([[say(f"answer {n}"), finish()] for n in range(8)])
+    spec = _goal_spec(tmp_path, max_rounds=5, limits=RuntimeLimits(max_turns=2))
+    session, events = await open_session(spec, llm)
+    try:
+        session.prompt("Work on it.")
+        ended = await events.wait_ended()
+
+        # The prompt and one round: the round after that would be a third request of the run.
+        assert len(llm.requests) == 2
+        assert (ended["reason"], ended["error"]) == ("error", "Agent stopped after max_turns=2")
+        assert llm.requests[1][-1]["content"].startswith("<goal_round>") and "Round: 1/5" in llm.requests[1][-1]["content"]
+
+        # A run has the limit to itself: what the one before it used is not held against the next.
+        # (The goal was disarmed when the run before stopped, so this one is a single stretch.)
+        mark = len(events.events)
+        session.prompt("Go on.")
+        ended = await events.wait_ended(start=mark)
+        assert len(llm.requests) == 3
+        assert (ended["reason"], ended["text"]) == ("completed", "answer 2")
+    finally:
+        await session.close()
+
+
 async def test_blocked_is_refused_before_the_third_consecutive_round(tmp_path: Path) -> None:
     holder: dict = {}
 

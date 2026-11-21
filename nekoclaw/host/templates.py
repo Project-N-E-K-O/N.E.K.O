@@ -28,8 +28,9 @@ without. Six come with the program (``PRESETS``):
   calls nothing.
 * ``planner``   - reads only, likewise.
 * ``inspector`` - cannot write files or call capabilities, but runs
-  commands (it has checks to run), and is opened without what the task
-  agent space would add: it judges with nothing but the work before it.
+  commands (it has checks to run), and is opened without the notes the task
+  agent space keeps: it judges with nothing but the work before it. It is
+  told the user's rules like every session (``TaskAgentSpace.brief``).
 
 A session whose preset withholds a tool, or caps its requests, is opened in
 the built-in runtime (``Template.needs_builtin``): dsh has file and command
@@ -54,7 +55,8 @@ built-in one. Task agents cannot write into the space, so none can change
 what it may do.
 
 A template only takes away: it withholds tools, makes a session read only,
-gives it no memory. It names no model, address or key (``model`` says only
+gives it no memory. What it withholds from a session it withholds from the
+task agents that session starts as well (``Template.under``). It names no model, address or key (``model`` says only
 whose model a session of it follows by default, and is kept for the pull
 request that makes use of it). What a file gets wrong is an error with a
 reason, never ignored: a field this does not know, a value that is not one
@@ -74,7 +76,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -150,7 +152,8 @@ class Template:
     # ``inherit``: writes where its session works. ``none``: has no tools
     # that write files (a command still can, where the shell is not withheld).
     writes: str = "inherit"
-    # ``project``: is told what the task agent space keeps and may add to it. ``none``: neither.
+    # ``project``: is told what the task agent space keeps and may add to
+    # it. ``none``: neither; it is told the user's rules and nothing else.
     memory: str = "project"
     # Whose model its sessions use unless the user says otherwise: the task
     # agents' (``agent``) or that of the session that started it
@@ -175,6 +178,19 @@ class Template:
         if self.memory == "none":
             tools.update(_MEMORY_NONE_WITHHELD)
         return frozenset(tools)
+
+    def under(self, starter: Template) -> Template:
+        """Return this preset as a task agent has it that a session of ``starter`` started.
+
+        Without the tools ``starter`` is without as well, so that a
+        session cannot get back through a task agent what its template
+        took from it. Nothing else is taken over: the role, the memory and
+        the cap on requests are the task agent's own preset's.
+        """
+        more = starter.withheld() - self.withheld()
+        if not more:
+            return self
+        return replace(self, withhold=tuple(sorted({*self.withhold, *more})))
 
     @property
     def calls_nothing(self) -> bool:
@@ -204,7 +220,7 @@ class Template:
 
     @property
     def remembers(self) -> bool:
-        """Whether its sessions are told what the task agent space keeps."""
+        """Whether its sessions are told what the task agent space keeps of earlier work (the user's rules all are told)."""
         return self.memory != "none"
 
 
@@ -473,6 +489,11 @@ def _signature(directory: Path) -> _Signature:
     return tuple(sorted(found))
 
 
+def _all_seen(signature: tuple[_Signature, ...]) -> bool:
+    """Return whether every file of the directories a signature stands for could be looked at."""
+    return all(part is not None and all(size >= 0 for _name, _date, size in part) for part in signature)
+
+
 def _read_directory(directory: Path, source: str) -> dict[str, Listed]:
     """Return the templates of one directory, by name: each in effect or wrong.
 
@@ -603,7 +624,10 @@ class TemplateStore:
             used += size
         rank = {name: at for at, name in enumerate(PRESETS)}
         listed = sorted(effective.values(), key=lambda item: (rank.get(item.name, len(rank)), item.name))
-        if not any(item.unread for item in listed):
+        # Nor is what was listed while a file could not be looked at: what
+        # stands for such a file is the same whatever is in it, so it would
+        # be taken for unchanged when it has become another.
+        if not any(item.unread for item in listed) and _all_seen(signature):
             self._listed[key] = (signature, listed)
         return list(listed)
 

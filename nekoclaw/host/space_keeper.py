@@ -876,14 +876,16 @@ class SpaceKeeper:
         project = commission.project or DEFAULT_PROJECT
         if project != DEFAULT_PROJECT:
             try:
-                found = await self._space.get_project(project)
+                found, read = await self._space.read_project(project)
             except (SpaceError, OSError, ValueError):
+                found, read = None, False
+            if not read:
                 # The model is shown no description, and what it writes of
                 # one is then not written (``_keep_card``): it would replace
-                # words it never read.
+                # words it never read. A record that cannot be read just now
+                # raises nothing: the project shows without a description.
                 self._about_unread.add(commission.id)
-                found = None
-            if found is not None:
+            elif found is not None:
                 about, about_by = found.description, found.description_by
         # A line the user wrote, or the session said of itself, is not a
         # review's to write (``Ledger.write_card``): the model is told so,

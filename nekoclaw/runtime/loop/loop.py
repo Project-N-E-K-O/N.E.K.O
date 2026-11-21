@@ -74,6 +74,7 @@ async def run_agent_loop(
     prompts: Sequence[AgentMessage] = (),
     prelude_messages: Sequence[AgentMessage] = (),
     max_turns: int | None = None,
+    turns_taken: int = 0,
     signal: CancellationToken | None = None,
     session_id: str | None = None,
     get_steering_messages: Callable[[], Sequence[AgentMessage]] | None = None,
@@ -108,7 +109,10 @@ async def run_agent_loop(
         return
 
     tool_by_name = {tool.name: tool for tool in tools}
-    turn = 1
+    # Local change: ``turns_taken`` is how many model requests the caller has
+    # made before this, in what it counts as one run: ``max_turns`` is a limit
+    # on all of them.
+    turn = 1 + turns_taken
     first_turn = True
     pending = tuple(get_steering_messages() if get_steering_messages else ())
     # Error text of the tool call that cancelled the run, e.g. a hook's reason.

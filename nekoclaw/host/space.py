@@ -5933,6 +5933,25 @@ class TaskAgentSpace:
 
         return await self._read(work)
 
+    async def read_project(self, name: str) -> tuple[Project | None, bool]:
+        """Return a project that is not archived, or None, and whether its record could be read.
+
+        ``get_project`` shows a project whose file cannot be read just now
+        by its directory's name alone, with nothing said of what it is
+        for. This tells that from a project nothing was ever written of:
+        what is put in the place of words that were not read would lose
+        them.
+        """
+
+        def work() -> tuple[Project | None, bool]:
+            directory = self._paths().project_dir(name)
+            if not directory.is_dir():
+                return None, True
+            data, readable = self._project_data(directory)
+            return self._project_of(data, directory, None), readable
+
+        return await self._read(work)
+
     def _project_line(self, project: Project) -> tuple[str, str]:
         paths = self._paths()
         target = f"projects/{project.name}/{paths.INDEX_NAME}"
@@ -6571,12 +6590,17 @@ class TaskAgentSpace:
 
     # -- what a task agent is handed --------------------------------------
 
-    async def brief(self, project: str | None) -> str:
+    async def brief(self, project: str | None, *, rules_only: bool = False) -> str:
         """Return what the space adds to a task agent's instructions; empty when it holds nothing.
 
         The rules and the index of the space, then those of the commission's
         project, each within its own cap. The entries are not included: the
         task agent reads the ones it needs.
+
+        ``rules_only``: the rules and neither index, for a session that is
+        to go by nothing noted before (a preset with ``memory: none``).
+        The rules are the user's word to every task agent, not something
+        remembered: no preset is opened without them.
         """
         from config.nekoclaw_settings import (
             SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS,
@@ -6632,10 +6656,17 @@ class TaskAgentSpace:
         except (OSError, ValueError):
             logger.warning("the task agent space could not be read for a task agent's instructions", exc_info=True)
             return ""
-        kept = [(header, text.strip(), cap, is_index) for header, text, cap, is_index in sections if text.strip()]
+        kept = [
+            (header, text.strip(), cap, is_index)
+            for header, text, cap, is_index in sections
+            if text.strip() and not (rules_only and is_index)
+        ]
         if not kept:
             return ""
-        note = texts.SPACE_BRIEF_NOTE.format(root=root, project=name)
+        # (The note that goes with the indexes says where the files of the
+        # space are and how to add to them: nothing a session without memory
+        # is to do.)
+        note = texts.SPACE_BRIEF_RULES_NOTE if rules_only else texts.SPACE_BRIEF_NOTE.format(root=root, project=name)
 
         def compose() -> str:
             # An index has no cap on its length, and counting its tokens

@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 
 from nekoclaw.host.decision import TIER_REVIEW
-from nekoclaw.host.paths import DEFAULT_PROJECT
+from nekoclaw.host.paths import DEFAULT_PROJECT, SpacePaths
 from tests.unit.nekoclaw.test_host_space_keeper import FakeLLM, World
 
 CARD = {
@@ -320,6 +320,7 @@ async def test_the_review_is_written_though_what_the_project_is_for_cannot_be_re
     commission = await _in_project(world, "Budget app", description="a budget")
     await world.work(commission.id)
     get_project = world.space.get_project
+    read_project = world.space.read_project
     reads: list[str] = []
 
     async def failing_once(name: str) -> Any:
@@ -327,9 +328,9 @@ async def test_the_review_is_written_though_what_the_project_is_for_cannot_be_re
         reads.append(name)
         if len(reads) == 1:
             raise OSError("the disk does not answer")
-        return await get_project(name)
+        return await read_project(name)
 
-    monkeypatch.setattr(world.space, "get_project", failing_once)
+    monkeypatch.setattr(world.space, "read_project", failing_once)
     await world.end(commission.id)
 
     user = world.llm.last(TIER_REVIEW)[1]["content"]
@@ -347,6 +348,47 @@ async def test_the_review_is_written_though_what_the_project_is_for_cannot_be_re
     await world.work(again.id)
     await world.end(again.id)
     assert (await get_project("Budget app")).description == "Something else."
+
+
+async def test_what_a_review_says_a_project_is_for_is_not_kept_when_the_projects_record_could_not_be_read(
+    world, monkeypatch
+):
+    # The record is held by another program, say, while the model is shown the card, and can be read
+    # again by the time its answer is kept. Reading it raises nothing then: the project shows by its
+    # name alone, with nothing said of what it is for.
+    world.llm.answers[TIER_REVIEW] = [{"review": "It was done.", "card": {**CARD, "description": "Something else."}}]
+    commission = await _in_project(world, "Budget app", description="a budget")
+    await world.work(commission.id)
+    read_project = world.space.read_project
+    real = Path.read_text
+    held = [False]
+
+    def read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+        if held[0] and self.name == SpacePaths.PROJECT_FILE:
+            raise PermissionError(13, "The process cannot access the file", str(self))
+        return real(self, *args, **kwargs)
+
+    async def held_meanwhile(name: str) -> Any:
+        held[0] = True
+        try:
+            found = await read_project(name)
+        finally:
+            held[0] = False
+        assert found[0] is not None and (found[0].name, found[0].description, found[1]) == ("Budget app", "", False)
+        return found
+
+    assert await read_project("No such project") == (None, True)
+    known = await read_project("Budget app")
+    assert (known[0].description, known[0].description_by, known[1]) == ("a budget", "creator", True)
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(world.space, "read_project", held_meanwhile)
+    await world.end(commission.id)
+
+    assert "\nsummary: (none)\ndescription: (none)\n\nWhat the task agent did:" in world.llm.last(TIER_REVIEW)[1]["content"]
+    assert (await world.reviews(commission.id))[0] == {
+        "status": "written", "project": "Budget app", "entries": [], "card": ["title", "duty", "summary"],
+    }
+    assert (await world.space.get_project("Budget app")).description == "a budget"
 
 
 async def test_the_review_is_written_though_the_card_of_its_session_cannot_be_read(world, monkeypatch, caplog):
@@ -399,8 +441,10 @@ async def test_the_lines_of_a_card_that_were_written_stay_on_record_though_the_d
         {"review": "It was done.", "card": {"title": 5, "duty": None, "summary": ["Sorted."], "description": {"a": 1}}},
         {"review": "It was done.", "card": {"title": "", "duty": "", "summary": "", "description": ""}},
         # A card whose JSON is broken (a quotation mark missing): the review before it is whole, and is kept.
-        '{"review": "It was done.", "entries": [], "project": "", "project_description": "", '
-        '"card": {"title": Photo sorter", "duty": "sorting photos", "summary": "Sorted.", "description": ""}}',
+        (
+            '{"review": "It was done.", "entries": [], "project": "", "project_description": "", '
+            '"card": {"title": Photo sorter", "duty": "sorting photos", "summary": "Sorted.", "description": ""}}'
+        ),
         # Cut off inside the card, where the cap on what the model writes fell.
         '{"review": "It was done.", "entries": [], "project": "", "project_description": "", "card": {"title": "Photo so',
     ],

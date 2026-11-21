@@ -1220,7 +1220,7 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     read_brief = host.space.brief
     reads = []
 
-    async def workspace_brief(project):
+    async def workspace_brief(project, **_kwargs):
         reads.append(project)
         if len(reads) == 2:
             if brief_result == "empty":

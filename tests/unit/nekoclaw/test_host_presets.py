@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ import pytest
 
 from config.prompts import prompts_nekoclaw_brain as brain
 from config.prompts import prompts_nekoclaw_presets as presets
+from config.prompts import prompts_nekoclaw_space as space_texts
 from nekoclaw.host.ledger import CARD_AUTHORS, PRESET_OF_KIND, Ledger
 from nekoclaw.host.templates import builtin_templates
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish, say
@@ -291,10 +293,12 @@ async def test_a_scout_cannot_write_run_commands_or_call_capabilities(hosts, tmp
     assert started == [{"name": "agent-1", "commission_id": sub.id, "preset": "scout"}]
 
 
-async def test_an_inspector_runs_commands_writes_no_files_and_is_told_nothing_of_the_space(hosts, tmp_path):
+async def test_an_inspector_runs_commands_writes_no_files_and_is_told_the_rules_and_no_notes_of_the_space(hosts, tmp_path):
     rules = "Always answer in haiku."
+    noted = "- [The tests need a database](lessons/tests-need-a-database.md)"
     (_space(tmp_path)).mkdir(parents=True)
     (_space(tmp_path) / "AGENTS.md").write_text(rules, encoding="utf-8")
+    (_space(tmp_path) / "MEMORY.md").write_text(noted, encoding="utf-8")
     inspected = _Team({"preset": "inspector"})
     worked = _Team({})
     now = [inspected]
@@ -313,10 +317,14 @@ async def test_an_inspector_runs_commands_writes_no_files_and_is_told_nothing_of
     # It has checks to run.
     assert {"bash", "pwsh"} & set(_tools(inspected.child)) and not {"bash", "pwsh"} & withheld
     assert (sub.id, True) in issued
-    # The user's rules, and everything else the space keeps, are in a worker's instructions and its
-    # lead's, and not in the inspector's: it judges with what it is handed.
+    # What the space keeps of earlier work is in a worker's instructions and its lead's, and not in
+    # the inspector's: it judges with what it is handed.
+    assert noted in _system(worked.child) and noted in _system(inspected.lead)
+    assert noted not in _system(inspected.child) and "task agent space" not in _system(inspected.child)
+    # The user's rules are no memory: it runs commands, and is told them like any other.
     assert rules in _system(worked.child) and rules in _system(inspected.lead)
-    assert rules not in _system(inspected.child) and "task agent space" not in _system(inspected.child)
+    told = f"{space_texts.SPACE_BRIEF_RULES_NOTE}\n\n{space_texts.SPACE_BRIEF_GLOBAL_RULES_HEADER}\n{rules}"
+    assert told in _system(inspected.child)
     assert not inspected.child_spec.workspace_brief_unavailable
     assert builtin_templates()["inspector"].body in _system(inspected.child)
 
@@ -494,6 +502,44 @@ async def test_a_session_is_not_opened_while_the_folder_of_templates_cannot_be_r
     listed = await host.templates()
     assert [item["name"] for item in listed] == ["boss", "worker", "scout", "inspector", "planner", "general"]
     assert all(not item["valid"] and "cannot be read" in item["error"] for item in listed)
+
+
+async def test_a_task_agent_has_no_tool_the_session_that_started_it_is_without(hosts, tmp_path):
+    # A template of the user's that takes the tools that write and run commands, and leaves the one
+    # that starts task agents: the worker it starts would write for it.
+    _template(_space(tmp_path) / "templates", "general", more="writes: none\nwithhold: [bash, pwsh]\n")
+    team = _Team({})
+    host = _host(hosts, tmp_path, team.pick)
+    issued = _issued(host)
+
+    receipt = await _dispatch(host, "look the photos over")
+    await wait_status(host, receipt.commission_id, "done")
+
+    (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
+    assert (await host.ledger.get_session(sub.session_id)).preset == "worker"
+    assert sorted(team.child_spec.disabled_tools) == sorted({*CHILD_WITHHELD, "write", "edit", "bash", "pwsh"})
+    assert not {"write", "edit", "bash", "pwsh"} & set(_tools(team.child))
+    # Only the tools: it calls capabilities as its starter does, and is a worker in all else.
+    assert (sub.id, False) in issued and team.child_spec.limits.max_turns is None
+
+
+def test_a_preset_under_another_is_without_what_that_one_is_without_and_is_itself_in_all_else():
+    presets_ = builtin_templates()
+    worker, scout, inspector = presets_["worker"], presets_["scout"], presets_["inspector"]
+
+    # Nothing withheld by the one that starts it: the very preset, as every built-in one is started.
+    assert worker.under(presets_["boss"]) is worker and scout.under(presets_["general"]) is scout
+    assert scout.under(inspector) is scout
+    under = worker.under(inspector)
+    assert under.withheld() == inspector.withheld() and under.calls_nothing and under.needs_builtin
+    # The role, the memory and the cap on requests are its own.
+    assert (under.name, under.body, under.memory, under.max_requests, under.read_only, under.writes) == (
+        "worker", worker.body, "project", None, False, "inherit",
+    )
+    assert under.remembers and not inspector.remembers
+    # What its own preset withholds stays withheld.
+    own = replace(worker, withhold=("grep",))
+    assert own.under(inspector).withheld() == inspector.withheld() | {"grep"}
 
 
 async def test_a_template_of_the_users_narrows_a_built_in_preset(hosts, tmp_path):

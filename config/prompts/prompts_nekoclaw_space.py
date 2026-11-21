@@ -61,6 +61,9 @@ SPACE_BRIEF_NOTE = (
     "files; add to them with note_lesson."
 )
 
+# For a session whose preset keeps no memory: it is shown the rules and no index.
+SPACE_BRIEF_RULES_NOTE = "From the user, for every task agent that works for them: keep to these rules."
+
 SPACE_BRIEF_GLOBAL_RULES_HEADER = "Rules for every commission:"
 SPACE_BRIEF_GLOBAL_INDEX_HEADER = "Index, all projects:"
 # Rendered with str.format: project.

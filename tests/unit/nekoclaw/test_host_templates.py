@@ -589,6 +589,33 @@ def test_a_template_that_cannot_be_looked_at_is_seen_all_the_same(space, monkeyp
     assert store.resolve("worker").withheld() == frozenset()
 
 
+def test_what_was_listed_while_a_file_could_not_be_looked_at_is_not_kept(space, monkeypatch):
+    # What stands for a file that cannot be looked at is the same whatever is in the file. Were the
+    # file read all the same a moment later and the listing kept, the template read then would be
+    # handed out for as long as the file cannot be looked at, whatever it has become since.
+    store = TemplateStore(lambda: space)
+    path = _put(space, _text(name="general", more="withhold: [bash]\n"), name="general")
+    real = Path.stat
+    failing = ["once"]
+    looked: list[str] = []
+
+    def stat(self: Path, **kwargs: object) -> object:
+        if self.name == path.name:
+            looked.append(failing[0])
+            if failing[0] == "always" or len(looked) == 1:
+                raise FileNotFoundError(self)
+        return real(self, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+
+    assert store.resolve("general").withhold == ("bash",)
+    assert looked == ["once", "once"]
+    failing[0] = "always"
+    assert store.signature()[0] == (("general.md", -1, -1),)
+    with pytest.raises(TemplateError, match="cannot be read"):
+        store.resolve("general")
+
+
 def test_a_project_whose_name_is_no_folder_name_goes_by_the_users_templates(space):
     store = TemplateStore(lambda: space)
     _put(space, _text())
