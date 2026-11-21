@@ -486,12 +486,19 @@
         return list;
     }
 
+    /**
+     * C1 payload. `visible` means "this page has regions to mask" and follows
+     * the layout only: whether the window itself is shown is the shell's
+     * call, and the shell drops the rects of a visible:false report. A hidden
+     * window therefore keeps reporting its real regions with visible:true, so
+     * the stored report is current the moment the window is shown again.
+     * Nothing to mask -> visible:false with no rects.
+     */
     function buildReportPayload(doc, win) {
-        var hidden = doc.visibilityState === 'hidden';
         var rects = limitRectCount(collectLocalMaskRects(doc, win, { includeHiddenDocument: true }), REPORT_MAX_RECTS);
         return {
             version: CONTRACT_VERSION,
-            visible: !hidden,
+            visible: rects.length > 0,
             viewport: { width: Number(win.innerWidth) || 0, height: Number(win.innerHeight) || 0 },
             rects: rects
         };

@@ -127,6 +127,8 @@ function makeWindow(opts) {
         Promise,
     };
     if (opts.multiWindow) w.__NEKO_MULTI_WINDOW__ = true;
+    // Chat-window preload exposes C1 before page scripts run.
+    if (opts.nekoCaptureMask) w.nekoCaptureMask = opts.nekoCaptureMask;
     if (opts.shell) w.electronScreen = opts.shell;
     w.window = w;
     vm.createContext(w);
@@ -679,9 +681,39 @@ test('reporter: hidden window keeps reporting its layout; the browser path still
     const { w } = makeWindow({ elements: chatElements({ galOpen: true }) });
     w.document.visibilityState = 'hidden';
     const payload = w.appCaptureMask.buildReportPayload(w.document, w);
-    assert.equal(payload.visible, false);
+    // The shell drops the rects of a visible:false report and decides by itself
+    // whether the window is shown, so regions are reported with visible:true.
+    assert.equal(payload.visible, true);
     assert.equal(payload.rects.length, 2, 'rects reported while hidden so the shell has them on restore');
     assert.equal(w.appCaptureMask.collectLocalMaskRects(w.document, w).length, 0);
+});
+
+test('reporter: visible follows the regions (nothing to mask -> visible:false, no rects)', () => {
+    for (const [elements, visible, count] of [
+        [chatElements({ galOpen: true }), true, 2],
+        [chatElements({ collapsed: true }), false, 0],
+        [[], false, 0],
+    ]) {
+        const { w } = makeWindow({ elements });
+        const payload = w.appCaptureMask.buildReportPayload(w.document, w);
+        assert.equal(payload.visible, visible);
+        assert.equal(payload.rects.length, count);
+    }
+});
+
+test('reporter: every fresh page (reload, page after a renderer crash) reports on its own load', async () => {
+    // Each page load runs app-capture-mask.js in a new document; the shell has
+    // dropped the previous report and needs one from the new page.
+    const reports = [];
+    const shellC1 = { report: (p) => { reports.push(JSON.parse(JSON.stringify(p))); } };
+    for (const [label, elements] of [['first load', []], ['reload', chatElements({ galOpen: true })], ['after crash', []]]) {
+        const before = reports.length;
+        makeWindow({ elements, nekoCaptureMask: shellC1 });
+        await new Promise((r) => setTimeout(r, 300));
+        assert.equal(reports.length, before + 1, `${label}: one report after load, without any DOM change`);
+    }
+    assert.deepEqual(reports.map((p) => p.visible), [false, true, false]);
+    assert.deepEqual(reports[0], { version: 1, visible: false, viewport: { width: 1000, height: 800 }, rects: [] });
 });
 
 test('reporter: reports once on start (new page after navigation) and again on resize', async () => {
@@ -700,4 +732,44 @@ test('reporter: reports once on start (new page after navigation) and again on r
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(reports.length, 2, 'viewport change is reported');
     assert.equal(reports[1].viewport.width, 900);
+});
+
+
+// ---------------------------------------------------------------- sourceId per single-shot entry
+
+test('single-shot entries pass the source they actually captured to the shell; backend passes null + backend surface', async () => {
+    const answer = async () => ({ ok: true, rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }] });
+
+    // Cached stream bound to a selected desktop source.
+    const cachedShell = shellStub(answer);
+    const cached = bootProactive({ multiWindow: true, shell: cachedShell });
+    cached.S.selectedScreenSourceId = 'screen:7:0';
+    const cachedShot = await cached.w.appProactive.captureProactiveChatScreenshotWithSource();
+    assert.equal(cachedShot.via, 'stream');
+    assert.deepEqual(cachedShell.calls.map((c) => c.sourceId), ['screen:7:0', 'screen:7:0']);
+
+    // Native snapshot of the selected source (no cached stream).
+    const nativeShell = shellStub(answer);
+    const native = bootProactive({ multiWindow: true, shell: nativeShell });
+    native.S.screenCaptureStream = null;
+    native.S.selectedScreenSourceId = 'screen:5:0';
+    native.w.getDesktopCaptureProvider = () => ({ captureSourceAsDataUrl() {} });
+    native.w.captureDesktopSourceWithTimeout = async (_p, _m, id) => {
+        assert.equal(id, 'screen:5:0');
+        return { success: true, dataUrl: RAW_FRAME };
+    };
+    const nativeShot = await native.w.appProactive.captureProactiveChatScreenshotWithSource();
+    assert.equal(nativeShot.via, 'native');
+    assert.deepEqual(nativeShell.calls.map((c) => [c.sourceId, c.surface]), [['screen:5:0', 'source'], ['screen:5:0', 'source']]);
+    assert.deepEqual(fillsOf(nativeShot.dataUrl), [[0, 0, 100, 80]]);
+
+    // Backend desktop screenshot: the source is genuinely unknown.
+    const backendShell = shellStub(answer);
+    const backend = bootProactive({ multiWindow: true, shell: backendShell });
+    backend.S.screenCaptureStream = null;
+    backend.w.appScreen.acquireOrReuseCachedStream = async () => null;
+    backend.w.appScreen.fetchBackendScreenshot = async () => ({ dataUrl: RAW_FRAME });
+    const backendShot = await backend.w.appProactive.captureProactiveChatScreenshotWithSource();
+    assert.equal(backendShot.via, 'backend');
+    assert.deepEqual(backendShell.calls[backendShell.calls.length - 1], { version: 1, sourceId: null, surface: 'backend' });
 });
