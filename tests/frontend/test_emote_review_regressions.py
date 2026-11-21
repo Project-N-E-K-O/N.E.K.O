@@ -177,6 +177,38 @@ def test_layered_reload_and_click_cleanup(page, running_server, mode):
         page.evaluate("""folder=>fetch('/api/model/pngtuber/model',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder})})""", folder)
 
 
+@pytest.mark.parametrize('legacy_snapshot', [False, True])
+def test_skin_change_survives_reopening_and_a_stale_library_snapshot(editor, legacy_snapshot):
+    _import(editor, _two_skins())
+    editor.locator('[data-template-skin-group="skin"]').select_option('alternate', force=True)
+    assert editor.evaluate("""() => {
+        const library=JSON.parse(localStorage.getItem('neko-emote-maker-template-library'));
+        return library.entries.find(entry=>entry.key===library.currentKey).session.character.skins[0].value;
+    }""") == 'alternate'
+    editor.wait_for_function("""async () => {
+        const key=JSON.parse(localStorage.getItem('neko-emote-maker-template-library')).currentKey;
+        return (await (await fetch('/api/emote-maker/library')).json()).entries.some(entry=>entry.key===key);
+    }""")
+    if legacy_snapshot:
+        # Model the older page: LAST_TEMPLATE_KEY is current, the library is stale.
+        editor.add_init_script("""(() => {
+            const key='neko-emote-maker-template-library';
+            const library=JSON.parse(localStorage.getItem(key));
+            const entry=library.entries.find(entry=>entry.key===library.currentKey);
+            entry.session.character.skins=[{group:'skin',value:'default'}];
+            localStorage.setItem(key,JSON.stringify(library));
+        })();""")
+    editor.reload(wait_until='networkidle')
+    if legacy_snapshot:
+        assert editor.evaluate("""() => {
+            const library=JSON.parse(localStorage.getItem('neko-emote-maker-template-library'));
+            return library.entries.find(entry=>entry.key===library.currentKey).session.character.skins[0].value;
+        }""") == 'default'
+    editor.locator('.template-lib-card:not([data-template-built-in]) .template-lib-open').first.click()
+    editor.wait_for_function('Boolean(reviewEditor.renderer()?.loaded)')
+    assert editor.evaluate('reviewEditor.state.templateSkins[0].value') == 'alternate'
+
+
 @pytest.mark.parametrize("mode", ["gif", "pack", "group"])
 def test_exports_wait_for_an_active_preview_capture(editor, mode):
     _import(editor, spine_zip())

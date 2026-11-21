@@ -7,6 +7,8 @@ allowing the runtime to keep playing idle without flickering.
 
 from __future__ import annotations
 
+import re
+
 from playwright.sync_api import Page
 
 REVEAL = """() => {
@@ -185,7 +187,8 @@ def test_export_has_a_single_bake_path(page: Page, running_server: str) -> None:
     assert "bakeGraphStates(" not in source, "重复的第二条烘焙路径应当已合并"
     assert source.count("async function bakePackJobs(") == 1, "应当只剩一条采集路径"
     assert source.count("async function buildPngtuberPackage(") == 1
-    assert "await bakePackJobs(jobs)" in source, "导出必须经由唯一的采集函数"
+    assert re.search(r"await\s+bakePackJobs\(\s*jobs(?:\s*,\s*\{[^}]*\})?\s*\)", source), \
+        "导出必须经由唯一的采集函数，可携带固定的格式选项"
     assert "function basicGraph(" in source, "基础模式应编译成图"
     assert "currentBakeGraph()" in source, "两种编辑方式应汇流到同一张图"
 

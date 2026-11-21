@@ -1261,6 +1261,8 @@
                 next.push({ group: groupId, value });
                 recordChange('templateSkins', next);
                 applyNativeCharacterState();
+                persistTemplateSession();
+                persistTemplateToLibrary();
             });
             row.append(name, select);
             children.push(row);
@@ -8395,7 +8397,9 @@
             const savedGraph = saved?.session?.nodeGraph || (sameSession ? state.nodeGraph : null);
             resetTemplateSession();
             if (saved?.session) {
-                lastTemplate = { ...saved.session, fingerprint };
+                // The last-open snapshot may contain edits saved by an older
+                // page that did not yet update the library on every change.
+                lastTemplate = { ...saved.session, ...(sameSession ? lastTemplate : {}), fingerprint };
             }
             if (builtinPackage) {
                 state.nodeGraph = null;
@@ -8728,6 +8732,7 @@
         window.addEventListener('localechange', renderAll);
         window.addEventListener('pagehide', () => {
             persistTemplateSession();
+            persistTemplateToLibrary();
             spineRendererGeneration += 1;
             disposeSpineRenderer();
             releaseTemplateAssetStore();
