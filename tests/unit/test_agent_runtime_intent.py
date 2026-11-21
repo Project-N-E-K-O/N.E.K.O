@@ -485,6 +485,35 @@ async def test_stale_master_off_cannot_stop_reenabled_master_lifecycle(
 
 
 @pytest.mark.asyncio
+async def test_the_switch_brings_the_plugins_on_with_it_and_leaves_the_device_switches_alone(
+    agent_state_isolation, isolated_intent_store: Path
+):
+    """One switch for all of it: switched on, the plugins are on, whatever was kept of their own switch.
+
+    The keyboard and mouse and the browser stay as they were: they say what
+    a task agent may touch on this computer, and are switched on by hand.
+    The intent kept for the plugins is not written by this: a restore that
+    replays the switch brings them on the same way.
+    """
+    srv = agent_state_isolation
+    from app.agent_runtime_intent import get_intent
+
+    assert srv.Modules.agent_flags.get("user_plugin_enabled") is not True
+    before = set(srv.Modules._persistent_tasks)
+    with patch.object(
+        srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False},
+    ):
+        answer = await srv.agent_command({"command": "set_agent_enabled", "enabled": True})
+    await _await_new_agent_tasks(srv, before)
+
+    assert answer["success"] is True and srv.Modules.analyzer_enabled is True
+    assert srv.Modules.agent_flags["user_plugin_enabled"] is True
+    assert srv.Modules.agent_flags.get("computer_use_enabled") is not True
+    assert srv.Modules.agent_flags.get("browser_use_enabled") is not True
+    assert get_intent("analyzer_enabled") is True and get_intent("user_plugin_enabled") is None
+
+
+@pytest.mark.asyncio
 async def test_gate_fail_preserves_user_plugin_enabled(
     agent_state_isolation, isolated_intent_store: Path
 ):

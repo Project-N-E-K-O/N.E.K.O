@@ -308,7 +308,8 @@ async def post_agent_command(request: Request):
         if mgr and command == "set_agent_enabled":
             enabled = bool(data.get("enabled"))
             if enabled:
-                mgr.update_agent_flags({"agent_enabled": True})
+                # Plugins come on with the switch, as in the agent process.
+                mgr.update_agent_flags({"agent_enabled": True, "user_plugin_enabled": True})
             else:
                 mgr.update_agent_flags({
                     "agent_enabled": False,

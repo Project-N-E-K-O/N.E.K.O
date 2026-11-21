@@ -512,15 +512,15 @@ async def agent_command(payload: Dict[str, Any]):
                 first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]
                 _set_capability("computer_use", False, first_reason)
                 _set_capability("browser_use", False, first_reason)
-            if Modules.agent_flags.get("user_plugin_enabled"):
-                # Master OFF preserves sub-feature intent but stops the plugin
-                # lifecycle. Replaying the existing ON intent schedules a new,
-                # generation-owned startup for the re-enabled master.
-                await set_agent_flags({
-                    "user_plugin_enabled": True,
-                    "lanlan_name": lanlan_name,
-                    "_persist_intent": False,
-                })
+            # Plugins come on with the switch: the user has one switch for
+            # all of it, and each plugin has its own. Master OFF stops the
+            # plugin lifecycle; this schedules a new, generation-owned
+            # startup for the re-enabled master.
+            await set_agent_flags({
+                "user_plugin_enabled": True,
+                "lanlan_name": lanlan_name,
+                "_persist_intent": False,
+            })
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
