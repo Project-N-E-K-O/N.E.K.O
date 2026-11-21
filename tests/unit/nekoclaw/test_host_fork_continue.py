@@ -237,7 +237,7 @@ async def test_a_copy_that_goes_on_calling_tools_is_handed_back_after_its_reques
     # Its request for writing down what it found is the only one it got.
     assert len(scripts[RENAME].requests) == 2
     release.set()
-    await wait_status(host, second.id, "done")
+    assert (await wait_status(host, second.id, "done")).session_id == first.session_id
     handed = _said(scripts[RENAME].requests[2])[-1]
     assert "`bash`" in handed and f"\n    {brain_texts.TASK_AGENT_FORK_FOUND_NOTHING}\n" in handed
 
