@@ -17,10 +17,12 @@ const api = vi.hoisted(() => ({
   setEntryDisabled: vi.fn(),
   importPack: vi.fn(),
   cancelPackJob: vi.fn(),
+  retryPackJob: vi.fn(),
   discardPackJob: vi.fn(),
   setPackAutoContext: vi.fn(),
   setPackIndexPolicy: vi.fn(),
   setPackMaterialType: vi.fn(),
+  setPackEnabled: vi.fn(),
   removePack: vi.fn(),
 }))
 
@@ -177,6 +179,122 @@ describe('KnowledgeManager diagnostics', () => {
 })
 
 describe('KnowledgeManager overview', () => {
+  it('offers frozen retry only for failed or cancelled jobs, never a waiting job', async () => {
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [
+      { ...job('failed'), reason: 'process_interrupted' },
+      { ...job('cancelled'), job_id: 'cancelled-1' },
+      { ...job('building'), job_id: 'busy-1', reason: 'knowledge_busy' },
+      { ...job('queued'), job_id: 'queued-1' },
+    ] })
+    api.retryPackJob.mockResolvedValue({ ok: true, job_id: 'retry-1', state: 'queued' })
+    const container = await mount()
+    await openTab('packs')
+    const retry = (id: string) => [...container.querySelectorAll<HTMLButtonElement>(`[data-job-id="${id}"] button`)]
+      .find(button => button.textContent?.trim() === 'Retry task')
+    expect(retry('job-1')).toBeTruthy()
+    expect(retry('cancelled-1')).toBeTruthy()
+    expect(retry('busy-1')).toBeUndefined()
+    expect(retry('queued-1')).toBeUndefined()
+    retry('job-1')!.click()
+    await flush()
+    expect(api.retryPackJob).toHaveBeenCalledWith({ job_id: 'job-1' })
+    expect(api.retryPackJob).toHaveBeenCalledTimes(1)
+    retry('cancelled-1')!.click()
+    await flush()
+    expect(api.retryPackJob).toHaveBeenLastCalledWith({ job_id: 'cancelled-1' })
+  })
+
+  it('does not revive retry or discard actions from a stale post-retry polling snapshot', async () => {
+    vi.useFakeTimers()
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [job('failed')] })
+    api.retryPackJob.mockResolvedValue({ ok: true, job_id: 'retry-new', state: 'queued' })
+    const container = await mount()
+    await openTab('packs')
+    container.querySelector<HTMLButtonElement>('[data-job-id="job-1"] button')!.click()
+    await flush()
+    expect(api.retryPackJob).toHaveBeenCalledTimes(1)
+    expect(container.querySelector('[data-job-id="job-1"]')).toBeNull()
+    const newTask = container.querySelector('[data-job-id="retry-new"]')
+    expect(newTask).not.toBeNull()
+    expect(newTask!.textContent).toContain(enUS.knowledge.jobQueued)
+    expect(newTask!.querySelector('button')!.textContent).toContain(enUS.knowledge.cancelJob)
+    expect(api.discardPackJob).not.toHaveBeenCalled()
+    const beforePoll = api.packJobs.mock.calls.length
+    await vi.advanceTimersByTimeAsync(2_100)
+    await flush()
+    expect(api.packJobs.mock.calls.length).toBeGreaterThan(beforePoll)
+    expect(container.querySelector('[data-job-id="retry-new"]')).not.toBeNull()
+  })
+
+  it('hands a retry over to the server snapshot after polling confirms its identity', async () => {
+    vi.useFakeTimers()
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [job('failed')] })
+    api.retryPackJob.mockResolvedValue({ ok: true, job_id: 'retry-new', state: 'queued' })
+    const container = await mount()
+    await openTab('packs')
+    container.querySelector<HTMLButtonElement>('[data-job-id="job-1"] button')!.click()
+    await flush()
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [{ ...job('building'), job_id: 'retry-new' }] })
+    await vi.advanceTimersByTimeAsync(2_100)
+    await flush()
+    expect(container.querySelector('[data-job-id="retry-new"]')!.textContent).toContain(enUS.knowledge.jobBuilding)
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [{ ...job('active'), job_id: 'retry-new' }] })
+    await vi.advanceTimersByTimeAsync(2_100)
+    await flush()
+    expect(container.querySelector('[data-job-id="retry-new"]')).toBeNull()
+    const afterCompletion = api.packJobs.mock.calls.length
+    await vi.advanceTimersByTimeAsync(4_200)
+    await flush()
+    expect(api.packJobs.mock.calls.length).toBe(afterCompletion)
+  })
+
+  it.each([true, false])('keeps an unconfirmed retry row discarded only after server success (%s)', async succeeds => {
+    let freezeNextList = false
+    let finishList!: (value: unknown) => void
+    const stale = { ok: true, jobs: [job('failed')] }
+    api.packJobs.mockImplementation(() => {
+      if (!freezeNextList) return Promise.resolve(stale)
+      freezeNextList = false
+      return new Promise(resolve => { finishList = resolve })
+    })
+    api.retryPackJob.mockImplementation(async () => {
+      freezeNextList = true
+      return { ok: true, job_id: 'retry-cancelled', state: 'cancelled' }
+    })
+    if (succeeds) api.discardPackJob.mockResolvedValue({ ok: true })
+    else api.discardPackJob.mockRejectedValue(new KnowledgeApiError('knowledge_busy'))
+    const container = await mount()
+    await openTab('packs')
+    container.querySelector<HTMLButtonElement>('[data-job-id="job-1"] button')!.click()
+    await flush()
+    expect(finishList).toBeTypeOf('function')
+    const retryRow = () => container.querySelector('[data-job-id="retry-cancelled"]')
+    expect(retryRow()).not.toBeNull()
+    const discard = [...retryRow()!.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim() === enUS.knowledge.discardJob)!
+    discard.click()
+    await flush()
+    expect(api.discardPackJob).toHaveBeenCalledWith({ job_id: 'retry-cancelled' })
+    expect(Boolean(retryRow())).toBe(!succeeds)
+    // Neither the in-flight snapshot nor a later refresh may revive a successful discard.
+    finishList(stale)
+    await flush()
+    container.querySelector<HTMLButtonElement>('.page-heading button')!.click()
+    await flush()
+    expect(Boolean(retryRow())).toBe(!succeeds)
+  })
+
+  it('keeps a failed retry available for another attempt', async () => {
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [job('failed')] })
+    api.retryPackJob.mockRejectedValue(new KnowledgeApiError('knowledge_busy'))
+    const container = await mount()
+    await openTab('packs')
+    const retry = container.querySelector<HTMLButtonElement>('[data-job-id="job-1"] button')!
+    retry.click()
+    await flush()
+    expect(retry.disabled).toBe(false)
+  })
+
   it('posts the global switch and reflects the saved value', async () => {
     const container = await mount()
     const toggle = container.querySelector<HTMLElement>('[data-testid="knowledge-global-switch"]')
@@ -202,9 +320,39 @@ describe('KnowledgeManager overview', () => {
     expect(container.querySelector('[data-testid="knowledge-state"]')?.textContent).toContain('Unavailable')
     expect(container.textContent).toContain('The pack registry file is damaged or unreadable.')
   })
+
+  it('toggles pack retrieval independently of automatic context and local vectors', async () => {
+    api.packs.mockResolvedValue({ ok: true, packs: [{
+      pack_id: 'imp.test', source: { name: 'My notes', homepage: '', license: '' },
+      origin: 'imported', enabled: true, auto_context: false, local_embedding: true,
+      declared_material_type: 'knowledge', material_type_override: null, effective_material_type: 'knowledge',
+      entries: 1, disabled_entries: 0, chunks_total: 1, chunks_ready: 0, chunks_failed: 0,
+      vector_state: 'waiting', export_ready: false, broken: false, subscription: null, installed_at: '', updated_at: '',
+    }] })
+    api.setPackEnabled.mockResolvedValue({ ok: true, pack_id: 'imp.test', enabled: false })
+    const container = await mount()
+    await openTab('packs')
+    expect(container.textContent).toContain('Imported documents')
+    container.querySelector<HTMLElement>('[data-testid="pack-enabled-imp.test"]')!.click()
+    await flush()
+    expect(api.setPackEnabled).toHaveBeenCalledWith({ pack_id: 'imp.test', enabled: false })
+    expect(api.setPackAutoContext).not.toHaveBeenCalled()
+    expect(api.setPackIndexPolicy).not.toHaveBeenCalled()
+    expect(container.querySelector<HTMLInputElement>('input[type="file"]')!.accept).toContain('.pdf')
+  })
 })
 
 describe('KnowledgeManager job polling', () => {
+  it.each(['failed', 'cancelled'] as const)('uses export-specific notification for a %s export', async state => {
+    vi.useFakeTimers()
+    api.packJobs.mockResolvedValueOnce({ ok: true, jobs: [{ ...job('building'), kind: 'pack_export' }] })
+      .mockResolvedValue({ ok: true, jobs: [{ ...job(state), kind: 'pack_export', reason: 'knowledge_error' }] })
+    await mount()
+    await vi.advanceTimersByTimeAsync(2_100)
+    await flush()
+    expect(document.body.textContent).toContain(state === 'failed' ? 'Export of fixture-pack failed:' : 'Export of fixture-pack was cancelled')
+    expect(document.body.textContent).not.toContain(state === 'failed' ? 'failed to import' : 'Import of fixture-pack was cancelled')
+  })
   it('polls while an import is active and stops after unmount', async () => {
     vi.useFakeTimers()
     api.packJobs.mockResolvedValue({ ok: true, jobs: [job('building')] })

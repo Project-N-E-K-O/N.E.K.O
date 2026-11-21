@@ -94,6 +94,10 @@ def service_with_fake_session(monkeypatch):
     svc._tokenizer = object()  # Non-None placeholder, never called.
     svc._dim = None  # No Matryoshka truncation.
     svc._load_lock = asyncio.Lock()
+    # The fixture bypasses the constructor, so initialize its shared native
+    # admission owner as well as the existing lifecycle primitives.
+    from memory._embeddings.scheduling import InferenceQueue
+    svc._inference_queue = InferenceQueue()
     svc._lifecycle_condition = asyncio.Condition()
     svc._active_operations = 0
     svc._closing = False
@@ -314,7 +318,7 @@ def test_parse_dim_handles_both_id_formats():
     assert embeddings.parse_dim_from_model_id("foo-bar-128d-fp32-mlen8192") == 128
 
 
-def test_truncation_failure_aborts_load_with_distinct_reason():
+def test_truncation_failure_aborts_load_with_distinct_reason(tmp_path):
     """`enable_truncation` failure makes _load_session_blocking raise
     _DisabledError(TRUNCATION_SETUP_FAILED), never become ready and stamp
     mismatched mlen cache IDs (joint Codex/CodeRabbit P2 on PR #1585).
@@ -328,9 +332,19 @@ def test_truncation_failure_aborts_load_with_distinct_reason():
     # Prepare fake service as above.
     svc = object.__new__(embeddings.EmbeddingService)
     svc._profile_id = "test-profile"
-    svc._model_dir = "/nonexistent"  # Patched path checks succeed.
+    svc._model_dir = str(tmp_path)
     svc._quantization = "int8"
     svc._dim = 256
+    # Native loading now fingerprints the same real LOADING lifecycle as the
+    # public request_load path before checking tokenizer truncation support.
+    svc._state = embeddings.EmbeddingState.LOADING
+
+    # Loading now stats resource identities before invoking the tokenizer.
+    # Isolated placeholders keep the intended truncation error decisive.
+    profile = tmp_path / svc._profile_id
+    (profile / "onnx").mkdir(parents=True)
+    for relative in ("onnx/model_quantized.onnx", "onnx/model_quantized.onnx_data", "tokenizer.json"):
+        (profile / relative).write_bytes(b"isolated test resource")
 
     # Patch file checks + onnxruntime + tokenizers, making failed enable_truncation
     # the decisive failure only.

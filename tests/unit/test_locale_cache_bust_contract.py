@@ -66,8 +66,15 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-21-decision-model-slot",
+        "2026-11-20-unified-knowledge-manager-merge",
+        "2026-11-19-unified-knowledge-manager-merge",
         "2026-11-19-eight-locale-gap-fill",
+        "2026-11-18-unified-knowledge-manager",
         "2026-11-17-remote-pairing-key-help",
+        "2026-11-17-knowledge-source-labels",
+        "2026-11-17-knowledge-package-scope",
+        "2026-11-16-personal-knowledge-library",
         "2026-11-15-nekoclaw-browser-custom-tts-merge",
         "2026-11-15-nekoclaw-browser-deepseek-tts-merge",
         "2026-11-15-custom-tts-voice-fallback-hint",

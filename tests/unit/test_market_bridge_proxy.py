@@ -11,6 +11,35 @@ from app.main_server import web_app
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('method,path,timeout', [('POST', 'knowledge/publish', 245.0),
+                                               ('GET', 'knowledge/status', 30.0), ('POST', 'oauth/start', 30.0)])
+async def test_only_knowledge_publication_proxy_waits_for_its_full_operation(monkeypatch, method, path, timeout):
+    real_client = httpx.AsyncClient
+    timeouts = []
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_args):
+            return None
+        async def request(self, *_args, **kwargs):
+            content = kwargs['content']
+            if not isinstance(content, bytes):
+                async for _block in content:
+                    pass
+            return httpx.Response(200, content=b'{}')
+    def upstream(**kwargs):
+        timeouts.append(kwargs['timeout'].read)
+        return FakeClient()
+    monkeypatch.setattr(web_app.httpx, 'AsyncClient', upstream)
+    monkeypatch.setattr(web_app, '_resolve_user_plugin_base', lambda: 'http://127.0.0.1:48916')
+    app = FastAPI()
+    app.add_api_route('/market/{path:path}', web_app.proxy_user_plugin_market_bridge, methods=['GET', 'POST'])
+    async with real_client(transport=httpx.ASGITransport(app=app), base_url='http://127.0.0.1') as client:
+        response = await client.request(method, '/market/' + path, content=b'{}' if method == 'POST' else b'')
+    assert response.status_code == 200 and timeouts == [timeout]
+
+
+@pytest.mark.asyncio
 async def test_market_proxy_preserves_query_token_and_authorization(monkeypatch):
     import utils.instance_access as access
 

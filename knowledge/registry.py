@@ -78,6 +78,10 @@ class PackRecord:
     updated_at: str = ""
     # Set for a pack installed from the plugin market; None for a local import.
     subscription: KnowledgeSubscription | None = None
+    # Pack participation is separate from passive context and vector backfill.
+    enabled: bool = True
+    origin: str = "builtin"
+    archive_sha256: str = ""
 
     @property
     def effective_material_type(self) -> str:
@@ -99,6 +103,7 @@ class PackRecord:
             "material_type_override": self.material_type_override,
             "entries": self.entries,
             "chunks": self.chunks,
+            "enabled": self.enabled,
             "auto_context": self.auto_context,
             "local_embedding": self.local_embedding,
             "disabled_titles": list(self.disabled_titles),
@@ -108,6 +113,10 @@ class PackRecord:
         # Only written when present, so a local pack's record is unchanged.
         if self.subscription is not None:
             payload["subscription"] = self.subscription.to_json()
+        if self.origin != "builtin":
+            payload["origin"] = self.origin
+        if self.archive_sha256:
+            payload["archive_sha256"] = self.archive_sha256
         return payload
 
 
@@ -176,6 +185,13 @@ def _parse_record(pack_id: str, raw: object) -> PackRecord:
             raise KnowledgeRegistryError("invalid_pack_record") from exc
         if subscription.pack_id != pack_id:
             raise KnowledgeRegistryError("invalid_pack_record")
+    origin = raw.get("origin", "market" if subscription is not None else "builtin")
+    archive_sha256 = raw.get("archive_sha256", "")
+    # Check the wire type before set membership so damaged JSON stays a domain error.
+    if not isinstance(origin, str) or origin not in {"builtin", "market", "imported"} or not isinstance(archive_sha256, str):
+        raise KnowledgeRegistryError("invalid_pack_record")
+    if archive_sha256 and (len(archive_sha256) != 64 or not set(archive_sha256) <= _SHA_HEX):
+        raise KnowledgeRegistryError("invalid_pack_record")
     return PackRecord(
         pack_id=pack_id,
         pack_sha256=sha,
@@ -194,6 +210,9 @@ def _parse_record(pack_id: str, raw: object) -> PackRecord:
         installed_at=_str(raw.get("installed_at", "")),
         updated_at=_str(raw.get("updated_at", "")),
         subscription=subscription,
+        enabled=_bool(raw.get("enabled", True)),
+        origin=origin,
+        archive_sha256=archive_sha256,
     )
 
 

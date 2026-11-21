@@ -390,8 +390,11 @@ async def redirect_plugin_dashboard(request: Request):
     else:
         user_plugin_base = await _resolve_user_plugin_base()
         target_url = f"{user_plugin_base}/ui"
-    if request.query_params.get("page") == "model-api":
-        target_url += "/model-api"
+    # Only named built-in manager pages may influence this redirect. Reuse the
+    # same runtime endpoint for desktop knowledge entry without a fixed port.
+    page = {"model-api": "/model-api", "knowledge": "/knowledge"}.get(request.query_params.get("page"))
+    if page:
+        target_url += page
     query_params: dict[str, str] = {}
     if "v" in request.query_params:
         v = request.query_params["v"].strip()

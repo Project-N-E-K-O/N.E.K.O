@@ -608,11 +608,11 @@ async def _cosine_rank(
         return []
 
     from memory.embeddings import (
-        get_embedding_service,
+        aget_embedding_service,
         parse_dim_from_model_id,
     )
 
-    service = get_embedding_service()
+    service = await aget_embedding_service()
     if not service.is_available():
         return []
     model_id = service.model_id()
@@ -1419,8 +1419,8 @@ async def hybrid_recall(
     # historically absent from Memory log file. Reading service state does not load or
     # throw (pure properties); failures degrade to unknown without affecting recall.
     try:
-        from memory.embeddings import get_embedding_service
-        _svc = get_embedding_service()
+        from memory.embeddings import aget_embedding_service
+        _svc = await aget_embedding_service()
         emb_state = "ready" if _svc.is_available() else (
             "disabled:%s" % _svc.disable_reason() if _svc.is_disabled() else "not_ready"
         )

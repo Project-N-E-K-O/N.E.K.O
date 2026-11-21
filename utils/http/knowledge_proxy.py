@@ -26,9 +26,10 @@ from __future__ import annotations
 from typing import AsyncIterator, Protocol
 
 JSON_BODY_MAX_BYTES = 64 * 1024
-# Kept equal to the schema-v1 pack limit (knowledge.models.MAX_PACK_BYTES,
-# which this layer cannot import) plus room for multipart framing.
-PACK_BODY_MAX_BYTES = 10 * 1024 * 1024 + 64 * 1024
+# Portable ZIP limit plus multipart framing; v1 JSON has its own stricter
+# validator after this streamed transport boundary.
+PACK_BODY_MAX_BYTES = 64 * 1024 * 1024 + 64 * 1024
+SOURCE_BODY_MAX_BYTES = 16 * 1024 * 1024
 
 READ_PATHS = frozenset(
     {
@@ -39,6 +40,9 @@ READ_PATHS = frozenset(
         "packs/jobs",
         "subscriptions",
         "diagnostics/recent",
+        "sources",
+        "sources/versions",
+        "packs/artifacts",
     }
 )
 WRITE_PATHS: dict[str, int] = {
@@ -47,10 +51,19 @@ WRITE_PATHS: dict[str, int] = {
     "packs/import": PACK_BODY_MAX_BYTES,
     "packs/jobs/cancel": JSON_BODY_MAX_BYTES,
     "packs/jobs/discard": JSON_BODY_MAX_BYTES,
+    "packs/jobs/retry": JSON_BODY_MAX_BYTES,
     "packs/auto-context": JSON_BODY_MAX_BYTES,
     "packs/index-policy": JSON_BODY_MAX_BYTES,
     "packs/material-type": JSON_BODY_MAX_BYTES,
     "packs/remove": JSON_BODY_MAX_BYTES,
+    "packs/enabled": JSON_BODY_MAX_BYTES,
+    "packs/export": JSON_BODY_MAX_BYTES,
+    "packs/exports/delete": JSON_BODY_MAX_BYTES,
+    "sources/preview": SOURCE_BODY_MAX_BYTES,
+    "sources/preview/discard": JSON_BODY_MAX_BYTES,
+    "sources/commit": JSON_BODY_MAX_BYTES,
+    "sources/remove": JSON_BODY_MAX_BYTES,
+    "sources/restore": JSON_BODY_MAX_BYTES,
 }
 # Writes Main forwards but the plugin server's browser-facing bridge does not:
 # only the plugin server's own subscription routes install and remove market

@@ -16,6 +16,7 @@ import dataclasses
 import errno
 import hashlib
 import hmac
+import ipaddress
 import json
 import re
 import secrets
@@ -223,6 +224,52 @@ def _main_server_port() -> int:
 def _is_loopback_host(host: str) -> bool:
     normalized = host.strip().strip("[]").lower()
     return normalized in {"localhost", "127.0.0.1", "::1"}
+
+
+def market_uses_environment_proxy(url: str) -> bool:
+    """Route the configured market through environment proxies only when public.
+
+    Loopback HTTP, ``localhost`` and non-global IP literals (a self-hosted LAN
+    or CGNAT/VPN market addressed by IP) stay direct. Host names such as
+    ``nas.local`` are not resolved here; route them with ``NO_PROXY``.
+    Publication and subscription download share this one rule.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").strip("[]").lower().rstrip(".")
+    if parsed.scheme != "https" or not host:
+        return False
+    if _is_loopback_host(host) or host.endswith(".localhost"):
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    # ``is_global`` also excludes shared CGNAT space (100.64/10, e.g. Tailscale).
+    return address.is_global
+
+
+def market_client_options(url: str) -> dict[str, Any]:
+    """HTTPX options for one market hop: proxies only for public markets.
+
+    ``trust_env=False`` bypasses proxies but would also drop the user's
+    ``SSL_CERT_FILE``/``SSL_CERT_DIR`` trust for a self-hosted HTTPS market,
+    so a direct hop keeps that certificate configuration explicitly.
+    """
+    if market_uses_environment_proxy(url):
+        return {"trust_env": True}
+    try:
+        secure = urlparse(url).scheme == "https"
+    except ValueError:
+        secure = False
+    if not secure:
+        # Plain loopback HTTP has no TLS; never fail it on a CA setting.
+        return {"trust_env": False}
+    import httpx
+
+    return {"trust_env": False, "verify": httpx.create_ssl_context(trust_env=True)}
 
 
 def _is_local_bridge_origin(origin: str, expected_ports: set[int]) -> bool:
@@ -3488,7 +3535,16 @@ async def _refresh_oauth_token(token_data: dict[str, Any]) -> dict[str, Any]:
                 },
             )
             res.raise_for_status()
-            payload = res.json()
+            try:
+                payload = res.json()
+            except (TypeError, ValueError) as exc:
+                # A 2xx HTML/empty gateway reply is an invalid Auth response,
+                # never a raw JSON exception or a diagnostic containing its body.
+                _log_auth_oauth_failure(
+                    "refresh", category="invalid_response", status=res.status_code,
+                    request_id=res.headers.get("x-request-id"), started_at=started_at,
+                )
+                raise HTTPException(status_code=502, detail="Auth refresh token 响应无效") from exc
     except httpx.HTTPStatusError as exc:
         _log_auth_oauth_failure(
             "refresh",

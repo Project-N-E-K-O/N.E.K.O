@@ -43,7 +43,7 @@ from typing import Any, Mapping
 from .models import MATERIAL_TYPES, pack_id_is_valid
 
 
-SUBSCRIPTION_PROTOCOL_VERSION = 1
+SUBSCRIPTION_PROTOCOL_VERSION = 2
 MARKET_PROVIDER = "plugin-market"
 CHANNELS = ("stable", "beta")
 _FIELDS = frozenset(
@@ -59,7 +59,8 @@ _FIELDS = frozenset(
     }
 )
 _PACKAGE_ID_RE = re.compile(r"^[1-9][0-9]{0,18}$")
-_REMOTE_ID_RE = re.compile(r"^knowledge/[a-z0-9][a-z0-9._-]{1,99}$")
+# Match the descriptor contract, including the first nine numeric Market IDs.
+_REMOTE_ID_RE = re.compile(r"^knowledge/[a-z0-9][a-z0-9._-]{0,99}$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,99}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 # More than an unsubscribe can ever name: the installed release plus every

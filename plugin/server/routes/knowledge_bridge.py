@@ -90,8 +90,15 @@ async def public_knowledge_bridge(
 
     port = _main_server_port()
     target = f"http://127.0.0.1:{port}/api/public-knowledge/{path}"
-    params = [(key, value) for key, value in request.query_params.multi_items() if key != "token"]
+    private_field = {"entries": "query", "entry": "title"}.get(path) if request.method == "GET" else None
+    excluded = {"token", private_field}
+    if path == "sources/preview":
+        excluded.update({"filename", "name"})
+    params = [(key, value) for key, value in request.query_params.multi_items() if key not in excluded]
     headers = {"Accept": "application/json"}
+    # Only this read's private field may cross the bridge; never put it in a URL.
+    if private_field and (header := f"x-knowledge-{private_field}") in request.headers:
+        headers[header] = request.headers[header]
     content: AsyncIterator[bytes] | None = None
     if request.method == "POST":
         declared = request.headers.get("content-length")
@@ -106,11 +113,21 @@ async def public_knowledge_bridge(
         )
         if declared is not None:
             headers["Content-Length"] = declared
+        if path == "sources/preview":
+            # Do not forward arbitrary browser headers or put private names in
+            # the proxy URL; these two URI-encoded display fields are explicit.
+            for name in ("x-knowledge-filename", "x-knowledge-name"):
+                if name in request.headers:
+                    headers[name] = request.headers[name]
         content = capped_body(request, max_bytes)
 
     httpx = await ensure_httpx()
     timeout = _WRITE_TIMEOUT_SECONDS if request.method == "POST" else _READ_TIMEOUT_SECONDS
     try:
+        if request.method == "GET" and path == "packs/artifacts":
+            from utils.http.knowledge_artifacts import relay_artifact
+
+            return await relay_artifact(_client(), target, params=params, headers=headers, timeout=timeout)
         response = await _client().request(
             request.method,
             target,

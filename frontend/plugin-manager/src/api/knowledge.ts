@@ -5,13 +5,17 @@ import axios from 'axios'
  *
  * Transport: `/market/knowledge/<path>?token=<bridge token>` on the plugin
  * server, which relays to Main `/api/public-knowledge/<path>` and from there
- * to the Memory Server. Every reply is a JSON object; business failures are
- * `{ok: false, reason}` and may arrive with a non-2xx HTTP status.
+ * to the Memory Server. Replies are JSON except artifact downloads; business
+ * failures are `{ok: false, reason}` and may carry a non-2xx HTTP status.
  */
 
 export const MAX_KNOWLEDGE_PACK_FILE_BYTES = 10 * 1024 * 1024
+export const MAX_KNOWLEDGE_ARCHIVE_FILE_BYTES = 64 * 1024 * 1024
+export const MAX_KNOWLEDGE_SOURCE_FILE_BYTES = 16 * 1024 * 1024
 const KNOWLEDGE_GET_REQUEST_TIMEOUT_MS = 15_000
 const KNOWLEDGE_MUTATION_REQUEST_TIMEOUT_MS = 50_000
+// The plugin bounds the complete publication flow to 240 seconds, including upload.
+const KNOWLEDGE_PUBLICATION_REQUEST_TIMEOUT_MS = 250_000
 
 let bridgeToken = ''
 let bridgeTokenRequest: Promise<string> | null = null
@@ -29,6 +33,9 @@ export const KNOWLEDGE_FAILURE_REASONS = [
   'not_found',
   'invalid_request',
   'job_in_progress',
+  'job_not_retryable',
+  'process_interrupted',
+  'pack_changed',
   'capacity_entries',
   'capacity_chunks',
   'capacity_bytes',
@@ -51,6 +58,34 @@ export const KNOWLEDGE_FAILURE_REASONS = [
   'subscription_identity_mismatch',
   'csrf_validation_failed',
   'operation_failed',
+  'unsupported_document',
+  'document_too_large',
+  'document_text_too_large',
+  'document_too_many_pages',
+  'invalid_text_encoding',
+  'invalid_docx',
+  'invalid_pdf',
+  'encrypted_pdf_unsupported',
+  'scan_unsupported',
+  'no_readable_text',
+  'preview_not_found',
+  'preview_changed',
+  'source_not_found',
+  'source_version_not_found',
+  'source_confirmation_required',
+  'vectors_not_ready',
+  'embedding_unavailable',
+  'package_artifact_hash_mismatch',
+  'package_invalid_archive',
+  'package_invalid_vector',
+  'package_capacity_exceeded',
+  'package_unsupported_format',
+  'package_embedding_identity_mismatch',
+  'market_auth_required',
+  'market_not_connected',
+  'market_publication_not_confirmed',
+  'market_identity_mismatch',
+  'market_publication_failed',
 ] as const
 
 export type KnowledgeFailureReason = (typeof KNOWLEDGE_FAILURE_REASONS)[number]
@@ -169,9 +204,18 @@ export interface KnowledgePack {
   disabled_entries: number
   auto_context: boolean
   local_embedding: boolean
+  /** Missing fields from older servers retain their existing enabled state. */
+  enabled?: boolean
+  origin?: 'builtin' | 'market' | 'imported'
+  /** True only when this installation retains the pack's local source originals. */
+  sources_managed?: boolean
+  /** A removed source group remains manageable for version recovery only. */
+  retained?: boolean
   chunks_total: number
   chunks_ready: number
   chunks_failed: number
+  /** Complete stored vectors share one proven specification, regardless of the active encoder. */
+  export_ready: boolean
   vector_state: KnowledgeVectorState
   broken: boolean
   /** Set for a pack installed from the plugin market; null for a local import. */
@@ -205,6 +249,53 @@ export interface KnowledgePackJob {
   chunks_total: number
   created_at: string
   updated_at: string
+  kind?: 'pack_import' | 'import_commit' | 'pack_export'
+  result?: KnowledgeArtifact | null
+}
+
+export interface KnowledgeArtifact {
+  artifact_id: string
+  sha256: string
+  bytes: number
+  filename: string
+  format_version: 2
+  pack_id: string
+  version: string
+  name?: string
+}
+
+export interface KnowledgeArtifactDownload {
+  blob: Blob
+  filename: string
+}
+
+export interface KnowledgeDocument {
+  doc_id: string
+  name: string
+  current_version: number | null
+  removed?: boolean
+  versions_count: number
+  chars: number
+  updated_at: string
+}
+
+export interface KnowledgeDocumentVersion {
+  version: number
+  name: string
+  chars: number
+  sha256: string
+  created_at: string
+  current: boolean
+}
+
+export interface KnowledgeDocumentPreview {
+  preview_id: string
+  doc_id: string
+  sha256: string
+  name: string
+  content: string
+  chars: number
+  sections: Array<{ text: string; location: Record<string, unknown> }>
 }
 
 export interface KnowledgeDiagnosticQuery {
@@ -296,6 +387,7 @@ function isInvalidBridgeToken(error: unknown): boolean {
     (
       code === 'invalid_bridge_token' ||
       legacyDetail === 'invalid bridge token' ||
+      // Retained wire response from older servers; this is not UI copy.
       legacyDetail === '无效的 bridge token'
     )
   )
@@ -315,6 +407,21 @@ interface RequestOptions {
   params?: Record<string, unknown>
   data?: unknown
   headers?: Record<string, string>
+  responseType?: 'blob'
+  timeout?: number
+  onHeaders?: (headers: Record<string, unknown>) => void
+}
+
+/** Binary downloads still expose JSON errors and refresh an expired bridge token. */
+async function decodeBinaryFailure(error: unknown): Promise<unknown> {
+  const response = (error as { response?: { data?: unknown } })?.response
+  if (!(response?.data instanceof Blob)) return error
+  try {
+    const data = JSON.parse(await response.data.text())
+    return { response: { ...response, data } }
+  } catch {
+    return error
+  }
 }
 
 async function executeRequest<T extends KnowledgeEnvelope>(
@@ -328,11 +435,23 @@ async function executeRequest<T extends KnowledgeEnvelope>(
     params: { ...(options.params || {}), token: value },
     data: options.data,
     headers: options.headers,
-    timeout: options.method === 'POST'
+    ...(options.responseType ? { responseType: options.responseType } : {}),
+    timeout: options.timeout ?? (options.method === 'POST'
       ? KNOWLEDGE_MUTATION_REQUEST_TIMEOUT_MS
-      : KNOWLEDGE_GET_REQUEST_TIMEOUT_MS,
+      : KNOWLEDGE_GET_REQUEST_TIMEOUT_MS),
   })
+  options.onHeaders?.(response.headers || {})
   return response.data
+}
+
+/** Honor the server's frozen Unicode filename, never a path from a header. */
+function artifactFilename(disposition: string): string {
+  const encoded = /filename\*\s*=\s*utf-8''([^;]+)/i.exec(disposition)?.[1]
+  const plain = /filename\s*=\s*(?:"([^"]*)"|([^;\s]+))/i.exec(disposition)
+  let name = ''
+  try { name = encoded ? decodeURIComponent(encoded.trim()) : plain?.[1] || plain?.[2] || '' } catch { return '' }
+  const hasControl = [...name].some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+  return /[\\/]/.test(name) || hasControl || !name.endsWith('.neko-knowledge.zip') ? '' : name
 }
 
 async function request<T extends KnowledgeEnvelope>(
@@ -344,12 +463,14 @@ async function request<T extends KnowledgeEnvelope>(
   try {
     try {
       data = await executeRequest<T>(path, options, usedToken)
-    } catch (error) {
+    } catch (original) {
+      const error = await decodeBinaryFailure(original)
       if (!isInvalidBridgeToken(error)) throw error
       if (bridgeToken === usedToken) bridgeToken = ''
       data = await executeRequest<T>(path, options, await token())
     }
-  } catch (error) {
+  } catch (original) {
+    const error = await decodeBinaryFailure(original)
     throw structuredFailure(error) ?? error
   }
   if (!data || typeof data !== 'object') throw new KnowledgeApiError('knowledge_invalid_response')
@@ -382,18 +503,34 @@ export function knowledgeMarketUrl(base: string, pairing: KnowledgeMarketPairing
   return `${base.replace(/\/+$/, '')}/#/knowledge?${query}`
 }
 
+/** LAN HTTP still supplies getRandomValues when randomUUID is unavailable. */
+export function createKnowledgePublicationId(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80
+  const hex = [...bytes].map(value => value.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 export const knowledgeApi = {
   status: () => request<KnowledgeStatusResponse>('status'),
   entries: (params: KnowledgeEntriesParams = {}) => {
     const cleaned: Record<string, unknown> = {}
-    if (params.query) cleaned.query = params.query
     if (params.pack_id) cleaned.pack_id = params.pack_id
     if (params.limit !== undefined) cleaned.limit = params.limit
     if (params.offset !== undefined) cleaned.offset = params.offset
-    return request<KnowledgeEntriesResponse>('entries', { params: cleaned })
+    // Private search text and document-derived titles must never enter access-log URLs.
+    return request<KnowledgeEntriesResponse>('entries', {
+      // Match list_entries' existing 200-character limit before percent encoding;
+      // otherwise a long Unicode query can exceed the HTTP header budget first.
+      params: cleaned, headers: { 'X-Knowledge-Query': encodeURIComponent(Array.from((params.query || '').trim()).slice(0, 200).join('')) },
+    })
   },
   entry: (params: { pack_id: string; title: string }) =>
-    request<KnowledgeEnvelope & { entry: KnowledgeEntryDetail }>('entry', { params: { ...params } }),
+    request<KnowledgeEnvelope & { entry: KnowledgeEntryDetail }>('entry', {
+      params: { pack_id: params.pack_id }, headers: { 'X-Knowledge-Title': encodeURIComponent(params.title) },
+    }),
   packs: () => request<KnowledgeEnvelope & { packs: KnowledgePack[] }>('packs'),
   packJobs: () => request<KnowledgeEnvelope & { jobs: KnowledgePackJob[] }>('packs/jobs'),
   diagnostics: () => request<KnowledgeEnvelope & {
@@ -403,6 +540,8 @@ export const knowledgeApi = {
 
   setEnabled: (enabled: boolean) =>
     post<KnowledgeEnvelope & { enabled: boolean }>('settings', { enabled }),
+  setPackEnabled: (data: { pack_id: string; enabled: boolean }) =>
+    post<KnowledgeEnvelope & { pack_id: string; enabled: boolean }>('packs/enabled', data),
   setEntryDisabled: (data: { pack_id: string; title: string; disabled: boolean }) =>
     post<KnowledgeEnvelope & { pack_id: string; disabled: boolean; disabled_entries: number }>(
       'entry/disabled',
@@ -410,15 +549,77 @@ export const knowledgeApi = {
     ),
   /** Uploads the raw pack file bytes; the server parses and validates them. */
   importPack: async (file: Blob): Promise<KnowledgeImportResponse> => {
-    if (file.size > MAX_KNOWLEDGE_PACK_FILE_BYTES) throw new KnowledgeApiError('pack_too_large')
+    const archive = file.type.includes('zip') || String((file as File).name || '').toLowerCase().endsWith('.zip')
+    const limit = archive ? MAX_KNOWLEDGE_ARCHIVE_FILE_BYTES : MAX_KNOWLEDGE_PACK_FILE_BYTES
+    if (file.size > limit) throw new KnowledgeApiError('pack_too_large')
     return request<KnowledgeImportResponse>('packs/import', {
       method: 'POST',
       data: file,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': archive ? 'application/zip' : 'application/json' },
     })
   },
+  sources: (pack_id: string) => request<KnowledgeEnvelope & { pack_id: string; sources: KnowledgeDocument[] }>(
+    'sources', { params: { pack_id } },
+  ),
+  sourceVersions: (data: { pack_id: string; doc_id: string }) => request<KnowledgeEnvelope & {
+    pack_id: string; doc_id: string; versions: KnowledgeDocumentVersion[]
+  }>('sources/versions', { params: data }),
+  previewSource: (file: Blob, params: { filename: string; pack_id?: string; doc_id?: string; name?: string }) => {
+    if (file.size > MAX_KNOWLEDGE_SOURCE_FILE_BYTES) return Promise.reject(new KnowledgeApiError('document_too_large'))
+    // Filenames and pack names belong in request headers rather than URLs,
+    // which are routinely recorded by HTTP access logs and browser history.
+    const { filename, name, ...identity } = params
+    return request<KnowledgeEnvelope & { pack_id: string; preview: KnowledgeDocumentPreview }>('sources/preview', {
+      method: 'POST', params: identity, data: file, headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Knowledge-Filename': encodeURIComponent(filename),
+        ...(name !== undefined ? { 'X-Knowledge-Name': encodeURIComponent(name) } : {}),
+      },
+    })
+  },
+  // Deletes only this uncommitted preview's own files; committed previews are kept.
+  discardSourcePreview: (data: { preview_id: string }) =>
+    post<KnowledgeEnvelope & { deleted: boolean }>('sources/preview/discard', { preview_id: data.preview_id }),
+  commitSource: (data: { preview_id: string; sha256: string; enabled: boolean; enabled_confirmed: boolean }) =>
+    post<KnowledgeImportResponse>('sources/commit', data),
+  removeSource: (data: { pack_id: string; doc_id: string }) => post<KnowledgeImportResponse>('sources/remove', data),
+  restoreSource: (data: { pack_id: string; doc_id: string; version: number }) =>
+    post<KnowledgeImportResponse>('sources/restore', data),
+  // The server assigns the release version. Whitelist the pack identity so an
+  // untyped caller cannot forward editable versions or change the ZIP format.
+  exportPack: (data: { pack_id: string }) =>
+    post<KnowledgeImportResponse>('packs/export', { pack_id: data.pack_id, format_version: 2 }),
+  deleteExport: (data: { job_id: string }) =>
+    post<KnowledgeEnvelope & { job_id: string; artifact_retained: boolean }>('packs/exports/delete', data),
+  artifact: async (artifact_id: string): Promise<KnowledgeArtifactDownload> => {
+    let filename = ''
+    const blob = await request<KnowledgeEnvelope & Blob>('packs/artifacts', {
+      params: { artifact_id }, responseType: 'blob',
+      // Keep the response name through the same authenticated/retrying transport.
+      onHeaders: headers => { filename = artifactFilename(String(headers['content-disposition'] || '')) },
+    })
+    if (!(blob instanceof Blob)) throw new KnowledgeApiError('knowledge_invalid_response')
+    if (blob.type.split(';', 1)[0] === 'application/json') {
+      // Exports are ZIPs. JSON is an error envelope, never a text-pack download;
+      // bound decoding while preserving the server's actionable failure reason.
+      let envelope: KnowledgeEnvelope | null = null
+      if (blob.size <= 64 * 1024) {
+        try { envelope = JSON.parse(await blob.text()) as KnowledgeEnvelope } catch { /* Use the invalid-response reason below. */ }
+      }
+      if (envelope?.ok === false) throw new KnowledgeApiError(String(envelope.reason || 'operation_failed'))
+      throw new KnowledgeApiError('knowledge_invalid_response')
+    }
+    return { blob, filename }
+  },
+  publish: (data: { pack_id: string; artifact_id: string; publish_confirmed: true; client_request_id: string; title: string; description: string }) =>
+    request<KnowledgeEnvelope & { share: { id: number } }>('publish', {
+      method: 'POST', data, timeout: KNOWLEDGE_PUBLICATION_REQUEST_TIMEOUT_MS,
+    }),
   cancelPackJob: (data: { job_id: string }) =>
     post<KnowledgeEnvelope & { job_id: string }>('packs/jobs/cancel', data),
+  // The server reuses frozen task input; clients never reconstruct its source set.
+  retryPackJob: (data: { job_id: string }) =>
+    post<KnowledgeImportResponse>('packs/jobs/retry', data),
   discardPackJob: (data: { job_id: string }) =>
     post<KnowledgeEnvelope & { job_id: string }>('packs/jobs/discard', data),
   setPackAutoContext: (data: { pack_id: string; enabled: boolean }) =>
