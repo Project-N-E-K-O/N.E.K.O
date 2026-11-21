@@ -53,6 +53,16 @@ OPENAI_CONNECTIVITY_TEST_MAX_TOKENS = 64
 - 64 was verified with gpt-5.6-luna; it is a bounded probe budget, not a universal minimum.
 - Other providers retain CONNECTIVITY_TEST_MAX_TOKENS."""
 
+DECISION_STATE_MAX_TOKENS = 6000
+"""Input token budget for DecisionClient shared state.
+- Purpose: cap shared context size for closed-set decision batches.
+- Consumer: utils/decision_client/adapters.py."""
+
+DECISION_CHAT_FALLBACK_MAX_TOKENS = 1024
+"""Output max_completion_tokens budget for DecisionClient ChatFallbackAdapter.
+- Purpose: bound structured JSON output for non-native decision providers.
+- Consumer: utils/decision_client/adapters.py."""
+
 MCP_TOOL_RESULT_MAX_TOKENS = 1000
 """MCP tool-result token limit before returning results to the LLM.
 - Purpose: default mcp_adapter._truncate_llm_text limit; truncate and append \"...\" when exceeded.
