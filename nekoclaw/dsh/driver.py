@@ -244,9 +244,9 @@ class _Session:
     # The next reply is the endpoint's own word after a closing report
     # (``forward.py``), not something the task agent said.
     local_reply_due: bool = False
-    # One newly accepted user instruction. Never send its text to the gateway.
-    device_intent: tuple[str, ...] = ()
-    device_intent_input: int = 0
+    # Most recent unanswered input asking for each of the two device groups.
+    device_intents: dict[str, int] = field(default_factory=dict)
+    registered_device_groups: frozenset[str] | None = None
     # Inputs of the last completed ACP prompt that received a real model reply.
     device_completed_input: int = 0
     device_local_reply_turn: int = -1
@@ -550,7 +550,7 @@ class DshRuntime:
 
     async def _device_view(
         self, token: str, dsh_id: str, epoch: int, refresh: bool, idle_cycle: bool = False,
-        shown: tuple[str, ...] = (), same_turn: bool = False,
+        shown: tuple[str, ...] = (), same_turn: bool = False, registered: tuple[str, ...] | None = None,
     ) -> list[str] | None:
         """Refresh just this process's registered commission devices after a successful summary."""
         from nekoclaw.runtime.tools.gateway import GatewayClient
@@ -562,24 +562,27 @@ class DshRuntime:
         gateway = session.spec.gateway
         # A timed-out local lookup may still be finishing when dsh retries.
         async with session.device_refresh_lock:
-            wanted = session.device_intent
-            input_number = session.device_intent_input
-            if epoch < session.device_epoch or (not refresh and not wanted and epoch == session.device_epoch):
+            if epoch < session.device_epoch:
                 return session.visible_devices
             # A pre-step summary runs after input admission but before that input
             # reaches a model. Only an ordinary successful reply proves exposure.
             delivered = session.device_completed_input
             if same_turn and session.device_local_reply_turn != session.turns:
                 delivered = session.taken
-            if input_number <= delivered:
-                wanted = tuple(group for group in wanted if group not in shown)
+            if registered is not None and session.registered_device_groups is None:
+                session.registered_device_groups = frozenset(registered)
+            eligible = session.registered_device_groups
+            for group, input_number in tuple(session.device_intents.items()):
+                if (eligible is not None and group not in eligible) or (input_number <= delivered and group in shown):
+                    del session.device_intents[group]
+            wanted = tuple(session.device_intents)
+            if not refresh and not wanted and epoch == session.device_epoch:
+                return session.visible_devices
             client = GatewayClient(gateway.url, gateway.token)
             try:
                 await client.list_tools(compactions=epoch, wanted=wanted, idle_device_cycle=idle_cycle)
             finally:
                 await client.aclose()
-            if session.device_intent_input == input_number:
-                session.device_intent = wanted
             session.device_epoch = epoch
             session.visible_devices = sorted(client.commission_tools)
             return session.visible_devices
@@ -1213,8 +1216,10 @@ class DshRuntime:
             from nekoclaw.device_intent import select_device_groups
 
             # The gateway intersects the opening hint with the actual initial group set.
-            session.device_intent = BUILTIN_GROUPS if opening else select_device_groups(text)
-            session.device_intent_input = session.given
+            groups = BUILTIN_GROUPS if opening else select_device_groups(text)
+            for group in groups:
+                if session.registered_device_groups is None or group in session.registered_device_groups:
+                    session.device_intents[group] = session.given
         session.queue.append(_Given(text, session.given))
         session.arrived.set()
         if session.run is None:

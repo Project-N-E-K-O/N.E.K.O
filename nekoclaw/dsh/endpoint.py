@@ -56,6 +56,18 @@ _START_TIMEOUT_SECONDS = 10.0
 
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 Receive = Callable[[], Awaitable[dict[str, Any]]]
+DeviceView = Callable[
+    [str, str, int, bool, bool, tuple[str, ...], bool, tuple[str, ...] | None],
+    Awaitable[list[str] | None],
+]
+
+
+def _device_groups(value: Any) -> tuple[str, ...]:
+    from config.nekoclaw_settings import BUILTIN_GROUPS
+
+    if not isinstance(value, list) or len(value) > len(BUILTIN_GROUPS) or any(g not in BUILTIN_GROUPS for g in value):
+        raise ValueError("invalid device groups")
+    return tuple(value)
 
 
 def _bearer(headers: dict[str, str]) -> str | None:
@@ -87,7 +99,7 @@ class LocalEndpoint:
 
     def __init__(
         self, *, forwarder: ModelForwarder, tools: HostTools,
-        device_view: Callable[[str, str, int, bool, bool, tuple[str, ...], bool], Awaitable[list[str] | None]] | None = None,
+        device_view: DeviceView | None = None,
     ) -> None:
         self._forwarder = forwarder
         self._tools = tools
@@ -256,11 +268,11 @@ class LocalEndpoint:
                     payload = json.loads(body)
                     session, epoch, refresh = payload["session"], payload["epoch"], payload["refresh"]
                     idle_cycle = payload.get("idleCycle", False)
-                    shown, same_turn = payload.get("shown", []), payload.get("sameTurn", False)
+                    shown = _device_groups(payload.get("shown", []))
+                    same_turn = payload.get("sameTurn", False)
+                    registered = _device_groups(payload["registered"]) if "registered" in payload else None
                     if (not isinstance(session, str) or type(epoch) is not int or epoch < 1 or
-                            type(refresh) is not bool or type(idle_cycle) is not bool or type(same_turn) is not bool
-                            or not isinstance(shown, list) or len(shown) > 2
-                            or any(group not in ("keyboard_mouse", "browser") for group in shown)):
+                            type(refresh) is not bool or type(idle_cycle) is not bool or type(same_turn) is not bool):
                         raise ValueError("invalid device view request")
                 except (KeyError, TypeError, ValueError):
                     await respond_json(send, 400, {"error": "invalid device view request"})
@@ -270,7 +282,7 @@ class LocalEndpoint:
                 try:
                     view = None
                     if self._device_view:
-                        view = await self._device_view(process, session, epoch, refresh, idle_cycle, tuple(shown), same_turn)
+                        view = await self._device_view(process, session, epoch, refresh, idle_cycle, shown, same_turn, registered)
                 except GatewayError:
                     await respond_json(send, 503, {"error": "device view unavailable"})
                     return

@@ -83,7 +83,8 @@ async def test_device_schemas_reach_the_model_and_leave_on_session_reuse(tmp_pat
         await host.shutdown()
 
 
-async def test_builtin_explicit_device_instruction_survives_summary_then_overflow_retry(tmp_path):
+@pytest.mark.parametrize("browser_is_human", [True, False], ids=["two-user-instructions", "synthetic-browser"])
+async def test_builtin_queued_device_instructions_survive_summary_then_overflow_retry(tmp_path, browser_is_human):
     events = Recorder()
     runtime = InProcessRuntime(events)
     provider = BuiltinToolProvider(state=lambda group: (True, ""))
@@ -103,41 +104,51 @@ async def test_builtin_explicit_device_instruction_survives_summary_then_overflo
     ])
     try:
         url = await host.gateway.start()
-        token = host.gateway.issue("wire", supports_images=True, first_turn_groups=("browser",))
+        token = host.gateway.issue("wire", supports_images=True, first_turn_groups=("browser", "keyboard_mouse"))
         with FakeOpenAIServer(lambda _: next(replies)) as server:
             model = ModelConfig(model="local-fixture", base_url=server.base_url, api_key="test-only",
                                 auto_extra_body=False, supports_images=True, context_window=32_000, max_output_tokens=2_000)
             spec = make_spec(tmp_path, model=model, gateway=GatewaySpec(url=url, token=token))
             await runtime.start(spec)
-            for i, prompt in enumerate(["Open the browser", "Step two.", "Step three.", "Step four.",
-                                        "Step five.", "List browser tabs"]):
+            for i, prompt in enumerate(["Open the browser", "Step two.", "Step three.", "Step four.", "List browser tabs"]):
                 start = len(events.events)
                 await runtime.prompt(spec.session_id, prompt, opening=i == 0)
                 ended = await events.wait_ended(spec.session_id, start=start)
                 assert ended["reason"] == "completed", ended
+            # Both steering messages are drained before one model request.
+            # The previous, answered browser instruction is still in history.
+            start = len(events.events)
+            await runtime.prompt(spec.session_id, "Continue.", human=False)
+            await runtime.steer(spec.session_id, "List browser tabs", human=browser_is_human)
+            await runtime.steer(spec.session_id, "Also take a desktop screenshot")
+            ended = await events.wait_ended(spec.session_id, start=start)
+            assert ended["reason"] == "completed", ended
             assert len(events.of("compacted")) == 2
             assert len(server.requests) == 9
             initial, refused, retried = [server.requests[i]["tools"] for i in (0, 6, 8)]
-            assert any(t["function"]["name"] == "browser_list_pages" for t in initial)
-            assert refused == initial
-            assert retried == initial
+            expected = [t for t in initial if browser_is_human or not t["function"]["name"].startswith("browser_")]
+            assert {"computer", "browser_list_pages"} <= {t["function"]["name"] for t in initial}
+            assert refused == retried == expected
             # The reply consumed the current instruction. An automatic wake
             # brings no fresh intent: the next unused cycle can fold again.
             start = len(events.events)
             await runtime.prompt(spec.session_id, "Continue.", human=False)
             await events.wait_ended(spec.session_id, start=start)
             assert len(events.of("compacted")) == 3 and len(server.requests) == 11
-            assert not any(t["function"]["name"].startswith("browser_") for t in server.requests[-1]["tools"])
+            final_names = {t["function"]["name"] for t in server.requests[-1]["tools"]}
+            assert "computer" not in final_names and not any(name.startswith("browser_") for name in final_names)
     finally:
         await runtime.shutdown()
         await host.shutdown()
 
 
-@pytest.mark.parametrize("scenario", ["manual-explicit-intent", "automatic-rediscovery", "truncated-summary"])
+@pytest.mark.parametrize("scenario", ["manual-explicit-intent", "manual-queued-intents", "automatic-rediscovery", "truncated-summary"])
 async def test_builtin_model_receives_folded_and_restored_browser_schema(tmp_path, monkeypatch, scenario):
     from utils.tokenize import count_tokens
 
-    automatic = scenario != "manual-explicit-intent"
+    queued = scenario == "manual-queued-intents"
+    groups = ("browser", "keyboard_mouse") if queued else ("browser",)
+    automatic = scenario in ("automatic-rediscovery", "truncated-summary")
     rediscover = scenario == "automatic-rediscovery"
     failed = scenario == "truncated-summary"
     provider = BuiltinToolProvider(state=lambda group: (True, ""))
@@ -165,7 +176,7 @@ async def test_builtin_model_receives_folded_and_restored_browser_schema(tmp_pat
     script = iter(replies)
     try:
         url = await host.gateway.start()
-        token = host.gateway.issue("wire", supports_images=True, first_turn_groups=("browser",))
+        token = host.gateway.issue("wire", supports_images=True, first_turn_groups=groups)
         with FakeOpenAIServer(lambda _: next(script)) as server:
             model = ModelConfig(model="local-fixture", base_url=server.base_url, api_key="test-only",
                                 auto_extra_body=False, supports_images=True, context_window=32_000, max_output_tokens=2_000)
@@ -191,7 +202,14 @@ async def test_builtin_model_receives_folded_and_restored_browser_schema(tmp_pat
             await prompt("Continue.")
             assert len(events.of("compacted")) == 1
             await prompt("Open the browser", human=False)
-            await prompt("Continue." if rediscover else "List browser tabs")
+            if queued:
+                start = len(events.events)
+                await runtime.prompt(spec.session_id, "Continue.", human=False)
+                await runtime.steer(spec.session_id, "List browser tabs")
+                await runtime.steer(spec.session_id, "Also take a desktop screenshot")
+                await events.wait_ended(spec.session_id, start=start)
+            else:
+                await prompt("Continue." if rediscover else "List browser tabs")
             tools = [request["tools"] for request in server.requests]
             assert len(tools) == (8 if rediscover else 7)
             if failed:
@@ -203,14 +221,14 @@ async def test_builtin_model_receives_folded_and_restored_browser_schema(tmp_pat
             assert tools[4] == tools[5]
             if rediscover:
                 assert tools[6] == tools[5]
-            web = {c.tool_name for c in provider.available() if c.group == "browser"}
+            devices = {c.tool_name for c in provider.available() if c.group in groups}
             def names(rows):
                 return {d["function"]["name"] for d in rows}
 
-            assert names(tools[0]) - names(tools[4]) == web
+            assert names(tools[0]) - names(tools[4]) == devices
             assert {"capability_search", "capability_call"} <= names(tools[4])
             assert not any(BUILTIN_GROUP_GUIDANCE["browser"] in tool["function"]["description"] for tool in tools[4])
-            assert listings == [(None, []), (1, []), (None, [] if rediscover else ["browser"])]
+            assert listings == [(None, []), (1, []), (None, [] if rediscover else sorted(groups))]
             encoded = [json.dumps(row, ensure_ascii=False, separators=(",", ":")) for row in tools]
             print("builtin tools (count, bytes, estimated tokens)",
                   [(len(row), len(raw.encode()), count_tokens(raw)) for row, raw in zip(tools, encoded, strict=True)],

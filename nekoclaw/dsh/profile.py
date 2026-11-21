@@ -161,6 +161,14 @@ function installDeviceView(ctx, url) {
   const views = new WeakMap()
   const prefix = 'mcp__gateway__'
   const device = name => name === prefix + 'computer' || name.startsWith(prefix + 'browser_')
+  function groupsOf(tools) {
+    const groups = new Set()
+    for (const tool of tools) {
+      if (tool.name === prefix + 'computer') groups.add('keyboard_mouse')
+      if (tool.name.startsWith(prefix + 'browser_')) groups.add('browser')
+    }
+    return [...groups]
+  }
   ctx.on('system-prompt/assemble', async (_assembly, { agent }, next) => {
     const assembly = await next()
     if (agent && assembly.tools.some(tool => device(tool.name))) {
@@ -178,12 +186,7 @@ function installDeviceView(ctx, url) {
     if (view && event.type === 'assistant/message' && !event.data.interrupted) {
       // Only the ordinary agent loop commits this event. An overflow, network
       // failure or interrupted stream is an attempt; a summary is separate.
-      const groups = new Set()
-      for (const tool of view.assembly.tools) {
-        if (tool.name === prefix + 'computer') groups.add('keyboard_mouse')
-        if (tool.name.startsWith(prefix + 'browser_')) groups.add('browser')
-      }
-      view.shown = { groups: [...groups], turn: event.data.turn }
+      view.shown = { groups: groupsOf(view.assembly.tools), turn: event.data.turn }
     }
     if (view && event.type === 'compaction/end' && event.data.error === undefined) {
       view.idleCycle = view.endSinceRequest === true
@@ -213,6 +216,7 @@ function installDeviceView(ctx, url) {
     if (view.dirty || (view.hidden && (view.turn !== turn || view.checkIntent))) {
       try {
         const status = { session: agent.session.id, epoch: view.epoch, refresh: view.dirty }
+        if (view.turn === undefined) status.registered = groupsOf(view.unfiltered)
         if (idleCycle) status.idleCycle = true
         if (view.shown?.groups.length) {
           status.shown = view.shown.groups

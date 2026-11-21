@@ -1005,8 +1005,11 @@ class TaskAgentSession(SessionInbox):
                 if taken is not None and not opening and self._commission_tools and gateway.device_groups:
                     from nekoclaw.device_intent import select_device_groups
 
-                    self._wanted_device_groups = select_device_groups(message.text)
-                    self._unanswered_device_groups = self._wanted_device_groups
+                    # All steering messages drained together share the next
+                    # reply. An earlier, answered batch contributes nothing.
+                    requested = set(select_device_groups(message.text)).intersection(gateway.device_groups.values())
+                    self._unanswered_device_groups = tuple(sorted(requested.union(self._unanswered_device_groups)))
+                    self._wanted_device_groups = self._unanswered_device_groups
                     hidden = gateway.device_groups.keys() - gateway.commission_tools
                     if any(gateway.device_groups[name] in self._wanted_device_groups for name in hidden):
                         gateway.device_list_dirty = True
