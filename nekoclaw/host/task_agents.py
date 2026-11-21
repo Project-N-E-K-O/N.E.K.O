@@ -8067,12 +8067,6 @@ class TaskAgentManager:
                 if len(page) < 500:
                     break
                 after = page[-1].seq
-            # When the commissions that wait for the session itself were
-            # handed over, for putting this one back among them in that
-            # order (below).
-            filed = await self._ledger.filed_order(
-                [item for item in list(self._queue) if self._session_of.get(item) == main] + [commission_id]
-            )
         except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
             logger.warning("handing commission %s back to its session failed: %s", commission_id, exc)
             await self._fail(commission_id, f"it could not be handed back to its session: {exc}", said="run", detail=str(exc))
@@ -8101,10 +8095,23 @@ class TaskAgentManager:
                     await self._fail(commission_id, f"it could not be handed back to its session: {exc}", said="run", detail=str(exc))
                     return
                 await asyncio.sleep(delay)
-        if woken:
-            self._notes.setdefault(commission_id, []).extend(told)
-            if commission_id in filed:
-                self._put_back_in_order(commission_id, main, filed)
+        if not woken:
+            return
+        self._notes.setdefault(commission_id, []).extend(told)
+        # In its place among those that wait for the session itself, by
+        # when each was filed: read now that it is queued, with nothing
+        # started in the session meanwhile (``_handing_back_to``), so that
+        # every one queued so far is among them. One that is queued while
+        # this is read counts as later.
+        try:
+            filed = await self._ledger.filed_order(
+                [item for item in list(self._queue) if self._session_of.get(item) == main]
+            )
+        except Exception:  # noqa: BLE001 - it waits at the end of the queue, which is all that is lost
+            logger.warning("reading in which order commissions were filed failed", exc_info=True)
+            return
+        if commission_id in filed:
+            self._put_back_in_order(commission_id, main, filed)
 
     def _put_back_in_order(self, commission_id: str, main: str, filed: dict[str, int]) -> None:
         """Put a commission handed back by a copy among those that wait for the session itself, in the order they were handed over.
