@@ -43,9 +43,11 @@ from nekoclaw.host.templates import TemplateStore, model_name
 logger = logging.getLogger(__name__)
 
 # Why no form was filled in: nothing was written to go by; no model is
-# configured for it; the call took too long; it failed; what came back was
-# no JSON object; the object has no name or no duty.
-DRAFT_REASONS: tuple[str, ...] = ("empty", "no_model", "timeout", "failed", "unreadable", "incomplete")
+# configured for it; the preset such a session has by default cannot be used
+# (its template is wrong, or the templates cannot be read); the call took too
+# long; it failed; what came back was no JSON object; the object has no name
+# or no duty.
+DRAFT_REASONS: tuple[str, ...] = ("empty", "no_model", "no_preset", "timeout", "failed", "unreadable", "incomplete")
 
 # The preset of a session the user sets up, unless the answer names another
 # that is there: it leads a project of its own.
@@ -135,6 +137,11 @@ async def draft_session(
     if llm is None:
         raise DraftError("no_model")
     listed = [item for item in await asyncio.to_thread(templates.listing, None) if item.name not in NOT_OFFERED]
+    default = next(item for item in listed if item.name == DEFAULT_PRESET)
+    if default.template is None:
+        # The form would name a preset no session can be opened by: said
+        # now, before a model is asked, and not when the session is made.
+        raise DraftError("no_preset", default.error)
     # The default is named in the instructions; the others one line each, as
     # many as fit, a template that is wrong left out. Only one the model was
     # told of can come back; anything else is the default.

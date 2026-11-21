@@ -877,6 +877,26 @@ async def test_the_preset_of_a_form_is_one_there_is(host):
     assert "\n- doc-writer: When documents are written." in system and "broken" not in system
 
 
+@pytest.mark.parametrize("wrong", ["a file", "a folder that is a file"])
+async def test_no_form_is_filled_in_while_the_preset_it_would_name_cannot_be_used(host, wrong):
+    templates = host.paths.space().templates_dir()
+    if wrong == "a file":
+        templates.mkdir(parents=True)
+        (templates / "boss.md").write_text("---\nname: boss\ndescription: Leads.\ntools: [bash]\n---\n", encoding="utf-8")
+    else:
+        templates.parent.mkdir(parents=True)
+        templates.write_text("not a folder", encoding="utf-8")
+    host._decision_llm.answer = dict(FORM)
+
+    with pytest.raises(DraftError) as raised:
+        await host.draft_session("a task agent for the reports")
+
+    # Said before a model is asked, with what is wrong: the session could not be made with it.
+    assert raised.value.reason == "no_preset" and "no_preset" in DRAFT_REASONS
+    assert ("unknown fields: tools" if wrong == "a file" else "cannot be read") in str(raised.value)
+    assert host._decision_llm.calls == []
+
+
 async def test_what_comes_back_is_cut_to_its_caps_and_named_as_a_folder_can_be(host):
     from config import nekoclaw_settings as settings
     from utils.tokenize import count_tokens

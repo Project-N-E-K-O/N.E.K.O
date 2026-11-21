@@ -55,7 +55,9 @@ of those allowed, a text over its cap. A file that is wrong takes the place
 of the template it would have replaced all the same: a session of that
 preset is not opened with more than its user meant it to have. Other
 templates are not affected, and ``TemplateStore.listing`` lists the wrong
-one with what is wrong with it.
+one with what is wrong with it. Likewise a folder of templates that is
+there and cannot be read: it is not taken for an empty one, and no preset
+is used until it can be read again.
 
 Nothing here is read until a session is opened or the templates are listed;
 what was read is kept until a file of the directories changes.
@@ -222,6 +224,19 @@ def model_name(preset: str) -> str:
     return PRESET_MODEL_NAMES.get(preset, preset)
 
 
+def reserved_names() -> frozenset[str]:
+    """Return the names no template of the user's can have.
+
+    That of a copy's preset, which is no template, and what a model reads
+    a built-in preset called where that is not its key: a template called
+    ``lead`` would be taken for the lead of a project wherever a model
+    names a preset.
+    """
+    from config.prompts.prompts_nekoclaw_presets import PRESET_MODEL_NAMES
+
+    return frozenset({SHADOW, *PRESET_MODEL_NAMES.values()})
+
+
 def _builtin(name: str, **values: Any) -> Template:
     from config.prompts.prompts_nekoclaw_presets import PRESET_BODIES, PRESET_DESCRIPTIONS
 
@@ -302,10 +317,10 @@ def parse_template(text: str, *, name: str, source: str) -> Template:
         # A template only takes away: it has no field for a model's name,
         # an address or a key, nor for anything else this does not know.
         raise TemplateError(f"unknown fields: {', '.join(unknown)}")
-    if not _NAME.fullmatch(name) or name == SHADOW:
+    if not _NAME.fullmatch(name) or name in reserved_names():
         raise TemplateError(
             "a template is named in lower-case letters, digits and hyphens, beginning with a letter, "
-            f"32 characters at most, and not {SHADOW}"
+            f"32 characters at most, and not {', '.join(sorted(reserved_names()))}"
         )
     if data.get("name") != name:
         raise TemplateError(f"name is {data.get('name')!r}; it has to be the name of the file, {name!r}")
@@ -376,15 +391,18 @@ def parse_template(text: str, *, name: str, source: str) -> Template:
 
 
 # What stands for a directory as it was read: every template file's name,
-# date and size. Nothing for a directory that is not there.
-_Signature = tuple[tuple[str, int, int], ...]
+# date and size. Nothing for a directory that is not there; None for one
+# that is there and cannot be read, which is never taken for one read before.
+_Signature = tuple[tuple[str, int, int], ...] | None
 
 
 def _signature(directory: Path) -> _Signature:
     try:
         entries = [entry for entry in directory.iterdir() if entry.name.endswith(_SUFFIX)]
-    except OSError:
+    except FileNotFoundError:
         return ()
+    except OSError:
+        return None
     found: list[tuple[str, int, int]] = []
     for entry in entries:
         try:
@@ -396,16 +414,23 @@ def _signature(directory: Path) -> _Signature:
 
 
 def _read_directory(directory: Path, source: str) -> dict[str, Listed]:
-    """Return the templates of one directory, by name: each in effect or wrong."""
+    """Return the templates of one directory, by name: each in effect or wrong.
+
+    A directory that is not there holds none. One that is there and
+    cannot be read raises ``TemplateError``: which presets its files
+    narrow cannot be told, and taking it for empty would hand back the
+    tools a file in it withholds.
+    """
     from config.nekoclaw_settings import TEMPLATE_FILE_MAX_BYTES, TEMPLATE_FILES_MAX
 
     try:
-        files = sorted(
-            (entry for entry in directory.iterdir() if entry.name.endswith(_SUFFIX) and entry.is_file()),
-            key=lambda entry: entry.name,
-        )
-    except OSError:
+        # Whatever is named as a template is taken for one: what cannot be
+        # read as a file is a template that is wrong, not one that is absent.
+        files = sorted((entry for entry in directory.iterdir() if entry.name.endswith(_SUFFIX)), key=lambda entry: entry.name)
+    except FileNotFoundError:
         return {}
+    except OSError as exc:
+        raise TemplateError(f"the folder of templates {directory.name} cannot be read ({type(exc).__name__})") from exc
     found: dict[str, Listed] = {}
     for count, path in enumerate(files):
         name = path.name[: -len(_SUFFIX)]
@@ -469,15 +494,23 @@ class TemplateStore:
         key = None if project is None or project == DEFAULT_PROJECT else project
         signature = self.signature(key)
         kept = self._listed.get(key)
+        # (What was listed of a folder that could not be read is not kept,
+        # and such a folder is like none that was read before.)
         if kept is not None and kept[0] == signature:
             return list(kept[1])
         everywhere, own = self._directories(key)
         effective: dict[str, Listed] = {
             name: Listed(name, SOURCE_BUILTIN, template) for name, template in builtin_templates().items()
         }
-        effective.update(_read_directory(everywhere, SOURCE_GLOBAL))
-        if own is not None:
-            effective.update(_read_directory(own, SOURCE_PROJECT))
+        try:
+            effective.update(_read_directory(everywhere, SOURCE_GLOBAL))
+            if own is not None:
+                effective.update(_read_directory(own, SOURCE_PROJECT))
+        except TemplateError as exc:
+            # A folder of templates is there and cannot be read: any preset
+            # may be narrowed by a file in it, so none is used as if none
+            # were. Not kept: the folder is looked at again the next time.
+            return [Listed(item.name, item.source, error=str(exc)) for item in effective.values()]
         order = {SOURCE_BUILTIN: 0, SOURCE_GLOBAL: 1, SOURCE_PROJECT: 2}
         used = 0
         for item in sorted(effective.values(), key=lambda item: (order[item.source], item.name)):

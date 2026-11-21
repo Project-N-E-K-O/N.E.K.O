@@ -386,6 +386,20 @@ async def test_a_session_whose_preset_cannot_be_used_any_more_is_not_opened_with
     assert llm.requests == []
 
 
+async def test_a_session_is_not_opened_while_the_folder_of_templates_cannot_be_read(hosts, tmp_path):
+    # What is there under the name of the folder is no folder: which presets the user narrowed cannot be told.
+    _space(tmp_path).mkdir(parents=True)
+    (_space(tmp_path) / "templates").write_text("not a folder", encoding="utf-8")
+    llm = ScriptedLLM([_report()])
+    host = _host(hosts, tmp_path, lambda spec: llm)
+
+    failed = await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "failed")
+
+    assert "the preset 'general' cannot be used: the folder of templates templates cannot be read" in failed.status_reason
+    assert llm.requests == []
+    assert all(not item["valid"] for item in await host.templates())
+
+
 async def test_a_template_of_the_users_narrows_a_built_in_preset(hosts, tmp_path):
     _template(_space(tmp_path) / "templates", "general", more="withhold: [bash, pwsh]\nmemory: none\n", body="Be brief.")
     llm = ScriptedLLM([_report()])

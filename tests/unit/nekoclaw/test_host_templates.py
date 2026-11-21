@@ -262,8 +262,10 @@ def test_a_template_needs_a_name_that_is_its_files_and_a_description():
         _parse(name="other", file="doc-writer")
     with pytest.raises(TemplateError, match="name is None"):
         parse_template("---\ndescription: x\n---\n", name="doc-writer", source="global")
-    for wrong in ("Doc", "1doc", "doc_writer", "d" * 33, SHADOW):
-        with pytest.raises(TemplateError, match="a template is named in lower-case letters"):
+    # Nor by what a model reads another preset called: "lead" is the lead of a project to a model,
+    # and a template of that name would be taken for it wherever a model names a preset.
+    for wrong in ("Doc", "1doc", "doc_writer", "d" * 33, SHADOW, "lead", "copy"):
+        with pytest.raises(TemplateError, match="a template is named in lower-case letters.*not copy, lead, shadow"):
             _parse(name=wrong)
     with pytest.raises(TemplateError, match="description is missing"):
         parse_template("---\nname: doc-writer\n---\n", name="doc-writer", source="global")
@@ -358,6 +360,64 @@ def test_a_wrong_file_stands_in_the_way_of_the_template_it_would_have_replaced(s
     # Elsewhere a scout is what it was.
     assert store.resolve("scout") == builtin_templates()["scout"]
     assert store.resolve("scout", "other") == builtin_templates()["scout"]
+
+
+def test_a_folder_of_templates_that_cannot_be_read_is_not_taken_for_an_empty_one(space, monkeypatch):
+    # A file in it may make a preset read only: with the folder taken for empty, a session of that
+    # preset would be handed back the tools the file withholds.
+    store = TemplateStore(lambda: space)
+    assert store.resolve("general").withheld() == frozenset()
+    _put(space, _text(name="general", more="read_only: true\n"), name="general")
+    assert store.resolve("general").read_only
+    real = Path.iterdir
+    locked: set[Path] = {space.templates_dir()}
+
+    def iterdir(self: Path) -> object:
+        if self in locked:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+
+    listed = store.listing()
+
+    # No preset is used as if nothing narrowed it; each says why.
+    assert [item.name for item in listed] == list(PRESETS)
+    assert all(not item.valid and item.error == "the folder of templates templates cannot be read (PermissionError)" for item in listed)
+    for name in ("general", "boss", "scout"):
+        with pytest.raises(TemplateError, match="cannot be read"):
+            store.resolve(name)
+    assert store.roster() == [] and store.listing("ledger-app")[0].valid is False
+    # Readable again, it is read again: nothing was kept of the time it was not.
+    locked.clear()
+    assert store.resolve("general").read_only and all(item.valid for item in store.listing())
+    # A project's own folder that cannot be read stands in the way of that project's presets only.
+    locked.add(space.templates_dir("ledger-app"))
+    assert all(not item.valid for item in store.listing("ledger-app"))
+    assert all(item.valid for item in store.listing()) and all(item.valid for item in store.listing("other"))
+
+
+def test_what_is_named_templates_and_is_no_folder_is_not_taken_for_no_templates(space):
+    store = TemplateStore(lambda: space)
+    assert all(item.valid for item in store.listing())
+    space.root.mkdir(parents=True)
+    space.templates_dir().write_text("not a folder", encoding="utf-8")
+
+    # It was listed while there was nothing there, and that is not what is gone by now.
+    assert all(not item.valid and "cannot be read" in item.error for item in store.listing())
+    space.templates_dir().unlink()
+    assert all(item.valid for item in store.listing())
+
+
+def test_a_template_that_is_a_folder_is_a_template_that_is_wrong(space):
+    store = TemplateStore(lambda: space)
+    (space.templates_dir() / "scout.md").mkdir(parents=True)
+
+    listed = {item.name: item for item in store.listing()}
+
+    # Not passed over for the built-in scout: what is named as a template is one.
+    assert not listed["scout"].valid and "cannot be read" in listed["scout"].error
+    assert listed["worker"].valid
 
 
 def test_a_file_too_large_and_files_past_the_most_a_folder_may_hold_are_errors(space, monkeypatch):
