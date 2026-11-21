@@ -45,6 +45,7 @@ from config.nekoclaw_settings import (
     GATEWAY_COMMISSION_TOOL_META_KEY,
     GATEWAY_COMPACTIONS_META_KEY,
     GATEWAY_DEVICE_INTENT_META_KEY,
+    GATEWAY_IDLE_DEVICE_CYCLE_META_KEY,
     GATEWAY_REPLY_META_KEY,
 )
 from nekoclaw.runtime.loop.messages import ImageContent, TextContent
@@ -200,13 +201,15 @@ class GatewayClient:
         return offered
 
     async def list_tools(
-        self, *, compactions: int | None = None, wanted: tuple[str, ...] = ()
+        self, *, compactions: int | None = None, wanted: tuple[str, ...] = (), idle_device_cycle: bool = False
     ) -> list[dict[str, Any]]:
         meta: dict[str, Any] = {}
         if compactions is not None:
             meta[GATEWAY_COMPACTIONS_META_KEY] = compactions
         if wanted:
             meta[GATEWAY_DEVICE_INTENT_META_KEY] = list(wanted)
+        if idle_device_cycle:
+            meta[GATEWAY_IDLE_DEVICE_CYCLE_META_KEY] = True
         listed = await self.request("tools/list", {"_meta": meta} if meta else {}, read_timeout=HANDSHAKE_TIMEOUT_SECONDS)
         tools = listed.get("tools") if isinstance(listed, dict) else None
         if not isinstance(tools, list):

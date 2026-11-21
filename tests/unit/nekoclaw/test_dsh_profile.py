@@ -72,14 +72,15 @@ apply({ on: (name, fn) => { hooks[name] = fn } }, { deviceViewUrl: 'http://local
 const agent = { session: { id: 'test' } }
 const request = { agent, turn: 1, signal: new AbortController().signal }
 const all = [{name: 'mcp__gateway__computer'}, {name: 'mcp__gateway__capability_search'}]
-const assembly = { tools: [...all] }
+const original = { tools: Object.freeze([...all]) }
 let allowed = []
 globalThis.fetch = async () => ({ ok: true, json: async () => allowed })
-await hooks['system-prompt/assemble'](assembly, {agent}, async () => assembly)
+const assembly = await hooks['system-prompt/assemble'](original, {agent}, async () => original)
 hooks['session/event'](agent.session, {type: 'compaction/end', data: {}})
 await hooks['agent/request'](request, async () => {})
 await hooks['agent/request'](request, async () => {})
 assert.deepEqual(assembly.tools, [all[1]])
+Object.freeze(assembly.tools)
 allowed = ['computer']
 hooks['tools/result']({agent, name: 'mcp__gateway__capability_search', arguments: {group: 'keyboard_mouse'}}, {})
 await hooks['agent/request'](request, async () => {})
@@ -175,7 +176,7 @@ def test_the_guard_asks_about_everything_it_is_not_told_to_let_pass() -> None:
     assert "if (!asked.has(exec.name) && (unasked.has(exec.name) || prefixes.some(" in source
     # It says it was loaded only after it listens.
     assert source.index("ctx.on(") < source.index(profile.GUARD_READY)
-    assert f"process.stderr.write('{profile.GUARD_READY}\\n')" in source
+    assert profile.GUARD_READY in source and profile.DEVICE_VIEW_READY in source
 
 
 def test_where_dsh_keeps_the_long_results_of_one_session() -> None:

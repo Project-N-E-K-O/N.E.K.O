@@ -977,6 +977,8 @@ GATEWAY_COMMISSION_TOOL_META_KEY = "nekoclaw/commissionTool"
 # The group of a commission tool, or the groups needed by a fresh user
 # instruction in tools/list. Internal MCP metadata, never model input.
 GATEWAY_DEVICE_INTENT_META_KEY = "nekoclaw/deviceIntent"
+# Two successful summaries with no intervening ordinary model request or device call.
+GATEWAY_IDLE_DEVICE_CYCLE_META_KEY = "nekoclaw/idleDeviceCycle"
 
 GATEWAY_TOOL_DESCRIPTION_MAX_TOKENS = 200
 """Cap on one tool description served by the gateway."""

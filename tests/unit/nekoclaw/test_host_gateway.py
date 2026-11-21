@@ -1228,6 +1228,21 @@ async def test_compaction_keeps_only_groups_actually_used_and_rediscovery_restor
     assert await listed(4) == {SEARCH_TOOL, CALL_TOOL}
 
 
+async def test_restored_compaction_count_alone_does_not_discard_a_used_group(builtin_host):
+    host = builtin_host
+    commission = await _commission(host)
+    token = host.gateway.issue(commission.id, supports_images=True, first_turn_groups=("browser",))
+    grant = host.gateway._grant(token)
+    await host.permission_store.set_mode("browser", "allow")
+    await _tool_names(host, grant)
+    assert not (await _call(host, grant, "browser_take_screenshot"))["isError"]
+    resumed = await host.gateway.tool_definitions(grant, compactions=100)
+    assert "browser_take_screenshot" in {tool["name"] for tool in resumed}
+    assert not (await _call(host, grant, "browser_take_screenshot"))["isError"]
+    folded = await host.gateway.tool_definitions(grant, compactions=102, idle_device_cycle=True)
+    assert {tool["name"] for tool in folded} == {SEARCH_TOOL, CALL_TOOL}
+
+
 async def test_compaction_during_permission_preflight_and_device_execution(builtin_host):
     host = builtin_host
     commission = await _commission(host)

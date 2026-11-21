@@ -87,7 +87,7 @@ class LocalEndpoint:
 
     def __init__(
         self, *, forwarder: ModelForwarder, tools: HostTools,
-        device_view: Callable[[str, str, int, bool], Awaitable[list[str] | None]] | None = None,
+        device_view: Callable[[str, str, int, bool, bool], Awaitable[list[str] | None]] | None = None,
     ) -> None:
         self._forwarder = forwarder
         self._tools = tools
@@ -255,7 +255,9 @@ class LocalEndpoint:
                 try:
                     payload = json.loads(body)
                     session, epoch, refresh = payload["session"], payload["epoch"], payload["refresh"]
-                    if not isinstance(session, str) or type(epoch) is not int or epoch < 1 or type(refresh) is not bool:
+                    idle_cycle = payload.get("idleCycle", False)
+                    if (not isinstance(session, str) or type(epoch) is not int or epoch < 1 or
+                            type(refresh) is not bool or type(idle_cycle) is not bool):
                         raise ValueError("invalid device view request")
                 except (KeyError, TypeError, ValueError):
                     await respond_json(send, 400, {"error": "invalid device view request"})
@@ -263,7 +265,7 @@ class LocalEndpoint:
                 from nekoclaw.runtime.tools.gateway import GatewayError
 
                 try:
-                    view = await self._device_view(process, session, epoch, refresh) if self._device_view else None
+                    view = await self._device_view(process, session, epoch, refresh, idle_cycle) if self._device_view else None
                 except GatewayError:
                     await respond_json(send, 503, {"error": "device view unavailable"})
                     return

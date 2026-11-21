@@ -66,6 +66,7 @@ PATCH_FILE = "nekoclaw.patch.yml"
 GUARD_FILE = "nekoclaw-guard.mjs"
 # What the guard writes to standard error once dsh has loaded it.
 GUARD_READY = "nekoclaw-guard ready"
+DEVICE_VIEW_READY = f"{GUARD_READY} with device view"
 # The variable dsh reads the "key" of its one provider from: the token of the
 # driver's endpoint, of no use anywhere else.
 KEY_VARIABLE = "NEKOCLAW_DSH_ENDPOINT_TOKEN"
@@ -147,9 +148,9 @@ export function apply(ctx, config) {
     if (native.kind !== 'allow') return native
     return { kind: 'ask', reason: 'the N.E.K.O host decides' }
   })
-  process.stderr.write('%s\\n')
+  process.stderr.write((config?.deviceViewUrl ? '%s' : '%s') + '\\n')
 }
-""" % GUARD_READY
+""" % (DEVICE_VIEW_READY, GUARD_READY)
 
 
 # dsh assembles schemas *before* its pre-step compaction and prepares the model
@@ -165,15 +166,18 @@ function installDeviceView(ctx, url) {
     if (agent && assembly.tools.some(tool => device(tool.name))) {
       const session = agent.session
       const view = views.get(session) || { epoch: 0, dirty: false, allowed: null }
-      view.tools = assembly.tools
-      view.unfiltered = null
+      view.unfiltered = assembly.tools
+      view.assembly = { ...assembly }
       views.set(session, view)
+      return view.assembly
     }
     return assembly
   })
   ctx.on('session/event', (session, event) => {
     const view = views.get(session)
     if (view && event.type === 'compaction/end' && event.data.error === undefined) {
+      view.idleCycle = view.endSinceRequest === true
+      view.endSinceRequest = true
       view.epoch++
       view.dirty = true
     }
@@ -187,7 +191,11 @@ function installDeviceView(ctx, url) {
   })
   ctx.on('agent/request', async ({ agent, turn, signal }, next) => {
     const view = views.get(agent.session)
-    if (!view?.epoch || !view.tools || view.disabled) return next()
+    if (!view?.epoch || !view.assembly || view.disabled) return next()
+    // The agent cannot dispatch a device between two summaries without a model
+    // step. A later attempt with intervening work must not claim that proof.
+    const idleCycle = view.idleCycle === true && view.endSinceRequest === true
+    view.endSinceRequest = false
     if (view.dirty || (view.hidden && (view.turn !== turn || view.checkIntent))) {
       try {
         const response = await fetch(url, {
@@ -196,7 +204,7 @@ function installDeviceView(ctx, url) {
             Authorization: 'Bearer ' + process.env.NEKOCLAW_DSH_ENDPOINT_TOKEN,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ session: agent.session.id, epoch: view.epoch, refresh: view.dirty }),
+          body: JSON.stringify({ session: agent.session.id, epoch: view.epoch, refresh: view.dirty, idleCycle }),
         })
         if (response.ok) {
           const names = await response.json()
@@ -211,14 +219,12 @@ function installDeviceView(ctx, url) {
       }
     }
     if (view.allowed !== null) {
-      // A retry may reuse this assembly instead of starting a new step.
-      const source = view.unfiltered || view.tools
+      // The previous request may have frozen its schema array, while an
+      // overflow retry still reuses the assembly. Preserve that history.
+      const source = view.unfiltered
       const visible = source.filter(tool => !device(tool.name) || view.allowed.has(tool.name))
       view.hidden = visible.length !== source.length
-      if (view.hidden || view.unfiltered) {
-        if (!view.unfiltered) view.unfiltered = [...source]
-        view.tools.splice(0, view.tools.length, ...visible)
-      }
+      view.assembly.tools = view.hidden ? visible : source
     }
     return next()
   })

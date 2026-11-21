@@ -32,7 +32,7 @@ async def test_device_refresh_does_not_consume_a_new_identical_instruction_or_re
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []
 
-    async def list_tools(client, *, compactions, wanted):
+    async def list_tools(client, *, compactions, wanted, idle_device_cycle):
         calls.append((compactions, wanted))
         entered.set()
         await release.wait()
@@ -40,6 +40,7 @@ async def test_device_refresh_does_not_consume_a_new_identical_instruction_or_re
 
     monkeypatch.setattr(GatewayClient, "list_tools", list_tools)
     runtime._queue(session, "Open the browser", human=True)
+    session.taken = session.given
     first = asyncio.create_task(runtime._device_view("process", "dsh", 2, True))
     await entered.wait()
     runtime._queue(session, "Open the browser", human=True)
@@ -47,12 +48,16 @@ async def test_device_refresh_does_not_consume_a_new_identical_instruction_or_re
     release.set()
     assert await first == await stale == ["browser_navigate_page"]
     assert session.device_intent == ("browser",)
-    await runtime._device_view("process", "dsh", 3, True)
-    assert calls == [(2, ("browser",)), (3, ("browser",))]
+    # The second steer is still pending, even if two summaries finished together.
+    await runtime._device_view("process", "dsh", 4, True, idle_cycle=True)
+    assert session.device_intent == ("browser",)
+    session.taken = session.given
+    await runtime._device_view("process", "dsh", 5, True)
+    assert calls == [(2, ("browser",)), (4, ("browser",)), (5, ("browser",))]
     assert session.device_intent == ()
 
 
-@pytest.mark.parametrize("scenario", ["search", "new_instruction", "failure"])
+@pytest.mark.parametrize("scenario", ["search", "new_instruction", "failure", "consecutive", "incomplete_profile"])
 async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path, monkeypatch, record_property, scenario):
     binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
     if not binary:
@@ -78,9 +83,9 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
     control_calls = []
     original_view = runtime._endpoint._device_view
 
-    async def count_control_calls(process, session, epoch, refresh):
-        control_calls.append((epoch, refresh))
-        return await original_view(process, session, epoch, refresh)
+    async def count_control_calls(process, session, epoch, refresh, idle_cycle):
+        control_calls.append((epoch, refresh, idle_cycle))
+        return await original_view(process, session, epoch, refresh, idle_cycle)
 
     monkeypatch.setattr(runtime._endpoint, "_device_view", count_control_calls)
 
@@ -106,12 +111,23 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
         if summary:
             if scenario == "failure":
                 return [sse_finish(), sse_usage(100, 0)]
+            if scenario == "consecutive":
+                # Shrink a real checkpoint twice while the first replacement
+                # still exceeds the target. The stock retry count is one.
+                n = sum(sample["summary"] for sample in snapshots)
+                return [sse_text("Prior words. " * {1: 250, 2: 30}.get(n, 1)), sse_finish(), sse_usage(100, 10)]
             return [sse_text("Checkpoint: the prior task finished."), sse_finish(), sse_usage(100, 10)]
         if phase == "search" and not called:
             called = True
             return [sse_tool_call(search, {"group": "browser"}), sse_finish("tool_calls"), sse_usage(100, 10)]
         # Force threshold pressure using the same model-reported usage dsh sees in production.
-        return [sse_text("Done."), sse_finish(), sse_usage(31000 if phase == "pressure" else 100, 10)]
+        usage = 31000 if phase == "pressure" else 100
+        if scenario == "consecutive":
+            # Pressure on the next turn, then a provider-declared overflow on
+            # its first ordinary request. The retry reuses the frozen header.
+            ordinary = sum(not sample["summary"] for sample in snapshots)
+            usage = {1: 9000, 2: 11000}.get(ordinary, 100)
+        return [sse_text("Done."), sse_finish(), sse_usage(usage, 10)]
 
     async def turn(text, *, opening=False):
         start = len(recorder.events)
@@ -124,12 +140,32 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
         with FakeOpenAIServer(reply) as model:
             config = ModelConfig(model="fixture", base_url=model.base_url, api_key="test-only", auto_extra_body=False,
                                  supports_images=True, context_window=32000, max_output_tokens=1024)
+            if scenario == "consecutive":
+                config = config.model_copy(update={"context_window": 10000, "compact_at": 3500, "max_output_tokens": 1000})
+            if scenario == "incomplete_profile":
+                (tmp_path / "home" / "profiles" / profile.PROFILE).mkdir(parents=True)
             await runtime.prepare(config)
+            if scenario == "incomplete_profile":
+                # dsh repaired the recipe, but the running guard was installed
+                # before the repair. Only the next launch may advertise it.
+                assert profile.uses_stock_tool_presentation(tmp_path / "home")
+                assert not runtime.supports_device_schemas(config)
+                return
             assert runtime.supports_device_schemas(config)
             token = host.gateway.issue("commission", supports_images=True, first_turn_groups=("browser",))
             spec = make_spec(tmp_path, model=config, gateway=GatewaySpec(url=url, token=token))
             await runtime.start(spec)
             await recorder.wait_for(lambda event: event["type"] == "started")
+            if scenario == "consecutive":
+                await turn("Open the browser. " + "Sample. " * 3000, opening=True)
+                phase = "second"
+                await turn("Open the browser, then reply Done.")
+                assert control_calls == [(2, True, True), (3, True, False)]
+                assert len(list_calls) == 2
+                assert list_calls[0]["wanted"] == () and list_calls[0]["idle_device_cycle"] is True
+                regular = [names for stage, summary, names, _ in seen if stage == "second" and not summary]
+                assert len(regular) == 2 and all("mcp__gateway__browser_navigate_page" not in names for names in regular)
+                return
             await turn("Reply with Done.", opening=True)
             phase = "pressure"
             await turn("Read this synthetic history. " + "Sample. " * 6000)

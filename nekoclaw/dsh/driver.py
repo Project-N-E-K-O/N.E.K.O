@@ -543,7 +543,9 @@ class DshRuntime:
         process = self._processes.get(shape_of(model))
         return bool(process and process.native_device_schemas and not process.retiring and process.connection.alive)
 
-    async def _device_view(self, token: str, dsh_id: str, epoch: int, refresh: bool) -> list[str] | None:
+    async def _device_view(
+        self, token: str, dsh_id: str, epoch: int, refresh: bool, idle_cycle: bool = False
+    ) -> list[str] | None:
         """Refresh just this process's registered commission devices after a successful summary."""
         from nekoclaw.runtime.tools.gateway import GatewayClient
 
@@ -558,12 +560,17 @@ class DshRuntime:
             input_number = session.device_intent_input
             if epoch < session.device_epoch or (not refresh and not wanted and epoch == session.device_epoch):
                 return session.visible_devices
+            # A steer that arrived while dsh was summarizing is still queued:
+            # no prompt or wait-agent result could take it between these ends.
+            unconsumed = input_number > session.taken
+            if idle_cycle and epoch > session.device_epoch and not unconsumed:
+                wanted = ()
             client = GatewayClient(gateway.url, gateway.token)
             try:
-                await client.list_tools(compactions=epoch, wanted=wanted)
+                await client.list_tools(compactions=epoch, wanted=wanted, idle_device_cycle=idle_cycle)
             finally:
                 await client.aclose()
-            if epoch > session.device_epoch and session.device_intent_input == input_number:
+            if epoch > session.device_epoch and session.device_intent_input == input_number and not unconsumed:
                 session.device_intent = ()
             session.device_epoch = epoch
             session.visible_devices = sorted(client.commission_tools)
@@ -650,7 +657,9 @@ class DshRuntime:
                 raise DshUnavailable("dsh did not load the permission guard") from exc
             from config.nekoclaw_settings import FIRST_TURN_DEVICE_TOOLS
 
-            if FIRST_TURN_DEVICE_TOOLS:
+            if not FIRST_TURN_DEVICE_TOOLS:
+                process.native_device_schemas = False
+            elif process.native_device_schemas:
                 process.native_device_schemas = await asyncio.to_thread(profile.uses_stock_tool_presentation, launch.home)
         except BaseException as exc:
             process.retiring = True
@@ -672,7 +681,9 @@ class DshRuntime:
 
     def _on_stderr(self, process: _Process, line: str) -> None:
         if profile.GUARD_READY in line:
-            process.guard_ready.set()
+            if not process.guard_ready.is_set():
+                process.native_device_schemas = profile.DEVICE_VIEW_READY in line
+                process.guard_ready.set()
         else:
             logger.debug("dsh: %s", line[:500])
 

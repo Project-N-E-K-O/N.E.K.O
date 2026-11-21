@@ -768,12 +768,15 @@ class CapabilityGateway:
         if method == "ping":
             return {}
         if method == "tools/list":
-            from config.nekoclaw_settings import GATEWAY_DEVICE_INTENT_META_KEY
+            from config.nekoclaw_settings import GATEWAY_DEVICE_INTENT_META_KEY, GATEWAY_IDLE_DEVICE_CYCLE_META_KEY
 
             meta = params.get("_meta")
             asked = meta.get(GATEWAY_DEVICE_INTENT_META_KEY) if isinstance(meta, dict) else None
             wanted = {g for g in asked if isinstance(g, str)} if isinstance(asked, list) else set()
-            return {"tools": await self.tool_definitions(grant, compactions=_compactions_of(params), wanted=wanted)}
+            idle_cycle = isinstance(meta, dict) and meta.get(GATEWAY_IDLE_DEVICE_CYCLE_META_KEY) is True
+            return {"tools": await self.tool_definitions(
+                grant, compactions=_compactions_of(params), wanted=wanted, idle_device_cycle=idle_cycle
+            )}
         if method == "tools/call":
             name = params.get("name")
             if not isinstance(name, str) or not name:
@@ -791,7 +794,8 @@ class CapabilityGateway:
     # -- tools ------------------------------------------------------------
 
     async def tool_definitions(
-        self, grant: Grant, *, compactions: int | None = None, wanted: set[str] | None = None
+        self, grant: Grant, *, compactions: int | None = None, wanted: set[str] | None = None,
+        idle_device_cycle: bool = False,
     ) -> list[dict[str, Any]]:
         """Offer discovery and call to every session, plus devices selected for this commission."""
         from config.nekoclaw_settings import GATEWAY_COMMISSION_TOOL_META_KEY, GATEWAY_DEVICE_INTENT_META_KEY
@@ -807,7 +811,10 @@ class CapabilityGateway:
             grant.handed_in.clear()
             grant.compactions = compactions
             waiting = {decision.device_group for decision in grant.cleared.values() if decision.refusal is None}
-            grant.mounted_groups.intersection_update(grant.used_groups | grant.active_groups.keys() | waiting)
+            keep = grant.active_groups.keys() | waiting
+            if not idle_device_cycle:
+                keep.update(grant.used_groups)
+            grant.mounted_groups.intersection_update(keep)
             grant.used_groups.clear()
         epoch = requested_at if compactions is None else compactions
         if wanted and epoch >= grant.folded_at:
