@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import threading
+from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -581,6 +582,29 @@ async def test_account_candidates_use_verse_without_sending_interests(
             & json.loads(request.content).keys()
         )
     assert [item["id"] for item in result["posts"]] == ["allowed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["community", "all"])
+async def test_guest_community_feed_succeeds_when_all_cards_are_excluded(monkeypatch, scope):
+    origin = "https://guest-community.example.test"
+    monkeypatch.setattr(trending_content, "social_base_url", lambda: origin)
+    monkeypatch.setattr(trending_content, "_public_community_pools", OrderedDict())
+
+    def handle(request):
+        assert "Authorization" not in request.headers
+        return httpx.Response(200, json={"items": [{"id": "blocked", "title": "竞技游戏赛况"}]})
+
+    context = RecommendationContext(
+        preferences=LocalPreferences(profile=Profile(exclusions={(scope, "竞技游戏")})),
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        monkeypatch.setattr(trending_content, "get_external_http_client", lambda: client)
+        result = await trending_content.fetch_neko_community_feed(recommendations=context)
+
+    assert result["success"] is True
+    assert result["authenticated"] is False
+    assert result["posts"] == []
 
 
 @pytest.mark.asyncio

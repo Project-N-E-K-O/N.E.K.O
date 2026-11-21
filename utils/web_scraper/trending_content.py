@@ -2357,11 +2357,11 @@ async def fetch_neko_community_feed(
                 if cached is None or time.monotonic() - cached[0] > NEKO_COMMUNITY_FALLBACK_SECONDS:
                     raise
                 posts = cached[1]
+            if not posts and _community_feed_collection(payload) != []:
+                raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
         if not authenticated and recommendations is not None:
             posts = recommendations.preferences.rank_community([dict(post) for post in posts])
         posts = posts[:max(1, int(limit))]
-        if not authenticated and not posts and _community_feed_collection(payload) != []:
-            raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
         # Preserve server ranking; an exhausted language pool may legitimately be empty.
         return {
             "success": True,
