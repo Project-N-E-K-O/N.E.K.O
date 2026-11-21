@@ -9,6 +9,19 @@ from types import SimpleNamespace
 import pytest
 
 
+class _ThreadingWith:
+    """``threading`` as ``api_runtime`` sees it, with some members swapped.
+
+    Only for that module; everything not swapped is the real module's.
+    """
+
+    def __init__(self, **swapped):
+        self.__dict__.update(swapped)
+
+    def __getattr__(self, name):
+        return getattr(threading, name)
+
+
 @pytest.fixture
 def shutdown_fixture(tmp_path, monkeypatch):
     from app.agent_server import api_runtime
@@ -52,7 +65,7 @@ def shutdown_fixture(tmp_path, monkeypatch):
         timers.append(current)
         return current
 
-    monkeypatch.setattr(api_runtime, "threading", SimpleNamespace(Timer=timer))
+    monkeypatch.setattr(api_runtime, "threading", _ThreadingWith(Timer=timer))
     for name, label in [
         ("shutdown_nekoclaw_host", "host"),
         ("_ensure_plugin_lifecycle_stopped", "plugin"),
@@ -216,6 +229,67 @@ async def test_browser_last_resort_survives_slow_host_cleanup(shutdown_fixture, 
         assert "browser" not in fixture.events, "do not reopen/close a browser after its kill deadline"
         assert "keys" in fixture.events and "status" in fixture.events
         assert fixture.tracker._storage_path.exists()
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await fixture.tracker.asave()
+
+
+@pytest.mark.asyncio
+async def test_browser_last_resort_fired_ahead_of_loop_clock_is_not_closed(shutdown_fixture, monkeypatch):
+    """The timer and the loop keep time apart: on Windows the timer can fire a
+    clock tick (~15.6 ms) before the loop's clock reaches the kill time. A
+    browser the last resort has killed must not be asked to close because the
+    loop still sees time left."""
+    from config import nekoclaw_settings
+
+    fixture = shutdown_fixture
+    # The kill time is far past every wait below (2 s each), so when the
+    # browser step runs the loop still sees time left: a runner slow enough
+    # to use it all up fails a wait instead of passing without reaching the
+    # check under test.
+    monkeypatch.setattr(nekoclaw_settings, "BROWSER_KILL_AT_SHUTDOWN_SECONDS", 30.0)
+
+    def early_timer(seconds, callback):
+        # Fires long before the loop's clock reaches the kill time.
+        current = threading.Timer(.05, callback)
+        fixture.timers.append(current)
+        return current
+
+    monkeypatch.setattr(fixture.api, "threading", _ThreadingWith(Timer=early_timer))
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def host():
+        entered.set()
+        await release.wait()
+        fixture.events.append("host")
+
+    monkeypatch.setattr(fixture.api, "shutdown_nekoclaw_host", host)
+    loop = asyncio.get_running_loop()
+    killed_at = []  # By the loop's clock (monotonic, readable from any thread).
+
+    def kill_browser():
+        killed_at.append(loop.time())
+        fixture.events.append("browser-killed")
+
+    monkeypatch.setattr(fixture.api.builtin_provider, "kill_browser", kill_browser)
+    started = loop.time()
+    task = asyncio.create_task(fixture.api.shutdown())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        async with asyncio.timeout(2):
+            while "browser-killed" not in fixture.events:
+                await asyncio.sleep(.01)
+        release.set()
+        await asyncio.wait_for(task, 2)
+        assert "browser" not in fixture.events, "do not close a browser the last resort has killed"
+        # The last resort's kill, then the browser step's own one: that step
+        # reads the loop's clock before it kills, and the kill time is no
+        # earlier than ``started + 30``, so the step saw time left.
+        assert len(killed_at) == 2
+        assert killed_at[1] < started + 30.0, "the browser step must see time left"
+        assert "keys" in fixture.events and "status" in fixture.events
     finally:
         release.set()
         task.cancel()
