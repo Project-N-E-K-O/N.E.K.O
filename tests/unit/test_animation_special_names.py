@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
-from app.main_server.web_app import CustomStaticFiles
+from app.main_server.web_app import CustomStaticFiles, StaticRootFiles
 from main_routers import mmd_router, vrm_router
 
 
@@ -49,9 +49,9 @@ def mmd_app(tmp_path, monkeypatch):
     monkeypatch.setattr(mmd_router, "get_config_manager", lambda: config)
     app = FastAPI()
     app.include_router(mmd_router.router)
-    # Same mount layout as the main server (web_app.py).
+    # Same mount classes and layout as the main server (app/main_server/web_app.py).
     app.mount("/user_mmd/animation", CustomStaticFiles(directory=str(user_anim)))
-    app.mount("/static", CustomStaticFiles(directory=str(project_root / "static")))
+    app.mount("/static", StaticRootFiles(directory=str(project_root / "static")))
     return app, static_anim, user_anim
 
 
@@ -68,7 +68,7 @@ def vrm_app(tmp_path, monkeypatch):
     app = FastAPI()
     app.include_router(vrm_router.router)
     app.mount("/user_vrm/animation", CustomStaticFiles(directory=str(user_anim)))
-    app.mount("/static", CustomStaticFiles(directory=str(project_root / "static")))
+    app.mount("/static", StaticRootFiles(directory=str(project_root / "static")))
     return app, static_anim, user_anim
 
 
