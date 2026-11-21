@@ -289,6 +289,11 @@ async def test_a_commission_that_names_a_project_is_filed_under_it_and_works_in_
 
     assert done.project == "Budget app"
     assert Path(done.workdir) == workdir
+    # Noted after the project is set: a reader of the project's timeline finds it.
+    events = await host.ledger.events(receipt.commission_id)
+    [noted] = [event for event in events if event.type == "filed_under_project"]
+    assert noted.payload == {"project": "Budget app"}
+    assert noted.seq > next(event.seq for event in events if event.type == "created")
     sessions = tmp_path / "nekoclaw" / "task_agents" / "projects" / "Budget app" / "sessions"
     assert Path(done.session_dir) == sessions / receipt.commission_id
     system = _system(llm)
@@ -322,6 +327,7 @@ async def test_a_commission_that_names_no_project_stays_daily(hosts, tmp_path):
 
     assert done.project is None
     assert "projects" in done.session_dir and DEFAULT_PROJECT in done.session_dir
+    assert not await host.ledger.has_event(receipt.commission_id, "filed_under_project")
 
 
 async def test_a_commission_taken_up_again_keeps_the_project_it_started_in(hosts, tmp_path):

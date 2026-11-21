@@ -2459,6 +2459,7 @@ owner 要的面板参考了 Antigravity 的 Swarm：成员之间的线（做完�
 | 种类 | 从哪来 | `text` | `peer` | `detail` |
 |---|---|---|---|---|
 | `filed` 立了一件事 | 事件 `created` | 标题 | 子使魔、问一句的副本：父委托 | `source` |
+| `filed_under_project` 归到了项目 | 事件 `filed_under_project`（她派的委托立的时候还没有项目，交给使魔时按它说的话归到某个项目，`TaskAgentManager._file_under_project`） | 标题 | — | `project` |
 | `queued` 排队 | 事件 `queued`；状态改成 `queued` | — | 排在谁后面（有的话） | `from`、`ahead`、`behind` |
 | `started` 开工、接着干 | 状态改成 `working` | — | — | `from` |
 | `asked_user` 等用户回话 | 状态改成 `waiting_user` | 问了什么（改状态时记进事件的 `question`；权限请求没有问题文字，记类别，MCP 服务器再加 `:服务器名`；不记要做什么、不记参数） | 用户 | `question_kind` |
@@ -2530,9 +2531,10 @@ owner 要的面板参考了 Antigravity 的 Swarm：成员之间的线（做完�
 
 用不着加索引，表结构不动。`waits()` 的时间主要花在逐件找「最后一次改状态、最后一次排队」上，和在办的件数成正比；真实情况下同时在办的远少于 800。
 
-**写入那一侧唯一的改动**
+**写入那一侧的两处改动**
 
 - 问用户的问题：委托只在等着的时候存着那一问（`pending_question`），答完就清掉。所以 `Ledger._transition` 改成 `waiting_user` 时把问题文字和种类（`question`、`question_kind`，取法同 `timeline.question_text`）一起记进那条状态事件，回放时每一次问过什么都看得到。这一步以前的状态事件没有这两个字段（猫爪没上线，不为旧数据补）。
+- 委托归到项目：她派的委托立的时候（记 `created`）还没有项目，交给使魔时才补上，原来只改委托那一行、不记事件。按项目读时间线的人要是正好在这中间读过，`created` 那条因为当时还不属于这个项目被跳过，游标越过了它，之后也读不到这件事了。现在补上项目以后再记一条 `filed_under_project`（先改项目、后记事件），这一条一定在那人读到的位置后面，而且属于这个项目。所以在项目的时间线里，这种委托的第一条是 `filed_under_project`，不一定有 `filed`。
 
 **没做的**
 

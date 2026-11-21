@@ -405,7 +405,7 @@ async def test_every_kind_is_in_the_list_and_steps_are_left_out(ledger):
     assert SECRET not in json.dumps(entries)
     assert _of(entries, "queued")[0]["detail"] == {"from": None, "ahead": 1, "behind": None}
     assert _of(entries, "woken")[0]["detail"] == {"count": 1, "reasons": []}
-    assert len(set(TIMELINE_KINDS)) == len(TIMELINE_KINDS) == 23
+    assert len(set(TIMELINE_KINDS)) == len(TIMELINE_KINDS) == 24
 
 
 async def _raw_event(ledger: Ledger, commission_id: str, kind: str, payload: str) -> None:
@@ -568,6 +568,22 @@ async def test_only_what_is_new_from_the_latest(ledger):
 
     assert [entry["text"] for entry in new["entries"]] == ["news"]
     assert new["next"] == new["latest"]
+
+
+async def test_one_put_under_a_project_after_it_was_read_past_reaches_the_projects_reader(ledger):
+    daily = await _session(ledger, "daily", project=None)
+    commission = await _file(ledger, daily, "add a CSV export", project=None)
+    page = await ledger.timeline(project="alpha", limit=100)
+    assert page["entries"] == []
+    # As ``TaskAgentManager._file_under_project`` does it: the project, then the note.
+    await ledger.update(commission.id, project="alpha")
+    await ledger.append_event(commission.id, "filed_under_project", {"project": "alpha"})
+
+    later = await ledger.timeline(project="alpha", after=page["next"], limit=100)
+
+    [entry] = later["entries"]
+    assert (entry["kind"], entry["text"], entry["detail"]) == ("filed_under_project", "add a CSV export", {"project": "alpha"})
+    assert entry["commission_id"] == commission.id and entry["project"] == "alpha"
 
 
 async def test_a_filtered_page_read_to_the_end_moves_past_what_it_passed_over(ledger):

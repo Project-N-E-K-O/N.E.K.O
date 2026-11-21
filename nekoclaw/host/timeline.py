@@ -60,6 +60,7 @@ from typing import Any
 # one it does not know.
 TIMELINE_KINDS: tuple[str, ...] = (
     "filed",  # a commission was filed
+    "filed_under_project",  # a commission filed with no project was put under one
     "queued",  # it waits for its turn or for a free place
     "started",  # it is being worked on (again)
     "asked_user",  # it waits for the user's answer
@@ -96,6 +97,7 @@ WAIT_KINDS: tuple[str, ...] = (
 
 _EVENT_TYPES: tuple[str, ...] = (
     "created",
+    "filed_under_project",
     "queued",
     "status",
     "answered",
@@ -287,6 +289,8 @@ def _event_entry(
         kind, text, detail = "filed", _text(row["title"]), {"source": row["source"]}
         if row["parent_id"]:
             peer = _session(sessions.get(row["parent_id"]), row["parent_id"])
+    elif kind == "filed_under_project":
+        text, detail = _text(row["title"]), {"project": _text(payload.get("project"))}
     elif kind == "queued":
         behind = payload.get("behind") if isinstance(payload.get("behind"), str) else None
         detail = {"from": None, "ahead": _number(payload.get("ahead")), "behind": behind}
