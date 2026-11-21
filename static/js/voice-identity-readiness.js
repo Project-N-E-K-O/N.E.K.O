@@ -108,6 +108,7 @@
         let isolationId = null;
         let isolationToken = null;
         let isolationServerOwned = false;
+        const isolationReleases = new Set();
         let requestAbort = null;
         let pollTimer = null;
         let pollResolve = null;
@@ -438,7 +439,7 @@
         }
         async function inactiveTicket(id, at) {
             const ticket = await hooks.request('/audio/check/isolation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request_id: id }) });
-            if (at !== epoch) { hooks.request('/audio/check/isolation/release', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: ticket.token }) }).catch(() => {}); throw new Error('capture_cancelled'); }
+            if (at !== epoch) { hooks.request('/audio/check/isolation/release', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: ticket.token }) }).catch(() => {}); throw new Error('capture_cancelled'); }
             isolationId = id; isolationToken = ticket.token; isolationServerOwned = true;
         }
         async function prepareIsolation(at) {
@@ -472,7 +473,7 @@
                     if (timedOut || at !== epoch) {
                         if (event.data.token) {
                             root.opener.postMessage({ type: 'neko-voice-enrollment-release', operationId: id, token: event.data.token }, root.location.origin);
-                            hooks.request('/audio/check/isolation/release', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: event.data.token }) }).catch(() => {});
+                            hooks.request('/audio/check/isolation/release', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: event.data.token }) }).catch(() => {});
                         }
                         reject(new Error('capture_cancelled'));
                         return;
@@ -492,11 +493,32 @@
         async function releaseIsolation(owned) {
             if (!owned || !owned.token) return;
             if (isolationId === owned.id && isolationToken === owned.token) { isolationId = null; isolationToken = null; }
-            if (root.nekoVoiceEnrollment && !owned.serverOwned) await root.nekoVoiceEnrollment.release({ operationId: owned.id });
+            let releasing;
+            if (root.nekoVoiceEnrollment && !owned.serverOwned) releasing = root.nekoVoiceEnrollment.release({ operationId: owned.id });
             else {
                 if (root.opener && !root.opener.closed) root.opener.postMessage({ type: 'neko-voice-enrollment-release', operationId: owned.id, token: owned.token }, root.location.origin);
-                await hooks.request('/audio/check/isolation/release', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: owned.token }) });
+                releasing = hooks.request('/audio/check/isolation/release', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: owned.token }) });
             }
+            isolationReleases.add(releasing);
+            try { await releasing; }
+            finally { isolationReleases.delete(releasing); }
+        }
+        let closePromise = null;
+        function close() {
+            if (closePromise) return closePromise;
+            pageHidden = true;
+            const owned = { id: isolationId, token: isolationToken, serverOwned: isolationServerOwned };
+            let timer = null;
+            // The close button also uses this hook without a parent deadline.
+            // Keep cleanup requests alive, but never treat a timeout as release.
+            const deadline = new Promise((_, reject) => {
+                timer = root.setTimeout(() => reject(new Error('voice_control_timeout')), 13000);
+            });
+            closePromise = Promise.race([
+                Promise.all([cancelOperation(), releaseIsolation(owned), ...isolationReleases]),
+                deadline
+            ]).then(() => {}).finally(() => root.clearTimeout(timer));
+            return closePromise;
         }
         async function testInput() {
             if (pending || hooks.enrolling()) return;
@@ -672,7 +694,7 @@
             try {
                 const result = await hooks.request('/resources/operations/' + encodeURIComponent(id) + '/cancel', { method: 'POST', keepalive: true });
                 if (operation === id && ['succeeded', 'failed', 'cancelled'].includes(result.state)) operation = null;
-                if (at !== epoch) return;
+                if (at !== epoch || pageHidden) return;
                 resourceFeedbackIssue = result.state !== 'succeeded' || !!result.reason;
                 el['resource-message'].textContent = t('voiceIdentity.resourceOperation_' + result.state, result.state || '');
                 if (result.reason) el['resource-message'].textContent += ' — ' + operationReason(result.reason);
@@ -775,7 +797,10 @@
             isolationId = null; isolationToken = null;
             if (pollTimer !== null) root.clearTimeout(pollTimer);
         });
-        root.addEventListener('pageshow', () => { pageHidden = false; render(false); });
+        root.addEventListener('pageshow', () => { pageHidden = false; closePromise = null; render(false); });
+        if (root.opener && !root.opener.closed) {
+            root.opener.postMessage({ type: 'neko-voice-enrollment-opened', operationId: root.nekoMicrophoneInput.operationId() }, root.location.origin);
+        }
         enumerate().catch(() => {});
         // The single enrollment gate; canStart and the button hint both read it.
         function startHintKey() {
@@ -785,7 +810,7 @@
             return 'voiceIdentity.enrollmentReady';
         }
         return {
-            refreshResources, receivedStream, controls: () => render(false), isPending: () => pending,
+            refreshResources, receivedStream, close, controls: () => render(false), isPending: () => pending,
             startHintKey,
             canStart: () => startHintKey() === 'voiceIdentity.enrollmentReady',
             canResume: () => !inputChangedDuringEnrollment,

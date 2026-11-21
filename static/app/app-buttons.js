@@ -2397,6 +2397,11 @@
                 await window.ensureWebSocketOpen();
                 ensureVoiceStartCurrent();
                 if (micStartMustStandDown()) return;
+                if (window.nekoVoiceCaptureReadiness) {
+                    await window.nekoVoiceCaptureReadiness.prepareCapture();
+                    ensureVoiceStartCurrent();
+                    if (micStartMustStandDown()) return;
+                }
                 S.socket.send(JSON.stringify({
                     action: 'start_session',
                     input_type: 'audio',
