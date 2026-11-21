@@ -234,6 +234,26 @@
                                 style="max-width: 600px; width: 100%;">
                             <em data-i18n="api.mimoTokenPlanKeyHint" style="font-weight: normal; color: #888; font-size: 0.85em;">启用 Token Plan 时只使用此 Key，不使用普通 MiMo API Key</em>
                         </div>
+                        <!-- 百炼业务空间 ID：决策模型用 qwen / qwen_intl 时显示（见 updateBailianWorkspaceControls） -->
+                        <div id="bailianWorkspaceRow" class="field-row" style="display: none;">
+                            <label for="bailianWorkspaceIdInput">
+                                <span data-i18n="api.bailianWorkspaceIdLabel">百炼业务空间 ID（决策模型）</span>
+                            </label>
+                            <input type="text" id="bailianWorkspaceIdInput"
+                                data-i18n-placeholder="api.bailianWorkspaceIdPlaceholder"
+                                placeholder="例如 llm-xxxxxxxx" value="" maxlength="200"
+                                autocomplete="off" spellcheck="false"
+                                aria-describedby="bailianWorkspaceIdHint bailianWorkspaceIdError"
+                                style="max-width: 600px; width: 100%;">
+                            <em id="bailianWorkspaceIdHint" style="font-weight: normal; color: #888; font-size: 0.85em;">
+                                <span data-i18n="api.bailianWorkspaceIdHint">没填时，决策模型用普通聊天模型代替。业务空间 ID 就是 API Host 最前面那一段（如 llm-xxx），可在百炼控制台「业务空间管理」页或创建 API Key 的弹窗里找到，也可以直接粘贴整个 API Host。</span>
+                                <a id="bailianWorkspaceIdDocLink" href="https://help.aliyun.com/zh/model-studio/regions#h2_migrate_domain"
+                                    target="_blank" rel="noopener noreferrer"
+                                    data-i18n="api.bailianWorkspaceIdDocLink">查看官方说明</a>
+                            </em>
+                            <em id="bailianWorkspaceIdError" role="alert" data-i18n="api.bailianWorkspaceIdInvalid"
+                                style="display: none; font-weight: normal; color: #c0392b; font-size: 0.85em;">百炼业务空间 ID 格式不对：只能包含字母、数字和 -，最长 63 个字符</em>
+                        </div>
                         <div class="field-row" style="margin-top: 10px;">
                             <label class="disable-tts-toggle">
                                 <input type="checkbox" id="disableTts" aria-describedby="disableTtsHintText">

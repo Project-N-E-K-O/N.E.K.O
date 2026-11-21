@@ -1662,6 +1662,11 @@
         "mimoTokenPlanKeyLabel": "MiMo Token Plan キー",
         "mimoTokenPlanKeyPlaceholder": "Token Plan キーを入力（tp-xxxxx）",
         "mimoTokenPlanKeyHint": "有効にすると、MiMo はこの Token Plan キーとエンドポイントのみを使用し、通常の MiMo API キーはロックされます。",
+        "bailianWorkspaceIdLabel": "Bailian ワークスペース ID（意思決定モデル）",
+        "bailianWorkspaceIdPlaceholder": "例: llm-xxxxxxxx",
+        "bailianWorkspaceIdHint": "未入力の場合、意思決定モデルの代わりに通常のチャットモデルを使います。ワークスペース ID は API Host の先頭部分（例: llm-xxx）で、Bailian（Model Studio）コンソールのワークスペース管理ページか、API キー作成時のポップアップで確認できます。API Host をそのまま貼り付けても構いません。",
+        "bailianWorkspaceIdDocLink": "公式ドキュメントを見る",
+        "bailianWorkspaceIdInvalid": "ワークスペース ID の形式が正しくありません：英数字と - のみ、63 文字以内で入力してください",
         "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan が有効です。このキーは使用されません"
     },
     "live2d": {
@@ -6035,7 +6040,12 @@
             "output_limit": "テストリクエストの出力上限が不足しています",
             "unknown": "不明なエラー",
             "backend_unavailable": "バックエンドサービスが利用できません",
-            "invalid_response": "レスポンス形式が不正です"
+            "invalid_response": "レスポンス形式が不正です",
+            "invalid_workspace_id": "Bailian ワークスペース ID の形式が無効です"
+        },
+        "decisionFallback": {
+            "workspace_missing": "Bailian ワークスペース ID が未入力のため、意思決定モデルの代わりにチャットモデルを使用中",
+            "region_unsupported": "この地域には意思決定モデルのネイティブ API がないため、チャットモデルを使用中"
         },
         "status": {
             "connected": "接続済み",

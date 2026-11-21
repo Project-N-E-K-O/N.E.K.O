@@ -1662,6 +1662,11 @@
         "mimoTokenPlanKeyLabel": "MiMo Token Plan Key",
         "mimoTokenPlanKeyPlaceholder": "Enter Token Plan key (tp-xxxxx)",
         "mimoTokenPlanKeyHint": "When enabled, MiMo uses only this Token Plan key and endpoint; the normal MiMo API key is locked.",
+        "bailianWorkspaceIdLabel": "Bailian workspace ID (decision model)",
+        "bailianWorkspaceIdPlaceholder": "e.g. llm-xxxxxxxx",
+        "bailianWorkspaceIdHint": "If left empty, a regular chat model stands in for the decision model. The workspace ID is the first part of your API Host (e.g. llm-xxx). Find it on the Workspace management page of the Bailian (Model Studio) console or in the popup shown when you create an API key. You can also paste the whole API Host.",
+        "bailianWorkspaceIdDocLink": "View official docs",
+        "bailianWorkspaceIdInvalid": "Invalid Bailian workspace ID: use only letters, digits and -, up to 63 characters",
         "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan is enabled; this key is not used"
     },
     "live2d": {
@@ -6035,7 +6040,12 @@
             "output_limit": "The test request output budget is too small",
             "unknown": "Unknown error",
             "backend_unavailable": "Backend service unavailable",
-            "invalid_response": "Invalid response format"
+            "invalid_response": "Invalid response format",
+            "invalid_workspace_id": "Invalid Bailian workspace ID"
+        },
+        "decisionFallback": {
+            "workspace_missing": "No Bailian workspace ID yet; a chat model stands in for the decision model",
+            "region_unsupported": "No native decision endpoint in this region; a chat model stands in for the decision model"
         },
         "status": {
             "connected": "Connected",
