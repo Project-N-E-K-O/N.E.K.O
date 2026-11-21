@@ -242,14 +242,40 @@ class VRMAnimation {
         return await this._loaderPromise;
     }
 
+    /**
+     * Local VRM animation URL for the request only; mirrors MMDCore.toRequestUrl.
+     * Animation lists and character config keep raw file names (the identity that
+     * saved idle selections are matched by), so '#', '?' and '%' must be escaped
+     * here or the browser reads them as URL syntax. Valid %XX runs are decoded once
+     * first, so an already-encoded path is not encoded twice.
+     * Trade-off: a file literally named with a valid escape (e.g. 'a%23b.vrma')
+     * is read as that escape; such names did not load before this either.
+     */
+    static toRequestUrl(vrmaUrl) {
+        if (typeof vrmaUrl !== 'string') return vrmaUrl;
+        const paths = window.VRM_PATHS || {};
+        const prefixes = ['/user_vrm/', '/static/vrm/', '/workshop/'];
+        for (const prefix of [paths.user_vrm, paths.static_vrm]) {
+            if (typeof prefix === 'string' && prefix.startsWith('/')) prefixes.push(prefix.replace(/\/*$/, '/'));
+        }
+        if (!prefixes.some(prefix => vrmaUrl.startsWith(prefix))) return vrmaUrl;
+        return vrmaUrl.split('/').map(segment => encodeURIComponent(
+            segment.replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
+                try { return decodeURIComponent(encoded); }
+                catch (_) { return encoded; }
+            })
+        )).join('/');
+    }
+
     async _loadVRMAGltf(loader, vrmaPath) {
-        if (!/\.vrma\.gz(?:$|[?#])/i.test(String(vrmaPath || ''))) {
-            return await loader.loadAsync(vrmaPath);
+        const requestUrl = VRMAnimation.toRequestUrl(vrmaPath);
+        if (!/\.vrma\.gz(?:$|[?#])/i.test(String(requestUrl || ''))) {
+            return await loader.loadAsync(requestUrl);
         }
 
         // Revalidate replaced user assets while allowing unchanged built-ins to
         // reuse the browser cache instead of downloading on every playback.
-        const response = await fetch(vrmaPath, { cache: 'no-cache' });
+        const response = await fetch(requestUrl, { cache: 'no-cache' });
         if (!response.ok) {
             throw new Error(`压缩动画加载失败: HTTP ${response.status}`);
         }
@@ -269,7 +295,7 @@ class VRMAnimation {
         const pageUrl = typeof document !== 'undefined' && document.baseURI
             ? document.baseURI
             : window.location.href;
-        const resourcePath = new URL('.', new URL(vrmaPath, pageUrl)).href;
+        const resourcePath = new URL('.', new URL(requestUrl, pageUrl)).href;
         return await loader.parseAsync(decoded, resourcePath);
     }
 

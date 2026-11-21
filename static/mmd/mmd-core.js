@@ -874,7 +874,7 @@ class MMDCore {
     // ═══════════════════ 模型信息 ═══════════════════
 
     /**
-     * Local model URL for the request only. Character config and model lists keep
+     * Local model / VMD animation URL for the request only. Character config and model lists keep
      * raw file names (the identity used for preferences and config names), so
      * '#', '?' and '%' must be escaped here or the browser reads them as URL
      * syntax (#3379). Valid %XX runs are decoded once first, the same rule as
