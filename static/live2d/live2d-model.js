@@ -3151,9 +3151,14 @@ Live2DManager.prototype.installMouthOverride = function() {
             // SDK fades blend from the previous frame. Remove only our own
             // last overlay before evaluation so a saved offset is composed once.
             // Foreign writes and click transitions keep their own input values.
+            const residueWrapperAlive = savedParamEntries.length > 0
+                && typeof this._beginMotionResidueWrapperFrame === 'function'
+                && this._beginMotionResidueWrapperFrame();
             if (!this._clickFadeState && (this._parameterConfigRevision || 0) === savedParameterRevision) {
                 for (const entry of savedParamEntries) {
                     if (entry.offset === 0 || isPersistentSavedParam(entry, currentPersistentParamIds)) continue;
+                    // 动作残留淡出层正在写的参数，它的当前值不是我们上一帧的叠加，不能去叠加。
+                    if (residueWrapperAlive && this._getMotionResidueParameterState(entry.idx) === 'fading') continue;
                     try {
                         const currentValue = coreModel.getParameterValueByIndex(entry.idx);
                         if (currentValue === entry.appliedValue || currentValue === Math.fround(entry.appliedValue)) {

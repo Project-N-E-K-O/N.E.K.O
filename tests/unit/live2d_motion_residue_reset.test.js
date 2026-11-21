@@ -150,9 +150,11 @@ test('a saved parameter fades from motion-plus-offset to the saved value through
         const peak = trace[end - 1].value;
         assert.ok(peak > 14, 'the saved offset is composed onto the motion value while it plays');
         const after = trace.slice(end).map(item => item.value);
-        assert.ok(after.some(value => value > 5 && value < peak - 1), 'the reset passes through intermediate values');
+        assert.ok(after.filter(value => value > 4.01 && value < peak - 0.01).length >= 5,
+            `the reset passes through several intermediate values: ${after.map(v => v.toFixed(2)).join(' ')}`);
         for (let i = 1; i < after.length; i++) {
             assert.ok(after[i] <= after[i - 1] + 1e-6, 'the saved parameter never jumps back up');
+            assert.ok(after[i - 1] - after[i] <= 5, `no single-frame jump: ${after.map(v => v.toFixed(2)).join(' ')}`);
         }
         assert.ok(Math.abs(after[0] - peak) < 3, 'no jump to the saved value on the hand-off frame');
         assert.equal(after[after.length - 1], 4);
@@ -163,10 +165,16 @@ test('a saved parameter fades from motion-plus-offset to the saved value through
         const beforeStop = f.value('ParamArmLA01');
         assert.ok(beforeStop > 10);
         f.native.stopAllMotions();
-        f.frame();
-        assert.ok(Math.abs(f.value('ParamArmLA01') - beforeStop) < 3, 'the hand-off frame keeps motion plus offset');
-        f.frames(12);
-        assert.equal(f.value('ParamArmLA01'), 4);
+        const stopped = [];
+        for (let i = 0; i < 14; i++) {
+            f.frame();
+            stopped.push(f.value('ParamArmLA01'));
+        }
+        assert.ok(Math.abs(stopped[0] - beforeStop) < 3, 'the hand-off frame keeps motion plus offset');
+        for (let i = 1; i < stopped.length; i++) {
+            assert.ok(stopped[i - 1] - stopped[i] <= 5, `no single-frame jump after stop: ${stopped.map(v => v.toFixed(2)).join(' ')}`);
+        }
+        assert.equal(stopped[stopped.length - 1], 4);
     } finally { f.release(); }
 });
 

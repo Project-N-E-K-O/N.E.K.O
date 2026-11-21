@@ -798,7 +798,7 @@ Live2DManager.prototype._installMotionResidueFade = function(model = this.curren
         && previous.coreModel === coreModel) return true;
     this._uninstallMotionResidueFade();
     const state = { model, internalModel, coreModel, touched: new Map(), fades: new Map(), listener: null,
-        updateCount: 0, wrapperSeen: new Map() };
+        updateCount: 0, wrapperFrameCount: -1, wrapperAlive: false };
     state.listener = () => this._updateMotionResidueFade(state);
     internalModel.on('afterMotionUpdate', state.listener);
     this._motionResidueFade = state;
@@ -814,7 +814,7 @@ Live2DManager.prototype._uninstallMotionResidueFade = function(state = this._mot
     } catch (_) {}
     state.touched.clear();
     state.fades.clear();
-    state.wrapperSeen.clear();
+    state.wrapperAlive = false;
     if (this._motionResidueFade === state) this._motionResidueFade = null;
 };
 
@@ -830,15 +830,22 @@ Live2DManager.prototype._isMotionResidueFading = function(index) {
     return !!state && state.fades.has(index);
 };
 
+// 保存参数包装层每帧开头调用一次：淡出层自上一帧以来跑过、且没被教程或演出暂停，
+// 本帧才把参数让给它。淡出层停摆（没有 afterMotionUpdate）时包装层照原逻辑写，避免参数卡住。
+Live2DManager.prototype._beginMotionResidueWrapperFrame = function() {
+    const state = this._getCurrentMotionResidueFade();
+    if (!state) return false;
+    const alive = state.updateCount !== state.wrapperFrameCount;
+    state.wrapperFrameCount = state.updateCount;
+    state.wrapperAlive = alive && state.touched.size > 0 && !this._isMotionResidueResetSuspended();
+    return state.wrapperAlive;
+};
+
 // 给保存参数包装层用：'fading' 表示淡出层正在写这个参数；'handoff' 表示动作刚放手、
 // 本帧 afterMotionUpdate 才开始淡出；其余返回 null，包装层照原逻辑写保存值。
-// 包装层上一次问过之后淡出层没再跑（没有 afterMotionUpdate），就不再让出，避免参数卡住。
 Live2DManager.prototype._getMotionResidueParameterState = function(index) {
     const state = this._getCurrentMotionResidueFade();
-    if (!state || !state.touched.has(index)) return null;
-    if (state.wrapperSeen.get(index) === state.updateCount) return null;
-    state.wrapperSeen.set(index, state.updateCount);
-    if (this._isMotionResidueResetSuspended()) return null;
+    if (!state || !state.wrapperAlive || !state.touched.has(index)) return null;
     return state.fades.has(index) ? 'fading' : 'handoff';
 };
 
