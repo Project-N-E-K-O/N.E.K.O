@@ -21,7 +21,7 @@ export function modelSlotForm(slot?: ModelSlot): ModelSlotForm {
   return {
     name: slot?.name ?? '',
     source: slot?.source ?? 'manual',
-    host_api: slot?.host_api ?? 'assist',
+    host_api: slot?.host_api ?? 'conversation',
     protocol: slot?.protocol ?? 'openai_chat',
     base_url: slot?.base_url ?? '',
     model: slot?.model ?? '',

@@ -116,13 +116,14 @@ def make_free_quota_hook(plugin_id: str, usage_id: str):
 
     The executor invokes this with the resolved snapshot right before any
     upstream request, covering the primary, a host-follow fallback and probes
-    alike. User-supplied keys (manual slots or a paid main-app API) are never
-    metered, and the free-tier decision uses the same snapshot as the request,
-    so a provider switch between resolution and execution cannot mis-meter.
+    alike. Only the built-in free credential is metered, whichever slot sends
+    it (a manual slot holding a copied free key counts too); other keys never
+    are. The decision uses the same snapshot as the request, so a provider
+    switch between resolution and execution cannot mis-meter.
     """
 
     async def before_attempt(_slot_id: str, slot: ModelSlot) -> None:
-        if slot.source != "host_follow" or not is_free_host_key(slot.api_key):
+        if not is_free_host_key(slot.api_key):
             return
         from utils.config_manager import get_config_manager
 

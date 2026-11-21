@@ -16,7 +16,7 @@ pytestmark = pytest.mark.plugin_unit
 
 
 def host_slot(**updates):
-    fields = {"name": "Host assist", "source": "host_follow", "host_api": "assist"}
+    fields = {"name": "Host assist", "source": "host_follow", "host_api": "conversation"}
     fields.update(updates)
     return ModelSlot(**fields)
 
@@ -97,8 +97,8 @@ def test_resolve_reads_the_main_app_config(monkeypatch):
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
     assert resolve_host_slot(host_slot()).model == "m"
-    assert resolve_host_slot(host_slot(host_api="core")).base_url == "https://x.test/v1"
-    assert seen == ["conversation", "realtime"]
+    assert resolve_host_slot(host_slot(host_api="agent")).base_url == "https://x.test/v1"
+    assert seen == ["conversation", "agent"]
 
 
 def test_status_reports_configuration_without_credentials(monkeypatch):
@@ -123,7 +123,7 @@ def test_status_reports_unconfigured_host(monkeypatch):
             return {"model": "m", "base_url": "wss://realtime.test/core"}
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
-    status = host_slot_status(host_slot(host_api="core"))
+    status = host_slot_status(host_slot(host_api="agent"))
     assert status["configured"] is False
     assert status["error_code"] == "host_api_unsupported"
     assert "WebSocket" in status["message"]

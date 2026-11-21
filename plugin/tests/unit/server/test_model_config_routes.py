@@ -107,7 +107,7 @@ async def test_crud_preserves_credentials_and_main_configuration(model_client, m
     assert response.status_code == 200
     seeded = response.json()["slots"]
     assert response.json()["schema_version"] == 1
-    assert {slot["name"] for slot in seeded} == {"Host assist API", "Host core API"}
+    assert {slot["name"] for slot in seeded} == {"Host chat model", "Host task agent model"}
     assert all(slot["source"] == "host_follow" for slot in seeded)
 
     created = await create_slot(model_client)

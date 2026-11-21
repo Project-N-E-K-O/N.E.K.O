@@ -24,12 +24,17 @@ from utils.http.url import same_endpoint
 Requirements = dict[PluginModelUsageId, PluginModelRequirementSchema]
 _requirements_adapter = TypeAdapter(Requirements)
 
-# Default slots every user gets without manual setup: one shared assist slot
-# (bindable out of the box) and one core slot (usable once the main app's core
-# API is an HTTP chat endpoint). Deterministic IDs keep seeding idempotent
-# across processes; the persisted seed_version keeps deleted defaults deleted.
+# Default slots every user gets without manual setup: one shared chat slot
+# (bindable out of the box) and one task agent slot (the model the main app
+# configures for agents: tool calling and image input). Deterministic IDs keep
+# seeding idempotent across processes; the persisted seed_version keeps
+# deleted defaults deleted.
 HOST_SLOT_SEED_VERSION = 1
-HOST_SLOT_SEEDS = (("assist", "Host assist API"), ("core", "Host core API"))
+SHARED_HOST_API = "conversation"
+HOST_SLOT_SEEDS = (
+    ("conversation", "Host chat model", ("text", "streaming")),
+    ("agent", "Host task agent model", ("text", "streaming", "tool_calling", "image_input")),
+)
 
 
 def host_slot_seed_id(host_api: str) -> str:
@@ -118,7 +123,7 @@ class ModelConfigService:
         """Create the default host-follow slots once, inside a write transaction."""
         if config.seed_version >= HOST_SLOT_SEED_VERSION:
             return
-        for host_api, name in HOST_SLOT_SEEDS:
+        for host_api, name, capabilities in HOST_SLOT_SEEDS:
             slot_id = host_slot_seed_id(host_api)
             if slot_id in config.slots:
                 continue
@@ -128,7 +133,7 @@ class ModelConfigService:
                 continue
             config.slots[slot_id] = ModelSlot(
                 name=name, source="host_follow", host_api=host_api,
-                capabilities=["text", "streaming"],
+                capabilities=list(capabilities),
             )
         config.seed_version = HOST_SLOT_SEED_VERSION
 
@@ -339,7 +344,7 @@ class ModelConfigService:
         """Bind still-unbound declared usages to a shared host-follow slot.
 
         Called after a committed install so a fresh plugin works against the
-        main app's assist API without manual setup. Existing bindings are never
+        main app's chat model without manual setup. Existing bindings are never
         touched; usages the shared slot cannot serve stay unbound for the user.
         ``requirements`` lets the caller read the manifest under the plugin
         operation lock and write the binding after releasing it.
@@ -351,23 +356,23 @@ class ModelConfigService:
 
         def change(config):
             # An install can be the first model-config write ever; seed the
-            # default slots here too so the shared assist slot has a stable ID.
+            # default slots here too so the shared chat slot has a stable ID.
             self._seed_default_slots(config)
             slot_id = next(
                 (key for key, slot in config.slots.items()
-                 if slot.source == "host_follow" and slot.host_api == "assist"),
+                 if slot.source == "host_follow" and slot.host_api == SHARED_HOST_API),
                 None,
             )
             created_slot = slot_id is None
             if slot_id is None:
                 if config.seed_version >= HOST_SLOT_SEED_VERSION:
-                    # Seeding already ran and no assist slot remains: the user
+                    # Seeding already ran and no shared chat slot remains: the user
                     # deleted the default. Respect that; leave usages unbound.
                     return {"bound": [], "slot_id": None}
                 slot_id = "slot_" + uuid4().hex
                 config.slots[slot_id] = ModelSlot(
-                    name="Host assist API", source="host_follow", host_api="assist",
-                    capabilities=["text", "streaming"],
+                    name=HOST_SLOT_SEEDS[0][1], source="host_follow", host_api=SHARED_HOST_API,
+                    capabilities=list(HOST_SLOT_SEEDS[0][2]),
                 )
             slot = config.slots[slot_id]
             bindings = config.bindings.setdefault(plugin_id, {})
@@ -388,7 +393,7 @@ class ModelConfigService:
             if not versions:
                 config.binding_versions.pop(plugin_id, None)
             if created_slot and not bound:
-                # Defensive only: seeding normally provides the assist slot.
+                # Defensive only: seeding normally provides the shared chat slot.
                 del config.slots[slot_id]
                 slot_id = None
             return {"bound": bound, "slot_id": slot_id}

@@ -26,7 +26,7 @@ class ReadOnlyStore:
     def __init__(self, protocol="openai_chat", timeout_seconds=60.0, host_follow=False):
         if host_follow:
             primary = ModelSlot(
-                name="Host assist", source="host_follow", host_api="assist",
+                name="Host assist", source="host_follow", host_api="conversation",
                 timeout_seconds=timeout_seconds,
             )
             backup = None

@@ -931,7 +931,7 @@ HOST_SLOT_ID = "slot_" + "b" * 32
 
 def bind_host_slot(setup_gateway, **slot_updates):
     fields = {
-        "name": "Host assist", "source": "host_follow", "host_api": "assist",
+        "name": "Host assist", "source": "host_follow", "host_api": "conversation",
         "capabilities": ["text", "streaming"],
     }
     fields.update(slot_updates)
@@ -989,6 +989,30 @@ async def test_host_follow_free_tier_consumes_agent_quota(http_client, setup_gat
     assert consumed == ["plugin:alpha:analysis"]
 
 
+async def test_manual_slot_holding_the_free_key_is_metered_too(http_client, setup_gateway, monkeypatch):
+    # Metering follows the credential actually sent, not the slot's source.
+    setup_gateway.config.slots[SLOT_ID] = setup_gateway.config.slots[SLOT_ID].model_copy(
+        update={"api_key": "free-access"},
+    )
+    consumed = patch_host_config(monkeypatch, {})
+
+    async def free_upstream(request):
+        assert request.headers["authorization"] == "Bearer free-access"
+        return httpx.Response(200, json=reply())
+
+    setup_gateway.upstream.handler = free_upstream
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 200
+    assert consumed == ["plugin:alpha:analysis"]
+
+
+async def test_manual_slot_with_its_own_key_is_not_metered(http_client, setup_gateway, monkeypatch):
+    consumed = patch_host_config(monkeypatch, {})
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 200
+    assert consumed == []
+
+
 async def test_host_follow_free_quota_exhaustion_rejects_before_upstream(http_client, setup_gateway, monkeypatch):
     bind_host_slot(setup_gateway)
     patch_host_config(monkeypatch, {
@@ -1023,12 +1047,12 @@ async def test_host_follow_unconfigured_main_api_fails_without_upstream(http_cli
 
 
 async def test_host_follow_websocket_core_is_rejected(http_client, setup_gateway, monkeypatch):
-    bind_host_slot(setup_gateway, host_api="core")
+    bind_host_slot(setup_gateway, host_api="agent")
     import utils.config_manager as config_manager
 
     class Manager:
         def get_model_api_config(self, model_type):
-            assert model_type == "realtime"
+            assert model_type == "agent"
             return {"model": "real-model", "base_url": "wss://realtime.test/core", "api_key": "k"}
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
@@ -1043,13 +1067,13 @@ async def test_unusable_host_fallback_does_not_reject_healthy_primary(http_clien
 
     class Manager:
         def get_model_api_config(self, model_type):
-            assert model_type == "realtime"
+            assert model_type == "agent"
             return {"model": "real-model", "base_url": "wss://realtime.test/core", "api_key": "k"}
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
     unusable = "slot_" + "c" * 32
     setup_gateway.config.slots[unusable] = ModelSlot(
-        name="Host core API", source="host_follow", host_api="core",
+        name="Host task agent model", source="host_follow", host_api="agent",
         capabilities=["text", "image_input", "streaming"],
     )
     setup_gateway.config.slots[SLOT_ID].fallback_slot_id = unusable
@@ -1066,7 +1090,7 @@ async def test_free_host_fallback_consumes_quota_after_paid_primary_fails(http_c
     # Keep the binding on the paid manual primary; the free host slot is only
     # its fallback (bind_host_slot would rebind the usage to the host slot).
     setup_gateway.config.slots[HOST_SLOT_ID] = ModelSlot(
-        name="Host assist", source="host_follow", host_api="assist",
+        name="Host assist", source="host_follow", host_api="conversation",
         capabilities=["text", "image_input", "streaming"],
     )
     setup_gateway.config.slots[SLOT_ID].fallback_slot_id = HOST_SLOT_ID
@@ -1102,7 +1126,7 @@ async def test_free_host_fallback_quota_exhaustion_is_final(http_client, setup_g
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
     # Binding stays on the paid manual primary; the free host slot is its fallback.
     setup_gateway.config.slots[HOST_SLOT_ID] = ModelSlot(
-        name="Host assist", source="host_follow", host_api="assist",
+        name="Host assist", source="host_follow", host_api="conversation",
         capabilities=["text", "image_input", "streaming"],
     )
     setup_gateway.config.slots[SLOT_ID].fallback_slot_id = HOST_SLOT_ID
@@ -1252,7 +1276,7 @@ async def test_legacy_disk_document_reads_through_real_store_and_explicit_temper
         "schema_version": 1, "seed_version": 1,
         "slots": {
             HOST_SLOT_ID: {
-                "name": "Legacy host", "source": "host_follow", "host_api": "assist",
+                "name": "Legacy host", "source": "host_follow", "host_api": "conversation",
                 "capabilities": ["text", "streaming"],
                 "defaults": {"temperature": 1.5},
             },

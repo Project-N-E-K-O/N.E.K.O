@@ -82,16 +82,16 @@ describe('model slot credentials', () => {
   })
   it('builds a host-follow payload without endpoint, model or credentials', () => {
     const form = modelSlotForm()
-    form.name = 'Host assist'
+    form.name = 'Host task agent'
     form.source = 'host_follow'
-    form.host_api = 'assist'
+    form.host_api = 'agent'
     form.base_url = 'https://leftover.test/v1'
     form.model = 'leftover-model'
     form.api_key = 'leftover-key'
     form.key_edited = true
     const payload = modelSlotPayload(form)
     expect(payload.source).toBe('host_follow')
-    expect(payload.host_api).toBe('assist')
+    expect(payload.host_api).toBe('agent')
     expect(payload.base_url).toBe('')
     expect(payload.model).toBe('')
     expect(payload).not.toHaveProperty('api_key')
@@ -108,7 +108,7 @@ describe('model slot credentials', () => {
     form.source = 'host_follow'
     // The main app may switch to Anthropic at any time: ≤1 is always the limit.
     expect(temperatureLimit(form, null)).toBe(1)
-    const hostSlot: ModelSlot = { ...saved, source: 'host_follow', host_api: 'assist', base_url: '', model: '', api_key: '', host_status: { configured: true, model: 'm', protocol: 'openai_chat', free: false } }
+    const hostSlot: ModelSlot = { ...saved, source: 'host_follow', host_api: 'conversation', base_url: '', model: '', api_key: '', host_status: { configured: true, model: 'm', protocol: 'openai_chat', free: false } }
     expect(temperatureLimit(modelSlotForm(hostSlot), hostSlot)).toBe(1)
     // Manual slots keep their own protocol's range.
     const manual = modelSlotForm(saved)
@@ -162,31 +162,31 @@ describe('Plugin API page', () => {
     expect(container.textContent).not.toContain('No model slots yet')
   })
   it('renders a host-follow slot with the resolved main-app model and no stored key', async () => {
-    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host assist', source: 'host_follow', host_api: 'assist', base_url: '', model: '', api_key: '', api_key_preview: '', capabilities: ['text', 'streaming'], host_status: { configured: true, model: 'qwen3.8-flash', protocol: 'openai_chat', free: false }, bound_by: [] }
+    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host chat', source: 'host_follow', host_api: 'conversation', base_url: '', model: '', api_key: '', api_key_preview: '', capabilities: ['text', 'streaming'], host_status: { configured: true, model: 'qwen3.8-flash', protocol: 'openai_chat', free: false }, bound_by: [] }
     api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [hostSlot] })
     const container = await mount()
-    expect(container.textContent).toContain('Main app assist API')
+    expect(container.textContent).toContain('Main app chat model')
     expect(container.textContent).toContain('qwen3.8-flash')
     expect(container.textContent).toContain('Managed by the main app')
     expect(container.textContent).not.toContain('__NEKO_SECRET_MASKED__')
   })
   it('flags a realtime core endpoint as unsupported, not as unconfigured', async () => {
-    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host core', source: 'host_follow', host_api: 'core', base_url: '', model: '', api_key: '', api_key_preview: '', host_status: { configured: false, error_code: 'host_api_unsupported' }, bound_by: [] }
+    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host task agent', source: 'host_follow', host_api: 'agent', base_url: '', model: '', api_key: '', api_key_preview: '', host_status: { configured: false, error_code: 'host_api_unsupported' }, bound_by: [] }
     api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [hostSlot] })
     const container = await mount()
-    expect(container.textContent).toContain('Realtime voice endpoint — plugin chat calls not supported')
+    expect(container.textContent).toContain('The followed main app model is not an HTTP chat endpoint — plugin chat calls are not supported')
     expect(container.textContent).not.toContain('Main app API not configured')
   })
   it('flags a host-follow slot whose main-app API is not configured with the translated label', async () => {
-    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host assist', source: 'host_follow', host_api: 'assist', base_url: '', model: '', api_key: '', api_key_preview: '', host_status: { configured: false, error_code: 'host_api_not_configured', message: 'Configure the main app API before using this slot' }, bound_by: [] }
+    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host chat', source: 'host_follow', host_api: 'conversation', base_url: '', model: '', api_key: '', api_key_preview: '', host_status: { configured: false, error_code: 'host_api_not_configured', message: 'Configure the main app API before using this slot' }, bound_by: [] }
     api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [hostSlot] })
     const container = await mount()
     expect(container.textContent).toContain('Main app API not configured')
     expect(container.textContent).not.toContain('Configure the main app API before using this slot')
-    expect(container.textContent).not.toContain('Realtime voice endpoint')
+    expect(container.textContent).not.toContain('not an HTTP chat endpoint')
   })
   it('falls back to the server message only for unknown error codes', async () => {
-    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host assist', source: 'host_follow', host_api: 'assist', base_url: '', model: '', api_key: '', api_key_preview: '', defaults: { temperature: 1.5, max_output_tokens: null }, host_status: { configured: false, error_code: 'future_error_code', message: 'An actionable server explanation.' }, bound_by: [] }
+    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host chat', source: 'host_follow', host_api: 'conversation', base_url: '', model: '', api_key: '', api_key_preview: '', defaults: { temperature: 1.5, max_output_tokens: null }, host_status: { configured: false, error_code: 'future_error_code', message: 'An actionable server explanation.' }, bound_by: [] }
     api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [hostSlot] })
     const container = await mount()
     expect(container.textContent).toContain('An actionable server explanation.')

@@ -504,7 +504,7 @@ def test_stream_error_is_sanitized():
 
 
 @pytest.mark.parametrize("content", [None, "Explanation"])
-def test_assistant_history_refusal_is_preserved_as_text(content):
+def test_chatant_history_refusal_is_preserved_as_text(content):
     result = prepare_request(
         _request(
             messages=[

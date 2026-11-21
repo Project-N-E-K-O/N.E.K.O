@@ -18,13 +18,13 @@ if TYPE_CHECKING:
     import httpx
 
 from plugin.server.domain.model_config import ModelSlot
+from plugin.server.infrastructure.host_model_slots import client_headers
 from plugin.server.model_gateway import anthropic, openai
 from plugin.server.model_gateway.errors import ModelGatewayError, upstream_error
 from plugin.server.model_gateway.observation import AttemptObservation
 from plugin.server.model_gateway.request import prepare_chat_request
 from plugin.server.model_gateway.transport import decode_object, encode_sse, iter_sse_data, read_json_response
 from utils.http_client import ensure_user_agent
-from utils.llm_client.anthropic_client import _is_kimi_code_anthropic_base_url
 from plugin.utils.http_imports import ensure_httpx, load_httpx
 
 
@@ -48,10 +48,7 @@ def _headers(slot: ModelSlot) -> dict[str, str]:
     headers = ensure_user_agent({"Accept": "application/json, text/event-stream", "Content-Type": "application/json"})
     if slot.protocol == "anthropic_messages":
         headers["anthropic-version"] = "2023-06-01"
-        # Kimi Code rejects other clients; the main app's factory sends the
-        # same UA (utils/llm_client/factory.py).
-        if _is_kimi_code_anthropic_base_url(slot.base_url):
-            headers["User-Agent"] = "claude-code/0.1.0"
+        headers.update(client_headers(slot.protocol, slot.base_url))
         if slot.api_key:
             headers["x-api-key"] = slot.api_key
     elif slot.api_key:

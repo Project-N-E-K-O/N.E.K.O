@@ -16,6 +16,17 @@ from pydantic import (
 from plugin.config.schema import ModelCapability, PluginModelUsageId
 
 SECRET_MASK = "__NEKO_SECRET_MASKED__"
+
+# Main-app model tiers a host-follow slot may follow. Each value is the
+# ``model_type`` passed to ``ConfigManager.get_model_api_config``; adding a
+# tier here (and to ``HostApi``) is all a new followable tier needs. Voice
+# tiers are absent on purpose: their endpoints are WebSocket and cannot serve
+# chat requests.
+HOST_API_MODEL_TYPES: dict[str, str] = {
+    "conversation": "conversation",
+    "agent": "agent",
+}
+HostApi = Literal["conversation", "agent"]
 MAX_OUTPUT_TOKENS = 1_000_000
 SlotId = Annotated[StrictStr, Field(pattern=r"^slot_[0-9a-f]{32}$")]
 PluginId = Annotated[StrictStr, Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")]
@@ -41,7 +52,7 @@ class ModelSlot(BaseModel):
 
     name: str = Field(min_length=1, max_length=128)
     source: Literal["manual", "host_follow"] = "manual"
-    host_api: Literal["assist", "core"] | None = None
+    host_api: HostApi | None = None
     protocol: Literal["openai_chat", "anthropic_messages"] = "openai_chat"
     base_url: str = Field(default="", max_length=2048)
     model: str = Field(default="", max_length=256)
@@ -55,7 +66,7 @@ class ModelSlot(BaseModel):
     def validate_source_fields(self) -> ModelSlot:
         if self.source == "host_follow":
             if self.host_api is None:
-                raise ValueError("A host-follow slot must select assist or core")
+                raise ValueError("A host-follow slot must select a main-app model tier")
             if self.base_url or self.model or self.api_key:
                 raise ValueError("A host-follow slot must not store endpoint, model or credentials")
         elif self.host_api is not None:
