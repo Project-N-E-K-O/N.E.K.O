@@ -196,6 +196,52 @@ async def _fallbacks(host: Any, commission_id: str) -> list[dict[str, Any]]:
     return [event.payload for event in await host.ledger.events(commission_id) if event.type == "runtime_fallback"]
 
 
+@pytest.mark.parametrize(
+    ("enabled", "runtime", "native", "text", "has_browser"),
+    [
+        (False, "builtin", False, "Open the browser", False),
+        (True, "builtin", False, "Open the browser", True),
+        (True, "builtin", False, "Explain the browser", False),
+        (True, "auto", False, "Open the browser", False),
+        (True, "auto", True, "Open the browser", True),
+    ],
+)
+async def test_dispatch_only_mounts_devices_on_a_supported_related_route(
+    hosts, tmp_path, monkeypatch, enabled, runtime, native, text, has_browser
+):
+    from config import nekoclaw_settings
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    monkeypatch.setattr(nekoclaw_settings, "FIRST_TURN_DEVICE_TOOLS", enabled)
+    if native:
+        monkeypatch.setattr(Dsh, "supports_device_schemas", lambda self, model: True, raising=False)
+    llm = ScriptedLLM([_report("ready", "done")])
+    host = _host(hosts, tmp_path, llm, Installation(preference=runtime),
+                 builtins=BuiltinToolProvider(state=lambda group: (True, "")))
+    await wait_status(host, await _dispatch(host, text), "done")
+    names = {tool["function"]["name"] for tool in llm.overrides[0]["tools"]}
+    assert ("browser_navigate_page" in names) == has_browser
+    assert "computer" not in names and {"capability_call", "capability_search"} <= names
+
+
+@pytest.mark.parametrize("follow_up", ["点击登录按钮", "继续"])
+async def test_relaunch_keeps_the_device_context_of_the_same_commission(hosts, tmp_path, follow_up):
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    llm = ScriptedLLM([_report("blocked", "waiting for login"), _report("ready", "done")])
+    host = _host(hosts, tmp_path, llm, Installation(preference="builtin"),
+                 builtins=BuiltinToolProvider(state=lambda group: (True, "")))
+    commission_id = await _dispatch(host, "打开浏览器")
+    await wait_status(host, commission_id, "blocked")
+    await wait_until(lambda: host.task_agents.running == [], what="the blocked session being released")
+    assert await host.task_agents.tell(commission_id, follow_up)
+    await wait_status(host, commission_id, "done")
+    assert len(llm.overrides) == 2
+    for request in llm.overrides:
+        names = {tool["function"]["name"] for tool in request["tools"]}
+        assert "browser_click" in names and "computer" not in names
+
+
 # ---------------------------------------------------------------------------
 # Which runtime
 # ---------------------------------------------------------------------------
@@ -408,6 +454,33 @@ async def test_a_commission_whose_session_dsh_cannot_take_up_is_told_what_it_is_
     assert _told_anew(llm.requests[-1], commission_id, "sort the photos", "it is on drive D") is log_gone
     if not log_gone:
         assert _last_user_message(llm.requests[-1]) == "it is on drive D"
+
+
+@pytest.mark.parametrize("log_gone", [True, False])
+async def test_a_commission_told_once_more_what_it_is_has_the_list_of_its_repository_again(
+    hosts, tmp_path, tmp_path_factory, log_gone
+):
+    # A repository, outside the folder the host keeps its data in.
+    root = tmp_path_factory.mktemp("repo")
+    (root / ".git").mkdir()
+    (root / "AGENTS.md").write_text("a", encoding="utf-8", newline="\n")
+    llm = ScriptedLLM([_report("failed", "the folder is missing"), _report("ready", "found it")])
+    host = _host(hosts, tmp_path, llm, Installation())
+    await host.space.touch_project("Budget app", workdir=str(root))
+    commission_id = await _dispatch(host, "add an export to the Budget app")
+    await wait_status(host, commission_id, "failed")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    assert "- AGENTS.md (1 B)" in _last_user_message(llm.requests[0])
+    host.fake.behaviour["log_gone"] = log_gone
+
+    assert await host.tell(commission_id, "it is on drive D")
+    done = await wait_status(host, commission_id, "done")
+
+    assert done.runtime == RUNTIME_DSH and done.workdir == str(root)
+    # Whether dsh takes its session up is known only once it was started. Where it does not, the
+    # commission is opened in a session that holds nothing, and what its repository keeps for agents
+    # is listed again; where it does, nothing of that is said a second time.
+    assert ("- AGENTS.md (1 B)" in _last_user_message(llm.requests[-1])) is log_gone
 
 
 async def test_a_commission_whose_session_is_gone_starts_over_knowing_what_it_is(hosts, tmp_path):
@@ -785,6 +858,31 @@ async def test_the_switch_and_the_plugins_are_read_and_set_through_the_host(host
     assert (await host.install_dsh())["installed"] is True and installation.installs == 1
 
 
+async def test_selected_dsh_stays_in_use_during_gateway_setup(hosts, tmp_path, monkeypatch):
+    import asyncio
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "done")]), Installation())
+    setting_up, resume = asyncio.Event(), asyncio.Event()
+    start = host.gateway.start
+
+    async def wait_for_setup():
+        setting_up.set()
+        await resume.wait()
+        return await start()
+
+    monkeypatch.setattr(host.gateway, "start", wait_for_setup)
+    dispatch = asyncio.create_task(_dispatch(host, "Open the browser"))
+    try:
+        await asyncio.wait_for(setting_up.wait(), 5)
+        with pytest.raises(DshUnavailable, match="in use"):
+            await host.uninstall_dsh()
+        assert not host.fake.dsh[0].shut_down
+    finally:
+        resume.set()
+        commission_id = await dispatch
+    await wait_status(host, commission_id, "done")
+
+
 async def test_shutting_the_host_down_ends_every_runtime_that_was_started(hosts, tmp_path):
     installation = Installation()
     llm = ScriptedLLM([_report("ready", "one"), _report("ready", "two")])
@@ -840,6 +938,10 @@ async def test_the_session_of_an_old_commission_that_ran_in_dsh_is_cleaned_in_ds
     host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]), installation)
     done = await wait_status(host, await _dispatch(host, "sort the photos"), "done")
     await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    # And let go of by the commission that held it, which takes two more looks at the ledger
+    # once it has left the runtime: until then the session counts as in use, and its files
+    # are not removed (the tidying comes by again, as it would here).
+    await wait_until(lambda: done.session_id not in host.task_agents._held_by, what="the session being let go")
     session_dir = Path(done.session_dir)
     assert (session_dir / DSH_SESSION_NAME).is_file()
 

@@ -173,6 +173,7 @@
     nekoVoiceInFlight: false,
     nekoVoiceController: null,
     voiceRouteActive: false,
+    voiceRouteStarting: false,
     voiceControlPending: false,
     voiceControlRequestSequence: 0,
     lastVoiceTranscriptRequestId: '',
@@ -976,7 +977,10 @@
   function syncVoiceRouteButton() {
     if (!els.voiceRouteButton) return;
     var active = !!state.voiceRouteActive;
-    var pending = !!state.voiceControlPending;
+    // The host may still be starting after a command reply (start_pending):
+    // a click then would toggle it off mid-start, so hold the button like a
+    // pending command until the state stream settles. Soccer does the same.
+    var pending = !!state.voiceControlPending || !!state.voiceRouteStarting;
     var available = hasVoiceInputCapability();
     els.voiceRouteButton.disabled = !state.routeActive || state.routeEnding || pending || !available;
     els.voiceRouteButton.classList.toggle('is-active', active);
@@ -1644,6 +1648,7 @@
     stopThinkingEventMessage();
     clearNekoVoiceQueue();
     state.voiceRouteActive = false;
+    state.voiceRouteStarting = false;
     state.voiceControlPending = false;
     state.voiceControlRequestSequence += 1;
     state.lastVoiceTranscriptRequestId = '';
@@ -1708,8 +1713,14 @@
 
   function handleSdkVoiceState(voiceState) {
     var detail = voiceState && typeof voiceState === 'object' ? voiceState : {};
-    if (detail.route_active === false) state.voiceRouteActive = false;
+    if (detail.route_active === false) {
+      state.voiceRouteActive = false;
+      state.voiceRouteStarting = false;
+    }
     if (typeof detail.active === 'boolean') state.voiceRouteActive = detail.active;
+    if (typeof detail.starting === 'boolean') {
+      state.voiceRouteStarting = detail.route_active !== false && detail.starting;
+    }
     updateControls();
   }
 
@@ -1751,6 +1762,7 @@
     var observedRequestSequence = state.voiceControlRequestSequence;
     if (!client || !client.capabilities.has('voice-input') || !isSdkRouteRunning(client)) {
       state.voiceRouteActive = false;
+      state.voiceRouteStarting = false;
       updateControls();
       return Promise.resolve(false);
     }
@@ -1761,6 +1773,7 @@
     }).catch(function () {
       if (observedRequestSequence !== state.voiceControlRequestSequence) return false;
       state.voiceRouteActive = false;
+      state.voiceRouteStarting = false;
       updateControls();
       return false;
     });
@@ -1769,6 +1782,8 @@
   function stopSdkVoiceBestEffort(client) {
     if (!client || !client.capabilities.has('voice-input')) return Promise.resolve(false);
     if (['running', 'degraded'].indexOf(client.runtime.state) < 0) return Promise.resolve(false);
+    // Like toggle / query: a late stop reply must not touch a newer round.
+    var observedRequestSequence = state.voiceControlRequestSequence;
     var stopRequest;
     try {
       stopRequest = client.voice.stop({ timeoutMs: 6500 });
@@ -1776,10 +1791,13 @@
       stopRequest = Promise.reject(error);
     }
     return Promise.resolve(stopRequest).then(function (voiceState) {
+      if (observedRequestSequence !== state.voiceControlRequestSequence) return false;
       handleSdkVoiceState(voiceState);
       return !!voiceState && voiceState.ok !== false;
     }).catch(function () {
+      if (observedRequestSequence !== state.voiceControlRequestSequence) return false;
       state.voiceRouteActive = false;
+      state.voiceRouteStarting = false;
       state.voiceControlPending = false;
       updateControls();
       return false;
@@ -2908,6 +2926,7 @@
       }
       state.routeActive = true;
       state.voiceRouteActive = false;
+      state.voiceRouteStarting = false;
       state.voiceControlPending = false;
       state.lastVoiceTranscriptRequestId = '';
       state.sessionId = client.runtime.session.id || state.sessionId;
@@ -5132,9 +5151,16 @@
     state.voiceControlRequestSequence = requestSequence;
     state.voiceControlPending = true;
     updateControls();
-    client.voice.toggle({ timeoutMs: 12000 }).then(function (voiceState) {
+    client.voice.toggle({ timeoutMs: 15000 }).then(function (voiceState) {
       if (requestSequence !== state.voiceControlRequestSequence) return;
+      // A reply for a route that ended while the command ran describes that
+      // route, not this one, and ok:false there does not mean the host
+      // microphone is off. The state stream carries the current route's truth.
+      if (voiceState && voiceState.reason === 'route_superseded') return;
       handleSdkVoiceState(voiceState);
+      // The host was still starting when its wait ran out: unknown, not a
+      // failure. The state stream reports the outcome when it lands.
+      if (voiceState && voiceState.reason === 'start_pending') return;
       if (voiceState && voiceState.ok === false) {
         addEventMessage('drawingGuess.voice.controlFailed', 'Voice operation failed: {{reason}}', {
           reason: String(voiceState.reason || 'request_failed')
@@ -5151,6 +5177,9 @@
       );
     }).catch(function (error) {
       if (requestSequence !== state.voiceControlRequestSequence) return;
+      // No reply arrived (timeout, bridge gone): nothing will tell us the host
+      // is still starting, so do not keep the button held on a stale flag.
+      state.voiceRouteStarting = false;
       addEventMessage('drawingGuess.voice.controlFailed', 'Voice operation failed: {{reason}}', {
         reason: sdkErrorReason(error)
       });

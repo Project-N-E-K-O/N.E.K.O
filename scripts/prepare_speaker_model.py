@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import importlib.util
 import os
 import shutil
@@ -60,6 +61,46 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+_HF_ORIGIN = "https://huggingface.co"
+# Same default order and overrides as scripts/prepare_voice_turn_assets.py:
+# huggingface.co first, then the hf-mirror.com reverse proxy.
+_DEFAULT_HF_ENDPOINTS = (_HF_ORIGIN, "https://hf-mirror.com")
+
+
+def _hf_endpoints() -> list[str]:
+    """Ordered HF-compatible base URLs to try.
+
+    ``HF_ENDPOINTS`` (comma-separated) replaces the default order; a single
+    ``HF_ENDPOINT`` (the huggingface_hub convention) pins to that mirror.
+    """
+
+    raw = os.environ.get("HF_ENDPOINTS") or os.environ.get("HF_ENDPOINT")
+    if raw:
+        endpoints = [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
+        if endpoints:
+            return endpoints
+    return list(_DEFAULT_HF_ENDPOINTS)
+
+
+def _download_source_candidates(source: str) -> tuple[str, ...]:
+    """Return the URLs to try for ``source``, in order.
+
+    Only pinned huggingface.co sources are rewritten onto the HF endpoint list;
+    every other host is fetched as declared. Mirrors cannot substitute content:
+    the caller still verifies the pinned size and SHA-256 of whatever they return.
+    """
+
+    if not source.startswith(_HF_ORIGIN + "/"):
+        return (source,)
+    path = source[len(_HF_ORIGIN):]
+    candidates: list[str] = []
+    for endpoint in _hf_endpoints():
+        candidate = endpoint + path
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return tuple(candidates)
+
+
 def _verify_transfer(path: Path, *, expected_size: int, expected_sha256: str) -> None:
     if path.stat().st_size != expected_size:
         raise CampPlusAssetError("asset_size_mismatch")
@@ -79,46 +120,60 @@ def _download_verified(
         raise CampPlusAssetError("manifest_invalid")
 
     temporary = destination.with_suffix(destination.suffix + ".part")
-    request = urllib.request.Request(
-        source,
-        headers={"User-Agent": "NEKO-speaker-model-preparer/1"},
-    )
     last_error: Exception | None = None
-    for attempt in range(3):
-        try:
-            if on_progress is not None:
-                on_progress({"phase": "downloading", "downloaded_bytes": 0, "total_bytes": expected_size, "attempt": attempt + 1})
-            with urllib.request.urlopen(request, timeout=60) as response:
-                if urlsplit(response.geturl()).scheme.lower() != "https":
-                    raise CampPlusAssetError("manifest_invalid")
-                with temporary.open("wb") as output:
-                    received = 0
-                    while chunk := response.read(min(1024 * 1024, expected_size - received + 1)):
-                        received += len(chunk)
-                        if received > expected_size:
-                            raise CampPlusAssetError("asset_size_mismatch")
-                        output.write(chunk)
-                        if on_progress is not None:
-                            on_progress({"phase": "downloading", "downloaded_bytes": received, "total_bytes": expected_size, "attempt": attempt + 1})
-            if on_progress is not None:
-                on_progress({"phase": "verifying", "downloaded_bytes": received, "total_bytes": expected_size, "attempt": attempt + 1})
-            _verify_transfer(
-                temporary,
-                expected_size=expected_size,
-                expected_sha256=expected_sha256,
-            )
-            os.replace(temporary, destination)
-            return
-        except CampPlusAssetError as exc:
-            temporary.unlink(missing_ok=True)
-            if exc.args != ("asset_size_mismatch",) or attempt == 2:
-                raise
-            time.sleep(1 << attempt)
-        except (OSError, TimeoutError, URLError) as exc:
-            last_error = exc
-            temporary.unlink(missing_ok=True)
-            if attempt < 2:
+    candidates = _download_source_candidates(source)
+    for index, candidate in enumerate(candidates):
+        if urlsplit(candidate).scheme.lower() != "https":
+            raise CampPlusAssetError("manifest_invalid")
+        request = urllib.request.Request(
+            candidate,
+            headers={"User-Agent": "NEKO-speaker-model-preparer/1"},
+        )
+        for attempt in range(3):
+            transfer_attempt = index * 3 + attempt + 1
+            try:
+                if on_progress is not None:
+                    on_progress({"phase": "downloading", "downloaded_bytes": 0, "total_bytes": expected_size, "attempt": transfer_attempt})
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    if urlsplit(response.geturl()).scheme.lower() != "https":
+                        raise CampPlusAssetError("manifest_invalid")
+                    with temporary.open("wb") as output:
+                        received = 0
+                        while chunk := response.read(min(1024 * 1024, expected_size - received + 1)):
+                            received += len(chunk)
+                            if received > expected_size:
+                                raise CampPlusAssetError("asset_size_mismatch")
+                            output.write(chunk)
+                            if on_progress is not None:
+                                on_progress({"phase": "downloading", "downloaded_bytes": received, "total_bytes": expected_size, "attempt": transfer_attempt})
+                if on_progress is not None:
+                    on_progress({"phase": "verifying", "downloaded_bytes": received, "total_bytes": expected_size, "attempt": transfer_attempt})
+                _verify_transfer(
+                    temporary,
+                    expected_size=expected_size,
+                    expected_sha256=expected_sha256,
+                )
+                os.replace(temporary, destination)
+                return
+            except CampPlusAssetError as exc:
+                # Wrong bytes from a source are fatal: a mirror must never be
+                # used to shop around for content that happens to verify.
+                temporary.unlink(missing_ok=True)
+                if exc.args != ("asset_size_mismatch",) or attempt == 2:
+                    raise
                 time.sleep(1 << attempt)
+            # IncompleteRead is not an OSError; without it a dropped connection
+            # would neither retry nor fall back to the next mirror.
+            except (OSError, TimeoutError, URLError, http.client.IncompleteRead) as exc:
+                last_error = exc
+                temporary.unlink(missing_ok=True)
+                if attempt < 2:
+                    time.sleep(1 << attempt)
+        if index + 1 < len(candidates):
+            print(
+                f"download from {candidate} failed ({last_error}); trying next source",
+                file=sys.stderr,
+            )
     raise CampPlusAssetError("asset_missing") from last_error
 
 

@@ -34,7 +34,7 @@ async def _background_preload():
         # Run synchronous imports in a thread pool to avoid blocking the event loop
         import concurrent.futures
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor() as pool:
             await loop.run_in_executor(pool, _sync_preload_modules)
     except Exception as e:

@@ -142,6 +142,8 @@ export function apply(ctx, config) {
     if (!asked.has(exec.name) && (unasked.has(exec.name) || prefixes.some(prefix => exec.name.startsWith(prefix)))) {
       return next()
     }
+    const native = await next()
+    if (native.kind !== 'allow') return native
     return { kind: 'ask', reason: 'the N.E.K.O host decides' }
   })
   process.stderr.write('%s\\n')
@@ -322,6 +324,26 @@ def session_spill_dir(home: Path, dsh_session: str) -> Path:
 def config_dir(home: Path) -> Path:
     """Return the directory the patch and the guard are written to."""
     return home / "nekoclaw"
+
+
+def uses_stock_tool_presentation(home: Path) -> bool:
+    """The pinned stock ACP recipe sends active MCP schemas natively on new and resume.
+
+    A custom Cordis patch or agent preset can present tools through run_code
+    instead, or filter the scope. Leave those routes on normal discovery.
+    """
+    directory = home / "profiles" / PROFILE
+    try:
+        package = json.loads((directory / "package.json").read_text(encoding="utf-8"))
+        if package["dsh"]["profile"] != {"bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-acp-app"]}:
+            return False
+        for filename in ("cordis.yml", "cordis.patch.yml"):
+            lines = (directory / filename).read_text(encoding="utf-8").splitlines()
+            if "".join(line.partition("#")[0].strip() for line in lines) != "[]":
+                return False
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    return True
 
 
 def write_profile(home: Path, patch: list[dict[str, Any]], *, tag: str = "") -> Path:

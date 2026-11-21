@@ -26,6 +26,7 @@ import os
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic import public_knowledge
+from main_logic.core._shared import _reply_observation_owner
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
 from config.prompts.prompts_sys import _loc
 from config.turn_context_settings import (
@@ -184,7 +185,16 @@ class ToolCallingMixin:
                 call.host_reply = reply_tail_registry.tool_context(
                     self, call.reply_owner, call.call_id, str(tool.metadata.get("source", "")),
                 )
-        result = await self.tool_registry.execute(call)
+        if call.name == DISPATCH_TOOL_NAME:
+            # The reply that emitted the call may finish after a new user input.
+            # A provider without reply ownership has no attributable input here.
+            owner_token = _reply_observation_owner.set(call.reply_owner)
+            try:
+                result = await self.tool_registry.execute(call)
+            finally:
+                _reply_observation_owner.reset(owner_token)
+        else:
+            result = await self.tool_registry.execute(call)
         if result.images:
             await self._route_tool_images(
                 result, invoking_session=invoking_session,
@@ -436,6 +446,11 @@ class ToolCallingMixin:
         task = task.strip() if isinstance(task, str) else ""
         if not task:
             return _loc(TASK_TOOL_EMPTY, _lang)
+        owner = _reply_observation_owner.get()
+        input_id = getattr(owner, "observation_input_id", None)
+        current_turn = str(getattr(self, "current_speech_id", "") or "")
+        dispatch_turn = getattr(owner, "speech_id", None) or current_turn
+        user_text = getattr(self, "_latest_user_utterance", "") if dispatch_turn == current_turn else ""
         data, may_have_arrived = await self._post_to_task_system(
             "/nekoclaw/dispatch",
             {
@@ -443,8 +458,9 @@ class ToolCallingMixin:
                 "lanlan_name": self.lanlan_name,
                 # The user's own words of this turn, as far as they are known
                 # by now; plugins get them as ``_ctx.latest_user_request``.
-                "user_text": getattr(self, "_latest_user_utterance", "") or "",
-                "conversation_id": str(getattr(self, "current_speech_id", "") or ""),
+                "user_text": user_text or "",
+                **({"source_message_ref": f"conversation_input:{input_id}"} if input_id else {}),
+                "conversation_id": dispatch_turn,
                 "language": self.user_language,
             },
         )

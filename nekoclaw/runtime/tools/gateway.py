@@ -41,7 +41,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from config.nekoclaw_settings import GATEWAY_COMPACTIONS_META_KEY, GATEWAY_REPLY_META_KEY
+from config.nekoclaw_settings import GATEWAY_COMMISSION_TOOL_META_KEY, GATEWAY_COMPACTIONS_META_KEY, GATEWAY_REPLY_META_KEY
 from nekoclaw.runtime.loop.messages import ImageContent, TextContent
 from nekoclaw.runtime.loop.tools import AgentTool, AgentToolResult
 from nekoclaw.runtime.tools.base import ToolCallInfo, ToolError, define_tool, run_cancellable
@@ -118,6 +118,7 @@ class GatewayClient:
         # handed over before a summary (a group of tools and how they are
         # used) is no longer in the conversation after it.
         self.compactions = 0
+        self.commission_tools: set[str] = set()
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -185,7 +186,15 @@ class GatewayClient:
         await self.notify("notifications/initialized")
         listed = await self.request("tools/list", {}, read_timeout=HANDSHAKE_TIMEOUT_SECONDS)
         tools = listed.get("tools") if isinstance(listed, dict) else None
-        return [tool for tool in tools or [] if isinstance(tool, dict) and tool.get("name")]
+        offered = [
+            tool for tool in tools or []
+            if isinstance(tool, dict) and isinstance(tool.get("name"), str) and tool["name"]
+        ]
+        self.commission_tools = {
+            tool["name"] for tool in offered
+            if isinstance(tool.get("_meta"), dict) and tool["_meta"].get(GATEWAY_COMMISSION_TOOL_META_KEY) is True
+        }
+        return offered
 
     def next_reply(self) -> None:
         """Note that the model has answered: the calls made from now on were written in that reply.

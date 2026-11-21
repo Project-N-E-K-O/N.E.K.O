@@ -218,7 +218,9 @@ async def test_the_provider_carries_a_call_out_and_hears_when_a_group_comes_free
     calls: list[Any] = []
 
     class Provider(_Builtins):
-        async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> Any:
+        async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any], still_allowed=None) -> Any:
+            if still_allowed is not None and not still_allowed():
+                return BuiltinOutcome(False, "revoked")
             calls.append(("run", capability.id, commission_id, arguments))
             return BuiltinOutcome(True, "2 pages", images=(BuiltinImage("QUJD", "image/jpeg"),))
 
@@ -229,6 +231,8 @@ async def test_the_provider_carries_a_call_out_and_hears_when_a_group_comes_free
     tool = builtin_tool(BUILTIN_GROUP_BROWSER, _PAGES)
     registry = CapabilityRegistry(PluginCatalog(client_factory=server.client), builtins=Provider([tool]))
 
+    blocked = await registry.run_builtin(tool, commission_id="c1", arguments={}, still_allowed=lambda: False)
+    assert not blocked.success and not calls
     outcome = await registry.run_builtin(tool, commission_id="c1", arguments={"verbose": True})
     # What the provider kept is its own business: a cleanup that fails is not raised.
     await registry.builtin_released(BUILTIN_GROUP_BROWSER, "c1")
@@ -592,6 +596,17 @@ def test_agent_startup_and_shutdown_call_the_mount():
                 for inner in ast.walk(node)
                 if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
             ]
+            # Shutdown delegates cleanup to the cancellation-preserving step
+            # helper. Only count a callback actually passed as its first arg.
+            calls[node.name].extend(
+                inner.args[0].id
+                for inner in ast.walk(node)
+                if isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Name)
+                and inner.func.id == "step"
+                and inner.args
+                and isinstance(inner.args[0], ast.Name)
+            )
 
     assert "mount_nekoclaw_host" in calls["startup"]
     assert "shutdown_nekoclaw_host" in calls["shutdown"]

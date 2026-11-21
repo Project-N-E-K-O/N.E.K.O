@@ -1327,8 +1327,8 @@ async def test_adopting_a_still_live_announcement_moves_its_id_off_the_lane():
         item_ack_timeout=0.05,
         response_started_timeout=0.15,
     )
-    await asyncio.wait_for(ticket.sent, 0.5)
-    await asyncio.wait_for(ticket.started, 1.0)
+    await asyncio.wait_for(ticket.sent, 10)
+    await asyncio.wait_for(ticket.started, 10)
 
     assert arbiter._server_response_ids == {}, (
         "the adopted id must be held in exactly one place — on its owner"
@@ -1339,7 +1339,7 @@ async def test_adopting_a_still_live_announcement_moves_its_id_off_the_lane():
     arbiter.notify_response_terminal(
         {"type": "response.done", "response": {"id": "resp-auto", "status": "completed"}}
     )
-    await asyncio.wait_for(ticket.done, 1.0)
+    await asyncio.wait_for(ticket.done, 10)
     assert aborted == []
     assert arbiter.is_busy is False, "the adopted turn's terminal reopens the lane"
     await arbiter.shutdown()

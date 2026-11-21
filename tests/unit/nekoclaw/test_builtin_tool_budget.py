@@ -218,8 +218,8 @@ async def test_no_shipped_tool_is_listed_and_every_request_carries_one_line_abou
     assert [item["name"] for item in listed] == [SEARCH_TOOL, CALL_TOOL]
     description = listed[0]["description"].splitlines()
     assert description[1:] == [
-        "Tool groups, not among your tools until used. To use one, make its first call below through "
-        "capability_call: the answer also brings the group's other tools and how to use them.",
+        "Use listed device tools directly. For an unlisted group, its first call below through "
+        "capability_call also returns the group's tools and guidance.",
         f"- browser: {BUILTIN_GROUP_SUMMARIES['browser']} First call: browser_navigate_page, "
         'arguments {"url": "..."}.',
         f"- desktop: {BUILTIN_GROUP_SUMMARIES['keyboard_mouse']} First call: computer, "

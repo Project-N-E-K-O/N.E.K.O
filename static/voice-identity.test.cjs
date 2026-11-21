@@ -2430,6 +2430,34 @@ test('BFCache restore waits for keepalive cancellation before reconciling status
     assert.equal(harness.elements.get('voice-identity-cancel').hidden, true);
 });
 
+test('pending readiness cleanup cannot delay close cancellation until after a restored enrollment starts', async () => {
+    const cleanup = deferred(); const cancelGate = deferred();
+    const readinessController = {
+        isPending: () => false, canStart: () => true, audioContract: () => ({ revision: 1 }),
+        async refreshResources() {}, controls() {}, receivedStream() {}, updateMeter() {},
+        close: () => cleanup.promise
+    };
+    const harness = createHarness({ initialEnrollmentNextSegment: 1, cancelGate, manualAudio: true, autoAdvance: false, readinessController });
+    await harness.initialize();
+    const closing = harness.beforeClose();
+    try {
+        await flush(3);
+        assert.ok(harness.fetchCalls.some(call => call.url === `${API_ROOT}/enrollment/cancel` && call.options.keepalive),
+            'enrollment cancellation must start while readiness cleanup is still pending');
+        cancelGate.resolve();
+        await harness.dispatch('pageshow', { persisted: true });
+        const enrolling = harness.emit('voice-identity-start');
+        await flush(8);
+        assert.equal(harness.serverEnrollmentId, 'enrollment-2');
+        cleanup.resolve(); await closing; await flush(3);
+        assert.equal(harness.serverEnrollmentId, 'enrollment-2');
+        assert.equal(harness.mediaStreams.at(-1).track.stopped, false);
+        await harness.emit('voice-identity-cancel'); await enrolling;
+    } finally {
+        cleanup.resolve(); cancelGate.resolve(); await closing;
+    }
+});
+
 test('BFCache restore releases controls when keepalive cancellation times out', async () => {
     const cancelGate = deferred();
     const harness = createHarness({

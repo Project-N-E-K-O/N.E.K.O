@@ -1061,7 +1061,8 @@
             if (!name) { showToast(t('ui.toast_username_empty', '请输入用户名')); return; }
             var r = await callPlugin('set_user_name', { name: name });
             if (r && r.user_name) {
-                showToast(t('ui.toast_username_updated', '用户名已更新为: ').replace('{name}', r.user_name) + r.user_name);
+                var nameMsg = t('ui.toast_username_updated', '用户名已更新为: ');
+                showToast(nameMsg.includes('{name}') ? nameMsg.replace('{name}', () => r.user_name) : nameMsg + r.user_name);
                 loadStatus();
             } else {
                 showToast(t('ui.toast_fail', '更新失败'));
@@ -1073,7 +1074,8 @@
             if (isNaN(sec) || sec < 10) { showToast(t('ui.toast_cooldown_invalid', '冷却时间至少 10 秒')); return; }
             var r = await callPlugin('set_cooldown', { seconds: sec });
             if (r && r.cooldown_seconds) {
-                showToast(t('ui.toast_cooldown_updated', '冷却时间已设为 ').replace('{sec}', r.cooldown_seconds) + r.cooldown_seconds + ' 秒');
+                var cdMsg = t('ui.toast_cooldown_updated', '冷却时间已设为 ');
+                showToast(cdMsg.includes('{sec}') ? cdMsg.replace('{sec}', () => r.cooldown_seconds) : cdMsg + r.cooldown_seconds + ' 秒');
                 loadStatus();
             } else {
                 showToast(t('ui.toast_fail', '更新失败'));
@@ -1093,8 +1095,8 @@
             if (!confirm(t('ui.confirm_clear', '确定要清空所有事件日志吗？'))) return;
             var r = await callPlugin('clear_events');
             if (r && r.cleared !== undefined) {
-                var fmt = t('ui.toast_events_cleared', '已清空 ').replace('{count}', r.cleared);
-                showToast(fmt + r.cleared + ' 条事件');
+                var clearMsg = t('ui.toast_events_cleared', '已清空 ');
+                showToast(clearMsg.includes('{count}') ? clearMsg.replace('{count}', () => r.cleared) : clearMsg + r.cleared + ' 条事件');
                 loadEvents();
                 loadStatus();
             } else {

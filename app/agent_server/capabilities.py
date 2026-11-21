@@ -31,6 +31,7 @@ from typing import Callable, Dict, Any, Optional, Tuple
 from . import _shared
 from ._shared import (
     logger,
+    _put_switch_off,
     _set_capability,
     _bump_state_revision,
 )
@@ -60,15 +61,10 @@ def _browser_dependency_status() -> tuple[bool, str]:
     now = time.monotonic()
     if _browser_search is not None and now - _browser_search[0] < _BROWSER_SEARCH_TTL_SECONDS:
         return _browser_search[1], _browser_search[2]
-    try:
-        from nekoclaw.builtin.browser.launcher import NoBrowserError, pick_browser
-        from nekoclaw.builtin.browser.settings import BrowserSettingsStore
+    from .nekoclaw_builtins import provider
 
-        try:
-            pick_browser(BrowserSettingsStore().load().executable)
-            found = True
-        except NoBrowserError:
-            found = False
+    try:
+        found = provider.browser_installed()
     except Exception as exc:
         logger.warning("[Agent] Searching for a browser failed: %s", exc)
         found = False
@@ -277,7 +273,7 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
         _has_running = _tool_group_in_use
 
         try:
-            probe_result = await asyncio.get_event_loop().run_in_executor(None, _probe)
+            probe_result = await asyncio.get_running_loop().run_in_executor(None, _probe)
             # Tolerate legacy bool returns in case some probe implementation
             # hasn't been migrated yet (defense-in-depth: the only real probe
             # — AgentModelProbe.check_connectivity — already returns a tuple).
@@ -317,10 +313,10 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
             else:
                 logger.warning("[Agent] Agent-LLM connectivity check failed: %s", reason)
                 if _shared.Modules.agent_flags.get("computer_use_enabled"):
-                    _shared.Modules.agent_flags["computer_use_enabled"] = False
+                    _put_switch_off("computer_use_enabled")
                     _shared.Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_COMPUTER", "details": {"reason_code": reason}})
                 if _shared.Modules.agent_flags.get("browser_use_enabled"):
-                    _shared.Modules.agent_flags["browser_use_enabled"] = False
+                    _put_switch_off("browser_use_enabled")
                     _shared.Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_BROWSER", "details": {"reason_code": reason}})
                     # Put off for the user, not by them: a window they can
                     # see is not taken from them.
@@ -338,9 +334,9 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
             _set_capability("computer_use", False, "AGENT_LLM_UNREACHABLE")
             _set_capability("browser_use", False, "AGENT_LLM_UNREACHABLE")
             if _shared.Modules.agent_flags.get("computer_use_enabled"):
-                _shared.Modules.agent_flags["computer_use_enabled"] = False
+                _put_switch_off("computer_use_enabled")
             if _shared.Modules.agent_flags.get("browser_use_enabled"):
-                _shared.Modules.agent_flags["browser_use_enabled"] = False
+                _put_switch_off("browser_use_enabled")
                 await _close_browser(capability_reason="AGENT_LLM_UNREACHABLE", leave_window=True)
             _shared.Modules.notification = json.dumps({"code": "AGENT_LLM_CHECK_ERROR"})
             _bump_state_revision()

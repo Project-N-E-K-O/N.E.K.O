@@ -97,6 +97,26 @@ async def test_the_first_commission_gets_the_group_at_once_and_the_listener_hear
     assert heard.events == [(BROWSER, "started", "c1")]
 
 
+@pytest.mark.parametrize("keep_sibling", [True, False])
+async def test_declined_call_rolls_back_only_its_claim_on_the_group(keep_sibling):
+    leases = _leases()
+    declined, sibling = object(), object()
+    assert await leases.acquire(BROWSER, "c1", claim=declined) is None
+    assert await leases.acquire(BROWSER, "c1", claim=sibling) is None
+    other = await _waiting(leases, BROWSER, "other")
+    leases.finish_claim(BROWSER, "c1", declined, keep=False)
+    assert leases.occupied() == {BROWSER: "c1"} and not other.done()
+    leases.finish_claim(BROWSER, "c1", sibling, keep=keep_sibling)
+    if keep_sibling:
+        assert leases.occupied() == {BROWSER: "c1"} and not other.done()
+        late = object()
+        assert await leases.acquire(BROWSER, "c1", claim=late) is None
+        leases.finish_claim(BROWSER, "c1", late, keep=False)
+        assert leases.release("c1") == [BROWSER]
+    assert await asyncio.wait_for(other, 5) is None
+    assert leases.occupied() == {BROWSER: "other"}
+
+
 async def test_a_group_nobody_uses_has_no_holder():
     leases = _leases()
 
@@ -411,7 +431,9 @@ class Provider:
     def available(self) -> list[Any]:
         return [builtin_tool(BROWSER, {"name": "browser_list_pages", "description": "List the open pages."})]
 
-    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any], still_allowed=None) -> BuiltinOutcome:
+        if still_allowed is not None and not still_allowed():
+            return BuiltinOutcome(False, "permission denied")
         return BuiltinOutcome(True, "done")
 
     async def released(self, group: str, commission_id: str) -> None:

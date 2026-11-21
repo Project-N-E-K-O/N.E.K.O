@@ -32,6 +32,7 @@ from plugin.core.communication import (
     PluginCommunicationResourceManager,
 )
 from plugin.core.context import PluginContext
+from plugin.sdk.shared.core.call_chain_view import call_chain_scope
 from plugin.core.entry_executor import EntryExecutor, execute_entry_command
 from plugin.core.entry_points import normalize_plugin_entry_point, plugin_package_matches_directory
 from plugin.core.model_gateway_access import model_gateway_access
@@ -237,6 +238,9 @@ if hasattr(os, "register_at_fork"):
     # POSIX only; spawn platforms re-execute children and inherit no such descriptors.
     os.register_at_fork(after_in_child=_close_inherited_host_sockets)
     _FORK_SOCKET_HOOK_REGISTERED = True
+    # A parent thread may hold stdout/stderr buffer locks at fork; see the hook.
+    from plugin._logging_runtime import reopen_inherited_std_streams as _reopen_inherited_std_streams
+    os.register_at_fork(after_in_child=_reopen_inherited_std_streams)
 
 
 # ============================================================================
@@ -1025,6 +1029,9 @@ def _plugin_process_runner(
                 logger.debug("[Plugin Process] Could not read startup config through SDK: {}", type(e).__name__)
 
         # Configuration overrides instance defaults, preserving old checkpoint fallback order.
+        from plugin.sdk.shared.storage.state import PluginStatePersistence
+
+        valid_persist_modes = PluginStatePersistence.VALID_PERSIST_MODES
         freezable_keys = getattr(instance, "__freezable__", []) or []
         persist_mode = getattr(instance, "__persist_mode__", None)
         if persist_mode is None:
@@ -1034,7 +1041,7 @@ def _plugin_process_runner(
             state_cfg = effective_cfg.get("plugin_state", {})
             if isinstance(state_cfg, dict):
                 cfg_persist_mode = state_cfg.get("persist_mode")
-                if cfg_persist_mode in ("auto", "manual", "off"):
+                if cfg_persist_mode in valid_persist_modes:
                     persist_mode = cfg_persist_mode
                     logger.debug("[Plugin Process] persist_mode from effective config: {}", persist_mode)
             # Backward-compatible old [plugin_checkpoint] settings.
@@ -1042,7 +1049,7 @@ def _plugin_process_runner(
                 checkpoint_cfg = effective_cfg.get("plugin_checkpoint", {})
                 if isinstance(checkpoint_cfg, dict):
                     cfg_freeze_mode = checkpoint_cfg.get("freeze_mode")
-                    if cfg_freeze_mode in ("auto", "manual", "off"):
+                    if cfg_freeze_mode in valid_persist_modes:
                         persist_mode = cfg_freeze_mode
                         logger.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", persist_mode)
         except Exception as e:
@@ -1480,7 +1487,10 @@ def _plugin_process_runner(
         async def _execute_command(msg: dict):
             logger.info("[Plugin Process] {} entry={} req_id={}", msg.get("type"),
                         msg.get("event_id") or msg.get("entry_id"), msg.get("req_id"))
-            ret = await execute_entry_command(executor, msg)
+            # Host-built call-chain view for ctx.call_chain; covers function,
+            # router and dynamic entries alike since all run through the executor.
+            with call_chain_scope(plugin_id, msg.get("_call_chain")):
+                ret = await execute_entry_command(executor, msg)
             try:
                 await asyncio.to_thread(res_sender.put, ret, timeout=10.0)
             except Exception:

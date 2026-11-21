@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from typing import Any
@@ -28,6 +29,8 @@ from nekoclaw.host.permissions import (
     DENIED_BY_SETTINGS,
     DENIED_BY_USER,
     DENIED_NO_ANSWER,
+    GrantBinding,
+    GrantScope,
     PermissionGate,
     PermissionStore,
 )
@@ -319,6 +322,307 @@ def store(tmp_path: Any) -> PermissionStore:
     return PermissionStore(tmp_path / "nekoclaw" / "permissions.json")
 
 
+async def test_scoped_loan_is_shared_by_the_root_but_bound_to_each_actual_delivery(store):
+    parents = {"first": "root", "second": "root"}
+
+    async def parent_of(actor):
+        return parents.get(actor)
+
+    waiting, answer = asyncio.Event(), asyncio.Event()
+    asked = []
+
+    async def ask(actor, question):
+        asked.append((actor, question))
+        waiting.set()
+        await answer.wait()
+        return "session"
+
+    gate = PermissionGate(store, ask, parent_of)
+    scope = GrantScope("daily", "work-summary", "owner")
+
+    async def deliver(actor, selected=scope):
+        return await gate.check(actor, "managed_delivery", scope=selected, hold_once=True)
+
+    async with asyncio.timeout(5), asyncio.TaskGroup() as group:
+        first = group.create_task(deliver("first"))
+        question = group.create_task(waiting.wait())
+        done, _ = await asyncio.wait((first, question), return_when=asyncio.FIRST_COMPLETED)
+        if first in done:
+            pytest.fail(f"first request ended before asking: {first.result()!r}")
+        second = group.create_task(deliver("second"))
+        await asyncio.sleep(0)
+        answer.set()
+    a, b = first.result(), second.result()
+    assert a.allow and b.allow and len(asked) == 1
+    assert asked[0][1].options == ("session", "once", "deny")
+    assert a.grant_id != b.grant_id
+    shared = gate.authorization_ref(a.grant_id)
+    assert shared == gate.authorization_ref(b.grant_id)
+    gate.end_session("first")
+    assert not gate.grant_active(a.grant_id) and gate.grant_active(b.grant_id)
+    c = await deliver("root")
+    assert gate.authorization_ref(c.grant_id) == shared and len(asked) == 1
+    gate.release_grant(c.grant_id)
+    assert not gate.grant_active(c.grant_id) and gate.grant_active(shared)
+    assert not await gate.valid_grant("other", b.grant_id, "managed_delivery", scope=scope)
+    assert not await gate.valid_grant("second", b.grant_id, "managed_delivery", scope=GrantScope("daily"))
+    for expanded in [GrantScope("daily", "private-summary", "owner"), GrantScope("daily", "work-summary", "group")]:
+        assert (await deliver("second", expanded)).allow
+    assert (await deliver("new-commission")).allow
+    assert len(asked) == 4
+    gate.revoke_grant(shared)
+    assert not gate.grant_active(b.grant_id)
+    assert (await deliver("second")).allow and len(asked) == 5
+
+
+async def test_external_message_starts_a_fresh_approval_branch_without_resetting_siblings(store):
+    parents = {"child": "root", "grandchild": "child", "other": "root"}
+
+    async def parent_of(cid):
+        return parents.get(cid)
+
+    asker = Asker("session")
+    gate = PermissionGate(store, asker, parent_of)
+    scope = GrantScope("builtin", "browser")
+
+    async def borrow(cid):
+        return await gate.check(cid, "browser", scope=scope, hold_once=True)
+
+    first = await borrow("child")
+    original = gate.authorization_ref(first.grant_id)
+    descendant = await borrow("grandchild")
+    assert gate.authorization_ref(descendant.grant_id) == original
+    gate.received_external_input("child")
+    assert not gate.grant_active(first.grant_id) and not gate.grant_active(descendant.grant_id)
+    assert not await gate.valid_grant("child", original, "browser", scope=scope)
+    assert gate.authorization_ref((await borrow("other")).grant_id) == original
+    assert len(asker.asked) == 1
+    fresh = await borrow("child")
+    assert fresh.asked and gate.authorization_ref(fresh.grant_id) != original
+    assert gate.authorization_ref((await borrow("grandchild")).grant_id) == gate.authorization_ref(fresh.grant_id)
+    assert len(asker.asked) == 2
+    gate.end_session("root")
+    assert not gate.grant_active(original) and not gate.grant_active(fresh.grant_id)
+
+
+async def test_widening_a_rule_keeps_parallel_answers_and_queued_approvals(store):
+    pending = asyncio.Event()
+    answer = asyncio.Event()
+
+    async def ask(actor, _question):
+        if actor == "queued":
+            return "once"
+        if actor == "second":
+            pending.set()
+            await answer.wait()
+            return "once"
+        return "always"
+
+    gate = PermissionGate(store, ask)
+    queued = await gate.check("queued", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+    async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
+        second = tasks.create_task(gate.check("second", "browser", scope=GrantScope("browser", "second"), hold_once=True))
+        await pending.wait()
+        first = await gate.check("first", "browser", scope=GrantScope("browser", "first"), hold_once=True)
+        answer.set()
+    assert first.allow and second.result().allow and second.result().asked
+    assert gate.grant_active(queued.grant_id) and gate.grant_active(second.result().grant_id)
+    await store.set_mode("browser", "allow")
+    assert gate.grant_active(queued.grant_id)
+    await store.set_mode("browser", "first_ask")
+    await store.set_mode("browser", "allow")
+    assert not gate.grant_active(queued.grant_id)
+
+
+@pytest.mark.parametrize("mode", ["allow", "first_ask"])
+async def test_dsh_native_request_must_outlive_its_first_settings_read(store, monkeypatch, mode):
+    await store.set_mode("run_command", mode)
+    ask = Asker("once")
+    gate = PermissionGate(store, ask)
+    read = store.mode
+
+    async def end_during_read(category, key=None):
+        current = await read(category, key)
+        gate.end_run("commission")
+        return current
+
+    monkeypatch.setattr(store, "mode", end_during_read)
+    decision = await gate.check_native("commission", "run_command", detail={"tool": "native"})
+    assert not decision.allow and not ask.asked
+
+
+async def test_retired_binding_during_mode_read_denies_the_scoped_fast_path(store, monkeypatch):
+    await store.set_mode("browser", "allow")
+    gate = PermissionGate(store)
+    binding = GrantBinding()
+    scope = GrantScope("builtin", "browser", bindings=(binding,))
+    mode = store.mode
+
+    async def retire(category, key=None):
+        value = await mode(category, key)
+        binding.active = False
+        return value
+
+    monkeypatch.setattr(store, "mode", retire)
+    assert not (await gate.check("c", "browser", scope=scope)).allow
+
+
+@pytest.mark.parametrize("failure", ["ended_during_save", "question_unavailable"])
+async def test_live_peer_rechecks_after_the_other_request_cannot_finish(store, monkeypatch, failure):
+    async def parent(cid):
+        return None if cid == "root" else "root"
+
+    asked = []
+    entered, release, joining = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def ask(cid, _question):
+        asked.append(cid)
+        if failure == "question_unavailable" and cid == "first":
+            entered.set()
+            await release.wait()
+            raise RuntimeError("no session to ask")
+        return "always" if failure == "ended_during_save" else "once"
+
+    gate = PermissionGate(store, ask, parent)
+    scope = GrantScope("builtin", "browser")
+    mode = store.mode
+    persist = store.set_mode
+
+    async def write(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await persist(*args, **kwargs)
+
+    peer_reads = 0
+
+    async def read(*args, **kwargs):
+        nonlocal peer_reads
+        result = await mode(*args, **kwargs)
+        if asyncio.current_task() is peer and result == "first_ask":
+            peer_reads += 1
+            if peer_reads == 2:
+                joining.set()
+        return result
+
+    monkeypatch.setattr(store, "set_mode", write)
+    peer = None
+    async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
+        first = tasks.create_task(gate.check("first", "browser", scope=scope, hold_once=True))
+        await entered.wait()
+        monkeypatch.setattr(store, "mode", read)
+        peer = tasks.create_task(gate.check("second", "browser", scope=scope, hold_once=True))
+        # The second caller reads the policy again after resolving its ancestry,
+        # then joins the in-flight approval without a further asynchronous step.
+        await joining.wait()
+        if failure == "ended_during_save":
+            gate.end_run("first")
+        release.set()
+    assert not first.result().allow
+    assert peer.result().allow and gate.grant_active(peer.result().grant_id)
+    assert asked == (["first"] if failure == "ended_during_save" else ["first", "second"])
+
+
+async def test_unrelated_setting_does_not_defeat_scoped_always_approval(store):
+    async def ask(_actor, _question):
+        await store.set_mode("run_command", "deny")
+        return "always"
+
+    gate = PermissionGate(store, ask)
+    result = await gate.check("c", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+    assert result.allow and result.asked and gate.grant_active(result.grant_id)
+    assert await store.mode("browser") == "allow"
+
+
+@pytest.mark.parametrize("new_mode, expected", [("always_ask", True), ("deny", False)])
+async def test_a_tightening_during_confirmation_never_persists_the_wider_answer(store, new_mode, expected):
+    async def ask(_actor, _question):
+        await store.set_mode("browser", new_mode)
+        return "always"
+
+    gate = PermissionGate(store, ask)
+    reply = await gate.check("c", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+    assert reply.allow is expected and await store.mode("browser") == new_mode
+    assert not gate.session_grants("c") and not gate.run_grants("c")
+    if expected:
+        assert gate.grant_active(reply.grant_id)
+        gate.release_grant(reply.grant_id)
+        assert not gate.grant_active(reply.grant_id)
+    else:
+        assert reply.reason == DENIED_BY_SETTINGS
+
+
+async def test_mcp_default_tightens_only_servers_that_inherit_it(store):
+    gate = PermissionGate(store, Asker("once"))
+    await store.set_mode("mcp_server", "allow", "named")
+    explicit = await gate.check("a", "mcp_server", key="named", scope=GrantScope("named"), hold_once=True)
+    inherited = await gate.check("a", "mcp_server", key="other", scope=GrantScope("other"), hold_once=True)
+    await store.set_mode("mcp_server", "deny")
+    assert gate.grant_active(explicit.grant_id) and not gate.grant_active(inherited.grant_id)
+    await store.set_mode("mcp_server", "allow", "other")
+    assert not gate.grant_active(inherited.grant_id)
+
+
+async def test_expanded_settings_do_not_silently_approve_every_data_recipient(store):
+    await store.set_mode("managed_delivery", "allow")
+    gate = PermissionGate(store, Asker("once"))
+    scope = GrantScope("daily", "work-summary", "owner")
+    assert not (await gate.check("commission", "managed_delivery")).allow
+    checked = await gate.check("commission", "managed_delivery", scope=scope)
+    assert checked.asked and checked.allow and gate.grant_active(checked.grant_id)
+    await store.set_mode("browser", "deny")
+    assert gate.grant_active(checked.grant_id)
+    await store.set_mode("managed_delivery", "deny")
+    await store.set_mode("managed_delivery", "first_ask")
+    assert not gate.grant_active(checked.grant_id)
+
+
+@pytest.mark.parametrize("ends", ["root", "child"])
+async def test_late_scoped_confirmation_does_not_authorize_a_cancelled_operation(store, ends):
+    gate = PermissionGate(store)
+
+    async def parent_of(actor):
+        return "root" if actor == "child" else None
+
+    async def ask(actor, question):
+        gate.end_session(ends)
+        return "session"
+
+    gate.set_parent_lookup(parent_of)
+    gate.set_asker(ask)
+    result = await gate.check("child", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+    assert not result.allow and not result.grant_id
+
+
+@pytest.mark.parametrize("transition,actor,allowed", [
+    ("end_run", "child", False), ("end_session", "child", False),
+    ("end_session", "root", False), ("end_session", "unrelated", True),
+])
+async def test_scoped_lookup_is_bound_to_the_run_that_requested_it(store, transition, actor, allowed):
+    gate = PermissionGate(store)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def parent_of(cid):
+        entered.set()
+        await release.wait()
+        return "root" if cid == "child" else None
+
+    ask = Asker("once")
+    gate.set_asker(ask)
+    gate.set_parent_lookup(parent_of)
+
+    async def check():
+        return await gate.check("child", "browser", scope=GrantScope("builtin", "browser"), hold_once=True)
+
+    pending = asyncio.create_task(check())
+    await entered.wait()
+    getattr(gate, transition)(actor)
+    release.set()
+    result = await pending
+    assert result.allow is allowed and bool(result.grant_id) is allowed
+    assert len(ask.asked) == int(allowed)
+    assert (await check()).allow  # the next genuine request belongs to the current run
+
+
 async def test_defaults_of_the_design(store):
     assert DEFAULT_MODES == {
         "workdir_files": "allow",
@@ -329,6 +633,7 @@ async def test_defaults_of_the_design(store):
         "keyboard_mouse": "first_ask",
         "browser": "first_ask",
         "plugin_entry": "allow",
+        "managed_delivery": "first_ask",
         "mcp_server": "first_ask",
     }
     for category, mode in DEFAULT_MODES.items():

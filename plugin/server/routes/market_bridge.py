@@ -23,16 +23,18 @@ import time
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable, Literal, TYPE_CHECKING, get_args
+from typing import Annotated, Any, Iterable, Literal, TYPE_CHECKING, get_args
 from urllib.parse import quote, urlparse, urlencode
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 if TYPE_CHECKING:
     import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import Path as PathParam
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.deployment import has_forwarding_metadata
+from utils.social_base import social_base_url, validate_http_url
 
 from plugin.server.application.plugins.capability_analysis_service import (
     notify_install_committed,
@@ -661,7 +663,9 @@ _CATALOG_RESPONSE_HEADERS = frozenset(
 )
 
 
-async def _proxy_market_catalog(request: Request, upstream_path: str) -> Response:
+async def _proxy_market_catalog(
+    request: Request, upstream_path: str, *, query: tuple[str, ...] | None = None,
+) -> Response:
     """Proxy a fixed public catalog path through the local same-origin API."""
 
     base_url = _normalized_base_url(MARKET_API_URL)
@@ -676,8 +680,11 @@ async def _proxy_market_catalog(request: Request, upstream_path: str) -> Respons
 
     httpx = await ensure_httpx()
     upstream_url = f"{base_url}/api/v1{upstream_path}"
-    if request.url.query:
-        upstream_url = f"{upstream_url}?{request.url.query}"
+    query_string = request.url.query if query is None else urlencode([
+        (name, value) for name, value in request.query_params.multi_items() if name in query
+    ])
+    if query_string:
+        upstream_url = f"{upstream_url}?{query_string}"
 
     started_at = time.monotonic()
     try:
@@ -893,7 +900,33 @@ async def _email_unverified_response(access_token: str) -> JSONResponse | None:
     )
 
 
-async def _proxy_market_submission(
+_FEEDBACK_SESSION_HEADER = "X-Market-Feedback-Session"
+# Set on a successful write whose login switched mid-flight: posted, but not by the current account.
+_FEEDBACK_SESSION_CHANGED_HEADER = "X-Market-Feedback-Session-Changed"
+
+
+def _feedback_session(token: dict[str, Any] | None) -> str:
+    if not token or not token.get("access_token") or not _oauth_subject_is_verified(token):
+        return ""
+    # Older saved logins may predate session_id. Their creation time survives
+    # refresh; without either, fall back to the subject alone. Never key on the
+    # access token: a routine refresh rotates it and would read as an account switch.
+    login = token.get("session_id") or token.get("created_at") or ""
+    identity = json.dumps([login, token["subject"]], separators=(",", ":"))
+    return hmac.new(_BRIDGE_TOKEN.encode(), identity.encode(), "sha256").hexdigest()
+
+
+def _current_feedback_session() -> str:
+    return _feedback_session(_read_json_file(_OAUTH_TOKEN_FILE))
+
+
+def _check_feedback_session(session: str, expected: str | None = None) -> None:
+    current = _current_feedback_session()
+    if not session or session != current or (expected is not None and expected != session):
+        raise HTTPException(status_code=409, detail={"code": "market_feedback_session_changed"})
+
+
+async def _proxy_market_authenticated(
     request: Request,
     *,
     method: str,
@@ -902,8 +935,9 @@ async def _proxy_market_submission(
     forward_body: bool = False,
     requires_verified_email: bool = False,
     api_path: str = "/api/v1/review/submissions",
+    surface: Literal["submission", "feedback"] = "submission",
 ) -> Response:
-    """Proxy one authenticated review-submission call to the Market.
+    """Proxy a fixed, authenticated route using the server-held Market token.
 
     The request carries the server-held access token; the browser only ever
     sends the bridge token, verified here. Only the ``query`` parameters named
@@ -915,8 +949,11 @@ async def _proxy_market_submission(
     unchanged (status + body) so the UI can localize by its ``code`` and show
     its ``detail``.
     """
+    feedback = surface == "feedback"
+    label = "Market feedback" if feedback else "Market submissions"
+    verb = "is" if feedback else "are"
     _verify_token(
-        request.query_params.get("token"),
+        None if feedback else request.query_params.get("token"),
         authorization=request.headers.get("authorization"),
     )
     _require_local_bridge_token_access(request)
@@ -925,8 +962,8 @@ async def _proxy_market_submission(
         return JSONResponse(
             status_code=503,
             content={
-                "detail": "Market submissions are not configured",
-                "code": "market_submission_not_configured",
+                "detail": f"{label} {verb} not configured",
+                "code": f"market_{surface}_not_configured",
             },
         )
 
@@ -940,6 +977,9 @@ async def _proxy_market_submission(
 
     httpx = await ensure_httpx()
     rejected_token: str | None = None
+    feedback_session = request.headers.get(_FEEDBACK_SESSION_HEADER)
+    if feedback and method != "GET" and not feedback_session:
+        raise HTTPException(status_code=409, detail={"code": "market_feedback_session_changed"})
     started_at = time.monotonic()
     for attempt in range(2):
         token_data = await _authenticated_market_token()
@@ -947,6 +987,10 @@ async def _proxy_market_submission(
             token_data = await _ensure_valid_oauth_token(force_refresh=True, rejected_access_token=rejected_token)
             if not token_data or not token_data.get("access_token"):
                 break
+        if feedback:
+            active_session = _feedback_session(token_data)
+            _check_feedback_session(active_session, feedback_session)
+            feedback_session = active_session
         access_token = token_data["access_token"]
         headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
         language = request.headers.get("accept-language")
@@ -965,9 +1009,10 @@ async def _proxy_market_submission(
         except httpx.HTTPError as exc:
             elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
             logger.warning(
-                "[market-submission] request failed "
+                "[market-{}] request failed "
                 "category={} status=unavailable request_id=unavailable "
                 "elapsed_ms={} origin={}",
+                surface,
                 _market_auth_network_failure_category(exc),
                 elapsed_ms,
                 _market_api_log_origin(),
@@ -975,19 +1020,39 @@ async def _proxy_market_submission(
             return JSONResponse(
                 status_code=502,
                 content={
-                    "detail": "Market submissions are temporarily unavailable",
-                    "code": "market_submission_unavailable",
+                    "detail": f"{label} {verb} temporarily unavailable",
+                    "code": f"market_{surface}_unavailable",
                 },
             )
 
+        sent_after_session_change = False
+        if feedback and feedback_session and _current_feedback_session() != feedback_session:
+            # The login switched while the request was in flight. A read, or a
+            # write the Market refused (below 500), is stale for the new account.
+            # A write the Market already applied must not be reported as failed,
+            # or the UI would invite the user to post it again under the new
+            # account. A 5xx may or may not have been applied: pass it through so
+            # the UI treats it as uncertain rather than as a definite refusal.
+            if method == "GET" or (not upstream.is_success and upstream.status_code < 500):
+                raise HTTPException(status_code=409, detail={"code": "market_feedback_session_changed"})
+            sent_after_session_change = upstream.is_success
+            logger.info(
+                "[market-{}] write {} after session change status={} request_id={} origin={}",
+                surface,
+                "applied" if sent_after_session_change else "uncertain",
+                upstream.status_code,
+                _safe_market_request_id(upstream.headers.get("x-request-id")),
+                _market_api_log_origin(),
+            )
         if upstream.status_code == 401:
             # A rejected credential never passes its upstream body through: the
             # first time, refresh once and retry; a second rejection means the
             # saved login is no longer usable and must be re-done.
             logger.info(
-                "[market-submission] request rejected "
+                "[market-{}] request rejected "
                 "category=credential_rejected status=401 request_id={} "
                 "elapsed_ms={} origin={}",
+                surface,
                 _safe_market_request_id(upstream.headers.get("x-request-id")),
                 max(0, round((time.monotonic() - started_at) * 1000)),
                 _market_api_log_origin(),
@@ -999,8 +1064,9 @@ async def _proxy_market_submission(
 
         if 300 <= upstream.status_code < 400:
             logger.warning(
-                "[market-submission] request failed "
+                "[market-{}] request failed "
                 "category=redirect_rejected status={} request_id={} origin={}",
+                surface,
                 upstream.status_code,
                 _safe_market_request_id(upstream.headers.get("x-request-id")),
                 _market_api_log_origin(),
@@ -1008,8 +1074,8 @@ async def _proxy_market_submission(
             return JSONResponse(
                 status_code=502,
                 content={
-                    "detail": "Market submissions returned an unsafe redirect",
-                    "code": "market_submission_redirect_rejected",
+                    "detail": f"{label} returned an unsafe redirect",
+                    "code": f"market_{surface}_redirect_rejected",
                 },
             )
 
@@ -1017,8 +1083,9 @@ async def _proxy_market_submission(
             unverified = await _email_unverified_response(access_token)
             if unverified is not None:
                 logger.info(
-                    "[market-submission] request rejected "
+                    "[market-{}] request rejected "
                     "category=email_unverified status=403 request_id={} origin={}",
+                    surface,
                     _safe_market_request_id(upstream.headers.get("x-request-id")),
                     _market_api_log_origin(),
                 )
@@ -1027,8 +1094,9 @@ async def _proxy_market_submission(
         if upstream.status_code >= 400:
             elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
             logger.warning(
-                "[market-submission] request failed "
+                "[market-{}] request failed "
                 "category={} status={} request_id={} elapsed_ms={} origin={}",
+                surface,
                 _market_auth_http_failure_category(upstream.status_code),
                 upstream.status_code,
                 _safe_market_request_id(upstream.headers.get("x-request-id")),
@@ -1041,6 +1109,14 @@ async def _proxy_market_submission(
             for name, value in upstream.headers.items()
             if name.lower() in _SUBMISSION_RESPONSE_HEADERS
         }
+        if feedback:
+            response_headers["cache-control"] = "no-store"
+            if sent_after_session_change:
+                # The old session is gone; do not hand it back as current.
+                response_headers[_FEEDBACK_SESSION_CHANGED_HEADER] = "1"
+            elif upstream.is_success and feedback_session:
+                response_headers[_FEEDBACK_SESSION_HEADER] = feedback_session
+                response_headers["X-Market-Web-Url"] = MARKET_WEB_URL
         return Response(
             content=upstream.content,
             status_code=upstream.status_code,
@@ -1057,9 +1133,159 @@ async def _proxy_market_submission(
     )
 
 
+@router.get("/feedback")
+async def market_feedback_list(request: Request) -> Response:
+    return await _proxy_market_authenticated(
+        request, method="GET", api_path="/api/v1/me/plugin-feedback", upstream_path="",
+        query=("kind", "status", "plugin_id", "cursor", "limit"), surface="feedback",
+    )
+
+
+@router.post("/feedback/mark-read")
+async def market_feedback_mark_read(request: Request) -> Response:
+    return await _proxy_market_authenticated(
+        request, method="POST", api_path="/api/v1/me/plugin-feedback", upstream_path="/mark-read",
+        forward_body=True, surface="feedback",
+    )
+
+
+_MarketThreadId = Annotated[int, PathParam(ge=1, le=2**31 - 1)]
+
+
+async def _proxy_market_conversation(
+    request: Request,
+    path: str,
+    *,
+    query: tuple[str, ...] = (),
+    message: bool = False,
+) -> Response:
+    if request.method == "GET" and not request.headers.get("authorization"):
+        return await _proxy_market_catalog(request, path, query=query)
+    try:
+        return await _proxy_market_authenticated(
+            request,
+            method=request.method,
+            api_path="/api/v1",
+            upstream_path=path,
+            query=query,
+            forward_body=message,
+            requires_verified_email=request.method == "POST",
+            surface="feedback",
+        )
+    except HTTPException as exc:
+        if (
+            request.method == "GET"
+            and not request.headers.get(_FEEDBACK_SESSION_HEADER)
+            and isinstance(exc.detail, dict)
+            and exc.detail.get("code") in {"market_auth_required", "market_auth_pending"}
+        ):
+            return await _proxy_market_catalog(request, path, query=query)
+        raise
+
+
+@router.get("/conversations/plugins/{plugin_id}/comments")
+async def market_conversation_comments(request: Request, plugin_id: _MarketThreadId) -> Response:
+    return await _proxy_market_conversation(
+        request, f"/plugins/{plugin_id}/comments", query=("after_id", "limit"),
+    )
+
+
+@router.post("/conversations/plugins/{plugin_id}/comments/messages")
+async def market_conversation_comment(request: Request, plugin_id: _MarketThreadId) -> Response:
+    return await _proxy_market_conversation(request, f"/plugins/{plugin_id}/comments/messages", message=True)
+
+
+@router.get("/conversations/plugins/{plugin_id}/issues")
+async def market_conversation_issues(request: Request, plugin_id: _MarketThreadId) -> Response:
+    return await _proxy_market_conversation(
+        request, f"/plugins/{plugin_id}/issues", query=("before_id", "state", "limit"),
+    )
+
+
+@router.get("/conversations/plugins/{plugin_id}/issues/{issue_id}")
+async def market_conversation_issue(
+    request: Request, plugin_id: _MarketThreadId, issue_id: _MarketThreadId,
+) -> Response:
+    return await _proxy_market_conversation(request, f"/plugins/{plugin_id}/issues/{issue_id}")
+
+
+@router.get("/conversations/plugins/{plugin_id}/issues/{issue_id}/messages")
+async def market_conversation_issue_messages(
+    request: Request, plugin_id: _MarketThreadId, issue_id: _MarketThreadId,
+) -> Response:
+    return await _proxy_market_conversation(
+        request, f"/plugins/{plugin_id}/issues/{issue_id}/messages", query=("after_id", "limit"),
+    )
+
+
+@router.post("/conversations/plugins/{plugin_id}/issues/{issue_id}/{action}")
+async def market_conversation_issue_action(
+    request: Request,
+    plugin_id: _MarketThreadId,
+    issue_id: _MarketThreadId,
+    action: Literal["messages", "close", "reopen"],
+) -> Response:
+    return await _proxy_market_conversation(
+        request, f"/plugins/{plugin_id}/issues/{issue_id}/{action}", message=action == "messages",
+    )
+
+
+# At most 100 public profiles per query; this is far above their real size.
+_AVATAR_QUERY_MAX_BYTES = 512 * 1024
+_AVATAR_URL_MAX_LENGTH = 2048
+
+
+class MarketFeedbackAvatarQuery(BaseModel):
+    user_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+@router.post("/feedback/avatars")
+async def market_feedback_avatars(request: Request, payload: MarketFeedbackAvatarQuery) -> JSONResponse:
+    _verify_token(authorization=request.headers.get("authorization"))
+    _require_local_bridge_token_access(request)
+    user_ids = list(dict.fromkeys(map(str, payload.user_ids)))
+    httpx = await ensure_httpx()
+    try:
+        base = validate_http_url(social_base_url(), name="NEKO_SOCIAL_BASE_URL")
+        async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
+            async with client.stream(
+                "POST", f"{base}/api/v1/public-profiles/query", json={"user_ids": user_ids}
+            ) as upstream:
+                upstream.raise_for_status()
+                declared = upstream.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > _AVATAR_QUERY_MAX_BYTES:
+                    raise ValueError("avatar query response too large")
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in upstream.aiter_bytes(64 * 1024):
+                    size += len(chunk)
+                    if size > _AVATAR_QUERY_MAX_BYTES:
+                        raise ValueError("avatar query response too large")
+                    chunks.append(chunk)
+        body = json.loads(b"".join(chunks))
+    except (httpx.HTTPError, ValueError, RecursionError):
+        return JSONResponse({}, status_code=502)
+    profiles = body.get("profiles") if isinstance(body, dict) else None
+    avatars = {}
+    if isinstance(profiles, dict):
+        for user_id in user_ids:
+            profile = profiles.get(user_id)
+            avatar = profile.get("avatar") if isinstance(profile, dict) else None
+            if not isinstance(avatar, dict) or avatar.get("kind") != "image":
+                continue
+            url = avatar.get("url")
+            if (
+                isinstance(url, str)
+                and url.startswith("https://")
+                and len(url) <= _AVATAR_URL_MAX_LENGTH
+            ):
+                avatars[user_id] = url
+    return JSONResponse(avatars, headers={"Cache-Control": "no-store"})
+
+
 @router.get("/submissions/mine")
 async def market_submission_mine(request: Request) -> Response:
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request, method="GET", upstream_path="/mine", query=_SUBMISSION_MINE_QUERY_PARAMS
     )
 
@@ -1068,17 +1294,17 @@ async def market_submission_mine(request: Request) -> Response:
 async def market_publication_requests(request: Request, plugin_id: int) -> Response:
     if plugin_id < 1 or plugin_id >= 2**31:
         raise HTTPException(422, "Invalid Market plugin ID")
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request, method="GET", api_path="/api/v1/plugins",
         upstream_path=f"/{plugin_id}/versions/publication-requests",
-        query=("request_id",), requires_verified_email=True,
+        query=("request_id", "limit", "offset"), requires_verified_email=True,
     )
 
 
 @router.post("/submissions/preflight")
 async def market_submission_preflight(request: Request) -> Response:
     # The Market takes an untyped dict here, so the body is forwarded as sent.
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="POST",
         upstream_path="/preflight",
@@ -1089,7 +1315,7 @@ async def market_submission_preflight(request: Request) -> Response:
 
 @router.post("/submissions/repository-preview")
 async def market_submission_repository_preview(request: Request) -> Response:
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="POST",
         upstream_path="/repository-preview",
@@ -1100,7 +1326,7 @@ async def market_submission_repository_preview(request: Request) -> Response:
 
 @router.post("/submissions/drafts")
 async def market_submission_create_draft(request: Request) -> Response:
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="POST",
         upstream_path="/drafts",
@@ -1111,7 +1337,7 @@ async def market_submission_create_draft(request: Request) -> Response:
 
 @router.put("/submissions/{submission_id}/draft")
 async def market_submission_update_draft(request: Request, submission_id: str) -> Response:
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="PUT",
         upstream_path=f"/{_validated_submission_id(submission_id)}/draft",
@@ -1122,7 +1348,7 @@ async def market_submission_update_draft(request: Request, submission_id: str) -
 
 @router.post("/submissions/{submission_id}/submit")
 async def market_submission_submit(request: Request, submission_id: str) -> Response:
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="POST",
         upstream_path=f"/{_validated_submission_id(submission_id)}/submit",
@@ -1133,7 +1359,7 @@ async def market_submission_submit(request: Request, submission_id: str) -> Resp
 
 @router.post("/submissions/{submission_id}/revision")
 async def market_submission_create_revision(request: Request, submission_id: str) -> Response:
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="POST",
         upstream_path=f"/{_validated_submission_id(submission_id)}/revision",
@@ -1145,7 +1371,7 @@ async def market_submission_create_revision(request: Request, submission_id: str
 @router.get("/submissions/{submission_id}/workspace")
 async def market_submission_workspace(request: Request, submission_id: str) -> Response:
     # A login-only Market route; no query parameter is forwarded.
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="GET",
         upstream_path=f"/{_validated_submission_id(submission_id)}/workspace",
@@ -1155,7 +1381,7 @@ async def market_submission_workspace(request: Request, submission_id: str) -> R
 @router.post("/submissions/{submission_id}/withdraw")
 async def market_submission_withdraw(request: Request, submission_id: str) -> Response:
     # The Market withdraw route needs only a login, not a verified email.
-    return await _proxy_market_submission(
+    return await _proxy_market_authenticated(
         request,
         method="POST",
         upstream_path=f"/{_validated_submission_id(submission_id)}/withdraw",

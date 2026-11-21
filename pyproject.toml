@@ -79,7 +79,7 @@ dependencies = [
   "httpx[socks]>=0.28.1",
   "psutil>=7.0.0",
   "portalocker>=2.10.1",
-  "filelock>=3.16",
+  "filelock>=4.2.1",
   "pyncm-async==1.8.1",
   # Never imported by name, but required at runtime: pyzmq's zmq.asyncio (used by
   # plugin/core/zmq_transport.py, plugin/core/message_plane_transport.py and
