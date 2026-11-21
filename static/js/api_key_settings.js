@@ -435,13 +435,19 @@ function applyLoadedBailianWorkspaceIds(data) {
     updateBailianWorkspaceControls();
 }
 
-/** 保存用：两份业务空间 ID 都提交；有非法值时返回 null 让保存中止。 */
+/**
+ * 保存用：提交合法的业务空间 ID。当前显示的那份非法时返回 null 让保存中止；
+ * 切走后看不到的那份非法值不提交（服务端保留原值），免得用户看不到原因却存不了。
+ */
 function bailianWorkspacePayload() {
     const payload = {};
     for (const field of Object.values(BAILIAN_WORKSPACE_ID_FIELDS)) {
         const { value, valid } = normalizeBailianWorkspaceId(_bailianWorkspaceIds[field]);
-        if (!valid) return null;
-        payload[field] = value;
+        if (valid) {
+            payload[field] = value;
+        } else if (field === _bailianWorkspaceActiveField) {
+            return null;
+        }
     }
     return payload;
 }
@@ -3689,6 +3695,11 @@ async function save_button_down(e) {
     const workspacePayload = bailianWorkspacePayload();
     if (!workspacePayload) {
         updateBailianWorkspaceControls();
+        const workspaceInput = document.getElementById('bailianWorkspaceIdInput');
+        if (workspaceInput) {
+            workspaceInput.scrollIntoView({ block: 'center' });
+            workspaceInput.focus();
+        }
         showStatus(window.t ? window.t('api.bailianWorkspaceIdInvalid') : '百炼业务空间 ID 格式不对：只能包含字母、数字和 -，最长 63 个字符', 'error');
         return;
     }
@@ -5291,6 +5302,9 @@ const ConnectivityManager = {
                     }
                     if (provider_scope === 'decision' && BAILIAN_WORKSPACE_ID_FIELDS[provider_key]) {
                         body.workspace_id = getBailianWorkspaceIdForProvider(provider_key);
+                        // 带上 Key 实际解析到的聊天端点（如国际版落在美国地域），
+                        // 后端按运行时同一规则判断能否走业务空间专属域名。
+                        if (url) body.url = url;
                     }
                     if ((provider_scope === 'assist' || provider_scope === 'decision') && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
                         body.url = overrideUrl;

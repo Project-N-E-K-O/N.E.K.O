@@ -1686,3 +1686,136 @@ def test_core_api_save_validates_workspace_ids(clean_user_data_dir, _core_config
     assert got["success"] is True
     assert got["assistWorkspaceIdQwen"] == ""
     assert got["assistWorkspaceIdQwenIntl"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_concurrent_success_does_not_clear_cooldown_set_by_failed_sibling():
+    """Recall batches share one cooldown key: a later success must not wipe a sibling's failure."""
+    import asyncio
+
+    from utils.decision_client.schema import DecisionAnswer, DecisionResponse
+
+    cfg = {
+        "model": "decision-model-preview",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "sk-test",
+        "decision_protocol": "systemone",
+        "decision_url": "https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+    }
+    release_slow = asyncio.Event()
+    ok_resp = DecisionResponse(
+        answers={"slow": DecisionAnswer(question_type="bool", value=True, probability=0.9)},
+        model="decision-model-preview",
+        protocol="systemone",
+    )
+
+    async def _execute(*, questions, **kwargs):
+        if "slow" in questions:
+            await release_slow.wait()
+            return ok_resp
+        try:
+            raise DecisionProtocolError("HTTP 500", status_code=500, protocol="systemone")
+        finally:
+            release_slow.set()
+
+    execute = AsyncMock(side_effect=_execute)
+    client = DecisionClient()
+    with patch.object(SystemOneAdapter, "execute", execute):
+        slow = asyncio.create_task(client.decide(
+            state="s", questions={"slow": BoolQuestion(instructions="?")}, config=cfg, allow_fallback=False,
+        ))
+        await asyncio.sleep(0)
+        with pytest.raises(DecisionProtocolError):
+            await client.decide(
+                state="s", questions={"fast": BoolQuestion(instructions="?")}, config=cfg, allow_fallback=False,
+            )
+        assert (await slow).answers["slow"].value is True
+        assert execute.await_count == 2
+
+        # The failure's cooldown survived the sibling's later success.
+        with pytest.raises(DecisionProtocolError, match="cooldown"):
+            await client.decide(
+                state="s", questions={"next": BoolQuestion(instructions="?")}, config=cfg, allow_fallback=False,
+            )
+        assert execute.await_count == 2
+
+        # A request that starts after the failure (a manual probe bypassing the
+        # cooldown) and succeeds does clear it.
+        release_slow.set()
+        await client.decide(
+            state="s", questions={"slow": BoolQuestion(instructions="?")}, config=cfg,
+            allow_fallback=False, respect_cooldown=False,
+        )
+        await client.decide(
+            state="s", questions={"slow": BoolQuestion(instructions="?")}, config=cfg, allow_fallback=False,
+        )
+        assert execute.await_count == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_connectivity_decision_probe_follows_resolved_region():
+    from main_routers.config_router.connectivity import ConnectivityTestRequest, test_connectivity
+
+    def _patches():
+        return (
+            patch(
+                "main_routers.config_router.connectivity._test_openai_compatible",
+                AsyncMock(return_value={"success": True}),
+            ),
+            patch(
+                "main_routers.config_router.connectivity._test_decision_endpoint",
+                AsyncMock(return_value={"success": True}),
+            ),
+        )
+
+    us = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+    sg = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+
+    # Key resolved to the US host: runtime decides with chat there, so probe that.
+    p_oai, p_dec = _patches()
+    with p_oai as mock_oai, p_dec as mock_dec:
+        res = await test_connectivity(ConnectivityTestRequest(
+            provider_key="qwen_intl", provider_scope="decision", api_key="sk-us",
+            workspace_id="llm-sg", url=us,
+        ))
+    assert res["success"] is True
+    assert res["decision_fallback"] == "region_unsupported"
+    assert mock_dec.await_count == 0
+    assert mock_oai.await_args.args[0] == us
+    assert mock_oai.await_args.kwargs["model"] == "qwen3.7-flash"
+
+    # Primary (Singapore) host with an ID: the workspace decision host.
+    p_oai, p_dec = _patches()
+    with p_oai as mock_oai, p_dec as mock_dec:
+        res = await test_connectivity(ConnectivityTestRequest(
+            provider_key="qwen_intl", provider_scope="decision", api_key="sk-sg",
+            workspace_id="llm-sg", url=sg,
+        ))
+    assert res["success"] is True and "decision_fallback" not in res
+    assert mock_oai.await_count == 0
+    assert mock_dec.await_args.args[0] == (
+        "https://llm-sg.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone"
+    )
+
+    # A chat-model override with the resolved URL probes chat on that URL.
+    p_oai, p_dec = _patches()
+    with p_oai as mock_oai, p_dec as mock_dec:
+        res = await test_connectivity(ConnectivityTestRequest(
+            provider_key="qwen_intl", provider_scope="decision", api_key="sk-us",
+            model="qwen3.8-flash", url=us,
+        ))
+    assert res["success"] is True
+    assert mock_dec.await_count == 0
+    assert mock_oai.await_args.args[0] == us
+
+    # A URL that is not one of the provider's own endpoints is refused.
+    p_oai, p_dec = _patches()
+    with p_oai as mock_oai, p_dec as mock_dec:
+        res = await test_connectivity(ConnectivityTestRequest(
+            provider_key="qwen_intl", provider_scope="decision", api_key="sk",
+            workspace_id="llm-sg", url="https://evil.example/compatible-mode/v1",
+        ))
+    assert res["success"] is False
+    assert mock_oai.await_count == 0 and mock_dec.await_count == 0
