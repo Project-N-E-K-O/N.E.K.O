@@ -2544,7 +2544,7 @@
         return { dataUrl: null, via: null, captureType: null, declined: true, allowDesktopFallback: false };
     }
 
-    async function captureProactiveChatScreenshotWithSourceInternal() {
+    async function captureProactiveChatScreenshotWithSourceInternal(captureScope) {
         var rememberedWindowCapture = { required: false, allowed: true };
         if (typeof window.prepareRememberedWindowCapture === 'function') {
             rememberedWindowCapture = await window.prepareRememberedWindowCapture();
@@ -2564,6 +2564,9 @@
                 || typeof rememberedWindowCapture.isCurrent !== 'function'
                 || rememberedWindowCapture.isCurrent();
         }
+
+        // 外层在遮罩（异步）完成后还要再确认一次记忆窗口没换（#3474）。
+        if (captureScope) captureScope.rememberedCaptureStillCurrent = rememberedCaptureStillCurrent;
 
         function discardSupersededRememberedFrame(path) {
             if (rememberedCaptureStillCurrent()) return false;
@@ -2730,7 +2733,8 @@
         }
         // 截图前先取一次聊天记录 / 选项区的位置，截完再取一次取并集（#3474）。
         var maskSession = beginSelfUiMaskSession({ sourceId: S.selectedScreenSourceId || null, via: 'stream' });
-        var shot = await captureProactiveChatScreenshotWithSourceInternal();
+        var captureScope = {};
+        var shot = await captureProactiveChatScreenshotWithSourceInternal(captureScope);
         // 遮罩必须在返回（即发送）之前完成：调用方拿到的就是要发的那张图。
         if (shot && shot.dataUrl) {
             var maskedDataUrl = await maskSelfUiInFrame(shot.dataUrl, {
@@ -2742,6 +2746,12 @@
                 shot = { dataUrl: null, via: null, captureType: null, allowDesktopFallback: false };
             } else {
                 shot.dataUrl = maskedDataUrl;
+            }
+            // 遮罩期间记忆窗口换了：这张图属于旧窗口，和内层的同类检查一样明确拒绝。
+            if (typeof captureScope.rememberedCaptureStillCurrent === 'function'
+                && !captureScope.rememberedCaptureStillCurrent()) {
+                console.warn('[主动搭话截图] 遮罩完成时记忆窗口已变化，丢弃旧帧');
+                return declinedProactiveScreenshot();
             }
         }
         // 统一结果闸门：缓存帧、原生捕获、前端流和后端截图的所有异步

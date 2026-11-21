@@ -773,3 +773,68 @@ test('single-shot entries pass the source they actually captured to the shell; b
     assert.equal(backendShot.via, 'backend');
     assert.deepEqual(backendShell.calls[backendShell.calls.length - 1], { version: 1, sourceId: null, surface: 'backend' });
 });
+
+// ---------------------------------------------------------------- review round 1
+
+test('browser: the pre-capture sample keeps the window position it was taken at', async () => {
+    // Whole-screen share; the browser window moves from x=0 to x=500 between
+    // the pre-capture sample and the post-capture sample.
+    const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
+    const { w } = makeWindow({
+        elements: [history],
+        geom: { innerWidth: 1000, innerHeight: 800, outerWidth: 1000, outerHeight: 800, screenX: 0, screenY: 0, screenWidth: 2000, screenHeight: 1000 },
+        imageSizes: { [RAW_FRAME]: [2000, 1000] },
+    });
+    const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    w.screenX = 500;
+    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
+    assert.deepEqual(fillsOf(out), [[92, 92, 116, 116], [592, 92, 116, 116]],
+        'old position (x=92) and new position (x=592) are both covered');
+});
+
+test('single-shot: a remembered window that changes while the frame is being masked is declined', async () => {
+    let current = true;
+    const shell = shellStub(async (_req, n) => {
+        if (n === 2) current = false; // the user switches windows during the post-capture query
+        return { ok: true, rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }] };
+    });
+    const env = bootProactive({ multiWindow: true, shell });
+    env.S.selectedScreenSourceId = 'window:42:0';
+    env.w.prepareRememberedWindowCapture = async () => ({ required: true, allowed: true, isCurrent: () => current });
+    const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
+    assert.equal(shot.dataUrl, null);
+    assert.equal(shot.declined, true);
+
+    // Control: the same window throughout -> the masked frame is returned.
+    current = true;
+    const steadyShell = shellStub(async () => ({ ok: true, rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }] }));
+    const steady = bootProactive({ multiWindow: true, shell: steadyShell });
+    steady.S.selectedScreenSourceId = 'window:42:0';
+    steady.w.prepareRememberedWindowCapture = async () => ({ required: true, allowed: true, isCurrent: () => true });
+    const steadyShot = await steady.w.appProactive.captureProactiveChatScreenshotWithSource();
+    assert.ok(steadyShot.dataUrl && fillsOf(steadyShot.dataUrl).length === 1);
+});
+
+test('screen share: a frame captured on one connection is not sent on a reconnected socket', async () => {
+    let env;
+    const shell = shellStub(async (_req, n) => {
+        if (n === 2) {
+            // Reconnect while the frame is being masked: S.socket is a new open socket.
+            env.S.socket = { readyState: 1, send: (m) => env.lateSent.push(m) };
+        }
+        return { ok: true, rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }] };
+    });
+    env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+    env.lateSent = [];
+    const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
+    const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    env.S.screenCaptureStream = stream;
+    env.w.startScreenVideoStreaming(stream, 'screen');
+    for (let i = 0; i < 10 && env.intervals.length === 0; i++) await new Promise((r) => setImmediate(r));
+    await env.intervals[0]();
+    assert.equal(env.sent.length, 0, 'not sent on the old connection');
+    assert.equal(env.lateSent.length, 0, 'not sent on the new connection');
+    // Next tick captures on the new connection and sends there.
+    await env.intervals[0]();
+    assert.equal(env.lateSent.length, 1);
+});

@@ -304,7 +304,10 @@
         if (isDesktopMultiWindow(win)) {
             return { hint: hint, pending: queryShellMask(win, hint) };
         }
-        return { hint: hint, localRects: collectLocalMaskRects(win.document, win) };
+        // Keep the window geometry of this sample too: if the browser window
+        // moves before the post-capture sample, each sample is mapped with
+        // the position it was taken at.
+        return { hint: hint, localRects: collectLocalMaskRects(win.document, win), geom: readBrowserGeometry(win) };
     }
 
     async function resolveGeometry(session, ctx) {
@@ -322,7 +325,7 @@
         var geom = readBrowserGeometry(win);
         var postLocal = mapViewportRectsToCapture(collectLocalMaskRects(win.document, win), ctx && ctx.captureType, geom);
         var preLocal = session && session.localRects
-            ? mapViewportRectsToCapture(session.localRects, ctx && ctx.captureType, geom)
+            ? mapViewportRectsToCapture(session.localRects, ctx && ctx.captureType, session.geom || geom)
             : null;
         return unionGeometry(preLocal, postLocal);
     }

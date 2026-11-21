@@ -1762,6 +1762,8 @@
                 }
                 if (!isCurrentStream()) return;
                 if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+                // 帧属于抓帧时的那条连接：遮罩等待期间重连换了 S.socket 的话不发（同原生路径）。
+                var captureSocket = S.socket;
                 // 同一帧的源 ID 在抓帧时钉住；截图前后各取一次遮罩区域（#3474）。
                 var frameSourceId = S.selectedScreenSourceId || null;
                 var maskSession = beginScreenFrameMaskSession(input_type, { sourceId: frameSourceId, via: 'stream' });
@@ -1774,8 +1776,8 @@
                     // 遮罩期间可能停止 / 换源 / 断线：旧帧不能落到新会话里。
                     if (!frameMessage || !isCurrentStream()) return;
                     if (!canSendLiveVisionStreamFrame(input_type)) return;
-                    if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
-                    S.socket.send(JSON.stringify(frameMessage));
+                    if (S.socket !== captureSocket || captureSocket.readyState !== WebSocket.OPEN) return;
+                    captureSocket.send(JSON.stringify(frameMessage));
 
                     // 刷新最后使用时间，防止活跃屏幕分享被误释放
                     if (isCurrentStream()) {
