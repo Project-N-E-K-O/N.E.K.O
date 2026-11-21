@@ -87,6 +87,7 @@
       "emotion_model": "qwen3.7-flash",
       "decision_model": "decision-model-preview",
       "decision_protocol": "systemone",
+      "decision_url_template": "https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
       "vision_model": "qwen3.8-omni-flash",
       "agent_model": "qwen3.8-flash"
     },
@@ -105,6 +106,7 @@
       "emotion_model": "qwen3.7-flash",
       "decision_model": "decision-model-preview",
       "decision_protocol": "systemone",
+      "decision_url_template": "https://{workspace_id}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone",
       "vision_model": "qwen3.8-omni-flash",
       "agent_model": "qwen3.8-flash"
     },
