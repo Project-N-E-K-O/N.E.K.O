@@ -189,7 +189,8 @@ def test_picker_rows_are_enabled_with_a_loaded_spine_renderer(group_page: Page) 
     assert state["noteShown"] is False, state
 
 
-def test_create_group_from_current_keeps_the_setup(group_page: Page) -> None:
+@pytest.mark.parametrize('overrides', [True, False])
+def test_create_group_from_current_keeps_the_setup(group_page: Page, overrides) -> None:
     """Create a group with the current frame, scale and rotation as its first entry."""
     # 先把缩放/旋转调开默认值，再看它们有没有被带走
     group_page.evaluate("""() => {
@@ -203,7 +204,15 @@ def test_create_group_from_current_keeps_the_setup(group_page: Page) -> None:
         document.querySelector('#adjust-overwrite').dispatchEvent(new Event('change', { bubbles: true }));
         set('scale', 118);
         set('rotation', -12);
+        set('x', 23);
+        set('y', -9);
     }""")
+    if not overrides:
+        group_page.evaluate("""() => {
+            const control = document.querySelector('#adjust-overwrite');
+            control.checked = false;
+            control.dispatchEvent(new Event('change', {bubbles:true}));
+        }""")
     group_page.evaluate("() => document.querySelector('#new-group-btn').click()")
     group_page.wait_for_function(
         "() => document.querySelectorAll('#group-members .group-member').length === 1",
@@ -221,12 +230,13 @@ def test_create_group_from_current_keeps_the_setup(group_page: Page) -> None:
     stored = json.loads(group_page.evaluate("(k) => localStorage.getItem(k)", SESSION_KEY) or "{}")
     shot = (stored.get("shots") or [{}])[0]
     transform = (shot.get("look") or {}).get("transform") or {}
-    assert abs(float(transform.get("scale") or 0) - 1.18) < 0.01,         f"当前缩放没被带进组: {transform}"
-    assert abs(float(transform.get("rotation") or 0) + 12) < 0.01,         f"当前旋转角度没被带进组: {transform}"
+    expected = {'x':23, 'y':-9, 'rotation':-12, 'scale':1.18} if overrides else {
+        'x':0, 'y':0, 'rotation':0, 'scale':1,
+    }
+    assert {key: transform[key] for key in expected} == expected
     own = next((item for item in (stored.get("groups") or []) if not str(item.get("id") or "").startswith("list:")), {})
     group_transform = ((own.get("look") or {}).get("transform") or {})
-    assert abs(float(group_transform.get("rotation") or 0) + 12) < 0.01, \
-        f"组自己没记下旋转，后加的成员就只能跟着滑杆跑: {own}"
+    assert {key: group_transform[key] for key in expected} == expected
 
     # 再加入当前场景：组里应该多一条"场景"成员。
     # （这条组已有一条取景，不是空组——加号只住在空组提示里，这里走右键菜单加。）

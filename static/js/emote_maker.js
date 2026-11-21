@@ -5586,16 +5586,17 @@
 
 
     function currentLookDefaults() {
+        const adjustments = state.adjustOverwrite ? state.adjustments : null;
         return {
             sceneId: state.selectedSceneId || '',
             skins: (state.templateSkins || []).map((item) => ({ ...item })),
             slots: (state.templateSlots || []).map((item) => ({ ...item })),
             transform: {
-                x: Number(state.adjustments?.x) || 0,
-                y: Number(state.adjustments?.y) || 0,
+                x: Number(adjustments?.x) || 0,
+                y: Number(adjustments?.y) || 0,
                 // 旋转角度也要带走：取景要能还原"我调成什么样"，少一项就少一项
-                rotation: Number(state.adjustments?.rotation) || 0,
-                scale: (Number(state.adjustments?.scale) || 100) / 100,
+                rotation: Number(adjustments?.rotation) || 0,
+                scale: (Number(adjustments?.scale) || 100) / 100,
                 mirror: false,
             },
         };
@@ -7243,8 +7244,8 @@
         try {
             for (let index = 0; index < jobs.length; index += 1) {
                 const job = jobs[index];
-                // 图片状态：没有场景，把用户图片按导出边长画成一帧；
-                // 多图轮播 = 总帧数均摊到每张图，前 total%n 张各多扛一帧
+                // 图片统一按预览时间轴裁切：PNG 每张停留一个预览帧，
+                // GIF 保留源时长，再按输出格式采样。
                 const jobImageIds = (job.imageIds && job.imageIds.length)
                     ? job.imageIds
                     : (job.imageId ? [job.imageId] : []);
@@ -7267,30 +7268,18 @@
                         if (!previewFps) missingImages += 1;
                         continue;
                     }
-                    // 平铺包的说话位只定格第一张：与场景侧的 still 规则同源
+                    // 平铺包的说话位只定格选中片段的第一张：与场景侧的 still 规则同源
                     // （运行时换 src 重载多帧 GIF 的空窗问题），分层不受限。
                     const still = job.stateKey === 'talking_image' && packFormat !== 'layered';
-                    let frames = [];
+                    const timed = decoded.some((frame) => frame.delayMs);
+                    const timeline = trimStageImageTimeline(decoded, job.imageStartAt || 0, job.imageSeconds || 0);
+                    let frames = still ? timeline.slice(0, 1) : timeline;
                     let imageFps = fps;
-                    if (decoded.some((frame) => frame.delayMs)) {
-                        const timeline = trimStageImageTimeline(decoded, job.imageStartAt || 0, job.imageSeconds || 0);
-                        frames = still ? timeline.slice(0, 1) : timeline;
-                        if (!still && (packFormat === 'layered' || frames.length > PACK_MAX_FRAMES)) {
-                            frames = sampleStageImageTimeline(timeline, fps, PACK_MAX_FRAMES);
-                            imageFps = 1000 / frames[0].delayMs;
-                        }
-                        frames = resizeStageImageFrames(frames, edge, resizedImageFrames);
-                    } else if (still) {
-                        frames = decoded.slice(0, 1);
-                    } else {
-                        const total = Math.max(decoded.length, Number(job.frames) || decoded.length);
-                        const base = Math.floor(total / decoded.length);
-                        const extra = total % decoded.length;
-                        decoded.forEach((frame, imageIndex) => {
-                            const count = base + (imageIndex < extra ? 1 : 0);
-                            for (let repeat = 0; repeat < count; repeat += 1) frames.push(frame);
-                        });
+                    if (!still && (!timed || packFormat === 'layered' || frames.length > PACK_MAX_FRAMES)) {
+                        frames = sampleStageImageTimeline(timeline, fps, PACK_MAX_FRAMES);
+                        imageFps = 1000 / frames[0].delayMs;
                     }
+                    frames = resizeStageImageFrames(frames, edge, resizedImageFrames);
                     results.push({
                         stateKey: job.stateKey, frames, edge, fps: imageFps,
                         scale: job.scale || 1, rotation: job.rotation || 0,
@@ -7341,6 +7330,7 @@
             bytes: encoder.encode(item.frames, {
                 width: item.edge,
                 height: item.edge,
+                fps: item.fps,
                 colors: GIF_EXPORT_COLORS,
                 transparent: true,
                 loop: item.stateKey !== 'click_image',
@@ -7483,13 +7473,10 @@
                 ? output.imageIds
                 : (output.imageId ? [output.imageId] : []);
             if (imageIds.length) {
-                // PNG 轮播沿用固定停留，GIF 则按源帧时长裁切选中的区间。
-                const still = output.stateKey === 'talking_image' && packFormat !== 'layered';
-                const hold = Math.max(0.05, Number(output.seconds) || 0.05);
+                // 由图片源的时间轴决定时长，PNG 和 GIF 都先裁切再采样。
                 return {
                     stateKey: output.stateKey,
                     imageIds,
-                    frames: still ? 1 : Math.max(imageIds.length, Math.ceil(hold * fps)),
                     imageStartAt: output.startAt,
                     imageSeconds: output.seconds,
                     scale: output.scale,
@@ -8166,6 +8153,8 @@
             const button = $(selector);
             if (button) button.disabled = packBusy || Boolean(exportEditingLock);
         });
+        const stop = $('#export-group-open-btn');
+        if (stop && (groupExportBusy || exportEditingLock)) stop.disabled = !groupExportBusy;
     }
 
 

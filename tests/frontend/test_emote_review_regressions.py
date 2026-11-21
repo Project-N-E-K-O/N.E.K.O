@@ -21,7 +21,7 @@ def editor(page, running_server):
         state, importTemplateFile, persistTemplateToLibrary, getImportedScenes,
         queueStageCapture, captureGifFrames, bakePackJobs, produceGroupFile, currentLookDefaults,
         importStageImages, persistExportSettings, previewGroupMember, renderLook,
-        applyTemplateFromRegistry, currentTemplateKey, setPackBusy,
+        applyTemplateFromRegistry, currentTemplateKey, setPackBusy, buildPngtuberPackage, flatStates, exportGroup,
         renderer: () => spineRenderer,
     };
 """
@@ -110,6 +110,95 @@ def test_single_png_download_starts_while_capture_controls_are_locked(editor):
     assert editor.locator('#export-png-btn').is_enabled()
 
 
+@pytest.mark.parametrize(('pack_format', 'fps', 'start', 'seconds'), [
+    ('flat', 10, .2, .2), ('flat', 30, .2, .2),
+    ('layered', 10, .2, .2), ('layered', 30, .2, .2),
+    ('flat', 30, .3, .1),
+])
+def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, fps, start, seconds):
+    from PIL import Image
+
+    _import(editor, spine_zip())
+    exported = editor.evaluate('''async ([format, fps, start, seconds]) => {
+        const q = reviewEditor;
+        const files = ['#ff0000','#00ff00','#0000ff','#ffff00'].map((color, index) => {
+            const canvas = document.createElement('canvas');
+            canvas.width = canvas.height = 16;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = color; ctx.fillRect(0,0,16,16);
+            const bytes = Uint8Array.from(atob(canvas.toDataURL().split(',')[1]), c=>c.charCodeAt(0));
+            return new File([bytes], `${index}.png`, {type:'image/png'});
+        });
+        await q.importStageImages(files);
+        const names = JSON.parse(localStorage.getItem('neko-emote-maker-stage-image-names'));
+        const ids = Object.keys(names).sort((a,b)=>names[a].localeCompare(names[b]));
+        if (ids.length !== 4) throw new Error('expected-four-imported-images');
+        Object.assign(q.state, {packFormat:format, packMode:'graph', exportResolution:64, exportFps:fps,
+            nodeGraph: NekoEmoteNodeGraph.normalizeGraph({schemaVersion:1, nodes:[
+                {id:'root',type:'source.default',params:{}},
+                {id:'images',type:'source.image',params:{imageIds:ids}},
+                {id:'idle',type:'output.state',params:{stateKey:'idle_image',startAt:start,seconds}},
+                {id:'talk',type:'output.state',params:{stateKey:'talking_image',startAt:.3,seconds:.1}},
+            ],links:['idle','talk'].map(to=>({from:'images',to,fromSocket:'look',toSocket:'look'}))})});
+        const built = await q.buildPngtuberPackage();
+        if (!built) throw new Error('image-package-failed');
+        return built.files.map(file=>({path:file.path,data:btoa(String.fromCharCode(...file.data))}));
+    }''', [pack_format, fps, start, seconds])
+    files = {item['path'].split('/', 1)[1]: base64.b64decode(item['data']) for item in exported}
+    blue, yellow = (0, 0, 255), (255, 255, 0)
+    wanted = [blue, yellow] if start == .2 else [yellow]
+    if pack_format == 'flat':
+        for name, duration, colors, count in (
+            ('idle.gif', seconds * 1000, wanted, round(seconds * fps)),
+            ('talking.gif', 100, [yellow], 1),
+        ):
+            with Image.open(io.BytesIO(files[name])) as image:
+                assert image.n_frames == count
+                observed, elapsed = [], 0
+                for index in range(image.n_frames):
+                    image.seek(index)
+                    observed.append(image.convert('RGB').getpixel((32, 32)))
+                    elapsed += image.info['duration']
+                assert elapsed == pytest.approx(duration, abs=1)
+                assert set(observed) == set(colors)
+                assert observed[0] == colors[0] and observed[-1] == colors[-1]
+    else:
+        metadata = json.loads(files['metadata.json'])
+        for layer in metadata['layers']:
+            state = next(state for state in layer['states'] if state['visible'])
+            duration = seconds if layer['name'] == 'idle_image' else .1
+            colors = wanted if layer['name'] == 'idle_image' else [yellow]
+            assert state['frames'] == round(duration * fps)
+            assert state['frames'] / (state['animation_speed'] * 4) == pytest.approx(duration)
+            with Image.open(io.BytesIO(files[layer['image']])) as sheet:
+                width, height = state['frame_width'], state['frame_height']
+                observed = [sheet.convert('RGB').getpixel((
+                    index % state['hframes'] * width + width // 2,
+                    index // state['hframes'] * height + height // 2,
+                )) for index in range(state['frames'])]
+            assert set(observed) == set(colors)
+            assert observed[0] == colors[0] and observed[-1] == colors[-1]
+
+
+def test_flat_pack_encoder_uses_baked_fps_for_frames_without_delays(editor):
+    from PIL import Image
+
+    encoded = editor.evaluate('''() => {
+        const frames = Array.from({length:30}, (_, index) => ({
+            width:1,height:1,data:new Uint8ClampedArray([index%2 ? 255 : 0,0,255,255]),
+        }));
+        const [state] = reviewEditor.flatStates([{stateKey:'idle_image',edge:1,fps:30,frames}]);
+        return btoa(String.fromCharCode(...state.bytes));
+    }''')
+    with Image.open(io.BytesIO(base64.b64decode(encoded))) as image:
+        assert image.n_frames == 30
+        elapsed = 0
+        for index in range(image.n_frames):
+            image.seek(index)
+            elapsed += image.info['duration']
+        assert elapsed == 1000
+
+
 def test_export_unlock_keeps_controls_enabled_by_an_async_load(editor):
     _import(editor, spine_zip())
     result = editor.evaluate('''async () => {
@@ -164,6 +253,51 @@ def test_nested_exports_keep_controls_locked_until_both_finish(editor, release_f
         }
     }''', release_first)
     assert result == {'locked':True, 'unchanged':True, 'unlocked':True}
+
+
+def test_batch_stop_becomes_available_when_folder_preparation_overlaps_a_capture(editor):
+    _import(editor, spine_zip())
+    editor.evaluate("document.querySelector('#inspector-tab-export').click()")
+    pending, writes = [], []
+
+    def export_request(route):
+        if route.request.url.endswith('/folder'):
+            pending.append(route)
+        else:
+            if route.request.url.endswith('/file'):
+                writes.append(route.request)
+            route.fulfill(json={'success':True})
+
+    editor.route('**/api/emote-maker/export/**', export_request)
+    with editor.expect_request('**/api/emote-maker/export/folder'):
+        editor.evaluate('''() => {
+            const q = reviewEditor;
+            q.state.exportFormat = 'png'; q.state.exportResolution = 64;
+            const group = {id:'review-stop',name:'review-stop',readOnly:true,
+                items:q.getImportedScenes().slice(0,2).map(scene=>({kind:'scene',ref:scene.id}))};
+            if (group.items.length !== 2) throw new Error('expected-two-batch-items');
+            window.reviewBatch = q.exportGroup(group, document.querySelector('#export-group-open-btn'),
+                Promise.resolve({kind:'path',path:'Z:/test-only-intercepted'}));
+        }''')
+    editor.wait_for_function("!document.querySelector('#export-group-open-btn').disabled")
+    editor.evaluate('''() => {
+        window.reviewBlockingCapture = reviewEditor.queueStageCapture('stop-review',100,'export',
+            () => new Promise(resolve => {window.reviewFinishBlockingCapture = resolve;}));
+    }''')
+    editor.wait_for_function("typeof window.reviewFinishBlockingCapture === 'function'")
+    assert editor.locator('#export-group-open-btn').is_disabled()
+    assert len(pending) == 1
+    pending[0].fulfill(json={'success':True,'directory':'Z:/test-only-intercepted','folder':'review-stop'})
+    editor.wait_for_function("!document.querySelector('#export-group-open-btn').disabled")
+    assert editor.locator('#adjust-scale').is_disabled()
+    editor.locator('#export-group-open-btn').click(force=True)
+    editor.evaluate('''async () => {
+        reviewFinishBlockingCapture();
+        await Promise.all([reviewBlockingCapture, reviewBatch]);
+    }''')
+    assert len(writes) == 1
+    assert not editor.locator('.emote-maker-page').get_attribute('aria-busy')
+    assert editor.locator('#export-group-open-btn').is_enabled()
 
 
 @pytest.mark.parametrize('path', ['registry', 'import', 'reimport'])
