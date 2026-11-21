@@ -88,6 +88,47 @@ def _gate() -> tuple[asyncio.Event, Any]:
     return release, wait
 
 
+class _WentWrong:
+    """What went wrong in what a test runs inside a session: a step of a scripted request, a callback of the host.
+
+    What is raised there is taken by the runtime, and the test would see
+    only that a session did not get where it waited for it, and only when
+    that wait timed out.
+    """
+
+    def __init__(self) -> None:
+        self.errors: list[Exception] = []
+        self._happened = asyncio.Event()
+
+    def noting(self, waits: Any) -> Any:
+        """Return ``waits``, which notes here what goes wrong in it before it raises it."""
+
+        async def noted(*args: Any) -> Any:
+            try:
+                return await waits(*args)
+            except Exception as exc:
+                self.errors.append(exc)
+                self._happened.set()
+                raise
+
+        return noted
+
+    async def unless(self, waiting: Any) -> Any:
+        """Await ``waiting``; should something go wrong inside a session first, raise that instead."""
+        waited = asyncio.ensure_future(waiting)
+        went_wrong = asyncio.ensure_future(self._happened.wait())
+        try:
+            await asyncio.wait({waited, went_wrong}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            went_wrong.cancel()
+            if not waited.done():
+                waited.cancel()
+            await asyncio.gather(waited, went_wrong, return_exceptions=True)
+        if self.errors and (waited.cancelled() or waited.exception() is not None):
+            raise self.errors[0] from (None if waited.cancelled() else waited.exception())
+        return waited.result()
+
+
 async def _events(host: Any, commission_id: str, kind: str | None = None) -> list[Any]:
     await host.task_agents.settle()
     return [event for event in await host.ledger.events(commission_id) if kind is None or event.type == kind]
@@ -589,7 +630,9 @@ async def test_what_the_task_agents_it_started_use_is_the_commissions_own_and_th
 ):
     monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
     release, wait = _gate()
+    went_wrong = _WentWrong()
 
+    @went_wrong.noting
     async def once_the_one_that_started_it_has_gone_on() -> None:
         # The task agent it started is to be the one that asks. Whichever of the
         # two comes to a next request first once the line is crossed asks, and
@@ -626,7 +669,7 @@ async def test_what_the_task_agents_it_started_use_is_the_commissions_own_and_th
     (child,) = await host.ledger.select(parent_id=first.id)
 
     # The one it started is the one that comes to its next request first: it asks, for the whole of the work.
-    question = await _asked(host, child.id)
+    question = await went_wrong.unless(_asked(host, child.id))
     assert question["category"] == "usage_limit" and question["detail"] == {"used": "1k", "more": "1k"}
     standing = await host.ledger.usage_standing(child.id)
     assert (standing.root, standing.used) == (first.id, 300 + 10 + 800 + 10)
@@ -645,6 +688,7 @@ async def test_what_the_task_agents_it_started_use_is_the_commissions_own_and_th
     assert asked == []
     # Over, nothing is kept of the refusal.
     assert host.task_agents._refused_more == set()
+    assert went_wrong.errors == []
 
 
 async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_waits_for_that_answer(
@@ -652,17 +696,20 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
 ):
     monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
     started: list[str] = []
+    went_wrong = _WentWrong()
 
+    @went_wrong.noting
     async def once_the_task_agent_it_started_has_used_its_share() -> None:
         # So the check before its report sees the line crossed, with what the task agent
         # it started used counted. (On a slow machine the check before this request does.)
         await wait_until(lambda: started, what="the commission")
         (child,) = await host.ledger.select(parent_id=started[0])
         await wait_until(lambda: child.id in host.task_agents._sessions, what="the task agent it started")
-        deadline = asyncio.get_running_loop().time() + 15
-        while (await host.ledger.usage_standing(child.id)).used < 300 + 10 + 800 + 10:
-            assert asyncio.get_running_loop().time() < deadline, "what the task agent it started used was not counted"
-            await asyncio.sleep(0.01)
+
+        async def counted() -> bool:
+            return (await host.ledger.usage_standing(child.id)).used >= 300 + 10 + 800 + 10
+
+        await wait_until(counted, what="what the task agent it started used being counted")
 
     scripts = {
         "sort the photos": ScriptedLLM(
@@ -686,12 +733,15 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
     budget = manager._cb_budget
     checks: dict[str, int] = {}
 
+    @went_wrong.noting
     async def the_task_agent_after_the_one_that_started_it(session_id: str, payload: dict[str, Any]) -> Any:
         # The task agent it started comes to its next request only once the one that started it asks.
         checks[session_id] = checks.get(session_id, 0) + 1
         commission_id = manager._held_by.get(session_id)
-        if started and commission_id not in (None, started[0]) and checks[session_id] == 2:
-            await wait_status(host, started[0], "waiting_user")
+        if commission_id is not None and checks[session_id] == 2:
+            commission = await host.ledger.get(commission_id)
+            if commission is not None and commission.parent_id is not None:
+                await wait_status(host, commission.parent_id, "waiting_user")
         return await budget(session_id, payload)
 
     monkeypatch.setattr(manager, "_cb_budget", the_task_agent_after_the_one_that_started_it)
@@ -701,7 +751,7 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
     (child,) = await host.ledger.select(parent_id=first.id)
 
     # The one that started it comes to its next request first: it asks, for the whole of the work.
-    question = await _asked(host, first.id)
+    question = await went_wrong.unless(_asked(host, first.id))
     assert question["category"] == "usage_limit" and question["detail"] == {"used": "1k", "more": "1k"}
     # The task agent it started waits for that answer, at work as it was, and is not asked about a second time.
     await asyncio.wait_for(manager._usage_asks[first.id].waited_for.wait(), 10)
@@ -726,6 +776,7 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
     assert await outbox(host, "question") == []
     # Over, nothing is kept of the question.
     assert host.task_agents._refused_more == set() and host.task_agents._usage_asks == {}
+    assert went_wrong.errors == []
 
 
 async def test_a_commission_that_is_stopped_while_the_user_is_asked_is_stopped_and_no_limit_asks_nothing(
