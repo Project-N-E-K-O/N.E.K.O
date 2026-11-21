@@ -1987,11 +1987,28 @@ class TaskAgentManager:
             model = await self._model_of(config)
             session.model = (config.get("base_url"), config.get("model"))
 
+            runtime_name, runtime, fallback = await self._choose_runtime(commission, model, begun_in)
+            # Uninstall/replace must see this commission before gateway setup yields.
+            session.runtime, session.runtime_name = runtime, runtime_name
             gateway_spec = None
             if self._gateway is not None:
-                # Whether or not anything can be called right now: the
-                # session keeps the tools it is opened with, and what can be
-                # called changes while it lasts.
+                from config.nekoclaw_settings import FIRST_TURN_DEVICE_TOOLS
+
+                groups: tuple[str, ...] = ()
+                custom_tools = {"tools", "tool_choice"}.intersection(model.extra_body or {})
+                if FIRST_TURN_DEVICE_TOOLS and kept.kind != "fork" and not custom_tools:
+                    from nekoclaw.host.device_intent import select_device_groups
+
+                    # On relaunch, a short follow-up like "click login" belongs to the
+                    # same commission's browser task. A new commission starts afresh.
+                    instructions = commission.dispatch_text
+                    if prompt:
+                        instructions += "\n" + prompt
+                    groups = select_device_groups(instructions)
+                    if groups and runtime_name == RUNTIME_DSH:
+                        supports = getattr(runtime, "supports_device_schemas", None)
+                        if supports is None or not supports(model):
+                            groups = ()
                 url = await self._gateway.start()
                 token = self._gateway.issue(
                     commission.id,
@@ -1999,14 +2016,13 @@ class TaskAgentManager:
                     supports_images=model.supports_images,
                     # A copy of a session changes nothing, whichever way.
                     reads_only=kept.kind == "fork",
+                    first_turn_groups=groups,
                 )
                 gateway_spec = GatewaySpec(url=url, token=token)
 
             spec = await self._spec(
                 commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec
             )
-            runtime_name, runtime, fallback = await self._choose_runtime(commission, model, begun_in)
-            session.runtime, session.runtime_name = runtime, runtime_name
             if unwanted():
                 # Everything was stopped while this was being set up, and
                 # the stop left a commission that was over alone: it stays
