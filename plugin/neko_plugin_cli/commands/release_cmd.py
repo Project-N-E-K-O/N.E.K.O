@@ -677,11 +677,11 @@ def _shell_quote(value: str) -> str | None:
     return None if any(char in value for char in _WINDOWS_EXPANDING_CHARS) else f'"{value}"'
 
 
-def _setup_repo_target(plugin_dir: Path | None, label: str) -> str:
-    """The plugin argument of a suggested setup-repo command.
+def _plugin_dir_argument(plugin_dir: Path | None, label: str) -> str:
+    """The plugin directory as one argument of a suggested command.
 
-    setup-repo resolves a bare id only under the plugins root; a path works
-    for every plugin.
+    Falls back to ``label`` when the directory is unknown. For setup-repo a
+    path also beats the bare id, which resolves only under the plugins root.
     """
     if plugin_dir is None:
         return label
@@ -704,7 +704,7 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
             ".github/workflows/release.yml",
             ".gitignore",
         }:
-            return f"neko-plugin setup-repo {_setup_repo_target(plugin_dir, label)} --github-actions"
+            return f"neko-plugin setup-repo {_plugin_dir_argument(plugin_dir, label)} --github-actions"
     if message.startswith("recommended market repository name is "):
         return "the Market accepts any public GitHub repository name; n.e.k.o_plugin_<plugin_id> is the convention"
     if message.startswith("release tag ") and "does not match plugin.toml version" in message:
@@ -725,7 +725,9 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
     if message == "plugin source directory does not have its own git repository":
         if plugin_dir is None:
             return "run git init inside the plugin directory"
-        return f"cd {plugin_dir} && git init"
+        # git -C avoids cd (cmd needs /d across drives) and && (missing in
+        # Windows PowerShell 5).
+        return f"git -C {_plugin_dir_argument(plugin_dir, '')} init"
     if message == "git remote 'origin' is not configured":
         return "git remote add origin <repo-url>"
     if message.startswith(_WORKTREE_NOT_COMMITTED):
@@ -737,7 +739,7 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
     if message.startswith(_AGENT_KIT_OUTDATED):
         # --no-* keeps the other support files.
         refresh = (
-            f"neko-plugin setup-repo {_setup_repo_target(plugin_dir, label)} --overwrite "
+            f"neko-plugin setup-repo {_plugin_dir_argument(plugin_dir, label)} --overwrite "
             "--no-readme --no-tests --no-gitignore --no-vscode"
         )
         return _tri(

@@ -2203,6 +2203,34 @@ def test_suggested_setup_repo_fix_falls_back_to_the_id_without_a_directory() -> 
     )
 
 
+@pytest.mark.parametrize("parent", ["my plugins", "my $HOME (copy)"])
+def test_suggested_git_init_fix_quotes_the_plugin_directory(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    parent: str,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / parent, "no_repo")
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "does not have its own git repository" in out
+    fix = next(line for line in out.splitlines() if line.strip().startswith("fix: git ") and " init" in line)
+    command = fix.split("fix: ", 1)[1]
+    if os.name == "nt":
+        arguments = [arg.strip('"') for arg in shlex.split(command, posix=False)]
+        if any(char in str(plugin_dir) for char in release_cmd._WINDOWS_EXPANDING_CHARS):
+            assert arguments[2] == "<plugin directory>"
+            arguments[2] = str(plugin_dir)
+    else:
+        arguments = shlex.split(command)
+    assert arguments == ["git", "-C", str(plugin_dir), "init"]
+    subprocess.run([*arguments[:3], "init", "-q"], check=True)
+
+    capsys.readouterr()
+    neko_plugin_cli.main(["check", str(plugin_dir)])
+    assert "does not have its own git repository" not in capsys.readouterr().out
+
+
 def test_check_does_not_flag_a_freshly_generated_agent_kit(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
