@@ -779,9 +779,12 @@ class WorktreeManager:
         # other name it merges as text.
         # Any merge.<name>.<key> makes <name> a driver of the user's, even one
         # with no command (git then stops the merge rather than merge as text).
-        configured = await self._git(root, "config", "--get-regexp", r"^merge\..+\.[^.]+$", check=False)
-        keys = [line.split(" ", 1)[0] for line in configured.lines()]
-        theirs = {key[len("merge.") : key.rindex(".")].encode("utf-8", "surrogateescape") for key in keys}
+        # Names only, NUL-separated: a name may hold spaces ([merge "my drv"]).
+        configured = await self._git(
+            root, "config", "-z", "--name-only", "--get-regexp", r"^merge\..+\.[^.]+$", check=False
+        )
+        keys = [key for key in configured.stdout.split(b"\0") if key.startswith(b"merge.") and key.count(b".") >= 2]
+        theirs = {key[len(b"merge.") : key.rindex(b".")] for key in keys}
         default = await self._git(root, "config", "--get", "merge.default", check=False)
         driver = default.stdout.strip()
         if driver in theirs:

@@ -1724,6 +1724,8 @@ async def test_cancelled_while_the_start_moves_on_puts_the_start_back(
         # A driver with a name and no command: git stops the merge.
         ("*.txt merge=demo\n", {"merge.demo.name": "Demo"}, False),
         ("", {"merge.default": "demo", "merge.demo.name": "Demo"}, False),
+        # A name with a space in it.
+        ("", {"merge.default": "my drv", "merge.my drv.driver": "cat %A"}, False),
     ],
     ids=[
         "attribute",
@@ -1736,6 +1738,7 @@ async def test_cancelled_while_the_start_moves_on_puts_the_start_back(
         "default-overridden",
         "attribute-name-only",
         "default-name-only",
+        "name-with-space",
     ],
 )
 async def test_probe_merge_drivers(
