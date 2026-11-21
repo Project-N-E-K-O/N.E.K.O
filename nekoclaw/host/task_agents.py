@@ -7845,6 +7845,10 @@ class TaskAgentManager:
         self._owe_what_is_left()
         for commission_id in list(self._sessions):
             self._discard(commission_id)
+        # Discarding a session with a native control still in flight schedules
+        # its cancellation write. Let it finish while the ledger is open.
+        if self._starting:
+            await asyncio.wait(list(self._starting), timeout=_SHUTDOWN_START_WAIT_SECONDS)
         self._held_by.clear()
         self._unsubscribe()
         # And once more, now that no run ends any more: the sessions that

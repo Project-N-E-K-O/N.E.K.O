@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -108,3 +109,7 @@ async def test_pinned_task_control_is_reserved_before_execution(tmp_path, tool, 
             assert end["is_error"] == (not allow or not human), end
     finally:
         await runtime.shutdown()
+    if tool == "todo_write":
+        cache, = (tmp_path / "dsh" / "storages" / "session_projcache" / "sessions").glob("*.json")
+        rows = json.loads(cache.read_text(encoding="utf-8"))["record"]["rows"]
+        assert rows["todos"]["val"] == (arguments["todos"] if allow else None)

@@ -516,9 +516,23 @@ async def test_a_run_says_how_many_background_jobs_it_leaves_running(tmp_path: P
 @pytest.mark.parametrize("allow", [True, False])
 async def test_task_control_admission_precedes_local_todo_change(tmp_path, allow):
     requests = []
-    host = HostCallbacks(task_control_begin=_recording({"allow": allow}, requests))
+    original = [{"content": "existing item", "status": "pending"}]
     args = {"todos": [{"content": "private local state", "status": "pending"}]}
-    events, _ = await _run(tmp_path, host, [call("todo_write", args, "control-1"), finish("tool_calls")])
+
+    async def begin(session_id, payload):
+        requests.append((session_id, payload))
+        assert session.todos.items == original
+        return {"allow": allow}
+
+    llm = ScriptedLLM([[call("todo_write", args, "control-1"), finish("tool_calls")], [say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(task_control_begin=begin))
+    try:
+        session.todos.write(original)
+        session.prompt("go")
+        await events.wait_ended()
+        assert session.todos.items == (args["todos"] if allow else original)
+    finally:
+        await session.close()
     assert requests == [("s1", {"tool": "todo_write", "call_id": "control-1"})]
     end, = events.of("tool_end")
     assert end["is_error"] is not allow

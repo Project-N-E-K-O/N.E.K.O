@@ -133,3 +133,32 @@ async def test_native_controls_reserve_and_settle_only_their_own_call(env, monke
     finally:
         manager._sessions.pop(source.id)
         manager._held_by.pop(sender.id)
+
+
+async def test_shutdown_waits_for_outstanding_control_cancellation(env, monkeypatch):
+    host, (source, sender), _ = env
+    manager = host.task_agents
+    manager._sessions[source.id] = _Session(source.id, session_id=sender.id)
+    manager._held_by[sender.id] = source.id
+    assert await manager._callbacks().call(sender.id, "task_control_begin", {
+        "tool": "todo_write", "call_id": "interrupted",
+    }) == {"allow": True}
+
+    writing, release = asyncio.Event(), asyncio.Event()
+    finish = call_audit.finish_call
+
+    async def blocked_write(record, status):
+        writing.set()
+        await release.wait()
+        await finish(record, status)
+
+    monkeypatch.setattr(call_audit, "finish_call", blocked_write)
+    closing = asyncio.create_task(manager.shutdown())
+    try:
+        await asyncio.wait_for(writing.wait(), timeout=5)
+        done, _ = await asyncio.wait([closing], timeout=0.2)
+        assert not done, "shutdown returned while the cancellation still needed the ledger"
+    finally:
+        release.set()
+        await closing
+    assert (await trace(host, source))[-1]["status"] == "cancelled"
