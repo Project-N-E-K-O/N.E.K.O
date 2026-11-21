@@ -2,16 +2,12 @@
 
 Use this when adding or reviewing a N.E.K.O plugin UI surface.
 
-Primary source files:
-
-- `plugin/core/ui_manifest.py`: manifest normalization, mode inference, permissions, default context.
-- `plugin/server/application/plugins/ui_query_service.py`: surface lookup, context/action authorization, dependency loading.
-- `plugin/sdk/plugin/ui.py`: Python `@ui.context` and `@ui.action` decorators.
-- `frontend/plugin-manager/src/components/plugin/HostedSurfaceFrame.vue`: iframe loading, markdown rendering, Hosted TSX bridge.
-- `frontend/plugin-manager/src/components/plugin/hosted/tsxRuntime.ts`: Hosted TSX document build and sandbox runtime.
-- `frontend/plugin-manager/src/components/plugin/hosted/hostedTsxModule.mjs`: import/export contract and dependency bundling.
-- `frontend/plugin-manager/src/components/plugin/hosted/ui-kit/runtime.js`: public UI kit runtime implementation.
-- `plugin/sdk/hosted-ui/index.d.ts`: public TSX API types.
+Sources of truth, when this page is not enough:
+[ui_manifest.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/core/ui_manifest.py) (manifest, modes, permissions),
+[ui.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/sdk/plugin/ui.py) (`@ui.context`, `@ui.action`),
+[hostedTsxModule.mjs](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/frontend/plugin-manager/src/components/plugin/hosted/hostedTsxModule.mjs)
+(import/export rules), and the [Hosted UI guide](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/plugins/hosted-ui.md).
+Component API: `hosted-ui-api.md`.
 
 ## Mode Choice
 
@@ -63,11 +59,11 @@ Manifest rules:
 - `id` defaults from the entry stem; use explicit ids for stable links.
 - `context` defaults to the surface id for `panel` and `guide`; set it explicitly when the Python context id differs.
 - `permissions` defaults to `["state:read", "config:read", "action:call"]` for panels and `["state:read"]` for guide/docs.
-- Valid permissions are `state:read`, `config:read`, `config:write`, `action:call`, `logs:read`, and `runs:read`.
+- Valid permissions are `state:read`, `config:read`, `config:write`, `action:call`, `document:parse`, `logs:read`, and `runs:read`. `neko-plugin check` currently warns that `document:parse` is unrecognized ([#3809](https://github.com/Project-N-E-K-O/N.E.K.O/issues/3809)); that warning is wrong and can be ignored.
 - Add only the permissions the surface needs. `action:call` is required for Hosted TSX action calls.
-- Entry paths are resolved inside `plugin/plugins/<plugin_id>/`; path traversal is rejected.
+- Entry paths are resolved inside `<plugin_dir>` (the folder holding `plugin.toml`); path traversal is rejected.
 - The entry file must exist or the surface is marked unavailable.
-- Locale-specific surface files can be placed next to the default file as `<stem>.<locale>.<ext>`; the default unsuffixed file is treated as the base source.
+- For `hosted-tsx` and `markdown` surfaces, locale-specific files sit next to the default file as `<stem>.<locale>.<ext>` (`static` surfaces always serve their one entry file). The unsuffixed file is the zh-CN version; ship at least `<stem>.en.<ext>` too. Other locales try their exact and primary tag, then (for other `zh-*` variants such as `zh-TW`) `zh-CN`, then `en`, then the unsuffixed file.
 
 ## Python Context And Actions
 
@@ -163,32 +159,27 @@ export default function Panel(props: PluginSurfaceProps<State>) {
 TSX runtime rules:
 
 - Import components, hooks, and types from `@neko/plugin-ui`.
-- Do not import npm packages or external bare modules.
+- Do not import npm packages or external bare modules; only `@neko/plugin-ui` (or `neko:ui`) and relative files.
 - Same-plugin relative imports are supported for `.tsx`, `.ts`, `.jsx`, and `.js` files.
 - Relative dependencies must stay inside the plugin root. Runtime dependency discovery limits are 32 files and 512 KiB total.
 - Dynamic `import()` is rejected.
-- The linker supports simple named exports in relative helper modules. Avoid re-exports, `export *`, export lists, enums, generators, abstract classes, destructured exports, and multi-declarator exports.
-- The iframe sandbox for Hosted TSX/Markdown is `allow-scripts`; do not rely on normal page globals outside the hosted bridge.
+- The linker supports simple named exports (`export function`, `export const`) in relative helper modules. These are rejected outright, not merely discouraged: `export let`/`export var`, namespaces, re-exports, `export *`, export lists, enums, generators, abstract classes, destructured exports, and multi-declarator exports. An installed plugin is never run through `check-hosted-tsx`, so the rejection shows up as a 400 error when the panel is opened.
+- Write `props.api.call(...)` in full. The checker rejects any bare `api.` (even `const { api } = props; api.call(...)`, or `api.` in a comment).
 - The runtime uses a lightweight React-like renderer. Use the provided hooks; do not assume React is installed.
 - `useLayoutEffect` currently uses the same timing as `useEffect`; do not depend on React pre-paint semantics.
 
+## What The Sandbox Does Not Have
+
+Hosted TSX and Markdown run in an `allow-scripts` iframe with an opaque origin:
+
+- no `localStorage`/`sessionStorage` (they throw): use `useLocalState` for UI state and Python for anything durable;
+- no `alert`/`confirm`/`prompt` or popups: `window.confirm` returns `false` without showing anything, so a `confirm` on `ActionButton`/`ActionForm` (set directly or through `@ui.action(confirm=...)`) silently cancels the action. `confirm` is not a safety gate: a direct `props.api.call(...)` ignores it; use `useConfirm()` and then `props.api.call(...)`, followed by `props.api.refresh()` if the action changes `@ui.context` state (only `ActionButton`/`ActionForm` refresh on their own);
+- no reliable `fetch` to N.E.K.O (cross-origin from `null`) and no host page globals: everything goes through `props.api`;
+- plugin logic and secrets stay in Python; the panel only renders state and calls actions.
+
 ## Props And Bridge
 
-`PluginSurfaceProps` includes:
-
-- `plugin`: plugin metadata.
-- `surface`: normalized surface metadata.
-- `state`: object returned by `@ui.context`.
-- `stateSchema`: optional context schema.
-- `actions`: UI actions exposed by `@ui.action`.
-- `entries`: entry metadata.
-- `config`: config schema/value snapshot, present when permitted.
-- `warnings`: surface warnings.
-- `locale`, `i18n`, and `t(...)`.
-- `api.call(actionId, args, options)` and `api.refresh()`.
-- `useLocalState(key, initialValue)`.
-
-Prefer `ActionButton` or `ActionForm` over raw `api.call` unless the UI needs custom control flow.
+The default export receives `PluginSurfaceProps` (`state`, `actions`, `config`, `t`, `api`, ...); the full shape and `api.call` / `api.refresh` / `api.parseDocument` / `api.display` are in `hosted-ui-api.md`. Prefer `ActionButton` or `ActionForm` over raw `api.call` unless the UI needs custom control flow.
 
 ## Markdown Surfaces
 
@@ -206,20 +197,15 @@ Use Markdown only for read-only quickstarts, docs, and reference text.
 
 ## Validation
 
-For a plugin with Hosted TSX:
+`neko-plugin check` verifies the manifest and that UI entry files exist (it currently warns about `document:parse` by mistake). It does not type-check Hosted TSX, render Markdown, or exercise the iframe. Without a checkout, ask the user to open the surface after Start/Reload and report the warnings it shows.
+
+### Hosted TSX checks [checkout only]
+
+These need a N.E.K.O source checkout with the frontend dependencies installed, and the plugin must sit inside that checkout: the script refuses paths outside the repository root.
 
 ```bash
 cd frontend/plugin-manager
 npm run check-hosted-tsx -- plugin/plugins/<plugin_id>
 ```
 
-Use broader checks when touching runtime behavior, action bridge, i18n, or UI kit:
-
-```bash
-cd frontend/plugin-manager
-npm run test:hosted-script
-npm run test:hosted
-npm run test:hosted:e2e
-```
-
-`uv run neko-plugin check <plugin_id|plugin_path>` verifies manifest shape and that UI entry files exist, but it only performs shallow `input_schema` checks for literal dicts and does not fully type-check Hosted TSX or exercise iframe behavior.
+Broader runtime checks (only when touching hosted runtime behaviour): `npm run test:hosted-script`, `npm run test:hosted`, `npm run test:hosted:e2e` in the same folder.

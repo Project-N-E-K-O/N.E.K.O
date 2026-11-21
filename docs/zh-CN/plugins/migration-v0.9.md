@@ -11,7 +11,7 @@
 | Bus 的 `where_*` 与列表集合运算 | 已移除 | 组合 `get()`、`filter()` / `where()`、`sort()`、`limit()`、`watch()` |
 | `get_message_plane_all` | 已移除 | 使用有界的 `await self.bus.messages.get(...)` 查询 |
 | Bus 增量/本地 fast path | 已移除 | 使用标准的、有界且可重放的 read/watch 管线 |
-| 高层 `self.memory` / SDK `MemoryClient` | 已移除 | `self.bus.memory.get(...)` 仅用于读取近期的内存用户上下文记录；插件 SDK 暂无持久记忆语义召回的替代接口 |
+| 高层 `self.memory` / 旧 SDK `MemoryClient` 门面 | 已移除 | `self.bus.memory.get(...)` 仅用于读取近期的内存用户上下文记录；持久记忆召回请使用 `ctx.query_memory(...)`（返回渲染好的文本）或 `plugin.sdk.plugin` 中新的 `MemoryClient(self.ctx).search(...)`（返回结构化命中） |
 | Extension 插件类型、`[plugin.host]`、`plugin.sdk.extension` | 已移除，不提供兼容层 | 将 Router 合并进所属普通 Plugin，或把该包改造成独立 Plugin |
 | `push_message` v1 字段 | 已弃用，但当前源码仍会转换 | 使用 `parts`、`visibility`、`ai_behavior`；不要依赖确切移除版本 |
 
@@ -34,7 +34,7 @@ class MyPlugin(NekoPluginBase):
         return Ok({"status": "done"})
 ```
 
-Extension 没有兼容垫片。删除 `type = "extension"` 和 `[plugin.host]` 后，要么把 Router 模块移入原宿主并调用 `self.include_router(router)`，要么把它改造成普通 `NekoPluginBase` 包。从 `plugin.sdk.extension` 的导入应改为 `plugin.sdk.plugin` 中对应的公共符号。`PluginRouter` 只继续用于普通 Plugin 内部的代码组织。
+Extension 没有兼容垫片。删除 `type = "extension"` 和 `[plugin.host]` 后，要么把 Router 模块移入原宿主，把 router 类列进宿主的 `__routers__`，并调用 `self.include_router(router)`，要么把它改造成普通 `NekoPluginBase` 包。从 `plugin.sdk.extension` 的导入应改为 `plugin.sdk.plugin` 中对应的公共符号。`PluginRouter` 只继续用于普通 Plugin 内部的代码组织。
 
 ## Result 导入
 
@@ -84,14 +84,14 @@ watcher.start()
 
 ## Memory
 
-旧 SDK `MemoryClient` 混淆了两种不同概念。当前受支持的替代能力是读取宿主的近期用户上下文快照：
+旧 SDK `MemoryClient` 混淆了两种不同概念。近期用户上下文来自宿主的快照：
 
 ```python
 # 读取一个 bucket 的最近记录
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-这些记录是有容量上限、只驻留内存且 TTL 为一小时的用户话语事件，并不是角色持久化的事实、反思或人格。通过 `self.bus.memory` 读取记录和使用其类型化记录的能力仍然保留；删除的是高层 `self.memory` 属性以及 SDK/runtime 的 `MemoryClient` 门面。`ctx.query_memory(...)` 仍为兼容而存在，但它访问的是已弃用的占位端点，不提供语义召回。目前公开插件 SDK 没有结构化的持久记忆召回接口。
+这些记录是有容量上限、只驻留内存且 TTL 为一小时的用户话语事件，并不是角色持久化的事实、反思或人格。通过 `self.bus.memory` 读取记录和使用其类型化记录的能力仍然保留；删除的是高层 `self.memory` 属性以及旧 SDK/runtime 的 `MemoryClient` 门面（现在从 `plugin.sdk.plugin` 导出的 `MemoryClient` 是另一个更新的检索客户端）。`ctx.query_memory(...)` 执行与内置 `recall_memory` 工具相同的混合召回，并以渲染好的文本返回命中结果（没有匹配时为空字符串）。需要结构化命中时，请使用 `MemoryClient(self.ctx).search(target=MemoryTarget.private(...), query=...)`，它返回 `Ok` / `Err`。`MemoryClient` 还有 `get_persona(target=...)`，只支持 `private` 目标，其他目标返回 `CAPABILITY_UNAVAILABLE`。能力策略开启时（`NEKO_PLUGIN_CAPABILITY_POLICY` 不是 `off`），宿主会把到达宿主的这些记忆调用按 `memory.read` 能力的使用来判定，但只为策略会拒绝的调用、以及被标记为疑似转手调用的调用写 `decision` 审计记录（相同结果每分钟最多记一条）；其他获准的调用最多只在所属入口调用结束时写入的 `allow_summary` 汇总记录里计数。所以这份审计记录不是逐次访问记录。记忆内容是用户的隐私数据，不要写进日志。
 
 ## `push_message` v2
 

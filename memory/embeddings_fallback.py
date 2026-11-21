@@ -65,6 +65,9 @@ class _DisabledEmbeddingService:
     def disable_reason(self) -> str:
         return self._DISABLE_REASON
 
+    def state_name(self) -> str:
+        return "disabled"
+
     def model_id(self) -> str | None:
         return None
 
@@ -92,6 +95,9 @@ class _DisabledEmbeddingService:
         return [None] * len(texts) if texts else []
 
 
+# Built eagerly at import (the import lock serializes it), so unlike the
+# lazy singleton in ``memory.embeddings`` there is no construction race and
+# no lock is needed here.
 _SERVICE_SINGLETON = _DisabledEmbeddingService()
 
 

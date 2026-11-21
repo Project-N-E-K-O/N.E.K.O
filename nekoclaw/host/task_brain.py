@@ -55,10 +55,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
-from nekoclaw.host.capabilities import CapabilityRegistry, McpDenial, mcp_entry_forbidden
+from nekoclaw.host import call_audit
+from nekoclaw.host.capabilities import MCP_ADAPTER_PLUGIN_ID, CapabilityRegistry, McpDenial, capabilities_of_plugin, mcp_entry_forbidden
 from nekoclaw.host.decision import (
     DecisionModel,
     DecisionRequest,
@@ -70,10 +72,11 @@ from nekoclaw.host.decision import (
     looks_like_a_task,
 )
 from nekoclaw.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger
-from nekoclaw.host.permissions import PermissionStore
+from nekoclaw.host.permissions import DENIED_BY_USER, GrantScope, PermissionGate, PermissionStore
 from nekoclaw.host.plugin_runs import (
     PluginRunner,
     RunOutcome,
+    audited_run_entry,
     describe_result,
     plugin_terminal_status,
     resolve_delivery_mode,
@@ -276,6 +279,7 @@ class TaskBrain:
         decision: DecisionModel,
         reporter: Reporter,
         permission_store: PermissionStore,
+        permissions: PermissionGate,
         task_agents: Any = None,
         enabled: Callable[[], bool] | None = None,
         on_progress: ProgressListener | None = None,
@@ -288,6 +292,7 @@ class TaskBrain:
         self._decision = decision
         self._reporter = reporter
         self._permission_store = permission_store
+        self._permissions = permissions
         self._task_agents = task_agents
         self._enabled = enabled
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -327,9 +332,15 @@ class TaskBrain:
 
         Called when everything is stopped: such a dispatch has no commission
         yet, so stopping the commissions under way would miss it, and it
-        would start its work right after the stop.
+        would start its work right after the stop. Likewise what the task
+        agents' host does by itself in sessions nothing is at work in
+        (summing one up): no commission stands for it either, and it makes
+        no model request after a stop.
         """
         self._dispatch_generation += 1
+        drop_idle_work = getattr(self._task_agents, "drop_idle_work", None)
+        if drop_idle_work is not None:
+            drop_idle_work()
 
     async def settle(self) -> None:
         """Wait for everything running in the background (second rounds, calls)."""
@@ -341,6 +352,10 @@ class TaskBrain:
     def _is_enabled(self) -> bool:
         if self._closed:
             return False
+        return self._switched_on()
+
+    def _switched_on(self) -> bool:
+        """Whether NekoClaw is switched on, whatever this brain itself is doing (``_is_enabled``)."""
         if self._enabled is None:
             return True
         try:
@@ -375,10 +390,8 @@ class TaskBrain:
         answerable = [item for item in under_way if item.parent_id is not None and item.status == "waiting_user"]
         # Plugin entries forbidden in the permission settings are not offered
         # to the decision model at all, so none is called directly either.
-        # Only "deny" counts here, on purpose: a direct call is one she
-        # dispatched and the model chose, called without asking as the
-        # analyzer does today. The asking modes apply where the design puts
-        # the questions: a task agent's tool calls and the capability gateway.
+        # Asking modes keep the entry discoverable; direct execution obtains
+        # the same approval as a tool call through the gateway.
         plugins_forbidden = await self._permission_store.mode("plugin_entry") == "deny"
         return DecisionRequest(
             dispatch_text=text,
@@ -387,8 +400,36 @@ class TaskBrain:
             plugins=[] if plugins_forbidden else await self._without_denied_mcp(await self._registry.plugins()),
             active=active,
             answerable=answerable,
+            recent=await self._recently_over(lanlan_name),
             task_agent_available=await self._task_agent_available(),
         )
+
+    async def _recently_over(self, lanlan_name: str) -> list[Commission]:
+        """Return her commissions a task agent worked on that are over and not long so, newest first.
+
+        What a sentence that adds something can go on with (``decision.read_follow_up``):
+        done, failed or stopped within ``FOLLOW_UP_RECENT_SECONDS``, her own
+        (not one a task agent started for itself), and worked on in a session
+        that has not ended (``Ledger.session_alive``: a session of one
+        commission is not gone on with from the eighth day on, however far
+        the guess by words is set to reach).
+        """
+        from config.nekoclaw_settings import FOLLOW_UP_RECENT_SECONDS, FOLLOW_UP_ROWS
+
+        # Newest by when they ended, which is when they last changed.
+        ended = await self._ledger.ended_lately(
+            lanlan_name, since=self._ledger._clock() - FOLLOW_UP_RECENT_SECONDS, limit=FOLLOW_UP_ROWS
+        )
+        # One look for each session, not for each commission: they are few (at most ``FOLLOW_UP_ROWS``).
+        alive: dict[str, bool] = {}
+        goes_on: list[Commission] = []
+        for item in ended:
+            session_id = item.session_id or ""
+            if session_id not in alive:
+                alive[session_id] = await self._ledger.session_alive(await self._ledger.get_session(session_id))
+            if alive[session_id]:
+                goes_on.append(item)
+        return goes_on
 
     async def _denied_mcp(self) -> McpDenial:
         """Return the MCP server settings as of now."""
@@ -405,17 +446,18 @@ class TaskBrain:
         adapter's entries that can reach any server.
         """
         denial = await self._denied_mcp()
-        if not denial.any_denied:
-            return plugins
         kept: list[dict[str, Any]] = []
         for plugin in plugins:
-            plugin_id = str(plugin.get("id") or "")
+            if plugin.get("id") != MCP_ADAPTER_PLUGIN_ID:
+                kept.append(plugin)
+                continue
+            # The chooser and both execution routes use the same verified server identities.
+            allowed_ids = {
+                item.entry_id for item in capabilities_of_plugin(plugin)
+                if item.available and (item.permission != "mcp_server" or not denial.server_denied(item.permission_key or ""))
+            }
             entries = plugin.get("entries") or []
-            allowed = [
-                entry
-                for entry in entries
-                if not (isinstance(entry, dict) and mcp_entry_forbidden(plugin_id, entry, denial))
-            ]
+            allowed = [entry for entry in entries if isinstance(entry, dict) and entry.get("id") in allowed_ids]
             if len(allowed) == len(entries):
                 kept.append(plugin)
                 continue
@@ -438,6 +480,7 @@ class TaskBrain:
         lang: str = "en",
         source: str = "dispatch",
         generation: int | None = None,
+        source_message_ref: str | None = None,
     ) -> Receipt:
         """Take one sentence from her and return the receipt of the first round.
 
@@ -472,7 +515,7 @@ class TaskBrain:
             return Receipt(kind="nothing_active")
 
         first = self._spawn(
-            self._first_round(text, user_text, lanlan_name, conversation_id, lang, source, generation)
+            self._first_round(text, user_text, lanlan_name, conversation_id, lang, source, generation, source_message_ref)
         )
         done, _pending = await asyncio.wait({first}, timeout=DISPATCH_FIRST_ROUND_SECONDS)
         if done:
@@ -513,6 +556,7 @@ class TaskBrain:
         lang: str,
         source: str,
         generation: int | None = None,
+        source_message_ref: str | None = None,
     ) -> Receipt:
         from config.nekoclaw_settings import COMMISSION_TITLE_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
@@ -522,9 +566,11 @@ class TaskBrain:
         await self.expire_deferred()
         request = await self._request(text, user_text, lanlan_name, lang)
         triage = await self._decision.triage(request)
-        by_id = {commission.id: commission for commission in (*request.active, *request.answerable)}
+        by_id = {commission.id: commission for commission in (*request.active, *request.answerable, *request.recent)}
         targets = [by_id[target] for target in triage.targets if target in by_id]
         calls = triage.model_calls
+        # The commission this sentence goes on with, when it is one that is over.
+        earlier = targets[0] if triage.kind == "continue" and targets else None
 
         if triage.kind == "nothing_active":
             return Receipt(kind="nothing_active", model_calls=calls)
@@ -540,13 +586,44 @@ class TaskBrain:
             is_permission = (target.question() or {}).get("kind") == "permission"
             if is_permission and triage.choice is None:
                 return Receipt(kind="unclear_answer", commissions=[target], model_calls=calls)
-            delivered = await self.answer(target.id, text, choice=triage.choice)
+            # As the answer to the question it was read against: that one
+            # may be answered, or gone, by now, with another in its place.
+            delivered = await self.answer(
+                target.id, text, choice=triage.choice, question_id=(target.question() or {}).get("id")
+            )
             return Receipt(kind="answered" if delivered else "ambiguous", commissions=[target], model_calls=calls)
         if triage.kind == "tell" and targets:
             delivered = await self.tell(targets[0].id, text)
             if delivered:
                 return Receipt(kind="told", commissions=targets[:1], model_calls=calls)
             # It could not be passed on; treat the sentence as work of its own.
+        if earlier is not None and earlier.status == "failed":
+            # A commission that failed is taken up again as it is, where its
+            # session stands, with what the sentence adds: as when it is
+            # told so directly. One that was done or stopped stays over and
+            # is followed up by a commission of its own (below).
+            #
+            # Not when NekoClaw was switched off, or everything stopped,
+            # while this round was looking: it is over, a stop does not end
+            # it, and taking it up would start work after the stop.
+            if not self._is_enabled():
+                return Receipt(kind="no_capability", reason="disabled", model_calls=calls)
+            if generation != self._dispatch_generation:
+                return Receipt(kind="no_capability", reason="stopped", model_calls=calls)
+            # Looked at once more where taking it up waits (for its review
+            # to be written down, for its session to be set up): a stop may
+            # come during that as well, and so may the switch. What is said
+            # of it then is said below, where both are read again.
+            # The switch, not ``_is_enabled``: that says no as well once
+            # this brain is closed, which a host that shuts down does
+            # before it ends its task agents. A start caught by that is
+            # ended there, as failed because the host shut down, and can
+            # be taken up again; called off here, it would be stopped.
+            if await self.tell(
+                earlier.id, text, still_wanted=lambda: self._switched_on() and generation == self._dispatch_generation
+            ):
+                return Receipt(kind="told", commissions=[earlier], model_calls=calls)
+            earlier = None
         if triage.kind in ("stop", "answer", "duplicate"):
             # What it referred to is no longer there.
             return Receipt(kind="nothing_active", model_calls=calls)
@@ -559,6 +636,14 @@ class TaskBrain:
         if generation != self._dispatch_generation:
             return Receipt(kind="no_capability", reason="stopped", model_calls=calls)
 
+        follows: dict[str, Any] = {}
+        if earlier is not None:
+            # Where it goes on when a task agent takes it: in the session of
+            # the commission it follows up, with what was said there, in the
+            # same working directory, under the same project. That one
+            # stays as it ended. Written down in the second round, which
+            # chooses for this sentence as for any other.
+            follows = {"session_id": earlier.session_id, "continues": earlier.id, "project": earlier.project}
         commission, created = await self._ledger.create(
             unless=lambda active: find_duplicate(text, user_text, active),
             lanlan_name=lanlan_name,
@@ -566,19 +651,63 @@ class TaskBrain:
             dispatch_text=text,
             user_text=user_text,
             source=source,
+            source_message_ref=source_message_ref,
             conversation_id=conversation_id,
             lang=lang,
         )
         if not created:
             return Receipt(kind="duplicate", commissions=[commission], model_calls=calls)
+        if self._task_agents is not None:
+            # What was said just before it, as of now: by the time it is
+            # chosen who does it, more may have been said, and what the
+            # sentence refers to may no longer be among what is kept.
+            self._task_agents.note_filed(commission)
         request.active = [item for item in request.active if item.id != commission.id]
-        self._spawn(self._second_round(commission, request, triage), commission_id=commission.id)
+        self._spawn(self._second_round(commission, request, triage, follows=follows), commission_id=commission.id)
         return Receipt(kind="accepted", commissions=[commission], model_calls=calls)
 
-    async def _second_round(self, commission: Commission, request: DecisionRequest, triage: Triage) -> None:
+    async def _second_round(
+        self,
+        commission: Commission,
+        request: DecisionRequest,
+        triage: Triage,
+        *,
+        follows: dict[str, Any] | None = None,
+    ) -> None:
+        """Choose who does a commission, and hand it over.
+
+        ``follows`` is where the commission goes on when it adds to one a
+        task agent did (the session, the commission, the project). It is
+        chosen for like any other: a plugin that is picked does it, and
+        what the sentence states for good is kept. Only handed to a task
+        agent does it become part of that session; done by a plugin, or by
+        nothing, it has no part in it, and holds nothing of it.
+        """
+        # Whether a task agent has it: what was kept for one goes otherwise.
+        handed_over = False
         try:
             request.preferences = await self._preferences.render(request.match_text)
             selection = await self._decision.select(request, triage)
+            repeats = selection.route == "duplicate" and bool(selection.duplicate_of)
+            if not self._switched_on() and not repeats:
+                # NekoClaw was switched off while it was chosen who does
+                # it. Nothing new is begun while it is off, by a task
+                # agent or by a plugin: a sentence dispatched now would
+                # be turned away. And nothing of what was chosen is
+                # written down: not the session it would have gone on
+                # in, nor what the sentence states for good.
+                # (One that repeats something under way begins nothing:
+                # it is withdrawn as that, below, which is what there
+                # is to tell her of it whatever the switch says. Of
+                # that one what was chosen is written down as ever.)
+                # (The switch, not ``_is_enabled``: a brain that is being
+                # closed hands it over, and the start ends as failed
+                # because the host shut down, to be taken up again.)
+                await self._overturn_switched_off(commission)
+                return
+            goes_on = bool(follows) and selection.route == "task_agent" and self._task_agents is not None
+            if goes_on:
+                commission = await self._ledger.update(commission.id, **(follows or {})) or commission
             await self._ledger.append_event(
                 commission.id,
                 "decision",
@@ -588,6 +717,8 @@ class TaskBrain:
                     "entry_id": selection.entry_id,
                     "reason": selection.reason,
                     "model_calls": triage.model_calls + selection.model_calls,
+                    # Which commission it goes on with, in that one's session.
+                    **({"continues": commission.continues} if goes_on else {}),
                 },
             )
             if selection.preference:
@@ -601,10 +732,32 @@ class TaskBrain:
                     source_commission=commission.id,
                 )
             if selection.route == "plugin":
-                await self._call_plugin(commission, selection, request)
+                try:
+                    async with call_audit.call(self._ledger, commission.id, "direct", "plugin") as direct:
+                        await self._call_plugin(commission, selection, request, direct)
+                except call_audit.CommissionEnded:
+                    return
+                except call_audit.AuditFull as exc:
+                    moved = await self._ledger.transition(commission.id, "failed", reason=str(exc))
+                    if moved.applied:
+                        await self._reporter.correction(commission, reason="no_capability", detail="audit_full", text=str(exc))
             elif selection.route == "task_agent" and self._task_agents is not None:
-                await self._task_agents.submit(commission, candidate_plugin_ids=selection.shown_plugin_ids)
-            elif selection.route == "duplicate" and selection.duplicate_of:
+                # Asked once its session is made ready, before it takes a
+                # place: NekoClaw may have been switched off meanwhile.
+                still_on, turned_away = self._asks_whether_on()
+                await self._task_agents.submit(
+                    commission, candidate_plugin_ids=selection.shown_plugin_ids, still_wanted=still_on
+                )
+                # The task agents have it from here on (started, queued, or
+                # failed by them, with what was kept for it gone). Before
+                # that, a handing over that fails or is cut off leaves it
+                # with nobody, and what was kept goes below.
+                handed_over = True
+                if turned_away:
+                    # It took no place, and is nobody's: put down as what
+                    # it is, whatever the switch says by now.
+                    await self._overturn_switched_off(commission)
+            elif repeats:
                 await self._overturn_duplicate(commission, selection.duplicate_of)
             else:
                 await self._overturn_no_capability(commission, selection.reason)
@@ -619,13 +772,39 @@ class TaskBrain:
                 await self._reporter.correction(
                     commission, reason="no_capability", detail="error", text=self._no_capability_text(commission, "no_match")
                 )
+        finally:
+            if not handed_over and self._task_agents is not None:
+                self._task_agents.drop_excerpt(commission.id)
+
+    def _asks_whether_on(self) -> tuple[Callable[[], bool], list[bool]]:
+        """Return what says whether NekoClaw is switched on, and a list that is filled once it said no.
+
+        For whoever is handed a commission and waits for something
+        before it begins: asked there, last thing, a commission that
+        is turned away is put down by what was said then, and not
+        by what the switch says a moment later.
+        """
+        turned_away: list[bool] = []
+
+        def still_on() -> bool:
+            on = self._switched_on()
+            if not on:
+                turned_away.append(True)
+            return on
+
+        return still_on, turned_away
 
     def _no_capability_text(self, commission: Commission, reason: str) -> str:
         return Receipt(kind="no_capability", commissions=[commission], reason=reason).text(commission.lang or "en")
 
-    async def _overturn_no_capability(self, commission: Commission, why: str) -> None:
-        """Accepted, yet nothing can do it: fail the commission and tell her."""
-        reason = await self._no_capability_reason()
+    async def _overturn_no_capability(self, commission: Commission, why: str, *, reason: str | None = None) -> None:
+        """Accepted, yet nothing can do it: fail the commission and tell her.
+
+        ``reason`` is what she is told when that is known already
+        (``disabled``: NekoClaw was switched off before anything had
+        the commission); else it is looked up.
+        """
+        reason = reason or await self._no_capability_reason()
         moved = await self._ledger.transition(
             commission.id, "failed", reason=f"nothing can do this: {why or reason}"
         )
@@ -633,6 +812,10 @@ class TaskBrain:
             await self._reporter.correction(
                 commission, reason="no_capability", detail=reason, text=self._no_capability_text(commission, reason)
             )
+
+    async def _overturn_switched_off(self, commission: Commission) -> None:
+        """Accepted, and NekoClaw was switched off before anything had begun it: fail the commission and tell her so."""
+        await self._overturn_no_capability(commission, "NekoClaw was switched off meanwhile", reason="disabled")
 
     async def _overturn_duplicate(self, commission: Commission, duplicate_of: str) -> None:
         """Accepted, yet it repeats something under way: withdraw it and tell her."""
@@ -653,10 +836,13 @@ class TaskBrain:
             return False
         return mcp_entry_forbidden(str(selection.plugin_id), entry, await self._denied_mcp())
 
-    async def _call_plugin(self, commission: Commission, selection: Selection, request: DecisionRequest) -> None:
+    async def _call_plugin(
+        self, commission: Commission, selection: Selection, request: DecisionRequest, direct: call_audit.Call
+    ) -> None:
         """Call the chosen plugin entry and turn its result into the commission's end."""
         if await self._permission_store.mode("plugin_entry") == "deny" or await self._mcp_forbidden(selection, request):
             # Forbidden while the model was choosing: nothing is called.
+            direct.status, direct.reason = "denied", "settings"
             await self._overturn_no_capability(commission, "denied")
             return
         moved = await self._ledger.transition(
@@ -668,6 +854,7 @@ class TaskBrain:
             entry_id=selection.entry_id,
         )
         if not moved.applied:
+            direct.status = "cancelled"
             return
         _plugin, entry = find_entry(request.plugins, str(selection.plugin_id), selection.entry_id)
 
@@ -686,17 +873,75 @@ class TaskBrain:
                 except Exception:  # noqa: BLE001 - showing progress must not disturb the call
                     logger.debug("a progress listener failed", exc_info=True)
 
-        outcome = await self._runner.run_entry(
-            commission_id=commission.id,
-            plugin_id=selection.plugin_id,
-            entry_id=selection.entry_id,
-            args=selection.plugin_args,
-            lanlan_name=commission.lanlan_name,
-            conversation_id=commission.conversation_id,
-            latest_user_request=commission.user_text,
-            on_progress=progress,
-            on_run_created=run_created,
+        # Asked as the task that sends the request for the run begins:
+        # what was written down of the choice, the permissions and the
+        # list of plugins are waited for since NekoClaw was seen to be
+        # on, and it may have been switched off meanwhile.
+        still_on, turned_away = self._asks_whether_on()
+        capability = next(
+            (item for item in capabilities_of_plugin(_plugin or {}) if item.entry_id == selection.entry_id), None
         )
+        if capability is None or not capability.available:
+            direct.status, direct.reason = "denied", "settings"
+            await self._overturn_no_capability(commission, "unverified plugin capability", reason="denied")
+            return
+        with ExitStack() as cleanup:
+            grants = []
+            scope = GrantScope(capability.kind, capability.id)
+            checks = [("plugin_entry", None)]
+            if capability.permission != "plugin_entry":
+                checks.append((capability.permission, capability.permission_key))
+            for category, key in checks:
+                decision = await self._permissions.check(
+                    commission.id, category, key=key, scope=scope, hold_once=True,
+                    detail={"tool": capability.tool_name, "title": capability.title, "capability": capability.id},
+                )
+                if not decision.allow or not decision.grant_id:
+                    direct.status = "denied"
+                    direct.reason = "user" if decision.reason == DENIED_BY_USER else "settings"
+                    await self._overturn_no_capability(commission, "permission refused", reason="denied")
+                    return
+                grants.append(decision.grant_id)
+                cleanup.callback(self._permissions.release_grant, decision.grant_id)
+            direct.grant_id = self._permissions.authorization_ref(grants[-1])
+            stopped_for = ""
+
+            def still_wanted() -> bool:
+                nonlocal stopped_for
+                if not still_on():
+                    return False
+                if not self._registry.plugins_enabled():
+                    stopped_for = "not_enabled"
+                elif not all(self._permissions.grant_active(ref) for ref in grants):
+                    stopped_for = "denied"
+                return not stopped_for
+
+            outcome = await audited_run_entry(
+                self._ledger, self._runner, commission_id=commission.id,
+                plugin_id=selection.plugin_id,
+                entry_id=selection.entry_id,
+                args=selection.plugin_args,
+                lanlan_name=commission.lanlan_name,
+                conversation_id=commission.conversation_id,
+                latest_user_request=commission.user_text,
+                on_progress=progress,
+                on_run_created=run_created,
+                matches_entry=capability.matches_entry,
+                still_wanted=still_wanted,
+            )
+        direct.status = plugin_terminal_status(outcome.success, outcome.data)
+        if turned_away:
+            direct.status = "cancelled"
+            # Nothing was called: put down as what it is, and not as a
+            # call that failed.
+            await self._overturn_switched_off(commission)
+            return
+        if outcome.reason == "entry_changed":
+            stopped_for = "denied"
+        if stopped_for:
+            direct.status, direct.reason = "denied", "settings"
+            await self._overturn_no_capability(commission, "plugin unavailable before submission", reason=stopped_for)
+            return
         await self._finish_direct(commission, request.plugins, entry, outcome)
 
     async def _finish_direct(
@@ -783,15 +1028,19 @@ class TaskBrain:
         if current is None or current.status != "working":
             # Stopped or ended before the plugin was told: it is not called.
             return
-        outcome = await self._runner.run_entry(
-            commission_id=commission.id,
-            plugin_id=plugin_id,
-            entry_id=BIND_TASK_ENTRY,
-            args={"reminder_id": reminder_id, "agent_task_id": commission.id},
-            # Not chosen by a model: a plugin may well hide this entry from
-            # selection, and it has to be reachable all the same.
-            housekeeping=True,
-        )
+        try:
+            outcome = await audited_run_entry(
+                self._ledger, self._runner, commission_id=commission.id,
+                plugin_id=plugin_id,
+                entry_id=BIND_TASK_ENTRY,
+                args={"reminder_id": reminder_id, "agent_task_id": commission.id},
+                # Not chosen by a model: a plugin may well hide this entry from
+                # selection, and it has to be reachable all the same.
+                housekeeping=True,
+            )
+        except (call_audit.AuditFull, call_audit.CommissionEnded) as exc:
+            logger.warning("deferred binding skipped for commission %s (%s)", commission.id, type(exc).__name__)
+            return
         if not outcome.success:
             logger.warning("binding deferred work of commission %s failed: %s", commission.id, outcome.error)
 
@@ -946,17 +1195,29 @@ class TaskBrain:
             )
         return moved.commission
 
-    async def tell(self, commission_id: str, text: str) -> bool:
-        """Pass a sentence on to a commission. Only a task agent can take one."""
-        if self._task_agents is None:
-            return False
-        return await self._task_agents.tell(commission_id, text)
+    async def tell(self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None) -> bool:
+        """Pass a sentence on to a commission. Only a task agent can take one.
 
-    async def answer(self, commission_id: str, text: str, *, choice: str | None = None) -> bool:
-        """Give the user's answer to a commission that waits for one."""
+        ``still_wanted`` is asked before a commission that is over is taken
+        up again with it, after whatever that had to wait for, up to where
+        it is given its work.
+        """
         if self._task_agents is None:
             return False
-        return await self._task_agents.answer(commission_id, text, choice)
+        return await self._task_agents.tell(commission_id, text, still_wanted=still_wanted)
+
+    async def answer(
+        self, commission_id: str, text: str, *, choice: str | None = None, question_id: str | None = None
+    ) -> bool:
+        """Give the user's answer to a commission that waits for one.
+
+        ``question_id`` says which question it answers (the ``id`` of
+        what the commission asked): turned away when another one waits
+        by now. Not said, it is for whichever waits.
+        """
+        if self._task_agents is None:
+            return False
+        return await self._task_agents.answer(commission_id, text, choice, question_id=question_id)
 
     # -- query ------------------------------------------------------------
 
@@ -977,6 +1238,7 @@ class TaskBrain:
             QUERY_ROW_MAX_TOKENS,
         )
         from config.prompts.prompts_nekoclaw_brain import NO_CAPABILITY_REASONS, QUERY_TEXTS
+        from nekoclaw.host.reports import tokens_text
         from utils.tokenize import truncate_to_tokens
 
         lang = prompt_language(lang)
@@ -1032,14 +1294,54 @@ class TaskBrain:
             if any(relevance(item) > 0 for item in (*active, *recent)):
                 active = sorted(active, key=relevance, reverse=True)
                 recent = sorted(recent, key=relevance, reverse=True)
+        # One that is in both lists ended between the two readings. It is
+        # listed once: one that is looked at again below, as that look
+        # finds it (what the second list has of it is of an earlier moment
+        # by then: ended there, it may be under way again); any other (one
+        # that a plugin carries out is not looked at again), as the second
+        # list has it, which is the later of the two readings. Sorted out
+        # here, before the lists are cut to size: cut first, a first list
+        # that fills the rows by itself would leave no room for what the
+        # second has of it, and the earlier reading would be the one told.
+        twice = {item.id for item in active}.intersection(item.id for item in recent)
+        again = {item.id for item in active if item.id in twice and self._looked_at_again(item)}
+        active = [item for item in active if item.id not in twice or item.id in again]
+        recent = [item for item in recent if item.id not in again]
         active = active[:QUERY_LEDGER_ROWS]
         recent = recent[: QUERY_LEDGER_ROWS - len(active)]
+        # Each row from one look at its commission: its status, what it
+        # asks and what it waits for are read together, so that a row does
+        # not say "waiting for you" of one that was answered and rests.
+        looked = [await self._waiting_words(item, lang) for item in active]
+        # Sorted by how each stands as of that look. One that ended since
+        # the lists were read is among those that ended, and counts there
+        # as one she was told of.
+        ended = [seen for seen, _said in looked if seen.status not in ACTIVE_STATUSES]
+        active = [seen for seen, _said in looked if seen.status in ACTIVE_STATUSES]
+        waiting = {seen.id: said for seen, said in looked if seen.status in ACTIVE_STATUSES}
+        recent = [*ended, *recent]
 
         def line(commission: Commission) -> str:
-            parts = [f"- {commission.title} ({status_word(commission.status, lang)})"]
-            asking = waiting_row(parts[0], commission, words["asked"], lang) if commission.status == "waiting_user" else ""
-            if asking:
-                return asking
+            stands = status_word(commission.status, lang)
+            if commission.tokens > 0:
+                # What it used so far, its task agents' requests counted in:
+                # she can say what a task cost when she is asked.
+                stands = f"{stands} · {words['used'].format(tokens=tokens_text(commission.tokens))}"
+            head = bare = f"- {commission.title} ({stands})"
+            if waiting.get(commission.id):
+                # What it waits for by its own asking, and what waits for it:
+                # right after its status, where a cut does not reach it.
+                head += f" [{waiting[commission.id]}]"
+            parts = [head]
+            if commission.status == "waiting_user":
+                # What it asks is told whole before what it waits for
+                # besides: where the two do not fit in the row together,
+                # the note of what waits gives way, and not the end of the
+                # question, which is where the answers on offer are.
+                asking = waiting_row(bare, commission, words["asked"], lang)
+                noted = waiting_row(head, commission, words["asked"], lang) if head != bare else asking
+                if asking:
+                    return noted if noted.endswith(asking[len(bare) :]) else asking
             if commission.result_summary:
                 parts.append(words["result"].format(summary=commission.result_summary))
             elif commission.status_reason and commission.status in ("failed", "blocked"):
@@ -1074,6 +1376,64 @@ class TaskBrain:
             text=truncate_to_tokens("\n".join(lines), QUERY_RESULT_MAX_TOKENS),
             commissions=[*active, *recent],
         )
+
+    @staticmethod
+    def _looked_at_again(commission: Commission) -> bool:
+        """Whether a row of a query's answer is made from a new look at its commission (``_waiting_words``)."""
+        return commission.route == "task_agent" and bool(commission.session_id)
+
+    async def _waiting_words(self, commission: Commission, lang: str) -> tuple[Commission, str]:
+        """Say, for a row of a query's answer, what a commission under way waits for and what waits for it; empty for neither.
+
+        Returned with the commission as it was read for that: the row is
+        made from the one look.
+
+        That it rests and when it goes on; else the times its task agent
+        set for itself that have not come; and the notes other sessions
+        wrote to its session that were not handed over. Read from the
+        ledger; no model is asked.
+        """
+        from datetime import datetime
+
+        from config.prompts.prompts_nekoclaw_sessions import SESSION_QUERY_TEXTS
+
+        if not self._looked_at_again(commission):
+            return commission, ""
+        words = _texts(SESSION_QUERY_TEXTS, lang)
+
+        def at(moment: float) -> str:
+            then, today = datetime.fromtimestamp(moment), datetime.fromtimestamp(now)
+            return then.strftime("%H:%M" if then.date() == today.date() else "%m-%d %H:%M")
+
+        parts: list[str] = []
+        # Whether it rests and what would wake it, as of one look: read
+        # apart, a commission that was woken in between would be said to
+        # rest until the next of its times.
+        seen, own, notes = await self._ledger.waiting_view(commission.id)
+        # What time it is once that is read, and not when the query began:
+        # a time that came while the ledger was asked has come.
+        now = self._ledger._clock()
+        if seen is None:
+            return commission, ""
+        if own and seen.resting:
+            # One whose time has come and that could not be woken yet (the
+            # quota is used up, say) does not go on "at" a time gone by.
+            due = own[0].due_at
+            parts.append(words["due"] if due <= now else words["resting"].format(time=at(due)))
+        else:
+            timers = [wake for wake in own if wake.reason == "timer"]
+            # One whose time has come and that cannot go on yet (the
+            # commission waits for its user's answer, say) is not "the
+            # next": told apart from those that are still to come.
+            due = [wake for wake in timers if wake.due_at <= now]
+            ahead = [wake for wake in timers if wake.due_at > now]
+            if due:
+                parts.append(words["wakes_due"].format(count=len(due)))
+            if ahead:
+                parts.append(words["wakes"].format(count=len(ahead), time=at(ahead[0].due_at)))
+        if notes:
+            parts.append(words["notes"].format(count=notes))
+        return seen, "; ".join(parts)
 
     # -- what a new session is told ---------------------------------------
 
@@ -1113,6 +1473,7 @@ class TaskBrain:
         user_text: str,
         reply_text: str,
         conversation_id: str | None = None,
+        source_message_ref: str | None = None,
         lang: str = "en",
         external_intent: float | None = None,
     ) -> TurnCheck:
@@ -1196,6 +1557,7 @@ class TaskBrain:
                 conversation_id=conversation_id,
                 lang=lang,
                 source="promised",
+                source_message_ref=source_message_ref,
                 generation=generation,
             )
             result.receipt = receipt

@@ -93,6 +93,10 @@ __pycache__/
 .cursor/
 .pytest_cache/
 /.pytest_tmp*/
+/pytest-of-*/
+# plugin/tests/pytest.ini 用相对 --basetemp / cache_dir 生成，落点随 cwd 变化
+.pytest-run/
+.pytest-cache-plugin/
 .DS_Store
 .codex
 # Local investigation material: raw provider responses, synthetic fixtures
@@ -108,6 +112,9 @@ __pycache__/
 .kiro/
 # Local Windows Nuitka build script — maintainer-only, not for repo
 build_nuitka.bat
+# Generated neko-plugin skill staging (scripts/prepare_nuitka_plugins.py prepare);
+# the authored source lives in .agent/skills/neko-plugin/
+/plugin/neko_plugin_cli/agent_kit/
 # Playwright browsers cache (used by build_nuitka.bat, not for repo)
 playwright_browsers/
 .playwright-browsers/
@@ -255,6 +262,7 @@ tests/testbench/docs/dev_note.txt
 # 内置 Live2D 模型源码打包在 assets/<name>.tar.gz；build_frontend 解压到此
 /static/yui-origin/
 /static/yui-lolita/
+/static/yui-sister/
 # 内置 PNGTuber 模型源码位于 frontend/pngtuber-packs；build_frontend 解压到此
 /static/pngtuber/
 

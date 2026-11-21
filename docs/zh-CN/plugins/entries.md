@@ -2,7 +2,7 @@
 
 入口点是已加载插件暴露给插件管理器、其他插件和 Agent（猫爪，NekoClaw）的可调用操作。它由 `@plugin_entry(id=...)` 产生的运行时 `entry_id` 标识。
 
-不要把它与 `plugin.toml` 的 `[plugin].entry` 混淆：后者是宿主导入插件类时使用的 `module.path:ClassName`。也不要与 `@llm_tool` 混淆：LLM 工具注册到 main_server 的 `/api/tools` registry，由主对话模型在对话中调用；Agent 则是在一件事被交给它之后，才去选择插件的运行时入口。
+不要把它与 `plugin.toml` 的 `[plugin].entry` 混淆：后者是宿主导入插件类时使用的 `module.path:ClassName`。也不要与 `@llm_tool` 混淆：LLM 工具注册到 main_server 的 `/api/tools` registry，由主对话模型在对话中调用；Agent 则是在一件事被交给它之后，才去选择插件的运行时入口。见[选择 `@plugin_entry` 还是 `@llm_tool`](/zh-CN/plugins/tool-calling#choosing-an-entry-type)。
 
 Agent 先筛选插件，再读取入口元数据。精选必须返回精确存在的 `plugin_id` 和 `entry_id`；缺失或未知 ID 不会追问，也不会直达调用任何入口：这件事交给 task agent，task agent 不可用时回「办不了」。入口什么时候被调用、由谁调用、结果怎么处理，见下文「Agent 怎么调用入口」。
 
@@ -86,7 +86,7 @@ class SearchParams(BaseModel):
 
 @plugin_entry(id="search", name="搜索", description="搜索内容")
 async def search(self, params: SearchParams):
-    self.logger.info("搜索: {} (最多{}条)", params.query, params.max_results)
+    self.logger.info("搜索（最多 %d 条）", params.max_results)  # 不要记录原始查询内容
     results = await self._do_search(params.query, params.max_results)
     return Ok({"results": results, "count": len(results)})
 ```
@@ -124,7 +124,7 @@ async def divide(self, a: float, b: float):
 
 ---
 
-## 控制 AI 看到的返回内容
+## 控制 AI 看到的返回内容 {#controlling-what-the-ai-sees}
 
 用 `llm_result_fields` 声明 AI 读结果里的哪些字段。返回值里常常有大量原始数据（比如完整的搜索结果列表），而 AI 只需要看到摘要：
 
@@ -148,6 +148,52 @@ async def search(self, query: str):
 `llm_result_fields` 列出的字段才会发送给 AI。其他字段正常存储，面板中也能看到，只是不会塞进 AI 的上下文里（省 token）。
 
 没有声明 `llm_result_fields` 时，AI 拿到什么取决于是谁调用了入口，见下文「Agent 怎么调用入口」里的结果对照表。
+
+---
+
+## 输出契约
+
+`output_schema` 声明入口返回值的结构，让别的插件和工具可以依赖它。它和 `llm_result_fields` 是两回事：后者选 AI 读哪些字段，`output_schema` 描述整个返回值。
+
+**从返回注解推导。** 处理函数的返回注解是 Pydantic 模型（或 `Model | None`）时，输出契约就是这个模型，不用另外写：
+
+```python
+class SearchReply(BaseModel):
+    summary: str
+    count: int
+
+@plugin_entry(id="search")
+async def search(self, query: str) -> SearchReply:
+    ...
+```
+
+**显式声明。** 返回普通 dict 的入口，传一个 JSON Schema：
+
+```python
+@plugin_entry(
+    id="search",
+    output_schema={
+        "type": "object",
+        "properties": {"summary": {"type": "string"}, "count": {"type": "integer"}},
+        "required": ["summary", "count"],
+    },
+)
+async def search(self, query: str):
+    return Ok({"summary": "...", "count": 3})
+```
+
+显式的 `output_schema` 优先于返回注解。两者都没有的入口没有输出契约，行为和以前完全一样。
+
+**检查什么：和入参对称。** 入参写 `params=Model` 时运行时会校验，只写 `input_schema` 字典时只发布、不校验；输出也一样：
+
+- **返回注解是 Pydantic model**（`-> Model` 或 `-> Model | None`；`list[Model]` 等其他写法不推导）：每次调用成功后、自动保存状态之前，用返回的数据构造这个 model 来校验（和 `params` 的做法相同），所以 field / model validator 和 `HttpUrl` 这类类型都会生效。直接返回 model 实例时视为已校验（构造时已经校验过）；`Model | None` 时返回 `None` 也能通过。检查的是 `Ok(...)` 里的值、直接返回的值，或 `finish()`/`ok()` 信封里的 `data`；`Err(...)` 和 `fail()` 信封本身就是失败，不检查。发布出去的 schema 是 model 的 `model_json_schema()`，和 `params` 的发布方式相同。
+- **显式写的 `output_schema` 字典**：和 `input_schema` 一样只发布，运行时不校验，`strict_output` 对它不起作用。
+- 默认不符合时只在插件日志里记一条告警，返回值原样返回。告警只列字段路径和错误类型（例如 `$.count (int_parsing)`），不记录返回的内容。同一个入口的同一种不符合，一分钟内最多记一次，下一条会写明期间被抑制了多少条。
+- 设 `strict_output=True` 时，不符合会让本次调用失败，错误码是 `PLUGIN_OUTPUT_SCHEMA_VIOLATION`，其他插件经 `call_entry` 调用时能拿到这个错误码；`/runs` 按现有行为把插件错误显示为 `INTERNAL`。字段路径记在插件日志的告警里。这时会跳过自动保存状态，但 handler 已经做过的事不会回滚。validator 自身崩溃时只记告警，不会让调用失败。
+
+**请返回 model 本身，不要返回序列化后的字典。** 检查是用返回的数据、按 model 的输入规则构造 model。model 已经序列化过的数据不一定能还原：`finish(data=model)` 输出的是字段名（字段设了别名时会被报成缺失），`@field_serializer`、`exclude=True`、校验别名和序列化别名不同，也都会改变形状。这类 model 请直接返回实例，或者不开 `strict_output`。
+
+插件的入口列表里会带上 `output_schema`（和 `strict_output`）。`register_dynamic_entry()` 和 Router 的 `add_entry()` 也能声明显式的 `output_schema`（只发布）；运行时检查只来自 `@plugin_entry` 上的 Pydantic 返回注解。写在 `[[plugin.entries]]` 表里的 `output_schema`/`strict_output` 会被忽略（`neko-plugin check` 会提示）。任务 Agent 的能力网关不对外发布它。
 
 ---
 
@@ -198,7 +244,7 @@ async def on_startup(self):
             }),
         )
 
-    self.logger.info("注册了 {} 个动态入口", len(commands))
+    self.logger.info("注册了 %d 个动态入口", len(commands))
     return Ok({"status": "ready"})
 
 def _make_handler(self, cmd_info):
@@ -276,4 +322,5 @@ async def internal_sync(self):
 | 返回成功 | `return Ok({...})` |
 | 返回失败 | `return Err(SdkError("原因"))` |
 | 限制 AI 看到的字段 | `llm_result_fields=["field1", "field2"]` |
+| 声明入口的返回结构 | 返回注解写 Pydantic 模型，或 `output_schema={...}` |
 | 运行时才知道有哪些功能 | `self.register_dynamic_entry(...)` |

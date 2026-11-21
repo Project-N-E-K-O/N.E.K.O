@@ -40,7 +40,12 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from nekoclaw.host import call_audit
+
+if TYPE_CHECKING:
+    from nekoclaw.host.ledger import Ledger
 
 from nekoclaw.host.selection import visible_entries
 
@@ -406,6 +411,25 @@ class RunOutcome:
         return {"meta": self.meta}
 
 
+async def audited_run_entry(
+    ledger: Ledger, runner: PluginRunner, *, commission_id: str, plugin_id: str | None,
+    entry_id: str | None, **kwargs: Any,
+) -> RunOutcome:
+    """Record only the host-selected entry and the plugin server's run ID. Keep /runs unchanged."""
+    target = f"plugin:{plugin_id or ''}:{entry_id or ''}"
+    async with call_audit.call(ledger, commission_id, "plugin", target) as record:
+        outcome = await runner.run_entry(
+            commission_id=commission_id, plugin_id=plugin_id, entry_id=entry_id, audit_call=record, **kwargs
+        )
+        refusal = getattr(outcome, "reason", None)
+        if refusal == "entry_changed":
+            record.status, record.reason = "denied", "settings"
+        else:
+            record.status = ("cancelled" if refusal == "not_wanted"
+                             else plugin_terminal_status(outcome.success, outcome.data))
+        return outcome
+
+
 class PluginRunner:
     """Sends ``/runs`` requests and follows them to their end."""
 
@@ -552,7 +576,10 @@ class PluginRunner:
         latest_user_request: str = "",
         on_progress: ProgressCallback | None = None,
         on_run_created: Callable[[str], Awaitable[None]] | None = None,
+        audit_call: call_audit.Call | None = None,
         housekeeping: bool = False,
+        matches_entry: Callable[[dict[str, Any], dict[str, Any]], bool] | None = None,
+        still_wanted: Callable[[], bool] | None = None,
     ) -> RunOutcome:
         """Call one plugin entry and wait for the run to end.
 
@@ -564,6 +591,12 @@ class PluginRunner:
         no model chose (handing a deferred task's id to the plugin's
         ``bind_task`` entry): such an entry may be hidden from selection, so
         the entry is looked for among all of the plugin's entries.
+
+        ``still_wanted`` is asked in the task that sends the request,
+        as it begins and before the HTTP client is made
+        (``_create_run``): a call that is not wanted any more is not
+        made (``not_wanted``). What the client itself waits for before
+        the request is on the wire is past that.
         """
         plugin_args = dict(args) if isinstance(args, dict) else {}
         requested_entry = entry_id or plugin_args.pop("_entry", None)
@@ -625,6 +658,10 @@ class PluginRunner:
                 )
 
         resolved_entry = str(requested_entry or "run")
+        if matches_entry is not None:
+            matching = [item for item in listed if str(item.get("id")) == resolved_entry]
+            if len(matching) != 1 or not matches_entry(plugin, matching[0]):
+                return rejected("the approved plugin entry has changed", "entry_changed")
         safe_args = dict(plugin_args)
         entry_timeout = resolve_entry_timeout(plugin, requested_entry, self._default_entry_timeout())
         try:
@@ -668,7 +705,19 @@ class PluginRunner:
         # exist on the plugin server, so a caller that is cancelled meanwhile
         # must not take the request down with it: the answer is still read,
         # and the run it names is cancelled.
-        request = asyncio.ensure_future(self._create_run(body))
+        async def create() -> tuple[Any, tuple[str, str] | None]:
+            created, problem = await self._create_run(body, still_wanted)
+            run_id = created.get("run_id") if isinstance(created, dict) else None
+            if audit_call and isinstance(run_id, str) and run_id:
+                # This task also owns a response arriving after caller cancellation.
+                # Keep the resolved entry and never copy the accompanying run token.
+                try:
+                    await audit_call.bind_run(run_id, f"plugin:{plugin_id}:{resolved_entry}")
+                except Exception as exc:  # a remote run exists; still track it for cancellation
+                    logger.warning("could not attach a plugin run to its host call (%s)", type(exc).__name__)
+            return created, problem
+
+        request = asyncio.ensure_future(create())
         self._cancel_tasks.add(request)
         request.add_done_callback(self._cancel_tasks.discard)
         try:
@@ -746,9 +795,22 @@ class PluginRunner:
             stage=completion.get("stage"),
         )
 
-    async def _create_run(self, body: dict[str, Any]) -> tuple[Any, tuple[str, str] | None]:
-        """Send ``POST /runs``. Returns ``(answer, None)`` or ``(None, (error, reason))``."""
+    async def _create_run(
+        self, body: dict[str, Any], still_wanted: Callable[[], bool] | None = None
+    ) -> tuple[Any, tuple[str, str] | None]:
+        """Send ``POST /runs``. Returns ``(answer, None)`` or ``(None, (error, reason))``.
+
+        ``still_wanted`` is asked here, as this begins, and not where
+        this is started: it runs as a task of its own, which begins a
+        moment after it is made. Before the client is made: a client
+        that cannot be made is a call that failed, and that is not
+        what is told of a call nobody wants any more.
+        """
         target = f"{body.get('plugin_id')}.{body.get('entry_id')}"
+        if still_wanted is not None and not still_wanted():
+            # Whoever handed the call over no longer wants it made (NekoClaw
+            # was switched off since it was chosen): nothing is sent.
+            return None, ("the call is not wanted any more", "not_wanted")
         try:
             async with self._client() as client:
                 response = await client.post(f"{self.base_url}/runs", json=body)

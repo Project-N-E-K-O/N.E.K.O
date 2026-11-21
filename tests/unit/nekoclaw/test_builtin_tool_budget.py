@@ -218,18 +218,14 @@ async def test_no_shipped_tool_is_listed_and_every_request_carries_one_line_abou
     assert [item["name"] for item in listed] == [SEARCH_TOOL, CALL_TOOL]
     description = listed[0]["description"].splitlines()
     assert description[1:] == [
-        "Tool groups, not among your tools until used. To use one, make its first call below through "
-        "capability_call: the answer also brings the group's other tools and how to use them.",
+        "Use listed device tools directly. For an unlisted group, its first call below through "
+        "capability_call also returns the group's tools and guidance.",
         f"- browser: {BUILTIN_GROUP_SUMMARIES['browser']} First call: browser_navigate_page, "
         'arguments {"url": "..."}.',
         f"- desktop: {BUILTIN_GROUP_SUMMARIES['keyboard_mouse']} First call: computer, "
         'arguments {"action": "screenshot"}.',
     ]
-    assert listed[0]["inputSchema"]["properties"]["group"] == {
-        "type": "string",
-        "enum": ["browser", "desktop"],
-        "description": TOOL_GROUP_ARGUMENT,
-    }
+    assert listed[0]["inputSchema"]["properties"]["group"] == {"type": "string", "description": TOOL_GROUP_ARGUMENT}
     # Not one shipped tool is defined or described in it, nor is there a
     # word of how a group is used. The one browser tool that is named is
     # the call the group is started with.
@@ -500,8 +496,7 @@ async def test_a_task_agent_is_told_of_and_handed_exactly_what_its_model_can_use
     # A model that sees no pictures is not told of the keyboard and the
     # mouse, whose only tool works from screenshots, and gets the browser
     # without its screenshot tool.
-    assert seeing[0]["inputSchema"]["properties"]["group"]["enum"] == ["browser", "desktop"]
-    assert blind[0]["inputSchema"]["properties"]["group"]["enum"] == ["browser"]
+    assert "- browser:" in seeing[0]["description"] and "- browser:" in blind[0]["description"]
     assert "- desktop:" in seeing[0]["description"] and "- desktop:" not in blind[0]["description"]
     handed = await _loaded(host, "browser", images=False)
     assert [json.loads(line)["name"] for line in handed.split("\n\n")[2].splitlines()] == [

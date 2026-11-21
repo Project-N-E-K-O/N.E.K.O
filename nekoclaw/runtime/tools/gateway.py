@@ -34,13 +34,20 @@ by the gateway, not by the runtime's own permission hook.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from config.nekoclaw_settings import GATEWAY_REPLY_META_KEY
+from config.nekoclaw_settings import (
+    GATEWAY_COMMISSION_TOOL_META_KEY,
+    GATEWAY_COMPACTIONS_META_KEY,
+    GATEWAY_DEVICE_INTENT_META_KEY,
+    GATEWAY_IDLE_DEVICE_CYCLE_META_KEY,
+    GATEWAY_REPLY_META_KEY,
+)
 from nekoclaw.runtime.loop.messages import ImageContent, TextContent
 from nekoclaw.runtime.loop.tools import AgentTool, AgentToolResult
 from nekoclaw.runtime.tools.base import ToolCallInfo, ToolError, define_tool, run_cancellable
@@ -52,6 +59,28 @@ CLIENT_NAME = "nekoclaw-runtime"
 HANDSHAKE_TIMEOUT_SECONDS = 30.0
 CONNECT_TIMEOUT_SECONDS = 5.0
 _EMPTY_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
+
+# The one TLS configuration of this process's gateway clients; see ``_tls``.
+_TLS: Any = None
+
+
+async def _tls() -> Any:
+    """Return the TLS configuration every request to the gateway is made with, put together once.
+
+    A request is made with a client of its own, and a client that is given
+    no configuration loads the certificate bundle anew: a tenth of a second
+    and more each time, which is longer than everything else a request to
+    the loopback address takes, three times over for the handshake of a
+    session that is opened. So it is made when first asked for, on a thread,
+    and used from then on. (Made twice by two sessions that ask at the same
+    moment, which does no harm.)
+    """
+    global _TLS
+    if _TLS is None:
+        import httpx
+
+        _TLS = await asyncio.to_thread(httpx.create_ssl_context, trust_env=False)
+    return _TLS
 
 
 MAX_IMAGES_PER_RESULT = 4
@@ -90,6 +119,14 @@ class GatewayClient:
         self._protocol_version: str | None = None
         # Which reply of the model the calls being made were written in.
         self._reply = 0
+        # How often the session's conversation has been summed up; the
+        # session keeps it current. Every call names it: what the gateway
+        # handed over before a summary (a group of tools and how they are
+        # used) is no longer in the conversation after it.
+        self.compactions = 0
+        self.commission_tools: set[str] = set()
+        self.device_groups: dict[str, str] = {}
+        self.device_list_dirty = False
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -107,7 +144,7 @@ class GatewayClient:
         timeout = httpx.Timeout(read_timeout, connect=CONNECT_TIMEOUT_SECONDS)
         try:
             # The gateway is on the loopback address: no proxy, no environment.
-            async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False, verify=await _tls()) as client:
                 response = await client.post(self._url, headers=self._headers(), content=json.dumps(message))
         except httpx.HTTPError as exc:
             raise GatewayError(f"{type(exc).__name__}: {exc}") from exc
@@ -155,9 +192,37 @@ class GatewayClient:
         if isinstance(result, dict) and isinstance(result.get("protocolVersion"), str):
             self._protocol_version = result["protocolVersion"]
         await self.notify("notifications/initialized")
-        listed = await self.request("tools/list", {}, read_timeout=HANDSHAKE_TIMEOUT_SECONDS)
+        offered = await self.list_tools()
+        self.device_groups = {
+            tool["name"]: group for tool in offered
+            if tool["name"] in self.commission_tools
+            and isinstance(group := tool["_meta"].get(GATEWAY_DEVICE_INTENT_META_KEY), str)
+        }
+        return offered
+
+    async def list_tools(
+        self, *, compactions: int | None = None, wanted: tuple[str, ...] = (), idle_device_cycle: bool = False
+    ) -> list[dict[str, Any]]:
+        meta: dict[str, Any] = {}
+        if compactions is not None:
+            meta[GATEWAY_COMPACTIONS_META_KEY] = compactions
+        if wanted:
+            meta[GATEWAY_DEVICE_INTENT_META_KEY] = list(wanted)
+        if idle_device_cycle:
+            meta[GATEWAY_IDLE_DEVICE_CYCLE_META_KEY] = True
+        listed = await self.request("tools/list", {"_meta": meta} if meta else {}, read_timeout=HANDSHAKE_TIMEOUT_SECONDS)
         tools = listed.get("tools") if isinstance(listed, dict) else None
-        return [tool for tool in tools or [] if isinstance(tool, dict) and tool.get("name")]
+        if not isinstance(tools, list):
+            raise GatewayError("tools/list did not return a list of tools")
+        offered = [
+            tool for tool in tools
+            if isinstance(tool, dict) and isinstance(tool.get("name"), str) and tool["name"]
+        ]
+        self.commission_tools = {
+            tool["name"] for tool in offered
+            if isinstance(tool.get("_meta"), dict) and tool["_meta"].get(GATEWAY_COMMISSION_TOOL_META_KEY) is True
+        }
+        return offered
 
     def next_reply(self) -> None:
         """Note that the model has answered: the calls made from now on were written in that reply.
@@ -171,10 +236,17 @@ class GatewayClient:
 
     async def call(self, name: str, arguments: dict[str, Any]) -> GatewayResult:
         """Call one tool and return its text and pictures; waits as long as the tool takes."""
-        params = {"name": name, "arguments": arguments, "_meta": {GATEWAY_REPLY_META_KEY: self._reply}}
+        params = {
+            "name": name,
+            "arguments": arguments,
+            "_meta": {GATEWAY_REPLY_META_KEY: self._reply, GATEWAY_COMPACTIONS_META_KEY: self.compactions},
+        }
         result = await self.request("tools/call", params, read_timeout=None)
         if not isinstance(result, dict):
             return GatewayResult("", (), False)
+        update = result.get("_meta")
+        if isinstance(update, dict) and update.get(GATEWAY_DEVICE_INTENT_META_KEY) in self.device_groups.values():
+            self.device_list_dirty = True
         parts: list[str] = []
         images: list[ImageContent] = []
         dropped = 0

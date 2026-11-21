@@ -54,13 +54,20 @@ class AgentRuntime(Protocol):
     async def start(self, spec: protocol.TaskAgentSpec) -> None:
         """Create a session, continuing its transcript if one exists."""
 
-    async def prompt(self, session_id: str, text: str) -> None:
-        """Hand the session work; rejected while a run is in progress."""
+    async def prompt(
+        self, session_id: str, text: str, *, opening: bool = False, human: bool = True, serial: int | None = None
+    ) -> None:
+        """Hand the session work; rejected while a run is in progress.
 
-    async def steer(self, session_id: str, text: str) -> None:
+        ``opening`` marks the text that opens a commission, ``human``
+        says whether a person wrote the text, and ``serial`` is said again
+        where the text is refused; see ``protocol.PromptCommand``.
+        """
+
+    async def steer(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
         """Deliver text before the next model request of the current run."""
 
-    async def follow_up(self, session_id: str, text: str) -> None:
+    async def follow_up(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
         """Deliver text once the current run has nothing left to do."""
 
     async def abort(self, session_id: str) -> None:
@@ -68,6 +75,19 @@ class AgentRuntime(Protocol):
 
     async def close(self, session_id: str) -> None:
         """Stop the session and forget it."""
+
+    async def fork(
+        self, session_id: str, *, session_dir: str, source_session_id: str, source_dir: str, upto: str | None = None
+    ) -> None:
+        """Make the record of a new session from another's; see ``protocol.ForkCommand``.
+
+        A ``forked`` event for the new session follows, or an ``error``
+        event whose ``command`` is ``fork``. A runtime that cannot copy a
+        session answers with that error.
+        """
+
+    async def compact(self, session_id: str) -> None:
+        """Sum the conversation of an idle session up now; rejected while a run is in progress."""
 
     async def shutdown(self) -> None:
         """Close every session; a subprocess runtime also ends its process."""
@@ -95,10 +115,22 @@ class RuntimeCore:
         # session and no new work is accepted. A count, not a flag: a second
         # call that returns first must not reopen the door for the first.
         self._shutdowns = 0
+        # How many calls of ``shutdown`` have begun, ever: what was being
+        # prepared when one began does not go on once it is over.
+        self._shutdowns_begun = 0
         # Sessions whose creation outlasted a shutdown; closed on arrival.
         self._abandoned: set[str] = set()
         # Keeps the tasks that close sessions alive until they are done.
         self._close_tasks: set[asyncio.Future[None]] = set()
+        # Sessions whose record is being made from another's right now,
+        # and the copying itself where it has begun: shutting down waits
+        # for it, so that it is said what became of each.
+        self._forking: set[str] = set()
+        self._copying: set[asyncio.Future[Any]] = set()
+        # Copies that still wait for the session they are made from: let
+        # go of when the runtime shuts down, so that each says at once
+        # that it is not made, and its id is free.
+        self._preparing: set[asyncio.Future[None]] = set()
         self.last_command_at = time.monotonic()
 
     # -- state ----------------------------------------------------------------
@@ -110,21 +142,21 @@ class RuntimeCore:
     @property
     def idle(self) -> bool:
         """True when no session is being created or closed, runs, or has a running job."""
-        if self._starting or self._closing:
+        if self._starting or self._closing or self._forking:
             return False
         return not any(session.busy for session in self._sessions.values())
 
-    def _reject(self, session_id: str, command: str, message: str) -> None:
+    def _reject(self, session_id: str, command: str, message: str, serial: int | None = None) -> None:
         self._emit(
             protocol.dump(
-                protocol.ErrorEvent(session_id=session_id, command=command, message=message)
+                protocol.ErrorEvent(session_id=session_id, command=command, message=message, serial=serial)
             )
         )
 
-    def _session(self, session_id: str, command: str) -> TaskAgentSession | None:
+    def _session(self, session_id: str, command: str, serial: int | None = None) -> TaskAgentSession | None:
         session = self._sessions.get(session_id)
         if session is None:
-            self._reject(session_id, command, f'unknown session "{session_id}"')
+            self._reject(session_id, command, f'unknown session "{session_id}"', serial)
         return session
 
     # -- commands -------------------------------------------------------------
@@ -134,6 +166,9 @@ class RuntimeCore:
         self.last_command_at = time.monotonic()
         if isinstance(command, protocol.StartCommand):
             await self.start(command.spec)
+            return
+        if isinstance(command, protocol.ForkCommand):
+            await self.fork(command)
             return
         # A driver may send the next command right after ``start`` without
         # waiting for ``started``. Creating a session takes a while, so such a
@@ -145,17 +180,123 @@ class RuntimeCore:
         if opening is not None:
             await asyncio.shield(opening)
         if isinstance(command, protocol.PromptCommand):
-            self.prompt(command.session_id, command.text)
+            self.prompt(
+                command.session_id, command.text, opening=command.opening, human=command.human, serial=command.serial
+            )
         elif isinstance(command, protocol.SteerCommand):
-            self.steer(command.session_id, command.text)
+            self.steer(command.session_id, command.text, human=command.human, serial=command.serial)
         elif isinstance(command, protocol.FollowUpCommand):
-            self.follow_up(command.session_id, command.text)
+            self.follow_up(command.session_id, command.text, human=command.human, serial=command.serial)
         elif isinstance(command, protocol.AbortCommand):
             self.abort(command.session_id)
         elif isinstance(command, protocol.CloseCommand):
             await self.close(command.session_id)
+        elif isinstance(command, protocol.CompactCommand):
+            self.compact_now(command.session_id)
         else:
             raise TypeError(f"not a session command: {type(command).__name__}")
+
+    async def fork(self, command: protocol.ForkCommand) -> None:
+        """Make the record of a new session from another's and say so; see ``fork.py``.
+
+        The other session may be open here, and at work. What it has said
+        so far is written out first, and the copy ends at the last place
+        where its conversation is whole. One that is on its way in or out
+        is waited for: its record is complete once it is there, or gone.
+        """
+        from pathlib import Path
+
+        from nekoclaw.runtime.fork import ForkError, fork_record
+
+        session_id, source_id = command.session_id, command.source_session_id
+        if self._shutdowns:
+            self._reject(session_id, "fork", "the runtime is shutting down")
+            return
+        if session_id in self._sessions or session_id in self._starting or session_id in self._forking:
+            self._reject(session_id, "fork", f'session "{session_id}" already exists')
+            return
+        self._forking.add(session_id)
+        shutdowns = self._shutdowns_begun
+
+        async def prepare() -> None:
+            for under_way in (self._starting.get(source_id), self._closing.get(source_id)):
+                if under_way is not None:
+                    await asyncio.shield(under_way)
+            source = self._sessions.get(source_id)
+            if source is not None:
+                await source.flush()
+
+        # A task of its own, which a shutdown lets go of: what it waits
+        # for (the other session coming in, going out, writing) is not
+        # cancelled with it.
+        preparing = asyncio.ensure_future(prepare())
+        self._preparing.add(preparing)
+        try:
+            await preparing
+        except asyncio.CancelledError:
+            # Nothing was written yet.
+            self._forking.discard(session_id)
+            caller = asyncio.current_task()
+            if self._shutdowns_begun != shutdowns and not (caller is not None and caller.cancelling()):
+                # Let go of by a shutdown, and not by whoever asked.
+                self._reject(session_id, "fork", "the runtime is shutting down")
+                return
+            raise
+        except Exception as exc:  # noqa: BLE001 - reported to the host, never raised into the pump
+            self._forking.discard(session_id)
+            logger.exception("could not copy session %s", source_id)
+            self._reject(session_id, "fork", f"{type(exc).__name__}: {exc}")
+            return
+
+        finally:
+            self._preparing.discard(preparing)
+        if self._shutdowns_begun != shutdowns:
+            # The runtime was shut down while this waited for the other
+            # session, and that is over by now or still under way:
+            # nothing is written behind its back. (Whoever asked may have
+            # tidied up after it already, and no longer listens.)
+            self._forking.discard(session_id)
+            self._reject(session_id, "fork", "the runtime is shutting down")
+            return
+
+        def written(done: "asyncio.Future[Any]") -> None:
+            self._copying.discard(done)
+            self._forking.discard(session_id)
+            if done.cancelled():
+                return
+            failed = done.exception()
+            if failed is None:
+                made = done.result()
+                self._emit(
+                    protocol.dump(
+                        protocol.ForkedEvent(
+                            session_id=session_id, source_session_id=source_id, upto=made.upto, entries=made.entries
+                        )
+                    )
+                )
+            elif isinstance(failed, ForkError):
+                self._reject(session_id, "fork", str(failed))
+            else:
+                logger.error("could not copy session %s", source_id, exc_info=failed)
+                self._reject(session_id, "fork", f"{type(failed).__name__}: {failed}")
+
+        # The copying itself: it goes on in its thread whatever becomes of
+        # whoever waits for it here, and until it is through the session
+        # is not to be copied or started again. What became of it is said
+        # by the copying when it is through, once, and not by whoever
+        # waits: one that is cancelled, be it while the thread still
+        # writes or after it has written and before this got to hear of
+        # it, leaves a host that still has to learn that a record was
+        # written, to remove it.
+        copying = asyncio.ensure_future(
+            asyncio.to_thread(fork_record, Path(command.source_dir), Path(command.session_dir), upto=command.upto)
+        )
+        self._copying.add(copying)
+        copying.add_done_callback(written)
+        try:
+            await asyncio.shield(copying)
+        except Exception:  # noqa: BLE001 - said to the host by ``written``
+            logger.debug("the copy of session %s was not made", source_id)
 
     async def start(self, spec: protocol.TaskAgentSpec) -> None:
         session_id = spec.session_id
@@ -165,6 +306,11 @@ class RuntimeCore:
             return
         if session_id in self._sessions or session_id in self._starting:
             self._reject(session_id, "start", f'session "{session_id}" already exists')
+            return
+        if session_id in self._forking:
+            # Its record is being written: opened now, it would begin with
+            # nothing, or with half of it.
+            self._reject(session_id, "start", f'session "{session_id}" is being copied; start it once that is done')
             return
         opening: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._starting[session_id] = opening
@@ -198,32 +344,48 @@ class RuntimeCore:
             del self._starting[session_id]
             opening.set_result(None)
 
-    def _text_command(self, session_id: str, command: str, text: str) -> None:
+    def _text_command(self, session_id: str, command: str, text: str, serial: int | None, **options: Any) -> None:
+        # ``serial`` is the sender's number for this text: said with the
+        # refusal, so the sender knows which of its texts was refused.
         if self._shutdowns:
             # New work would begin behind the back of the shutdown.
-            self._reject(session_id, command, "the runtime is shutting down")
+            self._reject(session_id, command, "the runtime is shutting down", serial)
             return
-        session = self._session(session_id, command)
+        session = self._session(session_id, command, serial)
         if session is None:
             return
         try:
-            getattr(session, command)(text)
+            getattr(session, command)(text, **options)
         except SessionError as exc:
-            self._reject(session_id, command, str(exc))
+            self._reject(session_id, command, str(exc), serial)
 
-    def prompt(self, session_id: str, text: str) -> None:
-        self._text_command(session_id, "prompt", text)
+    def prompt(
+        self, session_id: str, text: str, *, opening: bool = False, human: bool = True, serial: int | None = None
+    ) -> None:
+        self._text_command(session_id, "prompt", text, serial, opening=opening, human=human)
 
-    def steer(self, session_id: str, text: str) -> None:
-        self._text_command(session_id, "steer", text)
+    def steer(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
+        self._text_command(session_id, "steer", text, serial, human=human)
 
-    def follow_up(self, session_id: str, text: str) -> None:
-        self._text_command(session_id, "follow_up", text)
+    def follow_up(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
+        self._text_command(session_id, "follow_up", text, serial, human=human)
 
     def abort(self, session_id: str) -> None:
         session = self._session(session_id, "abort")
         if session is not None:
             session.abort()
+
+    def compact_now(self, session_id: str) -> None:
+        if self._shutdowns:
+            self._reject(session_id, "compact", "the runtime is shutting down")
+            return
+        session = self._session(session_id, "compact")
+        if session is None:
+            return
+        try:
+            session.compact()
+        except SessionError as exc:
+            self._reject(session_id, "compact", str(exc))
 
     async def close(self, session_id: str) -> None:
         session = self._sessions.pop(session_id, None)
@@ -283,12 +445,18 @@ class RuntimeCore:
         loop = asyncio.get_running_loop()
         deadline = None if timeout is None else loop.time() + timeout
         self._shutdowns += 1
+        self._shutdowns_begun += 1
+        for preparing in list(self._preparing):
+            # Copies that have not begun: not made after this, and told so now.
+            preparing.cancel()
         try:
             while True:
                 for session_id, session in list(self._sessions.items()):
                     self._begin_close(session_id, session)
                 self._sessions.clear()
-                under_way = [*self._starting.values(), *self._closing.values()]
+                # A record that is being copied is written to its end, and
+                # what became of it is said, before the runtime is gone.
+                under_way = [*self._starting.values(), *self._closing.values(), *self._copying]
                 if not under_way:
                     break
                 remaining = None if deadline is None else max(0.0, deadline - loop.time())
@@ -326,20 +494,44 @@ class InProcessRuntime:
     async def start(self, spec: protocol.TaskAgentSpec) -> None:
         await self._core.handle(protocol.StartCommand(spec=spec))
 
-    async def prompt(self, session_id: str, text: str) -> None:
-        await self._core.handle(protocol.PromptCommand(session_id=session_id, text=text))
+    async def prompt(
+        self, session_id: str, text: str, *, opening: bool = False, human: bool = True, serial: int | None = None
+    ) -> None:
+        await self._core.handle(
+            protocol.PromptCommand(session_id=session_id, text=text, opening=opening, human=human, serial=serial)
+        )
 
-    async def steer(self, session_id: str, text: str) -> None:
-        await self._core.handle(protocol.SteerCommand(session_id=session_id, text=text))
+    async def steer(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
+        await self._core.handle(
+            protocol.SteerCommand(session_id=session_id, text=text, human=human, serial=serial)
+        )
 
-    async def follow_up(self, session_id: str, text: str) -> None:
-        await self._core.handle(protocol.FollowUpCommand(session_id=session_id, text=text))
+    async def follow_up(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
+        await self._core.handle(
+            protocol.FollowUpCommand(session_id=session_id, text=text, human=human, serial=serial)
+        )
 
     async def abort(self, session_id: str) -> None:
         await self._core.handle(protocol.AbortCommand(session_id=session_id))
 
     async def close(self, session_id: str) -> None:
         await self._core.handle(protocol.CloseCommand(session_id=session_id))
+
+    async def fork(
+        self, session_id: str, *, session_dir: str, source_session_id: str, source_dir: str, upto: str | None = None
+    ) -> None:
+        await self._core.handle(
+            protocol.ForkCommand(
+                session_id=session_id,
+                session_dir=session_dir,
+                source_session_id=source_session_id,
+                source_dir=source_dir,
+                upto=upto,
+            )
+        )
+
+    async def compact(self, session_id: str) -> None:
+        await self._core.handle(protocol.CompactCommand(session_id=session_id))
 
     async def shutdown(self) -> None:
         # Bounded: a session whose creation hangs must not hold up the host's

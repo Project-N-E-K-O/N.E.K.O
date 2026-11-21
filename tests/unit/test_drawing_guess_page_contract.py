@@ -222,7 +222,7 @@ def test_drawing_guess_uses_minigame_sdk_for_host_lifecycle():
     assert "client.voice.onState(handleSdkVoiceState)" in script
     assert "client.voice.onTranscript(handleSdkVoiceTranscript)" in script
     assert "client.voice.onError(handleSdkVoiceError)" in script
-    assert "client.voice.toggle({ timeoutMs: 12000 })" in script
+    assert "client.voice.toggle({ timeoutMs: 15000 })" in script
     assert "client.voice.stop({ timeoutMs: 6500 })" in script
     assert "client.events.on('page-exit', handleSdkPageExit)" in script
     assert "state.playerTextChain = Promise.resolve(state.playerTextChain)" in script
@@ -576,7 +576,30 @@ def test_drawing_guess_static_route_contract():
     assert "function handleVoiceRouteButton" in script
     assert "client.voice.query({ timeoutMs: 5000 })" in script
     assert "client.voice.stop({ timeoutMs: 6500 })" in script
-    assert "client.voice.toggle({ timeoutMs: 12000 })" in script
+    assert "client.voice.toggle({ timeoutMs: 15000 })" in script
+    # #3003: a reply for a route that ended mid-command must not be painted over
+    # the current route or reported as a failure (the host microphone may well
+    # be live), and a start still pending at the deadline is not a failure.
+    # The client budget must outlast the host bridge's own start wait
+    # (COMMAND_TIMEOUT_MS, which only begins once the command arrives) plus
+    # the reply's way back, or the SDK rejects before a start_pending reply can
+    # land and the catch reports a failure.
+    host_bridge = (ROOT / "static" / "app" / "app-game-voice-control.js").read_text(encoding="utf-8")
+    host_wait = int(re.search(r"var COMMAND_TIMEOUT_MS = (\d+);", host_bridge).group(1))
+    toggle_budget = int(script.split("client.voice.toggle({ timeoutMs: ", 1)[1].split(" ", 1)[0])
+    assert toggle_budget >= host_wait + 2000, (toggle_budget, host_wait)
+    toggle_reply = script.split("client.voice.toggle({ timeoutMs: 15000 }).then(", 1)[1]
+    toggle_reply = toggle_reply.split("}).catch(", 1)[0]
+    superseded_at = toggle_reply.index("voiceState.reason === 'route_superseded') return;")
+    pending_at = toggle_reply.index("voiceState.reason === 'start_pending') return;")
+    apply_at = toggle_reply.index("handleSdkVoiceState(voiceState);")
+    failure_at = toggle_reply.index("drawingGuess.voice.controlFailed")
+    assert superseded_at < apply_at < pending_at < failure_at
+    # While the host is still starting (e.g. after start_pending) the voice
+    # button is held like a pending command: a click would toggle it off.
+    assert "var pending = !!state.voiceControlPending || !!state.voiceRouteStarting;" in script
+    sdk_state = script.split("function handleSdkVoiceState(voiceState) {", 1)[1].split("\n  }\n", 1)[0]
+    assert "state.voiceRouteStarting = detail.route_active !== false && detail.starting;" in sdk_state
     assert "client.voice.handoff(" not in script
     assert "voiceHandoff" not in script
     assert "function handleSdkVoiceTranscript" in script

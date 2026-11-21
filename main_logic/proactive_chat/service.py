@@ -77,6 +77,7 @@ from main_logic.proactive_chat.decisions import (
     _should_fetch_activity_snapshot,
     _should_skip_source,
     _should_use_voice_fast_path,
+    _voice_fast_path_allows_vision,
 )
 from main_logic.proactive_chat.delivery import (
     CommitmentOffer,
@@ -760,6 +761,14 @@ async def handle_proactive_chat(
             voice_language = _resolve_proactive_locale(command, mgr, fmt="full")
             delivered = await mgr.trigger_voice_proactive_nudge(
                 language=voice_language,
+                allow_vision=_voice_fast_path_allows_vision(
+                    enabled_modes=command.enabled_modes,
+                    enabled_modes_provided=command.enabled_modes_provided,
+                ),
+                # The epoch this request started under, like the text path:
+                # a revocation or switch-off during the awaits above (e.g.
+                # the mini-game invite push) must already end its vision.
+                vision_consent_epoch=vision_consent_epoch,
             )
             if delivered:
                 # Chat counter for1h+10 chats cooldown: voice nudge counts as proactive delivery,
@@ -2694,6 +2703,7 @@ async def handle_proactive_chat(
             master_name=master_name_current,
             log=logger,
             round_id=lifecycle.screenshot_request_id,
+            vision_consent_epoch=vision_consent_epoch,
         )
         if delivery_commit.result is not None:
             return await _end_proactive(

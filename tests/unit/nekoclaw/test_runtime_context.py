@@ -18,7 +18,9 @@ from nekoclaw.runtime.context import (
     Transcript,
     cap_result_text,
     choose_cut,
+    compact_ratio,
     kind_of,
+    output_allowance,
     prune_rows,
     retain_recent_images,
     select_user_rows,
@@ -88,16 +90,80 @@ def _manager(tmp_path: Path, policy: ContextPolicy, summaries: list, *, fail: bo
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("window", "configured", "allowed"),
+    [
+        # What the model is configured for, where the window holds it four times over.
+        (200_000, 8_192, 8_192),
+        (32_768, 8_192, 8_192),
+        # A quarter of a smaller window: the rest is for what the request sends.
+        (32_767, 8_192, 8_191),
+        (16_384, 8_192, 4_096),
+        (4_000, 8_192, 1_000),
+        # Never more than configured, and never next to nothing.
+        (16_384, 512, 512),
+        (800, 8_192, 256),
+    ],
+)
+def test_the_output_a_request_asks_for_is_a_quarter_of_the_window_at_the_most(
+    window: int, configured: int, allowed: int
+) -> None:
+    assert output_allowance(window, configured) == allowed
+
+
 def test_thresholds_scale_with_the_window() -> None:
+    # The owner's numbers (2026-11-18): a window of 200,000 is summed up from 170,000 on.
+    preset = ContextPolicy(window=200_000, max_output=8_192)
+    assert preset.threshold == 170_000
+    assert preset.threshold + preset.max_output + 20_000 <= 200_000
     small = ContextPolicy(window=32_000, max_output=4_000)
-    assert small.headroom == 4_000
-    assert small.threshold == 24_000  # window - output - headroom is the tighter bound
+    assert small.headroom == 3_200
+    assert small.threshold == 24_800  # window - output - headroom is the tighter bound
     assert small.retain_tokens == int(28_000 * 0.16)
     large = ContextPolicy(window=1_000_000, max_output=64_000)
     assert large.headroom == 65_536
-    assert large.threshold == 800_000  # 80% of the window is the tighter bound
+    assert large.threshold == 850_000  # 17 in 20 of the window is the tighter bound
+    # The free tier's model: later than the 102,400 of a window managed by four fifths, and
+    # well inside the 131,000 it takes.
+    assert ContextPolicy(window=128_000, max_output=8_192).threshold == 107_008
     assert large.result_cap == 12_500
     assert ContextPolicy(window=8_000, max_output=1_000).result_cap == 2_000
+
+
+@pytest.mark.parametrize(
+    ("window", "compact_at", "threshold"),
+    [
+        # Told where to sum up from: that point, as long as the output and the margin have room.
+        (200_000, 170_000, 170_000),
+        (200_000, 150_000, 150_000),
+        (200_000, 100_000, 100_000),
+        # As early as it was set (the host takes a point from 1,000 tokens on).
+        (200_000, 15_000, 15_000),
+        (200_000, 1_000, 1_000),
+        (200_000, 199_000, 171_808),
+        (200_000, 400_000, 171_808),
+        # Not told: 17 in 20 of the window.
+        (200_000, None, 170_000),
+        (100_000, None, 81_808),
+        (64_000, None, 49_408),
+    ],
+)
+def test_a_conversation_is_summed_up_from_where_the_session_was_told(
+    window: int, compact_at: int | None, threshold: int
+) -> None:
+    policy = ContextPolicy(window=window, max_output=8_192, threshold_ratio=compact_ratio(window, compact_at))
+
+    assert policy.threshold == threshold
+
+
+def test_the_part_of_the_window_follows_a_window_that_turns_out_smaller() -> None:
+    import dataclasses
+
+    told = ContextPolicy(window=200_000, max_output=8_192, threshold_ratio=compact_ratio(200_000, 150_000))
+    # As a session does that learns its model takes less: the same part of the smaller window.
+    smaller = dataclasses.replace(told, window=100_000)
+
+    assert (told.threshold, smaller.threshold) == (150_000, 75_000)
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +186,7 @@ def test_an_oversized_result_keeps_head_and_tail_and_is_saved_whole(tmp_path: Pa
     omitted = int(notice.split()[1])
     assert notice == (
         f"(Omitted {omitted} bytes. Full formatted result stored at: {saved}. "
-        "Use read with offset/limit, or grep this path to search within it.)"
+        "Use grep with a keyword to search this path in sections.)"
     )
     assert 0 < omitted < len(text)
     assert cap_result_text("short result", 12_500, spill, "x") is None
@@ -470,7 +536,8 @@ def test_what_the_summarizer_is_handed_is_cut_block_by_block_too() -> None:
     page = "PAGE-START " + _words(6_000) + " PAGE-END"
     region = _old_result(TextContent(text=group), TextContent(text=page))[1:3]
 
-    _call, handed = _shrink_for_summary(region, policy, 100_000)
+    (_call, handed), size = _shrink_for_summary(region, policy, 100_000)
+    assert 0 < size <= 100_000
 
     # The summary is written from the group as it was handed over; only the
     # long block next to it is cut for the summarizer.
@@ -661,6 +728,12 @@ def test_recent_user_messages_are_selected_newest_first_within_budget() -> None:
     assert select_user_rows(region, sizes, 250) == {"e4", "e2"}
     assert select_user_rows(region, sizes, 1_000) == {"e0", "e2", "e4"}
     assert select_user_rows(region, sizes, 50) == set()
+    # A pinned row is kept whatever its size, and takes nothing from the room of the others.
+    assert select_user_rows(region, sizes, 250, pinned={"e0"}) == {"e0", "e4", "e2"}
+    assert select_user_rows(region, sizes, 50, pinned={"e0"}) == {"e0"}
+    assert select_user_rows(region, sizes, 150, pinned={"e4"}) == {"e4", "e2"}
+    # One that is not in the part being summed up changes nothing.
+    assert select_user_rows(region, sizes, 250, pinned={"elsewhere"}) == {"e4", "e2"}
 
 
 async def test_summary_replaces_old_work_and_keeps_user_text_verbatim(tmp_path: Path) -> None:
@@ -1017,3 +1090,238 @@ async def test_growing_context_is_compacted_before_the_request_is_sent(tmp_path:
         assert events.of("usage")[-1]["context_tokens"] == 905
     finally:
         await session.close()
+
+
+async def test_a_conversation_that_could_stay_is_left_whole_when_no_summary_is_to_be_had(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Summed up with nothing wrong with its length (a session nothing is at work in): nothing has to go.
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+    messages = [UserMessage(content="go")]
+    for index in range(1, 9):
+        # About three thousand tokens each: what is cut before a summary is asked for.
+        messages.extend(_call_turn(index, _words(625, f"big{index}x")))
+    whole = [getattr(message, "text", None) or str(message.content) for message in messages]
+
+    # The request fails: as it was, the tool results that were cut for it included.
+    asked: list = []
+    cut: list[bool] = []
+
+    async def failing(prepared: list, max_tokens: int):  # noqa: ANN202
+        asked.append((list(prepared), max_tokens))
+        # (In the conversation itself, when the summary is asked for: cut, and then put back.)
+        cut.append(
+            any(texts.PRUNED_MIDDLE_MARKER in (getattr(message, "text", None) or str(message.content)) for message in messages)
+        )
+        raise RuntimeError("model unavailable")
+
+    manager = ContextManager(
+        policy=policy, spill=SpillStore(tmp_path / "outputs"), summarize=failing, new_entry_id=_counter()
+    )
+    transcript = Transcript(messages, _counter())
+    assert await manager.fit(transcript, force=True, tight=False, or_drop=False) == []
+    assert len(asked) == 1 and cut == [True]
+    assert [getattr(message, "text", None) or str(message.content) for message in messages] == whole
+    assert not any(texts.PRUNED_MIDDLE_MARKER in text for text in whole)
+
+    # Where the conversation has to get shorter the same request has the older part dropped, as before.
+    dropped = list(messages)
+    assert await _manager(tmp_path, policy, [], fail=True).fit(Transcript(dropped, _counter()), force=True)
+    assert any(isinstance(m, UserMessage) and SUMMARY_FALLBACK in str(m.content) for m in dropped)
+
+    # What is to be summed up does not fit into one request: a summary would stand for a part it was
+    # never shown, so none is asked for, and the conversation stays.
+    narrow = ContextPolicy(window=8_000, max_output=1_000)
+    asked = []
+    manager = _manager(tmp_path, narrow, asked)
+    long = [UserMessage(content="go")]
+    for index in range(1, 9):
+        long.extend(_call_turn(index, _words(900, f"wide{index}x")))
+    before = [getattr(message, "text", None) or str(message.content) for message in long]
+    assert await manager.fit(Transcript(long, _counter()), force=True, tight=False, or_drop=False) == []
+    assert asked == []
+    assert [getattr(message, "text", None) or str(message.content) for message in long] == before
+    # (The same conversation is summed up where it has to get shorter, from as much of it as fits.)
+    asked = []
+    assert await _manager(tmp_path, narrow, asked).fit(Transcript(list(long), _counter()), force=True)
+    assert len(asked) >= 1
+
+    # Summed up because it was told to, a conversation is summed up once: whoever told it to counted
+    # on one request. Where it has to get shorter it is looked at a second time while it is too long.
+    seen: list = []
+    inner = ContextManager._compact
+
+    async def counted(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        seen.append(kwargs.get("tight"))
+        return await inner(self, *args, **kwargs)
+
+    async def too_long_whatever_is_done(self, _messages) -> int:  # noqa: ANN001
+        return policy.threshold + 1
+
+    monkeypatch.setattr(ContextManager, "_compact", counted)
+    monkeypatch.setattr(ContextManager, "measure", too_long_whatever_is_done)
+    await _manager(tmp_path, policy, []).fit(Transcript(list(messages), _counter()), force=True, tight=False, or_drop=False)
+    once = list(seen)
+    seen.clear()
+    await _manager(tmp_path, policy, []).fit(Transcript(list(messages), _counter()), force=True, tight=False)
+    assert once == [False] and seen == [False, True]
+
+
+async def test_a_conversation_that_could_stay_is_whole_again_when_its_summing_up_is_cancelled(tmp_path: Path) -> None:
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+
+    def conversation() -> list:
+        made: list = [UserMessage(content="go")]
+        for index in range(1, 9):
+            # About three thousand tokens each: what is cut before a summary is asked for.
+            made.extend(_call_turn(index, _words(625, f"big{index}x")))
+        return made
+
+    def said(messages: list) -> list[str]:
+        return [getattr(message, "text", None) or str(message.content) for message in messages]
+
+    # Cancelled while the summary is asked for: none was made, so the tool results that were cut
+    # for the request are whole again, as when the request fails.
+    messages = conversation()
+    whole = said(messages)
+    asked = asyncio.Event()
+    cut: list[bool] = []
+
+    async def never(prepared: list, max_tokens: int):  # noqa: ANN202
+        cut.append(any(texts.PRUNED_MIDDLE_MARKER in text for text in said(messages)))
+        asked.set()
+        await asyncio.Event().wait()
+
+    manager = ContextManager(
+        policy=policy, spill=SpillStore(tmp_path / "outputs"), summarize=never, new_entry_id=_counter()
+    )
+    fitting = asyncio.ensure_future(manager.fit(Transcript(messages, _counter()), force=True, tight=False, or_drop=False))
+    await asyncio.wait_for(asked.wait(), 10)
+    fitting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(fitting, 10)
+    # (They were cut when the summary was asked for.)
+    assert cut == [True]
+    assert said(messages) == whole
+
+    # Cancelled after the summary replaced the older part: the summary stays.
+    messages = conversation()
+    later: list[asyncio.Future] = []
+    manager = _manager(tmp_path, policy, [])
+    later.append(
+        asyncio.ensure_future(
+            manager.fit(
+                Transcript(messages, _counter()),
+                force=True,
+                tight=False,
+                or_drop=False,
+                on_compaction=lambda _compaction: later[0].cancel(),
+            )
+        )
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(later[0], 10)
+    assert any(texts.SUMMARY_OPEN_TAG in text for text in said(messages))
+    assert len(messages) < len(whole)
+
+
+async def test_a_conversation_that_could_stay_is_not_summed_up_from_a_part_too_long_for_one_request(tmp_path: Path) -> None:
+    # The older part is one message, which is never left out of what the summary is asked for from,
+    # and it is longer than the request has room for: the request would be refused. Where the
+    # conversation could stay as it is, none is made.
+    narrow = ContextPolicy(window=8_000, max_output=1_000)
+    long_reply = AssistantMessage(content=[TextContent(text=_words(4_000, "long"))])
+
+    def conversation() -> list:
+        return [
+            UserMessage(content="go"),
+            long_reply,
+            UserMessage(content="and now?"),
+            AssistantMessage(content=[TextContent(text="done")]),
+        ]
+
+    room = narrow.window - narrow.summary_cap - 2_000
+    assert count_tokens(long_reply.content[0].text) > room
+
+    asked: list = []
+    messages = conversation()
+    before = [getattr(message, "text", None) or str(message.content) for message in messages]
+    assert await _manager(tmp_path, narrow, asked).fit(Transcript(messages, _counter()), force=True, tight=False, or_drop=False) == []
+    assert asked == []
+    assert [getattr(message, "text", None) or str(message.content) for message in messages] == before
+
+    # (Where it has to get shorter the request is made all the same, as before: this is the last resort.)
+    asked = []
+    assert await _manager(tmp_path, narrow, asked).fit(Transcript(conversation(), _counter()), force=True)
+    assert len(asked) >= 1 and long_reply in asked[0][0]
+
+
+async def test_a_conversation_that_could_stay_is_not_summed_up_from_a_part_in_which_a_call_has_two_results(
+    tmp_path: Path,
+) -> None:
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+
+    def conversation() -> list:
+        made: list = [UserMessage(content="go")]
+        for index in range(1, 9):
+            made.extend(_call_turn(index, _words(625, f"big{index}x")))
+        # One call is answered twice (its result was written to the record twice, say): a request
+        # is sent one of the two, and a summary would stand for both.
+        made.insert(3, ToolResultMessage(tool_call_id="call-1", tool_name="grep", content="answered a second time"))
+        return made
+
+    messages = conversation()
+    before = [getattr(message, "text", None) or str(message.content) for message in messages]
+    asked: list = []
+    assert await _manager(tmp_path, policy, asked).fit(Transcript(messages, _counter()), force=True, tight=False, or_drop=False) == []
+    assert asked == []
+    assert [getattr(message, "text", None) or str(message.content) for message in messages] == before
+
+    # (Where it has to get shorter the request is made all the same, as before.)
+    asked = []
+    assert await _manager(tmp_path, policy, asked).fit(Transcript(conversation(), _counter()), force=True)
+    assert len(asked) >= 1
+
+
+async def test_a_conversation_that_could_stay_is_not_summed_up_from_a_part_in_which_a_result_has_no_call(
+    tmp_path: Path,
+) -> None:
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+
+    def conversation() -> list:
+        made: list = [UserMessage(content="go")]
+        for index in range(1, 9):
+            made.extend(_call_turn(index, _words(625, f"big{index}x")))
+        # The record took a result and not the reply that made its call (the disk refused that one):
+        # a request is not sent a result without its call, and a summary would stand for it.
+        made.insert(3, AssistantMessage(content=[TextContent(text="looking further")]))
+        made.insert(4, ToolResultMessage(tool_call_id="call-lost", tool_name="grep", content="found by a call that is on no record"))
+        return made
+
+    messages = conversation()
+    before = [getattr(message, "text", None) or str(message.content) for message in messages]
+    asked: list = []
+    assert await _manager(tmp_path, policy, asked).fit(Transcript(messages, _counter()), force=True, tight=False, or_drop=False) == []
+    assert asked == []
+    assert [getattr(message, "text", None) or str(message.content) for message in messages] == before
+
+    # (Where it has to get shorter the request is made all the same, as before.)
+    asked = []
+    assert await _manager(tmp_path, policy, asked).fit(Transcript(conversation(), _counter()), force=True)
+    assert len(asked) >= 1
+
+
+async def test_calls_of_one_id_that_each_have_their_result_are_summed_up_where_the_conversation_could_stay(
+    tmp_path: Path,
+) -> None:
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+    messages: list = [UserMessage(content="go")]
+    for index in range(1, 9):
+        # Every call has the same id (a provider that numbers them anew in each reply), and its own
+        # result right after it: a request is sent all of them, and a summary stands for what it was shown.
+        messages.extend(_call_turn(1, _words(625, f"big{index}x")))
+    asked: list = []
+    assert await _manager(tmp_path, policy, asked).fit(Transcript(messages, _counter()), force=True, tight=False, or_drop=False)
+    assert len(asked) == 1
+    shown = [message for message in asked[0][0] if isinstance(message, ToolResultMessage)]
+    assert len(shown) >= 2 and {message.tool_call_id for message in shown} == {"call-1"}

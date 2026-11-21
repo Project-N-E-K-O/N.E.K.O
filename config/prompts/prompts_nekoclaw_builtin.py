@@ -34,7 +34,8 @@ request carries only one line about each group (``BUILTIN_GROUP_SUMMARIES``,
 in the description of the gateway's search tool). Loading a group hands over
 how it is used (``BUILTIN_GROUP_GUIDANCE``) followed by the definitions of
 its tools, and the tools are then called by name through the gateway's call
-tool.
+tool. When a group is selected up front for one commission, the gateway
+includes its guidance once alongside its native tool definitions instead.
 
 All of it is English text read by the model and is deliberately not
 translated; the language a task agent uses towards the user is set elsewhere.
@@ -413,13 +414,21 @@ BUILTIN_GROUP_FIRST_CALLS: dict[str, dict] = {
 # Put in front of the lines about the groups, in the description of the
 # gateway's search tool. Rendered with str.format.
 TOOL_GROUPS_INTRO = (
-    "Tool groups, not among your tools until used. To use one, make its first call below through "
-    "{call_tool}: the answer also brings the group's other tools and how to use them."
+    "Use listed device tools directly. For an unlisted group, its first call below through "
+    "{call_tool} also returns the group's tools and guidance."
 )
 
 # What the search tool's ``group`` argument is said to be: the way to a
 # group for a task that does not start with the group's first call.
-TOOL_GROUP_ARGUMENT = "Instead of query: a tool group to get the tools of, without making its first call."
+TOOL_GROUP_ARGUMENT = (
+    "Instead of query: a tool group to get the tools of, without making its first call. "
+    "One of those named above, or one a search result names."
+)
+
+# The same argument while there is no group to name. A session keeps the
+# tool definitions it was opened with; a group that is switched on while it
+# lasts is named by a search result, and is loaded through this.
+TOOL_GROUP_ARGUMENT_UNNAMED = "Instead of query: the tool group a search result names, to get its tools."
 
 # Ends the line about a group that has a first call. Rendered with str.format.
 TOOL_GROUP_FIRST_CALL = " First call: {name}, arguments {example}."

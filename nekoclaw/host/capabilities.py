@@ -57,6 +57,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from config.nekoclaw_settings import (
+    BUILTIN_GROUP_BROWSER as BUILTIN_GROUP_BROWSER,
+    BUILTIN_GROUP_KEYBOARD_MOUSE as BUILTIN_GROUP_KEYBOARD_MOUSE,
+    BUILTIN_GROUPS,
+)
 from nekoclaw.host.plugin_runs import PluginCatalog
 from nekoclaw.host.selection import routable_plugins, visible_entries
 
@@ -108,12 +113,17 @@ class Capability:
     # only to a task agent whose model can.
     needs_images: bool = False
 
-
-# The two groups of built-in tools. A group's name is also its permission
-# category and the thing one commission occupies at a time.
-BUILTIN_GROUP_KEYBOARD_MOUSE = "keyboard_mouse"
-BUILTIN_GROUP_BROWSER = "browser"
-BUILTIN_GROUPS: tuple[str, ...] = (BUILTIN_GROUP_KEYBOARD_MOUSE, BUILTIN_GROUP_BROWSER)
+    def matches_entry(self, plugin: dict[str, Any], entry: dict[str, Any]) -> bool:
+        """Verify the catalog identity visible to the host, including the MCP server and tool."""
+        if plugin.get("id") != self.plugin_id or entry.get("id") != self.entry_id or plugin.get("passive"):
+            return False
+        if self.plugin_id != MCP_ADAPTER_PLUGIN_ID:
+            return self.kind == KIND_PLUGIN_ENTRY
+        candidates = capabilities_of_plugin({**plugin, "entries": [entry]})
+        return any(
+            item.available and item.id == self.id and item.kind == self.kind and item.permission_key == self.permission_key
+            for item in candidates
+        )
 
 
 def builtin_tool(
@@ -182,8 +192,11 @@ class BuiltinCapabilities(Protocol):
     def available(self) -> list[Capability]:
         """Return the built-in tools, each with its availability as of now. Must not block."""
 
-    async def run(self, capability: Capability, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
-        """Carry out one call. Cancelling it must stop what it started."""
+    async def run(
+        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any],
+        still_allowed: Callable[[], bool] | None = None,
+    ) -> BuiltinOutcome:
+        """Recheck still_allowed after queueing and before the device action. Cancellation stops work."""
 
     async def released(self, group: str, commission_id: str) -> None:
         """A commission no longer occupies a group: drop what was kept for it."""
@@ -264,7 +277,8 @@ class McpDenial:
     def server_denied(self, server: str) -> bool:
         """Whether this server is forbidden: its own mode first, else the category's."""
         slot = (server or "").strip() or "*"
-        return self.servers.get(slot, self.category) == "deny"
+        mode = self.servers.get(slot, "auto")
+        return self.category == "deny" if mode == "auto" else mode == "deny"
 
     @property
     def any_denied(self) -> bool:
@@ -446,7 +460,8 @@ class CapabilityRegistry:
             return []
 
     async def run_builtin(
-        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any], reopen_agreement: Any = None
+        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any], reopen_agreement: Any = None,
+        still_allowed: Callable[[], bool] | None = None,
     ) -> BuiltinOutcome:
         """Carry out one call of a built-in tool through the provider.
 
@@ -457,11 +472,12 @@ class CapabilityRegistry:
         """
         if self._builtins is None:
             return BuiltinOutcome(False, "this capability is not offered by this process")
-        if reopen_agreement is None:
-            return await self._builtins.run(capability, commission_id=commission_id, arguments=arguments)
-        return await self._builtins.run(
-            capability, commission_id=commission_id, arguments=arguments, reopen_agreement=reopen_agreement
-        )
+        options: dict[str, Any] = {}
+        if still_allowed is not None:
+            options["still_allowed"] = still_allowed
+        if reopen_agreement is not None:
+            options["reopen_agreement"] = reopen_agreement
+        return await self._builtins.run(capability, commission_id=commission_id, arguments=arguments, **options)
 
     def browser_closed_by_user(self) -> bool:
         """Whether the user closed the browser the built-in tools started and it has no window since. Must not block."""

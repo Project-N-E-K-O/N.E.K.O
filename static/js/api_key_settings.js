@@ -32,7 +32,7 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary'];
+const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary', 'decision'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
@@ -64,6 +64,7 @@ const MODEL_CONFIG_EXPANSION_PATHS = {
     gameSummary: ['game', 'game-summary'],
     correction: ['correction'],
     emotion: ['emotion'],
+    decision: ['decision'],
     vision: ['vision'],
     agent: ['agent'],
     omni: ['omni'],
@@ -76,6 +77,7 @@ const MODEL_PROVIDER_FIELD_BY_TYPE = {
     gameSummary: 'summary_model',
     correction: 'correction_model',
     emotion: 'emotion_model',
+    decision: 'decision_model',
     vision: 'vision_model',
     agent: 'agent_model',
     omni: 'core_model',
@@ -1870,6 +1872,7 @@ const MODEL_TIER_BY_TYPE = {
     gameSummary: 'summary',
     correction: 'correction',
     emotion: 'emotion',
+    decision: 'decision',
     vision: 'vision',
     agent: 'agent',
 };
@@ -2891,6 +2894,10 @@ async function loadCurrentApiKey() {
             setSecretInputValue('emotionModelApiKey', data.emotionModelApiKey);
 
             loadImageSettings(data);
+
+            setInputValue('decisionModelUrl', data.decisionModelUrl);
+            setInputValue('decisionModelId', data.decisionModelId);
+            setSecretInputValue('decisionModelApiKey', data.decisionModelApiKey);
             setInputValue('visionModelUrl', data.visionModelUrl);
             setInputValue('visionModelId', data.visionModelId);
             setSecretInputValue('visionModelApiKey', data.visionModelApiKey);
@@ -3659,6 +3666,10 @@ async function save_button_down(e) {
     const emotionModelId = getVal('emotionModelId');
     const emotionModelApiKey = getKeyVal('emotionModelApiKey');
 
+    const decisionModelUrl = getVal('decisionModelUrl');
+    const decisionModelId = getVal('decisionModelId');
+    const decisionModelApiKey = getKeyVal('decisionModelApiKey');
+
     const visionModelUrl = getVal('visionModelUrl');
     const visionModelId = getVal('visionModelId');
     const visionModelApiKey = getKeyVal('visionModelApiKey');
@@ -3738,6 +3749,7 @@ async function save_button_down(e) {
         gameSummaryModelUrl, gameSummaryModelId, gameSummaryModelApiKey,
         correctionModelUrl, correctionModelId, correctionModelApiKey,
         emotionModelUrl, emotionModelId, emotionModelApiKey,
+        decisionModelUrl, decisionModelId, decisionModelApiKey,
         visionModelUrl, visionModelId, visionModelApiKey,
         agentModelUrl, agentModelId, agentModelApiKey,
         omniModelUrl, omniModelId, omniModelApiKey,
@@ -4436,7 +4448,7 @@ function navigateToCustomModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'correction', 'emotion', 'vision', 'image', 'agent', 'omni', 'tts', 'gptsovits'];
+    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'correction', 'emotion', 'decision', 'vision', 'image', 'agent', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
@@ -4547,6 +4559,7 @@ function getCustomModelDisplayLabel(modelType) {
         gameSummary: ['api.gameSummaryModelConfig', '小游戏摘要模型配置'],
         correction: ['api.correctionModelConfig', '纠错模型'],
         emotion: ['api.emotionModelConfig', '情感模型'],
+        decision: ['api.decisionModelConfig', '决策模型'],
         vision: ['api.visionModelConfig', '视觉聊天模型'],
         agent: ['api.agentApiConfigTitle', 'Agent API（需支持视觉功能）'],
         omni: ['api.realtimeModelConfig', '实时全模态模型（Local模式）'],
@@ -4702,14 +4715,18 @@ function updateErrorMessage(errorDisplayElement, errorCode, errorDetail) {
     errorDisplayElement.style.display = 'inline';
 }
 
-function buildConnectivityCacheId(scope, providerKey, key, url) {
+function buildConnectivityCacheId(scope, providerKey, key, url, model = '') {
     // 内置 provider 的 cacheId 故意不带 url：URL 会在第一次 testKey 成功后从
     // 候选值翻成 rememberResolvedProviderUrl 写入的 resolved_url，
     // 把 url 带进 cacheId 会让指示灯/错误面板的注册 key 凭空换一份，
     // 导致后续刷新打不到原 DOM，表现成检测灯卡住或丢状态。
     // 同一组 scope+providerKey 在 key 也是空（free 端点专用）时退到空字符串占位，
     // 也不要回退到 url，保持 cacheId 在 URL 翻新时稳定。
+    // decision 槽位使用独立 scope + model 维度的缓存键，避免与普通聊天 assist 灯混用。
     if (scope && providerKey) {
+        if (scope === 'decision') {
+            return `${scope}|${providerKey}|${key || ''}|${model || ''}`;
+        }
         return `${scope}|${providerKey}|${key || ''}`;
     }
     return key || url || '';
@@ -4873,7 +4890,10 @@ const ConnectivityManager = {
                     result.secretMasked = coreResult.secretMasked;
                     result.providerType = getProviderType(coreProvider);
                     result.providerKey = coreProvider;
-                    result.providerScope = 'assist';
+                    result.providerScope = (mt === 'decision') ? 'decision' : 'assist';
+                    if (mt === 'decision') {
+                        result.model = getResolvedCustomModelId(mt, provider);
+                    }
                 }
             } else if (provider === 'follow_assist') {
                 // 跟随辅助 API
@@ -4883,13 +4903,16 @@ const ConnectivityManager = {
                 result.url = assistResult.url;
                 result.providerType = assistResult.providerType;
                 result.providerKey = assistResult.providerKey;
-                result.providerScope = assistResult.providerScope;
+                result.providerScope = (mt === 'decision') ? 'decision' : assistResult.providerScope;
+                if (mt === 'decision') {
+                    result.model = getResolvedCustomModelId(mt, provider);
+                }
             } else if (provider === 'custom') {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.providerType = (mt === 'omni')
                     ? 'websocket'
-                    : (mt === 'tts' ? 'tts' : 'openai_compatible');
+                    : (mt === 'tts' ? 'tts' : (mt === 'decision' ? 'decision' : 'openai_compatible'));
                 if (mt === 'tts') {
                     result.subType = 'openai_tts';
                     result.voiceId = document.getElementById('ttsVoiceId')?.value?.trim() || '';
@@ -4978,14 +5001,20 @@ const ConnectivityManager = {
                     result.url = getEffectiveAssistUrl(provider, pInfo, { useTokenPlan: false }) || getProviderCoreUrl(provider, pInfo);
                     result.providerType = getProviderType(provider);
                     result.providerKey = provider;
-                    result.providerScope = 'assist';
+                    result.providerScope = (mt === 'decision') ? 'decision' : 'assist';
+                    if (mt === 'decision') {
+                        result.model = getResolvedCustomModelId(mt, provider);
+                    }
                 }
             }
 
             omitMaskedSecretFromConnectivity(result);
             if (result.key || result.url || result.secretMasked) {
                 if (result.providerKey && result.providerScope) {
-                    result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
+                    const cacheProviderKey = (provider === 'follow_assist')
+                        ? getEffectiveAssistProviderKey(result.providerKey)
+                        : result.providerKey;
+                    result.cacheId = buildConnectivityCacheId(result.providerScope, cacheProviderKey, result.key, result.url, result.model || '');
                 } else {
                     result.cacheId = buildCustomConnectivityCacheId(
                         result.providerType,
@@ -5108,7 +5137,10 @@ const ConnectivityManager = {
                     // Built-in provider mode
                     body.provider_key = provider_key;
                     body.provider_scope = provider_scope;
-                    if (provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
+                    if (provider_scope === 'decision' && model) {
+                        body.model = model;
+                    }
+                    if ((provider_scope === 'assist' || provider_scope === 'decision') && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
                         body.url = overrideUrl;
                     }
                 } else {
@@ -5153,7 +5185,7 @@ const ConnectivityManager = {
                     resolved_url: data.resolved_url || (data.success ? overrideUrl : null) || null
                 };
             };
-            const shouldProbeMimoTokenPlan = provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(url);
+            const shouldProbeMimoTokenPlan = (provider_scope === 'assist' || provider_scope === 'decision') && provider_key === 'mimo' && isMimoTokenPlanUrl(url);
             if (shouldProbeMimoTokenPlan) {
                 const seenUrls = new Set();
                 const candidates = [url, ...getMimoTokenPlanUrlCandidates()]
@@ -5168,7 +5200,9 @@ const ConnectivityManager = {
                     const result = await sendRequest(candidateUrl);
                     lastResult = result;
                     if (result.success) {
-                        rememberResolvedProviderUrl(provider_scope, MIMO_TOKEN_PLAN_PROVIDER_KEY, result.resolved_url || candidateUrl);
+                        if (provider_scope === 'assist') {
+                            rememberResolvedProviderUrl(provider_scope, MIMO_TOKEN_PLAN_PROVIDER_KEY, result.resolved_url || candidateUrl);
+                        }
                         cleanupRequest();
                         return result;
                     }
@@ -5184,7 +5218,7 @@ const ConnectivityManager = {
 
             const result = await sendRequest(url);
             cleanupRequest();
-            if (result.success && result.resolved_url && provider_key && provider_scope) {
+            if (result.success && result.resolved_url && provider_key && (provider_scope === 'core' || provider_scope === 'assist')) {
                 rememberResolvedProviderUrl(provider_scope, provider_key, result.resolved_url);
             }
             return result;
@@ -5263,9 +5297,9 @@ const ConnectivityManager = {
                     let isFree = false;
                     if (provider === 'follow_core' && coreSelect && coreSelect.value === 'free') isFree = true;
                     else if (provider === 'follow_assist' && assistSelect && assistSelect.value === 'free') isFree = true;
-                    // For custom provider, also pass model from the input
+                    // For custom/decision slots, prefer resolved model ID from resolveEffectiveKey
                     const modelInput = document.getElementById(`${mt}ModelId`);
-                    const model = modelInput ? modelInput.value.trim() : '';
+                    const model = customResult.model || (modelInput ? modelInput.value.trim() : '');
                     keyConfigs[customCacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
@@ -5340,7 +5374,7 @@ const ConnectivityManager = {
                     return;
                 } else if (value.success) {
                     summary.succeeded += 1;
-                    if (value.provider_key && value.provider_scope && value.resolved_url) {
+                    if (value.provider_key && (value.provider_scope === 'core' || value.provider_scope === 'assist') && value.resolved_url) {
                         summary.resolvedProviderUrls[`${value.provider_scope}:${value.provider_key}`] = value.resolved_url;
                     }
                 } else {
@@ -5418,7 +5452,7 @@ const ConnectivityManager = {
                         isFree = true;
                     }
                     const modelInput = document.getElementById(`${mt}ModelId`);
-                    const model = modelInput ? modelInput.value.trim() : '';
+                    const model = customResult.model || (modelInput ? modelInput.value.trim() : '');
                     keyConfigs[cacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,

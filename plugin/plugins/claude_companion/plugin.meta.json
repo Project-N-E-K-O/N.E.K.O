@@ -653,21 +653,24 @@
       "timeout": null
     }
   },
-  "schema_version": 4,
+  "schema_version": 5,
   "sdk_version": "0.1.0",
-  "source_bytes": 121196,
+  "source_bytes": 136288,
   "source_files": [
     "__init__.py",
     "config.json",
     "config.schema.json",
     "hooks.json",
     "i18n/en.json",
+    "i18n/es.json",
     "i18n/ja.json",
     "i18n/ko.json",
+    "i18n/pt.json",
+    "i18n/ru.json",
     "i18n/zh-CN.json",
     "i18n/zh-TW.json",
     "plugin.toml",
     "static/index.html"
   ],
-  "source_sha256": "9d4943f31e02b0a806233566bc914f813c974d05da73fa6c84404fe9a2e76be2"
+  "source_sha256": "8dea5534bad829eeefba556b026829de5fceba33ca96140d28bcea62d6a4b060"
 }

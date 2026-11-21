@@ -27,6 +27,7 @@ from plugin.neko_plugin_cli.core.project import (
     prepare_project,
 )
 from plugin.neko_plugin_cli.core.toml_utils import load_toml
+from plugin.neko_plugin_cli.templates.agent_kit import AgentKitUnavailableError
 from plugin import settings
 from plugin.core.entry_points import plugin_package_matches_directory
 from plugin.core.state import state
@@ -141,6 +142,11 @@ def _creation_error(exc: ProjectCreationError) -> ServerDomainError:
     return project_error(Code(exc.code), str(exc), status)
 
 
+def _agent_kit_error(exc: AgentKitUnavailableError) -> ServerDomainError:
+    # Missing install data, not a user input problem; the message names the fix.
+    return project_error(Code.PROJECT_IO_FAILED, str(exc), 500)
+
+
 def _busy_error(exc: PluginOperationBusy) -> ServerDomainError:
     return project_error(
         Code.PLUGIN_OPERATION_BUSY, f"Another plugin operation is in progress: {exc}", 409
@@ -203,6 +209,8 @@ def preview_project(parent_dir: str, identity: ProjectIdentity) -> ProjectPrevie
         files = prepare_project(spec, target, repo_root=source_repo_root())
     except ProjectCreationError as exc:
         raise _creation_error(exc) from exc
+    except AgentKitUnavailableError as exc:
+        raise _agent_kit_error(exc) from exc
     return _preview(spec, target, files)
 
 
@@ -213,6 +221,8 @@ def _create_files(parent_dir: str, identity: ProjectIdentity) -> ProjectPreview:
         written = create_project(spec, target, repo_root=source_repo_root())
     except ProjectCreationError as exc:
         raise _creation_error(exc) from exc
+    except AgentKitUnavailableError as exc:
+        raise _agent_kit_error(exc) from exc
     except FileExistsError as exc:
         raise project_error(Code.PROJECT_EXISTS, str(exc), 409) from exc
     except OSError as exc:

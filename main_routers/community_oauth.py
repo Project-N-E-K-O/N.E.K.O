@@ -23,7 +23,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from fastapi.responses import HTMLResponse, JSONResponse
 from main_routers.local_access import is_local_oauth_status_request as _loopback_request_source
@@ -35,6 +35,8 @@ from services.chat_sync import host as _chat_sync_host
 # Re-exported: card_drop_router / visit_router.credentials read it as
 # ``community_oauth.status_session_saved``, and tests patch it here.
 from utils.community_session import status_session_saved
+from utils import community_device_hold
+from utils.http.url import same_endpoint
 from utils.social_base import auth_public_url as _configured_auth_public_url
 from utils.instance_access import remote_instance_identity, request_public_origin, _same_origin
 
@@ -50,6 +52,10 @@ _OAUTH_REDIRECT_PATH = "/oauth/callback"
 _DEFAULT_DESKTOP_CLIENT_ID = "neko-servers-desktop-prod"
 _HTTP_TIMEOUT_SEC = 30.0
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
+# A rebind of an old device whose cloud row has no proof. Only the owning
+# account can attach one, so the owner must unbind it on the community site.
+LEGACY_DEVICE_OWNED_ELSEWHERE = "legacy_client_owned_by_other_user"
+# Acquire the device ownership lock first when both locks are needed.
 _oauth_start_lock = asyncio.Lock()
 _oauth_status_lock = asyncio.Lock()
 _oauth_status_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
@@ -151,6 +157,56 @@ def _callback_html(title: str, message: str, *, status_code: int = 200) -> HTMLR
             message=html.escape(message),
         ),
         status_code=status_code,
+    )
+
+
+# Offered only on the conflict page. Static text keeps the CSP hash constant;
+# the request is same-origin and the endpoint itself enforces local access.
+_REBIND_SCRIPT = """(()=>{
+const button=document.getElementById('rebind');const note=document.getElementById('rebind-note');
+if(!button||!note)return;
+button.addEventListener('click',async()=>{
+if(!window.confirm('确认把这台设备改绑到当前社区账号？原账号已有的卡牌、记忆和锻造券不会转移，原账号将不再拥有这台设备。'))return;
+button.disabled=true;note.textContent='正在改绑…';
+try{const res=await fetch('/api/card-drop/oauth/rebind-client',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:true})});
+let data={};try{data=await res.json();}catch(_){}
+if(res.ok){button.remove();note.textContent='已将这台设备改绑到当前账号，可关闭此页。';return;}
+const detail=String(data.detail||('HTTP '+res.status));
+note.textContent=detail==='legacy_client_owned_by_other_user'?'这台旧设备缺少本机证明，无法在本机改绑。请登录原账号，在社区网页「账号 → 已绑定设备」中解绑后再重新登录。':'改绑未完成（'+detail+'），可稍后重试。';
+if(detail==='legacy_client_owned_by_other_user'){button.remove();return;}}
+catch(_){note.textContent='无法连接 NEKO，请稍后重试。';}
+button.disabled=false;});
+})();"""
+_REBIND_SCRIPT_HASH = base64.b64encode(hashlib.sha256(_REBIND_SCRIPT.encode()).digest()).decode()
+_REBIND_ACTION = (
+    '<p style="margin-top:20px"><button id="rebind" type="button" style="font:inherit;'
+    'padding:10px 18px;border-radius:999px;border:0;background:#f472b6;color:#1a1a2e;'
+    'font-weight:700;cursor:pointer">将此设备改绑到当前账号</button></p>'
+    '<p id="rebind-note" role="status" style="margin-top:12px;font-size:.9rem"></p>'
+    "<script>" + _REBIND_SCRIPT + "</script>"
+)
+
+
+def _ownership_conflict_callback_html() -> HTMLResponse:
+    """Login succeeded on a device another account owns; offer an explicit rebind."""
+    page = _CALLBACK_PAGE.format(
+        title=html.escape("社区登录已完成"),
+        message=html.escape(
+            "当前账号已登录成功。这台设备此前已绑定其他社区账号，本次没有迁移游客资产，"
+            "原账号下的卡牌和记忆不受影响。如需把这台设备改绑到当前账号，可点击下方按钮确认。"
+        ),
+    ).replace("    </main>", "      " + _REBIND_ACTION + "\n    </main>", 1)
+    return HTMLResponse(
+        page,
+        status_code=200,
+        headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": (
+                "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; "
+                f"script-src 'sha256-{_REBIND_SCRIPT_HASH}'; frame-ancestors 'none'; base-uri 'none'"
+            ),
+        },
     )
 
 
@@ -284,10 +340,11 @@ def _persist_refreshed_oauth_tokens(
 
 def _clear_rejected_oauth_snapshot(expected: dict) -> bool:
     """Clear only the rejected credential snapshot; preserve a concurrent login."""
-    success = True
     social_paths = C._social_session_paths()
     auth_path = C._auth_path()
     expected_access = str(expected.get("access_token") or "").strip()
+    if not expected_access:
+        return False
     credentials = [(path, "token") for path in social_paths]
     if auth_path is not None:
         credentials.append((auth_path, "access_token"))
@@ -295,16 +352,27 @@ def _clear_rejected_oauth_snapshot(expected: dict) -> bool:
         # Keep conditional reads and deletions in the same critical section as
         # bind repair and identity writes, including the legacy session path.
         with C._social_session_locks(social_paths):
-            for path, token_key in credentials:
-                try:
-                    saved = C._read_json_dict(path)
-                    if str((saved or {}).get(token_key) or "").strip() == expected_access:
-                        path.unlink(missing_ok=True)
-                except OSError:
-                    success = False
+            # Like a logout: what the rejected login knew about the device
+            # owner must reach the device record first, or survive in a
+            # tombstone mirror. Only while the saved login is still the
+            # rejected one, and under the lock every login writer takes, so a
+            # newer login cannot clear its hold in between and have this
+            # stale outcome restore it.
+            rejected_paths = [
+                path for path, token_key in credentials
+                if str((C._read_json_dict(path) or {}).get(token_key) or "").strip() == expected_access
+            ]
+            if not rejected_paths:
+                return True
+            if not C._remember_confirmed_owner():
+                # Never strip a different login's mirror. Keep the rejected
+                # session for a later retry if its hold has no durable copy.
+                if auth_path not in rejected_paths or not C._tombstone_auth_mirror(auth_path):
+                    return False
+                rejected_paths.remove(auth_path)
+            return C._unlink_credentials(rejected_paths)
     except (OSError, TimeoutError):
-        success = False
-    return success
+        return False
 
 
 async def _refresh_oauth_token(
@@ -836,6 +904,7 @@ async def oauth_status_endpoint(request: Request):
             "auth_source": None,
             "local_user_id": None,
             "user": None,
+            "bind": None,
             "session_saved": status_session_saved(status),
             "community_base_url": C._social_base_url(),
             **session_fields,
@@ -848,6 +917,7 @@ async def oauth_status_endpoint(request: Request):
         "auth_source": snapshot.get("auth_source") or None,
         "local_user_id": snapshot.get("local_user_id") or None,
         "user": public_profile,
+        "bind": C._public_bind_state(auth),
         "community_base_url": C._social_base_url(),
         **session_fields,
     }
@@ -937,6 +1007,121 @@ async def oauth_logout_endpoint(request: Request):
         return await _oauth_logout()
 
 
+@router.post(
+    "/oauth/rebind-client",
+    summary="用本机证明把这台设备改绑到当前社区账号（需用户确认）",
+)
+async def oauth_rebind_client_endpoint(request: Request, payload: dict | None = Body(default=None)):
+    """Move this install from another account to the signed-in one.
+
+    The signed-in OAuth token and this install's persisted client proof stay
+    on this machine: the browser never hands a platform bearer to localhost,
+    and the cloud only accepts ``rebind`` with a freshly approved local proof.
+    Nothing moves between accounts; only the device's owner changes.
+    """
+    headers = {"Cache-Control": "no-store"}
+    if await _account_request_identity(request) is None:
+        return JSONResponse({"detail": "instance_authorization_required"}, status_code=403, headers=headers)
+    if not C._local_request_source_allowed(request):
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403, headers=headers)
+    if not isinstance(payload, dict) or payload.get("confirm") is not True:
+        # A blind POST must not move device ownership. The UI sends exactly
+        # ``{"confirm": true}`` only after the user confirmed the rebind.
+        return JSONResponse({"detail": "confirmation_required"}, status_code=400, headers=headers)
+
+    # Same fences as login and logout: no other account can be saved, and no
+    # logout can clear this one, between reading the session and recording
+    # the cloud's answer for it.
+    async with community_device_hold.ownership_lock, _oauth_start_lock:
+        saved = await asyncio.to_thread(C._desktop_session_snapshot) or {}
+        expected_user = C._normalize_local_user_id(saved.get("local_user_id"))
+        # Passing the signed-in account keeps live visits running: ownership
+        # of the device changes, the account using it does not.
+        async with visit_account_change(expected_user):
+            return await _rebind_current_session(headers, expected_user)
+
+
+async def _rebind_current_session(headers: dict[str, str], expected_user: str | None) -> JSONResponse:
+    status = await resolve_saved_oauth_status()
+    snapshot = status.get("snapshot") or {}
+    access_token = str(snapshot.get("access_token") or "").strip()
+    local_user_id = C._normalize_local_user_id(snapshot.get("local_user_id"))
+    if (
+        not status.get("logged_in")
+        or not access_token
+        or not local_user_id
+        or local_user_id != expected_user
+    ):
+        return JSONResponse({"detail": "desktop_login_required"}, status_code=409, headers=headers)
+    if snapshot.get("auth_source") != "oauth":
+        return JSONResponse(
+            {
+                "detail": "oauth_session_required",
+                "hint": "请在 NEKO 中退出后改用社区统一账号重新登录，再改绑这台设备。",
+            },
+            status_code=409,
+            headers=headers,
+        )
+
+    # The token was validated against the session's own community; never send
+    # it to a different one that the configuration now points at.
+    session_base = str(snapshot.get("base_url") or "").strip().rstrip("/")
+    configured_base = C._social_base_url()
+    if session_base and not same_endpoint(session_base, configured_base):
+        return JSONResponse({"detail": "community_base_url_changed"}, status_code=409, headers=headers)
+
+    # The cloud may answer that another account owns this device. Hold uploads
+    # on disk first, so that answer is never lost to a failed write and a
+    # restart; only a successful, recorded rebind releases the hold.
+    if not await asyncio.to_thread(
+        community_device_hold.begin_ownership_check, C._credential_dir()
+    ):
+        return JSONResponse(
+            {"detail": "local_bind_state_not_saved"}, status_code=503, headers=headers,
+        )
+
+    bind = await _oauth_guest_bind(configured_base, access_token, rebind=True)
+    public_bind = C._public_bind_state({"bind": bind})
+    if not bind.get("bound"):
+        error = str(bind.get("error") or "rebind_failed")
+        if error in (_BIND_OWNERSHIP_CONFLICT, LEGACY_DEVICE_OWNED_ELSEWHERE):
+            # Confirmed: another account still owns this device. Hold uploads
+            # even if the login itself never saw the conflict, and record it
+            # on the login too so the hold has a second copy on disk.
+            conflict = {"bound": False, "error": _BIND_OWNERSHIP_CONFLICT}
+            await asyncio.to_thread(C._record_device_hold, conflict, local_user_id)
+            await asyncio.to_thread(
+                C._persist_repaired_bind, access_token, conflict, same_account=(local_user_id, "oauth"),
+            )
+        status_code = 502 if error == "cloud_unreachable" else 409
+        return JSONResponse({"detail": error, "bind": public_bind}, status_code=status_code, headers=headers)
+
+    # The cloud now lists this account as the owner. Record that as a fact
+    # about the device; if the desktop host has switched accounts meanwhile,
+    # the owner comparison keeps the new account's uploads held.
+    hold_saved = await asyncio.to_thread(C._record_device_hold, bind, local_user_id)
+    saved = await asyncio.to_thread(
+        C._persist_repaired_bind, access_token, bind, same_account=(local_user_id, "oauth"),
+    )
+    if not saved:
+        current = await asyncio.to_thread(C._desktop_session_snapshot) or {}
+        if C._normalize_local_user_id(current.get("local_user_id")) != local_user_id:
+            return JSONResponse(
+                {"detail": "desktop_login_required", "bind": public_bind},
+                status_code=409,
+                headers=headers,
+            )
+    if not (saved and hold_saved):
+        # Retrying is safe: the device is already ours, so the cloud answers
+        # the same way and these writes get another chance.
+        return JSONResponse(
+            {"detail": "local_bind_state_not_saved", "bind": public_bind},
+            status_code=503,
+            headers=headers,
+        )
+    return JSONResponse({"ok": True, "bind": public_bind}, headers=headers)
+
+
 async def _oauth_logout() -> dict:
     snapshot, auth, social = await asyncio.to_thread(_load_oauth_logout_records)
     client_id = (
@@ -989,8 +1174,11 @@ async def oauth_remote_callback_endpoint(request: Request, payload: RemoteOAuthC
         return JSONResponse({"detail": "instance_authorization_required"}, status_code=403)
     response = await _handle_oauth_callback(payload.code, payload.state, payload.error, instance_identity=identity,
                                           authorized_request=request if identity != "local" else None)
-    return JSONResponse({"ok": response.status_code == 200}, status_code=response.status_code,
-                        headers={"Cache-Control": "no-store"})
+    body: dict[str, Any] = {"ok": response.status_code == 200}
+    if response.status_code == 200:
+        # The conflict page and its rebind button do not reach remote browsers.
+        body["bind"] = C._public_bind_state(await asyncio.to_thread(C._load_auth))
+    return JSONResponse(body, status_code=response.status_code, headers={"Cache-Control": "no-store"})
 
 
 @callback_router.get("/oauth/relay", response_class=HTMLResponse)
@@ -1149,43 +1337,63 @@ async def _handle_oauth_callback(
             status_code=400,
         )
 
-    bind = await _oauth_guest_bind(social_base, access_token)
-    if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
-        await _clear_pending_attempt(expected_state)
-        return _callback_html(
-            "登录冲突",
-            "这台设备已经绑定其他社区账号，本次登录未生效；原登录状态保持不变。",
-            status_code=400,
-        )
-
-    auth_payload = {
-        "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "local_user_id": local_user_id,
-        "auth_source": "oauth",
-        "auth_public_url": auth_public_url,
-        "client_id": client_id,
-        "user": _persisted_user_profile(user, local_user_id),
-        "bind": bind,
-        "oauth_attempt_state": hashlib.sha256(expected_state.encode()).hexdigest(),
-        "oauth_attempt_identity": pending.get("instance_identity") or "local",
-    }
-    async with _oauth_start_lock:
-        if not await _oauth_attempt_still_current(expected_state):
-            # A newer /oauth/start superseded this login: credential writes will already be rejected, so do not end ongoing visits for it first
-            credentials_saved = False
+    async with community_device_hold.ownership_lock:
+        # A device bound to another account must not block switching accounts.
+        # The login still completes; only the one-time guest migration is skipped
+        # and the device keeps its owner until the user explicitly rebinds it.
+        # Hold uploads on disk first, so the cloud's answer cannot be lost to
+        # a restart before it is recorded. Without that hold, do not ask: the
+        # login still completes and the guest migration waits for a later bind.
+        check = await asyncio.to_thread(community_device_hold.begin_bind_check, C._credential_dir())
+        if check is None:
+            bind = {"bound": False, "error": "local_bind_state_not_saved"}
         else:
-            # Switching community accounts: finish ongoing visits and await upload archival; admit no new visits while saving the new account's login state
-            async with visit_account_change(local_user_id):
-                credentials_saved = await asyncio.to_thread(
-                    _persist_oauth_credentials, auth_payload, social_base=social_base,
-                    access_token=access_token, refresh_token=refresh_token,
-                    local_user_id=local_user_id, auth_public_url=auth_public_url,
-                    client_id=client_id, expected_pending_state=expected_state,
-                    authorized_request=authorized_request,
-                )
-        await asyncio.to_thread(_unlink_pending, expected_state)
+            bind = await _oauth_guest_bind(social_base, access_token)
+        cloud_bind = bind
+
+        auth_payload = {
+            "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "local_user_id": local_user_id,
+            "auth_source": "oauth",
+            "auth_public_url": auth_public_url,
+            "client_id": client_id,
+            "user": _persisted_user_profile(user, local_user_id),
+            "bind": bind,
+            "oauth_attempt_state": hashlib.sha256(expected_state.encode()).hexdigest(),
+            "oauth_attempt_identity": pending.get("instance_identity") or "local",
+        }
+        await asyncio.to_thread(C._remember_confirmed_owner)
+        carried = C._carry_unwritten_hold(bind)
+        if carried is not bind:
+            bind = carried
+            auth_payload["bind"] = bind
+        async with _oauth_start_lock:
+            if not await _oauth_attempt_still_current(expected_state):
+                # A newer /oauth/start superseded this login: credential writes will already be rejected, so do not end ongoing visits for it first
+                credentials_saved = False
+            else:
+                # Switching community accounts: finish ongoing visits and await upload archival; admit no new visits while saving the new account's login state
+                async with visit_account_change(local_user_id):
+                    credentials_saved = await asyncio.to_thread(
+                        _persist_oauth_credentials, auth_payload, social_base=social_base,
+                        access_token=access_token, refresh_token=refresh_token,
+                        local_user_id=local_user_id, auth_public_url=auth_public_url,
+                        client_id=client_id, expected_pending_state=expected_state,
+                        authorized_request=authorized_request,
+                    )
+                    if credentials_saved:
+                        # Inside the login lock: a newer login cannot be saved
+                        # between this login's credentials and its device record.
+                        await asyncio.to_thread(
+                            C._settle_bind_check, check, cloud_bind, local_user_id, bind,
+                        )
+            if not credentials_saved:
+                # The login left in place keeps uploading; hold if this answer
+                # shows the device record is out of date.
+                await asyncio.to_thread(C._settle_bind_check, check, cloud_bind, local_user_id, None)
+            await asyncio.to_thread(_unlink_pending, expected_state)
     if not credentials_saved:
         return _callback_html(
             "登录未完成",
@@ -1193,6 +1401,8 @@ async def _handle_oauth_callback(
             status_code=400,
         )
 
+    if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
+        return _ownership_conflict_callback_html()
     if bind.get("error") == client_registration.LEGACY_REBIND_DETAIL:
         return _callback_html(
             "社区登录已完成",
@@ -1309,11 +1519,79 @@ def _response_detail(res: Any) -> Any:
         return None
 
 
-async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, Any]:
+async def _bind_signed_in_login(social_base: str, access_token: str, local_user_id: str) -> dict | None:
+    """Bind the device for the signed-in login and record the cloud's answer.
+
+    Call with the device ownership lock held. Returns None without asking the cloud
+    when the hold could not be written first.
+    """
+    check = await asyncio.to_thread(community_device_hold.begin_bind_check, C._credential_dir())
+    if check is None:
+        return None
+    bind = await _oauth_guest_bind(social_base, access_token)
+    conflict = bind.get("error") == _BIND_OWNERSHIP_CONFLICT
+    persisted = False
+    if bind.get("bound") or conflict:
+        # Persist repaired binds and terminal conflicts alike, or /auth-status
+        # keeps reporting the stale transient failure and every later handoff
+        # repeats the bind round trip.
+        persisted = await asyncio.to_thread(C._persist_repaired_bind, access_token, bind)
+    # A success only releases the hold when it was recorded for the
+    # still-current login; a stale account's success must not clear a newer
+    # conflict. Recording a conflict is always safe.
+    await asyncio.to_thread(
+        C._settle_bind_check, check, bind, local_user_id, bind if persisted or conflict else None,
+    )
+    return bind
+
+
+async def reconfirm_device_owner() -> None:
+    """Ask the cloud again with the signed-in login when an earlier answer was lost.
+
+    A login that stopped mid-check, or whose request failed after it may have
+    reached the cloud, leaves the check on disk and uploads held. Nothing else
+    would ask again for a login that already shows as bound.
+    """
+    # Serialize ownership changes from the cloud request through its local
+    # commit. Starting a new PKCE attempt only writes the pending login file.
+    async with community_device_hold.ownership_lock:
+        if not await asyncio.to_thread(community_device_hold.check_pending, C._credential_dir()):
+            return
+        # Refresh-capable: an expired token would be refused on every retry
+        # and keep uploads held after the network recovers.
+        status = await resolve_saved_oauth_status()
+        snapshot = status.get("snapshot") or {}
+        access_token = str(snapshot.get("access_token") or "").strip()
+        local_user_id = C._normalize_local_user_id(snapshot.get("local_user_id"))
+        if (
+            not status.get("logged_in") or snapshot.get("auth_source") != "oauth"
+            or not access_token or not local_user_id
+        ):
+            return
+        # Never send the token to a community other than its own; the check
+        # stays and uploads stay held.
+        session_base = str(snapshot.get("base_url") or "").strip().rstrip("/")
+        if not same_endpoint(session_base, C._social_base_url()):
+            return
+        await _bind_signed_in_login(session_base, access_token, local_user_id)
+
+
+# facts_sync asks for this before its upload gate; late-bound so patches reach it.
+community_device_hold.install_check_resolver(lambda: reconfirm_device_owner())
+
+
+async def _oauth_guest_bind(
+    social_base: str,
+    access_token: str,
+    *,
+    rebind: bool = False,
+) -> dict[str, Any]:
     """Best-effort OAuth guest migration via binding challenge.
 
-    Ownership conflicts must surface to the caller; other failures are recorded
-    but do not abort the login.
+    Failures, including an ownership conflict, are recorded in the returned
+    bind state and never abort the login. ``rebind`` asks the cloud to move a
+    device bound to another account to this one; only an explicit user action
+    may set it, and the cloud still requires this install's local proof.
     """
     bind: dict[str, Any] = {"bound": False, "error": None}
     base = social_base.rstrip("/")
@@ -1397,7 +1675,11 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
                     if adopt_res.status_code < 400:
                         approval_res, approval_detail = await _approve()
                     elif adopt_detail == _BIND_OWNERSHIP_CONFLICT:
-                        bind["error"] = _BIND_OWNERSHIP_CONFLICT
+                        # The cloud has no proof for this old device, and only
+                        # its owner may attach one, so a rebind cannot prove
+                        # this machine holds it. Report that distinctly: the
+                        # owner has to unbind it, retrying here never helps.
+                        bind["error"] = LEGACY_DEVICE_OWNED_ELSEWHERE if rebind else _BIND_OWNERSHIP_CONFLICT
                         return bind
                     else:
                         log = logger.info if adopt_res.status_code == 409 else logger.warning
@@ -1411,20 +1693,29 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
                 bind["error"] = approval_detail or f"http_{approval_res.status_code}"
                 return bind
 
+            bind_body: dict[str, Any] = {
+                "client_id": client_id,
+                "binding_challenge": challenge,
+            }
+            if rebind:
+                bind_body["rebind"] = True
             bind_res = await client.post(
                 f"{base}/api/auth/bind-client",
                 headers=headers,
-                json={
-                    "client_id": client_id,
-                    "binding_challenge": challenge,
-                },
+                json=bind_body,
             )
             if bind_res.status_code < 400:
                 bind["bound"] = True
                 return bind
+            if bind_res.status_code >= 500:
+                # A server or proxy error does not prove the bind was not
+                # committed; treat it like a request that got no answer.
+                bind["error"] = community_device_hold.CLOUD_UNREACHABLE
+                logger.info("community_oauth: guest bind returned %s", bind_res.status_code)
+                return bind
             bind["error"] = _response_detail(bind_res) or f"http_{bind_res.status_code}"
     except (httpx.HTTPError, OSError) as exc:
-        bind["error"] = "cloud_unreachable"
+        bind["error"] = community_device_hold.CLOUD_UNREACHABLE
         logger.info("community_oauth: guest bind failed: %s", exc)
     return bind
 

@@ -297,6 +297,10 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self._proactive_image_to_inject = None
         self._proactive_image_staged_at = 0.0
         self._proactive_image_history_len = 0
+        self._auto_capture_discard_epoch = 0  # Bumped by discard_auto_captured_history_images
+        self._in_flight_user_messages = {}  # task -> user message its stream_text still owns
+        # Screen consent the staged screenshot was taken under (None: no check).
+        self._proactive_image_consent_check = None
 
         # -- Empty-completion diagnostics (finish_reason / prompt_tokens / block_reason). --
         # Gemini may return non-stop finish_reason with empty content for SAFETY / RECITATION / MAX_TOKENS,

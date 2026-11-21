@@ -22,13 +22,17 @@ WORKDIR /src
 COPY frontend/plugin-manager /src/frontend/plugin-manager
 COPY frontend/react-neko-chat /src/frontend/react-neko-chat
 
-# Shared static assets bundled into plugin-manager at build time.
-# yui-guide-runtime.ts imports tutorial PNGs and shared icons via
-# `../../../static/...`; keep these COPY paths in sync with that file
-# (currently: static/assets/tutorial/{ghost-cursor,highlight}, static/icons).
+# Repo paths outside the frontend projects that the builds below read:
+#  - static/assets/tutorial: PNGs imported by plugin-manager's yui-guide-runtime.ts
+#  - static/locales: JSON read by react-neko-chat tests, which `tsc -b` checks
+#  - static/plugin-ui-sdk: display.js inlined by hosted/uiKitBundle.ts via `?raw`
+#  - static/icons: no build-time import today (only runtime /static/icons/ URLs)
+# tests/unit/test_docker_frontend_builder_context.py fails when a frontend
+# imports a repo path that is not copied here.
 COPY static/assets/tutorial /src/static/assets/tutorial
 COPY static/icons /src/static/icons
 COPY static/locales /src/static/locales
+COPY static/plugin-ui-sdk /src/static/plugin-ui-sdk
 
 WORKDIR /src/frontend/plugin-manager
 RUN npm ci && npm run build-only
@@ -203,7 +207,7 @@ COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plu
 COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
 
 # 7b. Extract built-in Live2D models (assets/<name>.tar.gz → static/<name>/)
-RUN cd /app && for model in yui-origin yui-lolita; do \
+RUN cd /app && for model in yui-origin yui-lolita yui-sister; do \
         tar -xzmf "assets/$model.tar.gz" -C static/ || exit 1; \
         test -f "static/$model/$model.moc3" || exit 1; \
     done

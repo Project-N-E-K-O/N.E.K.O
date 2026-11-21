@@ -295,3 +295,337 @@ def test_only_what_is_a_scheme_is_taken_for_one() -> None:
     assert model_key("Gateway:8080?Upstream=https://API.example.com", "m") == "gateway:8080?Upstream=https://API.example.com|m"
     # Schemes may hold digits, "+", "-" and "." after their first letter.
     assert model_key("Custom+V2.X-1://HOST/Path", "m") == "custom+v2.x-1://host/Path|m"
+
+
+# ---------------------------------------------------------------------------
+# The context window
+# ---------------------------------------------------------------------------
+
+
+async def test_a_model_nothing_is_known_about_gets_the_window_of_the_setting(path):
+    import config.nekoclaw_settings as settings
+
+    store = ModelCapabilityStore(path)
+
+    assert settings.TASK_AGENT_CONTEXT_WINDOW == 200_000
+    assert await store.context_window(URL, "any") == 200_000
+    assert await store.describe_window(URL, "any") == {
+        "window": 200_000,
+        "default": 200_000,
+        "set": None,
+        # The owner's numbers (2026-11-18): a preset of 200,000, summed up from 170,000 on.
+        "compact_at": 170_000,
+        "compact_at_set": None,
+        "idle_compact_after": 24 * 60.0,
+        "idle_compact_after_set": None,
+    }
+    assert settings.TASK_AGENT_COMPACT_AT_TOKENS == 170_000 and await store.compact_at(URL, "any") == 170_000
+    assert not path.exists()
+
+
+async def test_a_model_whose_window_is_written_down_is_managed_for_that(path):
+    import config.nekoclaw_settings as settings
+
+    store = ModelCapabilityStore(path)
+    free = "https://free.example.com/text/v1"
+
+    # The free tier's agent model cuts a long request off without saying so: nothing would
+    # ever be learned of its window, and a session managed for the setting would lose part
+    # of every request above what the model takes. It is the model of a user who set nothing.
+    assert settings.TASK_AGENT_KNOWN_CONTEXT_WINDOWS == {"free-agent-model": 128_000}
+    assert await store.context_window(free, "free-agent-model") == 128_000
+    assert await store.describe_window(free, "free-agent-model") == {
+        "window": 128_000,
+        "default": 128_000,
+        "set": None,
+        # The same part of its window as the presets are of each other.
+        "compact_at": 108_800,
+        "compact_at_set": None,
+        "idle_compact_after": 24 * 60.0,
+        "idle_compact_after_set": None,
+    }
+    # By name, whatever the address; and no other model.
+    assert await store.context_window(URL, " free-agent-model ") == 128_000
+    assert await store.context_window(free, "free-agent-model-2") == 200_000
+    assert await store.context_window(free, None) == 200_000
+
+    # What the user sets for it counts, as for any model; taken back, it is its own again.
+    assert await store.set_context_window(free, "free-agent-model", 64_000) == 64_000
+    assert await store.set_context_window(free, "free-agent-model", 200_000) == 200_000
+    assert await store.set_context_window(free, "free-agent-model", None) == 128_000
+    # And what a provider states for it still makes it smaller.
+    assert await store.note_context_window(free, "free-agent-model", 100_000) is True
+    assert await store.context_window(free, "free-agent-model") == 100_000
+
+
+async def test_the_user_sets_where_a_models_conversations_are_summed_up_from_and_takes_it_back(path):
+    store = ModelCapabilityStore(path)
+
+    assert await store.set_compact_at(URL, "m", 150_000) == 150_000
+    assert await store.compact_at(URL, "m") == 150_000
+    assert (await store.describe_window(URL, "m"))["compact_at_set"] == 150_000
+    # For that model only, and kept across a restart.
+    assert await store.compact_at(URL, "other") == 170_000
+    assert await ModelCapabilityStore(path).compact_at(URL, "m") == 150_000
+
+    # Of the window a session is in fact started with, when the model's configuration names one.
+    assert await store.compact_at(URL, "other", window=1_000_000) == 850_000
+    assert await store.compact_at(URL, "m", window=1_000_000) == 150_000
+    assert await store.compact_at(URL, "m", window=100_000) == 85_000
+
+    # A point that does not lie inside the window is not used: the model's window turned out
+    # smaller than the number was meant for, and it is summed up in proportion.
+    assert await store.note_context_window(URL, "m", 128_000) is True
+    assert await store.compact_at(URL, "m") == 108_800
+    assert await store.set_compact_at(URL, "m", 100_000) == 100_000
+    assert await store.set_compact_at(URL, "m", 128_000) == 108_800
+
+    # Taken back, it is the preset part of the window again; the rest of what is known stays.
+    assert await store.set_compact_at(URL, "m", None) == 108_800
+    assert (await store.describe_window(URL, "m"))["compact_at_set"] is None
+    assert await store.context_window(URL, "m") == 128_000
+
+
+@pytest.mark.parametrize("tokens", [0, 999, -5, True, "150000", float("nan"), float("inf")])
+async def test_a_point_that_is_no_number_of_tokens_is_not_set(path, tokens):
+    store = ModelCapabilityStore(path)
+
+    with pytest.raises(ValueError):
+        await store.set_compact_at(URL, "m", tokens)
+
+    assert await store.compact_at(URL, "m") == 170_000
+    assert not path.exists()
+
+
+async def test_the_user_sets_how_long_a_session_is_idle_before_it_is_summed_up_and_takes_it_back(path, monkeypatch):
+    from config import nekoclaw_settings as settings
+
+    store = ModelCapabilityStore(path)
+    # Nothing set: the setting, 24 minutes.
+    assert settings.TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS == 24 * 60.0
+    assert await store.idle_compact_after(URL, "m") == 24 * 60.0
+    assert not path.exists()
+
+    assert await store.set_idle_compact_after(URL, "m", 600) == 600.0
+    assert await store.idle_compact_after(URL, "m") == 600.0
+    # For that model, and no other; and it is kept across a restart.
+    assert await store.idle_compact_after(URL, "other") == 24 * 60.0
+    assert await ModelCapabilityStore(path).idle_compact_after(URL, "m") == 600.0
+    described = await store.describe_window(URL, "m")
+    assert (described["idle_compact_after"], described["idle_compact_after_set"]) == (600.0, 600.0)
+    other = await store.describe_window(URL, "other")
+    assert (other["idle_compact_after"], other["idle_compact_after_set"]) == (24 * 60.0, None)
+
+    # Back to the setting, which is read when it is asked for.
+    assert await store.set_idle_compact_after(URL, "m", None) == 24 * 60.0
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 1_800.0)
+    assert await store.idle_compact_after(URL, "m") == 1_800.0
+    assert json.loads(path.read_text(encoding="utf-8"))["models"] == {}
+
+
+@pytest.mark.parametrize("seconds", [0, 59, -5, float("nan"), float("inf"), True, "600", 31 * 24 * 3600, 10**400])
+async def test_a_time_that_is_no_usable_number_of_seconds_is_not_set(path, seconds):
+    store = ModelCapabilityStore(path)
+
+    with pytest.raises(ValueError):
+        await store.set_idle_compact_after(URL, "m", seconds)
+    assert await store.idle_compact_after(URL, "m") == 24 * 60.0 and not path.exists()
+
+
+@pytest.mark.parametrize("written", ["soon", 5, -1, True, None, [600], 10**12, 10**400])
+async def test_a_time_written_by_hand_that_is_no_usable_number_of_seconds_counts_as_not_set(path, written):
+    _write(path, {"version": 1, "models": {model_key(URL, "m"): {"idle_compact_after": written}}})
+    store = ModelCapabilityStore(path)
+
+    assert await store.idle_compact_after(URL, "m") == 24 * 60.0
+    assert (await store.describe_window(URL, "m"))["idle_compact_after_set"] is None
+
+
+async def test_what_the_user_set_for_the_idle_time_stays_when_a_refusal_of_pictures_is_written_down(path):
+    store = ModelCapabilityStore(path)
+    await store.set_idle_compact_after(URL, "m", 900)
+
+    assert await store.note_images_refused(URL, "m", "no images") is True
+    assert await store.idle_compact_after(URL, "m") == 900.0
+
+
+async def test_the_user_is_to_be_told_of_a_models_smaller_window_once(path):
+    store = ModelCapabilityStore(path)
+
+    # Nothing learned: nothing to tell.
+    assert await store.claim_window_reminder(URL, "m") is None
+    assert await store.note_context_window(URL, "m", 131_072) is True
+
+    # To whoever asks first; a second one while the first is telling them gets nothing.
+    assert await store.claim_window_reminder(URL, "m") == 131_072
+    assert await store.claim_window_reminder(URL, "m") is None
+    # Not on record before they were told: a process that ends in between tells them the
+    # next time, a second time at the worst, and never not at all.
+    assert "reminded" not in await store.describe_window(URL, "m")
+    assert await ModelCapabilityStore(path).claim_window_reminder(URL, "m") == 131_072
+
+    await store.confirm_window_reminder(URL, "m", 131_072)
+    # On record for whatever shows the model's settings later.
+    described = await store.describe_window(URL, "m")
+    assert described["reminded"] == 131_072 and described["reminded_at"] > 0
+    # Once for the model: not again when a smaller one is learned, nor after a restart.
+    assert await store.note_context_window(URL, "m", 64_000) is True
+    assert await store.claim_window_reminder(URL, "m") is None
+    assert await ModelCapabilityStore(path).claim_window_reminder(URL, "m") is None
+    # For that model only.
+    assert await store.note_context_window(URL, "other", 32_768) is True
+    assert await store.claim_window_reminder(URL, "other") == 32_768
+
+    # The user was not told after all (it could not be sent): told the next time.
+    store.unclaim_window_reminder(URL, "other")
+    assert "reminded" not in await store.describe_window(URL, "other")
+    assert await store.claim_window_reminder(URL, "other") == 32_768
+    await store.confirm_window_reminder(URL, "other", 32_768)
+    assert await store.claim_window_reminder(URL, "other") is None
+
+    # The user set the window themselves: what they were told is done with, and a model
+    # that turns out smaller again after that is told of again.
+    await store.set_context_window(URL, "m", 100_000)
+    assert "reminded" not in await store.describe_window(URL, "m")
+    assert await store.claim_window_reminder(URL, "m") == 64_000
+
+    # They set it once more while they are being told: what is on its way is of a window
+    # they have looked at since, and is not put on record as told.
+    await store.set_context_window(URL, "m", 90_000)
+    await store.confirm_window_reminder(URL, "m", 64_000)
+    assert "reminded" not in await store.describe_window(URL, "m")
+    assert await store.note_context_window(URL, "m", 48_000) is True
+    assert await store.claim_window_reminder(URL, "m") == 48_000
+    await store.confirm_window_reminder(URL, "m", 48_000)
+    assert (await store.describe_window(URL, "m"))["reminded"] == 48_000
+
+
+async def test_the_user_sets_a_window_for_one_model_and_takes_it_back(path):
+    store = ModelCapabilityStore(path)
+
+    assert await store.set_context_window(URL, "small-local", 32_000) == 32_000
+    assert await store.context_window(URL, "small-local") == 32_000
+    # Larger than the setting is the user's to choose as well.
+    assert await store.set_context_window(URL, "huge", 1_000_000) == 1_000_000
+    # Another model, and that name at another address, keep the setting.
+    assert await store.context_window(URL, "other") == 200_000
+    assert await store.context_window("http://192.168.1.5:8000/v1", "small-local") == 200_000
+    # Read back from the file by a store started later.
+    assert await ModelCapabilityStore(path).context_window(URL, "small-local") == 32_000
+    assert (await store.describe_window(URL, "small-local"))["set"] == 32_000
+
+    assert await store.set_context_window(URL, "small-local", None) == 200_000
+    saved = json.loads(path.read_text(encoding="utf-8"))["models"]
+    # Nothing is left of an entry that says nothing.
+    assert model_key(URL, "small-local") not in saved and model_key(URL, "huge") in saved
+
+
+@pytest.mark.parametrize("tokens", [0, -5, True, "32000", float("nan"), float("inf")])
+async def test_a_window_that_is_no_number_of_tokens_is_not_set(path, tokens):
+    store = ModelCapabilityStore(path)
+    with pytest.raises(ValueError):
+        await store.set_context_window(URL, "m", tokens)
+    assert await store.context_window(URL, "m") == 200_000
+
+
+async def test_no_window_is_smaller_than_a_session_can_be_managed_for(path):
+    import config.nekoclaw_settings as settings
+
+    store = ModelCapabilityStore(path)
+    assert await store.set_context_window(URL, "tiny", 512) == settings.TASK_AGENT_CONTEXT_WINDOW_MIN == 4_000
+    assert await store.note_context_window(URL, "tiny-too", 2_048) is True
+    assert await store.context_window(URL, "tiny-too") == 4_000
+
+
+async def test_the_window_a_provider_stated_counts_when_it_is_the_smaller_one(path, monkeypatch):
+    import config.nekoclaw_settings as settings
+
+    now = [1_800_000_000]
+    patch_module_clock(monkeypatch, capabilities_module, time=lambda: now[0])
+    store = ModelCapabilityStore(path)
+
+    assert await store.note_context_window(URL, "local", 32_768) is True
+    assert await store.context_window(URL, "local") == 32_768
+    assert await store.describe_window(URL, "local") == {
+        "window": 32_768,
+        "default": 200_000,
+        "set": None,
+        "compact_at": 27_853,
+        "compact_at_set": None,
+        "idle_compact_after": 24 * 60.0,
+        "idle_compact_after_set": None,
+        "learned": 32_768,
+        "learned_at": 1_800_000_000,
+        "lapses_at": 1_800_000_000 + settings.MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS,
+    }
+    # The same or a larger number told again changes nothing; a smaller one does.
+    assert await store.note_context_window(URL, "local", 32_768) is False
+    assert await store.note_context_window(URL, "local", 65_536) is False
+    assert await store.note_context_window(URL, "local", 16_384) is True
+    assert await store.context_window(URL, "local") == 16_384
+
+    # What the user set counts where it is smaller, and the provider's where that is.
+    await store.set_context_window(URL, "local", 8_000)
+    assert await store.context_window(URL, "local") == 8_000
+    await store.set_context_window(URL, "local", 100_000)
+    assert await store.context_window(URL, "local") == 16_384
+    # A provider that states a window larger than the setting does not widen it.
+    assert await store.note_context_window(URL, "big", 1_000_000) is True
+    assert await store.context_window(URL, "big") == 200_000
+    # Read back from the file by a store started later.
+    assert await ModelCapabilityStore(path).context_window(URL, "local") == 16_384
+
+
+@pytest.mark.parametrize("stated", [None, "many", 0, -1, True, float("nan")])
+async def test_a_statement_that_names_no_number_teaches_nothing(path, stated):
+    store = ModelCapabilityStore(path)
+    assert await store.note_context_window(URL, "local", stated) is False
+    assert await store.context_window(URL, "local") == 200_000
+    assert not path.exists()
+
+
+async def test_a_stated_window_is_believed_for_a_while_and_then_the_setting_counts_again(path, monkeypatch):
+    import config.nekoclaw_settings as settings
+
+    now = [1_800_000_000]
+    patch_module_clock(monkeypatch, capabilities_module, time=lambda: now[0])
+    store = ModelCapabilityStore(path)
+    await store.note_context_window(URL, "local", 32_768)
+    await store.set_context_window(URL, "local", 100_000)
+
+    now[0] += settings.MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS - 1
+    assert await store.context_window(URL, "local") == 32_768
+    now[0] += 2
+    # What the user set does not lapse; what was learned does.
+    assert await store.context_window(URL, "local") == 100_000
+    assert await store.describe_window(URL, "local") == {
+        "window": 100_000,
+        "default": 200_000,
+        "set": 100_000,
+        "compact_at": 85_000,
+        "compact_at_set": None,
+        "idle_compact_after": 24 * 60.0,
+        "idle_compact_after_set": None,
+    }
+    # Stated again, a larger number is taken now: the old one is no longer believed.
+    assert await store.note_context_window(URL, "local", 65_536) is True
+    assert await store.context_window(URL, "local") == 65_536
+
+
+async def test_what_is_known_of_the_window_and_of_pictures_do_not_overwrite_each_other(path):
+    store = ModelCapabilityStore(path)
+    await store.set_context_window(URL, "local", 32_000)
+    await store.note_context_window(URL, "local", 16_000)
+
+    assert await store.note_images_refused(URL, "local", "no pictures") is True
+    assert await store.context_window(URL, "local") == 16_000
+    assert (await store.describe_window(URL, "local"))["set"] == 32_000
+    assert await store.sees_images(URL, "local") is False
+
+    await store.set_context_window(URL, "local", None)
+    assert await store.sees_images(URL, "local") is False
+    assert await store.context_window(URL, "local") == 16_000
+    # A model that is only known by its window is taken to see pictures.
+    await store.set_context_window(URL, "other", 64_000)
+    assert await store.sees_images(URL, "other") is True
+    assert await store.describe(URL, "other") == {"sees": True}

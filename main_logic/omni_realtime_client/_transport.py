@@ -1050,15 +1050,54 @@ class _TransportMixin:
                 # is CPU-heavy (50-150ms on a 4K screenshot), so off-load to
                 # a thread to keep the event loop responsive.
                 if len(payload) > OMNI_WS_FRAME_LIMIT_BYTES:
+                    # An item shrink drops the oldest parts before it gives
+                    # up; keep the part list to undo that if it fails.
+                    _item = event.get("item")
+                    parts_before_shrink = (
+                        list(_item["content"])
+                        if isinstance(_item, dict)
+                        and isinstance(_item.get("content"), list)
+                        else None
+                    )
                     payload = await asyncio.to_thread(
                         self._try_shrink_image_payload, event, payload
                     )
+                    if payload is None and pre_send is not None:
+                        # The hook may now remove what did not fit (it runs
+                        # after the worker-thread yield); give up only if the
+                        # rest is still too large. Put back what the failed
+                        # shrink removed first, so the hook decides on it.
+                        if parts_before_shrink is not None:
+                            _item["content"] = parts_before_shrink
+                        pre_send(event)
+                        rechecked = json.dumps(event)
+                        if len(rechecked) <= OMNI_WS_FRAME_LIMIT_BYTES:
+                            payload = rechecked
+                            # The shrink already warned it dropped the item.
+                            logger.info(
+                                "oversized %s: shrink failed; sending after "
+                                "the pre-send hook (%d bytes)",
+                                event.get("type", ""),
+                                len(rechecked),
+                            )
                     if payload is None:
                         if raise_on_oversize:
                             raise RealtimeImagePayloadTooLargeError(
                                 "image payload exceeds realtime WebSocket frame limit"
                             )
                         return False
+                    if pre_send is not None:
+                        # The recompression above yields to a worker thread,
+                        # so the caller's conditions may have changed again
+                        # (e.g. screen consent revoked). Re-run the hook; the
+                        # item shrink edits ``event`` in place, so serializing
+                        # it again keeps the smaller images. Only reserialize
+                        # when the hook actually changed something.
+                        shrunk_snapshot = json.dumps(event)
+                        pre_send(event)
+                        rechecked = json.dumps(event)
+                        if rechecked != shrunk_snapshot:
+                            payload = rechecked
                 # Two distinct presend checks both run: send_guard verifies current connection
                 # ownership; raw-vision fencing verifies the frame still fits current routing
                 # mode. Semaphore waits and oversized-image recompression yield, allowing either
@@ -1412,6 +1451,7 @@ class _TransportMixin:
         description is delivered in the callback's exact arbiter ticket. They
         must not overwrite or consume the ambient screen/camera snapshot state.
         """
+        discard_epoch = getattr(self, "_visual_context_discard_epoch", 0)
         try:
             # Use the shared visual-analysis helper.
             from utils.screenshot_utils import analyze_image_with_vision_model
@@ -1420,6 +1460,15 @@ class _TransportMixin:
                 image_b64=image_b64,
                 max_completion_tokens=VISION_ANALYSIS_MAX_TOKENS
             )
+
+            if (
+                update_turn_state
+                and getattr(self, "_visual_context_discard_epoch", 0) != discard_epoch
+            ):
+                # The frame was discarded (consent revoked) while it was being
+                # analyzed; its description must not come back.
+                logger.info("Image analysis result dropped: visual context was discarded")
+                return ""
 
             if description:
                 if update_turn_state:
@@ -1440,7 +1489,13 @@ class _TransportMixin:
 
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
-            if update_turn_state:
+            # The frame may have been discarded meanwhile; state may then
+            # already belong to a newer frame, so leave it alone.
+            discarded_meanwhile = (
+                update_turn_state
+                and getattr(self, "_visual_context_discard_epoch", 0) != discard_epoch
+            )
+            if update_turn_state and not discarded_meanwhile:
                 self._image_recognized_this_turn = False
                 self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                 self._latest_image_b64 = None
@@ -1461,6 +1516,37 @@ class _TransportMixin:
         finally:
             if update_turn_state:
                 self._image_being_analyzed = False
+
+    def discard_live_share_frames(self) -> None:
+        """Forget the cached live frame after the frontend's share has stopped.
+
+        Live share frames carry no ``request_id``; a cached screenshot the user
+        attached to a voice turn (it has one) is left alone. Frames that
+        reached the server before the stop but finish validating after it are
+        dropped by Core before they get here. On providers without native
+        vision the frame's description goes too, and an analysis still running
+        for it cannot write its result back.
+        """
+
+        if getattr(self, "_latest_image_request_id", None) is not None:
+            return
+        # Same fence as a consent revocation (discard_cached_visual_context):
+        # an analysis still running for this frame cannot write back. No
+        # captured-at floor here: later frames, e.g. a user screenshot
+        # already in flight, must still be accepted.
+        self._visual_context_discard_epoch = (
+            getattr(self, "_visual_context_discard_epoch", 0) + 1
+        )
+        self._latest_image_generation = (
+            getattr(self, "_latest_image_generation", 0) + 1
+        )
+        self._latest_image_b64 = None
+        self._latest_image_source = "unknown"
+        self._latest_image_request_id = None
+        self._proactive_image_consumed = True
+        if not getattr(self, "_supports_native_image", True):
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+            self._image_recognized_this_turn = False
 
     def block_raw_visual_delivery(self) -> None:
         """Fail closed for raw frames without changing the microphone route."""
@@ -1505,6 +1591,34 @@ class _TransportMixin:
         ):
             self._raw_visual_delivery_blocked = False
 
+    def discard_cached_visual_context(self) -> None:
+        """Forget the cached frame so no later proactive turn can deliver it.
+
+        Called when the user revokes screen consent. The generation bump
+        fences any in-flight ``prompt_ephemeral`` snapshot: a late visual
+        rejection can no longer re-arm the discarded frame.
+        """
+
+        self._visual_context_discard_epoch = (
+            getattr(self, "_visual_context_discard_epoch", 0) + 1
+        )
+        self._latest_image_generation = (
+            getattr(self, "_latest_image_generation", 0) + 1
+        )
+        self._latest_image_b64 = None
+        # Frames still validating when consent was revoked carry an earlier
+        # ingress time; this floor makes stage_multimodal_frame and
+        # stream_image drop them.
+        self._visual_context_discard_at = time.monotonic()
+        self._latest_image_captured_at = self._visual_context_discard_at
+        self._latest_image_source = "unknown"
+        self._latest_image_request_id = None
+        self._proactive_image_consumed = True
+        if not self._supports_native_image:
+            # A completed Step annotation describes the discarded frame.
+            self._image_recognized_this_turn = False
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+
     def stage_multimodal_frame(
         self,
         image_b64: str,
@@ -1542,10 +1656,12 @@ class _TransportMixin:
         frame_captured_at = (
             float(captured_at) if has_ingress_order else time.monotonic()
         )
-        if has_ingress_order and frame_captured_at <= getattr(
-            self,
-            "_latest_image_captured_at",
-            0.0,
+        # Compare against the last discard too: a visual-route switch resets
+        # the cache ordering time, which must not readmit frames captured
+        # before a consent revocation.
+        if has_ingress_order and frame_captured_at <= max(
+            getattr(self, "_latest_image_captured_at", 0.0),
+            getattr(self, "_visual_context_discard_at", 0.0),
         ):
             return ImageStageResult(
                 accepted=False,
@@ -1799,6 +1915,19 @@ class _TransportMixin:
                     mode=delivery_mode.value,
                     generation=getattr(self, "_latest_image_generation", 0),
                     rejection_reason="raw_visual_delivery_blocked",
+                )
+            if (
+                cache_latest
+                and isinstance(captured_at, (int, float))
+                and float(captured_at)
+                <= getattr(self, "_visual_context_discard_at", 0.0)
+            ):
+                # Captured before the last consent revocation, delivered late.
+                return ImageStageResult(
+                    accepted=False,
+                    mode=delivery_mode.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                    rejection_reason="stale_frame",
                 )
             if delivery_mode == VisualDeliveryMode.EXTERNAL_DESCRIPTION:
                 if proactive_cue_image:

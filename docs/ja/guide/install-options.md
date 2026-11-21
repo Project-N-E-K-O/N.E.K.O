@@ -60,7 +60,7 @@ N.E.K.O_0.8.3_mac_arm64.zip
 
 - Python **3.11**
 - Python environment と command の実行に [`uv`](https://docs.astral.sh/uv/)
-- Repository lockfile と互換性のある Node。Plugin Manager は現在 `^20.19.0 || >=22.12.0` を要求
+- Repository lockfile と互換性のある Node。Plugin Manager は現在 `>=22.12.0` を要求
 - 有効にする機能が必要とする platform-specific dependency
 
 [前提条件](./prerequisites)、[開発環境の構築](./dev-setup)、[クイックスタート](./quick-start)から始めてください。

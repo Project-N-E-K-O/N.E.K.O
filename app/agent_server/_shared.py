@@ -109,6 +109,35 @@ def _bump_state_revision() -> int:
     return Modules.state_revision
 
 
+def _put_switch_off(key: str) -> None:
+    """Put a capability switch off, and drop what was kept for task agents if it was the last one on.
+
+    In one go, with nothing awaited in between: NekoClaw is off the
+    moment its last capability switch is (``nekoclaw_on``), and
+    what was kept of the main dialogue goes then. Not after
+    whatever the caller waits for next (a browser that is being
+    closed, a plugin host that is being stopped): the switch may
+    be on again by then, or the caller cancelled. Every place
+    that puts one of them off does it by this.
+    """
+    Modules.agent_flags[key] = False
+    try:
+        # Resolved when called: that module imports this one.
+        from .api_runtime import forget_turns_if_nekoclaw_is_off
+
+        forget_turns_if_nekoclaw_is_off()
+    except Exception:
+        # Seen: with this failed, what was said before the switch went
+        # off is handed to a task agent once NekoClaw is on again.
+        # (Whether NekoClaw is off now could not be looked at, that is:
+        # the dropping itself says so by itself when it fails.)
+        logger.warning(
+            "[NekoClaw] looking whether NekoClaw is off now failed as a switch went off;"
+            " the messages kept for task agents are not dropped",
+            exc_info=True,
+        )
+
+
 def _set_capability(name: str, ready: bool, reason: str = "") -> None:
     def _normalize_precheck_reason(raw_reason: str) -> str:
         text = str(raw_reason or "").strip()

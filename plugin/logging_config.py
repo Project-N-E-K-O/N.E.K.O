@@ -136,13 +136,11 @@ def _bind_process_logging(base_logger: logging.Logger, previous_handlers=()) -> 
     from config import APP_NAME
     from plugin._logging_runtime import (
         all_loggers as _all_loggers, close_unbound_handlers as _close_unbound_handlers,
-        replace_handlers as _replace_handlers,
+        is_inherited_handler as _is_inherited_handler, replace_handlers as _replace_handlers,
     )
 
     handlers = [h for h in base_logger.handlers if getattr(h, "_neko_owned", False)]
-    inherited = {h for lg in _all_loggers() for h in lg.handlers
-                 if getattr(h, "_neko_owned", False)
-                 and getattr(h, "_neko_pid", None) != os.getpid()}
+    inherited = {h for lg in _all_loggers() for h in lg.handlers if _is_inherited_handler(h)}
     retired = set(previous_handlers) | inherited
     for target in _all_loggers():
         selected = retired if target.name == APP_NAME or target.name.startswith(APP_NAME + ".") else inherited
@@ -250,13 +248,11 @@ def _ensure_sdk_logging() -> None:
     with _process_lock():
         if _runtime_pid == os.getpid() and _runtime_result is not None:
             return
-        from plugin._logging_runtime import all_loggers, ensure_legacy_root_collection
+        from plugin._logging_runtime import all_loggers, ensure_legacy_root_collection, is_inherited_handler
 
         service = os.getenv("NEKO_PLUGIN_SERVICE_NAME") or "Plugin"
         namespace = logging.getLogger(f"{APP_NAME}.{service}")
-        inherited = any(getattr(h, "_neko_owned", False)
-                        and getattr(h, "_neko_pid", None) != os.getpid()
-                        for lg in all_loggers() for h in lg.handlers)
+        inherited = any(is_inherited_handler(h) for lg in all_loggers() for h in lg.handlers)
         if namespace.handlers and not inherited:
             return  # Respect a logger explicitly configured by the containing app.
         result = setup_plugin_logging(service, own_root=inherited, log_level=_level_to_int(LOG_LEVEL))

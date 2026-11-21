@@ -21,6 +21,9 @@ Commands (``type`` field):
 
 * ``start``      - create a session from a ``TaskAgentSpec``.
 * ``prompt``     - hand the session work. Rejected while a run is in progress.
+  ``opening`` marks the text that opens a commission (a session takes
+  several, one after the other): a summary of the conversation leaves the
+  text that opened the commission under way as it is, word for word.
 * ``steer``      - deliver text before the next model request of the current
   run; on an idle session it starts a run.
 * ``follow_up``  - deliver text once the current run has nothing left to do; on
@@ -28,6 +31,12 @@ Commands (``type`` field):
 * ``abort``      - stop the current run. Queued steer / follow-up text is dropped.
 * ``close``      - stop the run, kill the session's background jobs and forget
   the session.
+* ``fork``       - make the record of a new session from that of another, by
+  copying what was said in it up to one entry (``fork.py``). The new session
+  is not opened: a ``start`` for it then goes on from the copy, with the
+  system prompt and the tool definitions the other was opened with.
+* ``compact``    - sum the conversation of an idle session up now, whatever
+  its length. Rejected while a run is in progress.
 
 Events (``type`` field). Every session event carries ``session_id`` and a
 per-session ``seq`` that increases by one:
@@ -38,9 +47,29 @@ per-session ``seq`` that increases by one:
   arrive while the tool is still running.
 * ``report``      - a structured report made through the ``report`` tool.
 * ``usage``       - token usage of one model request and the context size.
+  ``summary`` marks the request that summed the conversation up, which is
+  none of the run's own.
+* ``forked``      - the record of a new session was made from another's
+  (``fork``); ``upto`` is the entry of the other the copy ends with.
 * ``model_capability`` - something the session learned about its model: the
   provider refused a request for the pictures in it, so the session goes on
-  without pictures. Sent once per session at most.
+  without pictures (once per session at most); or it refused a request as
+  too long and stated a context window smaller than the one the session
+  was started with, which the session is managed for from then on.
+* ``compacted``   - the conversation was summed up. The session's system
+  prompt and tool definitions were put together anew after it.
+* ``taken``       - one of the texts the session was given (``prompt``,
+  ``steer``, ``follow_up``) is in its conversation for good: where the
+  session keeps a record of its own, the text is written to it, so that a
+  session opened again finds it. ``inputs`` says which, counted from 1 in
+  the order they were given. A text that was given and is dropped before
+  that (an ``abort``, a ``close``, a record that could not be written) is
+  never told of: a driver that needs to know whether what it sent stays
+  in the conversation waits for this, not for the next thing the session
+  puts out. It says that much and no more: not that a model request was
+  made with the text (a run that comes to its limit of requests as it
+  takes the text ends without one), only that the text is there for the
+  next request the session makes.
 * ``ended``       - a run finished and the session is idle (``completed``,
   ``aborted``, ``error``), or the session is gone (``closed``). A finished
   run states ``inputs``: how many texts (``prompt``, ``steer``,
@@ -60,7 +89,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 SESSION_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
 
@@ -81,6 +110,11 @@ class _Strict(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# The smallest window a session is managed for (the host's setting of the
+# same is ``TASK_AGENT_CONTEXT_WINDOW_MIN``; a test keeps the two equal).
+MIN_CONTEXT_WINDOW = 4_000
+
+
 class ModelConfig(_Strict):
     """Model endpoint of one session. ``http://`` endpoints are allowed."""
 
@@ -89,7 +123,11 @@ class ModelConfig(_Strict):
     # Travels inside the start command only; never read from argv or the environment.
     api_key: str | None = Field(default=None, repr=False)
     provider_type: str | None = None
-    context_window: int = Field(default=128_000, ge=4_000)
+    context_window: int = Field(default=128_000, ge=MIN_CONTEXT_WINDOW)
+    # The length of the conversation from which it is summed up, for the
+    # window above; None for the runtime's own part of the window. A window
+    # the session comes to be managed for later keeps the same part.
+    compact_at: int | None = Field(default=None, ge=1_000)
     max_output_tokens: int = Field(default=8_192, ge=256)
     request_timeout_seconds: float = Field(default=300.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
@@ -125,6 +163,9 @@ class GatewaySpec(_Strict):
     url: str = Field(min_length=1)
     # Issued by the host for this one session; sent as a bearer token.
     token: str = Field(min_length=1, repr=False)
+    # The host and its same-version Python child share this optional start
+    # hint. Neither runtime sends it to its model or grants access with it.
+    opening_browser_context: bool | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class TaskAgentSpec(_Strict):
@@ -139,8 +180,10 @@ class TaskAgentSpec(_Strict):
     model: ModelConfig
     # Host-supplied text appended to the built-in system prompt.
     instructions: str | None = None
-    # Language for text meant for the user, e.g. "Simplified Chinese".
-    reply_language: str | None = None
+    # A host maintenance opening reuses the saved prompt until the next commission.
+    idle_compaction: bool = False
+    # A fresh snapshot without the workspace brief should be retried on the next opening.
+    workspace_brief_unavailable: bool = False
     # False for a task agent started by another task agent: such a session cannot
     # manage goals on the strength of the messages it receives.
     top_level: bool = True
@@ -173,18 +216,39 @@ class PromptCommand(_Strict):
     type: Literal["prompt"] = "prompt"
     session_id: str
     text: str = Field(min_length=1)
+    # True for the text that opens a commission: what the session works on
+    # from here. A summary of the conversation leaves it as it is.
+    opening: bool = False
+    # False for text no person wrote for this session: what another session
+    # sent it, or what the host tells it of a time that has come. It stands
+    # in the conversation like any text, and entitles the run to nothing
+    # that only the user's own words entitle it to.
+    human: bool = True
+    # A number of the sender's own for this text, or None. Said again by
+    # the ``error`` event of a text that is refused: texts are sent without
+    # waiting for the one before, so "the last one sent" need not be the
+    # one a refusal is about.
+    serial: int | None = None
 
 
 class SteerCommand(_Strict):
     type: Literal["steer"] = "steer"
     session_id: str
     text: str = Field(min_length=1)
+    # See ``PromptCommand.human``.
+    human: bool = True
+    # See ``PromptCommand.serial``.
+    serial: int | None = None
 
 
 class FollowUpCommand(_Strict):
     type: Literal["follow_up"] = "follow_up"
     session_id: str
     text: str = Field(min_length=1)
+    # See ``PromptCommand.human``.
+    human: bool = True
+    # See ``PromptCommand.serial``.
+    serial: int | None = None
 
 
 class AbortCommand(_Strict):
@@ -194,6 +258,36 @@ class AbortCommand(_Strict):
 
 class CloseCommand(_Strict):
     type: Literal["close"] = "close"
+    session_id: str
+
+
+class ForkCommand(_Strict):
+    """Make the record of a new session from that of another; see ``nekoclaw.runtime.fork``.
+
+    The copy is made of the other's record as it is on the disk. What a
+    session that is open said and could not write there (the disk
+    refused it, after the retries) is not part of the record: a
+    session opened from it later does not have it, and neither does
+    the copy. That is not an error of the copying.
+    """
+
+    type: Literal["fork"] = "fork"
+    # The session that is made. It must have no record yet.
+    session_id: str = Field(pattern=SESSION_ID_PATTERN)
+    # Where its record is to be kept (``TaskAgentSpec.session_dir`` of its start).
+    session_dir: str = Field(min_length=1)
+    # The session that is copied, and where its record is kept. One that is
+    # open in this runtime has what it said so far written out first.
+    source_session_id: str
+    source_dir: str = Field(min_length=1)
+    # The entry of the other's record the copy is to end with; None for all
+    # of it. The copy ends at the last place at or before it where no tool
+    # call is left without its result.
+    upto: str | None = None
+
+
+class CompactCommand(_Strict):
+    type: Literal["compact"] = "compact"
     session_id: str
 
 
@@ -223,6 +317,8 @@ Command = Annotated[
         FollowUpCommand,
         AbortCommand,
         CloseCommand,
+        ForkCommand,
+        CompactCommand,
         HostResponseCommand,
         ShutdownCommand,
     ],
@@ -301,14 +397,33 @@ class UsageEvent(_SessionEvent):
     # Size of the conversation as of this request, and the model's window.
     context_tokens: int = 0
     context_window: int = 0
+    # True for the request that summed the conversation up: it is counted
+    # with what the session used, and says nothing of how long the
+    # conversation is (``context_tokens`` is 0).
+    summary: bool = False
+
+
+class ForkedEvent(_SessionEvent):
+    """The record of a new session (``session_id``) was made from another's."""
+
+    type: Literal["forked"] = "forked"
+    source_session_id: str
+    # The entry of the other's record the copy ends with.
+    upto: str
+    # How many entries were copied.
+    entries: int = 0
 
 
 class ModelCapabilityEvent(_SessionEvent):
     """What the session learned about its model while it ran."""
 
     type: Literal["model_capability"] = "model_capability"
-    # False: the provider said the model takes no pictures.
-    supports_images: bool
+    # False: the provider said the model takes no pictures. None: this is
+    # not about pictures.
+    supports_images: bool | None = None
+    # The context window the provider stated when it refused a request as
+    # too long; only when that is smaller than the session's.
+    context_window: int | None = None
     # What the provider said, shortened: kept with what is remembered, so
     # that it can be seen why the model was taken not to see pictures.
     reason: str = ""
@@ -316,10 +431,41 @@ class ModelCapabilityEvent(_SessionEvent):
     # once, for what they were); nothing is to be remembered about the model.
     lasting: bool = True
 
+    @model_validator(mode="after")
+    def _says_something(self) -> "ModelCapabilityEvent":
+        if self.supports_images is None and self.context_window is None:
+            raise ValueError("a model_capability event says what was learned")
+        return self
+
+
+class CompactedEvent(_SessionEvent):
+    """The conversation was summed up; the session goes on from the summary."""
+
+    type: Literal["compacted"] = "compacted"
+    # Lifetime count and pre-summary size, when the runtime measured them.
+    count: int | None = 0
+    tokens_before: int | None = 0
+
 
 # ``EndedEvent.error`` of a session whose runtime process went away. Nothing
 # more comes for such a session, not even the end of a close asked for.
 PROCESS_EXITED_ERROR = "the runtime process exited"
+
+
+class TakenEvent(_SessionEvent):
+    type: Literal["taken"] = "taken"
+    # Which of the texts the session was given is in its conversation now,
+    # counted from 1 in the order they were given.
+    inputs: int
+    # True where this is said after the run that took the text has ended:
+    # it was not known until then that the text had got into the
+    # conversation. What is told of the text is then what that run came to,
+    # and not what the next one does.
+    late: bool = False
+    # With ``late``: which run took the text, by the number its ``ended``
+    # event gave it (``EndedEvent.run``). A text may have gone to more than
+    # one run before it got into the conversation; this says which.
+    run: int | None = None
 
 
 class EndedEvent(_SessionEvent):
@@ -330,14 +476,39 @@ class EndedEvent(_SessionEvent):
     # Text of the last model response of the run.
     text: str = ""
     error: str | None = None
-    # Texts the session had taken when the run finished; None for ``closed``.
+    # Up to which of the texts the session was given this run is accounted
+    # for: the number of the last one it was handed when it finished. An
+    # upper bound, for telling the run's texts from those of the next. That
+    # a given text is in the conversation is said by its ``taken`` event and
+    # by nothing else: one whose answer never got there counts here, and is
+    # given again. None for ``closed``.
     inputs: int | None = None
+    # A number for this run among the session's runs, where the runtime
+    # counts them: what a ``taken`` event that comes late names (its ``run``).
+    run: int | None = None
+    # Of the texts this run was handed, those of which it is not known, as
+    # the run ends, whether they got into the conversation. A ``taken`` that
+    # comes late and names this run is of one of them, and of no other: a
+    # runtime that may say so late lists the text here. (One that knows of
+    # every text as its run ends, like the built-in one, lists none.)
+    open_inputs: list[int] = Field(default_factory=list)
+    # Background jobs of the session not yet gone when the run finished.
+    jobs: int = 0
+    # Those of them that tell the session when they finish, which starts its
+    # next run. Closing the session ends them, so a driver that would close
+    # an idle session to let it rest leaves one with such jobs open. (One
+    # that is being stopped is not among them: whoever stopped it knows,
+    # and nothing follows its end.)
+    waking_jobs: int = 0
 
 
 class ErrorEvent(_SessionEvent):
     type: Literal["error"] = "error"
     command: str
     message: str
+    # Of a text that was refused: the number it was sent under
+    # (``PromptCommand.serial``), where it had one.
+    serial: int | None = None
 
 
 class HostRequestEvent(_Strict):
@@ -385,6 +556,9 @@ SessionEvent = Union[
     ReportEvent,
     UsageEvent,
     ModelCapabilityEvent,
+    CompactedEvent,
+    TakenEvent,
+    ForkedEvent,
     EndedEvent,
     ErrorEvent,
 ]
@@ -399,6 +573,9 @@ RuntimeEvent = Annotated[
         ReportEvent,
         UsageEvent,
         ModelCapabilityEvent,
+        CompactedEvent,
+        TakenEvent,
+        ForkedEvent,
         EndedEvent,
         ErrorEvent,
         HostRequestEvent,

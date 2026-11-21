@@ -301,9 +301,17 @@ test('visual-only actions stay callable presentations without becoming Cat Mind 
         ['mouse', 'cat1_mouse', 'requestCat1Mouse'],
         ['wave', 'cat1_wave', 'requestCat1Wave'],
         ['sad', 'cat1_sad', 'requestCat1Sad'],
+        ['sad2', 'cat1_sad_2', 'requestCat1Sad2'],
         ['scared', 'cat1_scared', 'requestCat1Scared'],
         ['stroke', 'cat1_stroke', 'requestCat1Stroke'],
         ['wagging', 'cat1_wagging', 'requestCat1Wagging'],
+        ['banana', 'cat1_banana', 'requestCat1Banana'],
+        ['catnip1', 'cat1_catnip_1', 'requestCat1Catnip1'],
+        ['catnip2', 'cat1_catnip_2', 'requestCat1Catnip2'],
+        ['cry', 'cat1_cry', 'requestCat1Cry'],
+        ['ninjutsu', 'cat1_ninjutsu', 'requestCat1Ninjutsu'],
+        ['wag1', 'cat1_wag_1', 'requestCat1Wag1'],
+        ['wag2', 'cat1_wag_2', 'requestCat1Wag2'],
     ];
     for (const [key, actionId, requestName] of visualActions) {
         assert.equal(typeof window.NekoCatIdlePresentation[requestName], 'function', requestName);
@@ -316,7 +324,7 @@ test('visual-only actions stay callable presentations without becoming Cat Mind 
     assert.deepEqual(requests, visualActions.map(([, actionId]) => actionId));
 });
 
-test('grouped CAT1 idle random request selects one member and reports one Cat Mind lifecycle', () => {
+test('grouped CAT1 idle random request can select OIIA while muted and reports one lifecycle', () => {
     const { window, context, listeners } = loadMixin();
     const acknowledgements = [];
     const results = [];
@@ -344,18 +352,15 @@ test('grouped CAT1 idle random request selects one member and reports one Cat Mi
         _isNekoIdleCat1EdgePeekActive: () => false,
         _isNekoIdleReturnDragActionBlocking: () => false,
         _isAnyNekoIdleReturnDragActionBlocking: () => false,
-        _pickNekoIdleRandomVisualActionKey: (tier) => { assert.equal(tier, 'cat1'); picks += 1; return 'love1'; },
+        isNekoIdleCatAudioEnabled: () => false,
+        rollForOiia: () => { picks += 1; return 0.9; },
         _playNekoIdleCat1VisualAction: (_button, actionKey, options) => {
             selectedKey = actionKey;
             terminal = options.onTerminal;
             return true;
         },
     });
-    window.NekoCatResourceRegistry = {
-        getActionCapabilities(actionId) {
-            return { available: actionId === 'cat1_idle_random', reason: '' };
-        },
-    };
+    vm.runInContext('Math.random = rollForOiia;', context);
     window.nekoCatMind = {
         acknowledgeActionRequest(payload) {
             acknowledgements.push(payload);
@@ -373,18 +378,18 @@ test('grouped CAT1 idle random request selects one member and reports one Cat Mi
     }});
 
     assert.equal(picks, 1);
-    assert.equal(selectedKey, 'love1');
+    assert.equal(selectedKey, 'oiia');
     assert.equal(typeof terminal, 'function');
     assert.deepEqual(acknowledgements.map(({ actionId, status }) => ({ actionId, status })), [
         { actionId: 'cat1_idle_random', status: 'accepted' },
         { actionId: 'cat1_idle_random', status: 'started' },
     ]);
-    terminal('done', { reason: 'cat1-love-1-action-finished' });
+    terminal('done', { reason: 'cat1-oiia-action-finished' });
     terminal('done', { reason: 'duplicate' });
     assert.equal(results.length, 1);
     assert.equal(results[0].actionId, 'cat1_idle_random');
     assert.equal(results[0].source, 'cat_mind');
-    assert.equal(results[0].detail.actionKey, 'love1');
+    assert.equal(results[0].detail.actionKey, 'oiia');
 });
 
 test('CAT2 and CAT3 random requests use the matching provider, profile and Cat Mind lifecycle', () => {

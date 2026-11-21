@@ -8,6 +8,7 @@ output kept to its tail with the full text on disk.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import sys
@@ -251,7 +252,15 @@ async def test_abort_on_an_idle_session_stops_its_background_jobs_for_good(tmp_p
     try:
         session.prompt("start the server")
         await events.wait_ended(timeout=60)
+        # The run's end says that a job is still running: a session with one is not closed to rest.
+        assert events.of("ended")[0]["jobs"] == 1
         job = session.jobs.get("job-1")
+        # And that its end will start the next run. One that is being stopped by whoever
+        # knows about it does not: nothing follows its end, so it keeps no session open.
+        assert events.of("ended")[0]["waking_jobs"] == 1 and session.jobs.waking() == [job]
+        job.notice_suppressed = True
+        assert session.jobs.waking() == [] and session.jobs.running() == [job]
+        job.notice_suppressed = False
         for _ in range(100):
             if "pid" in job.process.stdout.read_from(0)[0]:
                 break
@@ -358,7 +367,8 @@ async def test_a_cancelled_spawn_does_not_leave_a_process_behind(
             process.kill()
 
 
-async def test_background_job_completion_is_reported_to_the_session(tmp_path: Path) -> None:
+@pytest.mark.parametrize("managed", [False, True])
+async def test_background_job_completion_is_reported_to_the_session(tmp_path: Path, managed: bool) -> None:
     script = _write(tmp_path, "brief.py", "import time\ntime.sleep(1.5)\nprint('all built')\n")
     llm = ScriptedLLM(
         [
@@ -373,7 +383,10 @@ async def test_background_job_completion_is_reported_to_the_session(tmp_path: Pa
             [say("The build finished."), finish()],
         ]
     )
-    session, events = await open_session(make_spec(tmp_path), llm, _host())
+    async def allow(_, payload):
+        return {"allow": True, "receipt": "command"}
+    host = HostCallbacks(execution_action=allow) if managed else _host()
+    session, events = await open_session(make_spec(tmp_path), llm, host)
     try:
         session.prompt("build")
         assert (await events.wait_for(lambda e: e["type"] == "tool_end", timeout=60))["text"] == (
@@ -387,6 +400,13 @@ async def test_background_job_completion_is_reported_to_the_session(tmp_path: Pa
         assert notice["role"] == "user"
         assert notice["content"].startswith(f"background job job-1 ({SHELL}: ")
         assert notice["content"].endswith("finished [status: completed, exit code: 0]. Output:\nall built")
+        if managed:
+            from nekoclaw.runtime.session import TRANSCRIPT_FILE
+            await session.flush()
+            assert sum(m.get("content") == notice["content"] for m in llm.requests[2]) == 1
+            rows = [json.loads(s) for s in (session._session_dir / TRANSCRIPT_FILE).read_text(encoding="utf-8").splitlines()]
+            assert [row["content"] for row in rows if row.get("custom_type") == "notice:job"] == [notice["content"]]
+            assert all(row.get("custom_type") != "notice:pending_job" for row in rows)
     finally:
         await session.close()
 
@@ -729,3 +749,296 @@ async def test_completion_notice_inlines_small_output_and_defers_large_output(tm
     assert registry.read(large) == "y" * 5000 + "\n"  # still unread, for job_output
     assert status_line(large) == "[status: completed, exit code: 0]"
     assert finished == [small, large]
+
+
+async def test_refused_job_output_is_unread_until_delivered(tmp_path):
+    tools = {}
+    count = 0
+    async def audit(_, payload):
+        nonlocal count
+        if payload["phase"] == "begin":
+            key = str(len(tools))
+            tools[key] = payload["tool"]
+            return {"allow": True, "receipt": key}
+        if payload["phase"] == "job_notice":
+            return {"allow": False}
+        if payload["phase"] == "finish" and tools[payload["receipt"]] == "job_output":
+            count += 1
+            return {"allow": count != 1}
+        return {"allow": True}
+
+    cmd = "Write-Output preserved-data" if WINDOWS else "echo preserved-data"
+    llm = ScriptedLLM([[call(SHELL, {"command": cmd, "description": "fixture", "run_in_background": True}),
+                        finish("tool_calls")],
+                       *[[call("job_output", {"job_id": "job-1", "wait": True}, f"read-{i}"),
+                          finish("tool_calls")] for i in range(3)], [say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=audit))
+    try:
+        session.prompt("collect")
+        await events.wait_ended("s1", timeout=60)
+        replies = {m["tool_call_id"]: m["content"] for batch in llm.requests for m in batch if m.get("tool_call_id")}
+        assert "could not be delivered" in replies["read-0"] and "preserved-data" not in replies["read-0"]
+        assert "preserved-data" in replies["read-1"] and "no new output" in replies["read-2"]
+    finally:
+        await session.close()
+
+
+async def test_closing_collects_pending_notices_after_process_settlement(tmp_path):
+    from types import SimpleNamespace
+    from nekoclaw.runtime.session import SessionError
+
+    reporting = asyncio.Event()
+    released = asyncio.Event()
+
+    async def report(job):
+        reporting.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            released.set()
+
+    registry = JobRegistry(report)
+    finished = asyncio.Event()
+    finished.set()
+    process = SimpleNamespace(wait=finished.wait, kill_requested=False, signal_name=None, returncode=0)
+    settled = registry.start("bash", "finished", process, foreground=False)
+    await asyncio.wait_for(reporting.wait(), 2)
+    assert registry.running() == [] and registry.waking() == [settled]
+    session, _ = await open_session(make_spec(tmp_path), ScriptedLLM([]), _host())
+    original_jobs = session.jobs
+    try:
+        # Only the in-flight completion notice keeps the session busy.
+        session.jobs = registry
+        with pytest.raises(SessionError, match="background command"):
+            session.compact()
+    finally:
+        session.jobs = original_jobs
+        await session.close()
+    stopping = asyncio.Event()
+    pending = SimpleNamespace(wait=stopping.wait, kill=stopping.set, kill_requested=True, signal_name=None)
+    running = registry.start("bash", "running", pending, foreground=False)
+    registry.close()
+    await registry.wait_closed(timeout_seconds=0.5)
+    assert settled.settled.is_set() and running.settled.is_set()
+    assert released.is_set() and not registry.waking()
+
+
+@pytest.mark.parametrize("receive", [False, True])
+@pytest.mark.parametrize(("notice_allowed", "saved"), [(False, True), (True, True), (True, False)])
+async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monkeypatch, receive, notice_allowed, saved):
+    from types import SimpleNamespace
+
+    stop = asyncio.Event()
+    stdout = procs.OutputBuffer(1024, lambda: None)
+    stdout.feed(b"first-part\n")
+    stop_at_notice = False
+    async def audit(_, payload):
+        if payload["phase"] == "begin":
+            return {"allow": True, "receipt": "job-read"}
+        if payload["phase"] == "job_notice":
+            if stop_at_notice:
+                session._abort_requested = True
+            return {"allow": notice_allowed}
+        if payload["phase"] == "finish":
+            stdout.feed(b"second-part\n")
+            stop.set()
+            await asyncio.wait_for(job.settled.wait(), 2)
+            await asyncio.sleep(0)
+            return {"allow": receive}
+        return {"allow": True}
+    llm = ScriptedLLM([[call("job_output", {"job_id": "job-1"}, "result"), finish("tool_calls")],
+                       [say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=audit))
+    notices = []
+    from nekoclaw.runtime.loop.messages import CustomMessage
+
+    def enqueue(kind, text):
+        handle = CustomMessage(custom_type=f"notice:{kind}", content=text)
+        notices.append(handle)
+        return handle
+
+    monkeypatch.setattr(session, "deliver_notice", enqueue)
+    process = SimpleNamespace(stdout=stdout, stderr=procs.OutputBuffer(1024, lambda: None),
+                              wait=stop.wait, kill=stop.set, kill_requested=False, signal_name=None, returncode=0)
+    job = session.jobs.start(SHELL, "fixture", process, foreground=False)
+    job.origin = "original"
+    try:
+        session.prompt("Read the current output")
+        await events.wait_ended("s1")
+        assert len(notices) == 1 and "second-part" not in notices[0].text
+        session.harness.message_list.append(notices[0])
+        session._on_message(notices[0])
+        assert not any(m is notices[0] for m in session.harness.message_list)
+        stop_at_notice = True
+        assert not await session._deliver_job_notices()
+        assert job.id in session.jobs.pending_notices and not session.transcript.is_registered(notices[0])
+        stop_at_notice = False
+        session._abort_requested = False
+        if not saved:
+            append = session._recorder._append
+            async def fail_notice(entry):
+                if getattr(entry, "custom_type", None) == "notice:job":
+                    session._recorder._lost[entry.id] = entry.parent_id
+                else:
+                    await append(entry)
+            monkeypatch.setattr(session._recorder, "_append", fail_notice)
+        assert await session._deliver_job_notices()
+        assert session.transcript.is_registered(notices[0])
+        await session.flush()
+        from nekoclaw.runtime.session import TRANSCRIPT_FILE
+        rows = [json.loads(line) for line in (session._session_dir / TRANSCRIPT_FILE).read_text(encoding="utf-8").splitlines()]
+        assert [row["content"] for row in rows if row.get("custom_type") == "notice:job"] == ([notices[0].text] if saved else [])
+        assert all(row.get("custom_type") != "notice:pending_job" for row in rows)
+        assert ("second-part" in notices[0].text) == notice_allowed
+        assert ("first-part" in notices[0].text) == (notice_allowed and not receive)
+        assert ("second-part" in session.jobs.read(job)) != (notice_allowed and saved)
+        result = next(m["content"] for m in llm.requests[1] if m.get("tool_call_id") == "result")
+        assert ("first-part" in result) == receive
+    finally:
+        await session.close()
+
+
+@pytest.mark.parametrize("receive", [False, True])
+async def test_promoted_command_advances_output_only_after_handoff(tmp_path, monkeypatch, receive):
+    from types import SimpleNamespace
+
+    done = asyncio.Event()
+    async def spawn(argv, **kwargs):
+        kwargs["stdout"].feed(b"first-chunk\n")
+        return SimpleNamespace(wait=done.wait, kill=done.set, stdout=kwargs["stdout"], stderr=kwargs["stderr"],
+                               kill_requested=False, signal_name=None, returncode=0)
+    monkeypatch.setattr(procs, "spawn", spawn)
+
+    async def audit(_, payload):
+        if payload["phase"] == "begin":
+            return {"allow": True, "receipt": payload["tool"]}
+        if payload["phase"] == "job_notice":
+            return {"allow": False}
+        if payload["phase"] == "finish" and payload["receipt"] == SHELL:
+            done.set()
+            return {"allow": receive}
+        return {"allow": True}
+
+    llm = ScriptedLLM([[call(SHELL, {"command": "fixture", "description": "fixture", "timeoutMs": 2}, "start"),
+                        finish("tool_calls")],
+                       [call("job_output", {"job_id": "job-1", "wait": True}, "reread"), finish("tool_calls")],
+                       [say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=audit))
+    try:
+        session.prompt("Collect the command output")
+        await events.wait_ended()
+        replies = {m["tool_call_id"]: m["content"] for batch in llm.requests for m in batch if m.get("tool_call_id")}
+        assert ("first-chunk" in replies["start"]) == receive
+        assert ("first-chunk" in replies["reread"]) != receive
+    finally:
+        done.set()
+        await session.close()
+
+
+async def test_oversized_failed_command_keeps_its_exit_status(tmp_path):
+    script = _write(tmp_path, "exit_fixture.py", "print('x' * 54000)\nraise SystemExit(2)\n")
+    async def allow(_, payload):
+        return {"allow": True, "receipt": "command"}
+    command = _python(script) + "; exit 2"
+    llm = ScriptedLLM([[call(SHELL, {"command": command, "description": "fixture"}, "failed-build"),
+                        finish("tool_calls")], [say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=allow))
+    try:
+        session.prompt("Run the fixture.")
+        await events.wait_ended(timeout=60)
+        result = next(m["content"] for m in llm.requests[1] if m.get("tool_call_id") == "failed-build")
+        assert "Use grep" in result and "[exit code: 2]" in result and "x" * 256 not in result
+    finally:
+        await session.close()
+
+
+async def test_notice_expansion_is_measured_and_fitted_before_model_request(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from nekoclaw.runtime.loop.messages import CustomMessage
+    from nekoclaw.runtime.tools.jobs import Job, PendingNotice
+
+    live = True
+    phases = []
+
+    async def audit(_, payload):
+        phases.append(payload["phase"])
+        return {"allow": live}
+
+    llm = ScriptedLLM([[say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=audit))
+    stdout = procs.OutputBuffer(1024, lambda: None)
+    stdout.feed(b"private-fixture-text")
+    job = Job("fixture", SHELL, "fixture", SimpleNamespace(stdout=stdout, stderr=procs.OutputBuffer(64, lambda: None)),
+              0, status="completed", origin="fixture-receipt")
+    handle = CustomMessage(custom_type="notice:pending_job", content="Job finished.", display=False)
+    session.jobs._jobs[job.id] = job
+    session.jobs.pending_notices[job.id] = PendingNotice(handle, None, admitted=True)
+
+    async def measure():
+        return session.context.policy.threshold
+
+    async def fit(**options):
+        nonlocal live
+        if options.get("reserve_tokens"):
+            assert "private-fixture-text" not in str(session.transcript.messages)
+            assert job.stdout_offset == 0
+            live = False
+
+    monkeypatch.setattr(session, "_size", measure)
+    monkeypatch.setattr(session, "_fit", fit)
+    try:
+        session.prompt("Fixture")
+        await events.wait_ended()
+        assert phases == ["job_notice_live", "job_notice"]
+        assert "Job finished." in str(llm.requests)
+        assert "private-fixture-text" not in str(llm.requests)
+        assert "private-fixture-text" not in str(session.transcript.messages)
+        assert job.stdout_offset == 0
+    finally:
+        await session.close()
+
+
+async def test_job_notice_batch_rechecks_earlier_sources_before_delivery(tmp_path):
+    from types import SimpleNamespace
+    from nekoclaw.host.task_agents import TaskAgentManager
+    from nekoclaw.runtime.loop.messages import CustomMessage
+    from nekoclaw.runtime.tools.jobs import Job, PendingNotice
+
+    first_live = True
+
+    async def admit_first():
+        return True
+
+    async def admit_second():
+        nonlocal first_live
+        first_live = False
+        return True
+
+    sources = {"first": (lambda: first_live, admit_first), "second": (lambda: True, admit_second)}
+    host_session = SimpleNamespace(session_id="s1", closing=False, job_sources=sources)
+    manager = SimpleNamespace(_held_by={"s1": "work"}, _sessions={"work": host_session})
+
+    async def audit(session_id, payload):
+        return await TaskAgentManager._cb_execution_action(manager, session_id, payload)
+
+    llm = ScriptedLLM([[say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=audit))
+    jobs = session.jobs
+    try:
+        for key in sources:
+            stdout = procs.OutputBuffer(1024, lambda: None)
+            stdout.feed(f"private-{key}".encode())
+            proc = SimpleNamespace(stdout=stdout, stderr=procs.OutputBuffer(64, lambda: None))
+            job = Job(key, SHELL, "fixture", proc, 0, status="completed", origin=key)
+            jobs._jobs[key] = job
+            handle = CustomMessage(custom_type="notice:pending_job", content=f"{key} finished.", display=False)
+            jobs.pending_notices[key] = PendingNotice(handle, None, admitted=True)
+        session.prompt("Collect the fixtures.")
+        await events.wait_ended()
+        await session.flush()
+        assert not first_live
+        for view in (str(llm.requests), str(session.transcript.messages)):
+            assert "private-first" not in view and "first finished." in view and "private-second" in view
+        assert jobs.get("first").stdout_offset == 0 and jobs.get("second").stdout_offset > 0
+    finally:
+        await session.close()

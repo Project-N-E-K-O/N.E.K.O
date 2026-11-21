@@ -195,7 +195,27 @@ async def _run_one(body: bytes) -> None:
 
 
 @pytest.mark.asyncio
-async def test_proxy_uses_runtime_user_plugin_server_port(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("path", "request_headers", "upstream_headers"),
+    [
+        ("/market/status?x=1", {}, {}),
+        (
+            "/market/feedback?kind=issue",
+            {"Authorization": "Bearer bridge-token", "X-Market-Feedback-Session": "test-session"},
+            {
+                "X-Market-Feedback-Session": "test-session",
+                "X-Market-Web-Url": "https://market.example.com",
+                "Cache-Control": "no-store",
+            },
+        ),
+    ],
+)
+async def test_proxy_uses_runtime_user_plugin_server_port(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    request_headers: dict[str, str],
+    upstream_headers: dict[str, str],
+) -> None:
     from app import main_server
     from app.main_server import app
 
@@ -204,7 +224,9 @@ async def test_proxy_uses_runtime_user_plugin_server_port(monkeypatch: pytest.Mo
 
     def _handler(request: httpx.Request) -> httpx.Response:
         seen_urls.append(str(request.url))
-        return httpx.Response(200, json={"ok": True})
+        for name, value in request_headers.items():
+            assert request.headers[name] == value
+        return httpx.Response(200, json={"ok": True}, headers=upstream_headers)
 
     class _MockUpstreamAsyncClient(original_async_client):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -219,12 +241,14 @@ async def test_proxy_uses_runtime_user_plugin_server_port(monkeypatch: pytest.Mo
             transport=httpx.ASGITransport(app=app),
             base_url="http://127.0.0.1:48911",
         ) as client:
-            response = await client.get("/market/status?x=1")
+            response = await client.get(path, headers=request_headers)
     finally:
         main_server.httpx.AsyncClient = saved_async_client
 
     assert response.status_code == 200
-    assert seen_urls == ["http://127.0.0.1:49123/market/status?x=1"]
+    assert seen_urls == [f"http://127.0.0.1:49123{path}"]
+    for name, value in upstream_headers.items():
+        assert response.headers[name] == value
 
 
 # ---------------------------------------------------------------------------

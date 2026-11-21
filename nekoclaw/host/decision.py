@@ -80,6 +80,19 @@ TIER_TURN_CHECK = "turn_check"
 # A short description for a plugin whose manifest has none: the small model,
 # once per plugin and description, in the background.
 TIER_SHORT_DESCRIPTION = "short_description"
+# The task agent space (``space_keeper.py``): the review of a finished
+# commission, the summary of a project that is archived, and the tidying of
+# the entries of one layer. All run in the background on the summary model
+# and are metered under names of their own.
+TIER_REVIEW = "review"
+TIER_ARCHIVE = "archive"
+TIER_CONSOLIDATE = "consolidate"
+_SUMMARY_TIERS = frozenset({TIER_FINE, TIER_REVIEW, TIER_ARCHIVE, TIER_CONSOLIDATE})
+_CALL_TYPES = {
+    TIER_REVIEW: "task_agent_review",
+    TIER_ARCHIVE: "task_agent_archive",
+    TIER_CONSOLIDATE: "task_agent_consolidate",
+}
 _FINE_ATTEMPTS = 3
 _FINE_RETRY_DELAYS = (1.0, 2.0)
 
@@ -106,6 +119,10 @@ class DecisionRequest:
     # questions reach the user too, so an answer can be about them; a stop,
     # a repeat or an addition never is.
     answerable: list[Commission] = field(default_factory=list)
+    # Her commissions a task agent worked on that are over (done, failed or
+    # stopped) and not long so, newest first. A sentence that adds to one of
+    # them goes on with it in its session.
+    recent: list[Commission] = field(default_factory=list)
     task_agent_available: bool = False
     # Rendered task preferences for the fine selection (already within budget).
     preferences: str = ""
@@ -125,7 +142,8 @@ class Triage:
     """Conclusion of the first round."""
 
     # "new", "duplicate", "stop", "tell", "answer", "ambiguous",
-    # "nothing_active", "none" (nothing can do this) or, from a probe that may
+    # "nothing_active", "none" (nothing can do this), "continue" (it goes on
+    # with a commission that is over: the target) or, from a probe that may
     # not ask a model, "unsure".
     kind: str
     # Commission ids this is about; several for "ambiguous".
@@ -175,7 +193,7 @@ class DecisionLLM(Protocol):
     """The model tiers the lexical decision model uses."""
 
     async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
-        """Return the text of one completion from ``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK`` or ``TIER_SHORT_DESCRIPTION``."""
+        """Return the text of one completion of a tier (``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK``, ``TIER_SHORT_DESCRIPTION``, ``TIER_REVIEW``, ``TIER_ARCHIVE``, ``TIER_CONSOLIDATE``)."""
 
 
 class DecisionModel(Protocol):
@@ -215,9 +233,10 @@ class ConfiguredDecisionLLM:
     """``DecisionLLM`` on the models the analyzer used.
 
     The coarse screen, the turn check and short descriptions run on the small
-    latency-sensitive tier (``emotion``), the fine selection on the ``summary``
-    tier. Endpoints come from the user's configuration as they are,
-    ``http://`` addresses included.
+    latency-sensitive tier (``emotion``); the fine selection, the reviews of
+    finished commissions, the summaries of archived projects and the tidying
+    of the task agent space on the ``summary`` tier. Endpoints come from the user's configuration as they
+    are, ``http://`` addresses included.
     """
 
     def __init__(self) -> None:
@@ -227,7 +246,19 @@ class ConfiguredDecisionLLM:
         from utils.config_manager import get_config_manager
         from utils.llm_client import create_chat_llm_async
 
-        slot = "summary" if tier == TIER_FINE else "emotion"
+        from config.nekoclaw_settings import (
+            SPACE_ARCHIVE_MODEL_SLOT,
+            SPACE_CONSOLIDATE_MODEL_SLOT,
+            TASK_AGENT_REVIEW_MODEL_SLOT,
+        )
+
+        # The tiers of the task agent space say in the settings which model
+        # they use, so that it is changed there and nowhere else.
+        slot = {
+            TIER_REVIEW: TASK_AGENT_REVIEW_MODEL_SLOT,
+            TIER_ARCHIVE: SPACE_ARCHIVE_MODEL_SLOT,
+            TIER_CONSOLIDATE: SPACE_CONSOLIDATE_MODEL_SLOT,
+        }.get(tier, "summary" if tier in _SUMMARY_TIERS else "emotion")
         config = await asyncio.to_thread(get_config_manager(migrate=False).get_model_api_config, slot)
         key = (slot, config.get("api_key"), config.get("base_url"), config.get("model"), config.get("provider_type"), budget)
         client = self._clients.get(key)
@@ -249,14 +280,23 @@ class ConfiguredDecisionLLM:
         from config import AGENT_PLUGIN_COARSE_MAX_TOKENS, AGENT_PLUGIN_FULL_MAX_TOKENS, AGENT_PLUGIN_SHORTDESC_MAX_TOKENS
         from utils.token_tracker import set_call_type
 
-        # Same usage bucket as the analyzer it takes over from.
-        set_call_type("agent")
-        from config.nekoclaw_settings import TURN_CHECK_OUTPUT_MAX_TOKENS
+        # Same usage bucket as the analyzer it takes over from; what the
+        # task agent space asks is counted apart.
+        set_call_type(_CALL_TYPES.get(tier, "agent"))
+        from config.nekoclaw_settings import (
+            SPACE_ARCHIVE_OUTPUT_MAX_TOKENS,
+            SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS,
+            TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS,
+            TURN_CHECK_OUTPUT_MAX_TOKENS,
+        )
 
         budget = {
             TIER_COARSE: AGENT_PLUGIN_COARSE_MAX_TOKENS,
             TIER_TURN_CHECK: TURN_CHECK_OUTPUT_MAX_TOKENS,
             TIER_SHORT_DESCRIPTION: AGENT_PLUGIN_SHORTDESC_MAX_TOKENS,
+            TIER_REVIEW: TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS,
+            TIER_ARCHIVE: SPACE_ARCHIVE_OUTPUT_MAX_TOKENS,
+            TIER_CONSOLIDATE: SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS,
         }.get(tier, AGENT_PLUGIN_FULL_MAX_TOKENS)
         client = await self._client(tier, budget)
         response = await client.ainvoke(messages)
@@ -528,22 +568,68 @@ def read_repeat_or_addition(request: DecisionRequest) -> Triage | None:
 
     if not has_cue("supplement", text):
         return None
+    content = token_set(strip_cues("vague", strip_cues("supplement", text)))
     # An addition can only be passed on to a task agent; a plugin run takes none.
     task_agents = [commission for commission in request.active if commission.route == "task_agent"]
-    if not task_agents:
+    if task_agents:
+        scored = [(_coverage(content, commission), commission) for commission in task_agents]
+        related = [item for item in scored if item[0] >= SUPPLEMENT_MIN_OVERLAP]
+        if len(task_agents) == 1 and (related or not content):
+            return Triage(kind="tell", targets=[task_agents[0].id])
+        target = _single_best(related)
+        if target is not None:
+            return Triage(kind="tell", targets=[target.id])
+        if related:
+            top = max(score for score, _ in related)
+            return Triage(kind="ambiguous", targets=[commission.id for score, commission in related if score == top])
+    return read_follow_up(request, anything_under_way=bool(task_agents))
+
+
+def read_follow_up(request: DecisionRequest, *, anything_under_way: bool) -> Triage | None:
+    """Read a sentence that adds something as going on with a commission that is over.
+
+    Called for a sentence with a cue of an addition that is about nothing
+    under way. One of the commissions a task agent worked on lately
+    (``request.recent``) takes it when enough of the sentence's own words
+    (``FOLLOW_UP_MIN_OVERLAP``; without the cue, words that point at
+    something unnamed, and words every request has) occur in what that
+    commission was, or came to: the one that shares most, and of several
+    that share as much, the newest. A sentence that says nothing but that
+    it adds something is about the one such commission there is, when
+    there is one only and nothing is under way. Words are read as for an
+    addition to a commission under way, and as bluntly: a follow-up that is
+    put in other words is missed and is a commission of its own, as before;
+    and a sentence that is none can be taken for one.
+    """
+    from config.nekoclaw_settings import FOLLOW_UP_MIN_OVERLAP
+
+    if not request.task_agent_available:
         return None
-    content = token_set(strip_cues("vague", strip_cues("supplement", text)))
-    scored = [(_coverage(content, commission), commission) for commission in task_agents]
-    related = [item for item in scored if item[0] >= SUPPLEMENT_MIN_OVERLAP]
-    if len(task_agents) == 1 and (related or not content):
-        return Triage(kind="tell", targets=[task_agents[0].id])
-    target = _single_best(related)
-    if target is not None:
-        return Triage(kind="tell", targets=[target.id])
-    if related:
-        top = max(score for score, _ in related)
-        return Triage(kind="ambiguous", targets=[commission.id for score, commission in related if score == top])
-    return None
+    said = strip_cues("vague", strip_cues("supplement", request.dispatch_text))
+    content = token_set(strip_cues("generic", said))
+    ended = [
+        commission
+        for commission in request.recent
+        if commission.route == "task_agent" and commission.parent_id is None and commission.session_id
+    ]
+    if not ended:
+        return None
+    if not content:
+        if len(ended) == 1 and not anything_under_way:
+            return Triage(kind="continue", targets=[ended[0].id])
+        return None
+
+    def shared(commission: Commission) -> float:
+        known = token_set(f"{commission_text(commission)} {commission.result_summary or ''}")
+        return len(content & known) / len(content)
+
+    scored = [(shared(commission), commission) for commission in ended]
+    top = max(score for score, _commission in scored)
+    if top < FOLLOW_UP_MIN_OVERLAP:
+        return None
+    # The first of them: ``recent`` is newest first.
+    target = next(commission for score, commission in scored if score == top)
+    return Triage(kind="continue", targets=[target.id])
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +742,13 @@ class LexicalDecisionModel:
             return answer
         repeat = read_repeat_or_addition(request)
         if repeat is not None:
+            if repeat.kind == "continue":
+                # It becomes a commission of its own: the plugins its words
+                # point at go along, as they do for any new one. No model.
+                match_text = request.match_text
+                repeat.keyword_hit_ids = keyword_hits(match_text, request.plugins)
+                kept, _ = stage1_filter(match_text, request.plugins)
+                repeat.candidate_ids = [str(plugin.get("id")) for plugin in kept]
             return repeat
         return await self.probe(request)
 

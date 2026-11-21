@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from typing import Any
+from unittest.mock import create_autospec
 
 import httpx
 import pytest
@@ -172,7 +174,10 @@ async def test_runtime_client_lists_and_calls_tools(server, hosts, tmp_path):
     definitions = await client.connect()
     result = await client.call("plugin__weather__today", {"city": "Lyon"})
 
-    assert [definition["name"] for definition in definitions] == ["plugin__weather__today"]
+    assert [definition["name"] for definition in definitions] == ["capability_search", "capability_call"]
+    assert [item["name"] for item in await host.gateway.candidate_definitions(commission.id)] == [
+        "plugin__weather__today"
+    ]
     assert (result.text, result.images, result.is_error) == ("sunny in Lyon", (), False)
     assert server.run_requests[0]["task_id"] == commission.id
     assert server.run_requests[0]["args"]["_ctx"]["latest_user_request"] == "plan my trip"
@@ -205,7 +210,9 @@ class Desk:
             builtin_tool(BUILTIN_GROUP_BROWSER, self.SNAPSHOT),
         ]
 
-    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any], still_allowed=None) -> BuiltinOutcome:
+        if still_allowed is not None and not still_allowed():
+            return BuiltinOutcome(False, "permission denied")
         self.calls.append((capability.tool_name, commission_id, dict(arguments)))
         if self.observe is not None:
             self.observed.append(self.observe())
@@ -238,7 +245,10 @@ async def test_runtime_client_gets_the_pictures_of_a_builtin_tool_only_if_its_mo
 
     # Neither group's tools are listed: they are loaded and called through these two.
     assert names == ["capability_search", "capability_call"]
-    groups = definitions[0]["inputSchema"]["properties"]["group"]["enum"]
+    told = definitions[0]["description"].splitlines()
+    groups = [line[2:].split(":")[0] for line in told if line.startswith("- ")]
+    # The argument takes any name: a group that is switched on later is loaded with this definition too.
+    assert "enum" not in definitions[0]["inputSchema"]["properties"]["group"]
     loaded = await client.call("capability_search", {"group": "desktop"})
     if sees_pictures:
         assert groups == ["browser", "desktop"]
@@ -267,7 +277,9 @@ class ShippedBrowser:
     def available(self) -> list[Any]:
         return [builtin_tool(BUILTIN_GROUP_BROWSER, definition) for definition in BROWSER_TOOLS]
 
-    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any], still_allowed=None) -> BuiltinOutcome:
+        if still_allowed is not None and not still_allowed():
+            return BuiltinOutcome(False, "permission denied")
         if self.error is not None:
             return BuiltinOutcome(False, self.error)
         return BuiltinOutcome(True, self.page)
@@ -450,6 +462,52 @@ async def test_revoked_token_stops_working(server, hosts, tmp_path):
     assert server.calls == []
 
 
+async def test_revoking_a_registered_desktop_call_stops_its_worker_and_releases_its_keys(server, hosts, tmp_path):
+    from nekoclaw.builtin.desktop import Desktop, DesktopStopped
+    from nekoclaw.builtin.devices import DesktopDeviceProvider
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    driver = create_autospec(Desktop, instance=True)
+    started = asyncio.Event()
+    stopped = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def screenshot(action, arguments, cancelled):
+        assert action == "screenshot"
+        loop.call_soon_threadsafe(started.set)
+        assert cancelled.wait(timeout=10)
+        stopped.set()
+        raise DesktopStopped()
+
+    driver.act.side_effect = screenshot
+    registration = create_autospec(DesktopDeviceProvider, instance=True)
+    registration.tools.return_value = DesktopDeviceProvider().tools()
+    registration.open_driver.return_value = driver
+    devices = BuiltinToolProvider(state=lambda group: (True, ""), desktop_provider=registration)
+    host = make_host(tmp_path, server, builtins=devices)
+    hosts.append(host)
+    host.permissions.set_asker(_allow_once)
+    url = await host.gateway.start()
+    commission = await _working_commission(host)
+    client = GatewayClient(url, host.gateway.issue(commission.id, supports_images=True))
+    await client.connect()
+    registration.open_driver.assert_not_called()
+    calling = asyncio.create_task(client.call("capability_call", {"name": "computer", "arguments": {"action": "screenshot"}}))
+    try:
+        await asyncio.wait_for(started.wait(), 10)
+        registration.open_driver.assert_called_once_with()
+        host.gateway.revoke(commission.id)
+        with pytest.raises(GatewayError, match="499"):
+            await calling
+        assert stopped.is_set()
+        assert host.leases.release(commission.id) == [BUILTIN_GROUP_KEYBOARD_MOUSE]
+        await host.leases.settle()
+        driver.release_held.assert_called_once_with()
+    finally:
+        calling.cancel()
+        await asyncio.gather(calling, return_exceptions=True)
+
+
 async def test_dropping_a_call_cancels_the_plugin_run(server, hosts, tmp_path):
     started = asyncio.Event()
 
@@ -500,7 +558,10 @@ async def test_task_agent_calls_a_plugin_entry_through_the_gateway(server, hosts
     server.add_plugin(plugin("lamp", "Controls the desk lamp", [entry("switch", "Turn the lamp on or off")]))
     llm = ScriptedLLM(
         [
-            [call("plugin__weather__today", {"city": "Lyon"}), finish("tool_calls")],
+            [
+                call("capability_call", {"name": "plugin__weather__today", "arguments": {"city": "Lyon"}}),
+                finish("tool_calls"),
+            ],
             [call("report", {"status": "ready", "summary": "Lyon is sunny; pack light"}, "c2"), finish("tool_calls")],
         ]
     )
@@ -514,11 +575,19 @@ async def test_task_agent_calls_a_plugin_entry_through_the_gateway(server, hosts
     done = await wait_status(host, receipt.commission_id, "done")
     assert done.route == "task_agent"
     assert host.gateway.started
-    # Offered next to the built-in tools, by the names the gateway gave them.
+    # The gateway's two tools are offered next to the built-in ones, and no entry by
+    # its own name: the tools of a session are the same whatever was picked for a commission.
     offered = [tool["function"]["name"] for tool in llm.overrides[0]["tools"]]
-    assert {"plugin__weather__today", "plugin__lamp__switch", "read", "report"} <= set(offered)
-    assert "capability_search" not in offered
-    assert "plugin__ or mcp__" in llm.requests[0][0]["content"]
+    assert {"capability_search", "capability_call", "read", "report"} <= set(offered)
+    assert not any(name.startswith(("plugin__", "mcp__")) for name in offered)
+    assert "capability_call" in llm.requests[0][0]["content"]
+    # What was picked for the commission is told in the message that opens it:
+    # each entry with its name, what it does and its arguments.
+    opening = llm.requests[0][-1]["content"]
+    picked = [json.loads(line) for line in opening.splitlines() if line.startswith("{")]
+    assert {item["name"] for item in picked} == {"plugin__weather__today", "plugin__lamp__switch"}
+    assert all(set(item) == {"name", "description", "inputSchema"} for item in picked)
+    assert "Call one with capability_call" in opening
     # The call reached the plugin as a normal run under this commission.
     (request,) = server.run_requests
     assert (request["task_id"], request["plugin_id"], request["entry_id"]) == (receipt.commission_id, "weather", "today")
@@ -542,7 +611,14 @@ async def test_stopping_the_commission_cancels_the_run_its_task_agent_started(se
         return plugin_finish({"reply": "never"})
 
     _weather(server, slow)
-    llm = ScriptedLLM([[call("plugin__weather__today", {"city": "Lyon"}), finish("tool_calls")]])
+    llm = ScriptedLLM(
+        [
+            [
+                call("capability_call", {"name": "plugin__weather__today", "arguments": {"city": "Lyon"}}),
+                finish("tool_calls"),
+            ]
+        ]
+    )
     host = _task_agent_host(hosts, tmp_path, server, llm)
     receipt = await host.dispatch("check the weather in Lyon and write packing advice", lanlan_name="Lan", lang="en")
     await asyncio.wait_for(started.wait(), 15)
@@ -569,7 +645,7 @@ async def test_mcp_tool_asks_the_user_through_the_commission(server, hosts, tmp_
     )
     llm = ScriptedLLM(
         [
-            [call("mcp__notes__search", {}), finish("tool_calls")],
+            [call("capability_call", {"name": "mcp__notes__search"}), finish("tool_calls")],
             [call("report", {"status": "ready", "summary": "found 3 notes"}, "c2"), finish("tool_calls")],
         ]
     )
@@ -733,7 +809,7 @@ async def test_task_agent_whose_model_takes_no_pictures_gets_the_browser_but_not
     # screenshots; nor has it the runtime's own picture tool.
     description = offered["capability_search"]["description"]
     assert "- browser:" in description and "- desktop:" not in description
-    assert offered["capability_search"]["parameters"]["properties"]["group"]["enum"] == ["browser"]
+    assert "enum" not in offered["capability_search"]["parameters"]["properties"]["group"]
     assert "read_image" not in offered
     system = llm.requests[0][0]["content"]
     assert _guidance("browser") not in system and _guidance("keyboard_mouse") not in system
@@ -800,8 +876,9 @@ async def test_task_agent_that_calls_a_tool_before_loading_its_group_is_handed_t
     host = _task_agent_host(hosts, tmp_path, server, llm, builtins=desk)
     await host.permission_store.set_mode("browser", "allow")
 
-    receipt = await host.dispatch("read the opening hours off the page", lanlan_name="Lan", lang="en")
+    receipt = await host.dispatch("find the opening hours", lanlan_name="Lan", lang="en")
     await wait_status(host, receipt.commission_id, "done")
+    assert "browser_take_snapshot" not in _offered(llm)
 
     # The first call did nothing and came back with the group: how it is
     # used and the definition the call was written without.
@@ -835,8 +912,9 @@ async def test_task_agent_whose_reply_holds_two_calls_to_a_group_it_has_not_read
     host = _task_agent_host(hosts, tmp_path, server, llm, builtins=desk)
     await host.permission_store.set_mode("browser", "allow")
 
-    receipt = await host.dispatch("read the opening hours off the page", lanlan_name="Lan", lang="en")
+    receipt = await host.dispatch("find the opening hours", lanlan_name="Lan", lang="en")
     await wait_status(host, receipt.commission_id, "done")
+    assert "browser_take_snapshot" not in _offered(llm)
 
     # The first came back with the group. The second was written before
     # that answer could be read: it was not carried out either, and was
@@ -851,3 +929,42 @@ async def test_task_agent_whose_reply_holds_two_calls_to_a_group_it_has_not_read
     # In the reply after, it went through.
     assert desk.calls == [("browser_take_snapshot", receipt.commission_id, {"verbose": True})]
     assert llm.requests[2][-1] == {"role": "tool", "tool_call_id": "c3", "content": "heading: Opening hours"}
+
+
+async def test_a_session_opened_when_nothing_could_be_called_reaches_a_plugin_installed_since(server, hosts, tmp_path):
+    llm = ScriptedLLM(
+        [
+            [call("report", {"status": "ready", "summary": "export added"}), finish("tool_calls")],
+            [
+                call("capability_call", {"name": "plugin__weather__today", "arguments": {"city": "Lyon"}}),
+                finish("tool_calls"),
+            ],
+            [call("report", {"status": "ready", "summary": "weather column added"}, "c2"), finish("tool_calls")],
+        ]
+    )
+    host = _task_agent_host(hosts, tmp_path, server, llm)
+    await host.space.touch_project("Budget app")
+
+    # No plugin, no built-in tool: nothing the gateway could serve.
+    first = await host.dispatch("add a CSV export to the budget app", lanlan_name="Lan", lang="en")
+    await wait_status(host, first.commission_id, "done")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    await wait_until(lambda: host.task_agents._held_by == {}, what="the session being let go")
+    offered = [tool["function"]["name"] for tool in llm.overrides[0]["tools"]]
+    assert {"capability_search", "capability_call"} <= set(offered)
+
+    _weather(server)
+    host.registry.invalidate()
+    second = await host.dispatch(
+        "add a column with the weather in Lyon to the budget app", lanlan_name="Lan", lang="en"
+    )
+
+    done = await wait_status(host, second.commission_id, "done")
+    # The same session, opened again with the tools it was told of the first time: the head
+    # of its requests is what it was, and the plugin that came since is called through it.
+    assert done.session_id == first.commission_id
+    assert llm.overrides[1]["tools"] == llm.overrides[0]["tools"]
+    assert llm.requests[1][0] == llm.requests[0][0]
+    (request,) = server.run_requests
+    assert (request["task_id"], request["plugin_id"], request["entry_id"]) == (second.commission_id, "weather", "today")
+    assert llm.requests[2][-1]["content"] == "sunny in Lyon"

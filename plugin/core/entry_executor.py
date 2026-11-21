@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import ExitStack
 from typing import Any
 
-from plugin._types.exceptions import PluginEntryNotFoundError, PluginExecutionError
+from plugin._types.exceptions import (
+    OUTPUT_SCHEMA_VIOLATION_CODE,
+    PluginEntryNotFoundError,
+    PluginExecutionError,
+    PluginOutputSchemaError,
+)
 from plugin.core.rpc import (
     RpcDeadlineExceededError,
     log_rpc_failure,
@@ -21,8 +27,21 @@ from plugin.sdk.shared.core.entry_runtime import (
     prepare_entry_kwargs,
     resolve_entry_timeout,
 )
+from plugin.core.responses import is_envelope
+from plugin.sdk.shared.core.output_contract import (
+    OutputCheck,
+    build_output_check,
+    format_issues,
+    is_violation,
+)
 
 UNSET_TIMEOUT = object()
+# Output-contract warnings: the same mismatch of the same entry is logged at
+# most once per interval; the next warning reports how many were suppressed.
+_WARN_INTERVAL = 60.0
+_WARN_KEYS_MAX = 1024
+# Keys ok(), fail() and finish() all write (``meta`` is optional).
+_ENVELOPE_KEYS = frozenset({"success", "code", "data", "message", "error", "time", "trace_id"})
 
 
 class EntryExecutor:
@@ -53,6 +72,114 @@ class EntryExecutor:
             persist,
         )
         self._logger = logger
+        # entry id -> (the meta the check was built from, the check). Rebuilt
+        # only when the entry's meta object changes (dynamic re-registration).
+        self._output_checks: dict[str, tuple[object, OutputCheck | None]] = {}
+        # (entry id, warning key) -> (last warning time, warnings suppressed since).
+        self._warned: dict[tuple[str, str], tuple[float, int]] = {}
+
+    def _output_check(self, event_id: str, meta: object) -> OutputCheck | None:
+        if len(self._output_checks) > len(self._metadata):
+            # More cached checks than entries: some entries are gone. Drop
+            # them even when this call is a cache hit.
+            self._prune_output_checks()
+        cached = self._output_checks.get(event_id)
+        if cached is not None and cached[0] is meta:
+            return cached[1]
+        # Entries that are gone (unregistered dynamic entries) leave the cache
+        # here, so it tracks live entries rather than every id ever called.
+        self._prune_output_checks()
+        try:
+            check = build_output_check(meta)
+        except Exception as exc:
+            # A contract that cannot be compiled must not break the entry.
+            check = None
+            self._logger.warning(
+                f"Plugin entry output_schema could not be prepared: entry={event_id}, error_type={type(exc).__name__}"
+            )
+        # A call that started before a re-registration still checks against
+        # its own meta, but must not overwrite the current entry's cache.
+        if self._metadata.get(event_id) is meta:
+            self._output_checks[event_id] = (meta, check)
+        return check
+
+    def _prune_output_checks(self) -> None:
+        for stale in [key for key in self._output_checks if key not in self._metadata]:
+            del self._output_checks[stale]
+        for gone in [key for key in self._warned if key[0] not in self._metadata]:
+            del self._warned[gone]
+
+    def _warn_limited(self, event_id: str, key: str, message: str) -> None:
+        """Log ``message`` at most once per ``_WARN_INTERVAL`` for the same entry and ``key``."""
+        now = time.monotonic()
+        last = self._warned.get((event_id, key))
+        if last is not None and now - last[0] < _WARN_INTERVAL:
+            self._warned[(event_id, key)] = (last[0], last[1] + 1)
+            return
+        if len(self._warned) >= _WARN_KEYS_MAX:
+            # Drop records whose window is over first; only if that is not
+            # enough, start over rather than grow without bound.
+            for stale in [k for k, (at, _n) in self._warned.items() if now - at >= _WARN_INTERVAL]:
+                del self._warned[stale]
+            if len(self._warned) >= _WARN_KEYS_MAX:
+                self._warned.clear()
+        self._warned[(event_id, key)] = (now, 0)
+        suffix = f", suppressed={last[1]}" if last is not None and last[1] else ""
+        self._logger.warning(f"{message}{suffix}")
+
+    def _check_output(self, event_id: str, label: str, result: object, meta: object) -> None:
+        """Validate a successful result against the entry's output contract.
+
+        ``meta`` is the entry's metadata as resolved when the call started; a
+        re-registration while the handler ran does not change the contract.
+        Logs and errors carry field paths and error types only, never the data.
+        """
+        if meta is None:
+            return
+        check = self._output_check(event_id, meta)
+        if check is None:
+            return
+        try:
+            if hasattr(result, "is_ok") and callable(result.is_ok):
+                # Ok: check its value. Err is a failure already: not checked.
+                if not result.is_ok():
+                    return
+                result = result.value
+            if is_envelope(result) and _ENVELOPE_KEYS.issubset(result.keys()):
+                # finish()/ok() envelopes: the contract describes ``data``;
+                # a fail() envelope is a failure already and is not checked.
+                # All keys every producer writes: a model may have a few of them.
+                if result.get("success") is not True:
+                    return
+                result = result.get("data")
+            issues = check(result)
+        except Exception as exc:
+            # The checkers catch their own failures; anything left (a mapping
+            # that raises when read, a metaclass raising in isinstance) is a
+            # checker failure, never a reason to lose the handler's result.
+            self._warn_limited(
+                event_id,
+                f"unchecked:{type(exc).__name__}",
+                f"Plugin entry output could not be checked: entry={label}, error_type={type(exc).__name__}",
+            )
+            return
+        if not issues:
+            return
+        summary = format_issues(issues)
+        strict = bool(getattr(meta, "strict_output", False)) and is_violation(issues)
+        self._warn_limited(
+            event_id,
+            # Indexes vary with the data; the kind of mismatch does not.
+            re.sub(r"\[\d+\]", "[]", summary),
+            f"Plugin entry output does not match output_schema: entry={label}, strict={strict}, issues={summary}",
+        )
+        if strict:
+            raise PluginOutputSchemaError(
+                self.plugin_id,
+                event_id,
+                [issue.as_dict() for issue in issues],
+                summary,
+            )
 
     def _resolve(self, event_type: str, event_id: str, *, registered_only: bool):
         # Custom-event calls (including cross-plugin ones) reach only handlers
@@ -112,6 +239,9 @@ class EntryExecutor:
         budget = remaining_budget(budget, deadline)
         if budget is not None and budget <= 0:
             raise RpcDeadlineExceededError(f"{label} deadline expired before execution")
+        # The contract this call is checked against: resolved with the handler,
+        # not re-read after it returns.
+        call_meta = self._metadata.get(event_id) if event_type == "plugin_entry" else None
         call_args = (
             prepare_entry_kwargs(
                 plugin_id=self.plugin_id,
@@ -157,6 +287,11 @@ class EntryExecutor:
             finally:
                 monitor.cancel()
                 await asyncio.gather(monitor, return_exceptions=True)
+            if event_type == "plugin_entry":
+                # Before persisting: a strict violation fails the call and the
+                # automatic state snapshot is skipped. The handler's own side
+                # effects have already happened and are not rolled back.
+                self._check_output(event_id, label, result, call_meta)
             if event_type == "plugin_entry" and self._should_persist(method):
                 try:
                     await self._persist("auto")
@@ -217,6 +352,18 @@ async def execute_entry_command(
         executor._logger.warning(
             f"Plugin entry operation timed out: entry={event_type}.{event_id}, req_id={reply['req_id']}"
         )
+    except PluginOutputSchemaError as exc:
+        # Already logged (paths and types only) where it was detected.
+        reply["error"] = {
+            "code": OUTPUT_SCHEMA_VIOLATION_CODE,
+            "message": str(exc),
+            "details": {
+                "plugin_id": executor.plugin_id,
+                "event_id": event_id,
+                "error_type": type(exc).__name__,
+                "issues": list(exc.issues),
+            },
+        }
     except Exception as exc:
         reply["error"] = {
             "code": "PLUGIN_EXECUTION_FAILED",

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Literal
@@ -51,6 +51,7 @@ from nekoclaw.runtime.loop.messages import (
     UserMessage,
     message_text,
 )
+from nekoclaw.runtime.loop.tool_history import repair_tool_history
 from nekoclaw.runtime.loop.tools import AgentToolResult
 from nekoclaw.runtime.tools.base import SpillStore
 
@@ -68,11 +69,69 @@ SUMMARY_FALLBACK = (
     "(The earlier part of this conversation could not be summarized and was dropped. Rely on "
     "the messages that remain and on the current state of the files.)"
 )
+SUMMARY_CUT_SHORT_NOTE = (
+    "(This summary reached its length limit and ends early: what would have followed is missing. "
+    "Where it matters, check the files and ask rather than assume.)"
+)
+
+
+class SummaryCutShort(RuntimeError):
+    """The model's summary ended at its length limit; ``text`` is what there is of it.
+
+    Only that: a reply that ended some other way without being a summary
+    (a tool was called instead) is a summary that failed.
+    """
+
+    def __init__(self, text: str) -> None:
+        super().__init__("the summary was cut short at its length limit")
+        self.text = text
 
 
 # ---------------------------------------------------------------------------
 # Policy
 # ---------------------------------------------------------------------------
+
+
+# The part of the window a conversation may fill before it is cut down and
+# summed up, unless the session is told another (``compact_ratio``): 170,000
+# of the preset 200,000 tokens.
+COMPACT_RATIO = 0.85
+
+
+def compact_ratio(window: int, compact_at: int | None) -> float:
+    """Return the part of a window a conversation may fill, given the length it is to be summed up from."""
+    if not compact_at or compact_at <= 0 or window <= 0:
+        return COMPACT_RATIO
+    # As early as it was set: a conversation is summed up from 1,000 tokens
+    # on at the earliest whatever this says (``ContextPolicy.threshold``).
+    return min(1.0, compact_at / window)
+
+
+def headroom_of(window: int) -> int:
+    """Return what is kept free of a window besides the output: a tenth of it, 65,536 tokens at the most.
+
+    The conversation is measured before every request, so this is not room
+    for what a turn adds; it is for what the measuring is off by. (An
+    eighth, until the preset window became 200,000 summed up from 170,000:
+    with an eighth kept free, and the output, that point would lie in it.)
+    """
+    return min(65_536, window // 10)
+
+
+# The largest part of the window a request's output may take: one in this many.
+OUTPUT_WINDOW_SHARE = 4
+
+
+def output_allowance(window: int, configured: int) -> int:
+    """Return how many tokens of output a request asks for in a window of ``window`` tokens.
+
+    What the model is configured for, and a quarter of the window at the
+    most. A provider counts the output a request asks for against the
+    window together with what it sends; in a window near the configured
+    output there would be no room left for the conversation, and a request
+    would be refused as too long however much of it was summed up.
+    """
+    return max(256, min(configured, window // OUTPUT_WINDOW_SHARE))
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +140,7 @@ class ContextPolicy:
 
     window: int
     max_output: int
-    threshold_ratio: float = 0.8
+    threshold_ratio: float = COMPACT_RATIO
     retain_ratio: float = 0.16
     headroom_tokens: int | None = None
     result_inline_tokens: int = 12_500
@@ -96,12 +155,12 @@ class ContextPolicy:
     def headroom(self) -> int:
         if self.headroom_tokens is not None:
             return self.headroom_tokens
-        return min(65_536, self.window // 8)
+        return headroom_of(self.window)
 
     @property
     def threshold(self) -> int:
         """Conversation size above which pruning and summarizing start."""
-        by_ratio = int(self.window * self.threshold_ratio)
+        by_ratio = round(self.window * self.threshold_ratio)
         by_reserve = self.window - self.max_output - self.headroom
         return max(1_000, min(by_ratio, by_reserve))
 
@@ -478,6 +537,9 @@ class Compaction:
     replaced_entry_ids: list[str]
     tokens_before: int
     usage: Usage | None = None
+    # A forced fit may have dropped the old span after a failed/truncated
+    # summary. The transcript still advances, but device tools stay put.
+    complete: bool = True
 
 
 def frame_summary(summary: str) -> str:
@@ -521,13 +583,19 @@ def choose_cut(rows: Sequence[Row], sizes: Sequence[int], retain_tokens: int) ->
     return cut
 
 
-def select_user_rows(region: Sequence[Row], sizes: Sequence[int], budget: int) -> set[str]:
-    """Pick the most recent user messages of ``region`` that fit ``budget`` tokens."""
-    kept: set[str] = set()
+def select_user_rows(
+    region: Sequence[Row], sizes: Sequence[int], budget: int, pinned: Collection[str] = ()
+) -> set[str]:
+    """Pick the most recent user messages of ``region`` that fit ``budget`` tokens.
+
+    A row named in ``pinned`` is kept whatever its size and on top of the
+    budget: what the user said since keeps the room it had.
+    """
+    kept: set[str] = {row.entry_id for row in region if row.entry_id in pinned}
     used = 0
     for index in range(len(region) - 1, -1, -1):
         row = region[index]
-        if row.kind != "human":
+        if row.kind != "human" or row.entry_id in kept:
             continue
         if used + sizes[index] > budget:
             break
@@ -625,12 +693,34 @@ class ContextManager:
         transcript: Transcript,
         *,
         force: bool = False,
+        tight: bool | None = None,
         on_compaction: Callable[[Compaction], None] | None = None,
+        pinned: Collection[str] = (),
+        or_drop: bool = True,
+        reserve_tokens: int = 0,
     ) -> list[Compaction]:
         """Bring the conversation under the threshold; rewrites ``transcript`` in place.
 
         ``force`` is the overflow path: prune everything and summarize even if
         the estimate says the conversation fits. Returns the summaries made.
+
+        ``tight`` says how much the first summary keeps word for word: a
+        quarter of the usual when True. Left out, a forced summary is
+        tight (the conversation was refused as too long) and any other is
+        not. A conversation that is summed up with nothing wrong with its
+        length (``force`` with ``tight`` False) keeps the usual.
+
+        ``pinned`` names rows (by entry id) that a summary leaves as they
+        are, word for word: the text that opened the commission the session
+        is working on.
+
+        ``or_drop`` says what becomes of the older part when no whole
+        summary of it can be had (the request failed, came back empty, or
+        ended at its length limit). True: the conversation has to get
+        shorter, so the part is replaced all the same, by a note that it
+        was dropped, or by the summary as far as it got with a note that
+        it ends early. False, for a conversation with nothing wrong with
+        its length: it is left as it is, and no summary is returned.
 
         ``on_compaction`` is how the caller persists them. It is called for each
         summary as soon as that summary has replaced the older messages, with
@@ -649,39 +739,59 @@ class ContextManager:
         if trimmed is not None:
             transcript.rewrite(trimmed)
             self.invalidate()
-        if not force and await self.measure(transcript.messages) <= self.policy.threshold:
+        threshold = self.policy.threshold - reserve_tokens
+        if not force and await self.measure(transcript.messages) <= threshold:
             return []
 
+        # As it is before anything is cut for the summary: put back when
+        # the conversation is to stay as it is and no summary is made.
+        as_it_was = None if or_drop else transcript.rows()
         pruned = await asyncio.to_thread(
             prune_rows, transcript.rows(), self.policy, include_latest=force
         )
         if pruned is not None:
             transcript.rewrite(pruned)
             self.invalidate()
-            if not force and await self.measure(transcript.messages) <= self.policy.threshold:
+            if not force and await self.measure(transcript.messages) <= threshold:
                 return []
 
         done: list[Compaction] = []
-        for attempt in range(2):
-            tokens_before = await self.measure(transcript.messages)
-            compaction = await self._compact(
-                transcript.rows(), tokens_before, tight=force or attempt > 0
-            )
-            if compaction is None:
-                break
-            transcript.rewrite(compaction.rows)
-            self.invalidate()
-            done.append(compaction)
-            if on_compaction is not None:
-                # Before the next await: a cancellation from here on must not
-                # leave the conversation ahead of what the caller has saved.
-                on_compaction(compaction)
-            if await self.measure(transcript.messages) <= self.policy.threshold:
-                break
+        # Once where the conversation could stay as it is: it is summed up
+        # because it was told to, and whoever told it to counted on one
+        # request.
+        try:
+            for attempt in range(2 if or_drop else 1):
+                tokens_before = await self.measure(transcript.messages)
+                compaction = await self._compact(
+                    transcript.rows(),
+                    tokens_before,
+                    tight=(force if tight is None else tight) or attempt > 0,
+                    pinned=pinned,
+                    or_drop=or_drop,
+                )
+                if compaction is None:
+                    break
+                transcript.rewrite(compaction.rows)
+                self.invalidate()
+                done.append(compaction)
+                if on_compaction is not None:
+                    # Before the next await: a cancellation from here on must not
+                    # leave the conversation ahead of what the caller has saved.
+                    on_compaction(compaction)
+                if await self.measure(transcript.messages) <= threshold:
+                    break
+        finally:
+            # Also when this is cancelled, or fails, while the summary is
+            # asked for. (One that was made stays, whatever comes after.)
+            if as_it_was is not None and not done and pruned is not None:
+                # Nothing was summed up, and nothing has to go: the tool
+                # results that were cut for it are whole again.
+                transcript.rewrite(as_it_was)
+                self.invalidate()
         return done
 
     async def _compact(
-        self, rows: list[Row], tokens_before: int, *, tight: bool
+        self, rows: list[Row], tokens_before: int, *, tight: bool, pinned: Collection[str] = (), or_drop: bool = True
     ) -> Compaction | None:
         policy = self.policy
         sizes = [estimate_tokens(row.message, policy.image_tokens) for row in rows]
@@ -696,13 +806,16 @@ class ContextManager:
         retain = policy.retain_tokens // 4 if tight else policy.retain_tokens
         cut = choose_cut(rows, sizes, retain)
         region = rows[:cut]
-        kept_ids = select_user_rows(region, sizes[:cut], policy.user_keep // (2 if tight else 1))
+        kept_ids = select_user_rows(region, sizes[:cut], policy.user_keep // (2 if tight else 1), pinned)
         replaced = [row for row in region if row.entry_id not in kept_ids]
         if not any(row.kind in ("assistant", "tool", "notice") for row in replaced):
             # Nothing but earlier summaries or oversized user text: no gain.
             return None
 
-        summary, usage = await self._summarize_region(replaced)
+        summary, usage, complete = await self._summarize_region(replaced, or_drop=or_drop)
+        if summary is None:
+            # No summary to be had, and nothing that has to go: left as it is.
+            return None
         stored = frame_summary(summary)
         summary_row = Row(self.new_entry_id(), "summary", summary_message(stored))
         replaced_ids = {row.entry_id for row in replaced}
@@ -722,29 +835,74 @@ class ContextManager:
             replaced_entry_ids=[row.entry_id for row in replaced],
             tokens_before=tokens_before,
             usage=usage,
+            complete=complete,
         )
 
-    async def _summarize_region(self, region: Sequence[Row]) -> tuple[str, Usage | None]:
-        """Ask the model for a checkpoint of ``region``; never raises."""
+    async def _summarize_region(
+        self, region: Sequence[Row], *, or_drop: bool = True
+    ) -> tuple[str | None, Usage | None, bool]:
+        """Ask the model for a checkpoint of ``region`` and say whether it is complete.
+
+        Without a whole summary: what stands in for it when ``or_drop``,
+        else None (see ``fit``).
+        """
         policy = self.policy
         # The request must fit the window itself: shrink tool results first,
         # then drop the oldest messages of the part being condensed.
         room = policy.window - policy.summary_cap - self.fixed_tokens - 2_000
-        prepared = await asyncio.to_thread(_shrink_for_summary, list(region), policy, room)
+        prepared, size = await asyncio.to_thread(_shrink_for_summary, list(region), policy, room)
+        if not or_drop and (len(prepared) < len(region) or size > room or _leaves_results_out(prepared)):
+            # The oldest messages do not fit into the request, so a summary
+            # would stand for a part it was never shown; or what is left
+            # (one message, which is never left out) is too long for the
+            # request by itself, and the request would be refused; or a
+            # request would not be sent some tool result there (one with
+            # no call, or the second of two of one call), and the
+            # summary would stand for it all the same.
+            logger.warning("the part to be summed up does not fit one request; the conversation is left as it is")
+            return None, None, False
         try:
             summary, usage = await self.summarize(prepared, policy.summary_cap)
         except asyncio.CancelledError:
             raise
+        except SummaryCutShort as cut:
+            # What it holds of limits on what may be done can be the part
+            # that is missing: not taken for a whole summary.
+            if not or_drop or not cut.text.strip():
+                logger.warning("context summary was cut short at its length limit")
+                return (SUMMARY_FALLBACK if or_drop else None), None, False
+            logger.warning("context summary was cut short at its length limit; kept as far as it got")
+            return f"{cut.text.rstrip()}\n\n{SUMMARY_CUT_SHORT_NOTE}", None, False
         except Exception as exc:  # noqa: BLE001 - a failed summary must not fail the run
+            if not or_drop:
+                logger.warning("context summary failed; the conversation is left as it is: %s", exc)
+                return None, None, False
             logger.warning("context summary failed, dropping the older span instead: %s", exc)
-            return SUMMARY_FALLBACK, None
+            return SUMMARY_FALLBACK, None, False
         if not summary.strip():
-            return SUMMARY_FALLBACK, usage
-        return summary, usage
+            return (SUMMARY_FALLBACK if or_drop else None), usage, False
+        return summary, usage, True
 
 
-def _shrink_for_summary(region: list[Row], policy: ContextPolicy, room: int) -> list[AgentMessage]:
-    """Return the messages handed to the summarizer, cut to fit ``room`` tokens."""
+def _leaves_results_out(messages: Sequence[AgentMessage]) -> bool:
+    """Whether a request made of ``messages`` would not be sent some tool result among them.
+
+    What a request is sent is put right first (``repair_tool_history``,
+    as the session does before it asks for the summary): a result
+    whose call is not there is left out, and so is one more than a
+    call has. Asked of that, and not of the ids alone: two calls of
+    one id, each with its own result, lose nothing.
+    """
+    repair = repair_tool_history(tuple(messages))
+    return bool(repair.dropped_orphan_results or repair.dropped_duplicate_results)
+
+
+def _shrink_for_summary(region: list[Row], policy: ContextPolicy, room: int) -> tuple[list[AgentMessage], int]:
+    """Return the messages handed to the summarizer, cut to fit ``room`` tokens, and how long they are.
+
+    The last message is never left out, whatever its length: the
+    length returned says whether what is handed over fits.
+    """
     messages: list[AgentMessage] = []
     for row in region:
         message = row.message
@@ -760,5 +918,5 @@ def _shrink_for_summary(region: list[Row], policy: ContextPolicy, room: int) -> 
     # Do not open with a tool result whose call was dropped.
     while start < len(messages) - 1 and isinstance(messages[start], ToolResultMessage):
         start += 1
-    return messages[start:]
+    return messages[start:], sum(sizes[start:])
 

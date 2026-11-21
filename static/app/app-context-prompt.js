@@ -124,6 +124,16 @@
             _setFlag('proactiveVisionChatEnabled', false);
         }
         _persistAndReschedule();
+        // Accepting "watch the screen with me" is a click: acquire the screen
+        // stream now (after the save, the gate reads saved settings), since
+        // later captures never show a picker.
+        if (context === 'play' && typeof window.acquireProactiveVisionAfterUserEnable === 'function') {
+            try {
+                window.acquireProactiveVisionAfterUserEnable();
+            } catch (e) {
+                console.warn('[context-prompt] 获取屏幕流失败:', e);
+            }
+        }
     }
 
     function _markShown(context) {

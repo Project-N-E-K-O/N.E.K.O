@@ -285,3 +285,40 @@ def test_arguments_are_checked_against_the_schema() -> None:
         validate_arguments(todo, {"todos": [{"content": "x", "status": "doing"}]})
     with pytest.raises(ToolError, match="were not valid JSON"):
         validate_arguments(read, {"__invalid_json_arguments__": '{"file_path": '})
+
+
+def test_sub_limit_numbered_file_can_continue_at_the_next_line(tmp_path):
+    import re
+    from nekoclaw.runtime.tools.fs import READ_LIMIT, READ_MAX_BYTES
+
+    document = tmp_path / "source.txt"
+    document.write_bytes((b"x" * 30 + b"\n") * 1500)
+    first = read_file(document, offset=1, limit=READ_LIMIT)
+    assert len(first.encode()) <= READ_MAX_BYTES
+    page = re.search(r"Use offset=(\d+) to continue", first)
+    assert page
+    following = int(page[1])
+    assert 1 < following < 1500
+    last = read_file(document, offset=following, limit=READ_LIMIT)
+    assert f"{following}: " in last and "1500: " in last
+
+
+def test_retained_job_batches_snapshot_only_the_same_source(tmp_path):
+    from nekoclaw.runtime.tools.protected_outputs import OutputSpool, ProtectedOutput
+
+    spool = OutputSpool(tmp_path)
+    try:
+        first, second, third = (ProtectedOutput(spool, "command") for _ in range(3))
+        first.write(b"first ")
+        second.write(b"second ")
+        second.prepend(first)
+        first.write(b"later")
+        third.write(b"third")
+        third.prepend(second)
+        with third.reader() as full, first.reader() as original:
+            assert full.read() == b"first second third"
+            assert original.read() == b"first later"
+        with pytest.raises(ValueError, match="unrelated"):
+            third.prepend(ProtectedOutput(spool, "another-command"))
+    finally:
+        spool.close()

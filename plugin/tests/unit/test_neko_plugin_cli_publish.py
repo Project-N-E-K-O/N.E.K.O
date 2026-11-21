@@ -418,6 +418,21 @@ _MARKET_RELEASE_URL = "https://github.com/neko/n.e.k.o_plugin_demo/releases/tag/
             "waiting for a Market reviewer",
         ),
         (
+            httpx.Response(202, json={
+                "status": "platform_attention",
+                "publication_request": {"id": 12, "status": "platform_attention"},
+            }),
+            1,
+            "[MARKET] status=platform_attention request=12\n",
+            "[FAIL] Market needs platform operator attention",
+        ),
+        (
+            httpx.Response(202, json=_market_review("superseded")),
+            1,
+            "[MARKET] status=superseded candidate=7\n",
+            "[FAIL] a newer release",
+        ),
+        (
             httpx.Response(202, json=_market_review("rejected")),
             1,
             "[MARKET] status=rejected candidate=7\n",
@@ -441,7 +456,12 @@ def test_publish_market_reports_the_market_status(
     captured = capsys.readouterr()
     assert captured.out.count("[MARKET]") == 1
     assert market_line in captured.out
-    assert message in captured.out + captured.err
+    assert "[MARKET]" not in captured.err
+    if exit_code:
+        assert message in captured.err
+        assert message not in captured.out
+    else:
+        assert message in captured.out
 
 
 @pytest.mark.parametrize(
@@ -1451,6 +1471,18 @@ def test_release_asset_is_ready_only_after_github_marks_it_uploaded() -> None:
 
     asset["state"] = "uploaded"
     assert release_asset_is_downloadable(asset) is True
+
+
+@pytest.mark.parametrize("plugin_id,has_link", [(17, True), (True, False), (-1, False), ("https://example.org", False)])
+def test_publish_market_recovers_from_legacy_latest(plugin_id, has_link, capsys):
+    payload = {"code": "release_version_not_newer", "detail": "Legacy latest",
+               "issues": [None, {"code": "release_latest_unordered", "plugin_id": plugin_id}]}
+    assert publish_cmd._report_market_response(409, payload) == 1
+    captured = capsys.readouterr()
+    if has_link:
+        assert "https://market.project-neko.cn/#/plugin/17?tab=versions&action=publish" in captured.err
+    else:
+        assert "/#/plugin/" not in captured.out + captured.err
 
 
 def test_publish_market_surfaces_stable_market_error(
