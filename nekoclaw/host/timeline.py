@@ -169,6 +169,10 @@ def question_text(pending: str | None) -> tuple[str, str]:
         items = question.get("questions")
         if isinstance(items, list) and items and isinstance(items[0], dict):
             asked = _text(items[0].get("question"))
+    if not asked:
+        # A request for approval says what kind of thing it may do (and, of
+        # an MCP server, which), never what with: that is its ``detail``.
+        asked = ":".join(part for part in (_text(question.get("category")), _text(question.get("key"))) if part)
     return asked, _text(question.get("kind"))
 
 

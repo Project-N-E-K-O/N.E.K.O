@@ -174,10 +174,13 @@ async def test_the_question_it_waits_on_is_shown_and_no_more_than_what_it_asks(l
     await ledger.append_event(commission.id, "answered", {"text": "main"})
     assert (await ledger.transition(commission.id, "working")).applied
     tick(ledger)
+    # As ``PermissionAsk.to_json`` writes it.
     second = {
         "kind": "permission",
-        "question": "may it write to D:/out?",
+        "category": "mcp_server",
+        "key": "github",
         "detail": {"args": {"token": SECRET}},
+        "options": ["once", "deny"],
         "id": "q2",
     }
     assert (await ledger.transition(commission.id, "waiting_user", pending_question=json.dumps(second))).applied
@@ -187,7 +190,7 @@ async def test_the_question_it_waits_on_is_shown_and_no_more_than_what_it_asks(l
     earlier, now = _of(entries, "asked_user")
     # The first question is no longer on record: only that it was asked.
     assert (earlier["text"], earlier["detail"], earlier["peer"]["type"]) == ("", {"question_kind": None}, "user")
-    assert (now["text"], now["detail"]) == ("may it write to D:/out?", {"question_kind": "permission"})
+    assert (now["text"], now["detail"]) == ("mcp_server:github", {"question_kind": "permission"})
     [answered] = _of(entries, "answered")
     assert (answered["text"], answered["peer"]["type"]) == ("main", "user")
     assert SECRET not in json.dumps(entries)
@@ -733,6 +736,9 @@ def test_what_a_question_asks():
     assert question_text('{"question": 5, "questions": [{"question": "size?"}], "kind": 3}') == ("size?", "")
     assert question_text('{"question": "colour?", "questions": [{"question": "size?"}]}') == ("colour?", "")
     assert question_text('{"questions": {"0": {"question": "size?"}}}') == ("", "")
+    assert question_text('{"kind": "permission", "category": "file_write", "key": null}') == ("file_write", "permission")
+    assert question_text('{"kind": "permission", "category": "file_write", "question": "ok?"}') == ("ok?", "permission")
+    assert question_text('{"kind": "permission", "key": 5, "detail": {"path": "x"}}') == ("", "permission")
 
 
 async def test_filed_waiting_for_the_user_it_waits_since_it_was_filed(ledger):

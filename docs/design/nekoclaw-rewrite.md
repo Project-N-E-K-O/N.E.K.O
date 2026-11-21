@@ -2415,7 +2415,7 @@ owner 要的面板参考了 Antigravity 的 Swarm：成员之间的线（做完�
 | `filed` 立了一件事 | 事件 `created` | 标题 | 子使魔、问一句的副本：父委托 | `source` |
 | `queued` 排队 | 事件 `queued`；状态改成 `queued` | — | 排在谁后面（有的话） | `from`、`ahead`、`behind` |
 | `started` 开工、接着干 | 状态改成 `working` | — | — | `from` |
-| `asked_user` 等用户回话 | 状态改成 `waiting_user` | 问了什么（只有正在等的那一问） | 用户 | `question_kind` |
+| `asked_user` 等用户回话 | 状态改成 `waiting_user` | 问了什么（只有正在等的那一问；权限请求没有问题文字，给类别，MCP 服务器再加 `:服务器名`，不给要做什么） | 用户 | `question_kind` |
 | `answered` 用户答了 | 事件 `answered` | 回答 | 用户 | — |
 | `told` 用户插了话 | 事件 `told` | 那句话 | 用户 | — |
 | `reported` 使魔汇报 | 事件 `report` | 摘要 | — | `status`（progress/waiting/done/…） |
