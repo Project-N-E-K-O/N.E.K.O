@@ -50,6 +50,9 @@ DRAFT_REASONS: tuple[str, ...] = ("empty", "no_model", "timeout", "failed", "unr
 # The preset of a session the user sets up, unless the answer names another
 # that is there: it leads a project of its own.
 DEFAULT_PRESET = "boss"
+# Presets such a session is not offered: how a task agent another one started
+# is opened, and a session of one errand that belongs to no project.
+NOT_OFFERED: frozenset[str] = frozenset({"worker", "general"})
 
 
 class DraftError(RuntimeError):
@@ -117,9 +120,10 @@ async def draft_session(
     """Return ``{name, title, preset, duty, description, rules}`` for a new session, from what the user wrote of it.
 
     ``llm`` is a ``DecisionLLM`` that knows ``TIER_SESSION_DRAFT``.
-    ``preset`` is the name of a template in effect for every project
-    (``DEFAULT_PRESET`` when the answer names none of them). Raises
-    ``DraftError``; never returns part of a form.
+    ``preset`` is the name of a template in effect for every project,
+    ``DEFAULT_PRESET`` when the answer names none of them or one such a
+    session is not offered (``NOT_OFFERED``). Raises ``DraftError``;
+    never returns part of a form.
     """
     from config import nekoclaw_settings as settings
     from config.prompts import prompts_nekoclaw_presets as texts
@@ -130,24 +134,29 @@ async def draft_session(
         raise DraftError("empty")
     if llm is None:
         raise DraftError("no_model")
-    listed = [item for item in await asyncio.to_thread(templates.listing, None) if item.template is not None]
-    names = {model_name(item.name): item.name for item in listed}
-    system = texts.SESSION_DRAFT_SYSTEM_PROMPT.format(
-        presets="\n".join(
-            texts.PRESET_ROSTER_LINE.format(name=model_name(item.name), description=item.template.description)
-            for item in listed
-            if item.template is not None
-        ),
-        default=model_name(DEFAULT_PRESET),
-    )
-    lines = (
-        await asyncio.to_thread(list_folder, workdir, settings.SESSION_DRAFT_LISTING_ENTRIES) if workdir else []
-    )
+    listed = [item for item in await asyncio.to_thread(templates.listing, None) if item.name not in NOT_OFFERED]
+    # The default is named in the instructions; the others one line each, as
+    # many as fit, a template that is wrong left out. Only one the model was
+    # told of can come back; anything else is the default.
+    names: dict[str, str] = {}
+    lines: list[str] = []
+    room = settings.SESSION_DRAFT_PRESETS_MAX_TOKENS
+    for item in listed:
+        if item.template is None or item.name == DEFAULT_PRESET:
+            continue
+        line = texts.PRESET_ROSTER_LINE.format(name=model_name(item.name), description=item.template.description)
+        room -= count_tokens(line) + 1
+        if room < 0:
+            break
+        lines.append(line)
+        names[model_name(item.name)] = item.name
+    system = texts.SESSION_DRAFT_SYSTEM_PROMPT.format(presets="\n".join(lines), default=model_name(DEFAULT_PRESET))
+    held = await asyncio.to_thread(list_folder, workdir, settings.SESSION_DRAFT_LISTING_ENTRIES) if workdir else []
     user = texts.SESSION_DRAFT_USER_TEMPLATE.format(
         text=truncate_to_tokens(wanted, settings.SESSION_DRAFT_TEXT_MAX_TOKENS),
         workdir=truncate_to_tokens(str(workdir), 60) if workdir else texts.SESSION_DRAFT_NO_FOLDER,
         listing=(
-            truncate_to_tokens("\n".join(lines), settings.SESSION_DRAFT_LISTING_MAX_TOKENS)
+            truncate_to_tokens("\n".join(held), settings.SESSION_DRAFT_LISTING_MAX_TOKENS)
             or texts.SESSION_DRAFT_NOTHING
         )
         if workdir

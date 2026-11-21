@@ -31,6 +31,10 @@ without. Six come with the program (``PRESETS``):
   commands (it has checks to run), and is opened without what the task
   agent space would add: it judges with nothing but the work before it.
 
+A session whose preset withholds a tool, or caps its requests, is opened in
+the built-in runtime (``Template.needs_builtin``): dsh has file and command
+tools of its own, which the host cannot keep from a session there.
+
 ``shadow`` is the preset of a copy of a session and no template: a copy is
 opened as the session it was copied from, without the tools every copy is
 without (``TASK_AGENT_FORK_WITHHELD_TOOLS``).
@@ -157,6 +161,18 @@ class Template:
         is what keeps a session from calling, not the list of its tools.
         """
         return "capability_call" in self.withheld()
+
+    @property
+    def needs_builtin(self) -> bool:
+        """Whether its sessions are opened in the built-in runtime, whatever else would be chosen.
+
+        dsh has tools of its own that write files and run commands, and
+        makes its model requests by itself: the host can neither keep a
+        tool from a session there nor count its requests. A preset that
+        withholds a tool or caps the requests is held to only where the
+        host opens the session itself.
+        """
+        return bool(self.withheld()) or self.max_requests is not None
 
     @property
     def delegates(self) -> bool:

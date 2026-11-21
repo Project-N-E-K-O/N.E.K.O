@@ -359,6 +359,11 @@ SESSION_DRAFT_LISTING_MAX_TOKENS = 400
 """Cap on the list of what the folder given holds (names and sizes; no file
 is opened), within that."""
 
+SESSION_DRAFT_PRESETS_MAX_TOKENS = 500
+"""Cap on the presets the form may name, as that call is told of them (one
+line each): the built-in ones are some 130 tokens, and of the user's own as
+many more as fit. One that is not told of is not offered."""
+
 SESSION_DRAFT_LISTING_ENTRIES = 60
 """How many entries of that folder are looked at, by name."""
 

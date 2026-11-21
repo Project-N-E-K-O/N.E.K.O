@@ -6168,9 +6168,8 @@ class TaskAgentSpace:
         def work() -> Project | None:
             paths = self._paths()
             directory = paths.project_dir(name)
-            if not directory.is_dir():
-                return None
             try:
+                # (A project that is not there has no record: nothing is made of it here.)
                 project, known = self._project_to_change(directory)
             except OSError:
                 logger.warning("the file of a project cannot be read; what it is for is left as it is")

@@ -189,7 +189,7 @@ CARD_DESCRIPTION_GUIDE = (
 # recognises a request by.
 # ---------------------------------------------------------------------------
 
-# Rendered with str.format: presets (one line each), default.
+# Rendered with str.format: presets (one line each, without the default), default.
 SESSION_DRAFT_SYSTEM_PROMPT = (
     "You are an agentic automation assessment agent, filling in the form for a new task agent "
     "the user wants to set up for a kind of work. You are given what the user wrote about it and, "
@@ -208,8 +208,9 @@ SESSION_DRAFT_SYSTEM_PROMPT = (
     + "\n"
     + CARD_DESCRIPTION_GUIDE
     + "\n"
-    "preset: one of the names below, the one whose line fits what the user wrote best; "
-    "{default} when none clearly does.\n"
+    "preset: which kind of task agent it is. {default} for one that does the work itself and may "
+    "hand parts of it out: most are that. One of these only when what the user wrote clearly asks "
+    "for it:\n"
     "{presets}\n"
     'rules: a draft of standing rules for this task agent, at most five short lines, each '
     'beginning with "- ": only what the user\'s words give grounds for (what to keep to, what '

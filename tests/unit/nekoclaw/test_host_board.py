@@ -183,6 +183,62 @@ async def test_the_board_of_one_project_and_of_one_character(host):
     assert (await host.board(project="No such project"))["projects"] == []
 
 
+async def test_only_the_sessions_asked_for_are_read_from_the_ledger(host):
+    _a, budget = await _lead(host, "Budget app", "add a chart")
+    _b, garden = await _lead(host, "Garden", "water the plants", lanlan_name="Mia")
+    _c, single = await _single(host, "sort the photos")
+    limits = {"recent_since": 0.0, "child_since": 0.0, "day_start": 0.0, "loose_max": 30, "children_max": 8, "events_each": 80}
+
+    async def read(**asked: Any) -> set[str]:
+        return {session.id for session in (await host.ledger.board_rows(**limits, **asked)).sessions}
+
+    assert await read() == {budget.id, garden.id, single.id}
+    # Of one project: its own session, and no session of one commission.
+    assert await read(project="Budget app") == {budget.id}
+    assert await read(lanlan_name="Mia") == {garden.id}
+    assert await read(lanlan_name="Lan") == {budget.id, single.id}
+
+
+async def test_a_session_of_one_commission_that_was_not_used_in_days_is_off_the_board(host):
+    old_commission, old = await _single(host, "an errand of last month")
+    await _done(host, old_commission.id)
+    long_ago = time.time() - 30 * 86400
+    await host.ledger.run(lambda conn: conn.execute("UPDATE sessions SET last_active_at = ?", (long_ago,)))
+    commission, recent = await _single(host, "an errand of today")
+    await _done(host, commission.id)
+    # The folder commissions of no project are filed under is no project of the board.
+    from nekoclaw.host.paths import DEFAULT_PROJECT
+
+    await host.space.touch_project(DEFAULT_PROJECT)
+
+    board = await host.board()
+
+    # With room to spare on the board: it is its age that keeps it off.
+    assert [card["id"] for card in board["loose"]] == [recent.id]
+    assert board["projects"] == []
+
+
+async def test_the_commission_in_hand_is_the_one_being_worked_on_before_one_that_rests_or_waits_its_turn(host):
+    first, session = await _single(host, "the one that came first and waits")
+    second = await _commission(host, "the one that rests", session_id=session.id)
+    await _working(host, second.id)
+    _wake, refusal = await host.ledger.wake_add(
+        session_id=session.id, commission_id=second.id, note="look again", due_at=time.time() + 3600,
+        pending_max=5, daily_max=20,
+    )
+    assert not refusal and await host.ledger.rest(second.id) is not None
+
+    card = _cards(await host.board())[session.id]
+    # One that rests before one that waits for its turn, though that one came first.
+    assert (card["commission"]["id"], card["commission"]["status"], card["state"]) == (second.id, "resting", "asleep")
+
+    third = await _commission(host, "the one at work", session_id=session.id)
+    await _working(host, third.id)
+    card = _cards(await host.board())[session.id]
+    assert (card["commission"]["id"], card["commission"]["status"], card["state"]) == (third.id, "working", "working")
+    assert first.id != card["commission"]["id"]
+
+
 async def test_a_project_counts_what_was_done_today_and_shows_whether_it_is_archived(host):
     commission, lead = await _lead(host, "Budget app", "add a chart")
     await _done(host, commission.id)
@@ -413,12 +469,16 @@ def test_what_a_session_is_doing_without_a_todo_list_and_with_other_tools():
         "sort the photos · bash: ls -la photos"
     )
     assert doing_of(commission(), (call("grep", {"pattern": "def main", "path": "src"}),)) == "sort the photos · grep: src"
+    assert doing_of(commission(), (call("grep", {"path": "  ", "pattern": "def main"}),)) == "sort the photos · grep: def main"
     assert doing_of(commission(), (call("web_fetch", {"url": "https://example.com/a"}),)) == (
         "sort the photos · web_fetch: https://example.com/a"
     )
     # A tool called on nothing that can be named, and arguments that are no object.
     assert doing_of(commission(), (call("list_agents", {}),)) == "sort the photos · list_agents"
     assert doing_of(commission(), (call("read", "not json"),)) == "sort the photos · read"
+    assert doing_of(commission(), (call("read", ["a.py"]),)) == "sort the photos · read"
+    assert doing_of(commission(), (call("read", "[1, 2]"),)) == "sort the photos · read"
+    assert doing_of(commission(), (call("read", None),)) == "sort the photos · read"
     # A todo list that is no list, and a call that names no tool, add nothing.
     assert doing_of(commission(), (call("todo_write", "not json"), call("todo_write", {"todos": "all of it"}))) == "sort the photos"
     assert doing_of(commission(), ({"args": {"file_path": "a.py"}},)) == "sort the photos · : a.py"
@@ -543,6 +603,20 @@ async def test_the_board_holds_no_more_sessions_than_its_limits_allow(host, monk
     monkeypatch.setattr("config.nekoclaw_settings.BOARD_MEMBERS_MAX", 24)
     (project,) = (await host.board())["projects"]
     assert [card["id"] for card in project["members"]] == [lead.id, children[3].id, children[2].id]
+
+
+async def test_a_project_begun_anew_under_the_name_of_an_archived_one_is_on_the_board_once(host):
+    await host.space.touch_project("Old thing")
+    await host.space.archive_project("Old thing", summary="It is over.", description="an old thing")
+    await host.space.touch_project("Old thing", description="Begun again.")
+    await host.space.touch_project("Other thing")
+    await host.space.archive_project("Other thing", summary="It is over.", description="another")
+
+    board = await host.board()
+
+    assert [(item["name"], item["archived"], item["description"]) for item in board["projects"]] == [
+        ("Old thing", False, "Begun again."), ("Other thing", True, "another"),
+    ]
 
 
 async def test_only_so_many_archived_projects_are_on_the_board(host, monkeypatch):
@@ -749,9 +823,13 @@ async def test_the_form_of_a_new_session_is_filled_in_by_one_call(host, tmp_path
 
     for guide in (presets.CARD_TITLE_GUIDE, presets.CARD_DUTY_GUIDE, presets.CARD_DESCRIPTION_GUIDE):
         assert guide in system
-    for name in ("lead", "worker", "scout", "inspector", "planner", "general"):
+    # The presets it may name: the lead of a project, which most are, and by their lines the ones
+    # that read only, check or plan. Not a worker, which another task agent starts, nor a session of one errand.
+    assert "preset: which kind of task agent it is. lead for one that does the work itself" in system
+    for name in ("scout", "inspector", "planner"):
         assert f"\n- {name}: " in system
-    assert "lead when none clearly does" in system and "- boss:" not in system
+    for name in ("lead", "boss", "worker", "general"):
+        assert f"\n- {name}: " not in system
     # What the user wrote, and of the folder names and sizes: no file was opened.
     assert "What the user wrote:\n我想要一只专门管月报页面和导出的使魔\n\n" in user
     assert f"Folder: {workdir}\n" in user
@@ -759,6 +837,24 @@ async def test_the_form_of_a_new_session_is_filled_in_by_one_call(host, tmp_path
     assert "do not read me" not in user and "secret words" not in user
     # Nothing was made of it: no session, no project, no file of the space.
     assert await host.ledger.find_sessions() == [] and not host.paths.space().root.exists()
+
+
+async def test_a_form_for_a_session_without_a_folder_says_so_and_lists_nothing(host):
+    host._decision_llm.answer = dict(FORM)
+
+    await host.draft_session("a task agent for the reports")
+
+    user = host._decision_llm.calls[0][1][1]["content"]
+    assert user == "What the user wrote:\na task agent for the reports\n\nFolder: (none chosen)\n"
+
+
+async def test_a_folder_that_holds_nothing_or_cannot_be_listed_is_told_as_that(host, tmp_path):
+    host._decision_llm.answer = dict(FORM)
+
+    await host.draft_session("a task agent for the reports", workdir=str(tmp_path / "missing"))
+
+    user = host._decision_llm.calls[0][1][1]["content"]
+    assert user.endswith("\n(nothing in it could be listed)")
 
 
 async def test_the_preset_of_a_form_is_one_there_is(host):
@@ -775,7 +871,7 @@ async def test_the_preset_of_a_form_is_one_there_is(host):
     assert await preset("doc-writer") == "doc-writer"
     # The lead by the name a model reads, and whatever is no preset, missing or wrong: the lead of a project.
     assert await preset("lead") == "boss"
-    for answered in ("wizard", "", None, 7, "broken", "boss"):
+    for answered in ("wizard", "", None, 7, "broken", "boss", "worker", "general"):
         assert await preset(answered) == "boss"
     system = host._decision_llm.calls[-1][1][0]["content"]
     assert "\n- doc-writer: When documents are written." in system and "broken" not in system
@@ -871,15 +967,44 @@ async def test_what_is_sent_to_fill_in_a_form_stays_within_its_cap(host, tmp_pat
     workdir.mkdir()
     for number in range(200):
         (workdir / f"a file with a rather long name number {number:03d}.txt").write_text("x", encoding="utf-8")
-    host._decision_llm.answer = dict(FORM)
+    # And templates of the user's, more than the form is told of.
+    templates = host.paths.space().templates_dir()
+    templates.mkdir(parents=True)
+    for number in range(12):
+        (templates / f"helper-{number:02d}.md").write_text(
+            f"---\nname: helper-{number:02d}\ndescription: {'When help of this particular kind is wanted. ' * 9}\n---\n",
+            encoding="utf-8",
+        )
+    host._decision_llm.answer = {**FORM, "preset": "helper-11"}
 
-    await host.draft_session("words about the task agent " * 2000, workdir=str(workdir))
+    form = await host.draft_session("words about the task agent " * 2000, workdir=str(workdir))
 
     system, user = (message["content"] for message in host._decision_llm.calls[0][1])
+    # The presets it is told of have a cap of their own; one it was not told of is not what comes back.
+    told = [line for line in system.splitlines() if line.startswith("- helper-")]
+    assert 0 < len(told) < 12 and "- helper-11: " not in system
+    assert count_tokens("\n".join(line for line in system.splitlines() if line.startswith("- "))) <= settings.SESSION_DRAFT_PRESETS_MAX_TOKENS
+    assert form["preset"] == "boss"
+    assert all(item["valid"] for item in await host.templates())
     assert count_tokens(system) + count_tokens(user) <= settings.SESSION_DRAFT_INPUT_MAX_TOKENS == 2000
     # Of the folder the first entries by name, and no more than are looked at.
     assert "number 000.txt" in user and f"number {settings.SESSION_DRAFT_LISTING_ENTRIES:03d}.txt" not in user
     assert settings.SESSION_DRAFT_OUTPUT_MAX_TOKENS == 500
+
+
+async def test_the_whole_of_what_is_sent_is_capped_whatever_its_parts_are(host, monkeypatch):
+    from config import nekoclaw_settings as settings
+    from utils.tokenize import count_tokens
+
+    # A part that outgrows the room it was meant to have.
+    monkeypatch.setattr(settings, "SESSION_DRAFT_TEXT_MAX_TOKENS", 50_000)
+    host._decision_llm.answer = dict(FORM)
+
+    await host.draft_session("words about the task agent " * 2000)
+
+    system, user = (message["content"] for message in host._decision_llm.calls[0][1])
+    assert count_tokens(system) + count_tokens(user) <= settings.SESSION_DRAFT_INPUT_MAX_TOKENS
+    assert count_tokens(user) > 1000
 
 
 def test_an_entry_of_a_folder_that_cannot_be_looked_at_is_listed_by_its_name(tmp_path, monkeypatch):
@@ -941,4 +1066,8 @@ def test_the_form_is_filled_in_on_the_summary_model_under_a_name_of_its_own(monk
     asyncio.run(llm.complete(TIER_SESSION_DRAFT, []))
 
     assert named == ["task_agent_session_draft"] and seen == [(TIER_SESSION_DRAFT, 500)]
+    # The budget is the setting for this call, not whatever a call without one gets.
+    monkeypatch.setattr("config.nekoclaw_settings.SESSION_DRAFT_OUTPUT_MAX_TOKENS", 321)
+    asyncio.run(llm.complete(TIER_SESSION_DRAFT, []))
+    assert seen[-1] == (TIER_SESSION_DRAFT, 321)
     assert TIER_SESSION_DRAFT in decision._SUMMARY_TIERS

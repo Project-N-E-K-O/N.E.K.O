@@ -1431,13 +1431,21 @@ class TaskAgentManager:
             self._waker.kick()
 
     async def _choose_runtime(
-        self, commission: Commission, model: Any, begun_in: str | None
+        self, commission: Commission, model: Any, begun_in: str | None, *, builtin_only: bool = False
     ) -> tuple[str, Any, str | None]:
         """Return the runtime a commission's task agent is started in; see ``runtimes.py``.
 
         Its name, the runtime, and, when the commission was to run in dsh
-        and runs in the built-in runtime instead, why.
+        and runs in the built-in runtime instead, why. With
+        ``builtin_only`` it is the built-in runtime and dsh is not asked:
+        for a session whose preset withholds tools, which only the
+        built-in runtime keeps from it (``Template.needs_builtin``). That
+        is where such a session belongs, so no reason is given for it.
         """
+        if builtin_only:
+            if self._pump is None:
+                self._pump = asyncio.ensure_future(self._pump_events())
+            return RUNTIME_BUILTIN, self._runtimes.builtin(), None
         parent_runtime = None
         if commission.parent_id is not None:
             # Where the task agent that started it runs: told by the ledger,
@@ -2475,7 +2483,9 @@ class TaskAgentManager:
             model = await self._model_of(config)
             session.model = (config.get("base_url"), config.get("model"))
 
-            runtime_name, runtime, fallback = await self._choose_runtime(commission, model, begun_in)
+            runtime_name, runtime, fallback = await self._choose_runtime(
+                commission, model, begun_in, builtin_only=template.needs_builtin
+            )
             # Uninstall/replace must see this commission before gateway setup yields.
             session.runtime, session.runtime_name = runtime, runtime_name
             url = await self._gateway.start() if self._gateway is not None else None
@@ -6233,7 +6243,7 @@ class TaskAgentManager:
         from config.prompts.prompts_nekoclaw_presets import PRESET_UNKNOWN, PRESET_UNUSABLE
         from nekoclaw.host.templates import NOT_FOR_CHILDREN, model_name
 
-        if named is None or named == "":
+        if named is None:
             return None
         wanted = str(named).strip()
         listed = await asyncio.to_thread(self.templates.listing, parent.project)

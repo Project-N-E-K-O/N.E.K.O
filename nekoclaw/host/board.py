@@ -286,8 +286,7 @@ class Board:
         mark = await self._mark()
         kept = self._kept.get(key)
         if (
-            known_revision is not None
-            and kept is not None
+            kept is not None
             and kept[0] == mark
             and 0 <= now - kept[1] < BOARD_REVISION_KEPT_SECONDS
             and kept[2] == known_revision

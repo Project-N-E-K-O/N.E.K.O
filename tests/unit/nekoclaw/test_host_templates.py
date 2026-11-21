@@ -109,6 +109,19 @@ def test_an_inspector_runs_commands_and_writes_nothing_and_has_no_memory():
     assert not item.remembers and item.calls_nothing and not item.delegates
 
 
+def test_a_preset_that_takes_anything_away_is_held_to_in_the_built_in_runtime_only():
+    builtin = builtin_templates()
+
+    # dsh has file and command tools of its own, and makes its requests by itself.
+    assert {name: item.needs_builtin for name, item in builtin.items()} == {
+        "boss": False, "worker": False, "general": False, "scout": True, "inspector": True, "planner": True,
+    }
+    assert _parse("withhold: [web_fetch]\n").needs_builtin
+    assert _parse("memory: none\n").needs_builtin
+    assert _parse("max_requests: 5\n").needs_builtin
+    assert not _parse("label: 文档猫\navatar: scout\nmodel: agent\n").needs_builtin
+
+
 def test_what_the_built_in_presets_say_is_within_the_caps_of_a_template():
     from config import nekoclaw_settings as settings
     from utils.tokenize import count_tokens

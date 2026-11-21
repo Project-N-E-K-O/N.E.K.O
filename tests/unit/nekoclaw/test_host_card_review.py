@@ -206,7 +206,10 @@ async def test_what_a_project_is_for_is_written_by_one_of_three_and_only_where_t
         await world.space.describe_project("Budget app", "x", by="model")
     assert await world.space.describe_project("No such project", "x", by="review") is None
     assert not (world.root / "projects" / "No such project").exists()
+    # Nor of the folder commissions of no project are filed under, which is there and has a record.
+    await world.space.touch_project(DEFAULT_PROJECT)
     assert await world.space.describe_project(DEFAULT_PROJECT, "x", by="review") is None
+    assert (await world.space.get_project(DEFAULT_PROJECT)).description == ""
     assert await world.space.describe_project("Budget app", "   ", by="review") is None
     made = await world.space.describe_project("Budget app", "a\n budget", by="creator")
     assert (made.description, made.description_by) == ("a budget", "creator")
@@ -283,7 +286,7 @@ async def test_the_review_is_written_though_what_the_project_is_for_cannot_be_re
         '{"review": "It was done.", "entries": [], "project": "", "project_description": "", "card": {"title": "Photo so',
     ],
 )
-async def test_a_review_whose_card_is_missing_or_wrong_is_kept_and_writes_no_card(world, answer):
+async def test_a_review_whose_card_is_missing_or_wrong_is_kept_and_writes_no_card(world, answer, caplog):
     world.llm.answers[TIER_REVIEW] = [answer]
     commission = await world.file()
     await world.ledger.write_card(commission.session_id, by="creator", duty="sort the photos")
@@ -294,9 +297,25 @@ async def test_a_review_whose_card_is_missing_or_wrong_is_kept_and_writes_no_car
     assert await world.reviews(commission.id) == [{"status": "written", "project": DEFAULT_PROJECT, "entries": []}]
     assert (await world.space.read_review(commission.id)).content.endswith("It was done.")
     assert await _card(world, commission.session_id) == ("", "", "sort the photos", "creator", "", "")
+    # Told apart from a card that could not be written: nothing went wrong here.
+    assert "could not be kept" not in caplog.text
 
 
-async def test_a_card_that_cannot_be_written_does_not_cost_the_review(world, monkeypatch):
+@pytest.mark.parametrize("description", [5, ["A budget."], {"text": "A budget."}, "   ", None])
+async def test_what_a_project_is_for_is_written_only_from_a_text(world, description, caplog):
+    world.llm.answers[TIER_REVIEW] = [{"review": "It was done.", "card": {**CARD, "description": description}}]
+    commission = await _in_project(world, "Budget app", description="a budget")
+    await world.work(commission.id)
+
+    await world.end(commission.id)
+
+    project = await world.space.get_project("Budget app")
+    assert (project.description, project.description_by) == ("a budget", "creator")
+    assert (await world.reviews(commission.id))[0]["card"] == ["title", "duty", "summary"]
+    assert "could not be kept" not in caplog.text
+
+
+async def test_a_card_that_cannot_be_written_does_not_cost_the_review(world, monkeypatch, caplog):
     async def failing(*args: Any, **kwargs: Any) -> Any:
         raise OSError("the disk is full")
 
@@ -306,6 +325,7 @@ async def test_a_card_that_cannot_be_written_does_not_cost_the_review(world, mon
 
     assert await world.reviews(commission.id) == [{"status": "written", "project": DEFAULT_PROJECT, "entries": []}]
     assert (await world.space.read_review(commission.id)).content.endswith("It was done.")
+    assert "the card a review wrote could not be kept (OSError)" in caplog.text
 
 
 async def test_a_review_that_wrote_nothing_usable_writes_no_card(world):
