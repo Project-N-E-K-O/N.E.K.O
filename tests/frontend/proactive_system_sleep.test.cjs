@@ -304,3 +304,29 @@ test('regular heartbeats do not trigger the wall-clock sleep guard', () => {
     pet.window.scheduleProactiveChat();
     assert.ok(pet.scheduledDelay() < 20000, 'leader keeps the base interval without a clock jump');
 });
+
+for (const mode of ['text', 'voice']) {
+    test(`${mode} tick that fires on time inside the wake quiet window does not speak`, async () => {
+        const { pet, chat } = setupLeaderAndFollower();
+        pet.appState.proactiveChatInterval = 600;
+        if (mode === 'voice') {
+            pet.appState.isRecording = true;
+            pet.appState._voiceProactiveNoResponseCount = 0;
+        }
+        pet.window.scheduleProactiveChat();
+        const due = pet.timers.get(pet.appState.proactiveChatTimer).due;
+        // Sleep with no heartbeats, waking 10s before the armed tick is due.
+        clock.now = due - 10 * 1000;
+        pet.heartbeat();   // heartbeat on wake starts the quiet window
+        chat.heartbeat();
+        flush();
+        assert.equal(pet.window.isProactiveLeader(), true);
+        clock.now = due;
+        await pet.fire();  // on time, so not caught by the late-tick check
+        assert.equal(proactiveFetches(pet), 0, 'no request inside the quiet window');
+        assert.equal(pet.appState.proactiveChatBackoffLevel, 0);
+        assert.equal(pet.appState._voiceProactiveNoResponseCount || 0, 0);
+        const next = pet.timers.get(pet.appState.proactiveChatTimer);
+        assert.ok(next && next.due >= due + 50 * 1000, 'rescheduled past the quiet deadline');
+    });
+}

@@ -1020,8 +1020,10 @@
                 // setTimeout firing does not clear our stored handle.
                 S.proactiveChatTimer = null;
                 if (S.isProactiveChatRunning) return;
-                // Catch-up after system sleep: not an attempt, not counted.
-                if (_proactiveTickMissedBySleep()) {
+                // Catch-up after system sleep, or an on-time tick that lands inside
+                // the wake quiet window (set later by the heartbeat): not an
+                // attempt, not counted; rescheduling honours the quiet deadline.
+                if (_proactiveTickMissedBySleep() || _getSystemQuietDelay() > 0) {
                     scheduleProactiveChat();
                     return;
                 }
@@ -1198,8 +1200,10 @@
                 return;
             }
 
-            // Catch-up after system sleep: drop it without touching the backoff level.
-            if (_proactiveTickMissedBySleep()) {
+            // Catch-up after system sleep, or an on-time tick that lands inside the
+            // wake quiet window (set later by the heartbeat): drop it without
+            // touching the backoff level; rescheduling honours the quiet deadline.
+            if (_proactiveTickMissedBySleep() || _getSystemQuietDelay() > 0) {
                 scheduleProactiveChat();
                 return;
             }
