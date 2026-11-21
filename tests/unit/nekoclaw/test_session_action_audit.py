@@ -331,11 +331,11 @@ async def test_shutdown_attempts_each_unused_copy_after_a_cleanup_failure(env, m
     assert attempted == [sender.id, recipient.id]
 
 
-@pytest.mark.parametrize("blocked", ["start", "unused_copy"])
+@pytest.mark.parametrize("blocked", ["start", "unused_copy", "read_correction"])
 async def test_shutdown_finishes_while_an_io_worker_still_needs_time(env, monkeypatch, blocked):
     from nekoclaw.host import task_agents
 
-    host, (_, sender), _ = env
+    host, (commission, sender), _ = env
     manager = host.task_agents
     entered, release = asyncio.Event(), asyncio.Event()
     monkeypatch.setattr(task_agents, "_SHUTDOWN_START_WAIT_SECONDS", 0.02)
@@ -350,20 +350,37 @@ async def test_shutdown_finishes_while_an_io_worker_still_needs_time(env, monkey
 
     if blocked == "start":
         worker = manager._spawn(wait_for_io())
-    else:
+    elif blocked == "unused_copy":
         manager._unused_ask_copies[sender.id] = sender
         monkeypatch.setattr(manager, "_discard_copy", wait_for_io)
+    else:
+        async with call_audit.call(host.ledger, commission.id, "session_action", "list_sessions") as record:
+            pass
+        correct = call_audit.Call.withhold_read
+
+        async def slow_correction(call, status, reason):
+            await wait_for_io()
+            await correct(call, status, reason)
+
+        monkeypatch.setattr(call_audit.Call, "withhold_read", slow_correction)
+        manager._read_corrections[record.call_id] = (record, "cancelled", None)
     closing = asyncio.create_task(manager.shutdown())
     try:
         await asyncio.wait_for(entered.wait(), 3)
         done, _ = await asyncio.wait([closing], timeout=0.5)
         assert closing in done
         assert (await host.ledger.get_session(sender.id)).status != "cleared"
+        if blocked == "read_correction":
+            assert record.call_id in manager._read_corrections
     finally:
         release.set()
         await closing
         if blocked == "start":
             await asyncio.gather(worker, return_exceptions=True)
+    if blocked == "read_correction":
+        await asyncio.gather(*manager._starting)
+        assert not manager._read_corrections
+        assert (await trace(host, commission))[-1]["status"] == "cancelled"
 
 
 async def test_session_read_loan_survives_prompt_mode_changes_and_never_revives_after_deny(env):

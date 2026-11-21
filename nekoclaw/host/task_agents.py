@@ -8071,21 +8071,21 @@ class TaskAgentManager:
         self._owe_what_is_left()
         for commission_id in list(self._sessions):
             self._discard(commission_id)
-        # Let pending control and delivery receipts settle while the ledger is open.
-        if self._control_settlements:
-            await asyncio.wait(list(self._control_settlements), timeout=_SHUTDOWN_START_WAIT_SECONDS)
-        for correction in list(self._read_corrections.values()):
-            await self._correct_undelivered_read(*correction)
+        # Receipts and file cleanup share a grace period. A stalled worker keeps
+        # its record or file claim while the rest of shutdown can proceed.
+        settling = set(self._control_settlements)
+        if self._read_corrections:
+            async def correct_reads() -> None:
+                # One SQLite writer can drain these without spawning a task per row.
+                for correction in list(self._read_corrections.values()):
+                    await self._correct_undelivered_read(*correction)
+            settling.add(self._spawn(correct_reads()))
         self._held_by.clear()
         unused_copies, self._unused_ask_copies = self._unused_ask_copies, {}
-        if unused_copies:
-            cleanups = [
-                self._spawn(recorded("unused question copy " + copy.id, lambda copy=copy: self._discard_copy(copy)))
-                for copy in unused_copies.values()
-            ]
-            # A slow filesystem worker retains the file claim until it finishes.
-            # Uncleared copies stay on the ledger for the ordinary session cleanup.
-            await asyncio.wait(cleanups, timeout=_SHUTDOWN_START_WAIT_SECONDS)
+        for copy in unused_copies.values():
+            settling.add(self._spawn(recorded("unused question copy " + copy.id, lambda copy=copy: self._discard_copy(copy))))
+        if settling:
+            await asyncio.wait(settling, timeout=_SHUTDOWN_START_WAIT_SECONDS)
         self._unsubscribe()
         # And once more, now that no run ends any more: the sessions that
         # were closed above ended their turns meanwhile, and one whose word
