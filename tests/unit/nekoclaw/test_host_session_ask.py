@@ -834,27 +834,38 @@ async def test_opening_an_ask_copy_rechecks_its_parent_loan(hosts, tmp_path, mon
         release.set()
 
 
-async def test_ended_run_cannot_hand_prepared_instructions_to_runtime(hosts, tmp_path, monkeypatch):
-    scripts = {BUILD: ScriptedLLM([[say("unused"), finish()]])}
+@pytest.mark.parametrize("when", ["before_open", "during_open"])
+async def test_external_input_rotates_startup_authority_without_cancelling_the_task(hosts, tmp_path, monkeypatch, when):
+    scripts = {BUILD: ScriptedLLM([[call("report", {"status": "ready", "summary": "finished"}), finish("tool_calls")]])}
     host = _host(hosts, tmp_path, scripts)
+    marker = "private pre-rotation space rule"
+    await host.space.write_rules(marker)
     manager = host.task_agents
     prepare = manager._spec
     runtime = manager._runtimes.builtin()
+    start = runtime.start
     opened = []
 
     async def prepared(commission, *args, **kwargs):
         spec = await prepare(commission, *args, **kwargs)
-        host.permissions.end_run(commission.id)
+        assert marker in spec.instructions
+        if when == "before_open":
+            host.permissions.received_external_input(commission.id)
         return spec
 
-    async def start(spec):
+    async def opening(spec):
         opened.append(spec)
+        await start(spec)
+        if when == "during_open":
+            host.permissions.received_external_input(manager._held_by[spec.session_id])
 
     monkeypatch.setattr(manager, "_spec", prepared)
-    monkeypatch.setattr(runtime, "start", start)
+    monkeypatch.setattr(runtime, "start", opening)
     receipt = await _dispatch(host, BUILD)
-    await wait_status(host, receipt.commission_id, "cancelled")
-    assert not opened and not scripts[BUILD].requests
+    result = await wait_status(host, receipt.commission_id, "done", "cancelled", "failed")
+    assert result.status == "done"
+    assert len(opened) == 1 and (marker in opened[0].instructions) == (when == "during_open")
+    assert len(scripts[BUILD].requests) == 1
 
 
 async def test_with_the_clock_set_back_the_wait_is_until_enough_of_the_hour_is_old(ledger):

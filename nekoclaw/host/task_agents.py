@@ -1589,15 +1589,15 @@ class TaskAgentManager:
         self._session_of[commission.id] = session.id
         return commission
 
-    async def _instructions(self, commission: Commission, *, with_gateway: bool) -> str:
+    def _base_instructions(self, commission: Commission, *, with_gateway: bool) -> str:
         """Return what the host adds to the system prompt of the session a commission is worked on in.
 
         Nothing of the commission itself: a session takes several, and its
         system prompt is kept as it was first opened with (the runtime
         reads these again only after the conversation was summed up).
-        How the host's capabilities are reached, whom the task agent works
-        for, and what the task agent space holds: for every task agent,
-        then for the project.
+        These instructions describe how the host's capabilities are reached
+        and whom the task agent works for. The current workspace brief is
+        appended separately when it can be released.
 
         In that order, which is from what every session is told alike to
         what only this one is: the system prompts of two sessions are then
@@ -1615,7 +1615,10 @@ class TaskAgentManager:
             parts.append(texts.TASK_AGENT_CHILD_FRAME)
         else:
             parts.append(texts.TASK_AGENT_SESSION_FRAME.format(lanlan_name=commission.lanlan_name))
-        own = truncate_to_tokens("\n\n".join(parts), TASK_AGENT_BRIEF_MAX_TOKENS)
+        return truncate_to_tokens("\n\n".join(parts), TASK_AGENT_BRIEF_MAX_TOKENS)
+
+    async def _instructions(self, commission: Commission, *, with_gateway: bool) -> str:
+        own = self._base_instructions(commission, with_gateway=with_gateway)
         kept = await self._space_brief(commission)
         # After the cap above and with one of its own (``SPACE_BRIEF_MAX_TOKENS``):
         # neither part can push the other out.
@@ -2075,16 +2078,24 @@ class TaskAgentManager:
         if session is None:
             return False
 
-        run_active = self._permissions.current_run(commission_id)
-
         def unwanted() -> bool:
             return still_wanted is not None and not still_wanted()
 
         async def open_if_authorized(runtime, spec) -> bool:
-            if not run_active() or unwanted():
+            if self._sessions.get(commission_id) is not session:
+                return False
+            if session.closing or (session.stands is not None and session.stands.status in ENDED_STATUSES):
+                self._discard(commission_id)
+                return False
+            if unwanted():
                 await self._ledger.transition(commission_id, "cancelled", reason=DENIED_BY_SETTINGS)
                 self._discard(commission_id)
                 return False
+            if not brief_run_active():
+                # A peer note ended the old loan while this spec was prepared.
+                # Keep the task and its queued input, leaving out the stale brief.
+                own = self._base_instructions(commission, with_gateway=spec.gateway is not None)
+                spec = spec.model_copy(update={"instructions": own})
             await runtime.start(spec)
             session.opened_in_runtime = True
             return True
@@ -2213,6 +2224,7 @@ class TaskAgentManager:
                 return False
             # A blocked or failed commission must be working again before its
             # opening brief can reserve a call against the new run.
+            brief_run_active = self._permissions.current_run(commission_id)
             spec = await self._spec(
                 commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec
             )
@@ -2326,7 +2338,7 @@ class TaskAgentManager:
                 current = await self._ledger.get(commission.id)
                 if self._sessions.get(commission.id) is not session or current is None or current.status != "working":
                     return True
-                if not run_active() or unwanted():
+                if unwanted():
                     # Everything was stopped while its status was being
                     # written: the stop looked at a commission that was
                     # over, and this one is at work with nothing to end it.
