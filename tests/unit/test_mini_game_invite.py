@@ -1835,6 +1835,17 @@ def test_theater_invite_toggle_selects_independently(monkeypatch, games_enabled,
     assert selected == (expected[0] if expected else None)
 
 
+@pytest.mark.parametrize("game,topic", [("drawing_guess", "你画我猜"), ("air_basketball", "篮球")])
+@pytest.mark.parametrize("scope", ["mini_game", "all"])
+def test_configured_game_ids_respect_topic_exclusions(monkeypatch, game, topic, scope):
+    from utils.proactive_preferences.preference_model import Profile
+
+    assert game in sr.MINI_GAME_INVITE_AVAILABLE_GAMES
+    monkeypatch.setattr(sr, "MINI_GAME_INVITE_AVAILABLE_GAMES", (game,))
+    assert sr._pick_mini_game_type() == game
+    assert sr._pick_mini_game_type(preferences=Profile(exclusions={(scope, topic)})) is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('choice,action', [('accept', 'open_game'), ('decline', 'cooldown'), ('later', 'suppress')])
 async def test_theater_invite_reuses_response_and_cooldown(monkeypatch, choice, action):

@@ -454,8 +454,8 @@ def _pick_mini_game_type(
     import random as _random
     if preferences and preferences.features("mini_game"):
         labels = {
-            "soccer": ["足球"], "badminton": ["羽毛球"], "draw-and-guess": ["你画我猜", "绘画", "猜谜"],
-            "basketball": ["篮球"], "air-basketball": ["篮球"],
+            "soccer": ["足球"], "badminton": ["羽毛球"], "drawing_guess": ["你画我猜", "绘画", "猜谜"],
+            "air_basketball": ["篮球"],
             "watch-together": ["一起看视频"], "theater": ["剧场", "角色扮演"],
         }
         choices = []
