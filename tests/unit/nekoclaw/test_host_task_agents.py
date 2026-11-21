@@ -3919,7 +3919,7 @@ async def test_keep_long_results_for_original_reader_and_require_grep(hosts, tmp
     from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
 
     document = tmp_path / "minutes.txt"
-    document.write_text(("hit\n" * 251) + "hit " + ("x" * READ_MAX_BYTES) + "\nhit final-decision\n",
+    document.write_text(("hit\n" * 251) + "hit " + ("账" * READ_MAX_BYTES) + " hit final-decision\n",
                         encoding="utf-8")
     llm = ScriptedLLM()
     host = _host(hosts, tmp_path, llm)

@@ -93,11 +93,14 @@ async def test_pinned_dsh_reuses_source_when_searching_retained_text(tmp_path):
     document.write_text(("hit paragraph\n" * 4200) + "hit final-decision\n", encoding="utf-8")
     calls = []
     stopped = False
+    released = set()
 
     async def action(_, payload):
         calls.append(payload)
+        if payload["phase"] == "release":
+            released.add(payload["receipt"])
         if payload["phase"] == "begin":
-            if payload.get("origins") and stopped:
+            if payload.get("origins") and (stopped or released.intersection(payload["origins"])):
                 return {"allow": False}
             return {"allow": True, "receipt": f"receipt-{len(calls)}"}
         return {"allow": True}
@@ -118,15 +121,18 @@ async def test_pinned_dsh_reuses_source_when_searching_retained_text(tmp_path):
             name, args = "read", {"file_path": str(document)}
         elif len(contents) == 1:
             name, args = "grep", {"path": str(document), "pattern": "hit"}
-        elif len(contents) == 2:
-            match = re.search("(" + re.escape(str(tmp_path)) + r"[^\n]*?-grep(?:-results)?\.txt)", contents[-1])
-            if not match:
+        elif len(contents) in (2, 4):
+            paths = re.findall(re.escape(str(tmp_path)) + r"[^\n]*?-grep(?:-results)?\.txt", contents[-1])
+            if not paths:
                 return [sse_text("No locator"), sse_finish()]
-            saved.append(match.group(1))
-            name, args = "read", {"file_path": saved[0]}
-        elif len(contents) in (3, 4):
-            stopped = len(contents) == 4
-            name, args = "grep", {"path": saved[0], "pattern": "final-decision"}
+            saved.append(paths[-1])
+            name, args = ("read", {"file_path": saved[0]}) if len(contents) == 2 else (
+                "grep", {"path": saved[-1], "pattern": "final-decision"})
+        elif len(contents) == 3:
+            name, args = "grep", {"path": saved[0], "pattern": "hit"}
+        elif len(contents) == 5:
+            stopped = True
+            name, args = "grep", {"path": saved[-1], "pattern": "final-decision"}
         else:
             return [sse_text("Done"), sse_finish()]
         return [sse_tool_call(name, args, f"call_{len(contents)}"), sse_finish("tool_calls")]
@@ -139,13 +145,14 @@ async def test_pinned_dsh_reuses_source_when_searching_retained_text(tmp_path):
             assert (await events.wait_for(lambda e: e["type"] in ("started", "error"), timeout=60))["type"] == "started"
             await runtime.prompt(spec.session_id, "Search for the final decision.")
             await events.wait_ended(spec.session_id, timeout=60)
-        assert len(contents) == 5, [s[-300:] for s in contents]
+        assert len(contents) == 6, [s[-300:] for s in contents]
         assert "Use grep" in contents[0] and "Use grep" in contents[2]
-        assert "hit final-decision" in contents[3] and "hit final-decision" not in contents[4]
+        assert "hit final-decision" in contents[4] and "hit final-decision" not in contents[5]
         assert saved and not Path(saved[0]).exists()
         assert all(len(s.encode("utf-8")) <= READ_MAX_BYTES for s in contents)
         recovered = [p["origins"] for p in calls if p.get("origins")]
-        assert len(recovered) == 3 and len({tuple(refs) for refs in recovered}) == 1
+        assert len(recovered) == 4 and recovered[0] == recovered[1] and recovered[2] == recovered[3]
+        assert recovered[0] != recovered[2]
     finally:
         await runtime.shutdown()
 

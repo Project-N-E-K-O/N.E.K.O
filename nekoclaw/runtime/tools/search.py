@@ -393,6 +393,7 @@ class GrepMatch:
     path: str
     line_number: int
     line: str
+    match_start: int = 0
 
 
 def validate_include(include: str) -> None:
@@ -414,10 +415,15 @@ def validate_include(include: str) -> None:
             )
 
 
-def preview_line(line: str, max_bytes: int = GREP_MAX_LINE_BYTES) -> str:
+def preview_line(line: str, max_bytes: int = GREP_MAX_LINE_BYTES, *, match_start: int = 0) -> str:
     encoded = line.encode("utf-8", errors="replace")
     if len(encoded) <= max_bytes:
         return line
+    position = len(line[:match_start].encode("utf-8", errors="replace"))
+    if position > max_bytes // 2:
+        start = position - max_bytes // 4
+        kept = encoded[start:start + max_bytes].decode("utf-8", errors="ignore")
+        return f"... {kept} (line truncated)"
     kept = encoded[:max_bytes].decode("utf-8", errors="ignore")
     return f"{kept} (line truncated)"
 
@@ -481,7 +487,7 @@ def _search_file(
                 if not valid:
                     line = "(line is not valid UTF-8)"
                     size = len(line)
-                out.append(GrepMatch(shown, number, line))
+                out.append(GrepMatch(shown, number, line, found.start()))
                 added += size + _MATCH_LABEL_BYTES
                 if added > SEARCH_RAW_OUTPUT_MAX_BYTES or len(out) > SEARCH_MAX_MATCHES:
                     raise _too_much_output()
@@ -554,11 +560,14 @@ def format_grep_matches(matches: list[GrepMatch]) -> str:
 def format_grep_output(matches: list[GrepMatch], spill_path: Path | None) -> str:
     if not matches:
         return "No matches found"
-    previewed = [GrepMatch(m.path, m.line_number, preview_line(m.line)) for m in matches]
+    previewed = [GrepMatch(m.path, m.line_number, preview_line(m.line, match_start=m.match_start)) for m in matches]
     seen = len(previewed)
     if seen <= GREP_MAX_MATCHES:
         noun = "match" if seen == 1 else "matches"
-        return f"Found {seen} {noun}\n\n{format_grep_matches(previewed)}"
+        body = f"Found {seen} {noun}\n\n{format_grep_matches(previewed)}"
+        if spill_path is not None:
+            body += f"\n\n(Full grep result stored at: {spill_path}. {SPILL_HINT})"
+        return body
     kept = previewed[:GREP_MAX_MATCHES]
     recovery = (
         f"Full grep result stored at: {spill_path}. {SPILL_HINT}"
@@ -649,7 +658,8 @@ def build_search_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> 
 
         preview = format_grep_output(matches, None)
         spill_path = None
-        if len(matches) > GREP_MAX_MATCHES or len(preview.encode("utf-8")) > READ_MAX_BYTES:
+        if (len(matches) > GREP_MAX_MATCHES or len(preview.encode("utf-8")) > READ_MAX_BYTES
+                or any(len(m.line.encode("utf-8")) > GREP_MAX_LINE_BYTES for m in matches)):
             full = f"Found {len(matches)} matches\n\n{format_grep_matches(matches)}"
             spill_path = await asyncio.to_thread(_save_spill, ctx.spill, "grep-results", full)
         preview = format_grep_output(matches, spill_path)

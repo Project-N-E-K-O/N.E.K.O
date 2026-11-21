@@ -844,7 +844,8 @@ class DshRuntime:
         if not receipt or not isinstance(args, dict):
             raise ValueError()
         action = request.get("action")
-        binding = OUTPUT_SCOPE.set(OutputScope(receipt))
+        output_scope = OutputScope(receipt)
+        binding = OUTPUT_SCOPE.set(output_scope)
         try:
             if action == "job" and tool in {"bash", "pwsh"}:
                 job_id = request.get("text")
@@ -876,6 +877,8 @@ class DshRuntime:
                 return {"error": str(exc)}
             return {"text": result.text}
         finally:
+            if output_scope.retained:
+                session.kept_calls.add(call_id)
             OUTPUT_SCOPE.reset(binding)
 
     async def _on_request(self, process: _Process, method: str, params: dict[str, Any]) -> dict[str, Any] | None:
