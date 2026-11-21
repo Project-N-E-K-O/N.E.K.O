@@ -578,7 +578,9 @@ async def test_a_question_whose_asker_is_cancelled_while_it_is_filed_is_answered
 
     host.ledger.append_event = slow  # type: ignore[method-assign]
     told = _steered_into(host, asker.id)
-    asking = asyncio.ensure_future(_ask(host, asker))
+    asking = asyncio.ensure_future(host.task_agents._callbacks().call(
+        asker.session_id, "session_ask", {"session": "photos", "question": QUESTION},
+    ))
     await asyncio.wait_for(entered.wait(), 5)
     asking.cancel()
     await asyncio.gather(asking, return_exceptions=True)

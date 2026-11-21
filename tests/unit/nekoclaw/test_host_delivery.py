@@ -517,3 +517,149 @@ async def test_revoking_the_input_grant_while_the_target_works_stops_the_return(
     report.wait.set()
     with pytest.raises(DeliveryDenied):
         await pending
+
+
+@pytest.mark.parametrize("ending", ["deliver", "deny_destination", "cancel", "timeout"])
+async def test_fetch_format_deliver_belongs_to_origin(env, ending):
+    """A plugin sequences three steps. Only its trusted reader holds the fetched value."""
+    host, root, timer, reader, questions = env
+    child, _ = await host.ledger.create(
+        lanlan_name="Lan", title="worker", dispatch_text="worker", source="dispatch", parent_id=root,
+    )
+    cid = child.id
+    public = Parcel("blank", PUBLIC)
+    source = Endpoint("builtin:data", WORK)
+    formatter = Endpoint("dsh:formatter", PUBLIC)
+    destination = Endpoint("session:destination", WORK)
+    plugin = Endpoint("neko:workflow", PUBLIC)
+    for endpoint in (source, formatter, destination, plugin):
+        host.delivery.register(endpoint)
+
+    hops, cached = [], {}
+    entered = asyncio.Event()
+    secret = "private source fixture"
+    source.response = Answer(value=Parcel(secret, WORK))
+    formatter.response = Answer(value=Parcel("[{}]", PUBLIC))
+
+    async def invoke(sender, target, parcel, *, one_way=True):
+        return await host.delivery.invoke(cid, sender, target.identity, parcel, one_way=one_way)
+
+    async def read_or_deliver(ref, arguments):
+        assert (ref.commission_id, ref.trace_id) == (cid, root)
+        if arguments.data == "fetch":
+            value = (await invoke(reader, source, public, one_way=False)).value
+            cached[ref.commission_id] = value
+            # Simulated usage receipt. No provider is contacted.
+            await host.ledger.add_usage(commission_id=ref.commission_id, requests=0, tokens_in=7)
+            hops.append("fetch")
+            with pytest.raises(DeliveryDenied):
+                await invoke(reader, formatter, value)
+        else:
+            value = cached.pop(ref.commission_id)
+            await invoke(reader, destination, Parcel(arguments.data.format(value.data), value.scopes))
+            hops.append("deliver")
+
+    async def pipeline(ref, arguments):
+        try:
+            await invoke(plugin, reader, Parcel("fetch", PUBLIC))
+            template = (await invoke(plugin, formatter, public, one_way=False)).value
+            hops.append("format")
+            await invoke(plugin, reader, template)
+        finally:
+            cached.pop(ref.commission_id, None)
+
+    reader.trigger = read_or_deliver
+    plugin.trigger = pipeline
+    candidates = {e.identity for e in host.delivery.discover(reader, WORK)}
+    assert destination.identity in candidates and formatter.identity not in candidates
+    assert not host.delivery.discover(timer, WORK)
+    impostor = Endpoint(timer.identity, WORK)
+    inspected = []
+    impostor.accepts = lambda scopes: inspected.append(scopes) or True
+    assert not host.delivery.discover(impostor, PUBLIC)
+    assert not inspected
+    source.permits = lambda sender, *, one_way: sender == reader.identity and not one_way
+    description = next(e for e in host.delivery.discover(reader, WORK) if e.identity == source.identity)
+    assert description.can_call and not description.can_trigger
+    assert not questions
+    if ending == "deliver":
+        for _ in range(2):
+            assert await invoke(timer, plugin, public) is None
+        assert hops == ["fetch", "format", "deliver"] * 2
+        assert destination.inputs == [Parcel(f"[{secret}]", WORK)] * 2
+        assert len(questions) == 2  # first restricted value, then the approved destination
+    elif ending == "deny_destination":
+        async def decide(_cid, question):
+            questions.append(question)
+            return "deny" if destination.identity in question.detail["title"] else "session"
+
+        host.permissions.set_asker(decide)
+        with pytest.raises(DeliveryDenied):
+            await invoke(timer, plugin, public)
+        assert hops == ["fetch", "format"] and not destination.inputs
+    else:
+        deadline = asyncio.timeout(None)
+
+        async def wait_for_layout(ref, arguments):
+            formatter.inputs.append(arguments)
+            entered.set()
+            await asyncio.Future()
+
+        async def bounded():
+            async with deadline:
+                await invoke(timer, plugin, public)
+
+        formatter.call = wait_for_layout
+        work = asyncio.create_task(bounded())
+        await asyncio.wait_for(entered.wait(), 5)
+        if ending == "cancel":
+            work.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await work
+        else:
+            deadline.reschedule(asyncio.get_running_loop().time())
+            with pytest.raises(TimeoutError):
+                await work
+        assert hops == ["fetch"] and not destination.inputs
+    assert not cached
+    assert all(p == public for p in formatter.inputs)
+    assert not timer.inputs
+    rows = await host.ledger.run(lambda db: call_audit.read_trace(db, cid, now=0))
+    assert all(r["trace_id"] == root for r in rows)
+    assert all(r["commission_id"] == cid for r in rows if r["kind"] != "commission")
+    assert secret not in json.dumps(rows) and not any(r["status"] == "running" for r in rows)
+    if ending in ("cancel", "timeout"):
+        assert any(r["status"] == "cancelled" and r["target"] == formatter.identity for r in rows)
+    by_id = {r["call_id"]: r for r in rows}
+    initiated = [r for r in rows if r["target"] == source.identity and r["kind"] == "invoke"]
+    assert initiated and all(by_id[r["parent_call_id"]]["target"] == reader.identity for r in initiated)
+    child_usage = await host.ledger.get(cid)
+    assert child_usage.tokens_in == 7 * hops.count("fetch") and child_usage.requests == 0
+    origin = await host.ledger.get(root)
+    assert origin.tokens_in == 7 * hops.count("fetch") and origin.requests == 0
+
+
+
+async def test_discovery_uses_the_processing_principal_and_inherited_scopes(env):
+    host, cid, timer, reader, _ = env
+    public_only = Endpoint("dsh:layout", PUBLIC)
+    host.delivery.register(public_only)
+    timer.readable = WORK
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("private registration detail")
+
+    faulty = Endpoint("dsh:broken", WORK)
+    faulty.permits = broken
+    host.delivery.register(faulty)
+    assert faulty.identity not in {item.identity for item in host.delivery.discover(timer, WORK)}
+
+    async def discover(ref, arguments):
+        entries = {item.identity for item in host.delivery.discover(reader, PUBLIC)}
+        assert public_only.identity not in entries and reader.identity in entries
+        assert not host.delivery.discover(timer, PUBLIC)
+        host.permissions.end_run(cid)
+        assert not host.delivery.discover(reader, PUBLIC)
+
+    reader.trigger = discover
+    await host.delivery.invoke(cid, timer, reader.identity, Parcel("fixture", WORK), one_way=True)

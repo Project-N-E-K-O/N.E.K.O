@@ -73,6 +73,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from nekoclaw.host import call_audit
 from nekoclaw.host.capabilities import CapabilityRegistry
 from nekoclaw.host.ledger import (
     ACTIVE_STATUSES,
@@ -96,11 +97,13 @@ from nekoclaw.host.permissions import (
     PermissionAsk,
     PermissionDecision,
     PermissionGate,
+    SessionActionScope,
 )
 from nekoclaw.host.plugin_runs import PluginRunner, audited_run_entry
 from nekoclaw.host.preferences import PreferenceStore, feedback_text
 from nekoclaw.host.reports import CHANNEL_TASK_AGENT, Reporter
 from nekoclaw.host.runtimes import RUNTIME_BUILTIN, RUNTIME_DSH, Runtimes
+from nekoclaw import TASK_CONTROL_TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +280,18 @@ class LedgerLessonSink:
         return "recorded"
 
 
+@dataclass(frozen=True, slots=True)
+class _SessionAction:
+    record: call_audit.Call
+    active: Callable[[], bool]
+    handing_over: asyncio.Event | None = None
+
+    def require(self) -> None:
+        if not self.active():
+            self.record.status = "denied"
+            raise RuntimeError(DENIED_BY_SETTINGS)
+
+
 @dataclass(slots=True)
 class _Session:
     """A commission's place: the session it is worked on in, open in a runtime or on its way there."""
@@ -293,6 +308,8 @@ class _Session:
     text_size: int = 0
     updates: dict[str, list[str]] = field(default_factory=dict)
     update_names: dict[str, str] = field(default_factory=dict)
+    # Locally allocated audit references for native todo/goal events of this run.
+    control_calls: dict[str, tuple[call_audit.Call, str]] = field(default_factory=dict)
     # Set while a host callback waits for the user's answer.
     question: asyncio.Future[dict[str, Any]] | None = None
     # Done the moment the answer to that question is in, before whoever
@@ -1157,21 +1174,130 @@ class TaskAgentManager:
 
         return HostCallbacks(
             decide_permission=self._cb_permission,
+            task_control_begin=self._begin_task_control,
             ask_user=self._cb_ask_user,
             report=self._cb_report,
-            note_lesson=self._cb_note_lesson,
+            note_lesson=self._session_action("note_lesson", self._cb_note_lesson),
             web_search=self._cb_web_search,
             subagent_start=self._cb_subagent_start,
             subagent_list=self._cb_subagent_list,
             subagent_send=self._cb_subagent_send,
             subagent_interrupt=self._cb_subagent_interrupt,
-            session_list=self._cb_session_list,
-            session_read=self._cb_session_read,
-            session_send=self._cb_session_send,
-            wake_schedule=self._cb_wake_schedule,
-            session_ask=self._cb_session_ask,
+            session_list=self._session_action("list_sessions", self._cb_session_list),
+            session_read=self._session_action("read_session", self._cb_session_read),
+            session_send=self._session_action("message_session", self._cb_session_send),
+            wake_schedule=self._session_action("schedule_wake", self._cb_wake_schedule),
+            session_ask=self._session_action("ask_session", self._cb_session_ask),
             budget=self._cb_budget,
         )
+
+    async def _begin_task_control(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Admit a native local-state operation. Its terminal runtime event settles the same row."""
+        commission_id = self._at_work_in(session_id)
+        session = self._sessions.get(commission_id)
+        name, key = payload.get("tool"), payload.get("call_id")
+        if session is None or not isinstance(name, str) or name not in TASK_CONTROL_TOOLS or not isinstance(key, str) or not key:
+            return {"allow": False}
+        live = self._permissions.current_run(commission_id)
+        try:
+            record = await call_audit.start_call(self._ledger, commission_id, "task_control", name)
+        except (call_audit.AuditFull, call_audit.CommissionEnded) as exc:
+            return {"allow": False, "reason": str(exc)}
+        scope = SessionActionScope("runtime:task-control", name, commission_id)
+        grant = None
+        admitted = False
+        outcome = "denied"
+        try:
+            decision = await self._permissions.check(commission_id, "session_action", scope=scope, hold_once=True)
+            grant = decision.grant_id
+            record.grant_id = self._permissions.authorization_ref(grant)
+            if (
+                payload.get("refused") or not grant or not self._permissions.grant_active(grant)
+                or not live() or self._sessions.get(commission_id) is not session or session.closing
+                or self._at_work_in(session_id) != commission_id or key in session.control_calls
+            ):
+                return {"allow": False}
+            session.control_calls[key] = (record, grant)
+            admitted = True
+            return {"allow": True}
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        except Exception:
+            outcome = "failed"
+            raise
+        finally:
+            if not admitted:
+                self._permissions.release_grant(grant)
+                await call_audit.finish_call(record, outcome)
+
+    def _session_action(self, tool: str, callback):
+        """Capture the caller before SQLite yields. A note does not carry this receipt."""
+        async def invoke(session_id: str, payload: dict[str, Any]):
+            commission_id = self._at_work_in(session_id)
+
+            async def perform(action: _SessionAction):
+                if self._at_work_in(session_id) != commission_id:
+                    action.record.status = "denied"
+                    raise RuntimeError("the originating run has ended")
+                return await callback(session_id, payload, action)
+
+            if tool != "ask_session":
+                return await self._perform_action(commission_id, tool, perform)
+            # Once filing has started, the handoff owns both the loan and the audit.
+            # Losing the ACP waiter must neither cancel it nor keep the waiter blocked.
+            handing_over = asyncio.Event()
+            work = self._spawn(self._perform_action(commission_id, tool, perform, handing_over))
+            try:
+                return await asyncio.shield(work)
+            except asyncio.CancelledError:
+                if not handing_over.is_set():
+                    work.cancel()
+                work.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+                raise
+
+        return invoke
+
+    async def _perform_action(
+        self, commission_id: str, tool: str, perform, handing_over: asyncio.Event | None = None,
+    ):
+        live = self._permissions.current_run(commission_id)
+        category = "outside_read" if tool in ("ask_session", "read_session") else "session_action"
+        kind = "working_memory" if tool in ("space_brief", "note_lesson") else "session_action"
+        scope = SessionActionScope("host:session", tool, commission_id)
+        reads = tool in ("list_sessions", "read_session", "space_brief")
+        grant = None
+        try:
+            async with call_audit.call(self._ledger, commission_id, kind, tool) as record:
+                decision = await self._permissions.check(commission_id, category, scope=scope, hold_once=True)
+                grant = decision.grant_id
+                record.grant_id = self._permissions.authorization_ref(grant)
+                if not (decision.allow and self._permissions.grant_active(grant) and live()):
+                    record.status = "denied"
+                    raise RuntimeError(decision.reason or "the originating run has ended")
+                try:
+                    action = _SessionAction(record, lambda: live() and self._permissions.grant_active(grant), handing_over)
+                    result = await perform(action)
+                except RuntimeError as exc:
+                    if exc.args == (DENIED_BY_SETTINGS,):
+                        record.status = "denied"
+                    raise
+                if reads and not self._permissions.grant_active(grant):
+                    record.status = "denied"
+                    raise RuntimeError("session records could not be delivered")
+            if reads:
+                if not record.closed:
+                    raise RuntimeError("session records could not be audited")
+                # Closing the row also awaited SQLite. Check again before releasing the result.
+                if not live() or not self._permissions.grant_active(grant):
+                    await self._ledger.run(lambda db: db.execute(
+                        "UPDATE host_calls SET status='denied', reason='delivery_revoked' WHERE call_id=?",
+                        (record.call_id,),
+                    ))
+                    raise RuntimeError("session records could not be delivered")
+            return result
+        finally:
+            self._permissions.release_grant(grant)
 
     def set_waker(self, waker: Any) -> None:
         """Set what is told that something waits to be handed to a session (``wakes.SessionWakes``)."""
@@ -1749,7 +1875,11 @@ class TaskAgentManager:
         if self._space is None:
             return ""
         try:
-            return await self._space.brief(commission.project)
+            async def read(action: _SessionAction) -> str:
+                action.record.scope_ref = commission.session_id
+                return await self._space.brief(commission.project)
+
+            return await self._perform_action(commission.id, "space_brief", read)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - it starts without what was kept
@@ -2606,12 +2736,21 @@ class TaskAgentManager:
         if kept:
             self._carried[commission_id] = [*self._carried.get(commission_id, []), *kept]
 
+    def _cancel_control_calls(self, commission_id: str) -> None:
+        session = self._sessions.get(commission_id)
+        if session is not None:
+            for record, grant in session.control_calls.values():
+                self._permissions.release_grant(grant)
+                self._spawn(call_audit.finish_call(record, "cancelled"))
+            session.control_calls.clear()
+
     def _discard(self, commission_id: str) -> None:
         """Give a commission's place back: its session is not, or no longer, open in a runtime for it.
 
         The commission goes on holding its session until it is known to be
         over (``_settle_hold``): one that waits for an answer keeps it.
         """
+        self._cancel_control_calls(commission_id)
         session = self._sessions.pop(commission_id, None)
         self._candidates.pop(commission_id, None)
         self._excerpts.pop(commission_id, None)
@@ -2736,6 +2875,7 @@ class TaskAgentManager:
             # Queued to be taken up again: what was said meanwhile goes along
             # with it, and so do its candidate plugins. It goes on holding
             # its session.
+            self._cancel_control_calls(commission_id)
             self._sessions.pop(commission_id, None)
             if self._gateway is not None:
                 self._gateway.revoke(commission_id)
@@ -2887,6 +3027,12 @@ class TaskAgentManager:
             # below as the host shuts down, what the runtime says next to
             # be taken would be taken for the text it refused.
             refused = _refusal(session, event)
+        if kind == "tool_end" and session.control_calls:
+            pending = session.control_calls.pop(str(event["tool_call_id"]), None)
+            if pending is not None:
+                record, grant = pending
+                self._permissions.release_grant(grant)
+                await call_audit.finish_call(record, "failed" if event["is_error"] else "completed")
         if session.untaken_answer is not None and _shows_work_taken(event, session.sent):
             session.untaken_answer = None
         if kind == "taken":
@@ -3034,6 +3180,7 @@ class TaskAgentManager:
         may have them now), and what the user allowed "once" for the
         keyboard and mouse and for the browser.
         """
+        self._cancel_control_calls(commission_id)
         self._permissions.end_run(commission_id)
         if self._leases is not None:
             self._leases.release(commission_id)
@@ -5100,10 +5247,15 @@ class TaskAgentManager:
         del session_id, payload
         return None
 
-    async def _cb_note_lesson(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    async def _cb_note_lesson(
+        self, session_id: str, payload: dict[str, Any], action: _SessionAction | None = None,
+    ) -> dict[str, Any] | None:
         commission = await self._ledger.get(self._at_work_in(session_id))
         if commission is None:
             return None
+        if action is not None:
+            action.require()
+            action.record.scope_ref = commission.session_id
         if payload.get("category") == "feedback":
             # A correction or approval from the user is a task preference. It is
             # an inference, so it takes effect once the same thing was seen twice.
@@ -5935,7 +6087,9 @@ class TaskAgentManager:
                 return words["resting"].format(time=_clock_time(pending[0].due_at))
         return words["cleared"] if session.status == "cleared" else words["closed"]
 
-    async def _cb_session_list(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _cb_session_list(
+        self, session_id: str, payload: dict[str, Any], action: _SessionAction | None = None,
+    ) -> dict[str, Any]:
         from config.nekoclaw_settings import (
             SESSION_LIST_COMMISSIONS,
             SESSION_LIST_LOOKED_AT,
@@ -5947,6 +6101,9 @@ class TaskAgentManager:
         from utils.tokenize import truncate_to_tokens
 
         caller = await self._caller(session_id)
+        if action is not None:
+            action.require()
+            action.record.scope_ref = caller.session_id
         project = payload.get("project")
         # A task agent another one started is that one's business, as it is
         # in every list she is shown: it is reached through its lead. Left
@@ -5995,7 +6152,9 @@ class TaskAgentManager:
             lines.append(line + (words.SESSION_LIST_THIS if session.id == caller.session_id else ""))
         return {"text": "\n".join(lines)}
 
-    async def _cb_session_read(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _cb_session_read(
+        self, session_id: str, payload: dict[str, Any], action: _SessionAction | None = None,
+    ) -> dict[str, Any]:
         import secrets
 
         from config import nekoclaw_settings as settings
@@ -6010,6 +6169,9 @@ class TaskAgentManager:
             # reading there has forbidden this too.
             raise RuntimeError(DENIED_BY_SETTINGS)
         target = await self._session_named(str(payload.get("session") or ""))
+        if action is not None:
+            action.require()
+            action.record.scope_ref = target.id
         what = str(payload.get("what") or "results")
         nonce = secrets.token_hex(8)
 
@@ -6083,7 +6245,9 @@ class TaskAgentManager:
         )
         return {"text": await framed(of, stretch.text) + "\n" + tail}
 
-    async def _cb_session_send(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _cb_session_send(
+        self, session_id: str, payload: dict[str, Any], action: _SessionAction | None = None,
+    ) -> dict[str, Any]:
         import math
 
         from config import nekoclaw_settings as settings
@@ -6098,6 +6262,9 @@ class TaskAgentManager:
         if not available:
             raise RuntimeError(refusals["switched_off"])
         target = await self._session_named(str(payload.get("to") or ""))
+        if action is not None:
+            action.require()
+            action.record.scope_ref = target.id
         if target.id == caller.session_id:
             raise RuntimeError(refusals["self"])
         if target.kind == "fork":
@@ -6122,6 +6289,8 @@ class TaskAgentManager:
             # write: what was on its way to the ledger before the stop began
             # is dropped by the stop as it ends.
             raise RuntimeError(refusals["over"])
+        if action is not None:
+            action.require()
         message, refusal, wait = await self._ledger.message_add(
             from_session=str(caller.session_id),
             from_commission=caller.id,
@@ -6156,12 +6325,17 @@ class TaskAgentManager:
             said += words.MESSAGE_QUEUED_NOTIFY.format(hours=round(settings.SESSION_NOTICE_WAIT_SECONDS / 3600))
         return {"message": said}
 
-    async def _cb_wake_schedule(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _cb_wake_schedule(
+        self, session_id: str, payload: dict[str, Any], action: _SessionAction | None = None,
+    ) -> dict[str, Any]:
         from config import nekoclaw_settings as settings
         from config.prompts import prompts_nekoclaw_sessions as words
         from utils.tokenize import truncate_to_tokens
 
         caller = await self._caller(session_id)
+        if action is not None:
+            action.require()
+            action.record.scope_ref = caller.session_id
         if caller.parent_id is not None:
             raise RuntimeError(words.WAKE_REFUSALS["from_child"])
         try:
@@ -6191,7 +6365,9 @@ class TaskAgentManager:
             said += words.WAKE_SET_CAPPED.format(days=round(settings.WAKE_MAX_DELAY_SECONDS / 86400))
         return {"message": said}
 
-    async def _cb_session_ask(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _cb_session_ask(
+        self, session_id: str, payload: dict[str, Any], action: _SessionAction | None = None,
+    ) -> dict[str, Any]:
         """Have a copy of another session answer a question; the answer comes back as a message.
 
         The other session must have a commission under way (one at work,
@@ -6227,6 +6403,9 @@ class TaskAgentManager:
         if not available:
             raise RuntimeError(refusals["switched_off"])
         target = await self._session_named(str(payload.get("session") or ""))
+        if action is not None:
+            action.require()
+            action.record.scope_ref = target.id
         if target.id == caller.session_id:
             raise RuntimeError(refusals["self"])
         if target.kind not in _ADDRESSED_KINDS:
@@ -6266,6 +6445,8 @@ class TaskAgentManager:
             # removed. One that was not asked does not count against what
             # may be asked. Returns why it was not asked, as whoever asked
             # is told; nothing where it was handed over.
+            if action is not None:
+                action.require()
             asked, refusal, wait = await self._ledger.ask_add(
                 from_session=str(caller.session_id),
                 from_commission=caller.id,
@@ -6287,6 +6468,8 @@ class TaskAgentManager:
 
             try:
                 try:
+                    if action is not None:
+                        action.require()
                     copy = await self.fork_session(target.id)
                 except ForkRefused as exc:
                     await not_asked()
@@ -6331,6 +6514,8 @@ class TaskAgentManager:
                 await self._ledger.append_event(
                     caller.id, "subagent_started", {"name": child.name, "commission_id": child.id, "asks": target.id}
                 )
+                if action is not None:
+                    action.require()
                 if await self.submit(child, wait=False):
                     return ""
                 # Not started, and failed by ``submit``: no place was free
@@ -6370,7 +6555,11 @@ class TaskAgentManager:
                 await not_asked()
                 raise
 
-        refused = await asyncio.shield(self._spawn(hand_over()))
+        if action is not None and action.handing_over is not None:
+            action.handing_over.set()
+            refused = await hand_over()
+        else:
+            refused = await asyncio.shield(self._spawn(hand_over()))
         if refused:
             raise RuntimeError(refused)
         return {"message": words.ASK_QUEUED.format(name=target.name)}

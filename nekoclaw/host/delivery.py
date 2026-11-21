@@ -119,6 +119,14 @@ class _Processing:
             self.accepted.set_result(ok)
 
 
+@dataclass(frozen=True)
+class Entry:
+    """Description of an exact registered target for the requested input scopes."""
+    identity: str
+    can_trigger: bool
+    can_call: bool
+
+
 class ManagedDelivery:
     """Host-only interface. Each endpoint is bound by object identity at registration."""
 
@@ -141,6 +149,33 @@ class ManagedDelivery:
             raise ValueError("managed endpoint already registered")
         self._adapters[identity] = adapter
         self._bindings[identity] = GrantBinding()
+
+    def discover(self, sender: DeliveryAdapter, scopes: frozenset[str]) -> tuple[Entry, ...]:
+        """List native candidates only. Discovery neither borrows a grant nor runs an endpoint."""
+        parent = self._processing.get()
+        if parent is not None:
+            if parent.endpoint is not sender or not parent.binding.active or not parent.run_active():
+                return ()
+            scopes = scopes | parent.scopes
+        if self._adapters.get(sender.identity) is not sender:
+            return ()
+        try:
+            if not sender.accepts(scopes):
+                return ()
+        except Exception:
+            return ()
+        entries = []
+        for identity, recipient in sorted(self._adapters.items()):
+            try:
+                if not recipient.accepts(scopes):
+                    continue
+                trigger = recipient.permits(sender.identity, one_way=True)
+                call = recipient.permits(sender.identity, one_way=False)
+            except Exception:
+                continue  # A native rule's error may contain data unavailable to this sender.
+            if (trigger or call) and self._connected(sender, recipient):
+                entries.append(Entry(identity, trigger, call))
+        return tuple(entries)
 
     def unregister(self, adapter: DeliveryAdapter) -> None:
         if self._adapters.get(adapter.identity) is adapter:

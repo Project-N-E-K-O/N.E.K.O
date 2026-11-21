@@ -60,6 +60,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from nekoclaw import TASK_CONTROL_TOOLS
+
 PROFILE = "acp"
 PROVIDER = "nekoclaw"
 PATCH_FILE = "nekoclaw.patch.yml"
@@ -125,6 +127,8 @@ DISABLED_ROWS: tuple[str, ...] = (
     "tool-working-directory",
 )
 
+CONTROL_CHECK_PREFIX = "nekoclaw:task-control:"
+
 GUARD_SOURCE = """\
 // Written by N.E.K.O (nekoclaw/dsh/profile.py). Do not edit: it is rewritten at every start.
 //
@@ -138,7 +142,19 @@ export function apply(ctx, config) {
   const unasked = new Set(Array.isArray(config?.unasked) ? config.unasked : [])
   const prefixes = Array.isArray(config?.unaskedPrefixes) ? config.unaskedPrefixes : []
   const asked = new Set(Array.isArray(config?.asked) ? config.asked : [])
+  const controls = new Set(%s)
   ctx.on('tools/pre-execute', async (exec, next) => {
+    if (controls.has(exec.name)) {
+      const native = await next()
+      if (native.kind === 'deny') return native
+      const approval = ctx.get('approval')
+      if (!approval || !exec.agent || !exec.callId) return { kind: 'deny', reason: 'missing task control context' }
+      const answer = await approval.request({
+        agent: exec.agent, toolName: exec.name, callId: '%s' + exec.callId, signal: exec.signal,
+      })
+      if (answer !== 'allowed-once') return { kind: 'deny', reason: 'task control unavailable' }
+      return native
+    }
     if (!asked.has(exec.name) && (unasked.has(exec.name) || prefixes.some(prefix => exec.name.startsWith(prefix)))) {
       return next()
     }
@@ -148,7 +164,7 @@ export function apply(ctx, config) {
   })
   process.stderr.write('%s\\n')
 }
-""" % GUARD_READY
+""" % (json.dumps(sorted(TASK_CONTROL_TOOLS)), CONTROL_CHECK_PREFIX, GUARD_READY)
 
 
 class DshUnavailable(RuntimeError):

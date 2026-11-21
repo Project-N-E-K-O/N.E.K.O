@@ -359,6 +359,10 @@ class GrantScope:
         return all(binding.active for binding in self.bindings)
 
 
+class SessionActionScope(GrantScope):
+    """Host-constructed scope for intrinsic session operations, never constructed from tool JSON."""
+
+
 @dataclass(frozen=True, slots=True)
 class _Loan:
     id: str
@@ -660,6 +664,17 @@ class PermissionGate:
     ) -> PermissionDecision:
         if not scope.registered() or not scope.provider or (category == "managed_delivery" and not scope.recipient):
             return PermissionDecision(False, DENIED_NO_ANSWER)
+        async def effective_mode() -> str:
+            if isinstance(scope, SessionActionScope):
+                # These actions have always been available without prompting. Reading a peer
+                # additionally respects the explicit ban on reads outside the work directory.
+                if category == "session_action":
+                    return "allow"
+                if category == "outside_read":
+                    return "deny" if await self.forbidden(category) else "allow"
+                return "deny"
+            return await self._store.mode(category, key)
+
         # Capture before any asynchronous settings or parent lookup. A late
         # request from an ended run cannot attach itself to the next run.
         work = self._work.setdefault(commission_id, object())
@@ -668,7 +683,7 @@ class PermissionGate:
         lookup = object()
         ended = self._lineage_lookups[lookup] = set()
         try:
-            mode = await self._store.mode(category, key)
+            mode = await effective_mode()
             if not scope.registered() or self._work.get(commission_id) is not work:
                 return PermissionDecision(False, DENIED_NO_ANSWER)
             if mode == "deny":
@@ -699,7 +714,7 @@ class PermissionGate:
             return loan_id
 
         while live():
-            mode = await self._store.mode(category, key)
+            mode = await effective_mode()
             if mode == "deny" or not live():
                 return PermissionDecision(False, DENIED_BY_SETTINGS)
             if delivery and mode == "allow":

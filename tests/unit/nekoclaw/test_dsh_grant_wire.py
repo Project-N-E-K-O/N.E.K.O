@@ -60,3 +60,51 @@ async def test_pinned_dsh_native_denial_precedes_host_ask(tmp_path, monkeypatch)
             assert not destination.exists()
     finally:
         await runtime.shutdown()
+
+
+@pytest.mark.parametrize(("tool", "human", "allow"), [
+    ("todo_write", True, True), ("todo_write", True, False),
+    ("create_goal", False, True), ("create_goal", True, True),
+])
+async def test_pinned_task_control_is_reserved_before_execution(tmp_path, tool, human, allow):
+    binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
+    if not binary:
+        pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to the pinned dsh executable")
+    calls = []
+
+    async def begin(sid, payload):
+        calls.append((sid, payload))
+        return {"allow": allow}
+
+    events = Recorder()
+    runtime = DshRuntime(
+        events, HostCallbacks(task_control_begin=begin),
+        launch=lambda: profile.DshLaunch(home=tmp_path / "dsh", executable=Path(binary)),
+        environment={**os.environ, "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"},
+    )
+    arguments = {"objective": "local fixture"} if tool == "create_goal" else {
+        "todos": [{"content": "local fixture", "status": "pending"}],
+    }
+    replies = iter([
+        [sse_tool_call(tool, arguments),
+         sse_finish("tool_calls")],
+        [sse_text("Done"), sse_finish()],
+    ])
+    try:
+        with FakeOpenAIServer(lambda _: next(replies)) as server:
+            spec = make_spec(tmp_path, model=ModelConfig(
+                model="local-fixture", base_url=server.base_url, api_key="local", auto_extra_body=False,
+            ))
+            await runtime.start(spec)
+            opened = await events.wait_for(lambda e: e["type"] in ("started", "error"), timeout=60)
+            assert opened["type"] == "started", opened
+            await runtime.prompt(spec.session_id, "Update the local state.", human=human)
+            await events.wait_ended(spec.session_id, timeout=40)
+            end, = events.of("tool_end")
+            expected = {"tool": tool, "call_id": end["tool_call_id"]}
+            if not human:
+                expected["refused"] = True
+            assert calls == [(spec.session_id, expected)]
+            assert end["is_error"] == (not allow or not human), end
+    finally:
+        await runtime.shutdown()

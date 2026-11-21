@@ -47,6 +47,7 @@ from typing import Any, Literal
 
 from nekoclaw.runtime.host import HostBridge
 from nekoclaw.runtime.loop.messages import ToolCall
+from nekoclaw import TASK_CONTROL_TOOLS
 from nekoclaw.runtime.tools.base import resolve_path
 
 Category = Literal["workdir_files", "outside_read", "outside_write", "run_command", "other"]
@@ -193,8 +194,8 @@ def make_permission_hook(
     user, for something that is not going to be done.
     """
 
-    async def consult(payload: dict[str, Any]) -> dict[str, Any] | None:
-        task = asyncio.ensure_future(host.call(session_id, "decide_permission", payload))
+    async def consult(payload: dict[str, Any], callback: str = "decide_permission") -> dict[str, Any] | None:
+        task = asyncio.ensure_future(host.call(session_id, callback, payload))
         try:
             while True:
                 done, _pending = await asyncio.wait({task}, timeout=_CANCEL_POLL_SECONDS)
@@ -210,6 +211,14 @@ def make_permission_hook(
     async def before_tool_call(call: ToolCall) -> tuple[bool, str | None]:
         if call.name in withheld:
             return False, None
+        if call.name in TASK_CONTROL_TOOLS and "task_control_begin" in host.capabilities:
+            try:
+                reply = await consult({"tool": call.name, "call_id": call.id}, "task_control_begin")
+            except Exception:
+                return True, "task control could not be registered"
+            if reply is None:
+                return True, "Operation aborted"
+            return (False, None) if reply.get("allow") is True else (True, reply.get("reason") or NO_APPROVER_REASON)
         request = classify(call.name, call.arguments, workdir, readable=readable)
         if request.category == "other":
             return False, None

@@ -511,3 +511,14 @@ async def test_each_session_tool_is_offered_with_its_callback_and_withheld_when_
 async def test_a_run_says_how_many_background_jobs_it_leaves_running(tmp_path: Path) -> None:
     events, _llm = await _run(tmp_path, HostCallbacks())
     assert events.of("ended")[0]["jobs"] == 0
+
+
+@pytest.mark.parametrize("allow", [True, False])
+async def test_task_control_admission_precedes_local_todo_change(tmp_path, allow):
+    requests = []
+    host = HostCallbacks(task_control_begin=_recording({"allow": allow}, requests))
+    args = {"todos": [{"content": "private local state", "status": "pending"}]}
+    events, _ = await _run(tmp_path, host, [call("todo_write", args, "control-1"), finish("tool_calls")])
+    assert requests == [("s1", {"tool": "todo_write", "call_id": "control-1"})]
+    end, = events.of("tool_end")
+    assert end["is_error"] is not allow
