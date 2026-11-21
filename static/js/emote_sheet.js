@@ -1,5 +1,5 @@
 // 由 emote_maker.js 使用：把逐帧结果拼成分层包需要的横条雪碧图，并产出 PNG 字节。
-// 单独成文件是为了能在 Node 里被测到（只依赖注入进来的 canvas 工厂，不碰 DOM 全局）。
+// 拼图支持注入 canvas 工厂；浏览器 PNG 导出还依赖 document 和 ImageData。
 (function (root, factory) {
     'use strict';
 

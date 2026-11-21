@@ -435,6 +435,7 @@
                 clearTimeout(this.clickTimer);
                 this.clickTimer = null;
             }
+            this.clearLayeredTransientSlot('click');
             if (this.lipSyncFrame) {
                 cancelAnimationFrame(this.lipSyncFrame);
                 this.lipSyncFrame = null;
@@ -4134,6 +4135,7 @@
             this.preloadImages();
             this.attachSpeechListeners();
             this.attachDragListeners();
+            this.syncLayeredSpeechSlot();
             this.setState('idle');
             this.applyTransform();
             this.syncGlobalConfig();
@@ -4175,7 +4177,8 @@
          * 一闪一闪地插进情绪动作。
          */
         emotionBlockedBySpeech() {
-            return Boolean(this.isSpeaking) && this.statePriority() === 'talking';
+            return Boolean(this.isSpeaking) && this.statePriority() === 'talking'
+                && (!this.isLayeredActive() || this.layeredSlotStateIndex('talking') !== null);
         }
 
         /** 话说完了：把说话期间攒下的那条情绪按"刚到"的方式补上（还在有效期内才补） */
@@ -4244,7 +4247,10 @@
             if (!stack.length) this.layeredSlotHomeIndex = this.layeredStateIndex;
             const existing = stack.findIndex((slot) => slot.kind === kind);
             if (existing >= 0) stack.splice(existing, 1);
-            stack.push({ kind, index });
+            // Speech stays below a drag regardless of which started first.
+            const drag = kind === 'talking' ? stack.findIndex((slot) => slot.kind === 'drag') : -1;
+            if (drag >= 0) stack.splice(drag, 0, { kind, index });
+            else stack.push({ kind, index });
             this.applyLayeredSlotStack();
             return true;
         }
@@ -4847,6 +4853,7 @@
         setSpeaking(isSpeaking) {
             if (this._renderingPaused) {
                 this.isSpeaking = !!isSpeaking;
+                if (!this.isSpeaking) this.flushPendingEmotion();
                 return;
             }
             if (this.returnIdleTimer) {
@@ -4897,6 +4904,10 @@
         }
 
         hide() {
+            if (this.pendingEmotion) {
+                if (this.currentEmotion === this.pendingEmotion.name) this.currentEmotion = '';
+                this.clearPendingEmotion();
+            }
             this.clearLayeredTimers();
             this.detachLayeredHotkeys();
             this.detachLayeredPlayEvent();
@@ -4910,6 +4921,8 @@
                 this.clickTimer = null;
             }
             this.stopSpeakingMouthAnimation();
+            this.clearLayeredTransientSlot('click');
+            this.clearLayeredTimers();
             // 隐藏前清掉锁定悬停淡化,避免换模型类型等不走解锁的路径把
             // locked-hover-fade 类留在容器上,下次 show() 时模型以 0.12 透明度出现
             if (typeof this._resetPngtuberLockedHoverFade === 'function') {

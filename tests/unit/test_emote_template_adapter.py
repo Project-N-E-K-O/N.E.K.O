@@ -28,6 +28,30 @@ def test_reads_plain_spine_without_vendor_configuration():
     assert package["model"]["displayName"] == "my-character"
 
 
+def test_unselected_invalid_atlas_does_not_block_the_matching_model():
+    stream = io.BytesIO(spine_zip())
+    with zipfile.ZipFile(stream, 'a') as archive:
+        archive.writestr('unused/invalid.atlas', b'\xffnot UTF-8')
+    package = inspect_spine_zip(stream.getvalue())
+    assert package['model']['atlas']['path'] == 'assets/character.atlas'
+    explicit = inspect_spine_zip(stream.getvalue(), atlas_path='assets/character.atlas')
+    assert explicit['id'] == package['id']
+
+
+def test_atlas_page_without_optional_page_properties_is_supported():
+    archive = rewrite(spine_zip(), lambda path, content: (
+        path, b'page.png\nbody\nbounds: 0, 0, 1, 1\n' if path.endswith('.atlas') else content))
+    assert inspect_spine_zip(archive)['model']['atlas']['pages'][0]['name'] == 'page.png'
+
+
+def test_repacked_stored_compressible_resource_remains_importable():
+    archive = rewrite(spine_zip(), lambda path, content: (
+        path, content + b' ' * 2_000_000 if path.endswith('.json') else content))
+    original = inspect_spine_zip(archive)
+    repacked = spine_resource_archive(archive, original)
+    assert inspect_spine_zip(repacked)['id'] == original['id']
+
+
 def test_identity_is_independent_of_archive_filename_and_unrelated_files():
     data = spine_zip()
     first = inspect_spine_zip(data, filename="one.zip")

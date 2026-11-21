@@ -29,6 +29,7 @@ function createContext({ onAppend } = {}) {
             }
         },
         console,
+        URL,
         Promise,
         setTimeout
     };
@@ -102,6 +103,29 @@ test('the vendored IIFE and license match the recorded provenance', () => {
     assert.match(fs.readFileSync(runtimePath, 'utf8'), /var spine=/);
     assert.match(fs.readFileSync(licensePath, 'utf8'), /Spine Runtimes License Agreement/);
     assert.match(fs.readFileSync(licensePath, 'utf8'), /each user of the Products must obtain their own\s+Spine Editor license/);
+});
+
+test('a synchronous insertion failure can be retried', async () => {
+    let attempt = 0;
+    const { context, appended } = createContext({onAppend(script, window) {
+        if (++attempt === 1) throw new Error('insertion failed');
+        window.spine = compatibleRuntime();
+        script.onload();
+    }});
+    await assert.rejects(context.window.NekoSpineRuntime.load(), /insertion failed/);
+    assert.equal((await context.window.NekoSpineRuntime.load()).available, true);
+    assert.equal(appended.length, 2);
+});
+
+test('only the pinned same-origin bundle is accepted, including an absolute URL', async () => {
+    const { context, appended } = createContext({onAppend(script, window) {
+        window.spine = compatibleRuntime();
+        script.onload();
+    }});
+    await assert.rejects(context.window.NekoSpineRuntime.load({src: 'https://foreign.test/runtime.js'}), /pinned local/);
+    assert.equal(appended.length, 0);
+    const result = await context.window.NekoSpineRuntime.load({src: 'http://localhost/static/libs/spine/spine-webgl-4.3.13.min.js'});
+    assert.equal(result.available, true);
 });
 
 test('the emote maker page only references the lazy loader, not the runtime asset', () => {

@@ -161,7 +161,7 @@
     }
 
     function typeOf(node) {
-        return TYPES[node && node.type] || null;
+        return node && Object.hasOwn(TYPES, node.type) ? TYPES[node.type] : null;
     }
 
     function normalizeColor(value, fallback) {
@@ -229,7 +229,7 @@
     }
 
     function makeNode(type, x, y, params, id) {
-        if (!TYPES[type]) return null;
+        if (!Object.hasOwn(TYPES, type)) return null;
         return {
             id: id || `${type}-${Math.random().toString(36).slice(2, 9)}`,
             type,
@@ -258,7 +258,7 @@
         const nodes = [];
         const dropped = [];
         input.nodes.forEach((node, index) => {
-            if (!node || !TYPES[node.type]) {
+            if (!node || !Object.hasOwn(TYPES, node.type)) {
                 dropped.push(node && node.id);
                 return;
             }
@@ -457,6 +457,7 @@
             }
             case 'mod.transform':
                 next.transform = {
+                    ...next.transform,
                     x: normalizeNumber(next.transform.x + params.x, -2000, 2000, 0),
                     y: normalizeNumber(next.transform.y + params.y, -2000, 2000, 0),
                     scale: normalizeNumber(next.transform.scale * params.scale, 0.05, 8, 1),

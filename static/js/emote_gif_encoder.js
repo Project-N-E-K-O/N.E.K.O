@@ -615,7 +615,6 @@
         encode,
         toBlob,
         lzwEncode,
-        buildPalette: buildAdaptivePalette,
         buildPaletteFromFrames,
     });
 }));

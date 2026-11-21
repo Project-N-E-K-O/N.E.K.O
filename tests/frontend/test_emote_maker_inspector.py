@@ -50,7 +50,7 @@ def test_dragging_a_slider_does_not_rebuild_the_panel(adjust_page: Page) -> None
         const input = document.querySelector('#adjust-x');
         input.value = '40';
         input.dispatchEvent(new Event('input', { bubbles: true }));
-        observer.takeRecords();
+        observer.takeRecords().forEach((r) => { rebuilds += r.addedNodes.length + r.removedNodes.length; });
         observer.disconnect();
         return {
             rebuilds,
@@ -168,6 +168,18 @@ def test_drop_hint_ring_is_gone_once_the_breathe_finishes(page: Page, running_se
     assert seen["keyframes"]["lastSelector"] in ("100%", "0%, 100%"), seen["keyframes"]
     assert alpha_of_seen(seen["keyframes"]["lastColor"]) == 0, \
         f"动画的收尾键不是透明，播完会留下可见的边框: {seen['keyframes']}"
+    final_border = page.evaluate("""() => {
+        const rows = document.querySelector('#pack-basic-rows');
+        document.body.append(rows);
+        rows.hidden = false;
+        rows.style.display = 'grid';
+        rows.classList.add('is-drop-hint');
+        const animations = rows.getAnimations();
+        if (!animations.length) throw new Error('Drop hint animation did not start');
+        animations.forEach(animation => animation.finish());
+        return getComputedStyle(rows).borderTopColor;
+    }""")
+    assert alpha_of_seen(final_border) == 0, final_border
 
 
 def alpha_of_seen(value: str) -> float:

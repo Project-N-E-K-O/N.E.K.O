@@ -130,6 +130,7 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "avatar_tools",
     "chat_avatars",
     "pngtuber",
+    "emote_templates",
     "watch_together",
     # Downloaded models (RapidOCR runtimes, memory embedding models): moved
     # so they keep working at the new root without downloading them again.

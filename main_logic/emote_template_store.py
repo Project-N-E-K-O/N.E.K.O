@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 from pathlib import Path, PurePosixPath
 
@@ -32,6 +33,7 @@ ARCHIVE_NAME = "template.zip"
 TEXTURES_DIR = "textures"
 META_NAME = "meta.json"
 _KEY_HASH_ALGORITHM = "sha256"
+_replacement_lock = threading.RLock()
 
 class EmoteTemplateStoreError(Exception):
     """Report a storage failure with a message suitable for the API response."""
@@ -74,6 +76,23 @@ def _dir_size(root: Path) -> int:
 class EmoteTemplateArchiveStore:
     def __init__(self, root: Path):
         self.root = Path(root)
+        self._recover_retired()
+
+    def _recover_retired(self) -> None:
+        """Recover a complete old copy if directory publication was interrupted."""
+        with _replacement_lock:
+            for retired in sorted(self.root.glob('.retired-*')):
+                if retired.is_symlink() or not retired.is_dir():
+                    continue
+                meta = self._read_meta(retired)
+                if not meta or not (retired / ARCHIVE_NAME).is_file():
+                    continue
+                final = self._entry_dir(str(meta['key']))
+                if not final.exists():
+                    try:
+                        os.replace(retired, final)
+                    except OSError as exc:
+                        raise EmoteTemplateStoreError('模板副本恢复失败') from exc
 
     # ── 路径解析 ────────────────────────────────────────────────────────────
     def _entry_dir(self, key: str) -> Path:
@@ -155,13 +174,15 @@ class EmoteTemplateArchiveStore:
 
     # ── 写 ─────────────────────────────────────────────────────────────────
     def _clean_textures(self, textures: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
-        seen: set[str] = set()
+        seen: dict[str, str] = {}
         cleaned: list[tuple[str, bytes]] = []
         total_texture_bytes = 0
         for relative, blob in textures or []:
             path = normalize_texture_path(relative)
             lowered = path.lower()
             if lowered in seen:
+                if seen[lowered] != path:
+                    raise EmoteTemplateStoreError(f"贴图路径大小写冲突：{path}")
                 continue
             blob_bytes = bytes(blob or b"")
             if len(blob_bytes) > MAX_TEXTURE_BYTES:
@@ -169,7 +190,7 @@ class EmoteTemplateArchiveStore:
             total_texture_bytes += len(blob_bytes)
             if total_texture_bytes > MAX_TEXTURE_TOTAL_BYTES:
                 raise EmoteTemplateStoreError("附带贴图总大小超过上限")
-            seen.add(lowered)
+            seen[lowered] = path
             cleaned.append((path, blob_bytes))
         if len(cleaned) > MAX_TEXTURE_FILES:
             raise EmoteTemplateStoreError(f"贴图数量超过上限（最多 {MAX_TEXTURE_FILES} 张）")
@@ -221,16 +242,17 @@ class EmoteTemplateArchiveStore:
             )
             # Windows 上 os.replace 不能盖非空目录：先把旧的挪去待删，再换新的进来。
             # 换新失败时把旧目录原样换回去，宁可留一个 .retired- 孤儿也不丢用户副本。
-            swapped_old = False
-            try:
-                if final.exists():
-                    os.replace(final, retired)
-                    swapped_old = True
-                os.replace(staging, final)
-            except OSError:
-                if swapped_old and not final.exists() and retired.exists():
-                    os.replace(retired, final)
-                raise
+            with _replacement_lock:
+                swapped_old = False
+                try:
+                    if final.exists():
+                        os.replace(final, retired)
+                        swapped_old = True
+                    os.replace(staging, final)
+                except OSError:
+                    if swapped_old and not final.exists() and retired.exists():
+                        os.replace(retired, final)
+                    raise
         except OSError as exc:
             shutil.rmtree(staging, ignore_errors=True)
             raise EmoteTemplateStoreError(f"副本写入失败：{exc}") from exc
@@ -254,6 +276,21 @@ class EmoteTemplateArchiveStore:
             raise EmoteTemplateStoreError("这个模板还没有本地副本")
         cleaned = self._clean_textures(textures)
         textures_dir = self._entry_dir(key) / TEXTURES_DIR
+        existing = self.texture_paths(key)
+        spellings = {}
+        for relative in existing + [path for path, _ in cleaned]:
+            lowered = relative.lower()
+            if lowered in spellings and spellings[lowered] != relative:
+                raise EmoteTemplateStoreError(f"贴图路径大小写冲突：{relative}")
+            spellings[lowered] = relative
+        replacements = dict(cleaned)
+        total_bytes = sum(len(blob) for blob in replacements.values()) + sum(
+            self._safe_child(textures_dir, path).stat().st_size for path in existing if path not in replacements
+        )
+        if len(set(existing) | replacements.keys()) > MAX_TEXTURE_FILES:
+            raise EmoteTemplateStoreError(f"贴图数量超过上限（最多 {MAX_TEXTURE_FILES} 张）")
+        if total_bytes > MAX_TEXTURE_TOTAL_BYTES:
+            raise EmoteTemplateStoreError("附带贴图总大小超过上限")
         for relative, blob in cleaned:
             target = self._safe_child(textures_dir, relative)
             target.parent.mkdir(parents=True, exist_ok=True)

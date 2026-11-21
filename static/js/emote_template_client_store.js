@@ -90,6 +90,78 @@
         throw new ClientZipAssetStoreError('ZIP 内容不是二进制数据', 'invalid_input');
     }
 
+    function zipEntryNames(bytes) {
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        let end = bytes.length - 22;
+        const minimum = Math.max(0, bytes.length - 65557);
+        while (end >= minimum && view.getUint32(end, true) !== 0x06054b50) end -= 1;
+        if (end < minimum) throw new ClientZipAssetStoreError('ZIP 目录无效', 'decode_failed');
+        let count = view.getUint16(end + 10, true);
+        let offset = view.getUint32(end + 16, true);
+        if (count === 0xffff || offset === 0xffffffff) {
+            const locator = end - 20;
+            if (locator < 0 || view.getUint32(locator, true) !== 0x07064b50
+                || view.getUint32(locator + 12, true) !== 0) {
+                throw new ClientZipAssetStoreError('ZIP64 目录无效', 'decode_failed');
+            }
+            const record = view.getUint32(locator + 8, true);
+            if (record + 56 > bytes.length || view.getUint32(record, true) !== 0x06064b50
+                || view.getUint32(record + 36, true) !== 0 || view.getUint32(record + 52, true) !== 0) {
+                throw new ClientZipAssetStoreError('ZIP64 目录超出上限', 'decode_failed');
+            }
+            count = view.getUint32(record + 32, true);
+            offset = view.getUint32(record + 48, true);
+        }
+        if (count > MAX_ARCHIVE_ENTRIES) {
+            throw new ClientZipAssetStoreError('ZIP 文件数超过上限（最多 5000 个）', 'too_many_entries');
+        }
+        const names = new Map();
+        const utf8 = new TextDecoder('utf-8', { fatal: true });
+        // zipfile's fallback is CP437, while fflate exposes legacy names as Latin-1.
+        const cp437 = 'ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»'
+            + '░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀'
+            + 'αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■\u00a0';
+        for (let index = 0; index < count; index += 1) {
+            if (offset + 46 > bytes.length || view.getUint32(offset, true) !== 0x02014b50) {
+                throw new ClientZipAssetStoreError('ZIP 目录条目无效', 'decode_failed');
+            }
+            const flaggedUtf8 = Boolean(view.getUint16(offset + 8, true) & 0x800);
+            const length = view.getUint16(offset + 28, true);
+            const start = offset + 46;
+            const next = start + length + view.getUint16(offset + 30, true) + view.getUint16(offset + 32, true);
+            if (next > bytes.length) throw new ClientZipAssetStoreError('ZIP 文件名无效', 'decode_failed');
+            const raw = bytes.subarray(start, start + length);
+            const extraEnd = start + length + view.getUint16(offset + 30, true);
+            const zip64Fields = [24, 20, 42].filter((field) => view.getUint32(offset + field, true) === 0xffffffff).length;
+            let zip64Found = false;
+            for (let extra = start + length; extra < extraEnd;) {
+                if (extra + 4 > extraEnd) throw new ClientZipAssetStoreError('ZIP 扩展字段无效', 'decode_failed');
+                const tag = view.getUint16(extra, true);
+                const size = view.getUint16(extra + 2, true);
+                if (extra + 4 + size > extraEnd || (tag === 1 && size < zip64Fields * 8)) {
+                    throw new ClientZipAssetStoreError('ZIP64 扩展字段无效', 'decode_failed');
+                }
+                if (tag === 1) zip64Found = true;
+                extra += 4 + size;
+            }
+            if (zip64Fields && !zip64Found) {
+                throw new ClientZipAssetStoreError('ZIP64 扩展字段缺失', 'decode_failed');
+            }
+            const key = flaggedUtf8 ? utf8.decode(raw) : Array.from(raw, (byte) => String.fromCharCode(byte)).join('');
+            let decoded;
+            try { decoded = utf8.decode(raw); } catch (error) {
+                if (flaggedUtf8) throw error;
+                try { decoded = new TextDecoder('gb18030', { fatal: true }).decode(raw); } catch (_) {
+                    decoded = Array.from(raw, (byte) => byte < 128 ? String.fromCharCode(byte) : cp437[byte - 128]).join('');
+                }
+            }
+            if (names.has(key)) throw new ClientZipAssetStoreError('ZIP 包含重复文件名', 'duplicate_path');
+            names.set(key, decoded);
+            offset = next;
+        }
+        return names;
+    }
+
     function unzipBounded(bytes) {
         if (!fflate || typeof fflate.unzipSync !== 'function') {
             return Promise.reject(new ClientZipAssetStoreError(
@@ -106,6 +178,8 @@
         let uncompressedTotal = 0;
         let validationError = null;
         const seen = new Set();
+        let entryNames;
+        try { entryNames = zipEntryNames(bytes); } catch (error) { return Promise.reject(error); }
         const filter = (meta) => {
             entryCount += 1;
             if (entryCount > MAX_ARCHIVE_ENTRIES) {
@@ -117,7 +191,7 @@
 
             let path = '';
             try {
-                path = normalizePath(meta?.name);
+                path = normalizePath(entryNames.get(meta?.name) ?? meta?.name);
             } catch (error) {
                 validationError ||= error;
                 return false;
@@ -161,10 +235,8 @@
             return isAllowed(path);
         };
 
-        // Use the synchronous decoder deliberately.  The browser package is
-        // small enough for the local Spine ZIP import path, while the async
-        // fflate worker adapter is not available in every Electron/Node
-        // embedding (and would make the same API nondeterministic in tests).
+        // The browser runs this decoder in our dedicated worker. Node and
+        // environments without Worker use the same bounded decoder directly.
         let files;
         try {
             files = fflate.unzipSync(bytes, { filter });
@@ -179,7 +251,7 @@
         for (const [rawName, value] of Object.entries(files || {})) {
             let path;
             try {
-                path = normalizePath(rawName);
+                path = normalizePath(entryNames.get(rawName) ?? rawName);
             } catch (pathError) {
                 return Promise.reject(pathError);
             }
@@ -192,6 +264,32 @@
             ));
         }
         return Promise.resolve(retained);
+    }
+
+    function unzipInWorker(bytes) {
+        return new Promise((resolve, reject) => {
+            const worker = new root.Worker('/static/js/emote_template_zip_worker.js');
+            worker.onmessage = ({ data }) => {
+                worker.terminate();
+                if (!data?.success) {
+                    reject(new ClientZipAssetStoreError(data?.message || 'ZIP 解压失败', data?.code || 'decode_failed'));
+                    return;
+                }
+                resolve(new Map(data.entries.map(([path, buffer]) => [path, new Uint8Array(buffer)])));
+            };
+            worker.onerror = () => {
+                worker.terminate();
+                reject(new ClientZipAssetStoreError('ZIP 解压线程不可用', 'decoder_unavailable'));
+            };
+            try {
+                // Do not detach the caller's buffer; retained assets return by transfer.
+                const input = bytes.slice();
+                worker.postMessage(input.buffer, [input.buffer]);
+            } catch (error) {
+                worker.terminate();
+                reject(new ClientZipAssetStoreError(String(error.message || error), 'decode_failed'));
+            }
+        });
     }
 
     class ClientZipAssetStore {
@@ -208,7 +306,11 @@
 
         static async fromBytes(value, metadata = {}) {
             const bytes = toUint8Array(value);
-            const entries = await unzipBounded(bytes);
+            if (bytes.byteLength > MAX_ARCHIVE_BYTES) {
+                throw new ClientZipAssetStoreError('模板包过大，当前导入上限为 64 MB', 'archive_too_large');
+            }
+            const entries = await (root?.document && typeof root.Worker === 'function'
+                ? unzipInWorker(bytes) : unzipBounded(bytes));
             return new ClientZipAssetStore(entries, {
                 ...metadata,
                 compressedBytes: bytes.byteLength
@@ -287,6 +389,14 @@
         get(path) {
             const bytes = this._lookup(path);
             return bytes ? bytes.slice() : null;
+        }
+
+        takeEntries() {
+            this._assertLive();
+            const entries = [...this._entries];
+            this._entries.clear(); // Ownership moves to the recipient; do not zero these buffers.
+            this.release();
+            return entries;
         }
 
         async open(path, options = {}) {

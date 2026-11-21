@@ -90,6 +90,7 @@
                 if (action === 'delete') {
                     dispatchSelectAction(entry.select, { action: 'delete', value: opt.value });
                     closeMenu(entry);
+                    triggerFocus(entry.trigger);
                     return;
                 }
                 beginInlineRename(entry, opt, label);
@@ -137,6 +138,8 @@
 
     function buildMenu(entry) {
         const { select, menu } = entry;
+        const focused = menu.contains(document.activeElement)
+            ? document.activeElement.closest('.emote-select-option')?.dataset.value : null;
         menu.replaceChildren();
         const options = visibleOptions(select);
         if (!options.length) {
@@ -151,7 +154,9 @@
             const item = document.createElement(writable ? 'div' : 'button');
             if (!writable) item.type = 'button';
             item.className = 'emote-select-option' + (writable ? ' has-actions' : '');
+            item.dataset.value = opt.value;
             item.setAttribute('role', 'option');
+            if (writable) item.setAttribute('aria-keyshortcuts', 'F2 Delete');
             item.tabIndex = -1;
             const label = document.createElement('span');
             label.className = 'emote-select-option-label';
@@ -177,6 +182,12 @@
             });
             menu.appendChild(item);
         });
+        if (focused != null) {
+            const restored = Array.from(menu.querySelectorAll('.emote-select-option'))
+                .find((item) => item.dataset.value === focused);
+            if (menu.classList.contains('is-open')) triggerFocus(restored || entry.trigger);
+            else triggerFocus(entry.trigger);
+        }
     }
 
     function triggerFocus(trigger) {
@@ -321,12 +332,18 @@
                     event.preventDefault();
                     current.click();
                 }
+            } else if ((event.key === 'F2' || event.key === 'Delete')
+                && document.activeElement?.classList.contains('has-actions')) {
+                event.preventDefault();
+                const action = event.key === 'F2' ? 'rename' : 'delete';
+                document.activeElement.querySelector(`[data-action="${action}"]`)?.click();
             } else if (event.key === 'Escape') {
                 event.preventDefault();
                 closeMenu(entry);
                 triggerFocus(trigger);
             } else if (event.key === 'Tab') {
                 closeMenu(entry);
+                triggerFocus(trigger);
             }
         });
 

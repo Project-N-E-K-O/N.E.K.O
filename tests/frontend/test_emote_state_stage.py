@@ -135,7 +135,7 @@ def _open_library(page: Page) -> None:
         page.wait_for_timeout(250)
 
 
-def _boot(page: Page, running_server: str, fps: int = 10, fmt: str = "layered") -> None:
+def _boot(page: Page, running_server: str, fps: int = 10, fmt: str = "layered", thumbnail: bool = False) -> None:
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.wait_for_timeout(300)
     page.evaluate(REVEAL)
@@ -146,7 +146,8 @@ def _boot(page: Page, running_server: str, fps: int = 10, fmt: str = "layered") 
         "模板必须用和其他模块一致的 ?v= 形式载入 emote_state_stage.js"
     errors: list[str] = []
     page.on("pageerror", lambda exc: errors.append(getattr(exc, "stack", None) or str(exc)))
-    page.evaluate(BOOT, 1.0 / fps)
+    script = BOOT.replace("return '';", "return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==';") if thumbnail else BOOT
+    page.evaluate(script, 1.0 / fps)
     page.wait_for_timeout(400)
     # 覆盖层里的异常只会让界面静默变空，断言"没东西"永远查不出根因，
     # 所以在这里直接把 pageerror 拦下来。
@@ -210,23 +211,26 @@ def test_the_start_handle_never_crosses_the_end(page: Page, running_server: str)
     _boot(page, running_server, fps=10)
     box = page.locator(".st-strip-canvas").bounding_box()
     # 先把范围收到 25%–50%
-    for at in (0.5, 0.25):
-        page.mouse.move(box["x"] + box["width"] * 0.98, box["y"] + box["height"] / 2)
+    for start, end in ((.98, .5), (.001, .25)):
+        page.mouse.move(box["x"] + box["width"] * start, box["y"] + box["height"] / 2)
         page.mouse.down()
-        page.mouse.move(box["x"] + box["width"] * at, box["y"] + box["height"] / 2, steps=4)
+        page.mouse.move(box["x"] + box["width"] * end, box["y"] + box["height"] / 2, steps=4)
         page.mouse.up()
     params = page.evaluate("() => window.__STAGE.getGraph().nodes.find(\
 n => n.params.stateKey === 'idle_image').params")
+    assert abs(params['startAt'] - .5) < .12, params
+    assert abs(params['startAt'] + params['seconds'] - 1) < .12, params
     # 再把起点往最右拖：必须停在终点之前，不能拖出一个反向范围
-    page.mouse.move(box["x"] + box["width"] * 0.26, box["y"] + box["height"] / 2)
+    page.mouse.move(box["x"] + box["width"] * 0.25, box["y"] + box["height"] / 2)
     page.mouse.down()
     page.mouse.move(box["x"] + box["width"] * 0.95, box["y"] + box["height"] / 2, steps=6)
     page.mouse.up()
     page.wait_for_timeout(200)
     after = page.evaluate("() => window.__STAGE.getGraph().nodes.find(\
 n => n.params.stateKey === 'idle_image').params")
-    assert after["startAt"] <= params["startAt"] + 1.0, after
-    assert after["startAt"] < 2.0, after
+    assert after['startAt'] > params['startAt'], after
+    assert after['seconds'] >= .1 - 1e-6, after
+    assert abs(after['startAt'] + after['seconds'] - params['startAt'] - params['seconds']) < .02, after
     assert page.evaluate("() => document.querySelector('.st-span').textContent").count("s") == 2
 
 
@@ -919,7 +923,7 @@ def test_an_animation_behind_a_modifier_still_reads_as_assigned(page: Page, runn
 
 def test_tile_and_library_share_one_thumb_cache(page: Page, running_server: str) -> None:
     """Share identical thumbnail requests between state rows and the animation library."""
-    _boot(page, running_server)
+    _boot(page, running_server, thumbnail=True)
     page.click(".st-rail")
     page.wait_for_timeout(600)
     page.click(".st-rail")

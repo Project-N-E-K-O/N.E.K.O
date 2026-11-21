@@ -368,8 +368,8 @@ def test_narrowing_the_window_reclamps_an_existing_layout(page: Page, running_se
 
 def test_handles_are_hidden_in_the_stacked_layout(page: Page, running_server: str) -> None:
     _open(page, running_server, 1000)
-    box = page.evaluate(GEOMETRY)
-    assert not box["handlesShown"], "堆叠布局下面板不再并排，手柄应当退出布局"
+    for selector in ('#resize-left', '#resize-right', '#resize-dock'):
+        expect(page.locator(selector)).to_be_hidden()
 
 
 def _drag_dock_to_the_limit(page: Page) -> None:
@@ -404,7 +404,12 @@ def test_playback_controls_stay_reachable_when_dock_is_maximised(
         """
     for width, height in ((1600, 1024), (1400, 900), (1280, 800), (1200, 720), (1120, 660)):
         _open(page, running_server, width, height)
+        page.focus('#resize-dock')
+        for _ in range(10):
+            page.keyboard.press('Shift+ArrowDown')
+        before = page.locator('.animation-dock').bounding_box()['height']
         _drag_dock_to_the_limit(page)
+        assert page.locator('.animation-dock').bounding_box()['height'] > before + 1
         box = page.evaluate(GEOMETRY)
         assert box["playbackShown"], f"{width}x{height}: 播放控件不可见"
         assert box["dockClip"] <= 1, f"{width}x{height}: dock 内容被裁 {box['dockClip']}px"

@@ -38,6 +38,7 @@
         const holdMs = Number(handlers.holdMs) > 0 ? Number(handlers.holdMs) : HOLD_MS;
         const startX = event.clientX;
         const startY = event.clientY;
+        const pointerId = event.pointerId;
         let latest = event;
         let timer = 0;
         let ringAppearTimer = 0;
@@ -67,6 +68,7 @@
             window.removeEventListener('dragstart', killNativeDrag, true);
         };
         const move = (moveEvent) => {
+            if (pointerId != null && moveEvent.pointerId != null && moveEvent.pointerId !== pointerId) return;
             if (!held && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) > MOVE_SLOP) {
                 cancel();
                 return;
@@ -74,7 +76,8 @@
             if (ring) positionRing(ring, moveEvent.clientX, moveEvent.clientY);
             latest = moveEvent;
         };
-        const up = () => {
+        const up = (upEvent) => {
+            if (pointerId != null && upEvent?.pointerId != null && upEvent.pointerId !== pointerId) return;
             if (finished) return;
             finished = true;
             held = false;
@@ -83,7 +86,8 @@
             ring = null;
             cancelledBy('release');
         };
-        const cancel = () => {
+        const cancel = (cancelEvent) => {
+            if (pointerId != null && cancelEvent?.pointerId != null && cancelEvent.pointerId !== pointerId) return;
             if (finished) return;
             finished = true;
             held = false;
@@ -193,24 +197,42 @@
         const span = Number(windowMs) > 0 ? Number(windowMs) : 600;
         let until = 0;
         let armed = false;
+        let source = null;
+        let pointerId = null;
+        let clearTimer = 0;
 
-        const stamp = () => {
+        const reset = () => {
+            until = 0;
+            source = null;
+            window.clearTimeout(clearTimer);
+            window.removeEventListener('pointerdown', reset, true);
+        };
+
+        const stamp = (event) => {
             if (!armed) return;
+            if (pointerId != null && event?.pointerId != null && event.pointerId !== pointerId) return;
             armed = false;
             window.removeEventListener('pointerup', stamp, true);
             window.removeEventListener('pointercancel', stamp, true);
             until = Date.now() + span;
+            window.addEventListener('pointerdown', reset, { once: true, capture: true });
+            clearTimer = window.setTimeout(reset, span);
         };
 
         return {
             // 起拖时调用；松手（或取消）时才真正开始计时
-            arm() {
+            arm(element = null, owner = null) {
                 if (armed) return;
+                reset();
+                source = element;
+                pointerId = owner;
                 armed = true;
                 window.addEventListener('pointerup', stamp, { capture: true });
                 window.addEventListener('pointercancel', stamp, { capture: true });
             },
-            shouldSwallow() {
+            shouldSwallow(event) {
+                if (event?.detail === 0) return false; // Keyboard activation is a new action.
+                if (source && event && event.currentTarget !== source && !source.contains(event.target)) return false;
                 if (armed) return true;      // 还按着/还在拖，当然不算点击
                 return Date.now() < until;
             },

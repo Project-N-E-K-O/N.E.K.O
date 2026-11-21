@@ -66,6 +66,18 @@
         templateSlotDefaults: [],
         templateSlotGroup: ''
     };
+    const TEMPLATE_SESSION_DEFAULTS = Object.fromEntries([
+        'colors', 'secondaryColor', 'colorMode', 'adjustments', 'adjustOverwrite',
+        'packScale', 'packOffsetX', 'packOffsetY', 'packMirror', 'packSceneIds',
+        'packName', 'packPriority', 'packFormat', 'nodeGraph',
+        'animationProgress', 'animationSpeed', 'groups', 'shots', 'groupId',
+    ].map((key) => [key, JSON.parse(JSON.stringify(state[key]))]));
+
+    function resetTemplateSession() {
+        for (const [key, value] of Object.entries(TEMPLATE_SESSION_DEFAULTS)) {
+            state[key] = JSON.parse(JSON.stringify(value));
+        }
+    }
 
     // A package is kept in memory only.  The normalized manifest contains
     // paths and metadata; binary assets live in a short-lived client store and
@@ -248,7 +260,7 @@
         'emoteMaker.groupCreated': "已新建组",
         'emoteMaker.groupRename': "改名",
         'emoteMaker.groupDelete': "删除",
-        'emoteMaker.groupDeleteConfirm': "删除「{{name}}」？这一组里的条目会一起去掉。",
+        'emoteMaker.groupDeleteConfirm': "删除「{{name}}」？将移除这一组内的条目，保留原动作和图片。",
         'emoteMaker.groupDeleted': "已删除这个组",
         'emoteMaker.groupReadOnly': "导入的组改不了，想改就先新建一个",
         'emoteMaker.groupSceneAdded': "已加入本组",
@@ -340,7 +352,7 @@
         'emoteMaker.packExportZip': '导出形象包',
         'emoteMaker.packImportNow': '导入到模型管理',
         'emoteMaker.packBakingProgress': '正在生成形象包…',
-        'emoteMaker.packIdleRequired': "先给「待机」挑一个动作。",
+        'emoteMaker.packIdleRequired': "先给「{{state}}」挑一个动作。",
         'emoteMaker.packZipSuccess': "形象包已导出，可以直接导入到模型管理。",
         'emoteMaker.packZipFailed': '形象包生成失败。',
         'emoteMaker.packImportSuccess': '形象包已导入模型管理。',
@@ -387,13 +399,13 @@
         'emoteMaker.stageImageDeleteFailed': '删除图片失败，请重试。',
         'emoteMaker.stageImagesMissing': "{{count}} 个状态绑的图片不见了，已跳过",
         'emoteMaker.stageSearch': "搜索动作",
-        'emoteMaker.packPlanSkipped': "已跳过未设置的槽位",
+        'emoteMaker.packPlanSkipped': "已跳过未设置的状态",
         'emoteMaker.packPriorityLabel': "状态优先级",
         'emoteMaker.packPriorityHint': "说话优先时情绪在说话后播放，情绪优先时说话期间触发情绪会覆盖说话动画",
         'emoteMaker.packPriorityTalking': "说话优先",
         'emoteMaker.packPriorityEmotion': "情绪优先",
         'emoteMaker.packPlanUnassigned': "未选动作",
-        'emoteMaker.packPlanDuplicate': "同一槽位重复",
+        'emoteMaker.packPlanDuplicate': "同一状态重复",
         'emoteMaker.graphCollapsedNotice': "同一状态设了两遍的，已保留你选的那个",
         'emoteMaker.stageUnavailable': "进阶设置没加载出来，刷新再试。",
         'emoteMaker.packNeedsTemplate': "先导入一个模板。",
@@ -4001,18 +4013,30 @@
         renderGroupPicker();
     }
 
-    /** 烘一项 → 一段字节。png 只要第 0 帧，gif 走现有编码器。 */
+    /** 烘一项 → 一段字节。PNG 使用取景时间，GIF 播放完整动作。 */
     async function produceGroupFile(group, item, format) {
+        return queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'export',
+            () => produceGroupFileNow(group, item, format));
+    }
+
+    async function produceGroupFileNow(group, item, format) {
         const encoder = window.NekoEmoteGifEncoder;
         const sheet = window.NekoEmoteSheet;
         const edge = Math.min(state.exportResolution || GIF_EXPORT_WIDTH, GIF_EXPORT_WIDTH);
         const fps = state.exportFps || GIF_EXPORT_FPS;
         let scene = getImportedScenes().find((entry) => entry.id === item.ref) || null;
+        let timeWindow;
         if (item.kind === 'shot') {
             const shot = findShotById(item.ref);
             if (!shot) throw new Error('missing-shot');
             scene = getImportedScenes().find((entry) => entry.id === shot.sourceSceneId) || null;
             if (!scene) throw new Error('scene_unavailable');
+            // PNG shots preserve their saved pose; GIF members still play the full action.
+            if (format === 'png') {
+                const duration = Number(getImportedAnimationDuration(scene.animation?.id)) || 0;
+                const from = duration * Math.max(0, Math.min(100, Number(shot.progress) || 0)) / 100;
+                timeWindow = { from, to: from + 1 / fps };
+            }
         }
         if (!scene) throw new Error('missing-scene');
         // 组上那一套数值盖到每一条上。没有记录的组（模板自带的列表）仍用编辑器当前值。
@@ -4020,8 +4044,9 @@
         if (look) captureLook = look;
         let frames;
         try {
-            frames = await captureGifFrames({
+            frames = await captureGifFramesNow({
                 scene,
+                timeWindow,
                 maxFrames: format === 'png' ? 1 : GROUP_EXPORT_MAX_FRAMES,
                 fps,
                 maxDimension: edge,
@@ -4224,8 +4249,8 @@
         }
     }
 
-    function planGroupExportFor(group, limit) {
-        const format = state.exportFormat === 'png' ? 'png' : 'gif';
+    function planGroupExportFor(group, limit, requestedFormat = state.exportFormat) {
+        const format = requestedFormat === 'png' ? 'png' : 'gif';
         const plan = groupLibrary.planGroupExport({
             group,
             shots: ownShots(),
@@ -4258,7 +4283,7 @@
             savingToFolder ? groupLibrary.MAX_ITEMS_PER_GROUP : groupLibrary.MAX_BATCH,
         );
         const format = planned.format;
-        const plan = planned.plan;
+        let plan = planned.plan;
         if (!plan.ready) {
             showToast(t('emoteMaker.groupExportEmpty'));
             return;
@@ -4278,8 +4303,8 @@
                 folder = disk;
             } catch (error) {
                 console.warn('[emote-maker] 创建导出文件夹失败', error);
-                showToast(t('emoteMaker.groupExportFolderFailed'));
-                return;
+                showToast(t('emoteMaker.groupExportPickFailed'));
+                plan = planGroupExportFor(group, groupLibrary.MAX_BATCH, format).plan;
             }
         } else if (picked) {
             try {
@@ -4290,8 +4315,8 @@
                 folder = await picked.getDirectoryHandle(folderName, { create: true });
             } catch (error) {
                 console.warn('[emote-maker] 创建导出文件夹失败', error);
-                showToast(t('emoteMaker.groupExportFolderFailed'));
-                return;
+                showToast(t('emoteMaker.groupExportPickFailed'));
+                plan = planGroupExportFor(group, groupLibrary.MAX_BATCH, format).plan;
             }
         }
         groupExportBusy = true;
@@ -4304,6 +4329,7 @@
         const previousAnimationId = state.animationId;
         const previousProgress = state.animationProgress;
         const previousOverwrite = state.adjustOverwrite;
+        const previousPlaying = state.animationPlaying;
         let result = null;
         try {
             result = await groupLibrary.runGroupExport({
@@ -4348,7 +4374,8 @@
             state.selectedSceneId = previousSceneId;
             state.animationId = previousAnimationId;
             state.animationProgress = previousProgress;
-            syncLiveCanvas({ autoplay: false });
+            state.animationPlaying = previousPlaying;
+            syncLiveCanvas({ autoplay: previousPlaying });
             renderAll();
         }
         if (!result) return;
@@ -4446,6 +4473,8 @@
                 if (animation.metadataOnly) return;
                 groupPreview = null;
                 state.animationId = animation.id;
+                const scene = getImportedScenes().find((entry) => entry.animation?.id === animation.id);
+                if (scene) state.selectedSceneId = scene.id;
                 state.animationProgress = 0;
                 state.animationPlaying = false;
                 // Selecting a card starts playback. Stop the previous loop
@@ -4455,6 +4484,7 @@
                 updateAnimationCardSelection();
                 updateAnimationControls();
                 void renderCanvas();
+                persistTemplateSession();
             });
             button.title = animation.metadataOnly ? t('emoteMaker.templateMetadataOnly') : label.textContent;
             // 右键：未选中就选上并打开加组菜单，已选中再点一次就取消。
@@ -5804,6 +5834,7 @@
         }
         const persisted = [];
         let invalidGif = false;
+        let invalidPng = false;
         for (const file of images) {
             const extension = file.name.toLowerCase().endsWith('.gif') ? 'gif' : 'png';
             if (extension === 'gif') {
@@ -5816,7 +5847,27 @@
                     continue;
                 }
             }
-            const dataUrl = await readStageImage(file.slice(0, file.size, `image/${extension}`));
+            let dataUrl;
+            try {
+                if (!file.size || file.size > 64 * 1024 * 1024) throw new Error('invalid_stage_image');
+                if (extension === 'png') {
+                    const signature = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+                    if (signature.length !== 8 || ![137,80,78,71,13,10,26,10].every((v, i) => signature[i] === v)) {
+                        throw new Error('invalid_stage_image');
+                    }
+                }
+                dataUrl = await readStageImage(file.slice(0, file.size, `image/${extension}`));
+                if (extension === 'png') await new Promise((resolve, reject) => {
+                    const image = new Image();
+                    image.onload = () => image.naturalWidth && image.naturalHeight ? resolve() : reject();
+                    image.onerror = reject;
+                    image.src = dataUrl;
+                });
+            } catch (_) {
+                if (extension === 'gif') invalidGif = true;
+                else invalidPng = true;
+                continue;
+            }
             if (currentTemplateKey() !== key) return;
             const id = stageImageId(file.name);
             persisted.push([id, { name: file.name, dataUrl, extension }]);
@@ -5836,6 +5887,7 @@
         pushStageUserImages();
         if (!saved) showToast(t('emoteMaker.stageImagesSaveFailed'));
         else if (invalidGif) showToast(t('emoteMaker.stageImagesInvalidGif'));
+        else if (invalidPng) showToast(t('emoteMaker.stageImagesSupportedFormats'));
         else showToast(interpolate(t('emoteMaker.stageImagesImported'), { count: persisted.length }));
     }
 
@@ -6025,7 +6077,7 @@
                     Number(getImportedAnimationDuration(scene.animation?.id)) || 0.05);
                 const frames = Math.max(1,
                     Math.min(budget.maxFrames, Math.ceil(duration * budget.fps)));
-                const baked = await bakePackJobs(
+                const baked = await bakePackJobsNow(
                     [{ stateKey: 'preview', sceneId: scene.id, look, frames,
                         timeWindow: startAt > 0
                             ? { from: startAt, to: startAt + 1 / budget.fps }
@@ -6343,13 +6395,15 @@
 
     function loadTemplateLibrary() {
         if (!templateLibraryModule) return;
-        templateLibraryState = templateLibraryModule.load(localStorage);
+        let storage;
+        try { storage = window.localStorage; } catch (_) { /* Storage can be unavailable. */ }
+        templateLibraryState = templateLibraryModule.load(storage);
         if (!templateLibraryState.entries.length && lastTemplate) {
-            const migrated = templateLibraryModule.migrateFromLegacy(lastTemplate, localStorage);
+            const migrated = storage && templateLibraryModule.migrateFromLegacy(lastTemplate, storage);
             if (migrated) {
                 templateLibraryState = migrated;
                 try {
-                    templateLibraryModule.save(localStorage, templateLibraryState);
+                    templateLibraryModule.save(storage, templateLibraryState);
                 } catch (_) { /* 同上 */ }
             }
         }
@@ -6435,7 +6489,7 @@
         const write = (async () => {
             await previous?.catch(() => {});
             const response = await fetch(`${TEMPLATE_LIBRARY_API}/${resource}?key=${encodeURIComponent(key)}`,
-                { method: 'POST', body: form, credentials: 'same-origin' },
+                { method: 'POST', body: form, credentials: 'same-origin', headers: { 'x-neko-emote-library': '1' } },
             );
             const payload = await response.json().catch(() => ({}));
             if (!response.ok || !payload.success) throw new Error(payload.error || 'template-library-write-failed');
@@ -6528,6 +6582,7 @@
         state.templateSlotDefaults = (held.pkg.character?.slots || []).map((item) => ({ ...item }));
         state.templateSlots = state.templateSlotDefaults.map((item) => ({ ...item }));
         state.templateSlotGroup = state.templateSlots[0]?.name || '';
+        resetTemplateSession();
         applyTemplateSession(held.pkg);
         if (!state.groupId) {
             const first = allGroups()[0];
@@ -6670,6 +6725,9 @@
         const aliases = manifest.source?.sceneAliases || {};
         const resolveSceneId = (id) => Object.hasOwn(aliases, id) ? aliases[id] : id;
         const character = lastTemplate.character || {};
+        if (typeof lastTemplate.packName === 'string') state.packName = lastTemplate.packName;
+        if (['flat', 'layered'].includes(lastTemplate.packFormat)) state.packFormat = lastTemplate.packFormat;
+        if (['emotion', 'talking'].includes(lastTemplate.packPriority)) state.packPriority = lastTemplate.packPriority;
         if (Array.isArray(character.skins)) state.templateSkins = character.skins.map((item) => ({ ...item }));
         if (Array.isArray(character.slots) && character.slots.length) {
             // 只接受新包里仍然存在的槽位名，避免把过期色组写回去。
@@ -6722,13 +6780,16 @@
         state.packSceneIds = pack;
         const graphModel = window.NekoEmoteNodeGraph;
         if (savedGraph && graphModel) {
-            const graph = graphModel.normalizeGraph(savedGraph);
-            state.nodeGraph = {
-                ...graph,
-                nodes: graph.nodes.map((node) => node.type === 'source.scene'
-                    ? { ...node, params: { ...node.params, sceneId: resolveSceneId(node.params.sceneId) } }
-                    : node),
+            // Repair stale sources before duplicate outputs are ranked and merged.
+            const prepared = {
+                ...savedGraph,
+                nodes: (savedGraph.nodes || []).map((node) => {
+                    if (node.type !== 'source.scene') return node;
+                    const sceneId = resolveSceneId(node.params?.sceneId);
+                    return { ...node, params: { ...node.params, sceneId: ids.has(sceneId) ? sceneId : '' } };
+                }),
             };
+            state.nodeGraph = graphModel.normalizeGraph(prepared);
             persistNodeGraph();
         }
         return true;
@@ -7094,8 +7155,14 @@
     }
 
     async function bakePackJobs(jobs, preview = {}) {
+        return queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'export',
+            () => bakePackJobsNow(jobs, preview));
+    }
+
+    async function bakePackJobsNow(jobs, preview = {}) {
         const previewFps = Number(preview.fps) || 0;
         const previewEdge = Number(preview.edge) || 0;
+        const packFormat = preview.format || state.packFormat;
         // 预览用的 job 会自带 fps/edge（表演台只要看得清，不需要导出级精度）；
         // 导出路径不传，仍取全局值。
         const edge = Math.min(previewEdge || state.exportResolution || PACK_MAX_EDGE, PACK_MAX_EDGE);
@@ -7107,6 +7174,12 @@
         let missingImages = 0;
         const previousSceneId = state.selectedSceneId;
         const previousAnimationId = state.animationId;
+        const previousLook = {
+            templateSkins: state.templateSkins,
+            templateSlots: state.templateSlots,
+            adjustments: state.adjustments,
+        };
+        const previousPlaying = state.animationPlaying;
         try {
             for (let index = 0; index < jobs.length; index += 1) {
                 const job = jobs[index];
@@ -7136,13 +7209,13 @@
                     }
                     // 平铺包的说话位只定格第一张：与场景侧的 still 规则同源
                     // （运行时换 src 重载多帧 GIF 的空窗问题），分层不受限。
-                    const still = job.stateKey === 'talking_image' && state.packFormat !== 'layered';
+                    const still = job.stateKey === 'talking_image' && packFormat !== 'layered';
                     let frames = [];
                     let imageFps = fps;
                     if (decoded.some((frame) => frame.delayMs)) {
                         const timeline = trimStageImageTimeline(decoded, job.imageStartAt || 0, job.imageSeconds || 0);
                         frames = still ? timeline.slice(0, 1) : timeline;
-                        if (!still && (state.packFormat === 'layered' || frames.length > PACK_MAX_FRAMES)) {
+                        if (!still && (packFormat === 'layered' || frames.length > PACK_MAX_FRAMES)) {
                             frames = sampleStageImageTimeline(timeline, fps, PACK_MAX_FRAMES);
                             imageFps = 1000 / frames[0].delayMs;
                         }
@@ -7169,7 +7242,7 @@
                 if (!previewFps) setPackStatus(`${t('emoteMaker.packBakingProgress')} ${index + 1}/${jobs.length}`);
                 await yieldToBrowser();
                 applyLookToState(job.look);
-                const frames = await captureGifFrames({
+                const frames = await captureGifFramesNow({
                     scene,
                     maxFrames: job.frames,
                     fps,
@@ -7192,7 +7265,8 @@
             if (!previewFps) setPackStatus('');
             state.selectedSceneId = previousSceneId;
             state.animationId = previousAnimationId;
-            syncLiveCanvas({ autoplay: false });
+            Object.assign(state, previousLook);
+            syncLiveCanvas({ autoplay: previousPlaying });
         }
         if (missingImages > 0) {
             showToast(interpolate(t('emoteMaker.stageImagesMissing'), { count: missingImages }));
@@ -7283,13 +7357,14 @@
     }
 
     async function buildPngtuberPackage() {
+        const packFormat = state.packFormat;
         const packModule = window.NekoEmotePngtuberPack;
         if (!packModule || !window.NekoEmoteGifEncoder || !hasSpineRenderer()) {
             showToast(t('emoteMaker.exportGifUnavailable'));
             return null;
         }
         if (packBusy) return null;
-        if (state.packFormat === 'layered' && !window.NekoEmotePngtuberLayered) {
+        if (packFormat === 'layered' && !window.NekoEmotePngtuberLayered) {
             showToast(t('emoteMaker.packLayeredUnavailable'));
             return null;
         }
@@ -7301,7 +7376,7 @@
         const graph = currentBakeGraph();
         const model = window.NekoEmoteNodeGraph;
         if (!graph || !model) {
-            showToast(t('emoteMaker.packIdleRequired'));
+            showToast(interpolate(t('emoteMaker.packIdleRequired'), { state: t('emoteMaker.packStateIdle') }));
             return null;
         }
         const evaluated = model.evaluate(graph, currentLookDefaults());
@@ -7333,7 +7408,7 @@
             return null;
         }
         if (!usable.some((output) => output.stateKey === 'idle_image')) {
-            showToast(t('emoteMaker.packIdleRequired'));
+            showToast(interpolate(t('emoteMaker.packIdleRequired'), { state: t('emoteMaker.packStateIdle') }));
             return null;
         }
 
@@ -7349,7 +7424,7 @@
                 : (output.imageId ? [output.imageId] : []);
             if (imageIds.length) {
                 // PNG 轮播沿用固定停留，GIF 则按源帧时长裁切选中的区间。
-                const still = output.stateKey === 'talking_image' && state.packFormat !== 'layered';
+                const still = output.stateKey === 'talking_image' && packFormat !== 'layered';
                 const hold = Math.max(0.05, Number(output.seconds) || 0.05);
                 return {
                     stateKey: output.stateKey,
@@ -7368,7 +7443,7 @@
             // 平铺包的说话位只烘一帧：运行时按口型节奏在 idle/talking 两张图之间来回切，
             // 图自己再动一次就成了双重动画。分层包不一样 —— 说话是去占状态槽，画面完全
             // 由这一格的雪碧图自己演，定格成一张就等于用户绑的动作没演。
-            const still = output.stateKey === 'talking_image' && state.packFormat !== 'layered';
+            const still = output.stateKey === 'talking_image' && packFormat !== 'layered';
             const to = still
                 ? Math.min(duration, from + 1 / fps)
                 : (wanted > 0 ? Math.min(duration, from + wanted) : duration);
@@ -7387,12 +7462,12 @@
         setPackBusy(true);
         try {
             await stageImagesReady;
-            const baked = await bakePackJobs(jobs);
+            const baked = await bakePackJobs(jobs, { format: packFormat });
             if (!baked.length) {
                 showToast(t('emoteMaker.packZipFailed'));
                 return null;
             }
-            if (state.packFormat === 'layered') {
+            if (packFormat === 'layered') {
                 baked[0].displayName = displayName;
                 baked[0].description = `${t('emoteMaker.title')} · ${displayName}`;
                 const result = await layeredStates(baked, displayName);
@@ -7560,6 +7635,11 @@
     // 传入 scene 时本函数只负责套用并烘焙它，不还原选中态 —— 那由调用方处理，
     // 因为它还要连带刷新一次界面。
     async function captureGifFrames(options = {}) {
+        return queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'export',
+            () => captureGifFramesNow(options));
+    }
+
+    async function captureGifFramesNow(options = {}) {
         const scene = options.scene || null;
         const animationId = scene ? (scene.animation?.id || state.animationId) : state.animationId;
         const duration = Math.max(
@@ -7901,6 +7981,10 @@
     }
 
     async function downloadPng() {
+        return queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'export', downloadPngNow);
+    }
+
+    async function downloadPngNow() {
         // 同步快照：nativeCompositeCanvas 把 WebGL 画布的当下像素拷进新的 2D canvas，
         // 因此编码期间动画继续跑也不会改变导出的那一帧。
         const highlighted = hasSpineRenderer() && colorPartHighlight();
@@ -8196,6 +8280,7 @@
                 if (selection.atlas) formData.append('atlas_path', selection.atlas);
                 const response = await fetch('/api/emote-maker/import', {
                     method: 'POST', body: formData, credentials: 'same-origin',
+                    headers: { 'x-neko-emote-library': '1' },
                 });
                 payload = await response.json().catch(() => ({}));
                 if (payload.code === 'selection_required') {
@@ -8304,11 +8389,12 @@
             state.groupId = '';
             // 多选集合里是上一个模板的动画 id，留着会把旧动作一起加进新模板的组
             setPickedAnimations([]);
-            const saved = restoreKey && templateLibraryModule?.find(templateLibraryState, restoreKey);
+            const saved = templateLibraryModule?.find(templateLibraryState, restoreKey || nextKey);
             const fingerprint = templateFingerprint(nextPackage);
             const sameSession = lastTemplate?.fingerprint === fingerprint;
             const savedGraph = saved?.session?.nodeGraph || (sameSession ? state.nodeGraph : null);
-            if (saved?.session && !sameSession) {
+            resetTemplateSession();
+            if (saved?.session) {
                 lastTemplate = { ...saved.session, fingerprint };
             }
             if (builtinPackage) {

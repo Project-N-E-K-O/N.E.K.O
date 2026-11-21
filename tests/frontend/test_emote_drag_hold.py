@@ -16,6 +16,7 @@ SETUP = """() => {
     window.__CALLS = [];
     const el = document.getElementById('hold-target');
     el.addEventListener('pointerdown', (event) => {
+        window.__pointerId = event.pointerId;
         window.__CTRL = window.NekoEmoteDragHold.armHold(event, {
             holdMs: 600,
             onComplete: (point) => window.__CALLS.push(['done', Math.round(point.clientX), Math.round(point.clientY)]),
@@ -98,7 +99,7 @@ def test_finishing_ring_can_be_cancelled_before_drag_starts(page: Page, running_
     if ending == "release":
         page.mouse.up()
     elif ending == "pointercancel":
-        page.evaluate("window.dispatchEvent(new PointerEvent('pointercancel'))")
+        page.evaluate("window.dispatchEvent(new PointerEvent('pointercancel', {pointerId: window.__pointerId}))")
     else:
         page.evaluate("window.__CTRL.cancel()")
     page.wait_for_timeout(250)
@@ -270,8 +271,8 @@ def test_a_native_dragstart_does_not_steal_our_drag(page: Page, running_server: 
     page.mouse.move(x, y)
     page.mouse.down()
     page.wait_for_timeout(150)
-    page.evaluate("() => document.getElementById('hold-target').dispatchEvent("
-                  "new DragEvent('dragstart', { bubbles: true, cancelable: true }))")
+    assert page.evaluate("() => document.getElementById('hold-target').dispatchEvent("
+                         "new DragEvent('dragstart', { bubbles: true, cancelable: true }))") is False
     page.wait_for_timeout(400)
     try:
         page.wait_for_function("() => window.__CALLS.some((c) => c[0] === 'done')", timeout=5000)

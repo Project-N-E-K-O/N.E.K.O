@@ -1,7 +1,10 @@
 """DashScope text-to-image and reference editing adapter."""
 import asyncio
 import base64
+import io
 import re
+
+from PIL import Image, ImageOps
 
 from .transport import parse_image, request_json
 from .types import ImageGenerationError
@@ -45,9 +48,29 @@ async def _wait_for_output(client, config, submission):
         await asyncio.sleep(5)
 
 
+def _reference_content(model, references):
+    content = []
+    for reference in references:
+        if model.startswith('wan2.6-image'):
+            try:
+                with Image.open(io.BytesIO(reference)) as source:
+                    if max(source.size) > 8000:
+                        raise ImageGenerationError('invalid_image')
+                    image = ImageOps.exif_transpose(source).convert('RGBA')
+                background = Image.new('RGBA', (max(240, image.width), max(240, image.height)), 'white')
+                background.alpha_composite(image, ((background.width - image.width) // 2,
+                                                   (background.height - image.height) // 2))
+                buffer = io.BytesIO()
+                background.convert('RGB').save(buffer, 'PNG')
+                reference = buffer.getvalue()
+            except (OSError, ValueError, Image.DecompressionBombError) as exc:
+                raise ImageGenerationError('invalid_image') from exc
+        content.append({'image': 'data:image/png;base64,' + base64.b64encode(reference).decode('ascii')})
+    return content
+
+
 async def _generate_multimodal(client, config, request):
-    content = [{"image": "data:image/png;base64," + base64.b64encode(image).decode("ascii")}
-               for image in request.reference_images]
+    content = await asyncio.to_thread(_reference_content, config.model, request.reference_images)
     content.append({"text": request.prompt})
     payload = {
         "model": config.model,

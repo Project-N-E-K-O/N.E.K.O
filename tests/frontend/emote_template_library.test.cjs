@@ -154,6 +154,18 @@ test('quota eviction preserves an older current template and its saved session',
     assert.equal(store.entries.length, 2, 'eviction must not mutate the original store');
 });
 
+test('current thumbnail is discarded before another template session is evicted', () => {
+    let store = library.upsert(library.emptyStore(), entry('current', {
+        thumb: `data:image/png;base64,${'z'.repeat(8192)}`,
+    }));
+    store = library.upsert(store, entry('other', {session: {groups: [{name: 'keep this group'}]}}));
+    store = library.touch(store, 'current');
+    const saved = library.shrinkToFit(store, JSON.stringify(store).length - 2000);
+    assert.equal(saved.entries.length, 2);
+    assert.equal(saved.entries.find(e => e.key === 'current').thumb, '');
+    assert.equal(saved.entries.find(e => e.key === 'other').session.groups[0].name, 'keep this group');
+});
+
 test('quota eviction removes the least recently used non-current entry first', () => {
     const entries = ['recent', 'oldest', 'current'].map((key, index) => entry(key, {
         lastUsedAt: [3, 1, 2][index],

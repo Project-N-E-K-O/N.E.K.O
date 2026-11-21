@@ -33,6 +33,8 @@ def _import(page: Page, file_name: str, display_name: str, slot: str, scenes: in
     })
     page.wait_for_function("() => document.body.classList.contains('editor-has-template')",
                            timeout=25000)
+    page.wait_for_function("name => JSON.parse(localStorage.getItem('neko-emote-maker-last-template') || '{}').packageName === name",
+                           arg=file_name)
     _open_export_tab(page)
     page.wait_for_function(
         "() => getComputedStyle(document.querySelector('#group-section')).display !== 'none'",
@@ -171,6 +173,7 @@ def test_batch_button_opens_a_group_picker_above_it(group_page: Page) -> None:
 
 def test_picker_rows_are_enabled_with_a_loaded_spine_renderer(group_page: Page) -> None:
     """Allow verified Spine models to be exported as groups."""
+    expect(group_page.locator('#export-png-btn')).to_be_enabled()
     group_page.evaluate("() => document.querySelector('#export-group-open-btn').click()")
     state = group_page.evaluate("""() => {
         const picker = document.querySelector('#group-export-picker');
@@ -338,6 +341,23 @@ def test_a_typed_name_becomes_the_new_group_name(group_page: Page) -> None:
             .some((option) => option.textContent.trim() === '改过的组')""",
         timeout=10000)
     assert "开心组" not in _options(group_page)
+
+
+def test_group_actions_are_keyboard_accessible_and_escape_restores_row_focus(group_page: Page) -> None:
+    group_page.locator('#group-section > summary').click()
+    group_page.locator('#new-group-btn').click()
+    _open_group_menu(group_page)
+    row = group_page.locator('#batch-export-group-select-menu .emote-select-option.has-actions')
+    expect(row).to_have_count(1)
+    value = row.get_attribute('data-value')
+    row.focus()
+    group_page.keyboard.press('F2')
+    expect(group_page.locator('.emote-select-rename')).to_be_focused()
+    group_page.keyboard.press('Escape')
+    expect(group_page.locator(f'#batch-export-group-select-menu [data-value="{value}"]')).to_be_focused()
+    group_page.keyboard.press('Delete')
+    expect(group_page.locator('#emote-confirm')).to_be_visible()
+    group_page.locator('#emote-confirm-cancel').click()
 
 
 def test_a_created_group_can_be_deleted(group_page: Page) -> None:
@@ -797,6 +817,7 @@ def test_right_click_menu_adds_and_removes_selected_actions(group_page: Page) ->
         arg=before, timeout=10000)
     kinds = group_page.evaluate(
         "() => [...document.querySelectorAll('#group-members .group-member-kind')].map(e => e.textContent)")
+    expect(group_page.locator('#group-members .group-member')).to_have_count(before + 1)
     assert "动作" in kinds, f"右键加入的该是一个动作: {kinds}"
 
     # 全选只用来核对计数。要看「移出」得先清掉多选再右键：已选中时再右键是取消，不会开菜单。
@@ -821,7 +842,8 @@ def test_right_click_menu_adds_and_removes_selected_actions(group_page: Page) ->
     group_page.evaluate("() => document.querySelector('#context-remove-btn').click()")
     after = group_page.evaluate(
         "() => document.querySelectorAll('#group-members .group-member').length")
-    assert after == before + 1 - 1 or after < before + 2, f"移出没生效: {before} → {after}"
+    expect(group_page.locator('#group-members .group-member')).to_have_count(before)
+    assert after == before, f"移出没生效: {before} → {after}"
 
 
 def test_tip_help_buttons_sit_next_to_their_label_text(group_page: Page) -> None:

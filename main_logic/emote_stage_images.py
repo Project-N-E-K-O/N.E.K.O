@@ -11,14 +11,61 @@ MAX_STAGE_GIF_EDGE = 2048
 MAX_FRAME_SHEET_PIXELS = 16 * 1024 * 1024
 
 
+def _gif_frame_count(raw: bytes) -> int:
+    """Bound every image descriptor before Pillow can allocate an expanded canvas."""
+    if len(raw) < 13 or raw[:6] not in (b'GIF87a', b'GIF89a'):
+        raise ValueError('invalid_stage_gif')
+    logical_width = int.from_bytes(raw[6:8], 'little')
+    logical_height = int.from_bytes(raw[8:10], 'little')
+    if min(logical_width, logical_height) == 0 or max(logical_width, logical_height) > MAX_STAGE_GIF_EDGE:
+        raise ValueError('invalid_stage_gif')
+    offset = 13 + (3 * (1 << ((raw[10] & 7) + 1)) if raw[10] & 0x80 else 0)
+    count = 0
+
+    def skip_blocks(at):
+        while at < len(raw):
+            length = raw[at]
+            at += 1
+            if not length:
+                return at
+            at += length
+            if at > len(raw):
+                break
+        raise ValueError('invalid_stage_gif')
+
+    while offset < len(raw):
+        marker = raw[offset]
+        offset += 1
+        if marker == 0x3b:
+            if count:
+                return count
+            break
+        if marker == 0x21:
+            offset = skip_blocks(offset + 1)
+            continue
+        if marker != 0x2c or offset + 9 > len(raw):
+            break
+        left, top, width, height = [int.from_bytes(raw[offset + i:offset + i + 2], 'little')
+                                    for i in (0, 2, 4, 6)]
+        if not width or not height or max(left + width, top + height) > MAX_STAGE_GIF_EDGE:
+            break
+        count += 1
+        if count > MAX_STAGE_GIF_FRAMES:
+            break
+        packed = raw[offset + 8]
+        offset += 9 + (3 * (1 << ((packed & 7) + 1)) if packed & 0x80 else 0)
+        offset = skip_blocks(offset + 1)  # LZW minimum code size, then image data.
+    raise ValueError('invalid_stage_gif')
+
+
 def decode_stage_gif(raw: bytes, edge: int) -> tuple[bytes, int, int, list[int]]:
     if not raw or len(raw) > MAX_STAGE_GIF_BYTES:
         raise ValueError("invalid_stage_gif")
     try:
+        frame_count = _gif_frame_count(raw)
         with Image.open(io.BytesIO(raw), formats=["GIF"]) as source:
             if max(source.size) > MAX_STAGE_GIF_EDGE:
                 raise ValueError("invalid_stage_gif")
-            frame_count = source.n_frames
             if not 1 <= frame_count <= MAX_STAGE_GIF_FRAMES:
                 raise ValueError("invalid_stage_gif")
             columns = ceil(sqrt(frame_count))

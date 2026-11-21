@@ -72,8 +72,16 @@
         if (typeof source !== 'string' || !source) {
             return Promise.reject(new Error('Spine runtime script URL is invalid'));
         }
+        try {
+            const base = document.baseURI || root.location?.href || 'http://localhost/';
+            if (new URL(source, base).href !== new URL(SCRIPT_URL, base).href) {
+                return Promise.reject(new Error('Spine runtime script URL is not the pinned local bundle'));
+            }
+        } catch (_) {
+            return Promise.reject(new Error('Spine runtime script URL is invalid'));
+        }
 
-        loadPromise = new Promise((resolve, reject) => {
+        const pending = new Promise((resolve, reject) => {
             const script = document.createElement('script');
             script.async = true;
             script.src = source;
@@ -81,7 +89,7 @@
                 // The marker is attached only to a script created by this
                 // loader. A pre-existing global is never claimed as 4.3.13.
                 script.dataset.nekoSpineRuntime = 'true';
-                if (source === SCRIPT_URL) script.dataset.nekoSpineVersion = RUNTIME_VERSION;
+                script.dataset.nekoSpineVersion = RUNTIME_VERSION;
             }
             if (options.nonce) script.nonce = String(options.nonce);
 
@@ -89,7 +97,6 @@
                 loadedScript = script;
                 const status = detect();
                 if (!status.available) {
-                    loadPromise = null;
                     reject(new Error(status.reason || 'Spine runtime failed feature detection'));
                     return;
                 }
@@ -97,20 +104,23 @@
             };
             script.onerror = () => {
                 loadedScript = null;
-                loadPromise = null;
                 reject(new Error(`Unable to load Spine runtime: ${source}`));
             };
 
             const parent = document.head || document.body || document.documentElement;
             if (!parent || typeof parent.appendChild !== 'function') {
-                loadPromise = null;
                 reject(new Error('Spine runtime has no document insertion point'));
                 return;
             }
             parent.appendChild(script);
         });
 
-        return loadPromise;
+        const shared = pending.catch((error) => {
+            if (loadPromise === shared) loadPromise = null;
+            throw error;
+        });
+        loadPromise = shared;
+        return shared;
     }
 
     root.NekoSpineRuntime = Object.freeze({

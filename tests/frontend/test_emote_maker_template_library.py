@@ -42,6 +42,7 @@ def test_same_resource_zip_renamed_does_not_duplicate_library_entry(page: Page, 
     _import(page, "first.zip")
     identity = _entries(page)[0]["key"]
     _import(page, "renamed.zip")
+    page.wait_for_function("() => (JSON.parse(localStorage.getItem('neko-emote-maker-template-library')) || {}).entries?.[0]?.displayName === 'renamed'")
     assert len(_entries(page)) == 1
     assert _entries(page)[0]["key"] == identity
 
@@ -384,7 +385,7 @@ def test_reopens_owned_archive_after_reload_without_original_filename(page: Page
     page.wait_for_function("""async key => (await (await fetch('/api/emote-maker/library')).json()).entries.some(item => item.key === key)""", arg=identity)
     with zipfile.ZipFile(io.BytesIO(spine_zip())) as archive:
         image = archive.read("assets/page.png")
-    saved = page.request.post(running_server + "/api/emote-maker/library/textures", params={"key": identity}, multipart={
+    saved = page.request.post(running_server + "/api/emote-maker/library/textures", headers={'x-neko-emote-library': '1'}, params={"key": identity}, multipart={
         "texture_paths": "StageImages/page.png",
         "textures": {"name": "page.png", "mimeType": "image/png", "buffer": image},
     })
@@ -430,15 +431,11 @@ def test_multiple_models_need_explicit_selection(page: Page, running_server: str
 def test_png_export_contains_a_real_rendered_spine_model(page: Page, running_server: str):
     _open(page, running_server)
     _import(page)
-    assert page.evaluate("""() => {
-        const canvas = document.querySelector('#emote-spine-canvas');
-        const copy = document.createElement('canvas');
-        copy.width = copy.height = 64;
-        const ctx = copy.getContext('2d');
-        ctx.drawImage(canvas, 0, 0, 64, 64);
-        const pixels = ctx.getImageData(0, 0, 64, 64).data;
-        return pixels.some((value, index) => index % 4 === 3 && value > 0);
-    }""")
+    with page.expect_download() as download:
+        page.locator('#export-png-btn').click()
+    with Image.open(download.value.path()) as image:
+        assert image.format == 'PNG'
+        assert image.convert('RGBA').getchannel('A').getextrema()[1] > 0
 
 
 def test_gif_export_samples_a_warmed_physics_loop_with_full_duration(page: Page, running_server: str, builtin_emote_template_dir):
@@ -764,8 +761,8 @@ def test_wardrobe_spritesheet_selects_multiple_crops_and_places_sprites(
     expect(page.locator("#wardrobe-minimap")).to_be_hidden()
     expect(page.locator("#wardrobe-spritesheet-layout-warning")).to_be_visible()
     assert len(submitted) == 1 and len(submitted[0]) == 3
-    for actual, expected in zip(submitted[0], ((.09, .15, .43, .9), (.6, .1, .95, .8))):
-        assert all(abs(a - b) < .015 for a, b in zip(actual, expected)), submitted
+    for actual, expected in zip(submitted[0], ((.09, .15, .43, .9), (.6, .1, .95, .8), (.46, .1, .48, .9)), strict=True):
+        assert all(abs(a - b) < .015 for a, b in zip(actual, expected, strict=True)), submitted
     expect(notice).to_be_hidden()
     save = page.locator("#wardrobe-spritesheet-save")
     card = page.locator(".wardrobe-library-card")
@@ -989,7 +986,7 @@ def test_yui_accessories_follow_the_visible_arm_when_talking(
     _open(page, running_server)
     for sprite in sprites:
         filename = f"{sprite['id']}.png"
-        response = page.request.post(running_server + "/api/emote-maker/library/textures", params={"key": key}, multipart={
+        response = page.request.post(running_server + "/api/emote-maker/library/textures", headers={'x-neko-emote-library': '1'}, params={"key": key}, multipart={
             "textures": {"name": filename, "mimeType": "image/png", "buffer": png.getvalue()},
             "texture_paths": f"WardrobeSprites/{filename}",
         })
@@ -1086,7 +1083,7 @@ def test_restored_accessory_waits_for_the_full_png_before_caching_texture(
 
     monkeypatch.setattr(emote_template_router, "FileResponse", delay_accessory)
     _open(page, running_server)
-    response = page.request.post(running_server + "/api/emote-maker/library/textures", params={"key": key}, multipart={
+    response = page.request.post(running_server + "/api/emote-maker/library/textures", headers={'x-neko-emote-library': '1'}, params={"key": key}, multipart={
         "textures": {"name": filename, "mimeType": "image/png", "buffer": content},
         "texture_paths": f"WardrobeSprites/{filename}",
     })

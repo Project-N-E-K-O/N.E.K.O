@@ -292,6 +292,11 @@
             this.manifest = options.manifest;
             this.assetStore = options.assetStore;
             this.options = { ...options };
+            // Keep logical dimensions stable when DPR enlarges the backing bitmap.
+            this.options.renderWidth = asPositiveNumber(options.renderWidth,
+                asPositiveNumber(options.width, asPositiveNumber(this.canvas.width, 1024)));
+            this.options.renderHeight = asPositiveNumber(options.renderHeight,
+                asPositiveNumber(options.height, asPositiveNumber(this.canvas.height, this.options.renderWidth)));
             this.runtime = null;
             this.context = null;
             this.gl = null;
@@ -390,6 +395,16 @@
                 const atlasText = await openStoreAsset(this.assetStore, this._modelInfo.atlasPath, 'text');
                 const atlasUri = bytesToDataUri(utf8Bytes(atlasText), 'text/plain;charset=utf-8');
                 this.assetManager.setRawDataURI(this._modelInfo.atlasPath, atlasUri);
+                // The pinned downloader's base64 text fast path uses atob without
+                // UTF-8 decoding. Hand the already-decoded atlas to its parser.
+                const downloader = this.assetManager.downloader;
+                if (downloader?.downloadText) {
+                    const downloadText = downloader.downloadText.bind(downloader);
+                    downloader.downloadText = (path, success, failure) => {
+                        if (path === this._modelInfo.atlasPath) success(atlasText);
+                        else downloadText(path, success, failure);
+                    };
+                }
 
                 const manifestPages = Array.isArray(this._modelInfo.atlas.pages)
                     ? this._modelInfo.atlas.pages
@@ -490,6 +505,8 @@
             const uri = bytesToDataUri(bytes, 'image/png');
             const expectedPath = joinPath(atlasRoot, pageName);
             this.assetManager.setRawDataURI(expectedPath, uri);
+            const runtimePath = `${atlasRoot}${pageName}`;
+            this.assetManager.setRawDataURI(runtimePath, uri);
             this.assetManager.setRawDataURI(pageName, uri);
             if (actualPath) this.assetManager.setRawDataURI(actualPath, uri);
             this._rawPages.add(expectedPath);
@@ -1344,6 +1361,16 @@
             for (let row = 0; row < height; row += 1) {
                 const sourceOffset = (height - row - 1) * rowBytes;
                 data.set(raw.subarray(sourceOffset, sourceOffset + rowBytes), row * rowBytes);
+            }
+            // The WebGL buffer is premultiplied; ImageData and PNG/GIF consumers
+            // expect straight RGB, including partially transparent edge pixels.
+            for (let index = 0; index < data.length; index += 4) {
+                const alpha = data[index + 3];
+                if (alpha > 0 && alpha < 255) {
+                    for (let channel = 0; channel < 3; channel += 1) {
+                        data[index + channel] = Math.min(255, Math.round(data[index + channel] * 255 / alpha));
+                    }
+                }
             }
             const maxDimension = Number(options.maxDimension);
             const requestedWidth = Number(options.width);

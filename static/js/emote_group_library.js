@@ -277,14 +277,18 @@
             return zipStored(stored.slice());
         }
 
+        async function aborted(done) {
+            const blob = await packStored();
+            return {
+                aborted: true, files, failed, stored, blob,
+                savedToFolder: stored.length > 0 && typeof zipStored === 'function',
+                done, total: items.length,
+            };
+        }
+
         for (let index = 0; index < items.length; index += 1) {
             if (typeof shouldAbort === 'function' && shouldAbort()) {
-                const blob = await packStored();
-                return {
-                    aborted: true, files, failed, stored, blob,
-                    savedToFolder: stored.length > 0 && typeof zipStored === 'function',
-                    done: index, total: items.length,
-                };
+                return aborted(index);
             }
             const item = items[index];
             try {
@@ -304,6 +308,7 @@
                 onProgress({ done: index + 1, total: items.length, file: item.file });
             }
         }
+        if (typeof shouldAbort === 'function' && shouldAbort()) return aborted(items.length);
         if (canStore) {
             const blob = await packStored();
             return {

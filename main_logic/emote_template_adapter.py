@@ -9,6 +9,7 @@ import re
 import stat
 import unicodedata
 import zipfile
+import zlib
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -129,7 +130,7 @@ def _atlas_pages(text):
             continue
         follow = lines[index + 1].strip() if index + 1 < len(lines) else ""
         page_start = index == 0 or not lines[index - 1].strip()
-        if page_start and re.match(r"^(size|format|filter|repeat|pma|scale)\s*:", follow, re.I):
+        if page_start:
             if PurePosixPath(value).suffix.lower() != ".png":
                 raise EmoteTemplatePackageError("当前 Spine 贴图必须使用 PNG")
             pages.append(value)
@@ -227,7 +228,10 @@ def inspect_spine_zip(data: bytes, *, filename="", model_path="", atlas_path="",
         scan_bytes = 0
         for path, info in entries.items():
             lower = path.lower()
-            if lower.endswith((".json", ".skel", ".skel.bytes", ".atlas", ".atlas.txt")):
+            if lower.endswith((".atlas", ".atlas.txt")):
+                atlases.append({"path": path})
+                continue
+            if lower.endswith((".json", ".skel", ".skel.bytes")):
                 binary = lower.endswith((".skel", ".skel.bytes"))
                 size = min(info.file_size, 256) if binary else info.file_size
                 scan_bytes += size
@@ -252,18 +256,19 @@ def inspect_spine_zip(data: bytes, *, filename="", model_path="", atlas_path="",
                         version = header.get("spine") if isinstance(header, dict) else None
                         if isinstance(version, str):
                             skeletons.append({"path": path, "version": version, "data": parsed})
-                else:
-                    try:
-                        text = _read(archive, info, MAX_METADATA_FILE_BYTES).decode("utf-8-sig")
-                    except UnicodeDecodeError as exc:
-                        raise EmoteTemplatePackageError(f"图集不是有效的 UTF-8 文本：{path}") from exc
-                    pages, regions = _atlas_pages(text)
-                    atlases.append({"path": path, "pages": pages, "regions": regions})
         skeleton = _choose(skeletons, "model", model_path)
         if ".".join(skeleton["version"].split(".")[:2]) != SPINE_VERSION_FAMILY:
             raise EmoteTemplatePackageError("当前仅支持 Spine 4.3 导出资源")
         matching = [item for item in atlases if _stem(item["path"]).casefold() == _stem(skeleton["path"]).casefold()]
         atlas = _choose(atlases if atlas_path else matching or atlases, "atlas", atlas_path)
+        if scan_bytes + entries[atlas["path"]].file_size > MAX_SCAN_BYTES:
+            raise EmoteTemplatePackageError("ZIP 元数据扫描超过 128 MiB 上限")
+        try:
+            text = _read(archive, entries[atlas['path']], MAX_METADATA_FILE_BYTES).decode('utf-8-sig')
+        except UnicodeDecodeError as exc:
+            raise EmoteTemplatePackageError(f"图集不是有效的 UTF-8 文本：{atlas['path']}") from exc
+        page_names, regions = _atlas_pages(text)
+        atlas.update(pages=page_names, regions=regions)
         pages = [{"name": name, "path": _resolve_image(entries, atlas["path"], name)} for name in atlas["pages"]]
         model_data = skeleton["data"] or {}
         missing_regions = set(_json_attachments(model_data)) - atlas["regions"]
@@ -324,7 +329,14 @@ def spine_resource_archive(data: bytes, package: dict) -> bytes:
     with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as target:
         entries = _collect_entries(source)
         for path in package["resources"]:
-            target.writestr(path, _read(source, entries[path], MAX_MODEL_BYTES))
+            info = entries[path]
+            content = _read(source, info, MAX_MODEL_BYTES)
+            compression = info.compress_type
+            if compression == zipfile.ZIP_DEFLATED and len(content) > max(1, len(zlib.compress(content)) - 6) * 1000:
+                compression = zipfile.ZIP_STORED
+            target.writestr(path, content, compress_type=compression)
     if output.tell() > MAX_ARCHIVE_BYTES:
         raise EmoteTemplatePackageError("整理后的 ZIP 超过大小上限")
+    with zipfile.ZipFile(io.BytesIO(output.getvalue())) as verified:
+        _collect_entries(verified)
     return output.getvalue()

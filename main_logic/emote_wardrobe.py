@@ -127,11 +127,11 @@ def prepare_spritesheet_crops(
         original = _png(crop)
         crops.append(original)
         if sharpness < .55:
-            cel_references[index] = _cel_reference(crop) if sharpness < .42 else original
+            cel_references[index] = _cel_reference(crop, aspect_limit) if sharpness < .42 else original
     return tuple(crops), padded_count, cel_references
 
 
-def _cel_reference(crop: Image.Image) -> bytes:
+def _cel_reference(crop: Image.Image, aspect_limit: int | None = None) -> bytes:
     reference = crop.copy()
     reference.thumbnail((192, 192), Image.Resampling.LANCZOS)
     alpha = reference.getchannel("A")
@@ -150,6 +150,12 @@ def _cel_reference(crop: Image.Image) -> bytes:
         outline = ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(3)))
         flat.paste((25, 24, 24), mask=outline)
     flat.putalpha(alpha)
+    if aspect_limit is not None and max(flat.size) > aspect_limit * min(flat.size):
+        width, height = flat.size
+        minimum = (max(width, height) + aspect_limit - 1) // aspect_limit
+        padded = Image.new("RGBA", (max(width, minimum), max(height, minimum)), "white")
+        padded.paste(flat, ((padded.width - width) // 2, (padded.height - height) // 2))
+        flat = padded
     return _png(flat)
 
 

@@ -228,6 +228,15 @@ test('renderer exports safe path and atlas helpers', () => {
     );
 });
 
+test('raw atlas page registration preserves a relative dot segment without a double slash', () => {
+    const renderer = new SpineRenderer({canvas:canvas(),manifest:{},assetStore:store()});
+    const keys=[];
+    renderer.assetManager={setRawDataURI:(key)=>keys.push(key)};
+    renderer._registerRawPage('./贴图.png','assets/贴图.png','assets/',new Uint8Array([137,80,78,71]));
+    assert.ok(keys.includes('assets/./贴图.png'));
+    assert.ok(!keys.some(key=>key.includes('//')));
+});
+
 
 test('renderer fails clearly when no runtime or loader is available', async () => {
     await assert.rejects(
@@ -265,6 +274,27 @@ test('skin names remain exact and are not interpreted as part groups or default 
     renderer._characterSkinSelections = [{ group: 'skin', value: skin.name }];
     renderer._applyCharacterSkins();
     assert.equal(applied, skin);
+});
+
+test('DPR does not compound when the renderer resizes repeatedly', async () => {
+    const target = canvas();
+    const renderer = await SpineRenderer.create({canvas: target, manifest: manifest(), assetStore: store(),
+        runtime: fakeRuntime(), devicePixelRatio: 2, renderOnLoad: false});
+    for (let index = 0; index < 4; index++) renderer.render();
+    assert.equal(target.width, 640);
+    assert.equal(target.height, 480);
+    renderer.dispose();
+});
+
+test('capture returns straight RGB for translucent framebuffer pixels', async () => {
+    const renderer = await SpineRenderer.create({canvas: canvas(), manifest: manifest(), assetStore: store(),
+        runtime: fakeRuntime(), renderOnLoad: false});
+    renderer.gl.readPixels = (x,y,w,h,format,type,output) => {
+        for (let offset = 0; offset < output.length; offset += 4) output.set([50,25,0,128], offset);
+    };
+    const frame = renderer.captureFrame();
+    assert.deepEqual([...frame.data.slice(0,4)], [100,50,0,128]);
+    renderer.dispose();
 });
 test('mismatched Spine versions are rejected by default', async () => {
     const packageData = manifest(); packageData.source.spineVersion = '4.2.0';

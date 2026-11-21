@@ -2,10 +2,12 @@
 import asyncio
 import base64
 import json
+import io
 import socket
 
 import httpx
 import pytest
+from PIL import Image
 
 from utils.image_generation import GeneratedImage, ImageGenerationError, ImageRequest, generate_image
 from utils.image_generation.config import resolve_image_config
@@ -26,6 +28,32 @@ def manager(provider="openai", **extra):
     return Manager({"imageModelProvider": provider, "assistApiKeyOpenai": "openai-key",
                     "assistApiKeyQwen": "beijing-key", "assistApiKeyQwenIntl": "singapore-key",
                     "imageModelApiKey": "custom-key", **extra})
+
+
+@pytest.mark.asyncio
+async def test_wan_reference_is_opaque_and_padded_after_all_crop_transforms():
+    reference = io.BytesIO()
+    Image.new('RGBA', (192, 48), (80, 120, 200, 128)).save(reference, 'PNG')
+    calls = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        content = body['input']['messages'][0]['content']
+        raw = base64.b64decode(content[0]['image'].split(',')[1])
+        with Image.open(io.BytesIO(raw)) as image:
+            assert image.mode == 'RGB'
+            assert image.size == (240, 240)
+            assert image.getpixel((0, 0)) == (255, 255, 255)
+            assert image.getpixel((120, 120)) == (167, 187, 227)
+        calls.append(request.url.path)
+        return httpx.Response(200, json={'output': {'choices': [{'message': {'content': [
+            {'image': 'https://images.example/result.png'}]}}]}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        result = await generate_image(ImageRequest('garment', reference_images=(reference.getvalue(),)),
+            config_manager=manager('qwen', imageModelId='wan2.6-image'), client=client)
+    assert result.image.url == 'https://images.example/result.png'
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("provider,key", [("openai", "openai-key"), ("qwen", "beijing-key"), ("qwen_intl", "singapore-key")])

@@ -259,6 +259,20 @@ test('进度回调每项一次，带文件名（界面要说在导哪张）', as
     assert.deepEqual(marks, ['1/2:01_a.gif', '2/2:02_b.gif']);
 });
 
+test('stop during the final item prevents memory ZIP packaging', async () => {
+    let abort = false;
+    let zipped = false;
+    const result = await groups.runGroupExport({
+        plan: plan([{kind:'scene',name:'last',ext:'png'}]),
+        produce: async () => { abort = true; return new Uint8Array([1]); },
+        zip: async () => { zipped = true; return 'unexpected'; },
+        shouldAbort: () => abort,
+    });
+    assert.equal(result.aborted, true);
+    assert.equal(result.done, 1);
+    assert.equal(zipped, false);
+});
+
 test('缺少注入就立刻报错，不要跑到一半才崩', async () => {
     await assert.rejects(() => groups.runGroupExport({ plan: plan([]), zip: async () => 'x' }), /produce/);
     await assert.rejects(() => groups.runGroupExport({ plan: plan([]), produce: async () => new Uint8Array([1]) }), /zip/);

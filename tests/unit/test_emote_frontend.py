@@ -58,7 +58,7 @@ def test_emote_frontend_cjs(script: str) -> None:
     assert target.is_file(), f"missing suite {target}"
     result = run_node_script(
         _node(),
-        f"require({json.dumps(str(target)).replace(chr(92), '/')});",
+        f"require({json.dumps(target.as_posix())});",
         cwd=ROOT,
         capture_output=True,
         text=True,

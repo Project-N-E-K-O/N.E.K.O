@@ -151,6 +151,7 @@
         let stripBefore = null;
         let stageDrag = null;
         let disposed = false;
+        let selectionRequest = 0;
 
         // ── shell ────────────────────────────────────────────────────────────
         const overlay = document.createElement('div');
@@ -210,6 +211,7 @@
 
         const drawer = document.createElement('section');
         drawer.className = 'st-drawer';
+        drawer.inert = true;
         drawer.id = 'st-drawer';
         drawer.setAttribute('aria-label', t('emoteMaker.stageLibrary'));
         const drawerHead = document.createElement('div');
@@ -1002,7 +1004,11 @@
         async function loadSelected() {
             const node = selectedNode();
             if (!node) return;
-            await framesOf(activeSource(node), activeQuality());
+            const request = ++selectionRequest;
+            const source = activeSource(node);
+            await framesOf(source, activeQuality());
+            if (disposed || request !== selectionRequest || selectedNode()?.id !== node.id
+                || activeSource(selectedNode()) !== source) return;
             paint();
             syncAnimButton();
         }
@@ -1104,7 +1110,7 @@
             if (!node) return;
             updateParams({
                 degrees: Math.round(clamp(degrees, -180, 180)),
-                scalePercent: Math.round(clamp(scalePercent, 10, 500) / 5) * 5,
+                scalePercent: Math.round(clamp(scalePercent, 10, 500)),
             });
             paint();
         }
@@ -1195,21 +1201,47 @@
          * 把某一格的帧源换成某条动画（''＝跟随默认外观）。
          * 只动图上那一根线：别的状态用同一条动画时不该被牵连。
          */
+        function replaceSourceFor(node, type, params) {
+            const previous = graph.links.find((link) => link.to === node.id);
+            const modifiers = [];
+            const visited = new Set();
+            let cursor = previous?.from;
+            while (cursor && !visited.has(cursor)) {
+                visited.add(cursor);
+                const upstream = graph.nodes.find((entry) => entry.id === cursor);
+                if (!upstream || model.typeOf(upstream)?.category !== 'modify') break;
+                modifiers.push(upstream);
+                cursor = graph.links.find((link) => link.to === cursor)?.from;
+            }
+            let source = rootNode();
+            if (type) {
+                source = model.makeNode(type, 60, 60, params);
+                graph = { ...graph, nodes: graph.nodes.concat([source]) };
+            }
+            // A stored graph may share its modifiers as well as its source.
+            // Copy that path for this output so its appearance is preserved.
+            for (const modifier of modifiers.reverse()) {
+                const copy = model.makeNode(modifier.type, modifier.x, modifier.y, { ...modifier.params });
+                graph = { ...graph, nodes: graph.nodes.concat([copy]) };
+                if (source) graph = model.addLink(graph, source.id, model.LOOK, copy.id, model.LOOK);
+                source = copy;
+            }
+            if (source) graph = model.addLink(graph, source.id, model.LOOK, node.id, model.LOOK);
+            else graph = { ...graph, links: graph.links.filter((link) => link.to !== node.id) };
+            let orphan = previous?.from;
+            while (orphan && !graph.links.some((link) => link.from === orphan)) {
+                const unused = graph.nodes.find((entry) => entry.id === orphan);
+                if (!unused || !(unused.type === 'source.scene' || unused.type === 'source.image'
+                    || model.typeOf(unused)?.category === 'modify')) break;
+                const parent = graph.links.find((link) => link.to === orphan)?.from;
+                graph = model.removeNode(graph, orphan);
+                orphan = parent;
+            }
+        }
+
         function applySceneTo(node, sceneId) {
             if (!node) return;
-            const scene = sceneNodeFor(node);
-            if (!sceneId) {
-                if (scene) graph = model.removeNode(graph, scene.id);
-                const root = rootNode();
-                if (root) graph = model.addLink(graph, root.id, model.LOOK, node.id, model.LOOK);
-            } else if (scene) {
-                scene.params = model.normalizeParams('source.scene', { ...scene.params, sceneId });
-                graph = model.normalizeGraph(graph);
-            } else {
-                const created = model.makeNode('source.scene', 60, 60, { sceneId });
-                graph = { ...graph, nodes: graph.nodes.concat([created]) };
-                graph = model.addLink(graph, created.id, model.LOOK, node.id, model.LOOK);
-            }
+            replaceSourceFor(node, sceneId ? 'source.scene' : null, { sceneId });
             sliceByNode.delete(node.id);
             playhead = 0;
         }
@@ -1225,21 +1257,17 @@
             const upstream = upstreamLink
                 ? graph.nodes.find((entry) => entry.id === upstreamLink.from) : null;
             if (upstream && upstream.type === 'source.image') {
-                const ids = boundImageIds(upstream);
+                const ids = [...boundImageIds(upstream)];
                 if (ids.includes(id)) return;
                 ids.push(id);
-                upstream.params = model.normalizeParams('source.image', {
+                replaceSourceFor(node, 'source.image', {
                     ...upstream.params, imageIds: ids, imageId: ids[0],
                 });
-                graph = model.normalizeGraph(graph);
                 return;
             }
-            const created = model.makeNode('source.image', 60, 60, {
+            replaceSourceFor(node, 'source.image', {
                 imageIds: [id], imageId: id,
             });
-            graph = { ...graph, nodes: graph.nodes.concat([created]) };
-            // addLink 自己会拆掉该输入槽的旧线（source.default 等共享源不能删节点）
-            graph = model.addLink(graph, created.id, model.LOOK, node.id, model.LOOK);
         }
 
         /** 从某一格的轮播列表里摘掉一张；摘空 = 拆掉图片源回"跟随默认外观"。 */
@@ -1249,15 +1277,12 @@
             if (!source || source.type !== 'source.image') return;
             const ids = boundImageIds(source).filter((id) => id !== String(imageId));
             if (ids.length) {
-                source.params = model.normalizeParams('source.image', {
+                replaceSourceFor(node, 'source.image', {
                     ...source.params, imageIds: ids, imageId: ids[0],
                 });
-                graph = model.normalizeGraph(graph);
                 return;
             }
-            graph = model.removeNode(graph, source.id);
-            const root = rootNode();
-            if (root) graph = model.addLink(graph, root.id, model.LOOK, node.id, model.LOOK);
+            replaceSourceFor(node, null, {});
         }
 
         // 本模块拿到的 t 只做翻译不插值（页面约定插值走 interpolate）；
@@ -1281,10 +1306,12 @@
         function renderBoundChips() {
             const node = selectedNode();
             const entries = node ? boundImagesFor(node) : [];
-            const key = `${node ? node.id : ''}|${entries.map((entry) => entry.id).join(',')}`;
+            const source = node ? model.findSource(graph, node.id, 'source') : null;
+            const ids = source?.type === 'source.image' ? boundImageIds(source) : [];
+            const key = `${node ? node.id : ''}|${ids.join(',')}|${entries.map((entry) => entry.id).join(',')}`;
             if (key === boundChipsKey) return;
             boundChipsKey = key;
-            if (!entries.length) {
+            if (!ids.length) {
                 boundRow.hidden = true;
                 boundChips.replaceChildren();
                 return;
@@ -1323,7 +1350,7 @@
             });
             boundChips.replaceChildren(...chips);
             boundClear.onclick = () => {
-                editGraph(() => entries.forEach((entry) => removeBoundImage(selectedNode(), entry.id)));
+                editGraph(() => applySceneTo(selectedNode(), ''));
                 rebuild();
             };
         }
@@ -1358,8 +1385,9 @@
         function requestTileThumb(host, scene, opts) {
             const startAt = Math.max(0, Number(opts && opts.startAt) || 0);
             const cacheKey = startAt > 0 ? `${scene}@${startAt}` : scene;
+            host.dataset.thumbRequest = cacheKey;
             const paintThumb = (url) => {
-                if (!url || disposed || !host.isConnected) return;
+                if (!url || disposed || !host.isConnected || host.dataset.thumbRequest !== cacheKey) return;
                 const image = document.createElement('img');
                 image.alt = '';
                 image.src = url;
@@ -1373,7 +1401,7 @@
             // hot=true：状态行只有八条，必须排在动作库那几百条缩略图前面
             Promise.resolve(options.thumbFor(scene, true, startAt > 0 ? { startAt } : undefined))
                 .then((url) => {
-                    thumbsByScene.set(cacheKey, url || '');
+                    if (url) thumbsByScene.set(cacheKey, url);
                     paintThumb(url);
                 }, () => {});
         }
@@ -1429,8 +1457,8 @@
                 });
                 tile.append(thumb, text, remove);
                 // 点击 = 赋给当前选中的状态格
-                tile.addEventListener('click', () => {
-                    if (rowClickGuard ? rowClickGuard.shouldSwallow() : tile.dataset.justDragged) return;
+                tile.addEventListener('click', (event) => {
+                    if (rowClickGuard ? rowClickGuard.shouldSwallow(event) : tile.dataset.justDragged) return;
                     clearPreview();
                     editGraph(() => applyImageTo(selectedNode(), entry.id));
                     loadSelected().then(renderUserImages);
@@ -1526,7 +1554,7 @@
                 return;
             }
             Promise.resolve(options.thumbFor(sceneId)).then((url) => {
-                thumbsByScene.set(sceneId, url || '');
+                if (url) thumbsByScene.set(sceneId, url);
                 thumb.classList.remove('is-loading');
                 if (!url || disposed || !thumb.isConnected) return;
                 const image = document.createElement('img');
@@ -1574,9 +1602,9 @@
             row.append(thumb, text);
             row.addEventListener('mouseenter', () => previewLibrary(entry));
             row.addEventListener('focus', () => previewLibrary(entry));
-            row.addEventListener('click', () => {
+            row.addEventListener('click', (event) => {
                 // 刚刚长按拖过 → 这一跳 click 不是"想选它"
-                if (rowClickGuard ? rowClickGuard.shouldSwallow() : row.dataset.justDragged) return;
+                if (rowClickGuard ? rowClickGuard.shouldSwallow(event) : row.dataset.justDragged) return;
                 clearPreview();
                 editGraph(() => applySceneTo(selectedNode(), entry.isDefault ? '' : entry.value));
                 loadSelected().then(refreshLibraryMarks);
@@ -1600,7 +1628,7 @@
                     ? { kind: 'image', imageId: entry.id, label: entry.label }
                     : { kind: 'scene', sceneId: entry.value, label: entry.label };
                 const fire = (point) => {
-                    if (rowClickGuard) rowClickGuard.arm();
+                    if (rowClickGuard) rowClickGuard.arm(row, event.pointerId);
                     else {
                         row.dataset.justDragged = '1';
                         window.setTimeout(() => { delete row.dataset.justDragged; }, 400);
@@ -1690,6 +1718,7 @@
         }
 
         function openLibrary() {
+            drawer.inert = false;
             if (!drawer.classList.contains('is-open')) {
                 renderLibrary();
                 applyTab();   // 恢复上次的页签（动作库/用户图片）并刷计数
@@ -1704,6 +1733,8 @@
         }
 
         function closeLibrary() {
+            if (drawer.contains(document.activeElement)) rail.focus();
+            drawer.inert = true;
             const wasOpen = drawer.classList.contains('is-open');
             drawer.classList.remove('is-open');
             dock.classList.remove('is-open');
@@ -1735,6 +1766,7 @@
         // 而表情制作页是 window.open 打开的，那等于把整个页面关掉。
         function close() {
             disposed = true;
+            onPickerClose();
             if (playTimer) cancelAnimationFrame(playTimer);
             playTimer = 0;
             if (upgradeTimer) window.clearTimeout(upgradeTimer);

@@ -1507,6 +1507,7 @@ select:focus-visible {
     .workspace-panel {
         flex: 0 0 auto;
         order: 1;
+        grid-template-rows: auto minmax(var(--canvas-track-min), auto) auto;
         --canvas-track-min: var(--canvas-min);
         --dock-track-min: var(--dock-preferred-min);
         overflow: visible;
@@ -2491,6 +2492,7 @@ body.is-pack-dragging * {
 #asset-grid.is-template-library {
     grid-template-columns: 1fr;
     gap: 7px;
+    overflow-y: auto;
 }
 .template-lib-card {
     display: flex;
@@ -3041,7 +3043,7 @@ body.is-pack-dragging * {
     padding: 0 8px;
     border: 1px solid var(--emote-accent);
     border-radius: 9px;
-    background: #ffffff;
+    background: var(--emote-surface-strong);
     color: var(--emote-text);
     font: inherit;
     font-size: 12px;
@@ -4310,6 +4312,14 @@ button:focus-visible {
 [data-theme="dark"] .emote-select-rename {
     background: #10283c;
     color: #d7e6f5;
+}
+
+@media (forced-colors: active) {
+    .emote-select-trigger:focus-visible,
+    .group-picker-row .emote-select-trigger:focus-visible {
+        outline: 2px solid Highlight;
+        outline-offset: 2px;
+    }
 }
 
 /* display:flex/grid 会盖掉 [hidden] 的默认效果，确认框和提示因此会挡住整页。 */

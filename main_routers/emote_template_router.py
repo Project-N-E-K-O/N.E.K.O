@@ -65,6 +65,7 @@ router = APIRouter(prefix="/api/emote-maker", tags=["emote-maker"])
 _CHUNK_SIZE = 1024 * 1024
 _EXPORT_FILE_LIMIT = 32 * 1024 * 1024
 _EXPORT_HEADER = "x-neko-emote-export"
+_LIBRARY_HEADER = "x-neko-emote-library"
 _INVALID_EXPORT_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 # Retain the storage key for existing wardrobe assets and editor sessions.
 _BUILTIN_KEY = "builtin:yui-0.2"
@@ -80,6 +81,28 @@ _wardrobe_generation_lock = asyncio.Lock()
 _wardrobe_library_lock = asyncio.Lock()
 _builtin_storage_lock = asyncio.Lock()
 _library_storage_lock = asyncio.Lock()
+
+
+async def _storage_transaction(lock, operation, *args, **kwargs):
+    """Keep storage ownership until a worker finishes, even if its caller cancels."""
+    async with lock:
+        work = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+        cancelled = False
+        while True:
+            try:
+                result = await asyncio.shield(work)
+            except asyncio.CancelledError:
+                if work.cancelled():
+                    raise
+                cancelled = True
+            except Exception:
+                if cancelled:
+                    raise asyncio.CancelledError from None
+                raise
+            else:
+                if cancelled:
+                    raise asyncio.CancelledError
+                return result
 
 
 def _builtin_template_directory() -> Path:
@@ -160,10 +183,14 @@ async def _read_upload(upload: UploadFile) -> bytes:
 
 
 @router.post("/import")
-async def import_spine_template(file: UploadFile = File(...), model_path: str = Form(""), atlas_path: str = Form("")):
+async def import_spine_template(
+    request: Request, file: UploadFile = File(...), model_path: str = Form(""), atlas_path: str = Form(""),
+):
     """Inspect a complete Spine ZIP using only its own resources."""
 
     try:
+        if request.headers.get(_LIBRARY_HEADER) != "1":
+            return _store_error(ValueError("forbidden"), status=403)
         content = await _read_upload(file)
         package = await asyncio.to_thread(
             inspect_spine_zip, content, filename=file.filename or "", model_path=model_path, atlas_path=atlas_path,
@@ -524,11 +551,9 @@ def _builtin_archive_for_editor() -> bytes:
 @router.get("/library")
 async def list_template_library():
     try:
-        store = _archive_store()
+        entries = await _storage_transaction(_library_storage_lock, lambda: _archive_store().list())
     except EmoteTemplateStoreError as exc:
         return _store_error(exc, status=500)
-    async with _library_storage_lock:
-        entries = await asyncio.to_thread(store.list)
     return {
         "success": True,
         "entries": entries,
@@ -549,6 +574,7 @@ def _save_template_copy(store, key, archive, filename, model_path, atlas_path, h
 
 @router.post("/library/archive")
 async def save_template_library_archive(
+    request: Request,
     key: str = Query(...),
     file: UploadFile = File(...),
     textures: list[UploadFile] | None = File(None),
@@ -557,12 +583,14 @@ async def save_template_library_archive(
     atlas_path: str = Form(""),
 ):
     try:
-        store = _archive_store()
+        if request.headers.get(_LIBRARY_HEADER) != "1":
+            return _store_error(ValueError("forbidden"), status=403)
+        store = await asyncio.to_thread(_archive_store)
         archive = await _read_upload(file)
-        async with _library_storage_lock:
-            entry = await asyncio.to_thread(
-                _save_template_copy, store, key, archive, file.filename or "", model_path, atlas_path, bool(textures),
-            )
+        entry = await _storage_transaction(
+            _library_storage_lock, _save_template_copy, store, key, archive,
+            file.filename or "", model_path, atlas_path, bool(textures),
+        )
     except (EmoteTemplateStoreError, EmoteTemplatePackageError) as exc:
         return _store_error(exc)
     finally:
@@ -572,20 +600,21 @@ async def save_template_library_archive(
     return JSONResponse(content={"success": True, "entry": entry})
 
 
+def _read_library_archive(key):
+    store = _archive_store()
+    path = store.archive_path(key)
+    with path.open('rb') as stream:
+        return stream.read(MAX_ARCHIVE_BYTES + 1), store.archive_name(key)
+
+
 @router.get("/library/archive")
 async def open_template_library_archive(key: str = Query(...)):
     try:
         if key == _BUILTIN_KEY:
-            async with _builtin_storage_lock:
-                content = await asyncio.to_thread(_builtin_archive_for_editor)
+            content = await _storage_transaction(_builtin_storage_lock, _builtin_archive_for_editor)
             name = _BUILTIN_FILENAME
         else:
-            async with _library_storage_lock:
-                store = _archive_store()
-                path = store.archive_path(key)
-                name = store.archive_name(key)
-                with path.open("rb") as stream:
-                    content = stream.read(MAX_ARCHIVE_BYTES + 1)
+            content, name = await _storage_transaction(_library_storage_lock, _read_library_archive, key)
         if len(content) > MAX_ARCHIVE_BYTES:
             raise EmoteTemplateStoreError("已保存的模板包超过大小上限")
     except (EmoteTemplateStoreError, EmoteTemplatePackageError, WardrobeError, OSError) as exc:
@@ -597,30 +626,44 @@ async def open_template_library_archive(key: str = Query(...)):
     )
 
 
+def _library_texture_paths(key):
+    store = _archive_store()
+    if key == _BUILTIN_KEY:
+        return [path for path in store.texture_paths(key) if path.startswith(_BUILTIN_USER_TEXTURE_PREFIXES)]
+    store.archive_path(key)
+    return store.texture_paths(key)
+
+
 @router.get("/library/textures")
 async def list_template_library_textures(key: str = Query(...)):
     try:
-        store = _archive_store()
-        if key == _BUILTIN_KEY:
-            async with _builtin_storage_lock:
-                paths = [path for path in store.texture_paths(key) if path.startswith(_BUILTIN_USER_TEXTURE_PREFIXES)]
-        else:
-            async with _library_storage_lock:
-                store.archive_path(key)
-                paths = store.texture_paths(key)
+        lock = _builtin_storage_lock if key == _BUILTIN_KEY else _library_storage_lock
+        paths = await _storage_transaction(lock, _library_texture_paths, key)
     except EmoteTemplateStoreError as exc:
         return _store_error(exc, status=404)
     return JSONResponse(content={"success": True, "paths": paths})
 
 
+def _merge_library_textures(key, blobs):
+    store = _archive_store()
+    if key != _BUILTIN_KEY or store.has(key):
+        return store.save_textures(key, blobs)
+    _, archive, _ = _builtin_template(_builtin_template_directory())
+    if blobs:
+        store.save(key, archive, blobs, filename=_BUILTIN_FILENAME)
+    return {"key": key, "textures": store.texture_paths(key)}
+
+
 @router.post("/library/textures")
 async def merge_template_library_textures(
+    request: Request,
     key: str = Query(...),
     textures: list[UploadFile] | None = File(None),
     texture_paths: list[str] | None = Form(None),
 ):
     try:
-        store = _archive_store()
+        if request.headers.get(_LIBRARY_HEADER) != "1":
+            return _store_error(ValueError("forbidden"), status=403)
         paths = [str(path or "") for path in (texture_paths or [])]
         blobs: list[tuple[str, bytes]] = []
         for index, texture in enumerate(textures or []):
@@ -630,18 +673,8 @@ async def merge_template_library_textures(
                 raise EmoteTemplateStoreError("Spine 模型贴图必须随 ZIP 提供；这里只接受会话图片")
             blobs.append((relative, await _read_upload_bytes(
                 texture, MAX_ARCHIVE_BYTES, "附带贴图")))
-        if key == _BUILTIN_KEY:
-            async with _builtin_storage_lock:
-                if store.has(key):
-                    result = store.save_textures(key, blobs)
-                else:
-                    _, archive, _ = _builtin_template(_builtin_template_directory())
-                    if blobs:
-                        store.save(key, archive, blobs, filename=_BUILTIN_FILENAME)
-                    result = {"key": key, "textures": store.texture_paths(key)}
-        else:
-            async with _library_storage_lock:
-                result = await asyncio.to_thread(store.save_textures, key, blobs)
+        lock = _builtin_storage_lock if key == _BUILTIN_KEY else _library_storage_lock
+        result = await _storage_transaction(lock, _merge_library_textures, key, blobs)
     except (EmoteTemplateStoreError, EmoteTemplatePackageError, OSError) as exc:
         return _store_error(exc, status=404 if "还没有本地副本" in str(exc) else 400)
     finally:
@@ -650,25 +683,27 @@ async def merge_template_library_textures(
     return JSONResponse(content={"success": True, **result})
 
 
+def _remove_library_textures(key, paths):
+    store = _archive_store()
+    for path in paths:
+        store.remove_texture(key, path)
+
+
 @router.post("/library/textures/remove")
 async def remove_template_library_texture(
+    request: Request,
     key: str = Query(...),
     texture_paths: list[str] | None = Form(None),
 ):
     try:
-        store = _archive_store()
+        if request.headers.get(_LIBRARY_HEADER) != "1":
+            return _store_error(ValueError("forbidden"), status=403)
         if key == _BUILTIN_KEY and any(
             not normalize_texture_path(path).startswith(_BUILTIN_USER_TEXTURE_PREFIXES) for path in (texture_paths or [])
         ):
             raise EmoteTemplateStoreError("这里只接受会话图片")
-        if key == _BUILTIN_KEY:
-            async with _builtin_storage_lock:
-                for path in (texture_paths or []):
-                    store.remove_texture(key, path)
-        else:
-            async with _library_storage_lock:
-                for path in (texture_paths or []):
-                    store.remove_texture(key, path)
+        lock = _builtin_storage_lock if key == _BUILTIN_KEY else _library_storage_lock
+        await _storage_transaction(lock, _remove_library_textures, key, texture_paths or [])
     except EmoteTemplateStoreError as exc:
         return _store_error(exc, status=404)
     return JSONResponse(content={"success": True})
@@ -677,7 +712,7 @@ async def remove_template_library_texture(
 @router.get("/library/texture")
 async def open_template_library_texture(key: str = Query(...), path: str = Query(...)):
     try:
-        target = _archive_store().texture_path(key, path)
+        target = await asyncio.to_thread(lambda: _archive_store().texture_path(key, path))
     except EmoteTemplateStoreError as exc:
         return _store_error(exc, status=404)
     media_type = "image/gif" if target.suffix.lower() == ".gif" else "image/png"
@@ -706,8 +741,7 @@ async def delete_template_library_archive(key: str = Query(...)):
     if key == _BUILTIN_KEY:
         return _store_error(EmoteTemplateStoreError("内置模板不可删除"), status=403)
     try:
-        async with _library_storage_lock:
-            result = await asyncio.to_thread(_archive_store().delete, key)
+        result = await _storage_transaction(_library_storage_lock, lambda: _archive_store().delete(key))
     except EmoteTemplateStoreError as exc:
         return _store_error(exc, status=500)
     return JSONResponse(content={"success": True, **result})
@@ -796,7 +830,8 @@ def _create_export_folder(parent: Path, folder: str) -> str:
             (parent / candidate).mkdir(parents=False, exist_ok=False)
             return candidate
         except FileExistsError:
-            candidate = f"{name} {index}"
+            suffix = f" {index}"
+            candidate = name[:80 - len(suffix)] + suffix
     raise ExportWriteError("没法在这个目录里建文件夹")
 
 
@@ -822,8 +857,7 @@ async def create_export_folder(body: ExportFolderBody, request: Request):
     if rejected is not None:
         return rejected
     try:
-        directory = _existing_export_directory(body.directory)
-        folder = _create_export_folder(directory, body.folder)
+        directory, folder = await asyncio.to_thread(_prepare_export_folder, body)
     except ExportWriteError as exc:
         return _export_error(exc)
     return JSONResponse(content={
@@ -831,6 +865,20 @@ async def create_export_folder(body: ExportFolderBody, request: Request):
         "directory": str(directory),
         "folder": folder,
     })
+
+
+def _prepare_export_folder(body):
+    directory = _existing_export_directory(body.directory)
+    return directory, _create_export_folder(directory, body.folder)
+
+
+def _write_export_file(directory, folder, name, payload):
+    parent = _existing_export_directory(directory)
+    child = _direct_child(parent, _safe_export_segment(folder, 'group'))
+    if not child.is_dir():
+        raise ExportWriteError('导出文件夹不存在')
+    target = _direct_child(child, _safe_export_file_name(name))
+    target.write_bytes(payload)
 
 
 @router.post("/export/file")
@@ -845,14 +893,8 @@ async def write_export_file(
         rejected = _reject_unscoped_export(request)
         if rejected is not None:
             return rejected
-        parent = _existing_export_directory(directory)
-        child = _direct_child(parent, _safe_export_segment(folder, "group"))
-        if not child.is_dir():
-            raise ExportWriteError("导出文件夹不存在")
-        file_name = _safe_export_file_name(name)
-        target = _direct_child(child, file_name)
         payload = await _read_limited_upload(file, _EXPORT_FILE_LIMIT)
-        target.write_bytes(payload)
+        await asyncio.to_thread(_write_export_file, directory, folder, name, payload)
     except ExportWriteError as exc:
         return _export_error(exc)
     except OSError:
@@ -868,6 +910,15 @@ async def zip_export_folder(body: ExportZipBody, request: Request):
     if rejected is not None:
         return rejected
     try:
+        name = await asyncio.to_thread(_zip_export_folder, body)
+    except ExportWriteError as exc:
+        return _export_error(exc)
+    return JSONResponse(content={"success": True, "zip": name})
+
+
+def _zip_export_folder(body):
+    archive_path = None
+    try:
         parent = _existing_export_directory(body.directory)
         child = _direct_child(parent, _safe_export_segment(body.folder, "group"))
         if not child.is_dir():
@@ -875,11 +926,19 @@ async def zip_export_folder(body: ExportZipBody, request: Request):
         zip_label = _safe_export_segment(body.zip_name or f"{child.name}.zip", f"{child.name}.zip")
         if not zip_label.lower().endswith(".zip"):
             zip_label = f"{zip_label}.zip"
-        archive_path = _unique_export_file(parent, zip_label)
+        # Reserve the filename atomically: parallel exports must never share it.
+        for _ in range(500):
+            candidate = _unique_export_file(parent, zip_label)
+            try:
+                stream = candidate.open('xb')
+                archive_path = candidate
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise ExportWriteError('没法写入压缩包')
         try:
-            with zipfile.ZipFile(
-                archive_path, "w", compression=zipfile.ZIP_DEFLATED,
-            ) as archive:
+            with stream, zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
                 for name in body.names:
                     file_name = _safe_export_file_name(name)
                     source = _direct_child(child, file_name)
@@ -892,9 +951,9 @@ async def zip_export_folder(body: ExportZipBody, request: Request):
         except OSError as exc:
             archive_path.unlink(missing_ok=True)
             raise ExportWriteError("没法写入压缩包") from exc
-    except ExportWriteError as exc:
-        return _export_error(exc)
-    return JSONResponse(content={"success": True, "zip": archive_path.name})
+    except OSError as exc:
+        raise ExportWriteError('没法写入压缩包') from exc
+    return archive_path.name
 
 
 async def _read_limited_upload(upload: UploadFile, limit: int) -> bytes:

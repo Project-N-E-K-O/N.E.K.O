@@ -491,8 +491,8 @@ def test_wrapped_sheet_addresses_every_real_frame(wrapped, page, running_server)
     assert out["grid"]["animate"] is True, "换行的表被判定为无动画，形象会定格"
 
     colour = lambda f: [20 + f * 10, 180, 60]  # noqa: E731
-    for entry in out["visited"]:
-        f = entry["chosen"]
+    for f, entry in enumerate(out["visited"]):
+        assert entry['chosen'] == f, entry
         assert entry["inside"] is True, f"第 {f} 帧取到图像外: {entry} / 图 {out['imgSize']}"
         assert entry["alpha"] == 255, f"第 {f} 帧取到空白格（补齐的格子被播出来了）: {entry}"
         assert entry["rgb"] == colour(f), f"第 {f} 帧取到了别的帧的格子: {entry}"
@@ -897,3 +897,60 @@ def test_speech_first_blocks_the_emotion_from_flat_mouth_beats(page, running_ser
     assert out["deferredName"] == "sad", f"延后的情绪没被记下来（等于被丢掉了）: {out}"
     assert out["afterSpeech"] == "s.gif", \
         f"话说完没把攒下的情绪补上: {out['afterSpeech']}"
+
+
+@pytest.mark.parametrize("mode", ["legacy-emotion", "drag-before-speech", "paused-end", "hidden-end"])
+def test_layered_speech_priority_lifecycle(page, running_server, mode):
+    folder = "review-speech-" + mode
+    states = [SLOT_STATES[0], SLOT_STATES[4]] if mode == "legacy-emotion" else SLOT_STATES
+    _upload_states(page, running_server, folder, states)
+    _runtime_page(page, running_server)
+    try:
+        result = page.evaluate("""async ([folder, mode]) => {
+            const div = document.createElement('div');
+            div.id = 'review-speech-container';
+            document.body.append(div);
+            const root = `/user_pngtuber/${encodeURIComponent(folder)}`;
+            const config = (await (await fetch(`${root}/model.json`)).json()).pngtuber;
+            config.layered_metadata = `${root}/metadata.json`;
+            config.idle_image = `${root}/idle.png`;
+            const manager = new PNGTuberManager(div.id);
+            await manager.load(config);
+            try {
+                if (mode === 'drag-before-speech') {
+                    manager.showDragImage();
+                    manager.startSpeakingMouthAnimation();
+                    const during = manager.layeredStateIndex;
+                    manager.restoreStateImage();
+                    return {during, afterRelease: manager.layeredStateIndex};
+                }
+                manager.startSpeakingMouthAnimation();
+                manager.setEmotion('happy', {durationMs: 0});
+                if (mode === 'legacy-emotion') {
+                    return {index: manager.layeredStateIndex, pending: manager.pendingEmotion};
+                }
+                const wasPending = !!manager.pendingEmotion;
+                if (mode === 'paused-end') {
+                    manager._renderingPaused = true;
+                    manager.setSpeaking(false);
+                } else manager.hide();
+                return {wasPending, pending: manager.pendingEmotion, emotion: manager.currentEmotion,
+                    index: manager.layeredStateIndex};
+            } finally { manager.dispose(); }
+        }""", [folder, mode])
+        if mode == "legacy-emotion":
+            assert result == {"index": 1, "pending": None}
+        elif mode == "drag-before-speech":
+            assert result == {"during": 2, "afterRelease": 1}
+        else:
+            assert result["wasPending"]
+            assert result["pending"] is None
+            if mode == "paused-end":
+                assert result["emotion"] == "happy"
+                assert result["index"] == 4
+            else:
+                assert not result["emotion"]
+    finally:
+        page.evaluate("""folder => fetch('/api/model/pngtuber/model', {
+            method: 'DELETE', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({folder})})""", folder)

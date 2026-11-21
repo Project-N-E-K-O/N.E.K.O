@@ -27,7 +27,8 @@ def _zip(content: bytes | str = b"template") -> bytes:
     payload = content.encode("utf-8") if isinstance(content, str) else content
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
-        archive.writestr("wrapper/model.json", payload.decode("utf-8", "ignore"))
+        archive.writestr(zipfile.ZipInfo("wrapper/model.json", date_time=(2020, 1, 1, 0, 0, 0)),
+                         payload.decode("utf-8", "ignore"))
     return stream.getvalue()
 
 
@@ -59,6 +60,38 @@ def test_save_list_delete_roundtrip_reports_real_bytes(store, tmp_path):
     assert not store.has(key)
     # 再删一次不报错：删不存在的东西等于没删
     assert store.delete(key)["freedBytes"] == 0
+
+
+def test_reopening_store_recovers_a_copy_retired_before_publication(store):
+    key = 'recoverable'
+    store.save(key, _zip('old'), [('StageImages/one.png', b'original-image')])
+    store._entry_dir(key).rename(store.root / '.retired-interrupted')
+    recovered = EmoteTemplateArchiveStore(store.root)
+    assert recovered.has(key)
+    assert recovered.archive_path(key).read_bytes() == _zip('old')
+    assert recovered.texture_path(key, 'StageImages/one.png').read_bytes() == b'original-image'
+
+
+def test_texture_merge_rejects_case_conflicts_without_losing_existing_files(store):
+    store.save('case', _zip(), [('StageImages/A.png', b'first')])
+    with pytest.raises(EmoteTemplateStoreError, match='大小写冲突'):
+        store.save_textures('case', [('StageImages/a.png', b'second')])
+    assert store.texture_path('case', 'StageImages/A.png').read_bytes() == b'first'
+    store.save_textures('case', [('StageImages/A.png', b'replacement')])
+    assert store.texture_path('case', 'StageImages/A.png').read_bytes() == b'replacement'
+    with pytest.raises(EmoteTemplateStoreError, match='大小写冲突'):
+        store.save('case', _zip('new'), [('StageImages/A.png', b'a'), ('StageImages/a.png', b'b')])
+    assert store.archive_path('case').read_bytes() == _zip()
+
+
+@pytest.mark.parametrize('limit', ['count', 'bytes'])
+def test_texture_merge_checks_the_combined_saved_inventory(store, monkeypatch, limit):
+    store.save('quota', _zip(), [('StageImages/one.png', b'1234')])
+    monkeypatch.setattr(store_module, 'MAX_TEXTURE_FILES' if limit == 'count' else 'MAX_TEXTURE_TOTAL_BYTES',
+                        1 if limit == 'count' else 5)
+    with pytest.raises(EmoteTemplateStoreError, match='上限'):
+        store.save_textures('quota', [('StageImages/two.png', b'5678')])
+    assert store.texture_paths('quota') == ['StageImages/one.png']
 
 
 def test_resaving_the_same_key_replaces_instead_of_piling_up(store):
@@ -141,7 +174,7 @@ def client(tmp_path: Path, monkeypatch):
         router_module, "_archive_store",
         lambda: EmoteTemplateArchiveStore(tmp_path / "emote_templates"),
     )
-    return TestClient(app, client=("127.0.0.1", 40000))
+    return TestClient(app, client=("127.0.0.1", 40000), headers={"x-neko-emote-library": "1"})
 
 
 def test_router_roundtrip_uses_our_names_and_self_contained_zip(client, tmp_path, monkeypatch):
@@ -811,3 +844,149 @@ def test_export_write_rejects_a_missing_header_and_a_path_escape(client, tmp_pat
     )
     assert missing.status_code == 400
     assert list(parent.glob("*.zip")) == []
+
+
+@pytest.mark.parametrize("resource", ["import", "library/archive", "library/textures", "library/textures/remove"])
+def test_library_form_posts_require_the_editor_header(client, tmp_path, resource):
+    from tests.emote_fixtures import spine_zip
+    from main_logic.emote_template_adapter import inspect_spine_zip
+
+    archive = spine_zip()
+    key = inspect_spine_zip(archive)["id"]
+    store = EmoteTemplateArchiveStore(tmp_path / "emote_templates")
+    store.save(key, archive)
+    before = {p.relative_to(store.root): p.read_bytes() for p in store.root.rglob("*") if p.is_file()}
+    options = {"params": {"key": key}, "headers": {"x-neko-emote-library": "0"}}
+    if resource in {"import", "library/archive"}:
+        options["files"] = {"file": ("test.zip", archive, "application/zip")}
+    else:
+        options["data"] = {"texture_paths": "StageImages/one.png"}
+    response = client.post("/api/emote-maker/" + resource, **options)
+    assert response.status_code == 403
+    after = {p.relative_to(store.root): p.read_bytes() for p in store.root.rglob("*") if p.is_file()}
+    assert after == before
+
+
+@pytest.mark.parametrize("operation", ["builtin-new", "builtin-existing", "builtin-remove", "custom", "custom-remove"])
+def test_texture_storage_operations_run_outside_the_event_loop(client, tmp_path, monkeypatch, operation):
+    import asyncio
+    from PIL import Image
+    import main_routers.emote_template_router as routes
+    from tests.emote_fixtures import spine_zip
+
+    archive = spine_zip()
+    key = routes._BUILTIN_KEY if operation.startswith("builtin") else routes.inspect_spine_zip(archive)["id"]
+    image = io.BytesIO()
+    Image.new("RGBA", (2, 2), "white").save(image, "PNG")
+    png = image.getvalue()
+    store = EmoteTemplateArchiveStore(tmp_path / "emote_templates")
+    if operation != "builtin-new":
+        store.save(key, archive, [("StageImages/one.png", png)])
+    monkeypatch.setattr(routes, "_builtin_template", lambda _: ({}, archive, {}))
+    calls = []
+
+    def tracked(name, function):
+        def run(*args, **kwargs):
+            try:
+                asyncio.get_running_loop()
+                on_loop = True
+            except RuntimeError:
+                on_loop = False
+            calls.append((name, on_loop))
+            return function(*args, **kwargs)
+        return run
+
+    for name in ("has", "save", "save_textures", "texture_paths", "remove_texture"):
+        monkeypatch.setattr(EmoteTemplateArchiveStore, name, tracked(name, getattr(EmoteTemplateArchiveStore, name)))
+    options = {"params": {"key": key}, "data": {"texture_paths": "StageImages/one.png"}}
+    resource = "library/textures"
+    if operation.endswith("remove"):
+        resource += "/remove"
+    else:
+        options["files"] = {"textures": ("one.png", png, "image/png")}
+    response = client.post("/api/emote-maker/" + resource, **options)
+    assert response.status_code == 200, response.text
+    assert calls
+    assert not any(on_loop for _, on_loop in calls), calls
+
+
+@pytest.mark.asyncio
+async def test_cancelled_storage_transaction_keeps_ownership_until_worker_finishes():
+    import asyncio
+    import threading
+    from main_routers.emote_template_router import _storage_transaction
+
+    entered, release = threading.Event(), threading.Event()
+    lock = asyncio.Lock()
+    order = []
+
+    def first_write():
+        order.append("first-start")
+        entered.set()
+        assert release.wait(5)
+        order.append("first-finish")
+
+    first = asyncio.create_task(_storage_transaction(lock, first_write))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        first.cancel()
+        second = asyncio.create_task(_storage_transaction(lock, lambda: order.append("second")))
+        await asyncio.sleep(.02)
+        first.cancel()
+        await asyncio.sleep(.02)
+        assert lock.locked()
+        assert order == ["first-start"]
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await second
+    assert order == ["first-start", "first-finish", "second"]
+
+
+def test_long_export_folder_suffix_survives_followup_writes(client, tmp_path):
+    name = 'g' * 80
+    folders = []
+    for content in (b'first', b'second'):
+        response = client.post('/api/emote-maker/export/folder', headers=_EXPORT_HEADER,
+            json={'directory': str(tmp_path), 'folder': name})
+        assert response.status_code == 200
+        folder = response.json()['folder']
+        assert len(folder) <= 80
+        folders.append(folder)
+        written = client.post('/api/emote-maker/export/file', headers=_EXPORT_HEADER,
+            data={'directory': str(tmp_path), 'folder': folder, 'name': 'one.gif'},
+            files={'file': ('one.gif', content, 'image/gif')})
+        assert written.status_code == 200
+    assert folders[0] != folders[1]
+    assert (tmp_path / folders[0] / 'one.gif').read_bytes() == b'first'
+    assert (tmp_path / folders[1] / 'one.gif').read_bytes() == b'second'
+
+
+@pytest.mark.asyncio
+async def test_parallel_directory_zips_reserve_distinct_names(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+    import main_routers.emote_template_router as routes
+
+    folder = tmp_path / 'group'
+    folder.mkdir()
+    (folder / 'one.png').write_bytes(b'original')
+    barrier = threading.Barrier(2)
+    local = threading.local()
+    original = routes._unique_export_file
+
+    def collide(*args):
+        path = original(*args)
+        if not getattr(local, 'waited', False):
+            local.waited = True
+            barrier.wait(5)
+        return path
+
+    monkeypatch.setattr(routes, '_unique_export_file', collide)
+    body = routes.ExportZipBody(directory=str(tmp_path), folder='group', names=['one.png'], zip_name='group.zip')
+    names = await asyncio.gather(*[asyncio.to_thread(routes._zip_export_folder, body) for _ in range(2)])
+    assert len(set(names)) == 2
+    for name in names:
+        with zipfile.ZipFile(tmp_path / name) as archive:
+            assert archive.read('one.png') == b'original'

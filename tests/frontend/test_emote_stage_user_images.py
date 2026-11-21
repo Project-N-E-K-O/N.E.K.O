@@ -97,6 +97,9 @@ def test_import_persists_into_the_template_copy(page: Page, running_server: str)
     images = []
     _open_stage(page, running_server, images=images)
     _switch_to_images(page)
+    responses = []
+    page.on('response', lambda response: responses.append(response) if '/library/textures?' in response.url
+            and response.request.method == 'POST' else None)
     page.evaluate("""() => {
         const bytes = Uint8Array.from(atob(
             'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg=='),
@@ -112,6 +115,22 @@ def test_import_persists_into_the_template_copy(page: Page, running_server: str)
         "() => (window.__texturePosts || []).some((p) =>"
         "        p.paths.some((path) => path.startsWith('StageImages/')))",
         timeout=5000)
+    page.wait_for_function("""async () => {
+        const key = JSON.parse(localStorage.getItem('neko-emote-maker-template-library')).currentKey;
+        const response = await fetch('/api/emote-maker/library/textures?key=' + encodeURIComponent(key));
+        const body = await response.json();
+        return body.paths?.some(path => path.startsWith('StageImages/'));
+    }""")
+    assert responses and responses[-1].ok
+    page.reload(wait_until='networkidle')
+    page.locator('.template-lib-card:not([data-template-built-in]) .template-lib-open').first.click()
+    expect(page.locator('#export-png-btn')).to_be_enabled()
+    page.locator('#inspector-tab-export').click()
+    page.locator('#pack-mode-graph').click()
+    page.locator('#open-state-stage-btn').click()
+    page.locator('.st-rail').click()
+    page.locator('.st-drawer-head .list-segment-btn').last.click()
+    expect(page.locator('.st-userimg').filter(has_text='我的图片.png')).to_be_visible()
 
 
 def test_gif_stage_image_survives_reload_and_exports_timed_frames(

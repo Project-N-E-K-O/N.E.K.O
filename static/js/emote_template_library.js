@@ -203,10 +203,10 @@
         // 缩略图是"好看"，不是"有用"：先牺牲它
         next = {
             ...next,
-            entries: next.entries.map((entry, i) => (
-                i === findIndex(next, next.currentKey) ? entry : { ...entry, thumb: '' }
-            )),
+            entries: next.entries.map((entry) => entry.key === next.currentKey ? entry : ({ ...entry, thumb: '' })),
         };
+        if (size(next) <= budget) return next;
+        next = { ...next, entries: next.entries.map((entry) => ({ ...entry, thumb: '' })) };
         if (size(next) <= budget) return next;
         next = { ...next, entries: [...next.entries] };
         while (next.entries.length > 1 && size(next) > budget) {
@@ -221,9 +221,7 @@
             next.entries.splice(oldest, 1);
         }
         if (size(next) <= budget) return next;
-        // 最后一级：连当前条目的缩略图也丢
-        next = { ...next, entries: next.entries.map((entry) => ({ ...entry, thumb: '' })) };
-        return size(next) <= budget ? next : null;
+        return null;
     }
 
     function serialize(store, budget = BUDGET_CHARS) {

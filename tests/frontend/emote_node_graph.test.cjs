@@ -246,9 +246,9 @@ test('every supported node round-trips through normalize', () => {
 // ── 装配计划：这几条规则各自对应一次真实故障 ────────────────────────────────
 const KEYS = ['idle_image', 'talking_image', 'happy_image'];
 
-function planOf(nodes, links, outputs) {
+function planOf(nodes, links, outputs, normalize = true) {
     const g = { schemaVersion: 1, nodes, links };
-    return graph.planOutputs(graph.normalizeGraph(g), outputs, KEYS, ['idle_image']);
+    return graph.planOutputs(normalize ? graph.normalizeGraph(g) : g, outputs, KEYS, ['idle_image']);
 }
 
 function outList(pairs) {
@@ -344,7 +344,7 @@ test('同一槽位重复只留一条，未知槽位丢掉', () => {
         { from: 'sc', to: 'a', fromSocket: 'look', toSocket: 'look' },
         { from: 'sc', to: 'b', fromSocket: 'look', toSocket: 'look' },
         { from: 'sc', to: 'c', fromSocket: 'look', toSocket: 'look' },
-    ], outList([['a', 'happy_image'], ['b', 'happy_image'], ['c', 'nope_image']]));
+    ], outList([['a', 'happy_image'], ['b', 'happy_image'], ['c', 'nope_image']]), false);
     assert.deepEqual(plan.kept.map((o) => o.nodeId), ['a']);
     assert.deepEqual(plan.dropped.map((d) => `${d.output.nodeId}:${d.reason}`),
         ['b:duplicate', 'c:unknown-state']);
