@@ -191,7 +191,7 @@ async def _handle_vrm_file_upload(
             except Exception:
                 pass
         
-        logger.info(f"成功上传{file_type_name}: {filename} -> {target_file_path} (大小: {total_size / (1024*1024):.2f}MB)")
+        logger.info(f"成功上传{file_type_name}: {filename} (大小: {total_size / (1024*1024):.2f}MB)")
         
         if subdir == 'animation':
             return JSONResponse(content={
@@ -391,7 +391,8 @@ def get_vrm_animations():
         try:
             config_mgr.ensure_vrm_directory()
         except Exception as ensure_error:
-            logger.warning(f"确保VRM目录失败（继续尝试）: {ensure_error}")
+            logger.warning(f"确保VRM目录失败（继续尝试）: {type(ensure_error).__name__}")
+            print(f"确保VRM目录失败（继续尝试）: {type(ensure_error).__name__}: {ensure_error}")
         
         # Check animations directory.
         animations_dirs = []
@@ -404,11 +405,12 @@ def get_vrm_animations():
             static_animation_dir = project_root / "static" / "vrm" / "animation"
             if static_animation_dir.exists() and static_animation_dir.is_dir():
                 animations_dirs.append(static_animation_dir)
-                logger.debug(f"找到静态动画目录: {static_animation_dir}")
+                logger.debug("找到静态动画目录")
             else:
-                logger.debug(f"静态动画目录不存在或不是目录: {static_animation_dir}")
+                logger.debug("静态动画目录不存在或不是目录")
         except Exception as static_error:
-            logger.warning(f"检查静态动画目录失败: {static_error}")
+            logger.warning(f"检查静态动画目录失败: {type(static_error).__name__}")
+            print(f"检查静态动画目录失败: {type(static_error).__name__}: {static_error}")
             static_animation_dir = None
 
         # 2. Check user vrm/animation (legacy compatibility).
@@ -416,15 +418,18 @@ def get_vrm_animations():
             user_animation_dir = config_mgr.vrm_animation_dir
             if user_animation_dir.exists() and user_animation_dir.is_dir():
                 animations_dirs.append(user_animation_dir)
-                logger.debug(f"找到用户动画目录: {user_animation_dir}")
+                logger.debug("找到用户动画目录")
             else:
-                logger.debug(f"用户动画目录不存在或不是目录: {user_animation_dir}")
+                logger.debug("用户动画目录不存在或不是目录")
         except Exception as user_error:
-            logger.warning(f"检查用户动画目录失败: {user_error}")
+            logger.warning(f"检查用户动画目录失败: {type(user_error).__name__}")
+            print(f"检查用户动画目录失败: {type(user_error).__name__}: {user_error}")
             user_animation_dir = None
         
         animations = []
         seen_urls = set()  # Store seen URLs in a set for O(1) lookup, avoiding O(n²) list checks.
+        skipped = 0  # Non-UTF-8 names cannot be serialized or requested.
+        failed = 0
         
         logger.info(f"找到 {len(animations_dirs)} 个动画目录")
         
@@ -467,6 +472,9 @@ def get_vrm_animations():
                             continue
                         if not anim_file.exists() or not anim_file.is_file():
                             continue
+                        if not is_utf8_text(anim_file.name):
+                            skipped += 1
+                            continue
                         
                         url = f"{url_prefix}/{anim_file.name}"
                         # Deduplicate with a set by URL (logical path), not absolute path.
@@ -485,13 +493,17 @@ def get_vrm_animations():
                             "size": anim_file.stat().st_size
                         })
                     except Exception as file_error:
-                        logger.warning(f"处理动画文件失败 {anim_file}: {file_error}")
+                        failed += 1
+                        print(f"处理动画文件失败 {anim_file!r}: {type(file_error).__name__}: {file_error}")
                         continue
                 
                 # Also support .vrm files as animations in certain cases.
                 for anim_file in anim_dir.glob('*.vrm'):
                     try:
                         if not anim_file.exists() or not anim_file.is_file():
+                            continue
+                        if not is_utf8_text(anim_file.name):
+                            skipped += 1
                             continue
                         
                         url = f"{url_prefix}/{anim_file.name}"
@@ -509,12 +521,18 @@ def get_vrm_animations():
                             "size": anim_file.stat().st_size
                         })
                     except Exception as file_error:
-                        logger.warning(f"处理动画文件失败 {anim_file}: {file_error}")
+                        failed += 1
+                        print(f"处理动画文件失败 {anim_file!r}: {type(file_error).__name__}: {file_error}")
                         continue
             except Exception as dir_error:
-                logger.warning(f"处理动画目录失败 {anim_dir}: {dir_error}")
+                logger.warning(f"处理动画目录失败: {type(dir_error).__name__}")
+                print(f"处理动画目录失败 {anim_dir!r}: {type(dir_error).__name__}: {dir_error}")
                 continue
         
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VRM 动画")
+        if failed:
+            logger.warning(f"跳过 {failed} 个处理失败的 VRM 动画文件")
         logger.info(f"成功获取VRM动画列表，共 {len(animations)} 个动画文件")
         return JSONResponse(content={
             "success": True,
@@ -522,9 +540,9 @@ def get_vrm_animations():
         })
     except Exception as e:
         import traceback
-        error_detail = traceback.format_exc()
-        logger.exception("获取VRM动画列表失败")
-        logger.error(f"错误详情: {error_detail}")
+        # Exception text and tracebacks may carry absolute paths: details go to print only.
+        logger.error(f"获取VRM动画列表失败: {type(e).__name__}")
+        print(f"获取VRM动画列表失败: {traceback.format_exc()}")
         error_message = str(e)
         return JSONResponse(
             status_code=500, 
