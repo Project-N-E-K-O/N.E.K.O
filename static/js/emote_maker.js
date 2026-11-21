@@ -9,6 +9,7 @@
     const CANVAS_SIZE = 1024;
     // Default GIF output policy; source skeleton coordinates are preserved.
     const GIF_EXPORT_FPS = 20;
+    const GIF_EXPORT_MAX_FPS = 50;
     const GIF_EXPORT_WIDTH = 240;
     const GIF_EXPORT_COLORS = 128;
     const GIF_EXPORT_MAX_BYTES = 1000000;
@@ -6059,7 +6060,7 @@
     function sampleStageImageTimeline(frames, fps, maxFrames) {
         if (!frames.length) return [];
         const duration = stageImageTimelineDuration(frames);
-        const count = Math.max(1, Math.min(maxFrames, Math.ceil(duration * fps / 1000)));
+        const count = Math.max(1, Math.min(maxFrames, Math.floor(duration * fps / 1000 + 1e-9)));
         const delayMs = duration / count;
         let source = 0;
         let end = stageImageFrameDelay(frames[source]);
@@ -7230,7 +7231,7 @@
         const requestedFps = previewFps || state.exportFps || GIF_EXPORT_FPS;
         // GIF intervals between 15 and 20ms encode as 20ms. Sample flat packs
         // at no more than 50 FPS so this cannot lengthen their animation.
-        const fps = packFormat === 'layered' ? requestedFps : Math.min(50, requestedFps);
+        const fps = packFormat === 'layered' ? requestedFps : Math.min(GIF_EXPORT_MAX_FPS, requestedFps);
         const sourceScenes = getImportedScenes();
         const results = [];
         const imageFrames = new Map();
@@ -7298,6 +7299,7 @@
                     scene,
                     maxFrames: job.frames,
                     fps,
+                    format: packFormat,
                     maxDimension: edge,
                     timeWindow: job.timeWindow,
                 });
@@ -7703,7 +7705,8 @@
             : 1;
         const playbackSpeed = Math.max(0.05, Number(state.animationSpeed) || 1) * sceneSpeed;
         const maxFrames = Math.max(1, Number(options.maxFrames) || GIF_EXPORT_MAX_FRAMES);
-        const fps = Number(options.fps) || state.exportFps || GIF_EXPORT_FPS;
+        const requestedFps = Number(options.fps) || state.exportFps || GIF_EXPORT_FPS;
+        const fps = options.format === 'layered' ? requestedFps : Math.min(GIF_EXPORT_MAX_FPS, requestedFps);
         // 允许 1 帧：形象包的"口型交替"就是要一张定格图。动画导出仍保持最少 2 帧。
         const frameFloor = maxFrames === 1 ? 1 : 2;
         // timeWindow 把采集窗口从"整段动画"收窄到用户挑的那一段；不给就是整段，
@@ -7713,7 +7716,8 @@
             ? duration
             : Math.max(windowFrom + 0.01, Math.min(duration, Number(options.timeWindow.to) || duration));
         const span = windowTo - windowFrom;
-        const frameCount = Math.max(frameFloor, Math.min(maxFrames, Math.ceil(span * fps)));
+        // Ignore floating-point noise at exact frame boundaries (e.g. 0.3-0.1).
+        const frameCount = Math.max(frameFloor, Math.min(maxFrames, Math.floor(span * fps / playbackSpeed + 1e-9)));
         const delayMs = Math.max(10, (span * 1000) / frameCount / playbackSpeed);
         const frames = [];
         const wasPlaying = Boolean(state.animationPlaying);

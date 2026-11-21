@@ -110,13 +110,18 @@ def test_single_png_download_starts_while_capture_controls_are_locked(editor):
     assert editor.locator('#export-png-btn').is_enabled()
 
 
-@pytest.mark.parametrize(('pack_format', 'fps', 'start', 'seconds'), [
-    ('flat', 10, .2, .2), ('flat', 30, .2, .2),
-    ('layered', 10, .2, .2), ('layered', 30, .2, .2),
-    ('flat', 30, .3, .1),
-    ('flat', 60, 0, 1), ('layered', 60, 0, 1),
+@pytest.mark.parametrize(('pack_format', 'fps', 'start', 'seconds', 'expected_frames'), [
+    ('flat', 10, .2, .2, 2), ('flat', 30, .2, .2, 6),
+    ('layered', 10, .2, .2, 2), ('layered', 30, .2, .2, 6),
+    ('flat', 30, .3, .1, 3),
+    ('flat', 60, 0, 1, 50), ('layered', 60, 0, 1, 60),
+    ('flat', 60, 0, .95, 47), ('layered', 60, 0, .95, 57),
+], ids=[
+    'flat-10-0.2-0.2', 'flat-30-0.2-0.2',
+    'layered-10-0.2-0.2', 'layered-30-0.2-0.2', 'flat-30-0.3-0.1',
+    'flat-60-0-1', 'layered-60-0-1', 'flat-60-0-0.95', 'layered-60-0-0.95',
 ])
-def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, fps, start, seconds):
+def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, fps, start, seconds, expected_frames):
     from PIL import Image
 
     _import(editor, spine_zip())
@@ -153,7 +158,7 @@ def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, 
     wanted = [palette[index % len(palette)] for index in range(round(start * 10), round((start + seconds) * 10))]
     if pack_format == 'flat':
         for name, duration, colors, count in (
-            ('idle.gif', seconds * 1000, wanted, round(seconds * min(fps, 50))),
+            ('idle.gif', seconds * 1000, wanted, expected_frames),
             ('talking.gif', 100, [yellow], 1),
         ):
             with Image.open(io.BytesIO(files[name])) as image:
@@ -172,7 +177,7 @@ def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, 
             state = next(state for state in layer['states'] if state['visible'])
             duration = seconds if layer['name'] == 'idle_image' else .1
             colors = wanted if layer['name'] == 'idle_image' else [yellow]
-            assert state['frames'] == round(duration * fps)
+            assert state['frames'] == (expected_frames if layer['name'] == 'idle_image' else round(duration * fps))
             assert state['frames'] / (state['animation_speed'] * 4) == pytest.approx(duration)
             with Image.open(io.BytesIO(files[layer['image']])) as sheet:
                 width, height = state['frame_width'], state['frame_height']
@@ -201,6 +206,37 @@ def test_flat_pack_encoder_uses_baked_fps_for_frames_without_delays(editor):
             image.seek(index)
             elapsed += image.info['duration']
         assert elapsed == 1000
+
+
+@pytest.mark.parametrize('pack_format', ['flat', 'layered'])
+@pytest.mark.parametrize(('speed', 'start', 'end'), [(1, 0, .95), (2, 0, .95), (1, .1, .3)])
+def test_spine_capture_keeps_fractional_clip_duration_at_sixty_fps(editor, pack_format, speed, start, end):
+    from PIL import Image
+
+    _import(editor, spine_zip())
+    result = editor.evaluate('''async ([format, speed, start, end]) => {
+        const q = reviewEditor;
+        q.state.animationSpeed = speed;
+        const [baked] = await q.bakePackJobs([{stateKey:'idle_image', sceneId:q.getImportedScenes()[0].id,
+            look:q.currentLookDefaults(),frames:60,timeWindow:{from:start,to:end}}],
+            {format,fps:60,edge:32});
+        return {count:baked.frames.length,duration:baked.frames.reduce((sum,f)=>sum+f.delayMs,0),
+            fps:baked.fps, gif:format === 'flat'
+                ? btoa(String.fromCharCode(...q.flatStates([baked])[0].bytes)) : null};
+    }''', [pack_format, speed, start, end])
+    counts = {'flat': {1:47, 2:23}, 'layered': {1:57, 2:28}}
+    expected = {'flat':10, 'layered':12}[pack_format] if start else counts[pack_format][speed]
+    duration = (end - start) * 1000 / speed
+    assert result['count'] == expected
+    assert result['duration'] == pytest.approx(duration)
+    assert result['fps'] <= (50 if pack_format == 'flat' else 60) + 1e-9
+    if pack_format == 'flat':
+        with Image.open(io.BytesIO(base64.b64decode(result['gif']))) as image:
+            elapsed = 0
+            for index in range(image.n_frames):
+                image.seek(index)
+                elapsed += image.info['duration']
+            assert elapsed == pytest.approx(duration, abs=5)
 
 
 def test_export_unlock_keeps_controls_enabled_by_an_async_load(editor):
