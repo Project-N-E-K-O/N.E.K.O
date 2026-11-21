@@ -74,7 +74,8 @@ async def test_capacity_precedes_permission_and_run_end_prevents_delivery(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_blocked_result_keeps_error_text_and_progress_in_the_executor(tmp_path):
+@pytest.mark.parametrize("host_error", [False, True])
+async def test_blocked_result_keeps_error_text_and_progress_in_the_executor(tmp_path, host_error):
     from nekoclaw.runtime.execution import managed_tool
     from nekoclaw.runtime.host import HostCallbacks
     from nekoclaw.runtime.tools.base import ToolError, define_tool
@@ -86,6 +87,8 @@ async def test_blocked_result_keeps_error_text_and_progress_in_the_executor(tmp_
         messages.append(payload)
         if payload["phase"] == "begin":
             return {"allow": True, "receipt": "fixture"}
+        if host_error and payload["phase"] == "finish":
+            raise RuntimeError("private host diagnostic")
         return {"allow": False}
 
     async def execute(arguments, call):
@@ -96,6 +99,7 @@ async def test_blocked_result_keeps_error_text_and_progress_in_the_executor(tmp_
     tool = managed_tool(define_tool(schema, execute), HostCallbacks(execution_action=action), "s", tmp_path)
     with pytest.raises(ToolError, match="could not be delivered") as error:
         await tool.execute("id", {}, None, progress.append)
+    assert str(error.value) == "The tool result could not be delivered."
     assert "secret" not in str(error.value) and "secret" not in str(messages)
     assert not progress
     assert messages[-1] == {"phase": "finish", "receipt": "fixture", "status": "failed"}
@@ -193,3 +197,18 @@ def test_utf8_code_point_split_across_grep_chunks_keeps_later_matches(tmp_path, 
                                 search._Budget(threading.Event(), time.monotonic() + 15),
                                 case_insensitive_globs=False)
     assert not attempts and [m.line for m in matches] == ["批准议定"]
+
+
+def test_bad_byte_in_large_utf8_log_preserves_later_utf8_lines(tmp_path, monkeypatch):
+    import threading
+    import time
+    import regex
+    from nekoclaw.runtime.tools import search
+
+    document = tmp_path / "log.txt"
+    document.write_bytes("header\n".encode() * 9000 + b"division \x92\n" + "café résumé\n".encode())
+    monkeypatch.setattr(search, "detect_legacy_encoding", lambda sample: "cp1252")
+    matches = search.grep_files(document, regex.compile("café"), None, tmp_path,
+                                search._Budget(threading.Event(), time.monotonic() + 15),
+                                case_insensitive_globs=False)
+    assert [m.line for m in matches] == ["café résumé"]

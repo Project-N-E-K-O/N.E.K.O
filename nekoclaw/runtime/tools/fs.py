@@ -69,7 +69,11 @@ def build_read_window(
 ) -> ReadWindow:
     """Select the lines one ``read`` call returns."""
     selected: list[tuple[int, str]] = []
-    used = 0
+    total = len(lines)
+    # Reserve the wrapper and a continuation footer with the largest possible
+    # end line. The empty numbered row also accounts for the footer separator.
+    envelope = ReadWindow(offset, [(total, "")], total, True)
+    used = len(format_read_output(display, envelope).encode("utf-8"))
     truncated = False
     for number, raw in enumerate(lines, start=1):
         if number < offset:
@@ -79,13 +83,12 @@ def build_read_window(
         text = raw
         if len(text) > max_line_length:
             text = f"{text[:max_line_length]}... (line truncated to {max_line_length} chars)"
-        size = len(text.encode("utf-8", errors="replace")) + (1 if selected else 0)
+        size = len(f"{number}: {text}".encode("utf-8", errors="replace")) + (1 if selected else 0)
         if used + size > max_bytes:
             truncated = True
             break
         used += size
         selected.append((number, text))
-    total = len(lines)
     if not truncated and offset > total and not (total == 0 and offset == 1):
         raise ToolError(f'offset {offset} is out of range for "{display}" ({total} lines)')
     return ReadWindow(offset=offset, lines=selected, total_lines=total, truncated_by_bytes=truncated)

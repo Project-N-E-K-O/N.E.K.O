@@ -81,10 +81,14 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
         protected = OutputScope(receipt) if spill is not None else None
 
         async def finish(status):
-            reply = await host.call(session, "execution_action", {
-                "phase": "finish", "receipt": receipt, "status": status,
-                **({"retain_source": True} if (output and output.retained) or (protected and protected.retained) else {}),
-            })
+            try:
+                reply = await host.call(session, "execution_action", {
+                    "phase": "finish", "receipt": receipt, "status": status,
+                    **({"retain_source": True} if (output and output.retained) or (protected and protected.retained) else {}),
+                })
+            except Exception as exc:
+                logging.getLogger(__name__).warning("closing a tool call failed (%s)", type(exc).__name__)
+                return False
             return reply.get("allow") is True
 
         progress = None
@@ -141,10 +145,7 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
             if call.cancelled():
                 raise ToolAborted()
         except (asyncio.CancelledError, ToolAborted):
-            try:
-                await finish("cancelled")
-            except Exception as exc:
-                logging.getLogger(__name__).warning("closing a cancelled tool call failed (%s)", type(exc).__name__)
+            await finish("cancelled")
             raise
         except Exception:
             if await finish("failed"):
@@ -155,6 +156,6 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
                     handoff.acknowledge()
                 # These registered tools have only a model-content recipient.
                 return result if result.details is None else result.model_copy(update={"details": None})
-        raise ToolError("The action ran. Its result could not be delivered.") from None
+        raise ToolError("The tool result could not be delivered.") from None
 
     return replace(tool, execute_fn=execute)

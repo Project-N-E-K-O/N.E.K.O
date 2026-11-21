@@ -808,8 +808,10 @@ class DshRuntime:
                 outcome = {"phase": "finish", "receipt": prepared[1], "status": "cancelled"}
             if outcome is not None:
                 async def close_record():
+                    from config.nekoclaw_settings import DSH_CLOSE_SECONDS
+
                     try:
-                        await self._host.call(session.id, callback, outcome)
+                        await asyncio.wait_for(self._host.call(session.id, callback, outcome), DSH_CLOSE_SECONDS)
                     except Exception as exc:  # The native effect has already happened.
                         logger.warning("closing a dsh action record failed (%s)", type(exc).__name__)
 
@@ -919,12 +921,21 @@ class DshRuntime:
             if phase not in ("completed", "failed"):
                 return _REJECT
             session.execution_receipts[original] = None
-            reply = await self._host.call(session.id, "native_execution_action", {
-                "phase": "finish", "receipt": receipt, "status": phase, "retain_source": True,
-            })
-            if reply.get("allow") is True and not session.aborting:
+            try:
+                reply = await self._host.call(session.id, "native_execution_action", {
+                    "phase": "finish", "receipt": receipt, "status": phase, "retain_source": True,
+                })
+            except Exception as exc:
+                # Keep the receipt for the terminal ACP event's cancellation.
+                if original in session.tool_calls:
+                    session.execution_receipts[original] = receipt
+                logger.warning("finishing a dsh action failed (%s)", type(exc).__name__)
+                return _REJECT
+            if reply.get("allow") is True:
                 session.finished_sources[original] = receipt
-                return _ALLOW
+                if not session.aborting and session.closing is None:
+                    return _ALLOW
+                session.kept_calls.discard(original)
             return _REJECT
         if ("allow-once", "allow_once") not in offered or session is None or call_id not in session.tool_calls:
             # ACP may narrow the offered choices. A host loan cannot add one.

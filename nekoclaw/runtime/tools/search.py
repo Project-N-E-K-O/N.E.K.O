@@ -434,27 +434,35 @@ def preview_line(line: str, max_bytes: int = GREP_MAX_LINE_BYTES, *, match_start
 
 def _legacy_readline(source):
     # ASCII headers can extend beyond the leading sample. Detect on the first
-    # non-UTF-8 line and keep that encoding for the rest of this file.
+    # non-UTF-8 line. Valid UTF-8 lines keep their original encoding.
     utf8 = codecs.getincrementaldecoder("utf-8")()
     legacy = None
+    encoding = None
+    detected = False
 
     def readline(size):
-        nonlocal utf8, legacy
+        nonlocal legacy, encoding, detected
         raw = source.readline(size)
-        eof = not raw
-        if utf8 is not None:
+        end = not raw or raw.endswith(b"\n")
+        if legacy is None:
             try:
-                utf8.decode(raw, final=eof)
+                utf8.decode(raw, final=end)
+                return raw
             except UnicodeDecodeError as exc:
-                utf8 = None
-                # The decoder includes pending bytes from the previous chunk.
+                utf8.reset()
                 raw = exc.object
-                sample = raw + source.peek(BINARY_SAMPLE_BYTES)[:BINARY_SAMPLE_BYTES]
-                complete, separator, _ = sample.rpartition(b"\n")
-                encoding = detect_legacy_encoding(complete if separator and complete else raw)
-                if encoding:
-                    legacy = codecs.getincrementaldecoder(encoding)(errors="replace")
-        return legacy.decode(raw, final=eof).encode("utf-8") if legacy else raw
+                if not detected:
+                    sample = raw + source.peek(BINARY_SAMPLE_BYTES)[:BINARY_SAMPLE_BYTES]
+                    complete, separator, _ = sample.rpartition(b"\n")
+                    encoding = detect_legacy_encoding(complete if separator and complete else raw)
+                    detected = True
+                if encoding is None:
+                    return raw
+                legacy = codecs.getincrementaldecoder(encoding)(errors="replace")
+        converted = legacy.decode(raw, final=end).encode("utf-8")
+        if end:
+            legacy = None
+        return converted
 
     return readline
 
