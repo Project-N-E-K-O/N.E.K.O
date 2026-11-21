@@ -515,11 +515,15 @@ def _ensure_standard_release_workflow(
             f"neko-plugin setup-repo {release_cmd._plugin_dir_argument(plugin_dir, '')} "
             "--upgrade-github-actions"
         )
+        fill_in = release_cmd._placeholder_path(plugin_dir)
         raise RuntimeError(
             _tri(
-                f"standard release workflow is not current; run {upgrade}",
-                f"标准发布工作流不是当前版本；请运行 {upgrade}",
-                f"標準リリースワークフローが最新ではありません。次を実行してください：{upgrade}",
+                f"standard release workflow is not current; run {upgrade}"
+                + (f" (plugin directory: {fill_in})" if fill_in else ""),
+                f"标准发布工作流不是当前版本；请运行 {upgrade}"
+                + (f"（插件目录：{fill_in}）" if fill_in else ""),
+                f"標準リリースワークフローが最新ではありません。次を実行してください：{upgrade}"
+                + (f"（プラグインディレクトリ：{fill_in}）" if fill_in else ""),
             )
         )
 

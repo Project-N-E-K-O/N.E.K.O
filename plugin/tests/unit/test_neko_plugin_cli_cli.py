@@ -2864,6 +2864,23 @@ def test_release_check_rejects_a_scaffold_without_any_commit(
     assert "[ERROR] git working tree has uncommitted or untracked files: .agents/" in capsys.readouterr().err
 
 
+def test_repository_diagnosis_skips_the_builtin_root_without_asking_for_git(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "neko"
+    defaults = CliDefaults(root / "plugin", root / "target", root / "plugin/plugins", root / "profiles")
+    plugin_dir = _make_plugin_dir(root / "plugin" / "plugins", "builtin_demo")
+    monkeypatch.setattr(release_cmd.shutil, "which", lambda _name: None)
+
+    issues = release_cmd._diagnose_repository(plugin_dir, defaults=defaults)
+    assert len(issues) == 1
+    assert issues[0][1].startswith("git checks are skipped for plugins in the built-in plugins root")
+    # Outside the built-in root a missing git is still reported.
+    other = _make_plugin_dir(tmp_path / "elsewhere", "other_demo")
+    assert release_cmd._diagnose_repository(other, defaults=defaults) == [("warning", "git executable not found")]
+
+
 def test_repository_diagnosis_only_warns_without_own_repository(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     defaults = neko_plugin_cli.resolve_default_paths()

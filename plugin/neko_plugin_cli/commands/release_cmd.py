@@ -220,9 +220,7 @@ def _repository_root(plugin_dir: Path, defaults: CliDefaults) -> Path | None:
 
 def _diagnose_repository(plugin_dir: Path, *, defaults: CliDefaults, release: bool = False) -> list[Issue]:
     """Local git readiness; with ``release`` an uncommitted tree is an error."""
-    if shutil.which("git") is None:
-        return [("warning", "git executable not found")]
-
+    # Checked before git itself: nothing here needs git, so do not ask for it.
     if _is_builtin_source_plugin_dir(plugin_dir, defaults):
         # _repository_root skips this root (CI mounts, first-party plugins)
         # even when the plugin carries its own .git (as init leaves it), so
@@ -237,6 +235,8 @@ def _diagnose_repository(plugin_dir: Path, *, defaults: CliDefaults, release: bo
                 ),
             )
         ]
+    if shutil.which("git") is None:
+        return [("warning", "git executable not found")]
     repository_root = _repository_root(plugin_dir, defaults)
     if repository_root is None:
         return [("warning", "plugin source directory does not have its own git repository")]
@@ -687,6 +687,11 @@ def _plugin_dir_argument(plugin_dir: Path | None, label: str) -> str:
         return label
     target = _shell_quote(str(plugin_dir))
     return _PLUGIN_DIR_PLACEHOLDER if target is None else target
+
+
+def _placeholder_path(plugin_dir: Path) -> str | None:
+    """The path to fill in when _plugin_dir_argument printed the placeholder."""
+    return str(plugin_dir) if _shell_quote(str(plugin_dir)) is None else None
 
 
 def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> str:

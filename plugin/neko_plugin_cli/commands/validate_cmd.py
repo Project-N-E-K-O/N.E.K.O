@@ -1490,7 +1490,9 @@ def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None
                 files = [name for name in files if name not in {"vendor", ".git"}]
             # _is_link also catches a Windows junction, which is_symlink()
             # misses on Python 3.11 (and which os.walk would descend into).
-            linked = {name for name in (*directories, *files) if _is_link(base / name)}
+            # Junctions are always directories, so files need only is_symlink().
+            linked = {name for name in directories if _is_link(base / name)}
+            linked.update(name for name in files if (base / name).is_symlink())
             links.extend(base / name for name in (*directories, *files) if name in linked)
             directories[:] = [name for name in directories if name not in linked]
     except OSError as exc:
