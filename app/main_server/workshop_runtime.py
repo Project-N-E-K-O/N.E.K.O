@@ -26,7 +26,7 @@ from main_routers.workshop_router import (
 )
 from utils.cloudsave_runtime import is_write_fence_active
 from utils.workshop_utils import (
-    WorkshopStaticFiles,
+    create_workshop_static_files,
     get_workshop_path_async,
     get_workshop_root_async,
 )
@@ -132,37 +132,39 @@ async def _init_and_mount_workshop():
         # 3. Call the utils layer to get/calculate paths (persisted in config).
         workshop_path = await get_workshop_root_async(subscribed_items)
 
-        # 4. Mount the static file directory.
-        if (
-            workshop_path
-            and os.path.exists(workshop_path)
-            and os.path.isdir(workshop_path)
-        ):
-            try:
-                app.mount(
-                    "/workshop", WorkshopStaticFiles(directory=workshop_path), name="workshop"
-                )
-                logger.info(f"✅ 成功挂载创意工坊目录: {workshop_path}")
-            except Exception as e:
-                logger.error(f"挂载创意工坊目录失败: {e}")
-        else:
-            logger.warning(
-                f"创意工坊目录不存在或不是有效的目录: {workshop_path}，跳过挂载"
-            )
+        # 4. Mount the static file directory. Without a usable root, /workshop is still
+        #    mounted so Steam libraries registered later are served.
+        _mount_workshop(workshop_path, fallback=False)
     except Exception as e:
         logger.error(f"初始化创意工坊目录时出错: {e}")
         # Fallback: ensure at least one default path is available.
         workshop_path = await get_workshop_path_async()
         logger.info(f"使用配置中的默认路径: {workshop_path}")
-        if (
-            workshop_path
-            and os.path.exists(workshop_path)
-            and os.path.isdir(workshop_path)
-        ):
-            try:
-                app.mount(
-                    "/workshop", WorkshopStaticFiles(directory=workshop_path), name="workshop"
-                )
-                logger.info(f"✅ 降级模式下成功挂载创意工坊目录: {workshop_path}")
-            except Exception as mount_err:
-                logger.error(f"降级模式挂载创意工坊目录仍然失败: {mount_err}")
+        _mount_workshop(workshop_path, fallback=True)
+
+
+def _mount_workshop(workshop_path, *, fallback: bool) -> None:
+    """Mount /workshop; a missing root still gets a mount for later Steam libraries."""
+    usable = bool(
+        workshop_path and os.path.exists(workshop_path) and os.path.isdir(workshop_path)
+    )
+    try:
+        app.mount(
+            "/workshop", create_workshop_static_files(workshop_path), name="workshop"
+        )
+    except Exception as e:
+        if fallback:
+            logger.error(f"降级模式挂载创意工坊目录仍然失败: {e}")
+        else:
+            logger.error(f"挂载创意工坊目录失败: {e}")
+        return
+    if usable:
+        if fallback:
+            logger.info(f"✅ 降级模式下成功挂载创意工坊目录: {workshop_path}")
+        else:
+            logger.info(f"✅ 成功挂载创意工坊目录: {workshop_path}")
+    else:
+        logger.warning(
+            f"创意工坊目录不存在或不是有效的目录: {workshop_path}，"
+            "仅挂载其他已登记的Steam库目录"
+        )

@@ -10,7 +10,6 @@ synthetic folder under ``tmp_path``.
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 from urllib.parse import quote
 
 from fastapi import FastAPI
@@ -19,6 +18,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 import utils.config_manager as config_manager_module
+from app.main_server import workshop_runtime
 from main_routers import live2d_router, mmd_router, vrm_router
 from main_routers import workshop_router
 from main_routers.workshop_router import items as wr_items
@@ -27,6 +27,7 @@ from utils import frontend_utils
 from utils.config_manager.workshop import WorkshopMixin
 from utils.workshop_utils import (
     WorkshopStaticFiles,
+    create_workshop_static_files,
     extract_workshop_roots_from_items,
     register_workshop_roots_from_items,
 )
@@ -241,10 +242,78 @@ def test_resolvers_refuse_escapes_from_second_library(libraries, escape_links):
     config = libraries.config
     assert live2d_router._resolve_sync_model_file("/workshop/300/Secret.model3.json", config) is None
     assert live2d_router._resolve_sync_model_file("/workshop/200/Leak.vrm", config) is None
+    # The linked item is skipped; the fallback stays inside the configured root.
+    path, prefix = frontend_utils.find_workshop_item_by_id("300")
+    assert (path, prefix) == (os.path.join(str(libraries.a), "300"), "/workshop")
+
+
+@pytest.mark.parametrize("item_id", ["..", ".", "", "../200", "..\\200", "a\x00b", "C:x"])
+def test_item_id_that_is_not_one_path_component_is_rejected(libraries, item_id):
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    assert frontend_utils.find_workshop_item_by_id(item_id) == (None, None)
+    assert frontend_utils.find_model_by_workshop_item_id(item_id) is None
+
+
+def test_by_id_lookup_reaches_second_library_when_configured_root_is_missing(libraries):
+    """The static fallback is only for 'no Workshop directory at all'."""
+    libraries.config._primary_root = str(libraries.tmp_path / "missing_root")
+    _write_model(libraries.b / "200", "live2d", "Bravo")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    assert frontend_utils.find_workshop_item_by_id("200") == (str(libraries.b / "200"), "/workshop")
+    assert frontend_utils.find_model_by_workshop_item_id("200") == "/workshop/200/Bravo.model3.json"
+    with _client(libraries, []) as client:
+        response = client.get("/api/live2d/model_config_by_id/200")
+    assert response.status_code == 200, response.text
+    assert response.json()["success"] is True
+    # No Workshop directory at all: the old static fallback is kept.
+    libraries.config._steam_workshop_library_roots = []
+    assert frontend_utils.find_workshop_item_by_id("200") == (os.path.join("static", "200"), "/static")
+
+
+def test_by_id_lookup_finds_nested_layout_in_second_library(libraries):
+    nested = libraries.b / "200" / "assets" / "Avatar"
+    _write_model(nested, "live2d", "Avatar")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    assert frontend_utils.find_workshop_item_by_id("200") == (str(libraries.b / "200"), "/workshop")
+    url = frontend_utils.find_model_by_workshop_item_id("200")
+    assert url == "/workshop/200/assets/Avatar/Avatar.model3.json"
+    with _client(libraries, []) as client:
+        assert client.get(url).status_code == 200
+
+
+def test_by_id_lookup_does_not_follow_links_out_of_an_item(libraries):
+    outside = libraries.tmp_path / "outside_model"
+    _write_model(outside, "live2d", "Secret")
+    (libraries.b / "300").mkdir()
+    try:
+        (libraries.b / "300" / "linked").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "300")}])
     path, _ = frontend_utils.find_workshop_item_by_id("300")
-    assert not str(path).startswith(str(libraries.b))
-    path, _ = frontend_utils.find_workshop_item_by_id("..")
-    assert Path(path).resolve() != libraries.b.parent.resolve()
+    assert path == os.path.join(str(libraries.a), "300")
+
+
+@pytest.mark.parametrize("workshop_path", [None, "missing"])
+def test_mount_without_usable_root_serves_libraries_registered_later(libraries, workshop_path):
+    """Startup without a usable root still mounts /workshop for later libraries."""
+    if workshop_path:
+        workshop_path = str(libraries.tmp_path / workshop_path)
+    _write_model(libraries.b / "200", "vrm", "Bravo")
+    app = FastAPI()
+    app.mount("/workshop", create_workshop_static_files(workshop_path), name="workshop")
+    with TestClient(app) as client:
+        assert client.get("/workshop/200/Bravo.vrm").status_code == 404
+        register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+        response = client.get("/workshop/200/Bravo.vrm")
+        assert response.status_code == 200
+        assert client.get("/workshop/%2e%2e/x").status_code == 404
+
+
+def test_mount_with_usable_root_is_rooted_there(libraries):
+    mount = create_workshop_static_files(str(libraries.a))
+    assert mount.directory == str(libraries.a)
+    assert mount.all_directories == [str(libraries.a)]
 
 
 def test_live2d_resolvers_find_models_in_second_library(libraries):
@@ -351,3 +420,14 @@ def test_startup_root_registers_every_library(libraries, monkeypatch):
     assert root == str(libraries.a)
     assert libraries.config.get_steam_workshop_library_roots() == [str(libraries.a), str(libraries.b)]
     assert os.path.isdir(root)
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_startup_mount_is_created_even_without_a_usable_root(libraries, monkeypatch, fallback):
+    app = FastAPI()
+    monkeypatch.setattr(workshop_runtime, "app", app)
+    workshop_runtime._mount_workshop(str(libraries.tmp_path / "missing"), fallback=fallback)
+    _write_model(libraries.b / "200", "mmd", "Bravo")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    with TestClient(app) as client:
+        assert client.get("/workshop/200/Bravo.pmx").status_code == 200

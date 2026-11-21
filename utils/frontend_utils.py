@@ -1246,19 +1246,27 @@ def find_model_directory(model_name: str):
     return (None, None)
 
 def _workshop_item_has_model(item_path: str) -> bool:
-    """Whether a Workshop item folder holds a .model3.json directly or in a direct subfolder."""
+    """Whether a Workshop item folder holds a .model3.json at any depth.
+
+    Matches the recursive layout ``find_model_by_workshop_item_id`` accepts. Directory
+    links are not followed, and the item folder itself must stay inside its root
+    (checked by the caller), so a link cannot widen the search.
+    """
     if not os.path.isdir(item_path):
         return False
-    # Check for a .model3.json file.
-    if any(file.endswith('.model3.json') for file in os.listdir(item_path)):
-        return True
-    # Check subfolders for model files.
-    for subdir in os.listdir(item_path):
-        subdir_path = os.path.join(item_path, subdir)
-        if os.path.isdir(subdir_path):
-            if any(file.endswith('.model3.json') for file in os.listdir(subdir_path)):
-                return True
+    for _root, _dirs, files in os.walk(item_path, followlinks=False):
+        if any(file.endswith('.model3.json') for file in files):
+            return True
     return False
+
+
+def _is_plain_item_id(item_id) -> bool:
+    """A Workshop item id must be one plain path component (no separators, '.', '..' or NUL)."""
+    return (
+        isinstance(item_id, str)
+        and item_id not in ('', '.', '..')
+        and not any(char in item_id for char in ('/', '\\', '\x00', ':'))
+    )
 
 
 def find_workshop_item_by_id(item_id: str) -> tuple:
@@ -1269,20 +1277,25 @@ def find_workshop_item_by_id(item_id: str) -> tuple:
         item_id: Steam Workshop item ID
         
     Returns:
-        (item path, URL prefix) tuple; return defaults even if not found
+        (item path, URL prefix) tuple; return defaults even if not found.
+        (None, None) for an id that is not a single plain path component.
     """
+    if not _is_plain_item_id(item_id):
+        logging.warning(f"创意工坊物品ID无效: {item_id!r}")
+        return (None, None)
     try:
-        workshop_dir = _resolve_workshop_search_dir()
-        
-        # Use the default static directory if the path is empty or absent.
-        if not workshop_dir or not os.path.exists(workshop_dir):
+        # The configured directory first, then the other Steam libraries /workshop also serves.
+        search_dirs = _resolve_workshop_search_dirs()
+
+        # Use the default static directory only when no Workshop directory exists at all.
+        if not search_dirs:
+            workshop_dir = _resolve_workshop_search_dir()
             logging.warning(f"创意工坊目录不存在或无效: {workshop_dir}，使用默认路径")
             default_path = os.path.join("static", item_id)
             return (default_path, '/static')
         
-        # Search directly using the item ID as folder name, in the configured directory
-        # first and then in the other Steam libraries /workshop also serves.
-        for search_dir in _resolve_workshop_search_dirs() or [workshop_dir]:
+        # Search directly using the item ID as folder name.
+        for search_dir in search_dirs:
             item_path = os.path.join(search_dir, item_id)
             if not _is_within(os.path.realpath(search_dir), os.path.realpath(item_path)):
                 continue
@@ -1290,7 +1303,7 @@ def find_workshop_item_by_id(item_id: str) -> tuple:
                 return (item_path, '/workshop')
         
         # Return the default path if no matching folder is found.
-        default_path = os.path.join(workshop_dir, item_id)
+        default_path = os.path.join(search_dirs[0], item_id)
         return (default_path, '/workshop')
     except Exception as e:
         logging.error(f"查找创意工坊物品ID {item_id} 时出错: {e}")

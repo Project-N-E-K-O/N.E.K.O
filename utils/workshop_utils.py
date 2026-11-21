@@ -217,7 +217,7 @@ class WorkshopStaticFiles(StaticFiles):
     def __init__(
         self,
         *,
-        directory: str,
+        directory: Optional[str],
         extra_directories: Optional[Callable[[], Iterable[str]]] = None,
         **kwargs: Any,
     ) -> None:
@@ -247,6 +247,19 @@ class WorkshopStaticFiles(StaticFiles):
     def all_directories(self, value: List[Any]) -> None:
         # StaticFiles.__init__ assigns the configured directories here.
         self._base_directories = list(value)
+
+
+def create_workshop_static_files(workshop_path: Optional[str]) -> WorkshopStaticFiles:
+    """
+    Build the ``/workshop`` app, also when the configured root is unusable
+
+    With a missing root the app starts with no base directory and serves only the
+    Steam libraries registered later (for example by the subscribed-items endpoint),
+    so their URLs work without a restart. Until then every request is a 404.
+    """
+    if workshop_path and os.path.isdir(workshop_path):
+        return WorkshopStaticFiles(directory=workshop_path)
+    return WorkshopStaticFiles(directory=None)
 
 
 def get_workshop_root(subscribed_items: Optional[List[Dict[str, Any]]] = None) -> str:
