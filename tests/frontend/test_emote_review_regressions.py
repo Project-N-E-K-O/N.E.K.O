@@ -132,6 +132,21 @@ def test_single_png_download_starts_while_capture_controls_are_locked(editor):
     'flat-60-0-1', 'layered-60-0-1', 'flat-60-0-0.95', 'layered-60-0-0.95',
 ])
 def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, fps, start, seconds, expected_frames):
+    _assert_png_image_pack_timing(editor, pack_format, fps, start, seconds, expected_frames)
+
+
+@pytest.mark.parametrize(('pack_format', 'start', 'seconds', 'expected_frames', 'gif_delays'), [
+    ('flat', .084, .132, 3, [20, 100, 20]),
+    ('layered', .084, .132, 33, None),
+    ('flat', .099, .102, 3, [10, 100, 10]),
+    ('layered', .099, .102, 102, None),
+], ids=['flat-16ms-edges', 'layered-16ms-edges', 'flat-1ms-edges', 'layered-1ms-edges'])
+def test_png_image_pack_short_boundaries_obey_format_timing_limits(
+        editor, pack_format, start, seconds, expected_frames, gif_delays):
+    _assert_png_image_pack_timing(editor, pack_format, 30, start, seconds, expected_frames, gif_delays)
+
+
+def _assert_png_image_pack_timing(editor, pack_format, fps, start, seconds, expected_frames, gif_delays=None):
     from PIL import Image
 
     _import(editor, spine_zip())
@@ -180,18 +195,25 @@ def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, 
         ):
             with Image.open(io.BytesIO(files[name])) as image:
                 assert image.n_frames == count
-                observed, elapsed, color_durations = [], 0, {}
+                observed, delays, elapsed, color_durations = [], [], 0, {}
                 for index in range(image.n_frames):
                     image.seek(index)
                     color = image.convert('RGB').getpixel((32, 32))
                     observed.append(color)
                     delay = image.info['duration']
+                    delays.append(delay)
                     elapsed += delay
                     color_durations[color] = color_durations.get(color, 0) + delay
-                assert elapsed == pytest.approx(duration, abs=1)
+                quantized_edges = gif_delays is not None and name == 'idle.gif'
+                if quantized_edges:
+                    # A 100ms PNG slide remains exact; each of its two cropped
+                    # edges may need up to 10ms for the compatible GIF tick.
+                    assert delays == gif_delays
+                assert elapsed == pytest.approx(duration, abs=20 if quantized_edges else 1)
                 assert set(observed) == set(colors)
                 assert observed[0] == colors[0] and observed[-1] == colors[-1]
-                assert color_durations == pytest.approx(wanted_durations if name == 'idle.gif' else {yellow: 100}, abs=1)
+                assert color_durations == pytest.approx(
+                    wanted_durations if name == 'idle.gif' else {yellow: 100}, abs=10 if quantized_edges else 1)
     else:
         metadata = json.loads(files['metadata.json'])
         for layer in metadata['layers']:
