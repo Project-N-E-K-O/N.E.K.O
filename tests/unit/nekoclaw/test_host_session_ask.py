@@ -30,6 +30,7 @@ from typing import Any
 import pytest
 
 from config.prompts import prompts_nekoclaw_sessions as words
+from nekoclaw.host import call_audit
 from nekoclaw.host.task_agents import ForkRefused
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish, say, usage
 from tests.unit.nekoclaw.host_fakes import (
@@ -162,6 +163,16 @@ async def test_a_session_is_asked_a_question_that_a_copy_of_it_answers_and_it_is
     [child] = await host.ledger.select(parent_id=asker)
     assert (child.source, child.status, child.name) == ("ask", "done", "ask-1")
     assert child.title == 'Question to "photos"' and child.dispatch_text == QUESTION
+    async def delivered():
+        rows = await host.ledger.run(lambda db: call_audit.read_trace(db, asker, now=0))
+        return any(row["target"] == "receive_answer" and row["status"] == "completed" for row in rows)
+
+    await wait_until(delivered, what="the receiving runtime's confirmation to reach the ledger")
+    rows = await host.ledger.run(lambda db: call_audit.read_trace(db, asker, now=0))
+    child_brief, = [r for r in rows if r["commission_id"] == child.id and r["target"] == "space_brief"]
+    assert child_brief["parent_call_id"] == child.id
+    release, = [r for r in rows if r["target"] == "receive_answer"]
+    assert (release["commission_id"], release["status"]) == (asker, "completed")
     copy = await host.ledger.get_session(child.session_id)
     assert (copy.kind, copy.forked_from, copy.workdir) == ("fork", photos.session_id, photos.workdir)
 
@@ -578,11 +589,16 @@ async def test_a_question_whose_asker_is_cancelled_while_it_is_filed_is_answered
 
     host.ledger.append_event = slow  # type: ignore[method-assign]
     told = _steered_into(host, asker.id)
-    asking = asyncio.ensure_future(_ask(host, asker))
+    asking = asyncio.ensure_future(host.task_agents._callbacks().call(
+        asker.session_id, "session_ask", {"session": "photos", "question": QUESTION},
+    ))
     await asyncio.wait_for(entered.wait(), 5)
     asking.cancel()
-    await asyncio.gather(asking, return_exceptions=True)
-    go_on.set()
+    try:
+        done, _ = await asyncio.wait([asking], timeout=5)
+        assert done and asking.cancelled(), "the ACP waiter did not cancel independently"
+    finally:
+        go_on.set()
     await wait_until(lambda: _children_of(host, asker.id), what="the question being filed")
     [child] = await host.ledger.select(parent_id=asker.id)
     child = await wait_status(host, child.id, "done", "failed", "cancelled", "blocked")
@@ -649,7 +665,9 @@ async def _children_of(host: Any, commission_id: str) -> bool:
     return bool(await host.ledger.select(parent_id=commission_id))
 
 
-async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word_of_the_users(hosts, tmp_path):
+@pytest.mark.parametrize("revoke", [None, "while_starting", "after_loan"])
+async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word_of_the_users(hosts, tmp_path, revoke):
+    deny = revoke is not None
     # The asker's session was closed while it waited (an idle runtime closes idle sessions):
     # the answer takes it up again, and opens its next turn as no word of the user's either.
     from nekoclaw.host.task_agents import _Unsaid
@@ -667,11 +685,296 @@ async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word
         return await prompt(session_id, text, **options)
 
     runtime.prompt = noting
-    answer = _Unsaid('[answer from "build": completed] It is under dist/.')
+    answer = _Unsaid('[answer from "build": completed] It is under dist/.', photos.id)
+    if revoke == "while_starting":
+        # The answer is already queued when the receiving runtime starts.
+        start = runtime.start
+
+        async def revoke_while_starting(spec):
+            await host.permission_store.set_mode("outside_read", "deny")
+            await start(spec)
+
+        runtime.start = revoke_while_starting
+    elif revoke == "after_loan":
+        check = host.permissions.check
+
+        async def revoke_after_loan(owner, category, **kwargs):
+            decision = await check(owner, category, **kwargs)
+            if getattr(kwargs.get("scope"), "resource", None) == "receive_answer":
+                assert decision.allow and host.permissions.grant_active(decision.grant_id)
+                await host.permission_store.set_mode("outside_read", "deny")
+            return decision
+
+        host.permissions.check = revoke_after_loan
     assert await host.task_agents._wake_working(photos.id, answer, reason="an answer takes it up again") is True
     await wait_until(lambda: handed, what="it being taken up again")
     [(text, human)] = handed
-    assert answer in text and human is False
+    assert (answer in text) is not deny
+    assert ("It is under dist/." in text) is not deny
+    assert ("permission denied" in text) is deny
+    assert human is False
+    async def recorded():
+        rows = await host.ledger.run(lambda db: call_audit.read_trace(db, photos.id, now=0))
+        return any(r["target"] == "receive_answer" and r["status"] == ("denied" if deny else "completed") for r in rows)
+    await wait_until(recorded, what="the answer delivery to be on record")
+
+
+@pytest.mark.parametrize("changes", [1, 2])
+async def test_opening_answer_rechecks_the_run_after_peer_input(hosts, tmp_path, monkeypatch, changes):
+    from nekoclaw.host.task_agents import _Unsaid
+
+    scripts = {PHOTOS: _photos()}
+    host = _host(hosts, tmp_path, scripts)
+    photos = await _at_rest(host, scripts)
+    await wait_until(lambda: photos.id not in host.task_agents._sessions, what="the first session closing")
+    runtime = host.task_agents._runtimes.builtin()
+    prompt, check, get = runtime.prompt, host.permissions.check, host.ledger.get
+    delivered = []
+    change_at_next_read = False
+    changed = 0
+
+    async def capture_prompt(session_id, text, **options):
+        delivered.append(text)
+        return await prompt(session_id, text, **options)
+
+    async def mark_answer_loan(owner, category, **kwargs):
+        nonlocal change_at_next_read
+        decision = await check(owner, category, **kwargs)
+        if getattr(kwargs.get("scope"), "resource", None) == "receive_answer":
+            assert decision.allow
+            change_at_next_read = changed < changes
+        return decision
+
+    async def get_after_peer_input(owner):
+        nonlocal changed, change_at_next_read
+        if owner == photos.id and change_at_next_read:
+            change_at_next_read = False
+            changed += 1
+            host.permissions.received_external_input(owner)
+        return await get(owner)
+
+    monkeypatch.setattr(host.permissions, "check", mark_answer_loan)
+    monkeypatch.setattr(host.ledger, "get", get_after_peer_input)
+    monkeypatch.setattr(runtime, "prompt", capture_prompt)
+    answer = _Unsaid("the private answer", photos.id)
+    assert await host.task_agents._wake_working(photos.id, answer, reason="answer delivered")
+    await wait_until(lambda: delivered, what="the opening prompt")
+    assert changed == changes
+    [text] = delivered
+    assert (answer in text) == (changes == 1)
+    assert ("could not be authorized for delivery" in text) == (changes == 2)
+    assert "permission denied" not in text
+
+    async def settled():
+        rows = await host.ledger.run(lambda db: call_audit.read_trace(db, photos.id, now=0))
+        states = [row["status"] for row in rows if row["target"] == "receive_answer"]
+        return sorted(states) == ["cancelled", "completed" if changes == 1 else "cancelled"]
+
+    await wait_until(settled, what="both answer attempts settling")
+
+
+@pytest.mark.parametrize("change", ["next_run", "closing", "ended"])
+async def test_delayed_answer_follows_its_still_working_commission(hosts, tmp_path, monkeypatch, change):
+    wait_model, model = _held()
+    scripts = {BUILD: model}
+    host = _host(hosts, tmp_path, scripts)
+    asker = await _asker_at_work(host, scripts)
+    child, _ = await host.ledger.create(
+        lanlan_name="Lan", title="question", dispatch_text="question", source="ask", route="task_agent",
+        parent_id=asker.id, name="ask-1",
+    )
+    session = host.task_agents._sessions[asker.id]
+    told = _steered_into(host, asker.id)
+    entered, proceed = asyncio.Event(), asyncio.Event()
+    start = call_audit.start_call
+
+    async def held_start(ledger, owner, kind, target):
+        if target == "receive_answer" and not entered.is_set():
+            entered.set()
+            await proceed.wait()
+        return await start(ledger, owner, kind, target)
+
+    monkeypatch.setattr(call_audit, "start_call", held_start)
+    sending = asyncio.create_task(host.task_agents._tell_parent(child, "completed", "answer fixture"))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        if change == "next_run":
+            await host.task_agents._run_over(asker.id)
+            assert host.permissions.current_run(asker.id)()
+        if change == "closing":
+            wait_model.set()
+            await wait_until(lambda: session.idle, what="the parent waiting for its child")
+            session.closing = True
+        elif change == "ended":
+            await host.ledger.transition(asker.id, "cancelled", reason="user stop")
+        proceed.set()
+        await asyncio.wait_for(sending, 5)
+        if change == "closing":
+            assert asker.id in host.task_agents._queue
+            assert "answer fixture" in host.task_agents._resume[asker.id]
+            await session.runtime.close(session.session_id)
+
+            async def received():
+                rows = await host.ledger.run(lambda db: call_audit.read_trace(db, asker.id, now=0))
+                return sum(r["target"] == "receive_answer" and r["status"] == "completed" for r in rows) == 1
+
+            await wait_until(received, what="the reopened session confirming the delayed answer")
+            await wait_until(lambda: any("answer fixture" in _said(req)[-1] for req in model.requests),
+                             what="the reopened session receiving the answer")
+        elif change == "ended":
+            assert not told and asker.id not in host.task_agents._queue
+        else:
+            assert len(told) == 1 and "answer fixture" in told[0]
+    finally:
+        proceed.set()
+        wait_model.set()
+        await sending
+
+
+@pytest.mark.parametrize("second_refusal", [False, True])
+async def test_explicit_runtime_refusal_settles_the_answer_and_retries_once(hosts, tmp_path, monkeypatch, second_refusal):
+    release, model = _held()
+    scripts = {BUILD: model}
+    host = _host(hosts, tmp_path, scripts)
+    asker = await _asker_at_work(host, scripts)
+    manager = host.task_agents
+    session = manager._sessions[asker.id]
+    child, _ = await host.ledger.create(
+        lanlan_name="Lan", title="question", dispatch_text="question", source="ask", route="task_agent",
+        parent_id=asker.id, name="ask-1",
+    )
+    sent = []
+
+    async def steer(session_id, text, *, serial, human):
+        assert not human
+        sent.append((serial, text))
+
+    async def receipts():
+        rows = await host.ledger.run(lambda db: call_audit.read_trace(db, asker.id, now=0))
+        return [r["status"] for r in rows if r["target"] == "receive_answer"]
+
+    monkeypatch.setattr(session.runtime, "steer", steer)
+    try:
+        await manager._tell_parent(child, "completed", "example answer")
+        assert len(sent) == 1 and await receipts() == ["running"]
+        error = {"type": "error", "session_id": asker.session_id, "command": "steer", "message": "busy"}
+        await manager._handle({**error, "serial": sent[0][0] + 100})
+        assert await receipts() == ["running"]
+        await manager._handle({**error, "serial": sent[0][0]})
+        await wait_until(lambda: len(sent) == 2, what="one redelivery of the refused answer")
+        assert sent[0][1] == sent[1][1] and "example answer" in sent[1][1]
+        if second_refusal:
+            def unexpected_retry(*args):
+                pytest.fail("a second refusal scheduled a third delivery")
+
+            monkeypatch.setattr(manager, "_wake_closed_parent", unexpected_retry)
+            await manager._handle({**error, "serial": sent[1][0]})
+        else:
+            await manager._handle({"type": "taken", "session_id": asker.session_id, "inputs": session.sent})
+        await asyncio.gather(*manager._control_settlements)
+        assert await receipts() == ["failed", "failed" if second_refusal else "completed"]
+        assert len(sent) == 2
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("when", ["before_open", "during_open", "parent_run_ended"])
+async def test_opening_an_ask_copy_rechecks_its_parent_loan(hosts, tmp_path, monkeypatch, when):
+    release, held = _held()
+    scripts = {BUILD: held, PHOTOS: _photos(), QUESTION: ScriptedLLM([[say("unused"), finish()]])}
+    host = _host(hosts, tmp_path, scripts)
+    photos = await _at_rest(host, scripts)
+    await host.ledger.update_session(photos.session_id, name="photos")
+    asker = await _asker_at_work(host, scripts)
+    manager = host.task_agents
+    runtime = manager._runtimes.builtin()
+    opened = []
+    spec_for, start = manager._spec, runtime.start
+
+    async def spec(*args, **kwargs):
+        result = await spec_for(*args, **kwargs)
+        if when == "before_open":
+            await host.permission_store.set_mode("outside_read", "deny")
+        return result
+
+    async def opening(spec):
+        opened.append(spec.session_id)
+        await start(spec)
+        if when == "during_open":
+            await host.permission_store.set_mode("outside_read", "deny")
+        elif when == "parent_run_ended":
+            host.permissions.end_run(asker.id)
+
+    monkeypatch.setattr(manager, "_spec", spec)
+    monkeypatch.setattr(runtime, "start", opening)
+    try:
+        with pytest.raises(RuntimeError):
+            await manager._callbacks().call(asker.session_id, "session_ask", {"session": "photos", "question": QUESTION})
+        child, = await host.ledger.select(parent_id=asker.id)
+        assert child.status in ("failed", "cancelled")
+        assert opened == ([] if when == "before_open" else [child.session_id])
+        assert not scripts[QUESTION].requests
+        assert await host.ledger.run(lambda db: db.execute("SELECT status FROM messages WHERE kind='ask'").fetchone()[0]) == "void"
+
+        async def cleared():
+            copy = await host.ledger.get_session(child.session_id)
+            return copy.status == "cleared" and not Path(copy.session_dir).exists()
+
+        await wait_until(cleared, what="unused question copy removed")
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("when", ["before_open", "during_brief", "during_open"])
+async def test_external_input_rotates_startup_authority_without_cancelling_the_task(hosts, tmp_path, monkeypatch, when):
+    scripts = {BUILD: ScriptedLLM([[call("report", {"status": "ready", "summary": "finished"}), finish("tool_calls")]])}
+    host = _host(hosts, tmp_path, scripts)
+    marker = "private pre-rotation space rule"
+    await host.space.write_rules(marker)
+    manager = host.task_agents
+    prepare = manager._spec
+    runtime = manager._runtimes.builtin()
+    start = runtime.start
+    opened = []
+
+    async def prepared(commission, *args, **kwargs):
+        spec = await prepare(commission, *args, **kwargs)
+        if when == "before_open":
+            host.permissions.received_external_input(commission.id)
+        return spec
+
+    async def opening(spec):
+        opened.append(spec)
+        await start(spec)
+        if when == "during_open":
+            host.permissions.received_external_input(manager._held_by[spec.session_id])
+
+    read_brief = host.space.brief
+    reads = []
+
+    async def reading(project):
+        value = await read_brief(project)
+        reads.append(value)
+        if when == "during_brief" and len(reads) == 1:
+            owner, = manager._sessions
+            host.permissions.received_external_input(owner)
+            await host.space.write_rules("updated after the peer note")
+        return value
+
+    monkeypatch.setattr(host.space, "brief", reading)
+    monkeypatch.setattr(manager, "_spec", prepared)
+    monkeypatch.setattr(runtime, "start", opening)
+    receipt = await _dispatch(host, BUILD)
+    result = await wait_status(host, receipt.commission_id, "done", "cancelled", "failed")
+    assert result.status == "done"
+    assert len(opened) == 1 and len(scripts[BUILD].requests) == 1
+    rows = await host.ledger.run(lambda db: call_audit.read_trace(db, receipt.commission_id, now=0))
+    if when == "during_brief":
+        assert "updated after the peer note" in opened[0].instructions and marker not in opened[0].instructions
+        assert [r["status"] for r in rows if r["target"] == "space_brief"] == ["denied", "completed"]
+    else:
+        assert marker in opened[0].instructions
+        assert [r["status"] for r in rows if r["target"] == "space_brief"] == ["completed"]
 
 
 async def test_with_the_clock_set_back_the_wait_is_until_enough_of_the_hour_is_old(ledger):

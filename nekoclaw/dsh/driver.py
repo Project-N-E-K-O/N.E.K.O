@@ -90,6 +90,7 @@ from nekoclaw.dsh.forward import ModelForwarder, unsupported_reason
 from nekoclaw.dsh.host_tools import ON_ANSWERED, HostTools
 from nekoclaw.dsh.profile import SESSION_FILE, DshLaunch, DshUnavailable, Shape
 from nekoclaw.runtime import protocol
+from nekoclaw import TASK_CONTROL_TOOLS
 from nekoclaw.runtime.host import HostBridge, NoHost
 from nekoclaw.runtime.permissions import GATEWAY_CALL_CATEGORY, HOST_TOOL_CALL_CATEGORY
 from nekoclaw.runtime.protocol import EventSink
@@ -139,11 +140,13 @@ class _Given(str):
     """A text a session was given, and which one it is, counted from 1 in the order they were given."""
 
     number: int
+    human: bool
     device_instruction: Literal["opening", "user"] | None = None
 
-    def __new__(cls, text: str, number: int) -> "_Given":
+    def __new__(cls, text: str, number: int, human: bool = True) -> "_Given":
         made = super().__new__(cls, text)
         made.number = number
+        made.human = human
         return made
 
 
@@ -220,6 +223,7 @@ class _Session:
     # Whether a turn is with dsh right now: a call that comes in between two
     # turns is a late one of the turn before, and is handed nothing either.
     in_turn: bool = False
+    human_in_turn: bool = False
     # False until dsh took the first message, which carries the host's instructions.
     briefed: bool = False
     # Whether it is offered the subagent tool, which its first message then tells of.
@@ -239,6 +243,7 @@ class _Session:
     job_origins: dict[str, str] = field(default_factory=dict)
     listed_jobs: dict[str, list[str]] = field(default_factory=dict)
     audit_writes: set[asyncio.Task] = field(default_factory=set)
+    prompt_calls: set[str] = field(default_factory=set)
     # Permission requests being decided right now.
     asks: set[asyncio.Task[Any]] = field(default_factory=set)
     # Set whenever a text is queued; ``wait_agent`` waits on it.
@@ -841,6 +846,8 @@ class DshRuntime:
             name = str(update.get("title") or "")
             arguments = update.get("rawInput")
             session.tool_calls[call_id] = (name, arguments)
+            if session.in_turn:
+                session.prompt_calls.add(call_id)
             self._emit(
                 session,
                 protocol.ToolStartEvent(
@@ -857,6 +864,7 @@ class DshRuntime:
             call_id = str(update.get("toolCallId") or "")
             # Over: nothing is asked about it any more, and what it was
             # called with (a whole file, for a write) need not be kept.
+            session.prompt_calls.discard(call_id)
             name = session.tool_calls.pop(call_id, ("", None))[0]
             from nekoclaw.runtime.execution import JOB_TOOLS
 
@@ -1041,6 +1049,13 @@ class DshRuntime:
                 session.finished_sources[original] = receipt
                 return _ALLOW
             return _REJECT
+        control_check = call_id.startswith(profile.CONTROL_CHECK_PREFIX)
+        if control_check:
+            # The native tool's own approval uses the original ID and policy.
+            # Never accept a real tool call that occupies the reserved namespace.
+            if session is None or call_id in session.tool_calls:
+                return _CANCELLED
+            call_id = call_id[len(profile.CONTROL_CHECK_PREFIX):]
         if ("allow-once", "allow_once") not in offered or session is None or call_id not in session.tool_calls:
             # ACP may narrow the offered choices. A host loan cannot add one.
             return _REJECT if ("reject-once", "reject_once") in offered else _CANCELLED
@@ -1048,6 +1063,25 @@ class DshRuntime:
         assert task is not None
         session.asks.add(task)
         try:
+            if control_check:
+                name, arguments = session.tool_calls[call_id]
+                if name not in TASK_CONTROL_TOOLS:
+                    return _REJECT
+                # ACP represents every prompt as user text. A framed peer message must
+                # not establish or change a goal on the strength of that transport role.
+                eligible = True
+                if name in {"create_goal", "update_goal"}:
+                    # Between host prompts, dsh may run its own goal round. Its goal
+                    # tool validates the exact goal, revision and round on execution.
+                    terminal = name == "update_goal" and isinstance(arguments, dict) and arguments.get("action") in ("complete", "blocked")
+                    eligible = session.spec.top_level and (session.human_in_turn if session.in_turn else terminal)
+                if "task_control_begin" not in self._host.capabilities:
+                    return _ALLOW if eligible else _REJECT
+                payload = {"tool": name, "call_id": call_id}
+                if not eligible:
+                    payload["refused"] = True
+                reply = await self._host.call(session.id, "task_control_begin", payload)
+                return _ALLOW if eligible and reply.get("allow") is True else _REJECT
             return _ALLOW if await self._decide(session, *session.tool_calls[call_id], call_id=call_id) else _REJECT
         except asyncio.CancelledError:
             if session.aborting or session.closing is not None:
@@ -1434,7 +1468,7 @@ class DshRuntime:
         # Numbered as it is given, like the host numbers what it sends: a
         # text that is dropped before dsh has it leaves its number unused.
         session.given += 1
-        given = _Given(text, session.given)
+        given = _Given(text, session.given, human)
         if (human or opening) and session.process and session.process.native_device_schemas and session.spec.gateway:
             given.device_instruction = "opening" if opening else "user"
         session.queue.append(given)
@@ -1532,7 +1566,12 @@ class DshRuntime:
             # it to queue again.
             outcome: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             session.answering.append((outcome, numbers))
-            on_answered.append(lambda delivered: self._answered(session, texts, of_run, outcome, delivered, browser))
+            def answered(delivered: bool) -> None:
+                if delivered and session.in_turn and session.runs == of_run and session.turns == of_turn:
+                    session.human_in_turn |= any(isinstance(text, _Given) and text.human for text in texts)
+                self._answered(session, texts, of_run, outcome, delivered, browser)
+
+            on_answered.append(answered)
         else:
             self._accept_device_inputs(session, texts, browser)
         return texts
@@ -1700,6 +1739,7 @@ class DshRuntime:
                 if first:
                     work = self._first_message(session, work)
                 try:
+                    session.human_in_turn = any(isinstance(text, _Given) and text.human for text in texts)
                     session.in_turn = True
                     try:
                         answer = await process.connection.request(
@@ -1711,6 +1751,9 @@ class DshRuntime:
                         # is handed anything from here on. (The answers its
                         # calls were handed are settled below all the same.)
                         session.in_turn = False
+                        for call_id in session.prompt_calls:
+                            session.tool_calls.pop(call_id, None)
+                        session.prompt_calls.clear()
                         session.turns += 1
                 except AcpClosed:
                     # The process is gone; that is announced where it was noticed.
@@ -1785,7 +1828,8 @@ class DshRuntime:
                 session.finished_sources.clear()
                 session.kept_calls.clear()
                 session.listed_jobs.clear()
-                session.tool_calls.clear()
+                # The prompt already dropped its own calls. A native goal round
+                # may have announced its next call while this run was settling.
                 session.runs += 1
                 session.run = None
         if session.closing is not None or self._sessions.get(session.id) is not session:
@@ -1834,6 +1878,7 @@ class DshRuntime:
     async def prompt(
         self, session_id: str, text: str, *, opening: bool = False, human: bool = True, serial: int | None = None
     ) -> None:
+
         session = await self._session(session_id, "prompt", serial)
         if session is None:
             return

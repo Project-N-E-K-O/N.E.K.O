@@ -1058,6 +1058,63 @@ async def test_a_gateway_tool_is_ruled_on_by_the_host_before_the_call_is_made(tm
         assert [row["failed"] for row in driver.record("service-call")] == [False, True]
 
 
+@pytest.mark.parametrize("top_level", [True, False])
+async def test_between_prompts_only_native_goal_terminal_updates_can_proceed(tmp_path, dsh, top_level):
+    requests = []
+
+    async def begin(session_id, payload):
+        requests.append(payload)
+        return {"allow": True}
+
+    driver = dsh(HostCallbacks(task_control_begin=begin))
+    await driver.started(make_spec(tmp_path, top_level=top_level))
+    session = driver.runtime._sessions["s1"]
+    assert not session.in_turn
+    for tool, action in [("create_goal", None), *(("update_goal", a) for a in ("edit", "pause", "resume", "complete", "blocked"))]:
+        call_id = action or "create"
+        session.tool_calls[call_id] = (tool, {"action": action})
+        reply = await driver.runtime._on_request(session.process, "session/request_permission", {
+            "sessionId": session.dsh_id,
+            "toolCall": {"toolCallId": profile.CONTROL_CHECK_PREFIX + call_id},
+            "options": [{"optionId": "allow-once", "kind": "allow_once"}, {"optionId": "reject-once", "kind": "reject_once"}],
+        })
+        allowed = top_level and action in ("complete", "blocked")
+        assert reply["outcome"]["optionId"] == ("allow-once" if allowed else "reject-once")
+        assert bool(requests[-1].get("refused")) != allowed
+
+
+async def test_native_goal_announced_while_host_turn_settles_survives_until_its_own_end(tmp_path, dsh, monkeypatch):
+    async def allow(session_id, payload):
+        assert payload["tool"] == "update_goal" and not payload.get("refused")
+        return {"allow": True}
+
+    driver = dsh(HostCallbacks(task_control_begin=allow))
+    await driver.started(make_spec(tmp_path, top_level=True))
+    runtime = driver.runtime
+    session = runtime._sessions["s1"]
+
+    def notify(**update):
+        runtime._on_notification(session.process, "session/update", {"sessionId": session.dsh_id, "update": update})
+
+    original = runtime._note_briefed
+
+    async def announce(current):
+        assert not current.in_turn
+        notify(sessionUpdate="tool_call", toolCallId="between", title="update_goal", rawInput={"action": "complete"})
+        await original(current)
+
+    monkeypatch.setattr(runtime, "_note_briefed", announce)
+    await driver.run("s1", "finish the work")
+    reply = await runtime._on_request(session.process, "session/request_permission", {
+        "sessionId": session.dsh_id,
+        "toolCall": {"toolCallId": profile.CONTROL_CHECK_PREFIX + "between"},
+        "options": [{"optionId": "allow-once", "kind": "allow_once"}, {"optionId": "reject-once", "kind": "reject_once"}],
+    })
+    assert reply["outcome"]["optionId"] == "allow-once"
+    notify(sessionUpdate="tool_call_update", toolCallId="between", status="completed")
+    assert "between" not in session.tool_calls
+
+
 async def test_a_tool_a_plugin_brought_is_asked_about_under_the_category_for_everything_else(tmp_path: Path, dsh) -> None:
     asked: list[dict[str, Any]] = []
 

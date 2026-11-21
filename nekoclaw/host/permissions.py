@@ -201,6 +201,7 @@ class PermissionStore:
         # it was based on changed meanwhile.
         self._version = 0
         self._revisions: dict[tuple[str, str | None], int] = {}
+        self._session_read_denied_at = 0
         self._lock = asyncio.Lock()
 
     def _path(self) -> Path:
@@ -302,6 +303,11 @@ class PermissionStore:
             return self._revisions.get((name, slot), 0)
         return self._revisions.get((name, None), 0)
 
+    def loan_revision(self, slot: tuple[str, str | None], scope: GrantScope) -> int:
+        if slot[0] == "outside_read" and isinstance(scope, SessionActionScope):
+            return self._session_read_denied_at
+        return self.revision(*slot)
+
     async def set_mode(
         self, category: str, mode: str, key: str | None = None, *, expected_version: int | None = None,
         expected_revision: int | None = None,
@@ -338,6 +344,8 @@ class PermissionStore:
             else:
                 self._categories[name] = mode
             self._version += 1
+            if name == "outside_read" and mode == "deny" and previous != "deny":
+                self._session_read_denied_at = self._version
             # Managed transfers still ask per recipient under an "allow" setting.
             ceiling = _MODE_RANK["first_ask"] if name == "managed_delivery" else _MODE_RANK["allow"]
             old_rule = _effective_mode(name, previous, category_mode=fallback)
@@ -384,6 +392,10 @@ class GrantScope:
 
     def registered(self) -> bool:
         return all(binding.active for binding in self.bindings)
+
+
+class SessionActionScope(GrantScope):
+    """Host-constructed scope for intrinsic session operations, never constructed from tool JSON."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -659,7 +671,7 @@ class PermissionGate:
         """Last synchronous check before crossing a host-owned boundary."""
         loan = self._loans.get(grant_id) if grant_id else None
         return bool(
-            loan and loan.scope.registered() and self._store.revision(*loan.slot) == loan.revision
+            loan and loan.scope.registered() and self._store.loan_revision(loan.slot, loan.scope) == loan.revision
             and (loan.parent_id is None or loan.parent_id in self._loans)
         )
 
@@ -700,7 +712,7 @@ class PermissionGate:
         self, owner: str, root: str, slot: tuple[str, str | None], scope: GrantScope, lifetime: str,
         parent_id: str | None = None, branch: tuple[str, ...] = (),
     ) -> str:
-        loan = _Loan(uuid.uuid4().hex, owner, root, slot, scope, self._store.revision(*slot), lifetime, parent_id, branch)
+        loan = _Loan(uuid.uuid4().hex, owner, root, slot, scope, self._store.loan_revision(slot, scope), lifetime, parent_id, branch)
         self._loans[loan.id] = loan
         if lifetime != "once":
             self._shared[(owner, slot, scope)] = loan
@@ -712,6 +724,17 @@ class PermissionGate:
     ) -> PermissionDecision:
         if not scope.registered() or not scope.provider or (category == "managed_delivery" and not scope.recipient):
             return PermissionDecision(False, DENIED_NO_ANSWER)
+        async def effective_mode() -> str:
+            if isinstance(scope, SessionActionScope):
+                # These actions have always been available without prompting. Reading a peer
+                # additionally respects the explicit ban on reads outside the work directory.
+                if category == "session_action":
+                    return "allow"
+                if category == "outside_read":
+                    return "deny" if await self.forbidden(category) else "allow"
+                return "deny"
+            return await self._store.mode(category, key)
+
         # Capture before any asynchronous settings or parent lookup. A late
         # request from an ended run cannot attach itself to the next run.
         work = self._work.setdefault(commission_id, object())
@@ -720,7 +743,7 @@ class PermissionGate:
         lookup = object()
         ended = self._lineage_lookups[lookup] = set()
         try:
-            mode = await self._store.mode(category, key)
+            mode = await effective_mode()
             if not scope.registered() or self._work.get(commission_id) is not work:
                 return PermissionDecision(False, DENIED_NO_ANSWER)
             if mode == "deny":
@@ -751,7 +774,7 @@ class PermissionGate:
             return loan_id
 
         while live():
-            mode = await self._store.mode(category, key)
+            mode = await effective_mode()
             if mode == "deny" or not live():
                 return PermissionDecision(False, DENIED_BY_SETTINGS)
             if delivery and mode == "allow":

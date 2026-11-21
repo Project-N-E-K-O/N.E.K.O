@@ -292,7 +292,7 @@ async def test_dispatch_only_mounts_devices_on_a_supported_related_route(
     ("Take a desktop screenshot.", "Open the browser.", {"computer", "browser_click"}, True, False),
     ("Open the browser.", "Take a desktop screenshot.", {"computer", "browser_click"}, False, False),
     ("Summarize the report.", _Handed("Open the browser.", ()), set(), None, False),
-    ("Summarize the report.", _Unsaid("Take a desktop screenshot."), set(), None, False),
+    ("Summarize the report.", lambda recipient: _Unsaid("Take a desktop screenshot.", recipient), set(), None, False),
 ])
 async def test_queued_instructions_choose_the_opening_tools_and_click_target(
     hosts, tmp_path, monkeypatch, dispatch, note, expected, focus, retry,
@@ -318,6 +318,8 @@ async def test_queued_instructions_choose_the_opening_tools_and_click_target(
     queued = await _dispatch(host, dispatch)
     await host.brain.settle()
     assert host.task_agents.queued == [queued]
+    if callable(note):
+        note = note(queued)
     assert await host.task_agents.tell(queued, note)
     if retry:
         # A fresh opening takes the same user sentence from the carried inbox.

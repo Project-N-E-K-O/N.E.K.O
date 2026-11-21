@@ -1104,9 +1104,9 @@ async def test_a_summary_that_is_refused_while_the_run_is_being_stopped_is_a_sto
         await session.close()
 
 
-@pytest.mark.parametrize("behind", [True, False])
+@pytest.mark.parametrize(("behind", "idle"), [(True, False), (False, False), (True, True)])
 async def test_what_follows_a_summary_is_done_by_a_session_opened_again_when_it_was_left_undone(
-    tmp_path: Path, behind: bool
+    tmp_path: Path, behind: bool, idle: bool
 ) -> None:
     spec = make_spec(tmp_path, model=_small_model(), instructions="Index of then.")
     llm = ScriptedLLM([[say("ok"), finish()]])
@@ -1121,6 +1121,8 @@ async def test_what_follows_a_summary_is_done_by_a_session_opened_again_when_it_
         # As a run leaves it that was stopped after the summary was written down and before
         # the system prompt was put together anew: the snapshot is the one from before it.
         saved.update(reason=REASON_OPENED, compactions=0, system="The system prompt of before the summary.")
+        if idle:
+            saved["refresh_on_resume"] = True
         (Path(spec.session_dir) / SYSTEM_FILE).write_text(json.dumps(saved), encoding="utf-8")
 
     later = make_spec(tmp_path, model=_small_model(), instructions="Index of now.")
