@@ -241,6 +241,11 @@ class NekoClawHost:
         if decision is None:
             decision = LexicalDecisionModel(self._decision_llm)
         self.decision = decision
+        # Whether a later commission of a busy project session is a side
+        # question, which is answered in a copy of the session meanwhile.
+        judge = getattr(decision, "side_question", None)
+        if judge is not None:
+            self.task_agents.set_side_question_judge(judge)
         self.brain = TaskBrain(
             ledger=self.ledger,
             preferences=self.preferences,

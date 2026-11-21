@@ -165,7 +165,7 @@ async def test_every_way_a_commission_ends_is_an_end(ledger):
     assert [entry["detail"]["outcome"] for entry in ended] == outcomes
 
 
-async def test_the_question_it_waits_on_is_shown_and_no_more_than_what_it_asks(ledger):
+async def test_every_question_asked_is_shown_and_no_more_than_what_it_asks(ledger):
     main = await _session(ledger, "main")
     commission = await _working(ledger, main)
     first = {"kind": "report", "question": "which branch?", "details": SECRET, "id": "q1"}
@@ -188,16 +188,34 @@ async def test_the_question_it_waits_on_is_shown_and_no_more_than_what_it_asks(l
     entries = await _all(ledger)
 
     earlier, now = _of(entries, "asked_user")
-    # The first question is no longer on record: only that it was asked.
-    assert (earlier["text"], earlier["detail"], earlier["peer"]["type"]) == ("", {"question_kind": None}, "user")
+    assert (earlier["text"], earlier["detail"], earlier["peer"]["type"]) == ("which branch?", {"question_kind": "report"}, "user")
     assert (now["text"], now["detail"]) == ("mcp_server:github", {"question_kind": "permission"})
     [answered] = _of(entries, "answered")
     assert (answered["text"], answered["peer"]["type"]) == ("main", "user")
     assert SECRET not in json.dumps(entries)
 
-    # Answered, it is not shown any more.
+    # Answered, the commission has no question any more; the replay still does.
     assert (await ledger.transition(commission.id, "working")).applied
-    assert [entry["text"] for entry in _of(await _all(ledger), "asked_user")] == ["", ""]
+    assert [entry["text"] for entry in _of(await _all(ledger), "asked_user")] == ["which branch?", "mcp_server:github"]
+    # What the move keeps of it, and no more.
+    moves = [event.payload for event in await ledger.events(commission.id) if event.type == "status"]
+    asked = [move for move in moves if move["to"] == "waiting_user"]
+    assert [(move["question"], move["question_kind"]) for move in asked] == [
+        ("which branch?", "report"),
+        ("mcp_server:github", "permission"),
+    ]
+    assert all("question" not in move for move in moves if move["to"] != "waiting_user")
+    assert SECRET not in json.dumps(moves)
+
+
+async def test_a_wait_for_the_user_with_no_question_shows_none(ledger):
+    main = await _session(ledger, "main")
+    commission = await _working(ledger, main)
+    assert (await ledger.transition(commission.id, "waiting_user")).applied
+
+    [asked] = _of(await _all(ledger), "asked_user")
+
+    assert (asked["text"], asked["detail"]) == ("", {"question_kind": ""})
 
 
 async def test_a_question_of_several_shows_the_first(ledger):
@@ -318,6 +336,27 @@ async def test_a_copy_carries_on_and_hands_back(ledger):
     assert "write_file" not in json.dumps(entries)
 
 
+async def test_taken_back_from_a_copy_and_copies_reporting(ledger):
+    main = await _session(ledger, "main")
+    commission = await _working(ledger, main)
+    await ledger.append_event(commission.id, "not_carried_on", {"copy": "copy-1", "of": main.id})
+    await ledger.append_event(commission.id, "back_from_copy", {"copy": "copy-2", "to": main.id})
+    await ledger.append_event(commission.id, "back_from_copy", {"copy": 3, "to": [main.id]})
+    await ledger.append_event(commission.id, "told_of_copies", {"text": f"<frame {SECRET}>"})
+
+    entries = await _all(ledger)
+
+    [called_off] = _of(entries, "copy_called_off")
+    assert called_off["peer"] == {"type": "session", "session_id": main.id, "commission_id": None}
+    assert called_off["detail"] == {"copy_session_id": "copy-1"}
+    back, odd = _of(entries, "back_from_copy")
+    assert back["peer"]["session_id"] == main.id and back["detail"] == {"copy_session_id": "copy-2"}
+    assert odd["peer"]["session_id"] is None and odd["detail"] == {"copy_session_id": None}
+    [told] = _of(entries, "copies_reported")
+    assert (told["text"], told["peer"], told["detail"], told["commission_id"]) == ("", None, {}, commission.id)
+    assert SECRET not in json.dumps(entries)
+
+
 async def test_resting_set_times_and_being_woken(ledger):
     main = await _session(ledger, "main")
     commission = await _working(ledger, main)
@@ -366,7 +405,7 @@ async def test_every_kind_is_in_the_list_and_steps_are_left_out(ledger):
     assert SECRET not in json.dumps(entries)
     assert _of(entries, "queued")[0]["detail"] == {"from": None, "ahead": 1, "behind": None}
     assert _of(entries, "woken")[0]["detail"] == {"count": 1, "reasons": []}
-    assert len(set(TIMELINE_KINDS)) == len(TIMELINE_KINDS) == 20
+    assert len(set(TIMELINE_KINDS)) == len(TIMELINE_KINDS) == 23
 
 
 async def _raw_event(ledger: Ledger, commission_id: str, kind: str, payload: str) -> None:
@@ -915,10 +954,11 @@ async def test_waits_kept_to_a_project_or_character_longest_first_and_capped(led
 
 async def test_waits_at_one_time_are_in_the_order_of_their_kinds(ledger):
     main = await _session(ledger, "main")
-    parent = await _working(ledger, main)
+    # Named so that the waiters' names alone would put the child first.
+    parent = await _working(ledger, main, id="a-parent")
     kid_session = await _session(ledger, "kid", kind="child")
     await _working(ledger, kid_session, "part", source="task_agent", parent_id=parent.id)
-    queued = await _file(ledger, main, "next")
+    queued = await _file(ledger, main, "next", id="z-queued")
 
     waits = await _waits(ledger)
 

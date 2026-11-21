@@ -72,6 +72,9 @@ TIMELINE_KINDS: tuple[str, ...] = (
     "ask_answered",  # the copy that answered a question one session asked another is over
     "into_copy",  # it went on in a copy of its session
     "handed_back",  # the copy handed it back to the session it was copied from
+    "copy_called_off",  # it was taken back from a copy before it began there
+    "back_from_copy",  # taken up again, it went back from its copy to the session
+    "copies_reported",  # a session was told what came of the work in its copies
     "resting",  # it rests until a time
     "rest_over",  # its rest is over
     "wake_set",  # it set itself a time to be woken at
@@ -101,6 +104,9 @@ _EVENT_TYPES: tuple[str, ...] = (
     "subagent_started",
     "carried_on_in_copy",
     "handed_back",
+    "not_carried_on",
+    "back_from_copy",
+    "told_of_copies",
     "resting",
     "rest_over",
     "wake_set",
@@ -194,8 +200,7 @@ def _event_rows(
     types = ", ".join("?" for _ in _EVENT_TYPES)
     return conn.execute(
         "SELECT e.rowid AS number, e.commission_id, e.seq, e.ts, e.type, e.payload, "
-        "c.session_id, c.project, c.lanlan_name, c.parent_id, c.source, c.title, "
-        "c.status AS commission_status, c.pending_question "
+        "c.session_id, c.project, c.lanlan_name, c.parent_id, c.source, c.title "
         "FROM events e JOIN commissions c ON c.id = e.commission_id "
         f"WHERE e.rowid > ? AND e.type IN ({types}) "
         # A question one session asks another is told by its message.
@@ -271,24 +276,11 @@ def _wake_reasons(conn: sqlite3.Connection, wake_ids: set[int]) -> dict[int, str
     return {int(row["id"]): str(row["reason"]) for row in rows}
 
 
-def _last_status(conn: sqlite3.Connection, commission_ids: set[str]) -> set[tuple[str, int]]:
-    """Return the last status event of each of these commissions, as ``(commission, seq)``."""
-    ids = sorted(commission_ids)
-    marks = ", ".join("?" for _ in ids)
-    found = conn.execute(
-        f"SELECT commission_id, MAX(seq) AS seq FROM events WHERE type = 'status' AND commission_id IN ({marks}) "
-        "GROUP BY commission_id",
-        ids,
-    ).fetchall()
-    return {(row["commission_id"], int(row["seq"])) for row in found}
-
-
 def _event_entry(
     row: sqlite3.Row,
     payload: dict[str, Any],
     sessions: dict[str, str | None],
     reasons: dict[int, str],
-    asking: set[tuple[str, int]],
 ) -> dict[str, Any]:
     kind, text, peer, detail = row["type"], "", None, {}
     if kind == "created":
@@ -307,9 +299,9 @@ def _event_entry(
         elif to == "queued":
             kind, detail = "queued", {"from": came_from, "ahead": None, "behind": None}
         elif to == "waiting_user":
-            kind, peer, detail = "asked_user", _USER, {"question_kind": None}
-            if (row["commission_id"], int(row["seq"])) in asking:
-                text, detail["question_kind"] = question_text(row["pending_question"])
+            # What it asked was put with the move (``Ledger._transition``).
+            kind, text, peer = "asked_user", _text(payload.get("question")), _USER
+            detail = {"question_kind": _text(payload.get("question_kind"))}
         else:
             kind, text, detail = "ended", _text(payload.get("reason")), {"outcome": to}
             if row["source"] in ("task_agent", "ask"):
@@ -328,6 +320,13 @@ def _event_entry(
         detail = {"copy_session_id": payload.get("session_id") if isinstance(payload.get("session_id"), str) else None}
     elif kind == "handed_back":
         peer = _session(payload.get("to"))
+    elif kind in ("not_carried_on", "back_from_copy"):
+        main = payload.get("of") if kind == "not_carried_on" else payload.get("to")
+        kind, peer = "copy_called_off" if kind == "not_carried_on" else kind, _session(main)
+        detail = {"copy_session_id": payload.get("copy") if isinstance(payload.get("copy"), str) else None}
+    elif kind == "told_of_copies":
+        # What it was told is the host's framing for the model, not a line to show.
+        kind = "copies_reported"
     elif kind == "resting":
         detail = {"until": _number(payload.get("until"))}
     elif kind == "wake_set":
@@ -414,22 +413,11 @@ def read_timeline(
         wakes.update(_wake_ids(payload))
     sessions = _sessions_of(conn, named)
     reasons = _wake_reasons(conn, wakes)
-    # Of a question only the one a commission waits on now is on record:
-    # that of its last status event, while it waits. (Which commissions are
-    # looked up only saves a query: the match below decides.)
-    asking = _last_status(
-        conn,
-        {
-            row["commission_id"]
-            for row in event_rows
-            if row["commission_status"] == "waiting_user" and payloads[int(row["number"])].get("to") == "waiting_user"
-        },
-    )
     entries: list[dict[str, Any]] = []
     for source, row in taken:
         if source == _EVENTS:
             event_after = int(row["number"])
-            entry = _event_entry(row, payloads[event_after], sessions, reasons, asking)
+            entry = _event_entry(row, payloads[event_after], sessions, reasons)
         else:
             message_after = int(row["number"])
             entry = _message_entry(row)
