@@ -701,3 +701,23 @@ def test_find_model_config_file_builds_workshop_urls_from_the_item_folder(librar
     assert frontend_utils.find_model_config_file("Gamma") == "/workshop/Gamma/Gamma.model3.json"
     with _client(libraries, []) as client:
         assert client.get("/workshop/200/Bravo.model3.json").status_code == 200
+
+
+def test_model_files_by_id_static_fallback_uses_the_shared_choice(libraries, monkeypatch):
+    """No Workshop directory at all: the by-id /static fallback still agrees with the config route."""
+    libraries.config._primary_root = str(libraries.tmp_path / "missing_root")
+    work = libraries.tmp_path / "cwd"
+    item = work / "static" / "200"
+    _write_model(item, "live2d", "100")
+    _write_model(item, "live2d", "200")
+    monkeypatch.chdir(work)
+    real_listdir = os.listdir
+    # Make "100" the first listed file, which the old first-listed rule would pick.
+    monkeypatch.setattr(os, "listdir", lambda path=".": sorted(real_listdir(path)))
+    assert frontend_utils.find_workshop_item_by_id("200") == (os.path.join("static", "200"), "/static")
+    with _client(libraries, []) as client:
+        files = client.get("/api/live2d/model_files_by_id/200").json()
+        config = client.get("/api/live2d/model_config_by_id/200").json()["config"]
+    assert files["success"] is True
+    assert files["model_config_url"].endswith("/200.model3.json")
+    assert config["FileReferences"]["Moc"] == "200.moc3"

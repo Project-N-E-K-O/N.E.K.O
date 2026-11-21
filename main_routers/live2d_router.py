@@ -1078,7 +1078,9 @@ def get_model_files_by_id(model_id: str):
             logger.debug(f"通过model_id {model_id} 查找模型目录: {model_dir}")
         except Exception as e:
             logger.warning(f"通过model_id查找失败: {e}")
-        found_by_item_id = bool(model_dir and url_prefix == '/workshop' and os.path.exists(model_dir))
+        # Any directory the by-id lookup returned (/workshop or its /static fallback)
+        # uses the shared model choice; only the by-name fallback below keeps the old rule.
+        found_by_item_id = bool(model_dir and os.path.exists(model_dir))
         
         # If model_id yields no valid directory, fall back treating it as model_name.
         if not model_dir or not os.path.exists(model_dir):
