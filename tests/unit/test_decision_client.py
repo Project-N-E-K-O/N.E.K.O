@@ -1892,3 +1892,57 @@ async def test_memory_recall_cancels_in_flight_batches_after_a_failure():
         )
     assert slow_cancelled.is_set()
     assert [r["id"] for r in ranked] == ["m1", "m0"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_memory_recall_falls_back_when_one_batch_has_no_valid_scores():
+    from memory.recall import MemoryRecallReranker
+    from utils.decision_client.schema import DecisionAnswer, DecisionResponse
+
+    decision_cfg = {
+        "model": "decision-model-preview",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "sk-test",
+        "decision_protocol": "systemone",
+        "decision_url": "https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+    }
+    summary_cfg = {
+        "model": "qwen3.8-flash",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "sk-test",
+        "provider_type": "openai_compatible",
+    }
+    cm = MagicMock()
+    cm.aget_model_api_config = AsyncMock(side_effect=lambda tier: decision_cfg if tier == "decision" else summary_cfg)
+    candidates = [{"id": f"m{i}", "text": f"fact {i}", "score": float(20 - i)} for i in range(20)]
+
+    async def _decide(self, *, state, questions, **kwargs):
+        # First batch (m0..m15): every question refused -> no answers at all.
+        if "m0" in questions:
+            return DecisionResponse(answers={}, model="decision-model-preview", protocol="systemone")
+        return DecisionResponse(
+            answers={qid: DecisionAnswer(question_type="score", value=3.0, score_norm=1.0) for qid in questions},
+            model="decision-model-preview",
+            protocol="systemone",
+        )
+
+    fake_llm = SimpleNamespace(
+        ainvoke=AsyncMock(return_value=SimpleNamespace(content='[{"id": "m0"}, {"id": "m1"}]')),
+        aclose=AsyncMock(),
+    )
+    with (
+        patch.object(DecisionClient, "decide", _decide),
+        patch("utils.llm_client.create_chat_llm_async", AsyncMock(return_value=fake_llm)) as mock_create,
+    ):
+        ranked = await MemoryRecallReranker()._fine_rank(
+            candidates,
+            query_texts=["q"],
+            budget=2,
+            config_manager=cm,
+            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
+            lang="en",
+        )
+    # Summary chat rerank decided the order, not the half-scored native pass.
+    assert mock_create.await_count == 1
+    assert [r["id"] for r in ranked] == ["m0", "m1"]

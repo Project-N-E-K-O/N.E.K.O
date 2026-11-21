@@ -786,8 +786,18 @@ class MemoryRecallReranker:
                     if pending_batches:
                         await asyncio.gather(*pending_batches, return_exceptions=True)
                 native_answers: dict = {}
-                for batch_resp in batch_responses:
-                    native_answers.update(batch_resp.answers or {})
+                for batch_ids, batch_resp in zip(batches, batch_responses):
+                    batch_answers = batch_resp.answers or {}
+                    # A batch with no usable score (e.g. every question refused)
+                    # fails the whole pass, like a single unsplit request would;
+                    # otherwise its candidates would sink below every scored one.
+                    if not any(
+                        batch_answers.get(cid) is not None
+                        and batch_answers[cid].score_norm is not None
+                        for cid in batch_ids
+                    ):
+                        raise RuntimeError("native decision batch returned no valid scores")
+                    native_answers.update(batch_answers)
                 if native_answers:
                     scored_rows: list[tuple[float, int, str]] = []
                     for idx, cid in enumerate(native_candidate_ids):
