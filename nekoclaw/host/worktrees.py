@@ -781,13 +781,14 @@ class WorktreeManager:
         # with no command (git then stops the merge rather than merge as text).
         # Names only, NUL-separated: a name may hold spaces ([merge "my drv"]).
         configured = await self._git(
-            root, "config", "-z", "--name-only", "--get-regexp", r"^merge\..+\.[^.]+$", check=False
+            root, "config", "-z", "--name-only", "--get-regexp", r"^merge\..*\.[^.]+$", check=False
         )
+        # The name may be empty ([merge ""]) or hold spaces anywhere.
         keys = [key for key in configured.stdout.split(b"\0") if key.startswith(b"merge.") and key.count(b".") >= 2]
         theirs = {key[len(b"merge.") : key.rindex(b".")] for key in keys}
-        default = await self._git(root, "config", "--get", "merge.default", check=False)
-        driver = default.stdout.strip()
-        if driver in theirs:
+        default = await self._git(root, "config", "-z", "--get", "merge.default", check=False)
+        driver = default.stdout[:-1] if default.stdout.endswith(b"\0") else default.stdout
+        if default.returncode == 0 and driver in theirs:
             return MERGE_DRIVERS, f"merge.default is {_decode(driver)}"
         checked = await self._git(
             root,

@@ -2419,3 +2419,24 @@ async def test_killing_the_tree_takes_what_git_started(monkeypatch: Any) -> None
     await asyncio.wait_for(process.communicate(), 10)  # its pipes close: nothing holds them now
     gone = await asyncio.to_thread(psutil.wait_procs, children, 10)
     assert not gone[1]
+
+
+@pytest.mark.parametrize(
+    ("extra", "usable"),
+    [
+        (b'[merge ""]\n\tdriver = cat %A\n[merge]\n\tdefault = ""\n', False),
+        (b'[merge ""]\n\tdriver = cat %A\n', True),  # configured, not chosen
+        (b'[merge " demo "]\n\tdriver = cat %A\n[merge]\n\tdefault = " demo "\n', False),
+        (b'[merge " demo "]\n\tdriver = cat %A\n[merge]\n\tdefault = demo\n', True),  # another name
+    ],
+    ids=["empty-name-chosen", "empty-name-not-chosen", "spaces-kept", "spaces-differ"],
+)
+async def test_probe_merge_driver_names_as_git_reads_them(
+    repo: Path, manager: WorktreeManager, extra: bytes, usable: bool
+) -> None:
+    config = repo / ".git" / "config"
+    config.write_bytes(config.read_bytes() + extra)
+    found = await manager.probe(repo)
+    assert found.usable is usable
+    if not usable:
+        assert found.reason == worktrees.MERGE_DRIVERS
