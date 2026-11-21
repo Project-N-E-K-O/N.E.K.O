@@ -1243,7 +1243,8 @@ async def test_restored_compaction_count_alone_does_not_discard_a_used_group(bui
     assert {tool["name"] for tool in folded} == {SEARCH_TOOL, CALL_TOOL}
 
 
-async def test_compaction_during_permission_preflight_and_device_execution(builtin_host):
+@pytest.mark.parametrize("idle_cycle", [False, True])
+async def test_compaction_during_permission_preflight_and_device_execution(builtin_host, idle_cycle):
     host = builtin_host
     commission = await _commission(host)
     token = host.gateway.issue(commission.id, supports_images=True, first_turn_groups=("browser",))
@@ -1257,7 +1258,8 @@ async def test_compaction_during_permission_preflight_and_device_execution(built
         return "once"
 
     async def listed(count):
-        return {d["name"] for d in await host.gateway.tool_definitions(grant, compactions=count)}
+        tools = await host.gateway.tool_definitions(grant, compactions=count, idle_device_cycle=idle_cycle)
+        return {tool["name"] for tool in tools}
 
     host.permissions.set_asker(ask)
     preflight = asyncio.create_task(host.gateway.clear_call(commission.id, "browser_take_screenshot", {}))

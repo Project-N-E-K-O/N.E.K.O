@@ -506,6 +506,9 @@ class TaskAgentSession(SessionInbox):
         # Fresh user input only. Consume it at the next summary, even when
         # it asked for the same device as the commission that opened here.
         self._wanted_device_groups: tuple[str, ...] = ()
+        # A summary can run again after a provider refuses a request. Keep
+        # this input's groups until an ordinary model request gets a reply.
+        self._unanswered_device_groups: tuple[str, ...] = ()
         self._device_fold_due = False
         self._device_fold_at = 0
         # What the model is told of, as the snapshot has it.
@@ -629,6 +632,7 @@ class TaskAgentSession(SessionInbox):
                 raise SessionError(f"the capability gateway cannot be reached: {exc}") from exc
             self._commission_tools = [tool for tool in gateway_tools if tool.name in self._gateway.commission_tools]
             self._wanted_device_groups = tuple(sorted(set(self._gateway.device_groups.values())))
+            self._unanswered_device_groups = self._wanted_device_groups
             executors = sorted([*executors, *gateway_tools], key=lambda tool: tool.name)
         self._executors = executors
         self._workdir, self._session_dir = workdir, session_dir
@@ -775,7 +779,8 @@ class TaskAgentSession(SessionInbox):
 
         try:
             definitions = await gateway.list_tools(
-                compactions=self._device_fold_at if fold else None, wanted=self._wanted_device_groups
+                compactions=self._device_fold_at if fold else None,
+                wanted=self._wanted_device_groups or self._unanswered_device_groups,
             )
         except GatewayError:
             # The host still controls every call. Keep the last usable list
@@ -1001,6 +1006,7 @@ class TaskAgentSession(SessionInbox):
                     from nekoclaw.device_intent import select_device_groups
 
                     self._wanted_device_groups = select_device_groups(message.text)
+                    self._unanswered_device_groups = self._wanted_device_groups
                     hidden = gateway.device_groups.keys() - gateway.commission_tools
                     if any(gateway.device_groups[name] in self._wanted_device_groups for name in hidden):
                         gateway.device_list_dirty = True
@@ -1148,7 +1154,9 @@ class TaskAgentSession(SessionInbox):
                         if held is not None:
                             yield held
                             held = None
-                        answered = answered or isinstance(event, AssistantDoneEvent)
+                        if isinstance(event, AssistantDoneEvent):
+                            self._unanswered_device_groups = ()
+                            answered = True
                         yield event
                     if answered:
                         # Shorter, it went through. That does not show it

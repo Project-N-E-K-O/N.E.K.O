@@ -83,6 +83,56 @@ async def test_device_schemas_reach_the_model_and_leave_on_session_reuse(tmp_pat
         await host.shutdown()
 
 
+async def test_builtin_explicit_device_instruction_survives_summary_then_overflow_retry(tmp_path):
+    events = Recorder()
+    runtime = InProcessRuntime(events)
+    provider = BuiltinToolProvider(state=lambda group: (True, ""))
+    host = make_host(tmp_path, builtins=provider, plugins_enabled=lambda: False)
+    long_reply = " ".join(f"step{i}" for i in range(1600))
+    short_reply = " ".join(f"tail{i}" for i in range(500))
+    summary = [sse_text("## Current Work\nFinished the previous steps."), sse_finish()]
+    replies = iter([
+        *([[sse_text(long_reply), sse_finish()]] * 3),
+        [sse_text(short_reply), sse_finish()], [sse_text(short_reply), sse_finish(), sse_usage(29_000, 1_000)],
+        summary,
+        (400, {"error": {"message": "This model's maximum context length is 32000 tokens.",
+                         "type": "invalid_request_error", "code": "context_length_exceeded"}}),
+        summary,
+        [sse_text(long_reply), sse_finish(), sse_usage(29_000, 1_000)], summary,
+        [sse_text("Done."), sse_finish()],
+    ])
+    try:
+        url = await host.gateway.start()
+        token = host.gateway.issue("wire", supports_images=True, first_turn_groups=("browser",))
+        with FakeOpenAIServer(lambda _: next(replies)) as server:
+            model = ModelConfig(model="local-fixture", base_url=server.base_url, api_key="test-only",
+                                auto_extra_body=False, supports_images=True, context_window=32_000, max_output_tokens=2_000)
+            spec = make_spec(tmp_path, model=model, gateway=GatewaySpec(url=url, token=token))
+            await runtime.start(spec)
+            for i, prompt in enumerate(["Open the browser", "Step two.", "Step three.", "Step four.",
+                                        "Step five.", "List browser tabs"]):
+                start = len(events.events)
+                await runtime.prompt(spec.session_id, prompt, opening=i == 0)
+                ended = await events.wait_ended(spec.session_id, start=start)
+                assert ended["reason"] == "completed", ended
+            assert len(events.of("compacted")) == 2
+            assert len(server.requests) == 9
+            initial, refused, retried = [server.requests[i]["tools"] for i in (0, 6, 8)]
+            assert any(t["function"]["name"] == "browser_list_pages" for t in initial)
+            assert refused == initial
+            assert retried == initial
+            # The reply consumed the current instruction. An automatic wake
+            # brings no fresh intent: the next unused cycle can fold again.
+            start = len(events.events)
+            await runtime.prompt(spec.session_id, "Continue.", human=False)
+            await events.wait_ended(spec.session_id, start=start)
+            assert len(events.of("compacted")) == 3 and len(server.requests) == 11
+            assert not any(t["function"]["name"].startswith("browser_") for t in server.requests[-1]["tools"])
+    finally:
+        await runtime.shutdown()
+        await host.shutdown()
+
+
 @pytest.mark.parametrize("scenario", ["manual-explicit-intent", "automatic-rediscovery", "truncated-summary"])
 async def test_builtin_model_receives_folded_and_restored_browser_schema(tmp_path, monkeypatch, scenario):
     from utils.tokenize import count_tokens

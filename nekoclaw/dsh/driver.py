@@ -247,6 +247,9 @@ class _Session:
     # One newly accepted user instruction. Never send its text to the gateway.
     device_intent: tuple[str, ...] = ()
     device_intent_input: int = 0
+    # Inputs of the last completed ACP prompt that received a real model reply.
+    device_completed_input: int = 0
+    device_local_reply_turn: int = -1
     visible_devices: list[str] | None = None
     device_epoch: int = 0
     device_refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -473,6 +476,8 @@ class DshRuntime:
         session = self._sessions.get(session_id)
         if session is not None:
             session.local_reply_due = True
+            session.device_local_reply_turn = session.turns
+            session.device_completed_input = 0
 
     def _on_window(self, session_id: str, model: Any, tokens: int, said: str) -> None:
         """A session's model endpoint refused a request as too long and stated its window.
@@ -544,7 +549,8 @@ class DshRuntime:
         return bool(process and process.native_device_schemas and not process.retiring and process.connection.alive)
 
     async def _device_view(
-        self, token: str, dsh_id: str, epoch: int, refresh: bool, idle_cycle: bool = False
+        self, token: str, dsh_id: str, epoch: int, refresh: bool, idle_cycle: bool = False,
+        shown: tuple[str, ...] = (), same_turn: bool = False,
     ) -> list[str] | None:
         """Refresh just this process's registered commission devices after a successful summary."""
         from nekoclaw.runtime.tools.gateway import GatewayClient
@@ -560,18 +566,20 @@ class DshRuntime:
             input_number = session.device_intent_input
             if epoch < session.device_epoch or (not refresh and not wanted and epoch == session.device_epoch):
                 return session.visible_devices
-            # A steer that arrived while dsh was summarizing is still queued:
-            # no prompt or wait-agent result could take it between these ends.
-            unconsumed = input_number > session.taken
-            if idle_cycle and epoch > session.device_epoch and not unconsumed:
-                wanted = ()
+            # A pre-step summary runs after input admission but before that input
+            # reaches a model. Only an ordinary successful reply proves exposure.
+            delivered = session.device_completed_input
+            if same_turn and session.device_local_reply_turn != session.turns:
+                delivered = session.taken
+            if input_number <= delivered:
+                wanted = tuple(group for group in wanted if group not in shown)
             client = GatewayClient(gateway.url, gateway.token)
             try:
                 await client.list_tools(compactions=epoch, wanted=wanted, idle_device_cycle=idle_cycle)
             finally:
                 await client.aclose()
-            if epoch > session.device_epoch and session.device_intent_input == input_number and not unconsumed:
-                session.device_intent = ()
+            if session.device_intent_input == input_number:
+                session.device_intent = wanted
             session.device_epoch = epoch
             session.visible_devices = sorted(client.commission_tools)
             return session.visible_devices
@@ -1490,6 +1498,9 @@ class DshRuntime:
                     # they go with the next turn.
                     await self._answers_settled(session)
                     self._say_taken(session, session.awaited)
+                    if (isinstance(answer, dict) and answer.get("stopReason") in ("end_turn", "max_tokens")
+                            and session.device_local_reply_turn != session.turns - 1):
+                        session.device_completed_input = max([session.device_completed_input, *sent, *session.awaited])
                 session.awaited = []
                 session.answering = []
                 if first:

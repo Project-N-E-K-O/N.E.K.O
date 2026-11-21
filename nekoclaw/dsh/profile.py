@@ -175,6 +175,16 @@ function installDeviceView(ctx, url) {
   })
   ctx.on('session/event', (session, event) => {
     const view = views.get(session)
+    if (view && event.type === 'assistant/message' && !event.data.interrupted) {
+      // Only the ordinary agent loop commits this event. An overflow, network
+      // failure or interrupted stream is an attempt; a summary is separate.
+      const groups = new Set()
+      for (const tool of view.assembly.tools) {
+        if (tool.name === prefix + 'computer') groups.add('keyboard_mouse')
+        if (tool.name.startsWith(prefix + 'browser_')) groups.add('browser')
+      }
+      view.shown = { groups: [...groups], turn: event.data.turn }
+    }
     if (view && event.type === 'compaction/end' && event.data.error === undefined) {
       view.idleCycle = view.endSinceRequest === true
       view.endSinceRequest = true
@@ -187,7 +197,11 @@ function installDeviceView(ctx, url) {
     if (view?.hidden && !result.isError && exec.name === prefix + 'capability_search' && exec.arguments?.group) {
       view.dirty = true
     }
-    if (view?.hidden && exec.name === 'mcp__host__wait_agent') view.checkIntent = true
+    if (view && exec.name === 'mcp__host__wait_agent') {
+      // New user input may have just been delivered, after the preceding reply.
+      view.shown = null
+      view.checkIntent = true
+    }
   })
   ctx.on('agent/request', async ({ agent, turn, signal }, next) => {
     const view = views.get(agent.session)
@@ -198,13 +212,19 @@ function installDeviceView(ctx, url) {
     view.endSinceRequest = false
     if (view.dirty || (view.hidden && (view.turn !== turn || view.checkIntent))) {
       try {
+        const status = { session: agent.session.id, epoch: view.epoch, refresh: view.dirty }
+        if (idleCycle) status.idleCycle = true
+        if (view.shown?.groups.length) {
+          status.shown = view.shown.groups
+          if (view.shown.turn === turn) status.sameTurn = true
+        }
         const response = await fetch(url, {
           method: 'POST', redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
           headers: {
             Authorization: 'Bearer ' + process.env.NEKOCLAW_DSH_ENDPOINT_TOKEN,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ session: agent.session.id, epoch: view.epoch, refresh: view.dirty, idleCycle }),
+          body: JSON.stringify(status),
         })
         if (response.ok) {
           const names = await response.json()

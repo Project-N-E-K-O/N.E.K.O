@@ -49,15 +49,17 @@ async def test_device_refresh_does_not_consume_a_new_identical_instruction_or_re
     assert await first == await stale == ["browser_navigate_page"]
     assert session.device_intent == ("browser",)
     # The second steer is still pending, even if two summaries finished together.
-    await runtime._device_view("process", "dsh", 4, True, idle_cycle=True)
+    await runtime._device_view("process", "dsh", 4, True, idle_cycle=True, shown=("browser",), same_turn=True)
     assert session.device_intent == ("browser",)
     session.taken = session.given
-    await runtime._device_view("process", "dsh", 5, True)
-    assert calls == [(2, ("browser",)), (4, ("browser",)), (5, ("browser",))]
+    await runtime._device_view("process", "dsh", 5, True, shown=("browser",), same_turn=True)
+    assert calls == [(2, ("browser",)), (4, ("browser",)), (5, ())]
     assert session.device_intent == ()
 
 
-@pytest.mark.parametrize("scenario", ["search", "new_instruction", "failure", "consecutive", "incomplete_profile"])
+@pytest.mark.parametrize(
+    "scenario", ["search", "new_instruction", "synthetic", "failure", "consecutive", "incomplete_profile"]
+)
 async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path, monkeypatch, record_property, scenario):
     binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
     if not binary:
@@ -83,9 +85,9 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
     control_calls = []
     original_view = runtime._endpoint._device_view
 
-    async def count_control_calls(process, session, epoch, refresh, idle_cycle):
+    async def count_control_calls(process, session, epoch, refresh, idle_cycle, shown, same_turn):
         control_calls.append((epoch, refresh, idle_cycle))
-        return await original_view(process, session, epoch, refresh, idle_cycle)
+        return await original_view(process, session, epoch, refresh, idle_cycle, shown, same_turn)
 
     monkeypatch.setattr(runtime._endpoint, "_device_view", count_control_calls)
 
@@ -126,12 +128,12 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
             # Pressure on the next turn, then a provider-declared overflow on
             # its first ordinary request. The retry reuses the frozen header.
             ordinary = sum(not sample["summary"] for sample in snapshots)
-            usage = {1: 9000, 2: 11000}.get(ordinary, 100)
+            usage = {1: 9000, 2: 11000, 3: 9000}.get(ordinary, 100)
         return [sse_text("Done."), sse_finish(), sse_usage(usage, 10)]
 
-    async def turn(text, *, opening=False):
+    async def turn(text, *, opening=False, human=True):
         start = len(recorder.events)
-        await runtime.prompt(spec.session_id, text, opening=opening)
+        await runtime.prompt(spec.session_id, text, opening=opening, human=human)
         result = await recorder.wait_ended(spec.session_id, timeout=40, start=start)
         assert result["reason"] == "completed", result
 
@@ -162,9 +164,15 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
                 await turn("Open the browser, then reply Done.")
                 assert control_calls == [(2, True, True), (3, True, False)]
                 assert len(list_calls) == 2
-                assert list_calls[0]["wanted"] == () and list_calls[0]["idle_device_cycle"] is True
+                assert list_calls[0]["wanted"] == ("browser",) and list_calls[0]["idle_device_cycle"] is True
                 regular = [names for stage, summary, names, _ in seen if stage == "second" and not summary]
-                assert len(regular) == 2 and all("mcp__gateway__browser_navigate_page" not in names for names in regular)
+                assert len(regular) == 2 and all("mcp__gateway__browser_navigate_page" in names for names in regular)
+                # The successful retry showed the instruction and its schemas.
+                # This host-generated continuation must not renew that intent.
+                phase = "synthetic"
+                await turn("Open the browser, then reply Done.", human=False)
+                ordinary = [names for stage, summary, names, _ in seen if stage == "synthetic" and not summary]
+                assert ordinary and all("mcp__gateway__browser_navigate_page" not in names for names in ordinary)
                 return
             await turn("Reply with Done.", opening=True)
             phase = "pressure"
@@ -178,6 +186,12 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
                 assert list_calls == [] and control_calls == []
                 return
             phase = scenario
+            if scenario == "synthetic":
+                before = len(list_calls)
+                await turn("Open the browser.", human=False)
+                assert not any(summary for stage, summary, _, _ in seen if stage == "synthetic")
+                assert browser not in seen[-1][2] and len(list_calls) == before
+                return
             if scenario == "search":
                 await turn("Use the catalog to retrieve the previous tool group.")
                 assert called
