@@ -2187,17 +2187,18 @@ class TaskAgentManager:
             most = settings.TASK_AGENT_FORKED_WORK_MAX_ITEMS
             news = self._handed_back_news.pop(main, [])
             handed: list[tuple[Commission, str]] = []
-            # Told by an opening message that is on its way (``_copies_said``)
-            # until it is seen taken (``_note_opened``): not a second time here.
-            told_in_openings = {item for items in self._forks_said.values() for item in items}
             try:
                 # Past those already on their way to it: what is left over
                 # once a text has told of the most it may goes with the next.
+                # (One more than is told: whether any is left over.)
+                passed = len(self._copies_on_the_way) + sum(len(items) for items in self._forks_said.values())
+                found = await self._ledger.forked_work(main, limit=most + passed + 1)
+                # Told by an opening message that is on its way (``_copies_said``)
+                # until it is on record as told (``_note_opened``), as it stands
+                # once that was read: not a second time here.
+                told_in_openings = {item for items in self._forks_said.values() for item in items}
                 waiting_to_be_told = [
-                    item
-                    # (One more than is told: whether any is left over.)
-                    for item in await self._ledger.forked_work(main, limit=most + len(self._copies_on_the_way) + 1)
-                    if item.id not in self._copies_on_the_way and item.id not in told_in_openings
+                    item for item in found if item.id not in self._copies_on_the_way and item.id not in told_in_openings
                 ]
                 done = waiting_to_be_told[:most]
                 while news and len(done) + len(handed) < most:

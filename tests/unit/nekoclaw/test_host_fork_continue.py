@@ -902,10 +902,30 @@ async def test_what_a_copy_finished_after_the_session_went_idle_is_told_with_the
         EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
         FILES: ScriptedLLM([[copy_wait, *_report("tables.py")]]),
         # Filed for a note another session wrote: opened in the session itself all the same.
-        "a note from another session": ScriptedLLM([_report("noted")]),
+        "a note from another session": ScriptedLLM(
+            [[call("glob", {"pattern": "*.py"}, "call-n"), finish("tool_calls")], _report("noted")]
+        ),
     }
     host = _host(hosts, tmp_path, scripts)
     sent = _news_sent(host, monkeypatch)
+    append = host.ledger.append_event
+
+    async def slow_told(commission_id: str, kind: str, payload: Any = None) -> Any:
+        if kind == "told_to_session" and not (payload or {}).get("steered"):
+            # What the opening told is put on record a while after it was
+            # taken: meanwhile it is not steered in as well.
+            await asyncio.sleep(0.3)
+        return await append(commission_id, kind, payload)
+
+    monkeypatch.setattr(host.ledger, "append_event", slow_told)
+    forked_work = host.ledger.forked_work
+
+    async def slow_read(*args: Any, **kwargs: Any) -> Any:
+        # Read while that is being put on record.
+        await asyncio.sleep(0.1)
+        return await forked_work(*args, **kwargs)
+
+    monkeypatch.setattr(host.ledger, "forked_work", slow_read)
     first = await _export_at_work(host, scripts)
     second = await _dispatch(host, FILES)
     await wait_until(lambda: scripts[FILES].requests, what="the copy at work")
