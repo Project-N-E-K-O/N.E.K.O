@@ -2870,6 +2870,7 @@
                 }
             }
             const pendingKeysToReassert = [];
+            const supersededPendingKeys = [];
             if (meta) {
                 // Keep this as for...of: static listener-contract tests slice
                 // at the first callback terminator.
@@ -2885,13 +2886,26 @@
                             || _sharedWriteTokenOutranks(meta, localToken)
                             || (meta.writeId === localToken.writeId
                                 && meta.writerId === localToken.writerId));
-                    if (incomingCanSupersede) continue;
+                    if (incomingCanSupersede) {
+                        // The other window's newer edit replaces this
+                        // window's unsaved one, so it is no longer this
+                        // window's to send: the baseline rolls to it below.
+                        // Left pending, the next unrelated save would send the
+                        // received value out as this window's explicit write.
+                        if (Object.prototype.hasOwnProperty.call(incoming, key)) {
+                            supersededPendingKeys.push(key);
+                        }
+                        continue;
+                    }
                     if (!Object.prototype.hasOwnProperty.call(settings, key)) continue;
                     if (Object.prototype.hasOwnProperty.call(incoming, key)) {
                         if (incoming === settings) incoming = Object.assign({}, settings);
                         delete incoming[key];
                     }
                     pendingKeysToReassert.push(key);
+                }
+                for (const key of supersededPendingKeys) {
+                    _pendingSettingsKeys.delete(key);
                 }
             }
             _noteCrossWindowMutations(incoming, meta ? meta.changedKeys : null);

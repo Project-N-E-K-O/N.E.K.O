@@ -318,6 +318,40 @@ _HARNESS = textwrap.dedent(
       await settle();
       assert(serverSettings.mergeMessagesEnabled === false && b.S.mergeMessagesEnabled === false,
         'A\\'s own later edit wins everywhere');
+
+      // An unsaved edit in A that B's newer explicit edit replaced is no longer
+      // A's: A applies B's value and its next unrelated save does not send it
+      // out as A's own write. (The case above is the pair: an incidental copy
+      // does not replace A's unsaved edit.)
+      a.holdPosts = true;
+      a.S.mergeMessagesEnabled = true;
+      a.mod.saveSettings();
+      await settle();
+      // B has not seen A's edit; it turns the key on and off again (explicit).
+      b.S.mergeMessagesEnabled = true;
+      b.mod.saveSettings();
+      await settle();
+      b.S.mergeMessagesEnabled = false;
+      b.mod.saveSettings();
+      await settle();
+      a.deliver();
+      await settle();
+      assert(a.S.mergeMessagesEnabled === false, 'A applies B\\'s newer explicit edit');
+      a.S.focusModeEnabled = !a.S.focusModeEnabled;
+      a.mod.saveSettings();
+      const supersededKeys = changedKeysOfStored();
+      assert(supersededKeys.indexOf('mergeMessagesEnabled') === -1,
+        'a superseded unsaved edit is not sent as A\\'s write: ' + JSON.stringify(supersededKeys));
+      assert(supersededKeys.indexOf('focusModeEnabled') !== -1, 'A\\'s own edit is explicit');
+      a.releasePosts();
+      await settle();
+      a.releasePosts();
+      await settle();
+      a.deliver();
+      b.deliver();
+      await settle();
+      assert(a.S.mergeMessagesEnabled === false && b.S.mergeMessagesEnabled === false,
+        'both windows keep B\\'s newer edit');
     }
 
     // Capture-side gates read the shared state: another window's revocation or
