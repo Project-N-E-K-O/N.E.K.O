@@ -307,6 +307,11 @@ def test_grep_reads_line_by_line_and_finds_a_keyword_beyond_the_prefix(
         path, regex.compile("needle.+cut"), None, tmp_path, _budget(), case_insensitive_globs=False
     )
     assert regex_matches.incomplete and not regex_matches
+    path.write_text("x" * 90 + "y\nxxx\n", encoding="utf-16")
+    anchored = search.grep_files(
+        path, regex.compile("^x+$"), None, tmp_path, _budget(), case_insensitive_globs=False
+    )
+    assert anchored.incomplete and [match.line_number for match in anchored] == [2]
     # No phantom empty line after a final newline.
     path.write_bytes(b"one\n\n")
     blank = search.grep_files(

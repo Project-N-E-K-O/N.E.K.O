@@ -218,12 +218,15 @@ class JobRegistry:
         return [job for job in self.visible() if job.active]
 
     def waking(self) -> list[Job]:
-        """Return the running jobs whose end tells the session, which starts its next run.
+        """Return jobs that can still wake the session, including a notice awaiting admission.
 
         Not one that whoever stopped it already knows about (the model's own
         ``job_kill``): nothing follows its end.
         """
-        return [job for job in self.running() if not job.notice_suppressed]
+        return [
+            job for watcher, job in self._watchers.items()
+            if not watcher.done() and job.id in self._jobs and not job.foreground and not job.notice_suppressed
+        ]
 
     def remove(self, job: Job) -> None:
         self._jobs.pop(job.id, None)

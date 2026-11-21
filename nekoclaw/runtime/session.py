@@ -128,6 +128,7 @@ from nekoclaw.runtime.tools import build_tools
 from nekoclaw.runtime.tools.base import SessionInbox, SpillStore, ToolContext, ToolError, define_tool
 from nekoclaw.runtime.tools.goal import GOAL_NAMESPACE, GoalState
 from nekoclaw.runtime.tools.jobs import (
+    NOTICE_INLINE_BYTES,
     Job,
     JobRegistry,
     PendingNotice,
@@ -1163,15 +1164,16 @@ class TaskAgentSession(SessionInbox):
                     # sums up further only if it no longer fits.
                     await self._fit(force=False)
                 # How much is about to be sent, as the conversation is measured.
-                expanded = False
-                if signal is None or not signal.is_cancelled():
-                    expanded = await self._deliver_job_notices()
                 sent = await self._size()
-                if expanded and sent > self.context.policy.threshold:
-                    await self._fit(force=False)
-                    if self._compaction_due:
-                        continue
-                    sent = await self._size()
+                if (signal is None or not signal.is_cancelled()) and self.jobs.pending_notices:
+                    reserve = await self._job_notice_room(self.context.policy.threshold - sent)
+                    if reserve:
+                        await self._fit(force=False, reserve_tokens=reserve)
+                        if self._compaction_due:
+                            continue
+                        sent = await self._size()
+                    if signal is None or not signal.is_cancelled():
+                        sent += await self._deliver_job_notices()
                 history = _provider_context(self.harness.message_list)
                 # Held back until output follows, so a request that is retried after
                 # an overflow does not announce two responses.
@@ -1311,7 +1313,7 @@ class TaskAgentSession(SessionInbox):
             self._record(message)
         return bool(verdict.get("stop"))
 
-    async def _fit(self, *, force: bool, tight: bool | None = None, or_drop: bool = True) -> None:
+    async def _fit(self, *, force: bool, tight: bool | None = None, or_drop: bool = True, reserve_tokens: int = 0) -> None:
         # Each summary is saved the moment it is applied, not after fit()
         # returns: an abort during a later summary ends fit() with the earlier
         # one already in the conversation, and later entries refer to its id.
@@ -1323,6 +1325,7 @@ class TaskAgentSession(SessionInbox):
             # The commission under way stays as it was handed over.
             pinned=self._pinned(),
             or_drop=or_drop,
+            reserve_tokens=reserve_tokens,
         )
 
     def _pinned(self) -> tuple[str, ...]:
@@ -1616,10 +1619,37 @@ class TaskAgentSession(SessionInbox):
     def withdraw_notice(self, handle: object) -> bool:
         return isinstance(handle, CustomMessage) and self.harness.remove_queued(handle)
 
-    async def _deliver_job_notices(self) -> bool:
+    async def _job_notice_room(self, available: int) -> int:
+        """Reserve space for notices without putting private text in a summary."""
+        pending = [(job_id, notice) for job_id, notice in self.jobs.pending_notices.items()
+                   if notice.admitted and isinstance(notice.handle, CustomMessage)]
+        # With room for even one token per inline byte, avoid reading output twice.
+        if sum(NOTICE_INLINE_BYTES + estimate_tokens(notice.handle) for _, notice in pending) <= available:
+            return 0
+        sizes = []
+        for job_id, notice in pending:
+            job = self.jobs.get(job_id)
+            text, _, _ = preview_completion_notice(self.jobs, job)
+            preview = CustomMessage(custom_type="notice:job", content=text, display=False)
+            sizes.append((job, estimate_tokens(preview), estimate_tokens(notice.handle)))
+        if sum(full for _, full, _ in sizes) <= available:
+            return 0
+        # Only near the context limit, avoid compressing history for a revoked notice.
+        total = 0
+        for job, full, minimal in sizes:
+            try:
+                ruling = await self._host.call(self.session_id, "execution_action", {
+                    "phase": "job_notice_live", "receipt": job.origin,
+                })
+            except Exception:
+                ruling = {}
+            total += full if ruling.get("allow") is True else minimal
+        return total if total > available else 0
+
+    async def _deliver_job_notices(self) -> int:
         # The queue carries only the wake. Record the final approved view
         # once, at the same boundary as its delivery to the model.
-        expanded = False
+        added_tokens = 0
         for job_id, notice in list(self.jobs.pending_notices.items()):
             if not notice.admitted or not isinstance(notice.handle, CustomMessage):
                 continue
@@ -1636,7 +1666,7 @@ class TaskAgentSession(SessionInbox):
                 except Exception:
                     ruling = {}
                 if self._abort_requested or self._closing:
-                    return expanded
+                    return added_tokens
                 self.jobs.pending_notices.pop(job_id, None)
                 saved = None
                 if ruling.get("allow") is True:
@@ -1647,8 +1677,8 @@ class TaskAgentSession(SessionInbox):
                 notice.handle.custom_type = "notice:job"
                 self.harness.message_list.append(notice.handle)
                 self._record(notice.handle, saved=saved)
-                expanded = True
-        return expanded
+                added_tokens += estimate_tokens(notice.handle)
+        return added_tokens
 
     async def _job_finished(self, job: Job) -> None:
         if job.command_finished is not None:
@@ -1656,9 +1686,9 @@ class TaskAgentSession(SessionInbox):
         async with job.output_lock:
             if job.origin:
                 try:
-                    decision = await self._host.call(self.session_id, "execution_action", {
+                    decision = await asyncio.wait_for(self._host.call(self.session_id, "execution_action", {
                         "phase": "job_notice_live", "receipt": job.origin,
-                    })
+                    }), CLOSE_GRACE_SECONDS)
                 except Exception:
                     return
                 if decision.get("allow") is not True:
@@ -1683,7 +1713,7 @@ class TaskAgentSession(SessionInbox):
     @property
     def busy(self) -> bool:
         """True while a run is in progress or a background job is still running."""
-        return self.running or bool(self.jobs.running())
+        return self.running or bool(self.jobs.running()) or bool(self.jobs.waking())
 
     def prompt(self, text: str, *, opening: bool = False, human: bool = True) -> None:
         """Hand the session work. ``opening`` marks the text that opens a commission.

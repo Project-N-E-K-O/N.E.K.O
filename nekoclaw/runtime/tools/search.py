@@ -557,7 +557,7 @@ def _search_file(
     The file is read one line at a time, so its size does not decide how much
     memory the search takes, and the search budget is checked as it goes. Of a
     long line only one bounded excerpt is returned. Literal keywords are
-    searched across chunk boundaries; regex prefix-only results are labelled.
+    searched across chunk boundaries; incomplete regex lines are omitted.
     """
     added = 0
     plain = expression.pattern
@@ -583,6 +583,9 @@ def _search_file(
                 number += 1
                 if number % _BUDGET_CHECK_LINES == 0:
                     budget.check()
+                if cut and literal is None:
+                    # An artificial end of line can make an anchored regex match.
+                    continue
                 if cut:
                     raw = raw[:GREP_LINE_MAX_BYTES]
                 if raw.endswith(b"\n"):
@@ -776,7 +779,7 @@ def build_search_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> 
         )
         from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
 
-        partial = ("Only the beginning of very long lines was searched. Use a literal keyword to scan the rest."
+        partial = ("Very long lines were skipped for this pattern. Use a literal keyword to search them."
                    if matches.incomplete else "")
         preview = format_grep_output(matches, None)
         spill_path = None

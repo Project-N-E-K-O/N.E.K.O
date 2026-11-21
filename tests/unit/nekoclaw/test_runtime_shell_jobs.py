@@ -802,13 +802,14 @@ async def test_closing_collects_pending_notices_after_process_settlement():
     process = SimpleNamespace(wait=finished.wait, kill_requested=False, signal_name=None, returncode=0)
     settled = registry.start("bash", "finished", process, foreground=False)
     await asyncio.wait_for(reporting.wait(), 2)
+    assert registry.running() == [] and registry.waking() == [settled]
     stopping = asyncio.Event()
     pending = SimpleNamespace(wait=stopping.wait, kill=stopping.set, kill_requested=True, signal_name=None)
     running = registry.start("bash", "running", pending, foreground=False)
     registry.close()
     await registry.wait_closed(timeout_seconds=0.5)
     assert settled.settled.is_set() and running.settled.is_set()
-    assert released.is_set()
+    assert released.is_set() and not registry.waking()
 
 
 @pytest.mark.parametrize("receive", [False, True])
@@ -941,22 +942,46 @@ async def test_oversized_failed_command_keeps_its_exit_status(tmp_path):
 
 
 async def test_notice_expansion_is_measured_and_fitted_before_model_request(tmp_path, monkeypatch):
-    session, events = await open_session(make_spec(tmp_path), ScriptedLLM([[say("done"), finish()]]), _host())
-    steps = []
-    async def expand():
-        steps.append("expand")
-        return True
+    from types import SimpleNamespace
+    from nekoclaw.runtime.loop.messages import CustomMessage
+    from nekoclaw.runtime.tools.jobs import Job, PendingNotice
+
+    live = True
+    phases = []
+
+    async def audit(_, payload):
+        phases.append(payload["phase"])
+        return {"allow": live}
+
+    llm = ScriptedLLM([[say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=audit))
+    stdout = procs.OutputBuffer(1024, lambda: None)
+    stdout.feed(b"private-fixture-text")
+    job = Job("fixture", SHELL, "fixture", SimpleNamespace(stdout=stdout, stderr=procs.OutputBuffer(64, lambda: None)),
+              0, status="completed", origin="fixture-receipt")
+    handle = CustomMessage(custom_type="notice:pending_job", content="Job finished.", display=False)
+    session.jobs._jobs[job.id] = job
+    session.jobs.pending_notices[job.id] = PendingNotice(handle, None, admitted=True)
+
     async def measure():
-        steps.append("measure")
-        return session.context.policy.threshold + 1
+        return session.context.policy.threshold
+
     async def fit(**options):
-        steps.append("fit")
-    monkeypatch.setattr(session, "_deliver_job_notices", expand)
+        nonlocal live
+        if options.get("reserve_tokens"):
+            assert "private-fixture-text" not in str(session.transcript.messages)
+            assert job.stdout_offset == 0
+            live = False
+
     monkeypatch.setattr(session, "_size", measure)
     monkeypatch.setattr(session, "_fit", fit)
     try:
         session.prompt("Fixture")
         await events.wait_ended()
-        assert steps[-4:] == ["expand", "measure", "fit", "measure"]
+        assert phases == ["job_notice_live", "job_notice"]
+        assert "Job finished." in str(llm.requests)
+        assert "private-fixture-text" not in str(llm.requests)
+        assert "private-fixture-text" not in str(session.transcript.messages)
+        assert job.stdout_offset == 0
     finally:
         await session.close()
