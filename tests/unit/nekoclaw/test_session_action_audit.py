@@ -97,6 +97,40 @@ async def test_no_release_to_reused_session_after_audit_write(env, monkeypatch):
     assert (last["status"], last["reason"]) == ("denied", "delivery_revoked")
 
 
+async def test_the_runtime_receiving_an_answer_starts_its_own_calls(env):
+    from nekoclaw.host.task_agents import _Unsaid
+
+    host, (source, sender), _ = env
+    session = _Session(source.id, session_id=sender.id)
+    parts = [_Unsaid("answer", source.id)]
+    async with call_audit.call(host.ledger, source.id, "session_action", "producer") as producer:
+        async with host.task_agents._answer_delivery(session, parts) as render:
+            assert render(parts) == "answer"
+            async with call_audit.call(host.ledger, source.id, "session_action", "next_tool"):
+                pass
+        async with call_audit.call(host.ledger, source.id, "session_action", "producer_continues"):
+            pass
+    rows = {r["target"]: r for r in await trace(host, source)}
+    assert rows["receive_answer"]["parent_call_id"] == rows["next_tool"]["parent_call_id"] == source.id
+    assert rows["producer_continues"]["parent_call_id"] == producer.call_id
+
+
+@pytest.mark.parametrize("change", ["revoke", "different_recipient"])
+async def test_answer_rechecks_both_the_recipient_and_its_live_loan(env, change):
+    from nekoclaw.host.task_agents import _Unsaid
+
+    host, (source, sender), (peer, _) = env
+    session = _Session(source.id, session_id=sender.id)
+    parts = ["plain background", _Unsaid("private answer", peer.id if change == "different_recipient" else source.id)]
+    async with host.task_agents._answer_delivery(session, parts) as render:
+        if change == "revoke":
+            await host.permission_store.set_mode("outside_read", "deny")
+        assert render(parts) == "plain background\n\n" + DENIED_BY_SETTINGS
+    last = (await trace(host, source))[-1]
+    assert (last["target"], last["scope_ref"], last["status"]) == ("receive_answer", sender.id, "denied")
+    assert last["grant_id"] and "private answer" not in json.dumps(last)
+
+
 async def test_native_controls_reserve_and_settle_only_their_own_call(env, monkeypatch):
     host, (source, sender), _ = env
     manager = host.task_agents

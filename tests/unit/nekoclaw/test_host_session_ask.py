@@ -166,6 +166,8 @@ async def test_a_session_is_asked_a_question_that_a_copy_of_it_answers_and_it_is
     rows = await host.ledger.run(lambda db: call_audit.read_trace(db, asker, now=0))
     child_brief, = [r for r in rows if r["commission_id"] == child.id and r["target"] == "space_brief"]
     assert child_brief["parent_call_id"] == child.id
+    release, = [r for r in rows if r["target"] == "receive_answer"]
+    assert (release["commission_id"], release["status"]) == (asker, "completed")
     copy = await host.ledger.get_session(child.session_id)
     assert (copy.kind, copy.forked_from, copy.workdir) == ("fork", photos.session_id, photos.workdir)
 
@@ -655,7 +657,8 @@ async def _children_of(host: Any, commission_id: str) -> bool:
     return bool(await host.ledger.select(parent_id=commission_id))
 
 
-async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word_of_the_users(hosts, tmp_path):
+@pytest.mark.parametrize("deny", [True, False])
+async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word_of_the_users(hosts, tmp_path, deny):
     # The asker's session was closed while it waited (an idle runtime closes idle sessions):
     # the answer takes it up again, and opens its next turn as no word of the user's either.
     from nekoclaw.host.task_agents import _Unsaid
@@ -673,11 +676,26 @@ async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word
         return await prompt(session_id, text, **options)
 
     runtime.prompt = noting
-    answer = _Unsaid('[answer from "build": completed] It is under dist/.')
+    answer = _Unsaid('[answer from "build": completed] It is under dist/.', photos.id)
+    if deny:
+        # The answer is already queued when the receiving runtime starts.
+        start = runtime.start
+
+        async def revoke_while_starting(spec):
+            await host.permission_store.set_mode("outside_read", "deny")
+            await start(spec)
+
+        runtime.start = revoke_while_starting
     assert await host.task_agents._wake_working(photos.id, answer, reason="an answer takes it up again") is True
     await wait_until(lambda: handed, what="it being taken up again")
     [(text, human)] = handed
-    assert answer in text and human is False
+    assert (answer in text) is not deny
+    assert ("permission denied" in text) is deny
+    assert human is False
+    async def recorded():
+        rows = await host.ledger.run(lambda db: call_audit.read_trace(db, photos.id, now=0))
+        return any(r["target"] == "receive_answer" and r["status"] == ("denied" if deny else "completed") for r in rows)
+    await wait_until(recorded, what="the answer delivery to be on record")
 
 
 async def test_with_the_clock_set_back_the_wait_is_until_enough_of_the_hour_is_old(ledger):
