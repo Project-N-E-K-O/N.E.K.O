@@ -1653,23 +1653,29 @@
      * @param {{sourceId?: string|null, via?: string, session?: object}} [maskOptions]
      * @returns {Promise<object|null>} 要发送的消息；null 表示这一帧不发
      */
+    var STREAM_FRAME_JPEG_QUALITY = 0.8;
+
     async function buildMaskedStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType, maskOptions) {
         if (input_type !== 'screen') {
             return buildStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType);
         }
         var captureType = resolveStreamFrameCaptureType(sourceId, explicitCaptureType);
+        // 消息骨架（含 avatar_position）在遮罩等待之前按拍图这一刻算好，遮完只换 data。
+        var msg = buildStreamDataMessage(dataUrl, input_type, sourceId, captureType);
         var opts = maskOptions || {};
-        var maskedDataUrl = dataUrl;
         var mask = window.appCaptureMask;
         if (mask && typeof mask.maskFrameForModel === 'function') {
-            maskedDataUrl = await mask.maskFrameForModel(dataUrl, {
+            var maskedDataUrl = await mask.maskFrameForModel(dataUrl, {
                 captureType: captureType,
                 sourceId: opts.sourceId || sourceId || null,
-                via: opts.via || (sourceId ? 'native' : 'stream')
+                via: opts.via || (sourceId ? 'native' : 'stream'),
+                // 屏幕帧抓帧时都是 JPEG 0.8；重编码沿用同一质量，帧大小不因遮罩变大。
+                jpegQuality: STREAM_FRAME_JPEG_QUALITY
             }, opts.session);
+            if (!maskedDataUrl) return null;
+            msg.data = maskedDataUrl;
         }
-        if (!maskedDataUrl) return null;
-        return buildStreamDataMessage(maskedDataUrl, input_type, sourceId, captureType);
+        return msg;
     }
     mod.buildMaskedStreamDataMessage = buildMaskedStreamDataMessage;
 
@@ -1891,8 +1897,14 @@
                 { sourceId: sourceId, via: 'native', session: maskSession }
             );
             if (!isCurrentNativeCapture()) return false;
+            // 遮罩是异步的：等待期间连接断开或被重连替换时，和前面几处一样完整停止分享
+            // （更新 UI、通知后端、释放原生源），不能只停帧循环。
+            if (!isCaptureSocketOpen()) {
+                await stopScreenSharing(true);
+                return false;
+            }
             if (!nativeMessage) return true;
-            if (canSendLiveVisionStreamFrame(inputType) && isCaptureSocketOpen()) {
+            if (canSendLiveVisionStreamFrame(inputType)) {
                 captureSocket.send(JSON.stringify(nativeMessage));
             } else if (isCurrentNativeCapture()) {
                 stopScreening();

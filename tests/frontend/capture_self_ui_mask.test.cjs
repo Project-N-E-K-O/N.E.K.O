@@ -838,3 +838,86 @@ test('screen share: a frame captured on one connection is not sent on a reconnec
     await env.intervals[0]();
     assert.equal(env.lateSent.length, 1);
 });
+
+// ---------------------------------------------------------------- review round 2 (maintainer)
+
+test('native screen share: a reconnect while a frame is being masked stops the share completely', async () => {
+    let env;
+    let calls = 0;
+    const shell = shellStub(async () => {
+        calls += 1;
+        // Frames 1 (calls 1-2) go out normally; during frame 2's post-capture
+        // query (call 4) the socket is replaced by a reconnect.
+        if (calls === 4) env.S.socket = { readyState: 1, send: (m) => env.newSocketSent.push(JSON.parse(m)) };
+        return { ok: true, rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }] };
+    });
+    env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+    env.newSocketSent = [];
+    env.w.captureDesktopSourceWithTimeout = async () => ({ success: true, dataUrl: RAW_FRAME });
+    // The native loop re-arms itself with setTimeout(scheduleNextFrame, 1000); run it by hand.
+    const frameTimers = [];
+    const realSetTimeout = env.w.setTimeout;
+    env.w.setTimeout = (fn, ms) => (ms === 1000 ? (frameTimers.push(fn), frameTimers.length) : realSetTimeout(fn, ms));
+    const provider = { nativeFrameCapture: true, captureSourceAsDataUrl() {} };
+    await env.w.appScreen.startNativeScreenStreaming(provider, 'screen:3:0', 'screen');
+    assert.equal(env.sent.length, 1, 'first frame sent on the original socket');
+    assert.equal(frameTimers.length, 1, 'native frame loop armed');
+    await frameTimers[0]();
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    assert.equal(env.sent.filter((m) => m.action === 'stream_data').length, 1, 'old frame not sent on the old socket');
+    assert.equal(env.newSocketSent.filter((m) => m.action === 'stream_data').length, 0, 'old frame not sent on the new socket');
+    assert.ok(env.newSocketSent.some((m) => m.action === 'screen_share_stopped'),
+        'the share is stopped for real: the backend is told (not just the frame loop paused)');
+});
+
+test('stream_data: avatar_position is computed when the frame is taken, not after masking', async () => {
+    const shell = shellStub(async (_req, n) => {
+        // The avatar moves while the frame is being masked.
+        if (n === 2) env.w.__avatarMoved = true;
+        return { ok: true, rects: [] };
+    });
+    const env = bootScreen({ multiWindow: true, shell });
+    env.w.live2dManager = {
+        getModelScreenBounds: () => (env.w.__avatarMoved
+            ? { centerX: 900, centerY: 700, width: 100, height: 100 }
+            : { centerX: 100, centerY: 100, width: 100, height: 100 }),
+    };
+    const session = env.w.appScreen.beginScreenFrameMaskSession('screen', { sourceId: null, via: 'stream' });
+    const msg = await env.w.appScreen.buildMaskedStreamDataMessage(RAW_FRAME, 'screen', undefined, 'viewport', { session });
+    assert.ok(msg.avatar_position, 'avatar overlay present');
+    assert.ok(Math.abs(msg.avatar_position.centerX - 0.1) < 1e-9, `centerX ${msg.avatar_position.centerX} is the pre-mask position`);
+});
+
+test('stream_data: masked frames are re-encoded at the capture quality (0.8)', async () => {
+    const qualities = [];
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }] }));
+    const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+    const create = env.w.document.createElement;
+    env.w.document.createElement = (tag) => {
+        const el = create(tag);
+        if (tag === 'canvas') {
+            const toDataURL = el.toDataURL;
+            el.toDataURL = (mime, q) => { qualities.push([mime, q]); return toDataURL(mime, q); };
+        }
+        return el;
+    };
+    const msg = await env.w.appScreen.buildMaskedStreamDataMessage(RAW_FRAME, 'screen', 'screen:1:0', 'screen', { via: 'native' });
+    assert.deepEqual(fillsOf(msg.data), [[0, 0, 100, 80]]);
+    assert.deepEqual(qualities, [['image/jpeg', 0.8]]);
+});
+
+test('fallback policy is told why: position unknown vs painting failed', async () => {
+    const seen = [];
+    const src = maskSource.replace("    function decideWhenGeometryUnavailable(ctx, reason) {\n",
+        "    function decideWhenGeometryUnavailable(ctx, reason) {\n        globalThis.__reasons = (globalThis.__reasons || []).concat([reason]);\n");
+    assert.notEqual(src, maskSource);
+    const unknown = makeWindow({ elements: chatElements({ galOpen: true }), geom: { isExtended: true } });
+    vm.runInContext(src, unknown.w);
+    assert.equal(await unknown.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen' }), RAW_FRAME);
+    seen.push(...unknown.w.__reasons);
+    const broken = makeWindow({ elements: chatElements({ galOpen: true }) });
+    vm.runInContext(src, broken.w);
+    assert.equal(await broken.w.appCaptureMask.maskFrameForModel('data:bad,xx', { captureType: 'viewport' }), 'data:bad,xx');
+    seen.push(...broken.w.__reasons);
+    assert.deepEqual(seen, ['position_unknown', 'paint_failed']);
+});

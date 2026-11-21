@@ -38,7 +38,9 @@
     var MASK_FILL_STYLE = '#2b2b2b';
     var CONTRACT_VERSION = 1;
     var SHELL_QUERY_TIMEOUT_MS = 500;
-    var JPEG_REENCODE_QUALITY = 0.9;
+    // Default re-encode quality = the proactive screenshot capture quality;
+    // callers pass ctx.jpegQuality to match their own capture quality.
+    var JPEG_REENCODE_QUALITY = 0.85;
     var PIXEL_EPSILON = 1e-6;
 
     function isFiniteNumber(value) {
@@ -355,11 +357,18 @@
      * may or may not be this browser, a desktop shell without
      * getSelfUiCaptureMask, or a failed query).
      *
-     * Current policy: send the frame unmasked, as before this module existed.
-     * Return 'drop' instead to withhold such frames; every caller already
-     * treats a null result from maskFrameForModel() as "no frame".
+     * Also reached when the position is known but painting failed
+     * (reason 'paint_failed': decode / 2d context / encode error).
+     *
+     * Current policy: send the frame unmasked in both cases, as before this
+     * module existed. Return 'drop' instead to withhold such frames (for all
+     * reasons, or only for one); every caller already treats a null result
+     * from maskFrameForModel() as "no frame".
+     *
+     * @param {object} ctx the frame context passed to maskFrameForModel()
+     * @param {'position_unknown'|'paint_failed'} reason
      */
-    function decideWhenGeometryUnavailable(ctx) {
+    function decideWhenGeometryUnavailable(ctx, reason) {
         return 'send-unmasked';
     }
 
@@ -393,7 +402,7 @@
      * Paint the normalized rects onto a copy of the image. The image keeps
      * its pixel size and encoding (JPEG stays JPEG, PNG stays PNG).
      */
-    async function paintMaskOnDataUrl(dataUrl, rects) {
+    async function paintMaskOnDataUrl(dataUrl, rects, jpegQuality) {
         var img = await loadImage(dataUrl);
         var width = img.naturalWidth || img.width;
         var height = img.naturalHeight || img.height;
@@ -406,7 +415,7 @@
         ctx2d.drawImage(img, 0, 0, width, height);
         paintMaskRects(ctx2d, width, height, rects);
         var isPng = /^data:image\/png[;,]/i.test(dataUrl);
-        var out = isPng ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', JPEG_REENCODE_QUALITY);
+        var out = isPng ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', jpegQuality);
         if (!out || out === 'data:,') throw new Error('mask: encode failed');
         return out;
     }
@@ -418,7 +427,8 @@
      * before it is sent to the model.
      *
      * @param {string} dataUrl the captured frame
-     * @param {{captureType: ('screen'|'viewport'|null), sourceId?: string|null, via?: string}} ctx
+     * @param {{captureType: ('screen'|'viewport'|null), sourceId?: string|null, via?: string, jpegQuality?: number}} ctx
+     *        jpegQuality: re-encode quality for JPEG frames (match the capture quality)
      *        what this frame actually is (pinned when it was captured)
      * @param {object} [session] from beginMaskSession(), taken before capture
      * @returns {Promise<string|null>} the frame to send, or null to send nothing
@@ -432,14 +442,18 @@
             geometry = { known: false, rects: [] };
         }
         if (geometry.known && geometry.rects.length === 0) return dataUrl;
+        var reason = 'position_unknown';
         if (geometry.known) {
+            reason = 'paint_failed';
             try {
-                return await paintMaskOnDataUrl(dataUrl, geometry.rects);
+                var quality = ctx && isFiniteNumber(ctx.jpegQuality) && ctx.jpegQuality > 0 && ctx.jpegQuality <= 1
+                    ? ctx.jpegQuality : JPEG_REENCODE_QUALITY;
+                return await paintMaskOnDataUrl(dataUrl, geometry.rects, quality);
             } catch (e) {
                 console.warn('[CaptureMask] masking failed:', e && e.message);
             }
         }
-        return decideWhenGeometryUnavailable(ctx) === 'drop' ? null : dataUrl;
+        return decideWhenGeometryUnavailable(ctx, reason) === 'drop' ? null : dataUrl;
     }
 
     // ======================== Chat-window reporter (contract C1) ========================
