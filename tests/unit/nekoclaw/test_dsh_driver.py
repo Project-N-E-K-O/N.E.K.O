@@ -1083,11 +1083,14 @@ async def test_between_prompts_only_native_goal_terminal_updates_can_proceed(tmp
         assert bool(requests[-1].get("refused")) != allowed
 
 
-async def test_automatic_round_keeps_its_own_execution_receipt(tmp_path, dsh, monkeypatch):
+@pytest.mark.parametrize("stop_during_check", [False, True])
+async def test_automatic_round_keeps_its_own_execution_receipt(tmp_path, dsh, monkeypatch, stop_during_check):
     phases = []
 
     async def audit(session_id, payload):
         phases.append(payload)
+        if payload["phase"] == "check" and stop_during_check:
+            session.aborting = True
         return {"allow": True, "receipt": "read-receipt"}
 
     driver = dsh(HostCallbacks(native_execution_action=audit))
@@ -1117,7 +1120,8 @@ async def test_automatic_round_keeps_its_own_execution_receipt(tmp_path, dsh, mo
 
     monkeypatch.setattr(runtime, "_note_briefed", announce)
     await driver.run("s1", "finish the work")
-    assert await approve("nekoclaw-exec/direct/auto-read") == "allow-once"
+    expected = "reject-once" if stop_during_check else "allow-once"
+    assert await approve("nekoclaw-exec/direct/auto-read") == expected
     assert phases[-1] == {"phase": "check", "receipt": "read-receipt"}
 
 

@@ -1020,6 +1020,8 @@ class DshRuntime:
                 if session.aborting or session.closing is not None:
                     return _REJECT
                 reply = await self._host.call(session.id, "native_execution_action", {"phase": "check", "receipt": receipt})
+                if session.aborting or session.closing is not None or session.execution_receipts.get(original) != receipt:
+                    return _REJECT
                 return _ALLOW if reply.get("allow") is True else _REJECT
             if phase not in ("completed", "failed"):
                 return _REJECT

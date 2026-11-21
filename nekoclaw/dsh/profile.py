@@ -256,7 +256,7 @@ export function apply(ctx, config) {
       if (!approval || !exec.agent || exec.signal.aborted) return false
       const response = await approval.request({agent: exec.agent, toolName: exec.name,
         callId: 'nekoclaw-exec/' + phase + '/' + exec.callId, signal: exec.signal})
-      return response === 'allowed-once'
+      return response === 'allowed-once' && !exec.signal.aborted
     }
     const refused = () => {
       const message = 'The tool result could not be delivered.'
