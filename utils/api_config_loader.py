@@ -147,6 +147,7 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
         'decision_model': 'DECISION_MODEL',
         'decision_protocol': 'DECISION_PROTOCOL',
         'decision_url': 'DECISION_URL',
+        'decision_url_template': 'DECISION_URL_TEMPLATE',
         'vision_model': 'VISION_MODEL',
         'agent_model': 'AGENT_MODEL',
         'audio_api_key': 'AUDIO_API_KEY',
