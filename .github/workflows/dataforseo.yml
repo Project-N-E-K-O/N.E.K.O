@@ -31,6 +31,11 @@ on:
         required: true
         type: boolean
         default: true
+      include_bing_cn:
+        description: 'Paid only: collect Bing rankings for the .cn Chinese keyword group'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -152,6 +157,28 @@ jobs:
           else
             echo "The previous artifact has no unified JSON report."
           fi
+
+      - name: Read latest Baidu submission evidence
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SEO_REPORTS_TOKEN }}
+        run: |
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "SEO_REPORTS_TOKEN is not configured."
+            exit 0
+          fi
+          repository="Project-N-E-K-O/N.E.K.O.OfficialWebsite"
+          run_id="$(gh api --paginate --slurp "repos/${repository}/actions/artifacts?name=baidu-cn-submission&per_page=100" |
+            jq -r '[.[].artifacts[] | select(.expired == false and .workflow_run.head_branch == "main")] | max_by(.created_at) | .workflow_run.id // empty')"
+          if [[ -z "$run_id" ]]; then
+            echo "No unexpired production Baidu submission receipt."
+            exit 0
+          fi
+          evidence_dir="$RUNNER_TEMP/baidu-submission"
+          gh run download "$run_id" --repo "$repository" --name baidu-cn-submission --dir "$evidence_dir"
+          echo "BAIDU_PUSH_REPORT_PATH=$evidence_dir/baidu-execution.json" >> "$GITHUB_ENV"
+          echo "BAIDU_PUSH_REPORT_EVIDENCE=https://github.com/${repository}/actions/runs/${run_id}" >> "$GITHUB_ENV"
 
       - name: Reuse today's authoritative .cn ranking artifact
         if: env.COLLECTION_KIND == 'paid'
@@ -320,6 +347,10 @@ jobs:
         working-directory: docs
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          BING_WEBMASTER_API_KEY: ${{ secrets.BING_WEBMASTER_API_KEY }}
+          DATAFORSEO_LOGIN: ${{ inputs.run_mode == 'paid' && secrets.DATAFORSEO_LOGIN || '' }}
+          DATAFORSEO_PASSWORD: ${{ inputs.run_mode == 'paid' && secrets.DATAFORSEO_PASSWORD || '' }}
+          INCLUDE_BING_CN: ${{ inputs.include_bing_cn }}
           GA4_PROPERTY_ID: ${{ vars.GA4_PROPERTY_ID }}
           GA4_CN_PROPERTY_ID: ${{ vars.GA4_CN_PROPERTY_ID }}
           GSC_SITE_URL: ${{ vars.GSC_SITE_URL }}
@@ -373,7 +404,7 @@ jobs:
           fi
           node scripts/seo-monitoring/assert-report.mjs --input "$report" --level daily
 
-      - name: Publish verified paid comparison baseline
+      - name: Publish verified Google comparison baseline
         if: success() && env.COLLECTION_KIND == 'paid' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
@@ -403,3 +434,7 @@ jobs:
               and .rankingStatus == "not_run"
             ' "$status" >/dev/null
           done
+          report=".seo-reports/seo-monitoring-${GITHUB_RUN_ID}.json"
+          node scripts/seo-monitoring/assert-report.mjs --input "$report" --level bing-dry-run
+          node scripts/seo-monitoring/assert-report.mjs --input "$report" --level baidu-dry-run
+          node scripts/seo-monitoring/assert-report.mjs --input "$report" --level search-dry-run

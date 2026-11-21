@@ -4,8 +4,12 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { DataForSeoClient } from '../dataforseo/client.mjs'
+import { collectBaiduRankings, summarizeBaiduSubmission } from './baidu.mjs'
+import { collectBingRankings, collectBingWebmaster } from './bing.mjs'
 import {
   collectGa4,
+  collectGa4SearchEngineSessions,
   collectGsc,
   collectTechnicalSeo,
   GA4_SCOPE,
@@ -161,13 +165,18 @@ async function main() {
   }
 
   const duplicates = duplicatePropertyIds(config)
-  const siteInputs = await Promise.all(config.sites.map(async definition => {
+  const siteInputsPromise = Promise.all(config.sites.map(async definition => {
     const siteUrl = process.env[definition.gsc.siteUrlEnv] || definition.gsc.defaultSiteUrl
     const propertyId = process.env[definition.ga4.propertyIdEnv]
     const duplicateSites = propertyId ? duplicates.get(propertyId) : null
+    const canReadGa4 = accessToken && propertyId && !duplicateSites
+    const ga4Reason = googleAuthError
+      ?? (duplicateSites
+        ? `${definition.ga4.propertyIdEnv} duplicates property ${propertyId} across ${duplicateSites.join(', ')}; each domain requires its own GA4 property.`
+        : `${definition.ga4.propertyIdEnv} is not configured`)
     const indexNowPath = options.indexNow.get(definition.id)
       || process.env[definition.indexNow.statusPathEnv]
-    const [gsc, ga4, technical, indexNow] = await Promise.all([
+    const [gsc, ga4, ga4SearchEngineSessions, technical, indexNow, bing, baiduReceipt] = await Promise.all([
       accessToken
         ? safely(() => collectGsc({
           siteUrl,
@@ -175,7 +184,7 @@ async function main() {
           ...definition.gsc,
         }, window, { accessToken }))
         : unavailable(googleAuthError),
-      accessToken && propertyId && !duplicateSites
+      canReadGa4
         ? safely(async () => ({
           ...await collectGa4({
             propertyId,
@@ -184,21 +193,54 @@ async function main() {
           }, window, { accessToken }),
           propertyId,
         }))
-        : unavailable(
-          googleAuthError
-          ?? (duplicateSites
-            ? `${definition.ga4.propertyIdEnv} duplicates property ${propertyId} across ${duplicateSites.join(', ')}; each domain requires its own GA4 property.`
-            : `${definition.ga4.propertyIdEnv} is not configured`),
-        ),
+        : unavailable(ga4Reason),
+      canReadGa4
+        ? collectGa4SearchEngineSessions({ propertyId, hostname: definition.hostname }, window.ga4.latest, { accessToken })
+        : { status: 'UNKNOWN', date: window.ga4.latest.endDate, reason: ga4Reason },
       safely(() => collectTechnicalSeo(definition)),
       readOptionalJson(
         indexNowPath,
         `${definition.indexNow.statusPathEnv} is not configured`,
         { missingStatus: 'not_run' },
       ),
+      collectBingWebmaster(definition.origin, {
+        apiKey: process.env.BING_WEBMASTER_API_KEY,
+      }),
+      definition.regionalSearch?.some(engine => engine.id === 'baidu')
+        ? readOptionalJson(process.env.BAIDU_PUSH_REPORT_PATH, 'No Baidu submission evidence', { missingStatus: 'not_run' })
+        : null,
     ])
-    return { definition, gsc, ga4, technical, indexNow }
+    const baiduSubmission = baiduReceipt
+      ? summarizeBaiduSubmission(baiduReceipt, definition.origin, process.env.BAIDU_PUSH_REPORT_EVIDENCE)
+      : undefined
+    return { definition, gsc, ga4, ga4SearchEngineSessions, technical, indexNow, bing, baiduSubmission }
   }))
+
+  const paid = process.env.COLLECTION_KIND === 'paid'
+  const login = process.env.DATAFORSEO_LOGIN
+  const password = process.env.DATAFORSEO_PASSWORD
+  const client = paid && login?.trim() && password?.trim()
+    ? new DataForSeoClient({ login, password })
+    : null
+  const bingRankingsPromise = Promise.all(definitions
+    .filter(definition => definition.bingRanking)
+    .map(definition => collectBingRankings(definition, {
+      client,
+      paid,
+      includeCn: process.env.INCLUDE_BING_CN === 'true',
+    }).catch(() => ({
+      id: definition.id, label: definition.label, status: 'FAILED', rows: [],
+      reason: 'Bing 排名采集异常', billingUncertain: paid,
+    }))))
+  const baiduDefinition = definitions.find(definition => definition.baiduRanking)
+  const [siteInputs, bingRankings, baiduRanking] = await Promise.all([
+    siteInputsPromise,
+    bingRankingsPromise,
+    baiduDefinition ? collectBaiduRankings(baiduDefinition, { client, paid }).catch(() => ({
+      id: baiduDefinition.id, label: baiduDefinition.label, status: 'FAILED', rows: [],
+      reason: '百度排名采集异常', billingUncertain: paid,
+    })) : null,
+  ])
 
   const report = buildMonitoringReport({
     config,
@@ -206,6 +248,8 @@ async function main() {
     window,
     dataForSeoInputs,
     siteInputs,
+    bingRankings,
+    baiduRanking,
     previousReport: previousReport?.status === 'unavailable' ? null : previousReport,
     previousReportEvidence: process.env.PREVIOUS_REPORT_EVIDENCE ?? options.previousReport,
   })

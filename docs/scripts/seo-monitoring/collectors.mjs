@@ -76,6 +76,7 @@ async function jsonRequest(url, {
   fetchImpl = globalThis.fetch,
   signal,
   timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  strictJson = false,
   ...options
 } = {}) {
   const response = await fetchImpl(url, {
@@ -93,6 +94,7 @@ async function jsonRequest(url, {
   try {
     payload = JSON.parse(source)
   } catch {
+    if (response.ok && strictJson) throw new Error('Invalid JSON response')
     // The status code is sufficient for a sanitized diagnostic.
   }
   if (!response.ok) {
@@ -275,6 +277,47 @@ async function collectGscRange(analyticsUrl, range, options) {
   }, options)
 }
 
+async function collectGscPropertyDay(analyticsUrl, range, { accessToken, fetchImpl }) {
+  try {
+    const payload = await jsonRequest(analyticsUrl, {
+      accessToken,
+      fetchImpl,
+      strictJson: true,
+      method: 'POST',
+      body: JSON.stringify({
+        ...range,
+        dimensions: ['date'],
+        aggregationType: 'byProperty',
+        dataState: 'final',
+      }),
+    })
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { status: 'FAILED' }
+    const rows = payload.rows ?? []
+    if (!Array.isArray(rows)) return { status: 'FAILED' }
+    if (rows.length === 0) return { status: 'UNKNOWN' }
+    if (payload.responseAggregationType !== 'byProperty') return { status: 'FAILED' }
+    const dates = rows.map(row => row?.keys?.[0])
+    if (dates.some(date => typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(date)
+        || date < range.startDate || date > range.endDate)) {
+      return { status: 'FAILED' }
+    }
+    const date = dates.sort().at(-1)
+    const row = rows.find(item => item.keys[0] === date)
+    if (![row.clicks, row.impressions].every(value => Number.isFinite(value) && value >= 0)) {
+      return { status: 'FAILED', date }
+    }
+    return {
+      status: 'OBSERVED',
+      date,
+      clicks: row.clicks,
+      impressions: row.impressions,
+      ctr: row.impressions > 0 ? row.clicks / row.impressions : 0,
+    }
+  } catch {
+    return { status: 'FAILED' }
+  }
+}
+
 async function collectTrackedHomepageQueries(analyticsUrl, range, { page, queries }, options) {
   try {
     // RE2's \s is ASCII-only. Use the same whitespace class for both sides.
@@ -350,10 +393,11 @@ export async function collectGsc({
   const requestOptions = { accessToken, fetchImpl, rowLimit }
   const resolved = await resolveLatestFinalGscWindow(analyticsUrl, window.gsc.discovery, requestOptions)
   const gscWindow = resolved.windows
-  const [latest, recent7, previous7, homepageQueries] = await Promise.all([
+  const [latest, recent7, previous7, latestPropertyDay, homepageQueries] = await Promise.all([
     collectGscRange(analyticsUrl, gscWindow.latest, requestOptions),
     collectGscRange(analyticsUrl, gscWindow.recent7, requestOptions),
     collectGscRange(analyticsUrl, gscWindow.previous7, requestOptions),
+    collectGscPropertyDay(analyticsUrl, gscWindow.recent7, requestOptions),
     trackedHomepageQueries
       ? collectTrackedHomepageQueries(analyticsUrl, gscWindow.recent7, trackedHomepageQueries, requestOptions)
       : null,
@@ -401,6 +445,7 @@ export async function collectGsc({
       coverage: 'api_top_rows_may_be_limited',
     },
     latestCompleteDay: aggregateGscRows(latest.rows),
+    latestPropertyDay,
     recent7: recentSummary,
     previous7: previousSummary,
     ...(homepageQueries ? { trackedHomepageQueries: homepageQueries } : {}),
@@ -459,6 +504,80 @@ function regexFilter(fieldName, value) {
       fieldName,
       stringFilter: { value, matchType: 'FULL_REGEXP', caseSensitive: false },
     },
+  }
+}
+
+export const SEARCH_ENGINES = [
+  { id: 'google', label: 'Google', source: /^(?:google|(?:[^.]+\.)*google\.[a-z]{2,}(?:\.[a-z]{2})?)$/iu },
+  { id: 'bing', label: 'Bing', source: /^(?:bing|(?:[^.]+\.)*bing\.com)$/iu },
+  { id: 'baidu', label: '百度', source: /^(?:baidu|(?:[^.]+\.)*baidu\.com)$/iu },
+  { id: 'sogou', label: '搜狗', source: /^(?:sogou|(?:[^.]+\.)*sogou\.com)$/iu },
+  { id: '360', label: '360', source: /^(?:360(?: search)?|(?:[^.]+\.)*(?:(?:so|haosou)\.com|360\.cn))$/iu },
+  { id: 'toutiao', label: '头条搜索', source: /^(?:toutiao(?: search)?|(?:[^.]+\.)*toutiao\.com)$/iu },
+]
+
+export async function collectGa4SearchEngineSessions({
+  propertyId, hostname,
+}, range, { accessToken, fetchImpl = globalThis.fetch, now = new Date() } = {}) {
+  const date = range.endDate
+  const unknown = reason => ({ status: 'UNKNOWN', date, reason })
+  try {
+    const payload = await gaRun(propertyId, {
+      dateRanges: [range],
+      dimensions: [{ name: 'sessionSource' }, { name: 'sessionDefaultChannelGroup' }],
+      metrics: [{ name: 'sessions' }],
+      dimensionFilter: andFilter([
+        exactFilter('hostName', hostname),
+        { orGroup: { expressions: [
+          exactFilter('sessionDefaultChannelGroup', 'Organic Search'),
+          exactFilter('sessionDefaultChannelGroup', 'Referral'),
+        ] } },
+      ]),
+    }, accessToken, fetchImpl)
+    if (payload?.rows !== undefined && !Array.isArray(payload.rows)) {
+      return { status: 'FAILED', date, reason: 'GA4 来源响应的会话行格式无效' }
+    }
+    const rows = payload?.rows ?? []
+    const metadata = payload?.metadata
+    if (rows.length !== (payload?.rowCount ?? 0)
+        || metadata?.dataLossFromOtherRow || metadata?.subjectToThresholding
+        || metadata?.samplingMetadatas?.length || metadata?.dataTruncationReasons?.length
+        || rows.some(row => row?.dimensionValues?.[0]?.value === '(other)')) {
+      return unknown('GA4 来源数据被合并、抽样或截断')
+    }
+    if (payload?.dimensionHeaders?.[0]?.name !== 'sessionSource'
+        || payload?.dimensionHeaders?.[1]?.name !== 'sessionDefaultChannelGroup'
+        || payload?.metricHeaders?.[0]?.name !== 'sessions') {
+      return { status: 'FAILED', date, reason: 'GA4 来源响应缺少会话表头' }
+    }
+    if (metadata?.timeZone && date >= isoDate(calendarDateInTimeZone(now, metadata.timeZone))) {
+      return unknown('该日期在 GA4 属性时区尚未结束')
+    }
+    if (rows.length === 0 && metadata?.emptyReason) {
+      return unknown('GA4 返回了带原因的空报告，无法确认会话数')
+    }
+    const sessions = Object.fromEntries(SEARCH_ENGINES.map(engine => [engine.id, 0]))
+    const referralSessions = { ...sessions }
+    let unmappedSessions = 0
+    for (const row of rows) {
+      const source = row?.dimensionValues?.[0]?.value
+      const channel = row?.dimensionValues?.[1]?.value
+      const count = row?.metricValues?.[0]?.value
+      if (typeof source !== 'string' || !['Organic Search', 'Referral'].includes(channel)
+          || !/^\d+$/u.test(count ?? '') || !Number.isSafeInteger(Number(count))) {
+        return { status: 'FAILED', date, reason: 'GA4 来源响应包含无效会话数据' }
+      }
+      const engine = SEARCH_ENGINES.find(item => item.source.test(source.trim()))
+      if (channel === 'Referral') {
+        if (engine) referralSessions[engine.id] += Number(count)
+      } else if (engine) sessions[engine.id] += Number(count)
+      else unmappedSessions += Number(count)
+    }
+    return { status: 'OBSERVED', date, timeZone: metadata?.timeZone ?? null, sessions, referralSessions, unmappedSessions }
+  } catch (error) {
+    const httpStatus = /^HTTP ([1-5]\d\d)\b/u.exec(error?.message ?? '')?.[1]
+    const detail = httpStatus ? `（HTTP ${httpStatus}）` : ''
+    return { status: 'FAILED', date, reason: `GA4 来源会话请求失败${detail}` }
   }
 }
 
@@ -681,20 +800,21 @@ function robotsAllowsPath(rules, path) {
     .some(rule => rule.field === 'allow')
 }
 
+function crawlerPolicy(groups, name) {
+  const exact = groups.filter(group => group.agents.includes(name.toLowerCase()))
+  const applicable = exact.length > 0
+    ? exact
+    : groups.filter(group => group.agents.includes('*'))
+  return {
+    name,
+    explicitlyNamed: exact.length > 0,
+    allowed: robotsAllowsPath(applicable.flatMap(group => group.rules), '/'),
+  }
+}
+
 function aiCrawlerPolicy(source) {
   const groups = robotsGroups(source)
-  const results = AI_CRAWLERS.map(name => {
-    const exact = groups.filter(group => group.agents.includes(name.toLowerCase()))
-    const applicable = exact.length > 0
-      ? exact
-      : groups.filter(group => group.agents.includes('*'))
-    const rules = applicable.flatMap(group => group.rules)
-    return {
-      name,
-      explicitlyNamed: exact.length > 0,
-      allowed: robotsAllowsPath(rules, '/'),
-    }
-  })
+  const results = AI_CRAWLERS.map(name => crawlerPolicy(groups, name))
   const blocked = results.filter(item => !item.allowed).map(item => item.name)
   return {
     status: blocked.length === 0 ? 'allowed' : 'blocked',
@@ -738,16 +858,69 @@ function expectedIndexNowKey(url) {
   }
 }
 
+function regionalProbeStatus(probe, usable, reason) {
+  if (probe?.status !== 'ok' || probe.httpStatus !== 200) {
+    return {
+      status: 'FAILED',
+      reason: probe?.reason === '验证文件 URL 配置无效' ? probe.reason
+        : probe?.httpStatus ? `HTTP ${probe.httpStatus}` : '未取得 HTTP 响应',
+    }
+  }
+  return usable ? { status: 'OBSERVED' } : { status: 'FAILED', reason }
+}
+
+function hasSitemapEntry(source) {
+  const content = source.replace(/<!--[^]*?-->/gu, '').trim()
+  const root = /^(?:<\?xml\s[^?]*\?>\s*)?<(urlset|sitemapindex)(?:\s[^>]*)?>([^]*)<\/\1>\s*$/u.exec(content)
+  if (!root) return false
+  const entries = root[1] === 'urlset'
+    ? root[2].matchAll(/<url>\s*<loc>\s*(https?:\/\/[^<\s]+)\s*<\/loc>[^]*?<\/url>/gu)
+    : root[2].matchAll(/<sitemap>\s*<loc>\s*(https?:\/\/[^<\s]+)\s*<\/loc>[^]*?<\/sitemap>/gu)
+  return [...entries].some(entry => URL.canParse(entry[1]))
+}
+
+function regionalSearchEvidence(definitions, checks, { home, robots, sitemap }) {
+  const groups = robotsGroups(robots.source)
+  const robotsAccess = regionalProbeStatus(robots, !/^\s*</u.test(robots.source), 'robots.txt 返回了网页内容')
+  return definitions.map((definition, index) => {
+    const verification = checks[index]
+    const evidence = regionalProbeStatus(verification, (
+      verification.finalUrl === verification.url && /^[a-z\d_-]{6,128}$/iu.test(verification.source?.trim() ?? '')
+    ), '验证文件地址或内容格式异常')
+    const crawler = crawlerPolicy(groups, definition.crawler)
+    return {
+      id: definition.id,
+      label: definition.label,
+      crawler: definition.crawler,
+      verification: { ...evidence, url: verification.url, finalUrl: verification.finalUrl },
+      homepage: regionalProbeStatus(home, true),
+      robots: robotsAccess.status !== 'OBSERVED' ? robotsAccess
+        : crawler.allowed ? { status: 'OBSERVED', allowed: true }
+          : { status: 'FAILED', allowed: false, reason: 'robots.txt 禁止抓取首页' },
+      sitemap: regionalProbeStatus(sitemap, hasSitemapEntry(sitemap.source), 'sitemap 未返回有效网址'),
+    }
+  })
+}
+
 export async function collectTechnicalSeo(site, {
   fetchImpl = globalThis.fetch,
   timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 } = {}) {
-  const [home, robots, sitemap, bingAuth, indexNowKey] = await Promise.all([
+  const regionalDefinitions = site.regionalSearch ?? []
+  const [home, robots, sitemap, bingAuth, indexNowKey, regionalFiles] = await Promise.all([
     fetchProbe(`${site.origin}/`, { fetchImpl, timeoutMs }),
     fetchProbe(site.robotsUrl, { fetchImpl, timeoutMs }),
     fetchProbe(site.sitemapUrl, { fetchImpl, timeoutMs }),
     fetchProbe(site.bingSiteAuthUrl, { fetchImpl, timeoutMs }),
     fetchProbe(site.indexNowKeyUrl, { fetchImpl, timeoutMs }),
+    Promise.all(regionalDefinitions.map(async ({ verificationPath }) => {
+      const url = typeof verificationPath === 'string' && verificationPath.startsWith('/')
+        ? safeUrl(verificationPath, site.origin) : null
+      if (!url || new URL(url).origin !== site.origin) {
+        return { status: 'failed', reason: '验证文件 URL 配置无效' }
+      }
+      return { ...await fetchProbe(url, { fetchImpl, timeoutMs }), url }
+    })),
   ])
   const linkTags = [...home.source.matchAll(/<link\b[^>]*>/giu)].map(match => match[0])
   const canonical = linkTags.find(tag => tagAttribute(tag, 'rel')?.toLowerCase() === 'canonical')
@@ -819,6 +992,7 @@ export async function collectTechnicalSeo(site, {
       aiCrawlers: crawlerPolicy,
     },
     sitemap: { status: sitemap.status, httpStatus: sitemap.httpStatus, urlCount: sitemapUrlCount },
+    regionalSearch: regionalSearchEvidence(regionalDefinitions, regionalFiles, { home, robots, sitemap }),
     bingSiteAuth: { status: bingAuth.status, httpStatus: bingAuth.httpStatus },
     indexNowKey: {
       status: indexNowKey.status,

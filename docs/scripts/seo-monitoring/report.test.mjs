@@ -176,6 +176,114 @@ function technical(origin) {
   }
 }
 
+test('Bing Markdown shows observed values and independent unavailable sources', () => {
+  const report = buildMonitoringReport({
+    config,
+    generatedAt: '2026-07-28T23:30:00.000Z',
+    window: { gsc: {}, ga4: {} },
+    dataForSeoInputs: [],
+    siteInputs: [{
+      definition: { id: 'cn', label: '.cn 产品主页' },
+      gsc: unavailable('no GSC fixture'),
+      ga4: unavailable('no GA4 fixture'),
+      technical: technical('https://project-neko.cn'),
+      bing: {
+        traffic: { status: 'FAILED', reason: 'HTTP 403' },
+        queries: {
+          status: 'OBSERVED',
+          invalidRowCount: 1,
+          rows: [{ date: '2026-07-28', query: 'desktop | pet', clicks: 0, impressions: 4, position: 3.5 }],
+        },
+      },
+    }],
+    bingRankings: [{
+      id: 'online-en',
+      label: '.online en / United States',
+      depth: 10,
+      status: 'UNKNOWN',
+      reason: 'dry-run 未请求付费排名',
+      rows: [],
+    }],
+  })
+  const markdown = renderMarkdown(report)
+  assert.match(markdown, /## Bing 搜索表现与排名/u)
+  assert.match(markdown, /查询（最新一周） \| API 日期/u)
+  assert.ok(markdown.includes('| .cn 产品主页 | desktop \\| pet | 2026-07-28 | 0 | 4 | 3.50 |'))
+  assert.match(markdown, /站点流量 \| FAILED · N\/A（HTTP 403）/u)
+  assert.match(markdown, /OBSERVED（跳过 1 条无效数据）/u)
+  assert.match(markdown, /UNKNOWN · N\/A（dry-run 未请求付费排名）/u)
+  assert.ok(!report.blockers.some(blocker => blocker.includes('Bing')))
+  assert.equal(report.sites[0].bing.queries.status, 'OBSERVED')
+  assert.deepEqual(
+    report.trust.filter(row => row.source.includes('Bing')).map(row => [row.evidence, row.status]),
+    [['GetRankAndTrafficStats', 'FAILED'], ['GetQueryStats', 'OBSERVED'], ['Bing Organic SERP Live', 'UNKNOWN']],
+  )
+})
+
+test('the daily engine table keeps webmaster metrics and GA4 sessions on their own dates', () => {
+  const report = buildMonitoringReport({
+    config,
+    generatedAt: '2026-07-28T23:30:00.000Z',
+    window: { gsc: {}, ga4: {} },
+    dataForSeoInputs: [],
+    siteInputs: [{
+      definition: { id: 'cn', label: '.cn 产品主页' },
+      gsc: gsc({
+        dataThrough: '2026-07-26', latestCompleteDay: { clicks: 1, impressions: 10, ctr: 0.1, position: 2 },
+        latestPropertyDay: { status: 'OBSERVED', date: '2026-07-26', clicks: 4, impressions: 50, ctr: 0.08 },
+      }),
+      ga4: unavailable('no GA4 overview fixture'),
+      ga4SearchEngineSessions: {
+        status: 'OBSERVED', date: '2026-07-28', sessions: { google: 2, bing: 3, baidu: 0 },
+        referralSessions: { google: 0, bing: 0, baidu: 2 },
+      },
+      technical: technical('https://project-neko.cn'),
+      bing: { traffic: { status: 'OBSERVED', rows: [{ date: '2026-07-27', clicks: 2, impressions: 20 }] } },
+    }],
+  })
+  const markdown = renderMarkdown(report)
+  assert.match(markdown, /## 各搜索引擎每日统计/u)
+  assert.ok(markdown.includes('| Google | 2026-07-26 | 4 | 50 | 8.00% | OBSERVED | 2026-07-28 | 2 | 0 | OBSERVED |'))
+  assert.ok(markdown.includes('| Bing | 2026-07-27 | 2 | 20 | 10.00% | OBSERVED | 2026-07-28 | 3 | 0 | OBSERVED |'))
+  assert.ok(markdown.includes('| 百度 | N/A | N/A | N/A | N/A | UNSUPPORTED | 2026-07-28 | 0 | 2 | OBSERVED |'))
+})
+
+test('regional search report exposes ranking availability separately from public probes', () => {
+  const definition = {
+    id: 'cn',
+    label: '.cn 产品主页',
+    regionalSearch: [
+      { id: 'baidu', label: '百度', crawler: 'Baiduspider' },
+      { id: 'sogou', label: '搜狗', crawler: 'Sogou web spider' },
+      { id: '360', label: '360', crawler: '360Spider' },
+      { id: 'toutiao', label: '头条搜索', crawler: 'Bytespider' },
+    ],
+  }
+  const probes = definition.regionalSearch.map(({ id }) => ({
+    id, verification: { status: 'OBSERVED' }, homepage: { status: 'FAILED' },
+    sitemap: { status: 'OBSERVED' }, robots: { status: 'OBSERVED', allowed: true },
+  }))
+  const report = buildMonitoringReport({
+    config, generatedAt: '2026-07-28T23:30:00.000Z',
+    window: { gsc: {}, ga4: {} }, dataForSeoInputs: [],
+    siteInputs: [{
+      definition, gsc: unavailable('no GSC fixture'), ga4: unavailable('no GA4 fixture'),
+      technical: { ...technical('https://project-neko.cn'), regionalSearch: probes },
+      baiduSubmission: { status: 'UNKNOWN', reason: '无正式回执' },
+    }],
+    baiduRanking: { id: 'cn', depth: 10, status: 'UNKNOWN', reason: 'dry-run 未提交百度付费排名任务', rows: [] },
+  })
+  const markdown = renderMarkdown(report)
+  assert.match(markdown, /## 国内搜索引擎/u)
+  assert.match(markdown, /搜狗 \| UNSUPPORTED.*\| UNSUPPORTED/u)
+  assert.match(markdown, /360 \| UNSUPPORTED.*\| UNSUPPORTED/u)
+  assert.match(markdown, /头条搜索 \| UNSUPPORTED.*\| UNSUPPORTED/u)
+  assert.match(markdown, /百度推送 · UNKNOWN/u)
+  assert.match(markdown, /百度 公开探针 \| .*? \| FAILED \|.*首页 FAILED/u)
+  assert.match(markdown, /搜狗 公开探针 \| .*? \| OBSERVED \|/u)
+  assert.deepEqual(report.sites[0].regionalSearch.map(engine => engine.performance.status), Array(4).fill('UNSUPPORTED'))
+})
+
 test('rank buckets distinguish observed off-100 results, failures, and not-run rows', () => {
   assert.deepEqual(rankBuckets([
     { organicRank: 2, error: null, collectionStatus: 'observed' },

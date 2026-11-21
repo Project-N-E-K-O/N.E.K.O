@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   collectGa4,
+  collectGa4SearchEngineSessions,
   collectGsc,
   collectSitemap,
   collectTechnicalSeo,
@@ -77,6 +78,13 @@ test('GSC collector returns latest day, consecutive 7-day trend, and action queu
       if (body.dataState === 'all' && body.dimensions?.[0] === 'date') {
         return jsonResponse({ metadata: { first_incomplete_date: '2026-07-21' }, rows: [] })
       }
+      if (body.aggregationType === 'byProperty') {
+        assert.deepEqual(body, { ...recent7, dimensions: ['date'], aggregationType: 'byProperty', dataState: 'final' })
+        return jsonResponse({ responseAggregationType: 'byProperty', rows: [
+          { keys: ['2026-07-17'], clicks: 2, impressions: 100 },
+          { keys: ['2026-07-19'], clicks: 4, impressions: 50 },
+        ] })
+      }
       if (body.startDate === latest.startDate) {
         return jsonResponse({ rows: [
           { keys: ['ai desktop pet', 'https://project-neko.online/'], clicks: 1, impressions: 10, ctr: 0.1, position: 8 },
@@ -100,6 +108,9 @@ test('GSC collector returns latest day, consecutive 7-day trend, and action queu
   assert.equal(result.availability.firstIncompleteDate, '2026-07-21')
   assert.equal(result.availability.latestFinalDate, '2026-07-20')
   assert.equal(result.latestCompleteDay.clicks, 1)
+  assert.deepEqual(result.latestPropertyDay, {
+    status: 'OBSERVED', date: '2026-07-19', clicks: 4, impressions: 50, ctr: 0.08,
+  })
   assert.equal(result.recent7.impressions, 120)
   assert.equal(result.previous7.impressions, 50)
   assert.equal(result.trend7.impressions.delta, 70)
@@ -205,6 +216,7 @@ test('GSC sitemap failure stays partial instead of discarding search performance
   assert.equal(result.dataThrough, '2026-07-22')
   assert.equal(result.availability.resolution, 'metadata_no_incomplete_date')
   assert.equal(result.latestCompleteDay.impressions, 0)
+  assert.deepEqual(result.latestPropertyDay, { status: 'UNKNOWN' })
   assert.equal(result.sitemap.status, 'unavailable')
   assert.match(result.sitemap.reason, /HTTP 404/)
 })
@@ -224,6 +236,7 @@ test('GSC collector paginates each requested period', async () => {
       if (body.dataState === 'all' && body.dimensions?.[0] === 'date') {
         return jsonResponse({ metadata: { first_incomplete_date: '2026-07-21' }, rows: [] })
       }
+      if (body.aggregationType === 'byProperty') return new Response('<html>Error page</html>')
       starts.push(`${body.startDate}:${body.startRow}`)
       if (body.startRow === 0) {
         return jsonResponse({ rows: [
@@ -236,9 +249,30 @@ test('GSC collector paginates each requested period', async () => {
   })
 
   assert.equal(result.pagination.latestRequests, 2)
+  assert.deepEqual(result.latestPropertyDay, { status: 'FAILED' })
   assert.equal(result.pagination.recent7Requests, 2)
   assert.equal(result.pagination.previous7Requests, 2)
   assert.equal(starts.length, 6)
+})
+
+test('GSC does not report page-aggregated results as a property day', async () => {
+  const result = await collectGsc({
+    siteUrl: 'https://project-neko.online/',
+    sitemapUrl: 'https://project-neko.online/sitemap.xml',
+    categoryQueryRegex: 'desktop pet',
+  }, reportingWindow(new Date('2026-07-23T08:00:00Z')), {
+    accessToken: 'fixture-auth',
+    fetchImpl: async (url, options) => {
+      if (!url.includes('searchAnalytics')) return jsonResponse({ errors: 0, warnings: 0 })
+      const body = JSON.parse(options.body)
+      if (body.aggregationType === 'byProperty') {
+        return jsonResponse({ responseAggregationType: 'byPage',
+          rows: [{ keys: [body.endDate], clicks: 4, impressions: 50 }] })
+      }
+      return jsonResponse({ rows: [] })
+    },
+  })
+  assert.deepEqual(result.latestPropertyDay, { status: 'FAILED' })
 })
 
 test('GA4 collector returns latest day and 7-day organic, AI, and CTA trends', async () => {
@@ -328,6 +362,81 @@ test('GA4 keeps docs-to-home metrics N/A when the event is not applicable to a s
   assert.equal(result.docsToHomeEvent, null)
 })
 
+test('GA4 engine sessions use the exact host and report organic and referral channels independently', async () => {
+  const range = { startDate: '2026-07-22', endDate: '2026-07-22' }
+  const rows = [
+    ['google', '4'], ['www.google.co.uk', '2'], ['cn.bing.com', '3'], ['m.baidu.com', '5'],
+    ['sogou', '1'], ['www.so.com', '7'], ['so.toutiao.com', '2', 'Referral'], ['lookalike.bing.com.invalid', '11'],
+    ['www.360.cn', '9'], ['360.cn.invalid', '3', 'Referral'],
+  ].map(([source, sessions, channel = 'Organic Search']) => ({
+    dimensionValues: [{ value: source }, { value: channel }], metricValues: [{ value: sessions }],
+  }))
+  const dimensions = [{ name: 'sessionSource' }, { name: 'sessionDefaultChannelGroup' }]
+  const headers = { dimensionHeaders: dimensions, metricHeaders: [{ name: 'sessions' }] }
+  const site = { propertyId: '123456789', hostname: 'project-neko.cn' }
+  const success = await collectGa4SearchEngineSessions(site, range, {
+    accessToken: 'fixture-auth',
+    fetchImpl: async (url, options) => {
+      assert.match(url, /properties\/123456789:runReport$/u)
+      const request = JSON.parse(options.body)
+      assert.deepEqual(request.dateRanges, [range])
+      assert.deepEqual(request.dimensions, dimensions)
+      const [host, channels] = request.dimensionFilter.andGroup.expressions
+      assert.deepEqual(host.filter, { fieldName: 'hostName', stringFilter: { value: 'project-neko.cn', matchType: 'EXACT' } })
+      assert.deepEqual(channels.orGroup.expressions.map(item => [
+        item.filter.fieldName, item.filter.stringFilter.value,
+      ]), [['sessionDefaultChannelGroup', 'Organic Search'], ['sessionDefaultChannelGroup', 'Referral']])
+      return Response.json({ ...headers, rowCount: rows.length, rows, metadata: { timeZone: 'Asia/Shanghai' } })
+    },
+  })
+  assert.deepEqual(success, {
+    status: 'OBSERVED', date: '2026-07-22', timeZone: 'Asia/Shanghai', unmappedSessions: 11,
+    sessions: { google: 6, bing: 3, baidu: 5, sogou: 1, 360: 16, toutiao: 0 },
+    referralSessions: { google: 0, bing: 0, baidu: 0, sogou: 0, 360: 0, toutiao: 2 },
+  })
+
+  const empty = await collectGa4SearchEngineSessions(site, range, {
+    accessToken: 'fixture-auth', fetchImpl: async () => Response.json(headers),
+  })
+  assert.equal(empty.status, 'OBSERVED')
+  assert.ok(Object.values(empty.sessions).every(value => value === 0))
+  assert.ok(Object.values(empty.referralSessions).every(value => value === 0))
+
+  for (const [response, status] of [
+    [{ ...headers, rows: null }, 'FAILED'],
+    [{ ...headers, rows: {} }, 'FAILED'],
+    [{ ...headers, metadata: { emptyReason: 'fixture reason' } }, 'UNKNOWN'],
+  ]) {
+    const incomplete = await collectGa4SearchEngineSessions(site, range, {
+      accessToken: 'fixture-auth', fetchImpl: async () => Response.json(response),
+    })
+    assert.equal(incomplete.status, status)
+    assert.equal(incomplete.sessions, undefined)
+    assert.doesNotMatch(JSON.stringify(incomplete), /fixture reason/u)
+  }
+
+  const stillOpen = await collectGa4SearchEngineSessions(site, range, {
+    accessToken: 'fixture-auth', now: new Date('2026-07-23T02:00:00Z'),
+    fetchImpl: async () => Response.json({ ...headers, metadata: { timeZone: 'America/Los_Angeles' } }),
+  })
+  assert.equal(stillOpen.status, 'UNKNOWN')
+  assert.equal(stillOpen.sessions, undefined)
+
+  const thresholded = await collectGa4SearchEngineSessions(site, range, {
+    accessToken: 'fixture-auth',
+    fetchImpl: async () => Response.json({ ...headers, metadata: { subjectToThresholding: true } }),
+  })
+  assert.equal(thresholded.status, 'UNKNOWN')
+  assert.equal(thresholded.sessions, undefined)
+
+  const failure = await collectGa4SearchEngineSessions(site, range, {
+    accessToken: 'fixture-auth',
+    fetchImpl: async () => Response.json({ error: { message: 'credential fixture' } }, { status: 403 }),
+  })
+  assert.equal(failure.status, 'FAILED')
+  assert.doesNotMatch(JSON.stringify(failure), /credential fixture/u)
+})
+
 test('technical collector checks HTTP, discovery files, canonical, hreflang, schema, and GA4 ID', async () => {
   const origin = 'https://project-neko.cn'
   const site = {
@@ -376,6 +485,39 @@ test('technical collector checks HTTP, discovery files, canonical, hreflang, sch
   assert.equal(result.robots.aiCrawlers.status, 'allowed')
   assert.equal(result.robots.aiCrawlers.checked, 5)
   assert.equal(result.indexNowKey.contentMatchesFilename, true)
+})
+
+test('regional verification and crawler probes distinguish site evidence from failures', async () => {
+  const origin = 'https://example.test'
+  const result = await collectTechnicalSeo({
+    origin,
+    robotsUrl: `${origin}/robots.txt`,
+    sitemapUrl: `${origin}/sitemap.xml`,
+    bingSiteAuthUrl: `${origin}/BingSiteAuth.xml`,
+    indexNowKeyUrl: `${origin}/indexnow-key.txt`,
+    regionalSearch: [
+      { id: 'sogou', label: '搜狗', crawler: 'Sogou web spider', verificationPath: '/sogou.txt' },
+      { id: 'toutiao', label: '头条搜索', crawler: 'Bytespider', verificationPath: '/verify.html' },
+      { id: '360', label: '360', crawler: '360Spider', verificationPath: '//[' },
+    ],
+  }, {
+    fetchImpl: async url => {
+      if (url.endsWith('/robots.txt')) return new Response('User-agent: Sogou web spider\nDisallow: /\n\nUser-agent: *\nAllow: /')
+      if (url.endsWith('/sitemap.xml')) return new Response(`<urlset><url><loc>${origin}/</loc></url></urlset>`)
+      if (url.endsWith('/sogou.txt')) return new Response('tokenFixture')
+      return new Response('<html>Unexpected page fallback</html>')
+    },
+  })
+  const [sogou, toutiao, engine360] = result.regionalSearch
+  assert.equal(sogou.verification.status, 'OBSERVED')
+  assert.equal(sogou.robots.status, 'FAILED')
+  assert.equal(sogou.robots.allowed, false)
+  assert.equal(toutiao.verification.status, 'FAILED')
+  assert.equal(toutiao.robots.allowed, true)
+  assert.equal(toutiao.sitemap.status, 'OBSERVED')
+  assert.equal(engine360.verification.status, 'FAILED')
+  assert.match(engine360.verification.reason, /URL 配置无效/u)
+  assert.doesNotMatch(JSON.stringify(result.regionalSearch), /tokenFixture/u)
 })
 
 test('technical collector makes failed content invariants block growth reporting', async () => {
