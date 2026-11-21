@@ -73,8 +73,22 @@ async def test_pinned_task_control_is_reserved_before_execution(tmp_path, tool, 
         pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to the pinned dsh executable")
     calls = []
 
+    original = [{"content": "existing item", "status": "pending"}]
+    seeded = []
+    before = []
+
+    def persisted_todos():
+        cache, = (tmp_path / "dsh" / "storages" / "session_projcache" / "sessions").glob("*.json")
+        rows = json.loads(cache.read_text(encoding="utf-8"))["record"]["rows"]
+        return rows["todos"]["val"]
+
     async def begin(sid, payload):
+        if tool == "todo_write" and not seeded:
+            seeded.append(payload["call_id"])
+            return {"allow": True}
         calls.append((sid, payload))
+        if tool == "todo_write":
+            before.extend((e["tool_call_id"], e["is_error"], e["text"]) for e in events.of("tool_end"))
         return {"allow": allow}
 
     events = Recorder()
@@ -86,7 +100,12 @@ async def test_pinned_task_control_is_reserved_before_execution(tmp_path, tool, 
     arguments = {"objective": "local fixture"} if tool == "create_goal" else {
         "todos": [{"content": "local fixture", "status": "pending"}],
     }
+    # dsh clears its todo projection on turn/start. Seed and update it in the same turn.
+    seed_replies = [
+        [sse_tool_call("todo_write", {"todos": original}, "seed_1"), sse_finish("tool_calls")],
+    ] if tool == "todo_write" else []
     replies = iter([
+        *seed_replies,
         [sse_tool_call(tool, arguments),
          sse_finish("tool_calls")],
         [sse_text("Done"), sse_finish()],
@@ -101,7 +120,7 @@ async def test_pinned_task_control_is_reserved_before_execution(tmp_path, tool, 
             assert opened["type"] == "started", opened
             await runtime.prompt(spec.session_id, "Update the local state.", human=human)
             await events.wait_ended(spec.session_id, timeout=40)
-            end, = events.of("tool_end")
+            end = events.of("tool_end")[-1]
             expected = {"tool": tool, "call_id": end["tool_call_id"]}
             if not human:
                 expected["refused"] = True
@@ -110,6 +129,7 @@ async def test_pinned_task_control_is_reserved_before_execution(tmp_path, tool, 
     finally:
         await runtime.shutdown()
     if tool == "todo_write":
-        cache, = (tmp_path / "dsh" / "storages" / "session_projcache" / "sessions").glob("*.json")
-        rows = json.loads(cache.read_text(encoding="utf-8"))["record"]["rows"]
-        assert rows["todos"]["val"] == (arguments["todos"] if allow else None)
+        (seed_id, is_error, text), = before
+        assert [seed_id] == seeded and not is_error
+        assert "1 pending" in text
+        assert persisted_todos() == (arguments["todos"] if allow else original)
