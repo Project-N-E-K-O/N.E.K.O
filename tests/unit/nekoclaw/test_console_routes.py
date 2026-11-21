@@ -586,3 +586,25 @@ async def test_the_switches_and_the_browser_settings_are_those_the_agent_process
         assert refused.json()["detail"] == {"code": "bad_browser_setting", "message": "unknown mode"}
         assert written == [{"mode": "attach"}]
     await host.shutdown()
+
+
+async def test_summing_up_idle_sessions_is_switched_off_and_on_from_the_page(console):
+    client, host, _ = console
+    assert (await client.get("/console/window", headers=HEADERS)).json()["window"]["idle_compact_on"] is True
+    off = (await client.post("/console/window", headers=HEADERS, json={"idle_compact_on": False})).json()["window"]
+    assert off["idle_compact_on"] is False
+    model = await a_model()
+    assert await host.model_capabilities.idle_compact_on(model["base_url"], model["model"]) is False
+    # With the time, in one go; and a time that is refused leaves the switch as it was.
+    refused = await client.post(
+        "/console/window", headers=HEADERS, json={"idle_compact_on": True, "idle_compact_after": 5},
+    )
+    assert refused.status_code == 400 and refused.json()["detail"]["code"] == "out_of_range"
+    assert (await client.get("/console/window", headers=HEADERS)).json()["window"]["idle_compact_on"] is False
+    on = (await client.post(
+        "/console/window", headers=HEADERS, json={"idle_compact_on": True, "idle_compact_after": 7200},
+    )).json()["window"]
+    assert (on["idle_compact_on"], on["idle_compact_after_set"]) == (True, 7200.0)
+    for not_a_switch in ("off", 0, None):
+        bad = await client.post("/console/window", headers=HEADERS, json={"idle_compact_on": not_a_switch})
+        assert bad.status_code == 400 and bad.json()["detail"]["code"] == "bad_flag"

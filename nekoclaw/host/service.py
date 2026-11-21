@@ -555,12 +555,13 @@ class NekoClawHost:
 
         ``context_window`` and ``compact_at`` in tokens, ``idle_compact_after``
         in seconds; None for one of them goes back to the setting, and one
-        that is not given stays as it is. Raises ``LookupError`` while no
-        model is configured, ``ValueError`` for a value the store refuses
-        (nothing is changed then) and ``TypeError`` for a name that is none
-        of the three.
+        that is not given stays as it is. ``idle_compact_on`` (a bool)
+        switches summing up idle sessions on or off. Raises ``LookupError``
+        while no model is configured, ``ValueError`` for a value the store
+        refuses (nothing is changed then) and ``TypeError`` for a name that
+        is none of the four.
         """
-        unknown = sorted(set(changes) - {"context_window", "compact_at", "idle_compact_after"})
+        unknown = sorted(set(changes) - {"context_window", "compact_at", "idle_compact_after", "idle_compact_on"})
         if unknown:
             raise TypeError(f"unknown window setting: {', '.join(unknown)}")
         config = await self._task_agent_model()
@@ -573,6 +574,7 @@ class NekoClawHost:
             ("context_window", store.set_context_window, "set"),
             ("compact_at", store.set_compact_at, "compact_at_set"),
             ("idle_compact_after", store.set_idle_compact_after, "idle_compact_after_set"),
+            ("idle_compact_on", store.set_idle_compact_on, "idle_compact_on"),
         )
         done: list[tuple[Any, Any]] = []
         try:

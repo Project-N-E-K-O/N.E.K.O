@@ -42,7 +42,7 @@ function permissions(version = 3, mode: PermissionsView['categories'][number]['m
 }
 const modelWindow = {
   model: 'agent-model', window: 200000, default: 200000, set: null, compact_at: 170000, compact_at_set: null,
-  idle_compact_after: 1440, idle_compact_after_set: null,
+  idle_compact_after: 1440, idle_compact_after_set: null, idle_compact_on: true,
 }
 
 let cleanup: (() => void) | undefined
@@ -202,6 +202,18 @@ describe('the context tab', () => {
     await type('window-compact-at', '90000')
     await click(byTest('window-save'))
     expect(api.setWindow).toHaveBeenCalledWith({ compact_at: 90000 })
+    expect((byTest('window-save') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('switches summing up idle sessions off, and the time with it cannot be set then', async () => {
+    api.getWindow.mockResolvedValue({ window: { ...modelWindow } })
+    api.setWindow.mockResolvedValue({ window: { ...modelWindow, idle_compact_on: false } })
+    await mount(WindowTab)
+    await click(byTest('window-idle-on')?.querySelector('input'))
+    expect((document.querySelector('[data-testid="window-idle"] input') as HTMLInputElement).disabled).toBe(true)
+    await click(byTest('window-save'))
+    expect(api.setWindow).toHaveBeenCalledWith({ idle_compact_on: false })
+    expect((byTest('window-idle-on')?.querySelector('input') as HTMLInputElement).checked).toBe(false)
     expect((byTest('window-save') as HTMLButtonElement).disabled).toBe(true)
   })
 

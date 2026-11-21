@@ -5731,3 +5731,41 @@ async def test_a_commission_that_was_queued_when_nekoclaw_went_off_is_begun_when
     whole = json.dumps(scripts["check the mail"].requests[0], ensure_ascii=False)
     assert "check the mail" in whole and "the other account" not in whole
     assert await outbox(host, "correction") == []
+
+
+async def test_with_summing_up_idle_sessions_switched_off_for_the_model_no_session_is_summed_up(hosts, tmp_path, monkeypatch):
+    """The user's switch for the task agent model: off, no timer is set, and one that was set does nothing."""
+    _idle_on(monkeypatch, after=30.0)
+    summary = [say("## Current Work\n- the CSV export is added and reported"), _used(7_000, 60), finish()]
+    export = ScriptedLLM([*_long_work("export added"), summary, *_long_work("columns added"), summary])
+    scripts = {"add a CSV export": export}
+    host = _host(hosts, tmp_path, _scripts_by_session(scripts), task_agent_model=_small_window)
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    model = await _small_window()
+
+    # Set while it is on, then switched off before the time comes: the timer comes due and asks nothing.
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    assert len(export.requests) == 5
+    await host.model_capabilities.set_idle_compact_on(model.get("base_url"), model["model"], False)
+    # The time has come by every other measure: it is the switch that turns it away.
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
+    assert await manager._idle_compact(first.id) is False
+    assert len(export.requests) == 5 and manager._compacting == {}
+    assert (await host.ledger.get_session(first.id)).compacted_at is None
+
+    # Off, a session that is let go gets no timer at all.
+    manager._drop_idle_timer(first.id)
+    await manager._schedule_idle_compact(first.id)
+    assert manager._idle_timers == {}
+
+    # On again, it is summed up as before.
+    await host.model_capabilities.set_idle_compact_on(model.get("base_url"), model["model"], True)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.05)
+    await manager._schedule_idle_compact(first.id)
+    await wait_until(lambda: len(export.requests) == 6, what="the request that sums it up")
+    await _idle_work_over(host)
+    assert (await host.ledger.get_session(first.id)).compacted_at is not None

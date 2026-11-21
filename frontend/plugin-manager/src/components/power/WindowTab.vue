@@ -34,14 +34,22 @@
 
       <div class="row">
         <div class="label">
-          {{ t('power.runtime.window.idleAfter') }}
-          <small>{{ t('power.runtime.window.idleHint') }} {{ t('power.runtime.window.idleAfterHint') }}</small>
+          {{ t('power.runtime.window.idle') }}
+          <small>{{ t('power.runtime.window.idleHint') }}</small>
         </div>
-        <el-input-number v-model="form.idleAmount" :min="0" :controls="false" :placeholder="String(idleDefault.amount)" data-testid="window-idle" />
-        <el-select v-model="form.idleUnit" class="unit" :aria-label="t('power.runtime.window.idleAfter')">
+        <el-switch v-model="form.idleOn" :aria-label="t('power.runtime.window.idle')" data-testid="window-idle-on" />
+      </div>
+
+      <div class="row" :class="{ off: !form.idleOn }">
+        <div class="label">
+          {{ t('power.runtime.window.idleAfter') }}
+          <small>{{ t('power.runtime.window.idleAfterHint') }}</small>
+        </div>
+        <el-input-number v-model="form.idleAmount" :min="0" :controls="false" :disabled="!form.idleOn" :placeholder="String(idleDefault.amount)" data-testid="window-idle" />
+        <el-select v-model="form.idleUnit" class="unit" :disabled="!form.idleOn" :aria-label="t('power.runtime.window.idleAfter')">
           <el-option v-for="unit in units" :key="unit" :value="unit" :label="t(`power.runtime.window.units.${unit}`)" />
         </el-select>
-        <el-button link :disabled="form.idleAmount === null" @click="form.idleAmount = null">{{ t('power.runtime.window.useDefault') }}</el-button>
+        <el-button link :disabled="form.idleAmount === null || !form.idleOn" @click="form.idleAmount = null">{{ t('power.runtime.window.useDefault') }}</el-button>
       </div>
 
       <div class="actions">
@@ -69,8 +77,8 @@ const saving = ref(false)
 const saved = ref(false)
 const error = ref('')
 // What the user set, or null for "the default": the fields show the default as a placeholder then.
-const form = reactive<{ context: number | null; compactAt: number | null; idleAmount: number | null; idleUnit: IdleUnit }>({
-  context: null, compactAt: null, idleAmount: null, idleUnit: 'minutes',
+const form = reactive<{ context: number | null; compactAt: number | null; idleAmount: number | null; idleUnit: IdleUnit; idleOn: boolean }>({
+  context: null, compactAt: null, idleAmount: null, idleUnit: 'minutes', idleOn: true,
 })
 
 const idleDefault = computed(() => splitIdle(window.value?.idle_compact_after ?? 0))
@@ -78,7 +86,8 @@ const idleSeconds = computed(() => (form.idleAmount === null ? null : joinIdle(f
 const dirty = computed(() => {
   const now = window.value
   if (!now) return false
-  return form.context !== now.set || form.compactAt !== now.compact_at_set || idleSeconds.value !== now.idle_compact_after_set
+  return form.context !== now.set || form.compactAt !== now.compact_at_set
+    || idleSeconds.value !== now.idle_compact_after_set || form.idleOn !== now.idle_compact_on
 })
 
 function show(next: ModelWindow | null) {
@@ -86,6 +95,7 @@ function show(next: ModelWindow | null) {
   if (!next) return
   form.context = next.set
   form.compactAt = next.compact_at_set
+  form.idleOn = next.idle_compact_on
   if (next.idle_compact_after_set === null) {
     form.idleAmount = null
     form.idleUnit = splitIdle(next.idle_compact_after).unit
@@ -117,6 +127,7 @@ async function save() {
   if (form.context !== now.set) changes.context_window = form.context
   if (form.compactAt !== now.compact_at_set) changes.compact_at = form.compactAt
   if (idleSeconds.value !== now.idle_compact_after_set) changes.idle_compact_after = idleSeconds.value
+  if (form.idleOn !== now.idle_compact_on) changes.idle_compact_on = form.idleOn
   saving.value = true
   saved.value = false
   try {
@@ -142,6 +153,7 @@ defineExpose({ load })
 .label { flex: 1 1 320px; min-width: 0; line-height: 1.5; }
 .label small { display: block; color: var(--el-text-color-secondary); line-height: 1.6; margin-top: 2px; }
 .unit { width: 110px; }
+.row.off .label { opacity: 0.6; }
 .actions { display: flex; align-items: center; gap: 12px; padding-top: 14px; border-top: 1px solid var(--el-border-color-lighter); }
 .block { margin: 12px 0; }
 </style>

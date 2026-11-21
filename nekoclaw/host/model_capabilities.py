@@ -87,6 +87,7 @@ _WINDOW_FIELDS = (
     # Not of the window, but a number the user set for the model that the
     # refusal of pictures is not to take with it.
     "idle_compact_after",
+    "idle_compact_off",
 )
 
 
@@ -405,6 +406,37 @@ class ModelCapabilityStore:
             await self._save(models)
         return await self.idle_compact_after(base_url, model)
 
+    async def idle_compact_on(self, base_url: Any, model: Any) -> bool:
+        """Return whether sessions with this model are summed up when they have been idle. On unless the user switched it off."""
+        entry = (await self._loaded()).get(model_key(base_url, model))
+        return (entry or {}).get("idle_compact_off") is not True
+
+    async def set_idle_compact_on(self, base_url: Any, model: Any, on: bool) -> bool:
+        """Switch summing up idle sessions with this model on or off; returns ``idle_compact_on``.
+
+        Off, a session that is waiting for its time is not summed up when
+        the time comes: what an idle session costs to sum up is saved, and
+        the next commission in it sends all that was said, with no cache
+        left to read it from. How long a session is idle before it is
+        summed up (``set_idle_compact_after``) is kept beside it.
+        """
+        if not isinstance(on, bool):
+            raise ValueError("summing up idle sessions is switched on or off")
+        models = await self._loaded()
+        key = model_key(base_url, model)
+        async with self._lock:
+            entry = dict(models.get(key) or {})
+            if on:
+                entry.pop("idle_compact_off", None)
+            else:
+                entry["idle_compact_off"] = True
+            if entry:
+                models[key] = entry
+            else:
+                models.pop(key, None)
+            await self._save(models)
+        return await self.idle_compact_on(base_url, model)
+
     async def claim_window_reminder(self, base_url: Any, model: Any) -> int | None:
         """Return the window the user is to be told of for this model, to whoever asks first. Once.
 
@@ -467,7 +499,8 @@ class ModelCapabilityStore:
         ``compact_at_set`` (what the user set for it, or None).
         ``idle_compact_after`` (how long a session is idle before it is
         summed up, in seconds) and ``idle_compact_after_set`` (what the
-        user set for it, or None). ``reminded``
+        user set for it, or None); ``idle_compact_on`` (False when the
+        user switched that off for the model). ``reminded``
         and ``reminded_at`` when the user was told that the model's window
         is smaller than was assumed: the window they were told of.
         """
@@ -482,6 +515,7 @@ class ModelCapabilityStore:
             "compact_at_set": self._point((entry or {}).get("compact_at")),
             "idle_compact_after": await self.idle_compact_after(base_url, model),
             "idle_compact_after_set": self._idle_time((entry or {}).get("idle_compact_after")),
+            "idle_compact_on": (entry or {}).get("idle_compact_off") is not True,
         }
         if entry is not None and entry.get("window_reminded_at") is not None:
             described["reminded"] = entry.get("window_reminded")

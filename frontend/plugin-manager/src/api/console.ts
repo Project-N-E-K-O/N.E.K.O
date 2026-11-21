@@ -65,6 +65,8 @@ export interface ModelWindow {
   compact_at_set: number | null
   idle_compact_after: number
   idle_compact_after_set: number | null
+  /** False when the user switched summing up idle sessions off for the model. */
+  idle_compact_on: boolean
   reminded?: number
   reminded_at?: number
   learned?: number
@@ -76,6 +78,7 @@ export interface WindowChanges {
   context_window?: number | null
   compact_at?: number | null
   idle_compact_after?: number | null
+  idle_compact_on?: boolean
 }
 
 export interface Place {

@@ -296,10 +296,15 @@ def build_console_router(
 
         Each of ``context_window``, ``compact_at`` (tokens) and
         ``idle_compact_after`` (seconds) that is given is set; ``null`` goes
-        back to the setting.
+        back to the setting. ``idle_compact_on`` (true or false) switches
+        summing up idle sessions on or off.
         """
         payload = payload or {}
         changes: dict[str, Any] = {}
+        if "idle_compact_on" in payload:
+            if not isinstance(payload["idle_compact_on"], bool):
+                raise _refuse(400, "bad_flag", field="idle_compact_on")
+            changes["idle_compact_on"] = payload["idle_compact_on"]
         for name in ("context_window", "compact_at", "idle_compact_after"):
             value = payload.get(name, _UNSET)
             if value is _UNSET:

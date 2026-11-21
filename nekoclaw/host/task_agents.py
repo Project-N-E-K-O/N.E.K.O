@@ -8469,6 +8469,25 @@ class TaskAgentManager:
                 logger.warning("looking up how long a session is idle before it is summed up failed", exc_info=True)
         return float(TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS)
 
+    async def _idle_compact_wanted(self) -> bool:
+        """Return whether the user has idle sessions of the task agent model summed up (``idle_compact_on``).
+
+        True when it cannot be told: it is on unless switched off, and what
+        decides which model a session is sent to is checked apart from this
+        (``_task_model_key``).
+        """
+        if self._model_capabilities is None:
+            return True
+        try:
+            config = await self._model_config()
+            if config and config.get("model"):
+                return await self._model_capabilities.idle_compact_on(config.get("base_url"), config.get("model"))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - not knowing is the same as nothing set
+            logger.warning("looking up whether idle sessions are summed up failed", exc_info=True)
+        return True
+
     @staticmethod
     def _model_key_of(config: dict[str, Any] | None) -> str | None:
         """Return the key (address and name) of the model a configuration names; None when it names none."""
@@ -8526,6 +8545,9 @@ class TaskAgentManager:
             return
         stops = self._idle_stops
         if idle_for is None:
+            if not await self._idle_compact_wanted():
+                # Switched off for this model by the user: no timer is set.
+                return
             idle_for = await self._idle_after()
             model = await self._task_model_key()
             if model is None:
@@ -8714,6 +8736,12 @@ class TaskAgentManager:
             # Everything was stopped between the timer and this.
             return False
         if not self._is_switched_on():
+            return False
+        if not await self._idle_compact_wanted():
+            # Switched off since the timer was set: it comes due and does nothing.
+            return False
+        if not self._idle_now(session_id) or (stops is not None and stops != self._idle_stops):
+            # Taken by a commission, or everything stopped, while that was looked up.
             return False
         task = asyncio.current_task()
         assert task is not None
