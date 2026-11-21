@@ -1004,3 +1004,70 @@ async def test_a_hand_back_whose_look_at_the_ledger_fails_goes_on_once_the_copy_
     done = await wait_status(host, second.id, "done")
     assert done.session_id == first.session_id
     assert "\n    It is in chart.py.\n" in _said(scripts[RENAME].requests[2])[-1]
+
+
+
+async def test_what_a_copy_streams_before_it_reports_goes_back_as_it_was_written(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        RENAME: ScriptedLLM(
+            [
+                [call("write", {"file_path": "chart.py", "content": "x"}, "call-1"), finish("tool_calls")],
+                [
+                    say("The title is set in "),
+                    say("chart"),
+                    say(".py"),
+                    say(", line "),
+                    say("12."),
+                    call("report", {"status": "blocked", "summary": "cannot write here"}, "call-b"),
+                    finish("tool_calls"),
+                ],
+                _report("renamed", "call-2"),
+            ]
+        ),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    await _export_at_work(host, scripts)
+    second = await _dispatch(host, RENAME)
+    await wait_until(lambda: _handed_back(host, second.id), what="the hand-back")
+    release.set()
+    await wait_status(host, second.id, "done")
+    handed = _said(scripts[RENAME].requests[2])[-1]
+    assert "\n    The title is set in chart.py, line 12.\n    cannot write here\n" in handed
+
+
+async def test_a_copy_that_cannot_be_put_on_record_goes_back_ahead_of_those_queued_since(hosts, tmp_path, monkeypatch):
+    # One copy at a time: what is handed over while the first is copied waits for the session.
+    monkeypatch.setattr(settings, "TASK_AGENT_FORK_CONTINUE_MAX_PER_SESSION", 1)
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        FILES: ScriptedLLM([_report("tables.py")]),
+        "list the reports": ScriptedLLM([_report("reports")]),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    first = await _export_at_work(host, scripts)
+    ledger = host.ledger
+    append = ledger.append_event
+    writing, go_on = asyncio.Event(), asyncio.Event()
+
+    async def failing(commission_id: str, kind: str, payload: Any) -> Any:
+        if kind == "carried_on_in_copy":
+            writing.set()
+            await go_on.wait()
+            raise RuntimeError("the ledger is busy")
+        return await append(commission_id, kind, payload)
+
+    monkeypatch.setattr(ledger, "append_event", failing)
+    second = await _dispatch(host, FILES)
+    await asyncio.wait_for(writing.wait(), 10)
+    # Handed over while the first is being put on record: later than it.
+    later = await _dispatch(host, "list the reports")
+    await wait_until(lambda: later.id in host.task_agents._queue, what="the later one queued")
+    go_on.set()
+    await wait_until(lambda: second.id in host.task_agents._queue, what="the first back in the queue")
+    assert list(host.task_agents._queue) == [second.id, later.id]
+    release.set()
+    assert (await wait_status(host, second.id, "done")).session_id == first.session_id
+    await wait_status(host, later.id, "done")

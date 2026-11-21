@@ -1957,12 +1957,15 @@ class TaskAgentManager:
         # filed for what another session wrote included.
         if place.kind != "project":
             return ""
-        done = [
-            item
-            for item in await self._ledger.forked_work(place.id, limit=settings.TASK_AGENT_FORKED_WORK_MAX_ITEMS)
-            if item.id != commission.id
-        ]
+        finished = await self._ledger.forked_work(place.id, limit=settings.TASK_AGENT_FORKED_WORK_MAX_ITEMS)
+        # The one it follows up is told of by the line that says so
+        # (``TASK_AGENT_COMMISSION_CONTINUES_IN_COPY``), and not a second time
+        # here; told all the same.
+        told = [item.id for item in finished if item.id == commission.continues]
+        done = [item for item in finished if item.id not in (commission.id, commission.continues)]
         if not done:
+            if told:
+                self._forks_said[commission.id] = told
             return ""
         # Each within an even share of what is left once the words around
         # them are counted: every one that is put on record as told below
@@ -1989,7 +1992,7 @@ class TaskAgentManager:
             for item in done
         )
         # Told once the session took the message that says it (``_note_opened``).
-        self._forks_said[commission.id] = [item.id for item in done]
+        self._forks_said[commission.id] = [*told, *(item.id for item in done)]
         return texts.TASK_AGENT_FORKED_WORK.format(items=items)
 
     async def _opening_of_question(self, commission: Commission) -> str:
@@ -3540,6 +3543,10 @@ class TaskAgentManager:
             return
         commission_id = session.commission_id
         if status == "waiting":
+            if session.carries_on_for is not None and session.handing_back is not None:
+                # Handed back already: the session itself goes on with it,
+                # and asks what it needs to there.
+                return
             question = {"kind": "report", "question": summary, "details": details, "id": uuid.uuid4().hex}
             moved = await self._ledger.transition(
                 commission_id,
@@ -3571,8 +3578,10 @@ class TaskAgentManager:
             # it goes back to the session itself as any copy that called
             # such a tool does.
             if session.handing_back is None:
-                session.findings.append(text)
-                await self._hand_back_or_later(session, said="\n".join(part for part in session.findings if part.strip()))
+                # What it wrote since it was told to write down what it found
+                # came in pieces as it was streamed: joined as it came.
+                found = "".join(session.findings).strip()
+                await self._hand_back_or_later(session, said=f"{found}\n{text}".strip() if found else text)
             return
         await self._end(
             commission_id,
@@ -7844,11 +7853,11 @@ class TaskAgentManager:
         if not may():
             await self._discard_copy(copy)
             return
-        # Those of the same session queued behind it: should it come back to
-        # the queue, it goes in front of them (whatever came and went
-        # elsewhere in the queue meanwhile).
-        behind = list(self._queue)[self._queue.index(commission_id) + 1 :]
-        behind = [item for item in behind if self._session_of.get(item) == main]
+        # Those of the same session queued ahead of it: should it come back
+        # to the queue, it goes behind them and in front of every other one
+        # of the session's (queued behind it, or queued since, which is
+        # later), whatever came and went elsewhere in the queue meanwhile.
+        ahead = set(list(self._queue)[: self._queue.index(commission_id)])
         self._queue.remove(commission_id)
         self._session_of[commission_id] = copy.id
         if not self._take_place(commission_id):
@@ -7878,8 +7887,14 @@ class TaskAgentManager:
                 del self._held_by[copy.id]
             self._session_of[commission_id] = main
             if commission_id not in self._queue:
-                ahead_of = next((item for item in behind if item in self._queue), None)
-                at = self._queue.index(ahead_of) if ahead_of is not None else len(self._queue)
+                at = next(
+                    (
+                        index
+                        for index, item in enumerate(self._queue)
+                        if self._session_of.get(item) == main and item not in ahead
+                    ),
+                    len(self._queue),
+                )
                 self._queue.insert(at, commission_id)
             await self._discard_copy(copy)
             if self._queue and len(self._sessions) < self.limit:
@@ -7916,6 +7931,10 @@ class TaskAgentManager:
         from config.nekoclaw_settings import TASK_AGENT_FORK_HAND_BACK_REQUESTS
         from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_FORK_HAND_BACK
 
+        if session.handing_back is not None:
+            # Handed back already, its close asked again by the host: no
+            # more requests of it.
+            return {"stop": True}
         if session.hand_back_left is None:
             left = max(1, int(TASK_AGENT_FORK_HAND_BACK_REQUESTS))
             session.hand_back_left = left - 1
