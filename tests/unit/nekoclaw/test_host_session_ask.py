@@ -834,7 +834,7 @@ async def test_opening_an_ask_copy_rechecks_its_parent_loan(hosts, tmp_path, mon
         release.set()
 
 
-@pytest.mark.parametrize("when", ["before_open", "during_open"])
+@pytest.mark.parametrize("when", ["before_open", "during_brief", "during_open"])
 async def test_external_input_rotates_startup_authority_without_cancelling_the_task(hosts, tmp_path, monkeypatch, when):
     scripts = {BUILD: ScriptedLLM([[call("report", {"status": "ready", "summary": "finished"}), finish("tool_calls")]])}
     host = _host(hosts, tmp_path, scripts)
@@ -848,7 +848,6 @@ async def test_external_input_rotates_startup_authority_without_cancelling_the_t
 
     async def prepared(commission, *args, **kwargs):
         spec = await prepare(commission, *args, **kwargs)
-        assert marker in spec.instructions
         if when == "before_open":
             host.permissions.received_external_input(commission.id)
         return spec
@@ -859,13 +858,32 @@ async def test_external_input_rotates_startup_authority_without_cancelling_the_t
         if when == "during_open":
             host.permissions.received_external_input(manager._held_by[spec.session_id])
 
+    read_brief = host.space.brief
+    reads = []
+
+    async def reading(project):
+        value = await read_brief(project)
+        reads.append(value)
+        if when == "during_brief" and len(reads) == 1:
+            owner, = manager._sessions
+            host.permissions.received_external_input(owner)
+            await host.space.write_rules("updated after the peer note")
+        return value
+
+    monkeypatch.setattr(host.space, "brief", reading)
     monkeypatch.setattr(manager, "_spec", prepared)
     monkeypatch.setattr(runtime, "start", opening)
     receipt = await _dispatch(host, BUILD)
     result = await wait_status(host, receipt.commission_id, "done", "cancelled", "failed")
     assert result.status == "done"
-    assert len(opened) == 1 and (marker in opened[0].instructions) == (when == "during_open")
-    assert len(scripts[BUILD].requests) == 1
+    assert len(opened) == 1 and len(scripts[BUILD].requests) == 1
+    rows = await host.ledger.run(lambda db: call_audit.read_trace(db, receipt.commission_id, now=0))
+    if when == "during_brief":
+        assert "updated after the peer note" in opened[0].instructions and marker not in opened[0].instructions
+        assert [r["status"] for r in rows if r["target"] == "space_brief"] == ["denied", "completed"]
+    else:
+        assert marker in opened[0].instructions
+        assert [r["status"] for r in rows if r["target"] == "space_brief"] == ["completed"]
 
 
 async def test_with_the_clock_set_back_the_wait_is_until_enough_of_the_hour_is_old(ledger):

@@ -1306,8 +1306,8 @@ class TaskAgentManager:
                     if exc.args == (DENIED_BY_SETTINGS,):
                         record.status = "denied"
                     raise
-                if reads and not self._permissions.grant_active(grant):
-                    record.status = "denied"
+                if reads and (not live() or not self._permissions.grant_active(grant)):
+                    record.status, record.reason = "denied", "delivery_revoked"
                     raise RuntimeError("session records could not be delivered")
             if reads:
                 if not record.closed:
@@ -1896,24 +1896,31 @@ class TaskAgentManager:
         lines = [json.dumps(definition, ensure_ascii=False) for definition in definitions]
         return "\n".join([texts.TASK_AGENT_COMMISSION_CANDIDATES_HEADER, *lines])
 
-    async def _space_brief(self, commission: Commission) -> str:
+    async def _space_brief(self, commission: Commission, receiving: Callable[[], bool] = lambda: True) -> str:
         """Return what the task agent space holds for a commission; empty when that is nothing.
 
         A space that cannot be read does not keep a task agent from starting.
         """
         if self._space is None:
             return ""
-        try:
-            async def read(action: _SessionAction) -> str:
-                action.record.scope_ref = commission.session_id
-                return await self._space.brief(commission.project)
+        async def read(action: _SessionAction) -> str:
+            action.record.scope_ref = commission.session_id
+            return await self._space.brief(commission.project)
 
-            return await self._perform_action(commission.id, "space_brief", read, self._permissions.current_run(commission.id))
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - it starts without what was kept
-            logger.warning("reading the task agent space for a task agent failed", exc_info=True)
-            return ""
+        for attempt in range(2):
+            if not receiving():
+                break
+            run = self._permissions.current_run(commission.id)
+            try:
+                return await self._perform_action(commission.id, "space_brief", read, lambda: run() and receiving())
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # An unavailable brief does not stop a commission.
+                if attempt == 0 and not run():
+                    continue  # A peer note rotated the old loan. Read afresh once.
+                logger.warning("reading the task agent space failed (%s)", type(exc).__name__)
+                break
+        return ""
 
     async def _repository_documents(self, workdir: str, session_dir: str | None = None) -> str:
         """Return the list of the files the repository a task agent works in keeps for agents; empty when it has none.
@@ -2081,7 +2088,14 @@ class TaskAgentManager:
         def unwanted() -> bool:
             return still_wanted is not None and not still_wanted()
 
+        def receiving() -> bool:
+            return (
+                self._sessions.get(commission_id) is session and not session.closing and not unwanted()
+                and (session.stands is None or session.stands.status not in ENDED_STATUSES)
+            )
+
         async def open_if_authorized(runtime, spec) -> bool:
+            brief = await self._space_brief(commission, receiving)
             if self._sessions.get(commission_id) is not session:
                 return False
             if session.closing or (session.stands is not None and session.stands.status in ENDED_STATUSES):
@@ -2091,11 +2105,8 @@ class TaskAgentManager:
                 await self._ledger.transition(commission_id, "cancelled", reason=DENIED_BY_SETTINGS)
                 self._discard(commission_id)
                 return False
-            if not brief_run_active():
-                # A peer note ended the old loan while this spec was prepared.
-                # Keep the task and its queued input, leaving out the stale brief.
-                own = self._base_instructions(commission, with_gateway=spec.gateway is not None)
-                spec = spec.model_copy(update={"instructions": own})
+            if brief:
+                spec = spec.model_copy(update={"instructions": f"{spec.instructions}\n\n{brief}"})
             await runtime.start(spec)
             session.opened_in_runtime = True
             return True
@@ -2224,9 +2235,9 @@ class TaskAgentManager:
                 return False
             # A blocked or failed commission must be working again before its
             # opening brief can reserve a call against the new run.
-            brief_run_active = self._permissions.current_run(commission_id)
             spec = await self._spec(
-                commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec
+                commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec,
+                include_space=False,
             )
             # On record with the session from here on: a later commission of
             # it is opened in the same place. (That the session is at work
@@ -2481,7 +2492,8 @@ class TaskAgentManager:
         return ModelConfig(**config)
 
     async def _spec(
-        self, commission: Commission, kept: Session, model: Any, *, workdir: str, session_dir: str, gateway: Any
+        self, commission: Commission, kept: Session, model: Any, *, workdir: str, session_dir: str, gateway: Any,
+        include_space: bool = True,
     ) -> Any:
         """Return what a runtime is given to open a session with, for the commission that is worked on in it.
 
@@ -2514,12 +2526,16 @@ class TaskAgentManager:
             withheld.update(TASK_AGENT_FORK_WITHHELD_TOOLS)
         # A copy that answers a question makes no more requests than this.
         limits = RuntimeLimits(max_turns=SESSION_ASK_MAX_REQUESTS) if commission.source == "ask" else RuntimeLimits()
+        if include_space:
+            instructions = await self._instructions(commission, with_gateway=gateway is not None)
+        else:
+            instructions = self._base_instructions(commission, with_gateway=gateway is not None)
         return TaskAgentSpec(
             session_id=kept.id,
             workdir=workdir,
             session_dir=session_dir,
             model=model,
-            instructions=await self._instructions(commission, with_gateway=gateway is not None),
+            instructions=instructions,
             top_level=commission.parent_id is None,
             disabled_tools=sorted(withheld),
             image_retention=image_retention,
