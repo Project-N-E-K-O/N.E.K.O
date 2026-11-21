@@ -4503,16 +4503,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     // file_path is built from the same raw file name as the list URL that
     // loadMMDAnimations() stores in option.value (escaping happens only at
     // load time), so an exact string match is unambiguous even when a
-    // built-in animation shares the file name. Both sides are compared in NFC
-    // because some file systems (HFS+) list non-ASCII names decomposed (NFD).
+    // built-in animation shares the file name. An exact match wins; only when
+    // there is none are both sides compared in NFC, because some file systems
+    // (HFS+) list non-ASCII names decomposed (NFD). Exact-first keeps the right
+    // file when a directory holds both spellings (allowed on Linux).
     function findUploadedMMDAnimationOption(options, uploadResult) {
         const filePath = uploadResult && typeof uploadResult.file_path === 'string'
-            ? uploadResult.file_path.normalize('NFC')
+            ? uploadResult.file_path
             : '';
         if (!filePath) return null;
-        return Array.from(options || []).find(opt => (
-            opt && typeof opt.value === 'string' && opt.value.normalize('NFC') === filePath
-        )) || null;
+        const candidates = Array.from(options || []).filter(opt => opt && typeof opt.value === 'string');
+        const exact = candidates.find(opt => opt.value === filePath);
+        if (exact) return exact;
+        const normalizedPath = filePath.normalize('NFC');
+        return candidates.find(opt => opt.value.normalize('NFC') === normalizedPath) || null;
     }
 
     async function loadMMDAnimations() {

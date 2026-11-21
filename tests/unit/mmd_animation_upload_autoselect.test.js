@@ -275,3 +275,28 @@ for (const { label, listForm, uploadForm } of NORMALIZATION_CASES) {
         assert.equal(page.playButton.disabled, false);
     });
 }
+
+for (const uploadForm of ['NFC', 'NFD']) {
+    test(`upload handler prefers the exact spelling when both are listed (upload ${uploadForm})`, async () => {
+        // Linux keeps both spellings as separate files; list the other one first.
+        const base = 'café.vmd';
+        const uploaded = base.normalize(uploadForm);
+        const other = base.normalize(uploadForm === 'NFC' ? 'NFD' : 'NFC');
+        const page = loadVmdUploadHandler({
+            listBefore: { success: true, animations: [] },
+            listAfter: {
+                success: true,
+                animations: [
+                    listEntry('/user_mmd/animation', other),
+                    listEntry('/user_mmd/animation', uploaded),
+                ],
+            },
+            uploadResponse: uploadResult(uploaded),
+        });
+        await page.loadInitialList();
+
+        await page.upload(uploaded);
+
+        assert.equal(page.select.value, `/user_mmd/animation/${uploaded}`);
+    });
+}
