@@ -24,6 +24,8 @@ session nothing is at work in for long is summed up, when that is switched on.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import functools
 import json
 from pathlib import Path
 from typing import Any
@@ -86,6 +88,57 @@ def _gate() -> tuple[asyncio.Event, Any]:
         await release.wait()
 
     return release, wait
+
+
+class _WentWrong:
+    """What went wrong in what a test runs inside a session: a step of a scripted request, a callback of the host.
+
+    What is raised there is taken by the runtime, and the test would see
+    only that a session did not get where it waited for it, and only when
+    that wait timed out.
+
+    What is wrapped with ``noting`` is wrapped whole: a host callback with the
+    host's own code in it as well. What that code raises, which the runtime
+    goes on from (it only logs it), fails the test too.
+    """
+
+    def __init__(self) -> None:
+        self.errors: list[Exception] = []
+        self._happened = asyncio.Event()
+
+    def noting(self, waits: Any) -> Any:
+        """Return ``waits``, which notes here what goes wrong in it before it raises it."""
+
+        @functools.wraps(waits)
+        async def noted(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await waits(*args, **kwargs)
+            except Exception as exc:
+                self.errors.append(exc)
+                self._happened.set()
+                raise
+
+        return noted
+
+    async def unless(self, waiting: Any) -> Any:
+        """Await ``waiting``; should something go wrong inside a session first, raise that instead."""
+        waited = asyncio.ensure_future(waiting)
+        went_wrong = asyncio.ensure_future(self._happened.wait())
+        try:
+            await asyncio.wait({waited, went_wrong}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            went_wrong.cancel()
+            if not waited.done():
+                waited.cancel()
+            await asyncio.gather(waited, went_wrong, return_exceptions=True)
+        if not self.errors and not waited.cancelled() and waited.exception() is not None:
+            # The test's own wait ran out first: what went wrong inside a session, should it
+            # have run out at about the same time, is noted a moment later.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._happened.wait(), 0.2)
+        if self.errors and (waited.cancelled() or waited.exception() is not None):
+            raise self.errors[0] from (None if waited.cancelled() else waited.exception())
+        return waited.result()
 
 
 async def _events(host: Any, commission_id: str, kind: str | None = None) -> list[Any]:
@@ -589,7 +642,9 @@ async def test_what_the_task_agents_it_started_use_is_the_commissions_own_and_th
 ):
     monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
     release, wait = _gate()
+    went_wrong = _WentWrong()
 
+    @went_wrong.noting
     async def once_the_one_that_started_it_has_gone_on() -> None:
         # The task agent it started is to be the one that asks. Whichever of the
         # two comes to a next request first once the line is crossed asks, and
@@ -626,17 +681,17 @@ async def test_what_the_task_agents_it_started_use_is_the_commissions_own_and_th
     (child,) = await host.ledger.select(parent_id=first.id)
 
     # The one it started is the one that comes to its next request first: it asks, for the whole of the work.
-    question = await _asked(host, child.id)
+    question = await went_wrong.unless(_asked(host, child.id))
     assert question["category"] == "usage_limit" and question["detail"] == {"used": "1k", "more": "1k"}
     standing = await host.ledger.usage_standing(child.id)
     assert (standing.root, standing.used) == (first.id, 300 + 10 + 800 + 10)
     assert await host.answer(child.id, "no", choice="deny")
 
     # Both are told to hand over, and the user is not asked a second time for the one that started it.
-    assert (await wait_status(host, child.id, "blocked")).result_summary == "counted 12 of them"
+    assert (await went_wrong.unless(wait_status(host, child.id, "blocked"))).result_summary == "counted 12 of them"
     release.set()
-    stuck = await wait_status(host, first.id, "blocked")
-    await _let_go(host)
+    stuck = await went_wrong.unless(wait_status(host, first.id, "blocked"))
+    await went_wrong.unless(_let_go(host))
     assert stuck.result_summary == "the count is missing"
     notice = brain_texts.TASK_AGENT_USAGE_WIND_UP.format(requests=settings.TASK_AGENT_USAGE_WIND_UP_REQUESTS)
     assert notice in _user_messages(scripts["count the jpgs"].requests[1])
@@ -645,6 +700,7 @@ async def test_what_the_task_agents_it_started_use_is_the_commissions_own_and_th
     assert asked == []
     # Over, nothing is kept of the refusal.
     assert host.task_agents._refused_more == set()
+    assert went_wrong.errors == []
 
 
 async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_waits_for_that_answer(
@@ -652,17 +708,20 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
 ):
     monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
     started: list[str] = []
+    went_wrong = _WentWrong()
 
+    @went_wrong.noting
     async def once_the_task_agent_it_started_has_used_its_share() -> None:
         # So the check before its report sees the line crossed, with what the task agent
         # it started used counted. (On a slow machine the check before this request does.)
         await wait_until(lambda: started, what="the commission")
         (child,) = await host.ledger.select(parent_id=started[0])
         await wait_until(lambda: child.id in host.task_agents._sessions, what="the task agent it started")
-        deadline = asyncio.get_running_loop().time() + 15
-        while (await host.ledger.usage_standing(child.id)).used < 300 + 10 + 800 + 10:
-            assert asyncio.get_running_loop().time() < deadline, "what the task agent it started used was not counted"
-            await asyncio.sleep(0.01)
+
+        async def counted() -> bool:
+            return (await host.ledger.usage_standing(child.id)).used >= 300 + 10 + 800 + 10
+
+        await wait_until(counted, what="what the task agent it started used being counted")
 
     scripts = {
         "sort the photos": ScriptedLLM(
@@ -686,12 +745,15 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
     budget = manager._cb_budget
     checks: dict[str, int] = {}
 
+    @went_wrong.noting
     async def the_task_agent_after_the_one_that_started_it(session_id: str, payload: dict[str, Any]) -> Any:
         # The task agent it started comes to its next request only once the one that started it asks.
         checks[session_id] = checks.get(session_id, 0) + 1
         commission_id = manager._held_by.get(session_id)
-        if started and commission_id not in (None, started[0]) and checks[session_id] == 2:
-            await wait_status(host, started[0], "waiting_user")
+        if commission_id is not None and checks[session_id] == 2:
+            commission = await host.ledger.get(commission_id)
+            if commission is not None and commission.parent_id is not None:
+                await wait_status(host, commission.parent_id, "waiting_user")
         return await budget(session_id, payload)
 
     monkeypatch.setattr(manager, "_cb_budget", the_task_agent_after_the_one_that_started_it)
@@ -701,10 +763,10 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
     (child,) = await host.ledger.select(parent_id=first.id)
 
     # The one that started it comes to its next request first: it asks, for the whole of the work.
-    question = await _asked(host, first.id)
+    question = await went_wrong.unless(_asked(host, first.id))
     assert question["category"] == "usage_limit" and question["detail"] == {"used": "1k", "more": "1k"}
     # The task agent it started waits for that answer, at work as it was, and is not asked about a second time.
-    await asyncio.wait_for(manager._usage_asks[first.id].waited_for.wait(), 10)
+    await went_wrong.unless(asyncio.wait_for(manager._usage_asks[first.id].waited_for.wait(), 10))
     assert (await host.ledger.get(child.id)).status == "working"
     assert len(scripts["count the jpgs"].requests) == 1
     assert len(await outbox(host, "question")) == 1
@@ -712,9 +774,9 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
     assert await host.answer(first.id, "go on", choice="once")
 
     # Allowed, both go on.
-    assert (await wait_status(host, child.id, "done")).result_summary == "counted 12 of them"
-    assert (await wait_status(host, first.id, "done")).result_summary == "sorted"
-    await _let_go(host)
+    assert (await went_wrong.unless(wait_status(host, child.id, "done"))).result_summary == "counted 12 of them"
+    assert (await went_wrong.unless(wait_status(host, first.id, "done"))).result_summary == "sorted"
+    await went_wrong.unless(_let_go(host))
     assert len(scripts["count the jpgs"].requests) == 2
     asked = [
         commission_id
@@ -726,6 +788,7 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
     assert await outbox(host, "question") == []
     # Over, nothing is kept of the question.
     assert host.task_agents._refused_more == set() and host.task_agents._usage_asks == {}
+    assert went_wrong.errors == []
 
 
 async def test_a_commission_that_is_stopped_while_the_user_is_asked_is_stopped_and_no_limit_asks_nothing(
@@ -1132,9 +1195,12 @@ async def _idle_work_over(host: Any) -> None:
     await manager.settle()
 
 
+@pytest.mark.parametrize("brief_result", ["current", "empty", "unavailable"])
 async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next_commission_goes_on_from_that(
-    hosts, tmp_path, monkeypatch
+    hosts, tmp_path, monkeypatch, brief_result
 ):
+    from nekoclaw.runtime.snapshot import read_snapshot
+
     _idle_on(monkeypatch, after=30.0)
     counted: list[str] = []
 
@@ -1148,12 +1214,27 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     scripts = {"add a CSV export": export, "add a chart": ScriptedLLM([_report("ready", "chart added")])}
     host = _host(hosts, tmp_path, _scripts_by_session(scripts), task_agent_model=_small_window, task_agent_meter=meter)
     await host.space.touch_project("Budget app")
+    await host.space.write_rules("Original rule: file photos by year.")
+    read_brief = host.space.brief
+    reads = []
+
+    async def workspace_brief(project):
+        reads.append(project)
+        if len(reads) == 2:
+            if brief_result == "empty":
+                return ""
+            if brief_result == "unavailable":
+                raise OSError("workspace read failed")
+        return await read_brief(project)
+
+    monkeypatch.setattr(host.space, "brief", workspace_brief)
     manager = host.task_agents
     first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
     await wait_status(host, first.id, "done")
     await _let_go(host)
     # Let go, the session is set to be summed up once it has been idle for as long as is set.
     await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    await host.space.write_rules("While idle: file photos by month.")
     before = await host.ledger.get(first.id)
     requests_before, counted_before = len(export.requests), len(counted)
     assert requests_before == 5
@@ -1170,6 +1251,8 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     summary = export.requests[-1]
     # It begins as the session's requests did, so that what a provider kept of them is used.
     assert _system_of(summary) == _system_of(export.requests[0])
+    assert "Original rule: file photos by year." in _system_of(summary)
+    assert len(reads) == 1  # Only the first real commission read workspace rules.
     assert export.overrides[-1]["tools"] == export.overrides[0]["tools"]
     assert "condense the conversation above" in str(summary[-1]["content"]).lower()
     # What it used is the session's, and no commission's: nothing of the commission changed.
@@ -1183,10 +1266,15 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     assert len(host.task_agents._idle_compacted_at) == 1
     assert host.task_agents._service == {} and host.task_agents._held_by == {}
 
-    # The next commission of the project goes on from the summary and what was said last.
+    # Work may change again after the idle summary. Read it as the new commission.
+    await host.space.write_rules("Current rule: file photos by date.")
     second = (await _dispatch(host, "add a chart to the budget app")).commissions[0]
     await wait_status(host, second.id, "done")
     request = scripts["add a chart"].requests[0]
+    assert len(reads) == 2
+    assert ("Current rule: file photos by date." in _system_of(request)) == (brief_result == "current")
+    assert "Original rule: file photos by year." not in _system_of(request)
+    assert "While idle: file photos by month." not in _system_of(request)
     said = json.dumps(request, ensure_ascii=False)
     assert "the CSV export is added and reported" in said
     assert "s0w10 s0w11" not in said
@@ -1195,6 +1283,76 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     await _let_go(host)
     await _idle_work_over(host)
     assert len(export.requests) == requests_before + 1 and len(host.task_agents._idle_compacted_at) == 1
+    assert read_snapshot(Path(session.session_dir)).refresh_on_resume == (brief_result == "unavailable")
+    if brief_result == "unavailable":
+        scripts["add a table"] = ScriptedLLM([_report("ready", "table added")])
+        third = (await _dispatch(host, "add a table to the budget app")).commissions[0]
+        await wait_status(host, third.id, "done")
+        assert "Current rule: file photos by date." in _system_of(scripts["add a table"].requests[0])
+        assert len(reads) == 3
+        assert not read_snapshot(Path(session.session_dir)).refresh_on_resume
+
+
+@pytest.mark.parametrize("stands_at", ["last_at_work", "just_idle_for_long_enough"])
+async def test_a_timer_that_comes_due_before_the_wall_clock_has_the_session_idle_is_set_again_and_it_is_summed_up(
+    hosts, tmp_path, monkeypatch, stands_at
+):
+    # The timer runs by the loop's clock, the ledger by the wall clock. On
+    # Windows the wall clock moves in steps of about 15.6 ms, so the timer
+    # often comes due while the ledger has the session idle a little less
+    # than long enough. That look is to set the timer again for what is
+    # left, not give the summing up away. With an idle time that is not a
+    # whole number of float steps at wall-clock size (such as 0.05 s here),
+    # ``(last + after) - last`` falls a hair short of ``after``.
+    _idle_on(monkeypatch, after=30.0)
+    summary = [say("## Current Work\n- the CSV export is added"), _used(7_000, 60), finish()]
+    export = ScriptedLLM([*_long_work("export added"), summary])
+    host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=_small_window)
+    # The wall clock stands still from the start, at a fixed time (2025-11),
+    # so what the session's timestamp rounds to does not depend on today.
+    last = 1_763_000_000.0
+    wall = {"now": last}
+    monkeypatch.setattr(host.ledger, "_clock", lambda: wall["now"])
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    assert len(export.requests) == 5
+
+    # The wall clock stands where the session was last at work, or at
+    # ``last + after`` itself: in floats that is still a hair short of
+    # idle for long enough, so it is early there as well.
+    assert (await host.ledger.get_session(first.id)).last_active_at == last
+    up = last + 0.05
+    assert up - last < 0.05
+    wall["now"] = last if stands_at == "last_at_work" else up
+    # Each look, and whether the timer was set again by the time it was
+    # over (read then: a timer set again may come due right after).
+    looks: list[tuple[bool, bool]] = []
+    look = manager._idle_compact
+
+    async def looked(*args: Any, **kwargs: Any) -> bool:
+        result = await look(*args, **kwargs)
+        looks.append((result, first.id in manager._idle_timers))
+        return result
+
+    monkeypatch.setattr(manager, "_idle_compact", looked)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.05)
+    manager._schedule_idle_compact(first.id)
+
+    await wait_until(lambda: looks, what="the first look")
+    # Too early by the ledger: nothing was asked, and it is to be looked at again.
+    summed_up, set_again = looks[0]
+    assert summed_up is False and len(export.requests) == 5
+    assert set_again, "the summing up was given away instead of looked at again"
+
+    # The wall clock catches up: the next look sums it up.
+    wall["now"] = last + 1.0
+    await wait_until(lambda: len(export.requests) == 6, what="the request that sums it up")
+    await _idle_work_over(host)
+    assert (await host.ledger.get_session(first.id)).compacted_at is not None
 
 
 async def test_nothing_is_summed_up_unless_it_is_switched_on_and_worth_it(hosts, tmp_path, monkeypatch):

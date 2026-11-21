@@ -185,6 +185,7 @@ HOST_CALLS: tuple[str, ...] = (
     *SUBAGENT_CALLS,
     *SESSION_CALLS,
     "budget",
+    "task_control_begin",
 )
 
 
@@ -222,6 +223,7 @@ class HostCallbacks:
     wake_schedule: HostCallback | None = None
     session_ask: HostCallback | None = None
     budget: HostCallback | None = None
+    task_control_begin: HostCallback | None = None
 
     @property
     def capabilities(self) -> frozenset[str]:
