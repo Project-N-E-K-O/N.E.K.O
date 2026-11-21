@@ -73,6 +73,9 @@ class ConnectivityTestRequest(BaseModel):
     sub_type: Optional[str] = ""
     voice_id: Optional[str] = ""
     is_free: Optional[bool] = False
+    # provider_scope='decision' only: Bailian workspace ID for providers whose
+    # native decision endpoint lives on a workspace-only host (qwen / qwen_intl).
+    workspace_id: Optional[str] = ""
 
 
 class ConnectivityTestResponse(BaseModel):
@@ -963,6 +966,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
     All requests have a 10-second timeout. The endpoint is async, so it naturally supports concurrent requests without blocking.
     """
     api_key_stripped = (req.api_key or "").strip()
+    decision_fallback = ""
     mode1_sub_type = ""
     profile_protocol = ""
     profile_model = ""
@@ -1024,6 +1028,34 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 profile_protocol=profile_protocol,
                 profile_model=profile_model,
             )
+            profile_decision_url_template = str(profile.get("decision_url_template") or "").strip()
+            if (
+                is_native_decision_protocol(resolved_protocol)
+                and profile_decision_url_template
+                and not profile_decision_url
+            ):
+                # Same rule as runtime core_config.py: the native endpoint exists only
+                # on the workspace host. Without an ID the runtime decides with the
+                # profile's chat model, so probe exactly that instead of a doomed URL.
+                from utils.decision_client.workspace import (
+                    InvalidWorkspaceIdError,
+                    build_workspace_decision_url,
+                    normalize_workspace_id,
+                )
+
+                try:
+                    workspace_id = normalize_workspace_id(req.workspace_id)
+                except InvalidWorkspaceIdError:
+                    return {"success": False, "error": "业务空间 ID 格式无效", "error_code": "invalid_workspace_id"}
+                if workspace_id:
+                    profile_decision_url = build_workspace_decision_url(
+                        profile_decision_url_template, workspace_id
+                    )
+                else:
+                    decision_fallback = "workspace_missing"
+                    resolved_protocol = "chat_fallback"
+                    model = str(profile.get("emotion_model") or profile.get("summary_model") or "").strip()
+                    _source_label = f"{profile.get('name', provider_key)}（决策模型·聊天回退）"
             if is_native_decision_protocol(resolved_protocol):
                 url_stripped = profile_decision_url or profile_openrouter_url
                 url_candidates = (
@@ -1098,6 +1130,9 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
     except Exception as e:
         logger.exception("[ConnectivityTest] 未预期的异常")
         result = {"success": False, "error": str(e), "error_code": "unknown"}
+    if decision_fallback:
+        # Lets the settings page say "chat model stands in for the decision model".
+        result = {**result, "decision_fallback": decision_fallback}
 
     # Per-result log: provider/custom + success/failure.
     if result.get("success"):

@@ -682,6 +682,7 @@ class MemoryRecallReranker:
         from utils.decision_client import (
             DecisionClient,
             ScoreQuestion,
+            get_decision_adapter,
             is_native_decision_protocol,
         )
 
@@ -720,45 +721,71 @@ class MemoryRecallReranker:
                     native_candidate_ids.append(cid)
                     used_tokens += line_tokens
 
-                state_text = state_header + "\n".join(native_lines)
-                questions = {
-                    cid: ScoreQuestion(
-                        instructions=(
-                            f"Rate how relevant memory candidate [{cid}] is for answering or "
-                            "supporting the Query above. Higher evidence score in parentheses "
-                            "indicates stronger user confirmation."
-                        ),
-                        levels=(
-                            "irrelevant",
-                            "weakly_relevant",
-                            "relevant",
-                            "highly_relevant",
-                        ),
-                    )
-                    for cid in native_candidate_ids
-                }
+                # The native endpoint answers at most 16 questions per request (one
+                # question per candidate here). Split into batches of that size and
+                # send them concurrently; each batch's state carries only its own
+                # candidate lines, so the total input stays the packed budget above
+                # plus one query header per extra batch.
+                # Protocols without a documented cap keep a single request.
+                per_request_cap = getattr(
+                    get_decision_adapter(decision_config.get('decision_protocol')),
+                    'MAX_QUESTIONS_PER_REQUEST',
+                    None,
+                )
+                batch_size = max(1, per_request_cap or len(native_candidate_ids))
+                line_by_cid = dict(zip(native_candidate_ids, native_lines))
+                batches = [
+                    native_candidate_ids[i:i + batch_size]
+                    for i in range(0, len(native_candidate_ids), batch_size)
+                ]
                 dec_client = DecisionClient(config_manager=config_manager)
-                # Keep native decision total latency tightly capped (2.0s; typical
-                # native latency is ~150-250ms) so upstream's ~5s query_memory budget
-                # still leaves room for the summary chat fallback on timeout. Outer
-                # wait_for (2.2s) gives DecisionClient's inner 2.0s timeout priority
-                # so transient timeouts reliably trigger the 60s cooldown cache.
-                dec_resp = await asyncio.wait_for(
-                    dec_client.decide(
-                        state=state_text,
-                        questions=questions,
+
+                def _batch_call(batch_ids: list[str]):
+                    batch_state = state_header + "\n".join(line_by_cid[cid] for cid in batch_ids)
+                    batch_questions = {
+                        cid: ScoreQuestion(
+                            instructions=(
+                                f"Rate how relevant memory candidate [{cid}] is for answering or "
+                                "supporting the Query above. Higher evidence score in parentheses "
+                                "indicates stronger user confirmation."
+                            ),
+                            levels=(
+                                "irrelevant",
+                                "weakly_relevant",
+                                "relevant",
+                                "highly_relevant",
+                            ),
+                        )
+                        for cid in batch_ids
+                    }
+                    return dec_client.decide(
+                        state=batch_state,
+                        questions=batch_questions,
                         config=decision_config,
                         timeout=2.0,
                         allow_fallback=False,
                         respect_cooldown=True,
                         call_type="memory_recall_rerank",
-                    ),
+                    )
+
+                # Keep native decision total latency tightly capped (2.0s; typical
+                # native latency is ~150-250ms) so upstream's ~5s query_memory budget
+                # still leaves room for the summary chat fallback on timeout. Outer
+                # wait_for (2.2s) gives DecisionClient's inner 2.0s timeout priority
+                # so transient timeouts reliably trigger the 60s cooldown cache.
+                # Batches run concurrently, so the cap is unchanged; any failed batch
+                # fails the whole native pass (no half-native, half-coarse order).
+                batch_responses = await asyncio.wait_for(
+                    asyncio.gather(*(_batch_call(batch_ids) for batch_ids in batches)),
                     timeout=2.2,
                 )
-                if dec_resp.answers:
+                native_answers: dict = {}
+                for batch_resp in batch_responses:
+                    native_answers.update(batch_resp.answers or {})
+                if native_answers:
                     scored_rows: list[tuple[float, int, str]] = []
                     for idx, cid in enumerate(native_candidate_ids):
-                        ans = dec_resp.answers.get(cid)
+                        ans = native_answers.get(cid)
                         if ans is not None and ans.score_norm is not None:
                             scored_rows.append((float(ans.score_norm), idx, cid))
                     if scored_rows:

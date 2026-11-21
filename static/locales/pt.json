@@ -1662,6 +1662,11 @@
         "mimoTokenPlanKeyLabel": "Chave do MiMo Token Plan",
         "mimoTokenPlanKeyPlaceholder": "Insira a chave do Token Plan (tp-xxxxx)",
         "mimoTokenPlanKeyHint": "Quando ativado, o MiMo usa apenas esta chave e o endpoint do Token Plan; a chave normal da API MiMo fica bloqueada.",
+        "bailianWorkspaceIdLabel": "ID do espaço de trabalho do Bailian (modelo de decisão)",
+        "bailianWorkspaceIdPlaceholder": "ex.: llm-xxxxxxxx",
+        "bailianWorkspaceIdHint": "Se ficar vazio, um modelo de chat comum é usado no lugar do modelo de decisão. O ID do espaço de trabalho é a primeira parte do seu API Host (ex.: llm-xxx). Você o encontra na página de gerenciamento de espaços de trabalho do console do Bailian (Model Studio) ou na janela exibida ao criar uma chave de API. Também é possível colar o API Host inteiro.",
+        "bailianWorkspaceIdDocLink": "Ver a documentação oficial",
+        "bailianWorkspaceIdInvalid": "ID do espaço de trabalho do Bailian inválido: use apenas letras, dígitos e -, até 63 caracteres",
         "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan está ativado; esta chave não é usada"
     },
     "live2d": {
@@ -5747,7 +5752,8 @@
             "output_limit": "O limite de saída da solicitação de teste é insuficiente",
             "unknown": "Erro desconhecido",
             "backend_unavailable": "Serviço de backend indisponível",
-            "invalid_response": "Formato de resposta inválido"
+            "invalid_response": "Formato de resposta inválido",
+            "invalid_workspace_id": "ID do espaço de trabalho do Bailian inválido"
         },
         "status": {
             "connected": "Conectado",

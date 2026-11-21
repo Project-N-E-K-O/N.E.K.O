@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 import json
 import math
 import re
@@ -107,8 +108,13 @@ def _truncate_state_for_decision(state: Any) -> Any:
 
 
 def _http_error_is_permanent(status_code: int) -> bool:
-    """HTTP statuses indicating the endpoint/model itself is unsupported or retired."""
-    return status_code in (400, 404, 405, 422)
+    """HTTP statuses that will not change until the route, model or API key changes.
+
+    Covers unsupported/retired endpoints (400/404/405/422) and rejected
+    credentials or a model not enabled for the workspace (401/403). The
+    cooldown key includes the API key fingerprint, so a new key retries at once.
+    """
+    return status_code in (400, 401, 403, 404, 405, 422)
 
 
 def _extract_error_detail(resp: httpx.Response) -> str:
@@ -149,8 +155,34 @@ class DecisionAdapter(abc.ABC):
         """Execute a decision batch and return a normalized :class:`DecisionResponse`."""
 
 
+def _score_probs_by_label(levels: tuple[str, ...], probs: Mapping[str, float]) -> dict[str, float]:
+    """Map score probabilities keyed by 0-based level index strings ("0", "1", ...) to level labels.
+
+    Label-keyed entries are kept as-is so either wire shape normalizes to labels.
+    """
+    out: dict[str, float] = {}
+    for idx, lbl in enumerate(levels):
+        p = probs.get(str(idx))
+        if p is None:
+            p = probs.get(lbl)
+        if p is not None:
+            out[lbl] = p
+    return out
+
+
 class SystemOneAdapter(DecisionAdapter):
-    """TypeSafe System One protocol (DashScope ``decision-model-preview`` & OpenRouter Decisions)."""
+    """TypeSafe System One protocol (DashScope ``decision-model-preview`` & OpenRouter Decisions).
+
+    Wire format (Bailian decision model API reference): every question carries
+    ``type`` / ``instructions`` / ``criteria``. ``score`` criteria is the
+    low-to-high level description array, ``noul`` criteria is the optional
+    ``{"true": ..., "false": ...}`` object and ``choice`` criteria maps option
+    to description. One request accepts at most
+    :attr:`MAX_QUESTIONS_PER_REQUEST` questions; larger batches are split into
+    concurrent requests that share the same state.
+    """
+
+    MAX_QUESTIONS_PER_REQUEST = 16
 
     def __init__(self, protocol: str = "systemone") -> None:
         self.protocol = protocol
@@ -169,10 +201,13 @@ class SystemOneAdapter(DecisionAdapter):
                     "type": "noul",
                     "instructions": q.instructions,
                 }
+                noul_criteria: dict[str, str] = {}
                 if q.true_description:
-                    entry["true_description"] = q.true_description
+                    noul_criteria["true"] = q.true_description
                 if q.false_description:
-                    entry["false_description"] = q.false_description
+                    noul_criteria["false"] = q.false_description
+                if noul_criteria:
+                    entry["criteria"] = noul_criteria
                 q_map[qid] = entry
             elif isinstance(q, ChoiceQuestion):
                 q_map[qid] = {
@@ -184,7 +219,7 @@ class SystemOneAdapter(DecisionAdapter):
                 q_map[qid] = {
                     "type": "score",
                     "instructions": q.instructions,
-                    "levels": list(q.levels),
+                    "criteria": list(q.levels),
                 }
         return {
             "model": model,
@@ -216,11 +251,13 @@ class SystemOneAdapter(DecisionAdapter):
             probs = _normalize_probs_map(item.get("probabilities"))
 
             if isinstance(q, BoolQuestion):
+                # ``noul`` is P(yes) in [0, 1]; the reference documents no
+                # probabilities map for noul, so one is only a last resort.
                 prob = _clamp_prob(item.get("noul"))
                 if prob is None:
                     prob = _clamp_prob(item.get("probability"))
-                if prob is None and "yes" in probs:
-                    prob = probs["yes"]
+                if prob is None:
+                    prob = probs.get("true", probs.get("yes"))
                 if prob is None:
                     continue
                 answers[qid] = DecisionAnswer(
@@ -245,16 +282,19 @@ class SystemOneAdapter(DecisionAdapter):
                         confidence=conf,
                     )
             elif isinstance(q, ScoreQuestion):
+                # ``score`` is the probability-weighted 0-based level index (may be
+                # fractional); ``probabilities`` is keyed by index strings "0".."N-1".
                 max_idx = float(len(q.levels) - 1)
+                label_probs = _score_probs_by_label(q.levels, probs)
                 score_val = _extract_numeric_score(item.get("score"), 0.0, max_idx)
                 if score_val is None:
-                    score_val = _expected_score_from_probs(q.levels, probs, max_idx)
+                    score_val = _expected_score_from_probs(q.levels, label_probs, max_idx)
                 if score_val is None:
                     continue
                 answers[qid] = DecisionAnswer(
                     question_type="score",
                     value=score_val,
-                    probabilities=probs,
+                    probabilities=label_probs or probs,
                     confidence=conf,
                     score_norm=(score_val / max_idx) if max_idx > 0 else 0.0,
                 )
@@ -295,6 +335,44 @@ class SystemOneAdapter(DecisionAdapter):
                 protocol=self.protocol,
                 permanent_route_error=True,
             )
+        limit = self.MAX_QUESTIONS_PER_REQUEST
+        if len(questions) <= limit:
+            return await self._execute_one(
+                endpoint=endpoint, state=state, questions=questions, model=model, api_key=api_key, timeout=timeout,
+            )
+        # Over the per-request cap: split into concurrent requests sharing the
+        # state. Callers that can shrink the state per chunk (memory recall)
+        # batch themselves; this keeps every other caller within the limit.
+        items = list(questions.items())
+        chunks = [dict(items[i:i + limit]) for i in range(0, len(items), limit)]
+        parts = await asyncio.gather(*(
+            self._execute_one(
+                endpoint=endpoint, state=state, questions=chunk, model=model, api_key=api_key, timeout=timeout,
+            )
+            for chunk in chunks
+        ))
+        merged: dict[str, DecisionAnswer] = {}
+        for part in parts:
+            merged.update(part.answers)
+        return DecisionResponse(
+            answers=merged,
+            model=parts[0].model,
+            protocol=self.protocol,
+            prompt_tokens=sum(p.prompt_tokens for p in parts),
+            completion_tokens=sum(p.completion_tokens for p in parts),
+            cached_tokens=sum(p.cached_tokens for p in parts),
+        )
+
+    async def _execute_one(
+        self,
+        *,
+        endpoint: str,
+        state: Any,
+        questions: Mapping[str, DecisionQuestion],
+        model: str,
+        api_key: str,
+        timeout: float,
+    ) -> DecisionResponse:
         payload = self.build_payload(state=state, questions=questions, model=model)
         headers = {"Content-Type": "application/json"}
         if api_key:

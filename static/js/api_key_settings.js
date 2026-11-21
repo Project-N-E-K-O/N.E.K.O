@@ -331,6 +331,121 @@ function updateMimoTokenPlanControls() {
     keepApiSettingsBottomIfNeeded(wasAtBottom);
 }
 
+// ==================== 百炼业务空间 ID（决策模型原生接口） ====================
+// 百炼的原生决策接口只挂在带业务空间 ID 的专属域名上；没填时后端用普通聊天模型代替。
+// 北京（qwen）和新加坡（qwen_intl）各存一份，输入框只编辑决策模型当前实际用的那一份。
+const BAILIAN_WORKSPACE_ID_FIELDS = {
+    qwen: 'assistWorkspaceIdQwen',
+    qwen_intl: 'assistWorkspaceIdQwenIntl',
+};
+// 与后端 utils/decision_client/workspace.py 一致：单个 DNS 标签，字母数字和 -，最长 63。
+const BAILIAN_WORKSPACE_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const _bailianWorkspaceIds = { assistWorkspaceIdQwen: '', assistWorkspaceIdQwenIntl: '' };
+// 决定决策模型实际服务商的控件；任一变化都要刷新业务空间 ID 行。
+const BAILIAN_WORKSPACE_PROVIDER_SELECTS = ['assistApiSelect', 'coreApiSelect', 'decisionModelProvider', 'enableCustomApi'];
+let _bailianWorkspaceActiveField = '';
+
+// 用户常直接粘贴整个 API Host（llm-xxx.cn-beijing.maas.aliyuncs.com，可带 https:// 和路径），取最前面那段。
+const BAILIAN_API_HOST_PATTERN = /^(?:https:\/\/)?([^./:\s]+)\.[a-z0-9-]+\.maas\.aliyuncs\.com(?:[/:?#].*)?$/i;
+
+function normalizeBailianWorkspaceId(value) {
+    let raw = String(value || '').trim();
+    if (!raw) return { value: '', valid: true };
+    const hostMatch = BAILIAN_API_HOST_PATTERN.exec(raw);
+    if (hostMatch) raw = hostMatch[1];
+    const lowered = raw.toLowerCase();
+    // eslint-disable-next-line no-control-regex
+    const ascii = /^[\x00-\x7f]*$/.test(raw);
+    return { value: lowered, valid: ascii && BAILIAN_WORKSPACE_ID_PATTERN.test(lowered) };
+}
+
+function getDecisionEffectiveProviderKey() {
+    const assistSel = document.getElementById('assistApiSelect');
+    const assistApi = assistSel ? assistSel.value : '';
+    const enableCustomApi = document.getElementById('enableCustomApi');
+    if (!enableCustomApi || !enableCustomApi.checked) return assistApi;
+    const decisionSel = document.getElementById('decisionModelProvider');
+    const selected = decisionSel ? decisionSel.value : '';
+    if (!selected || selected === 'follow_assist') return assistApi;
+    if (selected === 'follow_core') {
+        const coreSel = document.getElementById('coreApiSelect');
+        return coreSel ? coreSel.value : '';
+    }
+    if (selected === 'custom') return '';
+    return selected;
+}
+
+function getBailianWorkspaceIdForProvider(providerKey) {
+    const field = BAILIAN_WORKSPACE_ID_FIELDS[providerKey];
+    if (!field) return '';
+    const raw = String(_bailianWorkspaceIds[field] || '').trim();
+    const { value, valid } = normalizeBailianWorkspaceId(raw);
+    // 非法值原样交给后端，由后端返回 invalid_workspace_id，不在前端悄悄改写。
+    return valid ? value : raw;
+}
+
+function getBailianWorkspaceDocUrl(providerKey) {
+    // 「迁移至业务空间专属域名」一节说明了在哪里复制 API Host（即业务空间专属域名）。
+    if (providerKey === 'qwen') {
+        return 'https://help.aliyun.com/zh/model-studio/regions#h2_migrate_domain';
+    }
+    const lang = String((window.i18next && window.i18next.language) || document.documentElement.lang || '').toLowerCase();
+    const docLang = lang.startsWith('zh') ? 'zh' : 'en';
+    return `https://www.alibabacloud.com/help/${docLang}/model-studio/regions#h2_migrate_domain`;
+}
+
+function updateBailianWorkspaceControls() {
+    const row = document.getElementById('bailianWorkspaceRow');
+    const input = document.getElementById('bailianWorkspaceIdInput');
+    if (!row || !input) return;
+    const providerKey = getDecisionEffectiveProviderKey();
+    const field = BAILIAN_WORKSPACE_ID_FIELDS[providerKey] || '';
+    if (field !== _bailianWorkspaceActiveField) {
+        input.value = field ? (_bailianWorkspaceIds[field] || '') : '';
+        _bailianWorkspaceActiveField = field;
+    }
+    row.style.display = field ? 'flex' : 'none';
+    const link = document.getElementById('bailianWorkspaceIdDocLink');
+    if (link && field) link.href = getBailianWorkspaceDocUrl(providerKey);
+    updateBailianWorkspaceValidity();
+}
+
+function updateBailianWorkspaceValidity() {
+    const input = document.getElementById('bailianWorkspaceIdInput');
+    const errorEl = document.getElementById('bailianWorkspaceIdError');
+    if (!input) return true;
+    const { valid } = normalizeBailianWorkspaceId(input.value);
+    if (errorEl) errorEl.style.display = valid ? 'none' : 'block';
+    input.setAttribute('aria-invalid', valid ? 'false' : 'true');
+    return valid;
+}
+
+function onBailianWorkspaceInput() {
+    const input = document.getElementById('bailianWorkspaceIdInput');
+    if (!input || !_bailianWorkspaceActiveField) return;
+    _bailianWorkspaceIds[_bailianWorkspaceActiveField] = input.value.trim();
+    updateBailianWorkspaceValidity();
+}
+
+function applyLoadedBailianWorkspaceIds(data) {
+    Object.values(BAILIAN_WORKSPACE_ID_FIELDS).forEach(field => {
+        _bailianWorkspaceIds[field] = typeof data[field] === 'string' ? data[field] : '';
+    });
+    _bailianWorkspaceActiveField = '';
+    updateBailianWorkspaceControls();
+}
+
+/** 保存用：两份业务空间 ID 都提交；有非法值时返回 null 让保存中止。 */
+function bailianWorkspacePayload() {
+    const payload = {};
+    for (const field of Object.values(BAILIAN_WORKSPACE_ID_FIELDS)) {
+        const { value, valid } = normalizeBailianWorkspaceId(_bailianWorkspaceIds[field]);
+        if (!valid) return null;
+        payload[field] = value;
+    }
+    return payload;
+}
+
 function isAliyunUsApiUrl(url) {
     const rawUrl = String(url || '').trim();
     if (!rawUrl) return false;
@@ -845,6 +960,10 @@ function buildProviderSelectDropdownMenu(select) {
 }
 
 function syncProviderSelectDropdowns(targetSelect = null, { rebuild = false } = {}) {
+    // 下拉框被程序改值（加载配置、联动）时不会触发 change，这里顺手刷新业务空间 ID 行。
+    if (!targetSelect || BAILIAN_WORKSPACE_PROVIDER_SELECTS.includes(targetSelect.id)) {
+        updateBailianWorkspaceControls();
+    }
     const selects = targetSelect
         ? [targetSelect]
         : Array.from(document.querySelectorAll('.api-provider-select[data-dropdown-enhanced="true"]'));
@@ -2799,6 +2918,7 @@ async function loadCurrentApiKey() {
                 setSecretInputValue('mimoTokenPlanKeyInput', data.assistApiKeyMimoTokenPlan);
             }
             updateMimoTokenPlanControls();
+            applyLoadedBailianWorkspaceIds(data);
 
             // Sync the core API key into the Key Book for the selected core provider
             // so autoFillCoreApiKey() can find it later
@@ -3483,6 +3603,25 @@ document.addEventListener('DOMContentLoaded', function () {
     if (enableCustomApi) {
         enableCustomApi.addEventListener('change', () => toggleCustomApi());
     }
+    document.addEventListener('change', (event) => {
+        const target = event.target;
+        if (target && BAILIAN_WORKSPACE_PROVIDER_SELECTS.includes(target.id)) {
+            updateBailianWorkspaceControls();
+        }
+    });
+    const bailianWorkspaceInput = document.getElementById('bailianWorkspaceIdInput');
+    if (bailianWorkspaceInput) {
+        bailianWorkspaceInput.addEventListener('input', onBailianWorkspaceInput);
+        // 失焦时把粘贴的 API Host 等写法收成规范 ID，让用户看到实际会保存的值。
+        bailianWorkspaceInput.addEventListener('blur', () => {
+            const { value, valid } = normalizeBailianWorkspaceId(bailianWorkspaceInput.value);
+            if (valid && value !== bailianWorkspaceInput.value) {
+                bailianWorkspaceInput.value = value;
+                onBailianWorkspaceInput();
+                bailianWorkspaceInput.dispatchEvent(new Event('change'));
+            }
+        });
+    }
     ['ttsModelProvider', 'ttsModelUrl', 'ttsModelId', 'ttsModelApiKey', 'ttsVoiceId'].forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -3546,6 +3685,13 @@ async function save_button_down(e) {
 
     if (e && e.preventDefault) e.preventDefault();
     if (_apiSaveInProgress) return;
+
+    const workspacePayload = bailianWorkspacePayload();
+    if (!workspacePayload) {
+        updateBailianWorkspaceControls();
+        showStatus(window.t ? window.t('api.bailianWorkspaceIdInvalid') : '百炼业务空间 ID 格式不对：只能包含字母、数字和 -，最长 63 个字符', 'error');
+        return;
+    }
 
     const apiKeyInput = document.getElementById('apiKeyInput');
 
@@ -3757,6 +3903,7 @@ async function save_button_down(e) {
         mcpToken, enableCustomApi,
         useMimoTokenPlan,
         assistApiKeyMimoTokenPlan: mimoTokenPlanKey,
+        ...workspacePayload,
         resolvedProviderUrls: _resolvedProviderUrls,
         ...modelProviders
     };
@@ -4725,7 +4872,9 @@ function buildConnectivityCacheId(scope, providerKey, key, url, model = '') {
     // decision 槽位使用独立 scope + model 维度的缓存键，避免与普通聊天 assist 灯混用。
     if (scope && providerKey) {
         if (scope === 'decision') {
-            return `${scope}|${providerKey}|${key || ''}|${model || ''}`;
+            // 百炼的决策地址由业务空间 ID 决定，换 ID 必须换一份检测结果。
+            const workspaceId = getBailianWorkspaceIdForProvider(providerKey);
+            return `${scope}|${providerKey}|${key || ''}|${model || ''}|${workspaceId}`;
         }
         return `${scope}|${providerKey}|${key || ''}`;
     }
@@ -5139,6 +5288,9 @@ const ConnectivityManager = {
                     body.provider_scope = provider_scope;
                     if (provider_scope === 'decision' && model) {
                         body.model = model;
+                    }
+                    if (provider_scope === 'decision' && BAILIAN_WORKSPACE_ID_FIELDS[provider_key]) {
+                        body.workspace_id = getBailianWorkspaceIdForProvider(provider_key);
                     }
                     if ((provider_scope === 'assist' || provider_scope === 'decision') && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
                         body.url = overrideUrl;
@@ -5993,6 +6145,16 @@ function initConnectivityLights() {
             input.addEventListener('change', handleCustomEndpointChange);
         });
     });
+
+    // 百炼业务空间 ID 决定决策模型的检测地址：改 ID 后重新登记决策槽位的灯。
+    const bailianWorkspaceInput = document.getElementById('bailianWorkspaceIdInput');
+    if (bailianWorkspaceInput) {
+        const handleBailianWorkspaceChange = debounce(() => {
+            if (lightRefs.custom.decision) reRegisterModelSlot('decision');
+        }, 300);
+        bailianWorkspaceInput.addEventListener('input', handleBailianWorkspaceChange);
+        bailianWorkspaceInput.addEventListener('change', handleBailianWorkspaceChange);
+    }
 
     // ===== Task 8.2: Provider switch event binding =====
 

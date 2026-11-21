@@ -163,15 +163,38 @@ def test_systemone_adapter_roundtrip():
     payload = adapter.build_payload(state="App crashes on export", questions=qs, model="decision-model-preview")
     assert payload["model"] == "decision-model-preview"
     assert payload["state"] == "App crashes on export"
-    assert payload["questions"]["is_urgent"]["type"] == "noul"
-    assert payload["questions"]["route"]["type"] == "choice"
-    assert payload["questions"]["severity"]["type"] == "score"
+    # Bailian decision model API reference: every question uses type / instructions / criteria.
+    assert payload["questions"]["is_urgent"] == {
+        "type": "noul",
+        "instructions": "Is this urgent?",
+        "criteria": {"true": "Urgent", "false": "Not urgent"},
+    }
+    assert payload["questions"]["route"] == {
+        "type": "choice",
+        "instructions": "Pick queue",
+        "criteria": {"billing": "Invoices", "tech": "Bugs"},
+    }
+    assert payload["questions"]["severity"] == {
+        "type": "score",
+        "instructions": "Rate severity",
+        "criteria": ["low", "medium", "high"],
+    }
+    for entry in payload["questions"].values():
+        assert set(entry) <= {"type", "instructions", "criteria"}
+    # A noul question without descriptions carries no criteria at all (it is optional).
+    bare = adapter.build_payload(
+        state="x", questions={"q": BoolQuestion(instructions="Yes?")}, model="decision-model-preview",
+    )
+    assert bare["questions"]["q"] == {"type": "noul", "instructions": "Yes?"}
 
+    # Response shape from the reference: answers keyed by question id, score
+    # probabilities keyed by 0-based level index strings, usage.input_tokens only.
     resp = adapter.parse_response(
         {
             "model": "decision-model-preview",
-            "results": {
-                "is_urgent": {"type": "noul", "noul": 0.92, "confidence": 0.96},
+            "request_id": "00000000-0000-0000-0000-000000000000",
+            "answers": {
+                "is_urgent": {"type": "noul", "noul": 0.92},
                 "route": {
                     "type": "choice",
                     "choice": "tech",
@@ -181,11 +204,13 @@ def test_systemone_adapter_roundtrip():
                 "severity": {
                     "type": "score",
                     "score": 1.8,
-                    "probabilities": {"low": 0.05, "medium": 0.15, "high": 0.80},
+                    "probabilities": {"0": 0.05, "1": 0.10, "2": 0.85},
+                    "legend": {"0": "low", "1": "medium", "2": "high"},
                     "confidence": 0.88,
                 },
             },
-            "usage": {"prompt_tokens": 110, "completion_tokens": 0},
+            "usage": {"input_tokens": 110},
+            "latency_ms": 52.9,
         },
         qs,
         "decision-model-preview",
@@ -198,6 +223,182 @@ def test_systemone_adapter_roundtrip():
     assert resp.answers["route"].value == "tech"
     assert resp.answers["severity"].value == pytest.approx(1.8)
     assert resp.answers["severity"].score_norm == pytest.approx(0.9)
+    # Index-keyed level probabilities are normalized to level labels.
+    assert resp.answers["severity"].probabilities == {
+        "low": pytest.approx(0.05), "medium": pytest.approx(0.10), "high": pytest.approx(0.85),
+    }
+
+    # Without a score field, the expected score comes from the index-keyed probabilities.
+    from_probs = adapter.parse_response(
+        {"answers": {"severity": {"type": "score", "probabilities": {"0": 0.0, "1": 0.5, "2": 0.5}}}},
+        {"severity": qs["severity"]},
+        "decision-model-preview",
+    )
+    assert from_probs.answers["severity"].value == pytest.approx(1.5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_systemone_adapter_splits_more_than_16_questions_into_concurrent_requests():
+    adapter = SystemOneAdapter("systemone")
+    assert SystemOneAdapter.MAX_QUESTIONS_PER_REQUEST == 16
+    questions = {
+        f"q{i}": ScoreQuestion(instructions=f"rate {i}", levels=("no", "yes"))
+        for i in range(20)
+    }
+    sent_payloads: list[dict] = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return {
+                "model": "decision-model-preview",
+                "answers": {
+                    qid: {"type": "score", "score": 1.0, "probabilities": {"0": 0.0, "1": 1.0}}
+                    for qid in self._payload["questions"]
+                },
+                "usage": {"input_tokens": 10},
+            }
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            sent_payloads.append(json)
+            return _FakeResponse(json)
+
+    with patch("utils.decision_client.adapters.httpx.AsyncClient", _FakeAsyncClient):
+        resp = await adapter.execute(
+            state="shared state",
+            questions=questions,
+            model="decision-model-preview",
+            base_url="",
+            api_key="sk-test",
+            decision_url="https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+        )
+
+    assert [len(p["questions"]) for p in sent_payloads] == [16, 4]
+    assert all(p["state"] == "shared state" for p in sent_payloads)
+    sent_ids = [qid for p in sent_payloads for qid in p["questions"]]
+    assert sorted(sent_ids) == sorted(questions)
+    assert set(resp.answers) == set(questions)
+    assert resp.prompt_tokens == 20
+
+    # Exactly 16 questions stays a single request.
+    sent_payloads.clear()
+    with patch("utils.decision_client.adapters.httpx.AsyncClient", _FakeAsyncClient):
+        await adapter.execute(
+            state="s",
+            questions=dict(list(questions.items())[:16]),
+            model="decision-model-preview",
+            base_url="",
+            api_key="sk-test",
+            decision_url="https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+        )
+    assert [len(p["questions"]) for p in sent_payloads] == [16]
+
+
+# ---------------------------------------------------------------------------
+# Bailian workspace ID validation and dedicated-host URL building
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("llm-abc123", "llm-abc123"),
+        ("  LLM-AbC123  ", "llm-abc123"),
+        ("a", "a"),
+        ("a" * 63, "a" * 63),
+        ("llm-abc\n", "llm-abc"),
+        ("", ""),
+        ("   ", ""),
+        (None, ""),
+    ],
+)
+def test_workspace_id_normalization_accepts_single_dns_labels(raw, expected):
+    from utils.decision_client.workspace import normalize_workspace_id, safe_workspace_id
+
+    assert normalize_workspace_id(raw) == expected
+    assert safe_workspace_id(raw) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "evil.com",
+        "llm-abc.evil.com",
+        "evil.com/x",
+        "evil.com#",
+        "llm-abc@evil.com",
+        "user:pass@evil",
+        "llm-abc:443",
+        "llm abc",
+        "llm-abc\nevil",
+        "-llm",
+        "llm-",
+        "llm_abc",
+        "a" * 64,
+        "llm%2eevil",
+        "llm․evil",
+        "ｌｌｍ",  # full-width letters
+        "K",  # Kelvin sign case-folds to ASCII "k"
+        "https://llm-abc.cn-beijing.maas.aliyuncs.com",
+        123,
+        ["llm-abc"],
+    ],
+)
+def test_workspace_id_rejects_anything_that_could_change_the_host(raw):
+    from utils.decision_client.workspace import (
+        InvalidWorkspaceIdError,
+        build_workspace_decision_url,
+        normalize_workspace_id,
+        safe_workspace_id,
+    )
+
+    with pytest.raises(InvalidWorkspaceIdError):
+        normalize_workspace_id(raw)
+    assert safe_workspace_id(raw) == ""
+    assert build_workspace_decision_url(
+        "https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone", raw,
+    ) == ""
+
+
+@pytest.mark.unit
+def test_build_workspace_decision_url_for_both_regions():
+    from utils.decision_client.workspace import build_workspace_decision_url
+    from utils.api_config_loader import get_assist_api_profiles
+
+    profiles = get_assist_api_profiles(force_reload=True)
+    assert build_workspace_decision_url(profiles["qwen"]["DECISION_URL_TEMPLATE"], "LLM-Abc") == (
+        "https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone"
+    )
+    assert build_workspace_decision_url(profiles["qwen_intl"]["DECISION_URL_TEMPLATE"], "llm-abc") == (
+        "https://llm-abc.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone"
+    )
+    # No placeholder or no ID -> nothing to call.
+    assert build_workspace_decision_url("https://example.com/systemone", "llm-abc") == ""
+    assert build_workspace_decision_url(profiles["qwen"]["DECISION_URL_TEMPLATE"], "") == ""
+    # Defense in depth: the ID must land as the leading host label of an https URL.
+    assert build_workspace_decision_url("https://evil.example/{workspace_id}/systemone", "llm-abc") == ""
+    assert build_workspace_decision_url("http://{workspace_id}.cn-beijing.maas.aliyuncs.com/v1", "llm-abc") == ""
+    assert build_workspace_decision_url("https://user@{workspace_id}.example/v1", "llm-abc") == ""
+    # Only providers whose native endpoint needs a workspace carry a template.
+    templated = {key for key, prof in profiles.items() if prof.get("DECISION_URL_TEMPLATE")}
+    assert templated == {"qwen", "qwen_intl"}
 
 
 @pytest.mark.unit
@@ -688,13 +889,121 @@ def test_config_manager_decision_slot_defaults_and_cross_provider(clean_user_dat
         cfg_path.write_text(json.dumps(data), encoding="utf-8")
         cm._core_config_cache = None
 
-    # Default qwen assist -> native systemone decision-model-preview + qwen3.7-flash fallback
+    # Default qwen assist without a Bailian workspace ID -> the native endpoint does
+    # not exist on the shared DashScope host, so decide with the chat model instead.
     _set_cfg({"coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "sk-qwen"})
     qwen_dec = cm.get_model_api_config("decision")
-    assert qwen_dec["model"] == "decision-model-preview"
-    assert qwen_dec["decision_protocol"] == "systemone"
-    assert qwen_dec["decision_url"].endswith("/compatible-mode/v1/systemone")
+    assert qwen_dec["model"] == "qwen3.7-flash"
+    assert qwen_dec["decision_protocol"] == "chat_fallback"
+    assert qwen_dec["native_unavailable_reason"] == "workspace_missing"
+    assert qwen_dec["native_decision_model"] == "decision-model-preview"
+    assert "systemone" not in qwen_dec["decision_url"]
     assert qwen_dec["fallback_model"] == "qwen3.7-flash"
+
+    # With a workspace ID -> native systemone on the Beijing workspace host.
+    _set_cfg({
+        "coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "sk-qwen",
+        "assistWorkspaceIdQwen": "LLM-Abc123",
+    })
+    qwen_ws_dec = cm.get_model_api_config("decision")
+    assert qwen_ws_dec["model"] == "decision-model-preview"
+    assert qwen_ws_dec["decision_protocol"] == "systemone"
+    assert qwen_ws_dec["decision_url"] == (
+        "https://llm-abc123.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone"
+    )
+    assert qwen_ws_dec["native_unavailable_reason"] == ""
+    assert qwen_ws_dec["fallback_model"] == "qwen3.7-flash"
+
+    # qwen_intl uses its own ID and the Singapore host; the Beijing ID is not reused.
+    _set_cfg({
+        "coreApi": "qwen", "assistApi": "qwen_intl", "assistApiKeyQwenIntl": "sk-intl",
+        "assistWorkspaceIdQwen": "llm-beijing",
+        "assistWorkspaceIdQwenIntl": "llm-sg",
+    })
+    intl_dec = cm.get_model_api_config("decision")
+    assert intl_dec["decision_protocol"] == "systemone"
+    assert intl_dec["decision_url"] == (
+        "https://llm-sg.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone"
+    )
+    _set_cfg({
+        "coreApi": "qwen", "assistApi": "qwen_intl", "assistApiKeyQwenIntl": "sk-intl",
+        "assistWorkspaceIdQwen": "llm-beijing",
+    })
+    assert cm.get_model_api_config("decision")["decision_protocol"] == "chat_fallback"
+
+    # qwen_intl resolved to the US host has no documented decision endpoint.
+    _set_cfg({
+        "coreApi": "qwen", "assistApi": "qwen_intl", "assistApiKeyQwenIntl": "sk-intl",
+        "assistWorkspaceIdQwenIntl": "llm-sg",
+        "resolvedProviderUrls": {"assist:qwen_intl": "https://dashscope-us.aliyuncs.com/compatible-mode/v1"},
+    })
+    us_dec = cm.get_model_api_config("decision")
+    assert us_dec["base_url"].startswith("https://dashscope-us.")
+    assert us_dec["decision_protocol"] == "chat_fallback"
+    assert us_dec["native_unavailable_reason"] == "region_unsupported"
+    assert "maas.aliyuncs.com" not in us_dec["decision_url"]
+
+    # A hand-edited invalid ID is ignored on read (treated as unset), never put in a host.
+    for bad in ("evil.com/x", "llm-abc.evil.com", "llm-abc@evil.com", "-bad"):
+        _set_cfg({
+            "coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "sk-qwen",
+            "assistWorkspaceIdQwen": bad,
+        })
+        bad_dec = cm.get_model_api_config("decision")
+        assert bad_dec["decision_protocol"] == "chat_fallback", bad
+        assert "evil" not in bad_dec["decision_url"], bad
+        assert cm.get_core_config()["ASSIST_WORKSPACE_ID_QWEN"] == ""
+
+    # A hand-entered custom decision URL on a workspace host still wins.
+    _set_cfg({
+        "coreApi": "qwen",
+        "assistApi": "qwen",
+        "coreApiKey": "sk-qwen",
+        "enableCustomApi": True,
+        "decisionModelProvider": "custom",
+        "decisionModelUrl": "https://llm-manual.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "decisionModelId": "decision-model-preview",
+        "decisionModelApiKey": "sk-manual",
+    })
+    manual_dec = cm.get_model_api_config("decision")
+    assert manual_dec["decision_protocol"] == "systemone"
+    assert manual_dec["decision_url"] == (
+        "https://llm-manual.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone"
+    )
+    _set_cfg({
+        "coreApi": "qwen",
+        "assistApi": "deepseek",
+        "assistApiKeyDeepseek": "sk-ds",
+        "assistWorkspaceIdQwen": "llm-ignored",
+        "enableCustomApi": True,
+        "decisionModelProvider": "qwen",
+        "decisionModelUrl": "https://llm-manual.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "decisionModelId": "decision-model-preview",
+        "decisionModelApiKey": "sk-manual",
+    })
+    manual_named_dec = cm.get_model_api_config("decision")
+    assert manual_named_dec["decision_url"] == (
+        "https://llm-manual.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone"
+    )
+
+    # Custom slot pinned to provider qwen (official URL) uses the saved workspace ID.
+    _set_cfg({
+        "coreApi": "qwen",
+        "assistApi": "deepseek",
+        "assistApiKeyDeepseek": "sk-ds",
+        "assistApiKeyQwen": "sk-qwen",
+        "assistWorkspaceIdQwen": "llm-pinned",
+        "enableCustomApi": True,
+        "decisionModelProvider": "qwen",
+        "decisionModelUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "decisionModelId": "decision-model-preview",
+        "decisionModelApiKey": "sk-qwen",
+    })
+    pinned_dec = cm.get_model_api_config("decision")
+    assert pinned_dec["decision_protocol"] == "systemone"
+    assert pinned_dec["decision_url"] == (
+        "https://llm-pinned.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone"
+    )
 
     # Default gemini assist -> native gemini_decisions + /v1beta/decisions
     _set_cfg({"coreApi": "qwen", "assistApi": "gemini", "assistApiKeyGemini": "sk-gem"})
@@ -884,6 +1193,7 @@ async def test_connectivity_decision_probe_success_and_auth_error():
         assert mock_dec_probe.await_count == 0
 
     # Built-in Mode 1 provider_scope='decision' tests the provider's decision model & protocol
+    # on the Bailian workspace host built from the submitted workspace ID.
     with patch(
         "main_routers.config_router.connectivity._test_decision_endpoint",
         AsyncMock(return_value={"success": True}),
@@ -893,12 +1203,78 @@ async def test_connectivity_decision_probe_success_and_auth_error():
                 provider_key="qwen",
                 provider_scope="decision",
                 api_key="sk-qwen",
+                workspace_id="LLM-Abc",
             )
         )
         assert scope_res["success"] is True
+        assert "decision_fallback" not in scope_res
         assert mock_dec_probe.await_count == 1
+        assert mock_dec_probe.await_args.args[0] == (
+            "https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone"
+        )
         assert mock_dec_probe.await_args.kwargs["model"] == "decision-model-preview"
         assert mock_dec_probe.await_args.kwargs["protocol"] == "systemone"
+
+    with patch(
+        "main_routers.config_router.connectivity._test_decision_endpoint",
+        AsyncMock(return_value={"success": True}),
+    ) as mock_dec_probe:
+        intl_res = await test_connectivity(
+            ConnectivityTestRequest(
+                provider_key="qwen_intl",
+                provider_scope="decision",
+                api_key="sk-intl",
+                workspace_id="llm-sg",
+            )
+        )
+        assert intl_res["success"] is True
+        assert mock_dec_probe.await_args.args[0] == (
+            "https://llm-sg.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone"
+        )
+
+    # No workspace ID -> no doomed native request: probe the chat model the runtime
+    # actually decides with, and tell the page it is the chat fallback.
+    with (
+        patch(
+            "main_routers.config_router.connectivity._test_openai_compatible",
+            AsyncMock(return_value={"success": True}),
+        ) as mock_oai,
+        patch(
+            "main_routers.config_router.connectivity._test_decision_endpoint",
+            AsyncMock(return_value={"success": True}),
+        ) as mock_dec_probe,
+    ):
+        no_ws_res = await test_connectivity(
+            ConnectivityTestRequest(provider_key="qwen", provider_scope="decision", api_key="sk-qwen")
+        )
+        assert no_ws_res["success"] is True
+        assert no_ws_res["decision_fallback"] == "workspace_missing"
+        assert mock_dec_probe.await_count == 0
+        assert mock_oai.await_count == 1
+        assert mock_oai.await_args.args[0] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        assert mock_oai.await_args.kwargs["model"] == "qwen3.7-flash"
+
+    # Injection-style workspace IDs are rejected before any request is made.
+    with (
+        patch(
+            "main_routers.config_router.connectivity._test_openai_compatible",
+            AsyncMock(return_value={"success": True}),
+        ) as mock_oai,
+        patch(
+            "main_routers.config_router.connectivity._test_decision_endpoint",
+            AsyncMock(return_value={"success": True}),
+        ) as mock_dec_probe,
+    ):
+        for bad in ("evil.com/x", "llm-abc.evil.com", "llm@evil.com", "a" * 64):
+            bad_res = await test_connectivity(
+                ConnectivityTestRequest(
+                    provider_key="qwen", provider_scope="decision", api_key="sk-qwen", workspace_id=bad,
+                )
+            )
+            assert bad_res["success"] is False
+            assert bad_res["error_code"] == "invalid_workspace_id"
+        assert mock_oai.await_count == 0
+        assert mock_dec_probe.await_count == 0
 
     # Mode 1 provider_scope='decision' overridden with a regular chat model must use chat probe
     with (
@@ -1063,9 +1439,10 @@ async def test_memory_recall_reranker_aligns_questions_with_bounded_native_state
         for i in range(80)
     ]
 
-    captured: dict = {}
+    captured: dict = {"batches": []}
 
     async def _capture_decide(self, *, state, questions, **kwargs):
+        captured["batches"].append((state, list(questions.keys())))
         captured["state"] = state
         captured["question_ids"] = list(questions.keys())
         return DecisionResponse(
@@ -1089,6 +1466,223 @@ async def test_memory_recall_reranker_aligns_questions_with_bounded_native_state
         )
 
     assert len(ranked) == 5
-    assert 0 < len(captured["question_ids"]) < len(candidates)
-    for qid in captured["question_ids"]:
-        assert f"[{qid}]" in captured["state"]
+    all_ids = [qid for _state, ids in captured["batches"] for qid in ids]
+    assert 0 < len(all_ids) < len(candidates)
+    assert len(all_ids) == len(set(all_ids))
+    for state, ids in captured["batches"]:
+        for qid in ids:
+            assert f"[{qid}]" in state
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_memory_recall_native_rerank_batches_16_questions_per_request():
+    from memory.recall import MemoryRecallReranker
+    from utils.decision_client.schema import DecisionAnswer, DecisionResponse
+
+    cm = MagicMock()
+    cm.aget_model_api_config = AsyncMock(return_value={
+        "model": "decision-model-preview",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "sk-test",
+        "decision_protocol": "systemone",
+        "decision_url": "https://llm-abc.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
+    })
+    # 40 short candidates all fit the native state budget -> 16 + 16 + 8.
+    candidates = [{"id": f"m{i}", "text": f"fact number {i}", "score": float(40 - i)} for i in range(40)]
+    batches: list[tuple[str, list[str]]] = []
+
+    async def _decide(self, *, state, questions, **kwargs):
+        batches.append((state, list(questions)))
+        # Later candidates score higher so the native order is visible in the result.
+        return DecisionResponse(
+            answers={
+                qid: DecisionAnswer(question_type="score", value=0.0, score_norm=int(qid[1:]) / 100)
+                for qid in questions
+            },
+            model="decision-model-preview",
+            protocol="systemone",
+        )
+
+    with patch.object(DecisionClient, "decide", _decide):
+        ranked = await MemoryRecallReranker()._fine_rank(
+            candidates,
+            query_texts=["which fact?"],
+            budget=30,
+            config_manager=cm,
+            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
+            lang="en",
+        )
+
+    assert [len(ids) for _state, ids in batches] == [16, 16, 8]
+    for state, ids in batches:
+        assert state.startswith("Query:\n- which fact?")
+        # Each batch's state carries only its own candidates.
+        own = set(ids)
+        for i in range(40):
+            assert (f"[m{i}]" in state) == (f"m{i}" in own)
+    assert [r["id"] for r in ranked] == [f"m{i}" for i in range(39, 9, -1)]
+
+    # One failed batch fails the whole native pass -> summary chat rerank is used.
+    calls = {"n": 0}
+
+    async def _decide_one_fails(self, *, state, questions, **kwargs):
+        calls["n"] += 1
+        if "[m20]" in state:
+            raise DecisionProtocolError("HTTP 500", status_code=500, protocol="systemone")
+        return DecisionResponse(
+            answers={qid: DecisionAnswer(question_type="score", value=1.0, score_norm=0.5) for qid in questions},
+            model="decision-model-preview",
+            protocol="systemone",
+        )
+
+    summary_cfg = {
+        "model": "qwen3.8-flash",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "sk-test",
+        "provider_type": "openai_compatible",
+    }
+    decision_cfg = dict(cm.aget_model_api_config.return_value)
+    cm.aget_model_api_config = AsyncMock(side_effect=lambda tier: decision_cfg if tier == "decision" else summary_cfg)
+    fake_llm = SimpleNamespace(
+        ainvoke=AsyncMock(return_value=SimpleNamespace(content='[{"id": "m1"}, {"id": "m0"}]')),
+        aclose=AsyncMock(),
+    )
+    with (
+        patch.object(DecisionClient, "decide", _decide_one_fails),
+        patch("utils.llm_client.create_chat_llm_async", AsyncMock(return_value=fake_llm)),
+    ):
+        fallback_ranked = await MemoryRecallReranker()._fine_rank(
+            candidates,
+            query_texts=["which fact?"],
+            budget=2,
+            config_manager=cm,
+            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
+            lang="en",
+        )
+    assert calls["n"] == 3
+    assert [r["id"] for r in fallback_ranked] == ["m1", "m0"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_memory_recall_skips_native_without_workspace_id(clean_user_data_dir):
+    """Default qwen config without a workspace ID never reaches the native endpoint."""
+    from memory.recall import MemoryRecallReranker
+    from utils.config_manager import get_config_manager
+
+    cm = get_config_manager("N.E.K.O")
+    cm.config_dir.mkdir(parents=True, exist_ok=True)
+    cm.get_config_path("core_config.json").write_text(
+        json.dumps({"coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "sk-qwen"}), encoding="utf-8",
+    )
+    cm._core_config_cache = None
+
+    fake_llm = SimpleNamespace(
+        ainvoke=AsyncMock(return_value=SimpleNamespace(content='[{"id": "m2"}, {"id": "m1"}]')),
+        aclose=AsyncMock(),
+    )
+    native_execute = AsyncMock(side_effect=AssertionError("native endpoint must not be called"))
+    with (
+        patch.object(SystemOneAdapter, "execute", native_execute),
+        patch("utils.llm_client.create_chat_llm_async", AsyncMock(return_value=fake_llm)),
+        patch("memory.recall.logger") as mock_logger,
+    ):
+        ranked = await MemoryRecallReranker()._fine_rank(
+            [{"id": "m1", "text": "a", "score": 1.0}, {"id": "m2", "text": "b", "score": 1.0}],
+            query_texts=["q"],
+            budget=2,
+            config_manager=cm,
+            prompt_loader=lambda _lang: "{QUERY}\n{CANDIDATES}\n{BUDGET}",
+            lang="en",
+        )
+    assert native_execute.await_count == 0
+    assert mock_logger.warning.call_count == 0
+    assert [r["id"] for r in ranked] == ["m2", "m1"]
+
+
+# ---------------------------------------------------------------------------
+# /api/config/core_api: workspace ID save-side and read-side validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _core_config_router_for_workspace(monkeypatch):
+    from main_routers.config_router import core_config
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(core_config, "get_session_manager", lambda: {})
+    monkeypatch.setattr(core_config, "get_initialize_character_data", lambda: _noop)
+    monkeypatch.setattr(core_config, "ensure_default_yui_voice_for_free_api", _noop)
+    monkeypatch.setattr(core_config, "_auto_resolve_provider_urls_for_save", _noop)
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    return core_config
+
+
+class _FakeJsonRequest:
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def json(self):
+        return self._payload
+
+
+@pytest.mark.unit
+def test_core_api_save_validates_workspace_ids(clean_user_data_dir, _core_config_router_for_workspace):
+    import asyncio
+
+    from utils.config_manager import get_config_manager
+
+    router = _core_config_router_for_workspace
+    assert router.CORE_CONFIG_WORKSPACE_ID_FIELDS == ("assistWorkspaceIdQwen", "assistWorkspaceIdQwenIntl")
+    cm = get_config_manager("N.E.K.O")
+    cm.config_dir.mkdir(parents=True, exist_ok=True)
+    stored = {"coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "sk-qwen", "assistWorkspaceIdQwen": "llm-old"}
+    cm.save_json_config("core_config.json", stored)
+    cm._core_config_cache = None
+
+    def _save(extra):
+        return asyncio.run(router.update_core_config(_FakeJsonRequest({
+            "coreApiKey": "sk-qwen", "coreApi": "qwen", "assistApi": "qwen", "enableCustomApi": False, **extra,
+        })))
+
+    # Injection-style values are rejected and nothing is written.
+    for bad in ("evil.com", "llm-abc.evil.com", "llm@evil.com", "evil.com/x", "a" * 64, "-x", 7):
+        resp = _save({"assistWorkspaceIdQwen": bad})
+        assert resp["success"] is False, bad
+        assert resp["error"] == "INVALID_WORKSPACE_ID"
+        assert cm.load_json_config("core_config.json", {})["assistWorkspaceIdQwen"] == "llm-old"
+
+    # A valid value is stored in canonical form; empty clears it.
+    assert _save({"assistWorkspaceIdQwen": "  LLM-New ", "assistWorkspaceIdQwenIntl": "llm-sg"})["success"] is True
+    saved = cm.load_json_config("core_config.json", {})
+    assert saved["assistWorkspaceIdQwen"] == "llm-new"
+    assert saved["assistWorkspaceIdQwenIntl"] == "llm-sg"
+    assert _save({"assistWorkspaceIdQwenIntl": ""})["success"] is True
+    assert cm.load_json_config("core_config.json", {})["assistWorkspaceIdQwenIntl"] == ""
+
+    # Read side: GET returns the stored ID, and a hand-edited invalid value reads as unset.
+    cm.save_json_config("core_config.json", {**stored, "assistWorkspaceIdQwen": "llm-x.evil.com"})
+    cm._core_config_cache = None
+    got = asyncio.run(router.get_core_config_api())
+    assert got["success"] is True
+    assert got["assistWorkspaceIdQwen"] == ""
+    assert got["assistWorkspaceIdQwenIntl"] == ""

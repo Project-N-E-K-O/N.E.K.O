@@ -1662,6 +1662,11 @@
         "mimoTokenPlanKeyLabel": "MiMo Token Plan Key",
         "mimoTokenPlanKeyPlaceholder": "輸入 Token Plan Key（tp-xxxxx）",
         "mimoTokenPlanKeyHint": "啟用後，MiMo 只使用此 Token Plan Key 和端點；普通 MiMo API Key 會被鎖定。",
+        "bailianWorkspaceIdLabel": "百煉業務空間 ID（決策模型）",
+        "bailianWorkspaceIdPlaceholder": "例如 llm-xxxxxxxx",
+        "bailianWorkspaceIdHint": "沒填時，決策模型以一般聊天模型代替。業務空間 ID 就是 API Host 最前面那一段（如 llm-xxx），可在百煉控制台「業務空間管理」頁或建立 API Key 的彈窗中找到，也可以直接貼上整個 API Host。",
+        "bailianWorkspaceIdDocLink": "查看官方說明",
+        "bailianWorkspaceIdInvalid": "百煉業務空間 ID 格式不正確：只能包含字母、數字和 -，最長 63 個字元",
         "mimoApiKeyLockedByTokenPlan": "已啟用 MiMo Token Plan；此 Key 不會被使用"
     },
     "live2d": {
@@ -5747,7 +5752,8 @@
             "output_limit": "測試請求的輸出額度不足",
             "unknown": "未知錯誤",
             "backend_unavailable": "後端服務不可用",
-            "invalid_response": "回應格式錯誤"
+            "invalid_response": "回應格式錯誤",
+            "invalid_workspace_id": "百煉業務空間 ID 格式無效"
         },
         "status": {
             "connected": "已連通",

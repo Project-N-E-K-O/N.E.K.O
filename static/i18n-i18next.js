@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 新增决策模型槽位（api.decisionModelConfig / api.decisionModelApiKeyPlaceholder）八语言文案，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-21-decision-model-slot';
+    // 新增百炼业务空间 ID（api.bailianWorkspaceId* / connectivity.error.invalid_workspace_id）八语言文案，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-11-21-bailian-workspace-id';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

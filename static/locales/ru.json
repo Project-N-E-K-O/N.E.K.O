@@ -1662,6 +1662,11 @@
         "mimoTokenPlanKeyLabel": "Ключ MiMo Token Plan",
         "mimoTokenPlanKeyPlaceholder": "Введите ключ Token Plan (tp-xxxxx)",
         "mimoTokenPlanKeyHint": "Если включено, MiMo использует только этот ключ и endpoint Token Plan; обычный ключ MiMo API блокируется.",
+        "bailianWorkspaceIdLabel": "ID рабочего пространства Bailian (модель решений)",
+        "bailianWorkspaceIdPlaceholder": "например, llm-xxxxxxxx",
+        "bailianWorkspaceIdHint": "Если поле пустое, вместо модели решений используется обычная чат-модель. ID рабочего пространства — это первая часть вашего API Host (например, llm-xxx). Его можно найти на странице управления рабочими пространствами в консоли Bailian (Model Studio) или во всплывающем окне при создании API-ключа. Можно вставить и весь API Host целиком.",
+        "bailianWorkspaceIdDocLink": "Открыть официальную документацию",
+        "bailianWorkspaceIdInvalid": "Неверный ID рабочего пространства Bailian: допустимы только буквы, цифры и -, не более 63 символов",
         "mimoApiKeyLockedByTokenPlan": "MiMo Token Plan включен; этот ключ не используется"
     },
     "live2d": {
@@ -5747,7 +5752,8 @@
             "output_limit": "Недостаточный лимит вывода тестового запроса",
             "unknown": "Неизвестная ошибка",
             "backend_unavailable": "Бэкенд-сервис недоступен",
-            "invalid_response": "Неверный формат ответа"
+            "invalid_response": "Неверный формат ответа",
+            "invalid_workspace_id": "Неверный формат ID рабочего пространства Bailian"
         },
         "status": {
             "connected": "Подключено",

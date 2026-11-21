@@ -30,6 +30,8 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyKimi": "",
     "assistApiKeyKimiCode": "",
     "assistApiKeyQwenIntl": "",
+    "assistWorkspaceIdQwen": "",
+    "assistWorkspaceIdQwenIntl": "",
     "assistApiKeyMinimax": "",
     "assistApiKeyMimo": "",
     "useMimoTokenPlan": False,
@@ -122,6 +124,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'EMOTION_MODEL': "qwen3.7-flash",
         'DECISION_MODEL': "decision-model-preview",
         'DECISION_PROTOCOL': "systemone",
+        'DECISION_URL_TEMPLATE': "https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone",
         'VISION_MODEL': "qwen3.8-omni-flash",
         'AGENT_MODEL': "qwen3.8-flash",
     },
@@ -137,6 +140,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'EMOTION_MODEL': "qwen3.7-flash",
         'DECISION_MODEL': "decision-model-preview",
         'DECISION_PROTOCOL': "systemone",
+        'DECISION_URL_TEMPLATE': "https://{workspace_id}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/systemone",
         'VISION_MODEL': "qwen3.8-omni-flash",
         'AGENT_MODEL': "qwen3.8-flash",
     },
@@ -396,6 +400,14 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'grok': 'ASSIST_API_KEY_GROK',
     'doubao': 'ASSIST_API_KEY_DOUBAO',
     'doubao_tts': 'ASSIST_API_KEY_DOUBAO_TTS',
+}
+
+# Bailian workspace IDs, one per provider region: core_config.json field ->
+# resolved config key. The native decision endpoint lives on a workspace-only
+# host (see DECISION_URL_TEMPLATE); without an ID the decision slot uses chat.
+ASSIST_WORKSPACE_ID_FIELDS = {
+    'qwen': ('assistWorkspaceIdQwen', 'ASSIST_WORKSPACE_ID_QWEN'),
+    'qwen_intl': ('assistWorkspaceIdQwenIntl', 'ASSIST_WORKSPACE_ID_QWEN_INTL'),
 }
 
 DEFAULT_CONFIG_DATA = {
