@@ -209,7 +209,7 @@ async def test_builtin_model_receives_folded_and_restored_browser_schema(tmp_pat
                 await runtime.steer(spec.session_id, "Also take a desktop screenshot")
                 await events.wait_ended(spec.session_id, start=start)
             else:
-                await prompt("Continue." if rediscover else "List browser tabs")
+                await prompt("Continue." if rediscover else "Click the login button")
             tools = [request["tools"] for request in server.requests]
             assert len(tools) == (8 if rediscover else 7)
             if failed:

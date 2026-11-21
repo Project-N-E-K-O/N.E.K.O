@@ -26,13 +26,14 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from nekoclaw.dsh import DshUnavailable
 from nekoclaw.host.paths import DSH_SESSION_NAME, TRANSCRIPT_NAME
 from nekoclaw.host.runtimes import RUNTIME_BUILTIN, RUNTIME_DSH
-from nekoclaw.host.task_agents import _begun_in, _has_transcript
+from nekoclaw.host.task_agents import _Handed, _begun_in, _has_transcript
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish
 from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
@@ -224,16 +225,26 @@ async def test_dispatch_only_mounts_devices_on_a_supported_related_route(
     assert "computer" not in names and {"capability_call", "capability_search"} <= names
 
 
+@pytest.mark.parametrize("backend", ["builtin", "auto"], ids=["builtin", "dsh"])
 @pytest.mark.parametrize(("follow_up", "compacted", "expected"), [
-    ("点击登录按钮", False, True), ("继续", False, True),
-    ("继续", True, False), ("列出浏览器标签页", True, True),
+    ("点击登录按钮", False, "browser_click"), ("继续", False, "browser_click"),
+    ("继续", "while_queued", "browser_click"),
+    ("继续", True, None), ("列出浏览器标签页", True, "browser_click"),
+    ("点击登录按钮", True, "browser_click"), ("click login", True, "browser_click"),
+    ("截桌面", True, "computer"), ("Click the Start menu", True, "computer"),
+    ("Switch to Notepad, then click OK", True, "computer"),
+    (_Handed("点击登录按钮", ()), True, None),
 ])
-async def test_relaunch_uses_current_device_intent_after_a_summary(hosts, tmp_path, follow_up, compacted, expected):
+async def test_relaunch_uses_current_device_intent_after_a_summary(
+    hosts, tmp_path, monkeypatch, backend, follow_up, compacted, expected
+):
     from nekoclaw.builtin.provider import BuiltinToolProvider
 
     llm = ScriptedLLM([_report("blocked", "waiting for login"), _report("ready", "done")])
-    host = _host(hosts, tmp_path, llm, Installation(preference="builtin"),
+    monkeypatch.setattr(Dsh, "supports_device_schemas", lambda self, model: True, raising=False)
+    host = _host(hosts, tmp_path, llm, Installation(preference=backend),
                  builtins=BuiltinToolProvider(state=lambda group: (True, "")))
+    monkeypatch.setattr(host.task_agents, "_sees_images", AsyncMock(return_value=True))
     commission_id = await _dispatch(host, "打开浏览器")
     await wait_status(host, commission_id, "blocked")
     await wait_until(lambda: host.task_agents.running == [], what="the blocked session being released")
@@ -241,13 +252,16 @@ async def test_relaunch_uses_current_device_intent_after_a_summary(hosts, tmp_pa
         commission = await host.ledger.get(commission_id)
         # Both the active runtime's compacted event and a host idle summary
         # save this timestamp on the persistent session.
-        await host.ledger.update_session(commission.session_id, compacted_at=host.ledger._clock())
+        # A previous commission may finish a summary while this one waits to open.
+        summary_at = commission.created_at if compacted == "while_queued" else host.ledger._clock()
+        await host.ledger.update_session(commission.session_id, compacted_at=summary_at)
     assert await host.task_agents.tell(commission_id, follow_up)
     await wait_status(host, commission_id, "done")
     assert len(llm.overrides) == 2
-    for request, browser in zip(llm.overrides, [True, expected], strict=True):
+    assert bool(host.fake.dsh) == (backend == "auto")
+    for request, device in zip(llm.overrides, ["browser_click", expected], strict=True):
         names = {tool["function"]["name"] for tool in request["tools"]}
-        assert ("browser_click" in names) == browser and "computer" not in names
+        assert names.intersection({"browser_click", "computer"}) == ({device} if device else set())
 
 
 # ---------------------------------------------------------------------------

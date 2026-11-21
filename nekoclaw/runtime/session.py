@@ -47,6 +47,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from config.nekoclaw_settings import BUILTIN_GROUP_BROWSER
 from config.prompts import prompts_nekoclaw as texts
 from nekoclaw.runtime import protocol
 from nekoclaw.runtime import fork
@@ -509,6 +510,7 @@ class TaskAgentSession(SessionInbox):
         # A summary can run again after a provider refuses a request. Keep
         # this input's groups until an ordinary model request gets a reply.
         self._unanswered_device_groups: tuple[str, ...] = ()
+        self._browser_click_context = False
         self._device_fold_due = False
         self._device_fold_at = 0
         # What the model is told of, as the snapshot has it.
@@ -633,6 +635,7 @@ class TaskAgentSession(SessionInbox):
             self._commission_tools = [tool for tool in gateway_tools if tool.name in self._gateway.commission_tools]
             self._wanted_device_groups = tuple(sorted(set(self._gateway.device_groups.values())))
             self._unanswered_device_groups = self._wanted_device_groups
+            self._browser_click_context = self._wanted_device_groups == (BUILTIN_GROUP_BROWSER,)
             executors = sorted([*executors, *gateway_tools], key=lambda tool: tool.name)
         self._executors = executors
         self._workdir, self._session_dir = workdir, session_dir
@@ -1007,7 +1010,10 @@ class TaskAgentSession(SessionInbox):
 
                     # All steering messages drained together share the next
                     # reply. An earlier, answered batch contributes nothing.
-                    requested = set(select_device_groups(message.text)).intersection(gateway.device_groups.values())
+                    selected = select_device_groups(message.text, browser_context=self._browser_click_context)
+                    if selected:
+                        self._browser_click_context = selected == (BUILTIN_GROUP_BROWSER,)
+                    requested = set(selected).intersection(gateway.device_groups.values())
                     self._unanswered_device_groups = tuple(sorted(requested.union(self._unanswered_device_groups)))
                     self._wanted_device_groups = self._unanswered_device_groups
                     hidden = gateway.device_groups.keys() - gateway.commission_tools

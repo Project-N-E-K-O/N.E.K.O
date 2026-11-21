@@ -1984,7 +1984,8 @@ class TaskAgentManager:
             # it is the one its session is at: a commission that was stuck
             # lets the session go on with the next, and what it is told
             # after that reads as part of that other one.
-            opened = await self._ledger.has_event(commission.id, "opened")
+            opened_at = await self._ledger.first_event_at(commission.id, "opened")
+            opened = opened_at is not None
             at_it = opened and await self._ledger.opened_last(session.session_id) == commission.id
 
             model = await self._model_of(config)
@@ -1995,7 +1996,7 @@ class TaskAgentManager:
             session.runtime, session.runtime_name = runtime, runtime_name
             gateway_spec = None
             if self._gateway is not None:
-                from config.nekoclaw_settings import FIRST_TURN_DEVICE_TOOLS
+                from config.nekoclaw_settings import BUILTIN_GROUP_BROWSER, FIRST_TURN_DEVICE_TOOLS
 
                 groups: tuple[str, ...] = ()
                 custom_tools = {"tools", "tool_choice"}.intersection(model.extra_body or {})
@@ -2007,11 +2008,15 @@ class TaskAgentManager:
                     # After this commission's session has been summed up, the
                     # original dispatch is history. A restart or idle wake
                     # must not put a folded device back in the request.
-                    summed_up = opened and kept.compacted_at is not None and kept.compacted_at >= commission.created_at
-                    instructions = "" if summed_up else commission.dispatch_text
-                    if prompt and not isinstance(prompt, (_Handed, _Unsaid)):
-                        instructions += "\n" + prompt
-                    groups = select_device_groups(instructions)
+                    summed_up = opened_at is not None and kept.compacted_at is not None and kept.compacted_at >= opened_at
+                    follow_up = prompt if prompt and not isinstance(prompt, (_Handed, _Unsaid)) else ""
+                    if not opened:
+                        groups = select_device_groups(commission.dispatch_text + "\n" + follow_up)
+                    elif follow_up or not summed_up:
+                        previous = select_device_groups(commission.dispatch_text)
+                        groups = select_device_groups(follow_up, browser_context=previous == (BUILTIN_GROUP_BROWSER,))
+                        if not groups and not summed_up:
+                            groups = previous
                     if groups and runtime_name == RUNTIME_DSH:
                         supports = getattr(runtime, "supports_device_schemas", None)
                         if supports is None or not supports(model):
@@ -2026,6 +2031,7 @@ class TaskAgentManager:
                     first_turn_groups=groups,
                 )
                 gateway_spec = GatewaySpec(url=url, token=token)
+                gateway_spec._browser_context = groups == (BUILTIN_GROUP_BROWSER,)
 
             spec = await self._spec(
                 commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec

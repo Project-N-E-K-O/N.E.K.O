@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +29,7 @@ async def test_device_refresh_does_not_consume_a_new_identical_instruction_or_re
     process = SimpleNamespace(token="process", native_device_schemas=True, by_dsh_id={"dsh": session})
     runtime._processes[object()] = process
     session.process = process
+    runtime._sessions[session.id] = session
     # An active run accepts further instructions without starting a new task.
     session.run = asyncio.current_task()
     session.in_turn = True
@@ -59,7 +61,15 @@ async def test_device_refresh_does_not_consume_a_new_identical_instruction_or_re
     await runtime._device_view("process", "dsh", 5, True, shown=("browser",), same_turn=True)
     assert calls == [(2, ("browser",)), (4, ("browser", "keyboard_mouse")), (5, ("keyboard_mouse",))]
     assert session.device_intents == {"keyboard_mouse": 3}
-    await runtime._device_view("process", "dsh", 6, True, shown=("keyboard_mouse",), same_turn=True)
+    session.device_completed_input = 3
+    runtime._queue(session, "Open the browser", human=True)
+    await runtime._take_input(session, 0)
+    runtime._on_local_reply(session.id)
+    await runtime._device_view("process", "dsh", 6, True, shown=("keyboard_mouse", "browser"), same_turn=True)
+    # A local closing reply settles no new input and preserves the older real receipt.
+    assert session.device_intents == {"browser": 4}
+    session.turns += 1
+    await runtime._device_view("process", "dsh", 7, True, shown=("browser",), same_turn=True)
     assert session.device_intents == {}
 
 
@@ -85,8 +95,8 @@ async def test_device_input_from_wait_activates_only_when_its_answer_is_delivere
 
 
 @pytest.mark.parametrize(
-    "scenario", ["search", "new_instruction", "queued", "queued_synthetic", "queued_abort", "synthetic", "failure",
-                 "consecutive", "incomplete_profile"]
+    "scenario", ["search", "new_instruction", "queued", "queued_synthetic", "queued_abort", "browser_click",
+                 "synthetic", "failure", "consecutive", "incomplete_profile"]
 )
 async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path, monkeypatch, record_property, scenario):
     binary = os.getenv("NEKOCLAW_TEST_DSH_BINARY")
@@ -94,8 +104,10 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
         pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to run the pinned dsh locally")
     monkeypatch.setattr(nekoclaw_settings, "FIRST_TURN_DEVICE_TOOLS", True)
     build_patch = profile.build_patch
+    loop_thread = threading.get_ident()
 
     def compact_short_fixture(**kwargs):
+        assert threading.get_ident() != loop_thread  # Reads the selected ACP recipe from disk.
         patch = build_patch(**kwargs)
         # Let a short local transcript qualify for the real summarizer.
         row = next(row for row in patch if row.get("id") == "compaction-basic")
@@ -191,15 +203,18 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
                 return
             assert runtime.supports_device_schemas(config)
             queued = scenario in ("queued", "queued_synthetic", "queued_abort")
-            groups = ("browser", "keyboard_mouse") if queued else ("browser",)
+            groups = ("browser", "keyboard_mouse") if queued or scenario == "browser_click" else ("browser",)
             token = host.gateway.issue("commission", supports_images=True, first_turn_groups=groups)
-            spec = make_spec(tmp_path, model=config, gateway=GatewaySpec(url=url, token=token))
+            gateway = GatewaySpec(url=url, token=token)
+            gateway._browser_context = groups == ("browser",)
+            assert set(gateway.model_dump()) == {"url", "token"}
+            spec = make_spec(tmp_path, model=config, gateway=gateway)
             await runtime.start(spec)
             await recorder.wait_for(lambda event: event["type"] == "started")
             if scenario == "consecutive":
                 await turn("Open the browser. " + "Sample. " * 3000, opening=True)
                 phase = "second"
-                await turn("Open the browser, then reply Done.")
+                await turn("点击登录按钮")
                 assert control_calls == [(2, True, True), (3, True, False)]
                 assert len(list_calls) == 2
                 assert list_calls[0]["wanted"] == ("browser",) and list_calls[0]["idle_device_cycle"] is True
@@ -215,6 +230,8 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
                 assert ordinary and all("mcp__gateway__browser_navigate_page" not in names for names in ordinary)
                 return
             await turn("Reply with Done.", opening=True)
+            if scenario == "browser_click":
+                await turn("打开浏览器")
             phase = "pressure"
             await turn("Read this synthetic history. " + "Sample. " * 6000)
             phase = "after"
@@ -226,6 +243,22 @@ async def test_only_successful_dsh_compaction_changes_the_next_request(tmp_path,
                 assert list_calls == [] and control_calls == []
                 return
             phase = scenario
+            if scenario == "browser_click":
+                computer = "mcp__gateway__computer"
+                assert browser not in seen[-1][2] and computer not in seen[-1][2]
+                await turn("点击登录按钮", human=False)
+                assert browser not in seen[-1][2] and computer not in seen[-1][2]
+                await turn("点击登录按钮")
+                assert browser in seen[-1][2] and computer not in seen[-1][2]
+                await turn("也截个桌面图")
+                phase = "pressure"
+                await turn("Read this synthetic history. " + "Sample. " * 6000)
+                phase = "after_desktop"
+                await turn("Now reply with Done.")
+                assert browser not in seen[-1][2] and computer not in seen[-1][2]
+                await turn("点击登录按钮")
+                assert computer in seen[-1][2] and browser not in seen[-1][2]
+                return
             if queued:
                 computer = "mcp__gateway__computer"
                 assert browser not in seen[-1][2] and computer not in seen[-1][2]

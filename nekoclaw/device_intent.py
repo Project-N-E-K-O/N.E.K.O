@@ -95,7 +95,7 @@ _CLICK = re.compile(
     r"\b(?:click|double-click|right-click)\b(?!-through|[-\s]+(?:handling|handlers?|listeners?|callbacks?|events?)\b)"
 )
 _SCREENSHOT_ACTION = re.compile(
-    r"截(?:一?[个個張张]|一下).{0,10}[图圖]|(?:^\s*|请|請|帮我|幫我|给我|給我)(?:截屏|截[图圖])|"
+    r"截(?:一?[个個張张]|一下).{0,10}[图圖]|(?:^\s*|请|請|帮我|幫我|给我|給我)(?:截屏|截[图圖]|截桌面)|"
     r"^\s*(?:给|給|为|為|对|對).{0,10}(?:网页|網頁|屏幕|桌面)(?:截屏|截[图圖])|"
     r"\b(?:take|capture)\s+(?:(?:a|the|my|desktop|screen)\s+){0,3}screenshot\b|^\s*(?:please\s+)?screenshot\b"
 )
@@ -103,10 +103,11 @@ _DESKTOP_TARGET = re.compile(
     r"桌面|屏幕|螢幕|任务栏|工作列|文件资源管理器|檔案總管|访达|訪達|"
     r"\b(?:desktop|taskbar|start menu|system tray|file explorer|finder)\b"
 )
+_SWITCH_TARGET = re.compile(r"切[换換][到至]|[转轉]到|\bswitch\s+(?:over\s+)?to\b")
 
 
-def select_device_groups(text: str) -> tuple[str, ...]:
-    """Return the matching group names, in the gateway's canonical group order."""
+def select_device_groups(text: str, *, browser_context: bool = False) -> tuple[str, ...]:
+    """Classify this instruction; a previous browser target can locate an unqualified click."""
     text = unicodedata.normalize("NFKC", text).casefold()
     text = _URL.sub("https:// ", text)
     text = _QUOTED.sub(lambda m: "https:// " if m[0][1:-1].strip() == "https://" else " ", text)
@@ -129,15 +130,23 @@ def select_device_groups(text: str) -> tuple[str, ...]:
             _OTHER_WEB.search(clause)
         )
         desktop_target = bool(_DESKTOP_TARGET.search(clause))
+        desktop_action = bool(_DESKTOP_ACTION.search(clause))
+        # An explicit device, a file or a screenshot can change the target
+        # before a later click in the same instruction.
+        if browser_context and (
+            desktop_target or desktop_action or _FILE_OBJECT.search(clause)
+            or (not web_target and (screenshot or _SWITCH_TARGET.search(clause)))
+        ):
+            browser_context = False
         web_context = web_context or explicit_web or browser
-        if click and web_context and not desktop_target and not code:
+        if click and (web_context or browser_context) and not desktop_target and not code:
             browser = True
         if browser:
             groups.add(BUILTIN_GROUP_BROWSER)
         # An ambiguous web object can fall back to discovery. Do not turn a
         # page click or screenshot into input or capture on the real desktop.
         desktop_fallback = desktop_target or not (browser or web_object)
-        if _DESKTOP_ACTION.search(clause) or (screenshot and desktop_fallback):
+        if desktop_action or (screenshot and desktop_fallback):
             groups.add(BUILTIN_GROUP_KEYBOARD_MOUSE)
         if click and desktop_fallback and (desktop_target or not code):
             groups.add(BUILTIN_GROUP_KEYBOARD_MOUSE)

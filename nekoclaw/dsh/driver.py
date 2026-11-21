@@ -81,7 +81,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from nekoclaw.dsh import profile
 from nekoclaw.dsh.acp import AcpClosed, AcpConnection, AcpError
@@ -138,7 +138,7 @@ class _Given(str):
     """A text a session was given, and which one it is, counted from 1 in the order they were given."""
 
     number: int
-    device_groups: tuple[str, ...] = ()
+    device_instruction: Literal["opening", "user"] | None = None
 
     def __new__(cls, text: str, number: int) -> "_Given":
         made = super().__new__(cls, text)
@@ -248,6 +248,8 @@ class _Session:
     # Most recent unanswered input asking for each of the two device groups.
     device_intents: dict[str, int] = field(default_factory=dict)
     registered_device_groups: frozenset[str] | None = None
+    # The focus established by accepted user instructions, if any.
+    device_browser_context: bool | None = None
     # Inputs of the last completed ACP prompt that received a real model reply.
     device_completed_input: int = 0
     device_local_reply_turn: int = -1
@@ -477,8 +479,8 @@ class DshRuntime:
         session = self._sessions.get(session_id)
         if session is not None:
             session.local_reply_due = True
+            # This turn cannot confirm new input. Earlier model replies still count.
             session.device_local_reply_turn = session.turns
-            session.device_completed_input = 0
 
     def _on_window(self, session_id: str, model: Any, tokens: int, said: str) -> None:
         """A session's model endpoint refused a request as too long and stated its window.
@@ -608,11 +610,12 @@ class DshRuntime:
 
         launch = await asyncio.to_thread(self._launch)
         await self._endpoint.start()
-        patch = profile.build_patch(
-            shape=shape, endpoint=self._endpoint.model_url, slots=DSH_SESSION_SLOTS, home=launch.home
-        )
+        model_url = self._endpoint.model_url
 
         def prepare() -> tuple[Path, Path]:
+            patch = profile.build_patch(
+                shape=shape, endpoint=model_url, slots=DSH_SESSION_SLOTS, home=launch.home
+            )
             return profile.write_profile(launch.home, patch, tag=_shape_tag(shape)), profile.start_directory(launch.home)
 
         patch_path, start_directory = await asyncio.to_thread(prepare)
@@ -1214,11 +1217,7 @@ class DshRuntime:
         session.given += 1
         given = _Given(text, session.given)
         if (human or opening) and session.process and session.process.native_device_schemas and session.spec.gateway:
-            from config.nekoclaw_settings import BUILTIN_GROUPS
-            from nekoclaw.device_intent import select_device_groups
-
-            # The gateway intersects the opening hint with the actual initial group set.
-            given.device_groups = BUILTIN_GROUPS if opening else select_device_groups(text)
+            given.device_instruction = "opening" if opening else "user"
         session.queue.append(given)
         session.arrived.set()
         if session.run is None:
@@ -1230,10 +1229,25 @@ class DshRuntime:
         # An abort can discard queued texts. Activate only what is handed to
         # the ACP turn or delivered with the result of its wait_agent call.
         for text in texts:
-            if isinstance(text, _Given):
-                for group in text.device_groups:
-                    if session.registered_device_groups is None or group in session.registered_device_groups:
-                        session.device_intents[group] = max(text.number, session.device_intents.get(group, 0))
+            if not isinstance(text, _Given) or not text.device_instruction:
+                continue
+            from nekoclaw.device_intent import BUILTIN_GROUP_BROWSER, BUILTIN_GROUPS, select_device_groups
+
+            registered = session.registered_device_groups
+            if text.device_instruction == "opening":
+                # The catalog, not the host's opening message, selects the initial groups.
+                groups = BUILTIN_GROUPS
+            else:
+                browser = session.device_browser_context
+                if browser is None:
+                    browser = (registered == {BUILTIN_GROUP_BROWSER} if registered is not None
+                               else session.spec.gateway._browser_context is True)
+                groups = select_device_groups(text, browser_context=browser)
+                if groups:
+                    session.device_browser_context = groups == (BUILTIN_GROUP_BROWSER,)
+            for group in groups:
+                if registered is None or group in registered:
+                    session.device_intents[group] = max(text.number, session.device_intents.get(group, 0))
 
     async def _take_input(self, session: _Session, seconds: float) -> list[str]:
         """Hand a waiting session the texts queued for it; see ``host_tools.TakeInput``."""

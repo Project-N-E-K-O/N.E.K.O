@@ -128,3 +128,18 @@ def test_device_tools_default_and_override(monkeypatch, value, enabled):
 )
 def test_first_turn_device_groups(text, expected):
     assert select_device_groups(text) == expected
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("点击登录按钮", (BROWSER,)), ("Click the login button", (BROWSER,)),
+    ("继续", ()), ("解释如何点击登录按钮", ()), ('Translate "click login"', ()),
+    ("截桌面", (DESKTOP,)), ("Click the taskbar icon", (DESKTOP,)),
+    ("Double-click the Downloads folder", (DESKTOP,)),
+    ("切换到桌面，再点击登录按钮", (DESKTOP,)),
+    ("Switch to Notepad, then click OK", (DESKTOP,)),
+    ("切换到记事本，再点击确定", (DESKTOP,)),
+    ("先截个图，再点击登录按钮", (DESKTOP,)),
+    ("Use the mouse to click login", (DESKTOP,)),
+])
+def test_an_earlier_browser_only_disambiguates_an_unqualified_click(text, expected):
+    assert select_device_groups(text, browser_context=True) == expected
