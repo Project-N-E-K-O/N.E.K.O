@@ -21,6 +21,11 @@ def client(tmp_path, monkeypatch):
             yield
     monkeypatch.setattr(routes.host, "saved_session_snapshot", lambda: dict(snapshot))
     monkeypatch.setattr(routes.host, "saved_session_writer_fence", fence)
+    monkeypatch.setattr(
+        routes.host, "signed_in_account_state",
+        lambda: ("signed_in", snapshot.get("local_user_id") or "")
+        if snapshot.get("access_token") else ("signed_out", None),
+    )
     monkeypatch.setattr(routes, "get_config_manager", lambda: SimpleNamespace(get_runtime_config_path=lambda name: tmp_path / name))
     monkeypatch.setattr(routes, "load_global_conversation_settings", lambda: {"proactiveMusicEnabled": True})
     monkeypatch.setattr(_shared, "AUTOSTART_CSRF_TOKEN", "test-token")
@@ -48,6 +53,18 @@ async def test_legacy_session_without_user_id_uses_the_guest_community_feed(clie
     context = await routes.load_recommendation_context(owner)
     assert context.allows_guest_community
     assert not context.bearer and not context.community and not context.account_id
+
+
+@pytest.mark.asyncio
+async def test_unreadable_credentials_withhold_the_guest_community_feed(client, monkeypatch):
+    _, snapshot = client
+    # An unreadable session file reads as "no snapshot" but strict state is unknown.
+    snapshot.clear()
+    monkeypatch.setattr(routes.host, "signed_in_account_state", lambda: ("unknown", None))
+    owner = await routes.capture_owner()
+    context = await routes.load_recommendation_context(owner)
+    assert not context.allows_guest_community
+    assert not context.community_identity_known
 
 
 @pytest.mark.asyncio

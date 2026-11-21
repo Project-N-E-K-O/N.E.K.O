@@ -92,6 +92,10 @@ async def load_recommendation_context(expected_owner: dict) -> RecommendationCon
             owner = owner_from_snapshot(snapshot)
             if owner != expected_owner:
                 return RecommendationContext(community_identity_known=False)
+            # The snapshot reader treats an unreadable credential file as no
+            # session; the strict state tells that apart from signed out.
+            if host.signed_in_account_state()[0] == "unknown":
+                return RecommendationContext(community_identity_known=False)
             try:
                 path = Path(get_config_manager().get_runtime_config_path("recommendation_feedback.sqlite3"))
                 store = RecommendationStore(path, protocol_version=STORE_PROTOCOL_VERSION)

@@ -370,6 +370,14 @@ def _build_ranked_web_prompt(
     return merged, links, fallback_labels, fallback_records
 
 
+def _preference_excluded_result() -> ProactiveChatResult:
+    return ProactiveChatResult(
+        body=_proactive_pass_body(
+            PROACTIVE_REASON_PASS_SOURCE_EMPTY, message="all sources excluded by preferences",
+        ),
+    )
+
+
 def _eligible_meme_candidates(candidates: list[dict], profile: Profile | None) -> list[dict]:
     if profile is None:
         return candidates
@@ -1739,6 +1747,9 @@ async def handle_proactive_chat(
             source.get("preference_exhausted") for source in sources.values()
         )
         avatar_position = command.avatar_position
+        # Every source was excluded by preferences: still read the chat so an
+        # evidence-only Phase 1 can lift the exclusion, then pass as before.
+        evidence_only_round = False
 
         if not sources:
             # Exception: unfinished-thread mode may already clear enabled_modes (restricted_screen_only
@@ -1755,12 +1766,10 @@ async def handle_proactive_chat(
                     )
                 )
             if not _has_unfinished_thread and preference_withheld_source:
-                return await _end_proactive(ProactiveChatResult(
-                    body=_proactive_pass_body(
-                        PROACTIVE_REASON_PASS_SOURCE_EMPTY, message="all sources excluded by preferences",
-                    ),
-                ))
-            if not _has_unfinished_thread and not verse_ranked:
+                if recommendations is None or recommendations.save_chat is None:
+                    return await _end_proactive(_preference_excluded_result())
+                evidence_only_round = True
+            if not _has_unfinished_thread and not verse_ranked and not evidence_only_round:
                 return await _end_proactive(
                     ProactiveChatResult(
                         body=_proactive_pass_body(
@@ -2207,6 +2216,8 @@ async def handle_proactive_chat(
             )
             if evidence:
                 await recommendations.save_chat(evidence)
+        if evidence_only_round:
+            return await _end_proactive(_preference_excluded_result())
 
         # ============================================================
         # Parse web output → match links → deduplicate.
