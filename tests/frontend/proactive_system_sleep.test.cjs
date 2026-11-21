@@ -102,7 +102,7 @@ function createWindow(pathname, options = {}) {
                 json: async () => body,
             });
         },
-        BroadcastChannel: FakeBroadcastChannel,
+        BroadcastChannel: options.noBroadcastChannel ? undefined : FakeBroadcastChannel,
     };
     window.window = window;
     vm.createContext(window);
@@ -402,4 +402,37 @@ for (const mode of ['text', 'voice']) {
         assert.equal(pet.appState._voiceProactiveNoResponseCount || 0, 0);
         assert.ok(pet.scheduledDelay() >= 59999, 'rescheduled after the quiet window');
     });
+}
+
+for (const mode of ['text', 'voice']) {
+    for (const slept of [true, false]) {
+        test(`${mode}, no BroadcastChannel: ${slept ? 'sleeping during the header await cancels the send' : 'no sleep still sends'}`, async () => {
+            channels.length = 0;
+            queue.length = 0;
+            clock.now = 1_000_000;
+            const pet = createWindow('/', { captureIntervals: true, noBroadcastChannel: true });
+            assert.equal(pet.window.isProactiveLeader(), true, 'single window leads');
+            if (mode === 'voice') {
+                pet.appState.isRecording = true;
+                pet.appState._voiceProactiveNoResponseCount = 0;
+            }
+            let release;
+            pet.window.nekoLocalMutationSecurity = {
+                getMutationHeaders: () => new Promise((resolve) => { release = () => resolve({}); }),
+            };
+            pet.window.scheduleProactiveChat();
+            clock.now += pet.scheduledDelay();
+            pet.heartbeat();  // sampler ticks while awake
+            const pending = pet.fire();
+            for (let i = 0; i < 20 && typeof release !== 'function'; i += 1) {
+                await new Promise((resolve) => setImmediate(resolve));
+            }
+            assert.equal(typeof release, 'function');
+            if (slept) clock.now += 10 * 60 * 1000;
+            release();
+            await pending;
+            assert.equal(proactiveFetches(pet), slept ? 0 : 1);
+            assert.equal(pet.appState.proactiveChatBackoffLevel, mode === 'text' && !slept ? 1 : 0);
+        });
+    }
 }

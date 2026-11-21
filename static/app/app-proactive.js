@@ -581,19 +581,22 @@
     }
     mod._proactiveTickMissedBySleep = _proactiveTickMissedBySleep;
 
-    // Every window also watches its own wall clock: the leader heartbeat runs
-    // every few seconds, so a gap above SYSTEM_SLEEP_LATE_FLOOR_MS between two
-    // checks means the machine slept. Without this a follower that takes over
+    // Every window also watches its own wall clock: a sampler (and the leader
+    // heartbeat, when BroadcastChannel exists) runs every few seconds, so a gap
+    // above SYSTEM_SLEEP_LATE_FLOOR_MS between two checks means the machine slept. Without this a follower that takes over
     // right after wake (the leader's heartbeat expired during sleep) would
     // schedule a fresh tick with no quiet window. Each window detects the
     // jump itself, so no cross-window state is needed. Only active while the
-    // heartbeat keeps the stamp fresh; otherwise a long idle gap would look
-    // like sleep. Known harmless false positive: a browser tab frozen by the
+    // sampler keeps the stamp fresh (independent of BroadcastChannel, so a
+    // single window without the channel is covered too); otherwise a long idle
+    // gap would look like sleep. Known harmless false positive: a browser tab frozen by the
     // page lifecycle (or a debugger pause) for over the floor gets 60s of quiet.
     var _lastWallClockCheckAt = 0;
+    var WALL_CLOCK_SAMPLE_MS = 15 * 1000;
+    var _wallClockSamplerTimer = null;
 
     function _checkWallClockJump() {
-        if (!_proactiveLeaderHeartbeatTimer) return;
+        if (!_wallClockSamplerTimer) return;
         var now = Date.now();
         var last = _lastWallClockCheckAt;
         _lastWallClockCheckAt = now;
@@ -753,6 +756,17 @@
     }
 
     // 启动：先 announce 一下，再周期性 heartbeat
+    // Wall-clock sampler for sleep detection; does not depend on BroadcastChannel.
+    if (PROACTIVE_SELF_RANK !== 99) {
+        _wallClockSamplerTimer = setInterval(_checkWallClockJump, WALL_CLOCK_SAMPLE_MS);
+        window.addEventListener('beforeunload', function () {
+            if (_wallClockSamplerTimer) {
+                clearInterval(_wallClockSamplerTimer);
+                _wallClockSamplerTimer = null;
+            }
+        });
+    }
+
     if (_proactiveLeaderChannel) {
         _proactiveBroadcast('announce');
         _proactiveLeaderHeartbeatTimer = setInterval(function () {
