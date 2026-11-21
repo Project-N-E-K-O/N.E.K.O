@@ -2126,12 +2126,15 @@ class TaskAgentManager:
         """
         from config import nekoclaw_settings as settings
 
-        while main in self._copy_news and not self._closed:
+        def at_work() -> tuple[str, _Session, Any] | None:
+            # The commission that holds it, its place and its runtime, while
+            # it may be told: at work, with a run under way.
             holder = self._held_by.get(main)
             live = self._sessions.get(holder) if holder is not None else None
             runtime = self._runtime_of(live) if live is not None else None
             if (
-                live is None
+                holder is None
+                or live is None
                 or runtime is None
                 or live.carries_on_for is not None
                 or live.closing
@@ -2144,6 +2147,11 @@ class TaskAgentManager:
                 or live.stands.status != "working"
                 or live.stands.resting
             ):
+                return None
+            return holder, live, runtime
+
+        while main in self._copy_news and not self._closed:
+            if at_work() is None:
                 # Kept for when it is at work again (``_handle``).
                 return
             self._copy_news.discard(main)
@@ -2159,12 +2167,14 @@ class TaskAgentManager:
             done = await self._ledger.forked_work(main, limit=settings.TASK_AGENT_FORKED_WORK_MAX_ITEMS)
             if not done and not handed:
                 continue
-            if self._held_by.get(main) != holder or live.closing or live.idle:
-                # Moved on while the ledger was read: kept for later.
+            now = at_work()
+            if now is None:
+                # Not at work any more once the ledger was read: kept for later.
                 self._copy_news.add(main)
                 for waiting, copy_id in handed:
                     self._handed_back_news.setdefault(main, []).append((waiting.id, copy_id))
                 return
+            holder, live, runtime = now
             text = _Found(_forked_work_text(done, handed))
             # On record as what it was told, under a type of its own: no
             # word of the user's, which a review reads ``told`` for.

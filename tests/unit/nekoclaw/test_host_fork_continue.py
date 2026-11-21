@@ -1468,17 +1468,20 @@ async def test_what_a_copy_finished_while_the_session_asks_with_the_question_too
 
 async def test_a_session_whose_run_is_over_while_it_waits_for_its_jobs_is_not_woken_to_be_told(hosts, tmp_path):
     release, wait = _gate()
+    copy_release, copy_wait = _gate()
     scripts = {
         EXPORT: ScriptedLLM(
             [[wait, call("glob", {"pattern": "*.py"}, "call-x"), finish("tool_calls")], _report("export added", "call-y")]
         ),
-        FILES: ScriptedLLM([_report("tables.py")]),
+        FILES: ScriptedLLM([[copy_wait, *_report("tables.py")]]),
     }
     host = _host(hosts, tmp_path, scripts)
     first = await _export_at_work(host, scripts)
+    second = await _dispatch(host, FILES)
+    await wait_until(lambda: scripts[FILES].requests, what="the copy at work")
     # As it stands when its run ended with jobs of its own still running, whose end starts the next.
     host.task_agents._sessions[first.id].idle = True
-    second = await _dispatch(host, FILES)
+    copy_release.set()
     done = await wait_status(host, second.id, "done")
     await _decided(host)
     assert "told_of_copies" not in await _types(host, first.id)
