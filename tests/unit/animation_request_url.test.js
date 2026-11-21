@@ -128,3 +128,75 @@ test('VRM player requests the escaped URL for .vrma and .vrma.gz', async () => {
         '/static/vrm/animation/%E6%AF%94%20V%20%E6%89%8B%E5%8A%BF%232.vrma.gz',
     ]);
 });
+
+// Saved config may carry a query / fragment after the extension (e.g. the jukebox
+// restores '/static/vrm/animation/wait03.vrma?legacy=1' as '.vrma.gz?legacy=1').
+// List names always end in the extension, so only a tail after the last
+// extension is URL syntax; '?' / '#' before it belong to the file name.
+test('MMD / VRM: query or fragment after the extension is kept as URL syntax', () => {
+    const cases = [
+        [vrmToRequestUrl, '/static/vrm/animation/wait03.vrma.gz?legacy=1', '/static/vrm/animation/wait03.vrma.gz?legacy=1'],
+        [vrmToRequestUrl, '/static/vrm/animation/wait03.vrma.gz#saved', '/static/vrm/animation/wait03.vrma.gz#saved'],
+        [vrmToRequestUrl, '/user_vrm/animation/Wave #1?.vrma?keep=1', '/user_vrm/animation/Wave%20%231%3F.vrma?keep=1'],
+        [vrmToRequestUrl, '/user_vrm/animation/a.vrma#b.vrma', '/user_vrm/animation/a.vrma%23b.vrma'],
+        [vrmToRequestUrl, '/user_vrm/animation/x.VRMA?v=2', '/user_vrm/animation/x.VRMA?v=2'],
+        [mmdToRequestUrl, '/user_mmd/animation/Dance #1.vmd?v=1', '/user_mmd/animation/Dance%20%231.vmd?v=1'],
+        [mmdToRequestUrl, '/user_mmd/animation/a.vmd#b.vmd', '/user_mmd/animation/a.vmd%23b.vmd'],
+        [mmdToRequestUrl, '/user_mmd/m#1/m#1.pmx#saved', '/user_mmd/m%231/m%231.pmx#saved'],
+        [mmdToRequestUrl, '/user_mmd/m#1/m#1.pmx?v=1', '/user_mmd/m%231/m%231.pmx?v=1'],
+        [mmdToRequestUrl, '/workshop/123/Old #2.PMD?v=1', '/workshop/123/Old%20%232.PMD?v=1'],
+        [vrmToRequestUrl, '/user_vrm/animation/Pose #1.vrm?v=1', '/user_vrm/animation/Pose%20%231.vrm?v=1'],
+        [vrmToRequestUrl, '/static/vrm/animation/X #1.VRMA.GZ?legacy=1', '/static/vrm/animation/X%20%231.VRMA.GZ?legacy=1'],
+    ];
+    for (const [toRequestUrl, raw, expected] of cases) {
+        assert.equal(toRequestUrl(raw), expected, raw);
+    }
+});
+
+test('VRM player keeps a saved query on .vrma.gz and still takes the gzip branch', async () => {
+    const fetched = [];
+    const local = loadContext({
+        fetch: async url => {
+            fetched.push(url);
+            return { ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
+        },
+        document: { baseURI: 'http://neko.test/' },
+    });
+    const VRMAnimation = vm.runInContext('VRMAnimation', local);
+    const animation = new VRMAnimation({ currentModel: null, core: {} });
+    const calls = [];
+    const loader = {
+        loadAsync: async url => { calls.push(['loadAsync', url]); return {}; },
+        parseAsync: async (data, resourcePath) => { calls.push(['parseAsync', resourcePath]); return {}; },
+    };
+
+    await animation._loadVRMAGltf(loader, '/static/vrm/animation/wait03.vrma.gz?legacy=1');
+    await animation._loadVRMAGltf(loader, '/user_vrm/animation/Wave #1.vrma#saved');
+
+    assert.deepEqual(fetched, ['/static/vrm/animation/wait03.vrma.gz?legacy=1']);
+    assert.deepEqual(calls, [
+        ['parseAsync', 'http://neko.test/static/vrm/animation/'],
+        ['loadAsync', '/user_vrm/animation/Wave%20%231.vrma#saved'],
+    ]);
+});
+
+test('MMD player keeps a saved query after .vmd', async () => {
+    const loaded = [];
+    const local = loadContext({ THREE: {} });
+    const MMDAnimation = vm.runInContext('MMDAnimation', local);
+    const animation = new MMDAnimation({ currentModel: { mesh: {} } });
+    animation._getMMDModule = async () => ({
+        VMDLoader: class {
+            load(url, onLoad, onProgress, onError) { loaded.push(url); onError(new Error('fixture stop')); }
+        },
+    });
+    await assert.rejects(animation.loadAnimation('/user_mmd/animation/Dance #1.vmd?v=1'), /fixture stop/);
+    assert.deepEqual(loaded, ['/user_mmd/animation/Dance%20%231.vmd?v=1']);
+});
+
+test('MMD config name ignores a saved query / fragment after the model extension', () => {
+    const getConfigName = vm.runInContext('MMDCore.getConfigName', ctx);
+    assert.equal(getConfigName('/user_mmd/m#1/m#1.pmx?v=1'), 'm#1');
+    assert.equal(getConfigName('/user_mmd/m#1/m#1.pmx#saved'), 'm#1');
+    assert.equal(getConfigName('/user_mmd/what?.pmx'), 'what?');
+});

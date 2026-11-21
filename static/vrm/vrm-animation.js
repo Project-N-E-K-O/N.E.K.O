@@ -250,6 +250,12 @@ class VRMAnimation {
      * first, so an already-encoded path is not encoded twice.
      * Trade-off: a file literally named with a valid escape (e.g. 'a%23b.vrma')
      * is read as that escape; such names did not load before this either.
+     *
+     * Lists only return names ending in the file extension, so a value ending in
+     * it is a raw name throughout ('a?.vrma' escapes the '?'). Otherwise a '?' or
+     * '#' right after the last extension starts a query / fragment that saved
+     * config may carry ('wait03.vrma.gz?legacy=1'); it is kept as URL syntax. A tail
+     * that itself ends in the extension ('x.vrma?src=a.vrma') is read as part of the name.
      */
     static toRequestUrl(vrmaUrl) {
         if (typeof vrmaUrl !== 'string') return vrmaUrl;
@@ -259,12 +265,18 @@ class VRMAnimation {
             if (typeof prefix === 'string' && prefix.startsWith('/')) prefixes.push(prefix.replace(/\/*$/, '/'));
         }
         if (!prefixes.some(prefix => vrmaUrl.startsWith(prefix))) return vrmaUrl;
-        return vrmaUrl.split('/').map(segment => encodeURIComponent(
+        let path = vrmaUrl;
+        let suffix = '';
+        if (!/\.(?:vrma\.gz|vrma|vrm)$/i.test(vrmaUrl)) {
+            const match = vrmaUrl.match(/^(.*\.(?:vrma\.gz|vrma|vrm))([?#].*)$/is);
+            if (match) [, path, suffix] = match;
+        }
+        return path.split('/').map(segment => encodeURIComponent(
             segment.replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
                 try { return decodeURIComponent(encoded); }
                 catch (_) { return encoded; }
             })
-        )).join('/');
+        )).join('/') + suffix;
     }
 
     async _loadVRMAGltf(loader, vrmaPath) {

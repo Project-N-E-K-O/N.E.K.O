@@ -881,6 +881,12 @@ class MMDCore {
      * getConfigName, so an already-encoded path is not encoded twice.
      * Trade-off: a file literally named with a valid escape (e.g. 'a%23b.pmx')
      * is read as that escape; such names did not load before this either.
+     *
+     * Lists only return names ending in the file extension, so a value ending in
+     * it is a raw name throughout ('a?.vmd' escapes the '?'). Otherwise a '?' or
+     * '#' right after the last extension starts a query / fragment that saved
+     * config may carry ('x.vmd?v=1'); it is kept as URL syntax. A tail that itself
+     * ends in the extension ('x.vmd?src=a.vmd') is read as part of the name.
      */
     static toRequestUrl(modelUrl) {
         if (typeof modelUrl !== 'string') return modelUrl;
@@ -890,12 +896,18 @@ class MMDCore {
             if (typeof prefix === 'string' && prefix.startsWith('/')) prefixes.push(prefix.replace(/\/*$/, '/'));
         }
         if (!prefixes.some(prefix => modelUrl.startsWith(prefix))) return modelUrl;
-        return modelUrl.split('/').map(segment => encodeURIComponent(
+        let path = modelUrl;
+        let suffix = '';
+        if (!/\.(?:vmd|pmx|pmd)$/i.test(modelUrl)) {
+            const match = modelUrl.match(/^(.*\.(?:vmd|pmx|pmd))([?#].*)$/is);
+            if (match) [, path, suffix] = match;
+        }
+        return path.split('/').map(segment => encodeURIComponent(
             segment.replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
                 try { return decodeURIComponent(encoded); }
                 catch (_) { return encoded; }
             })
-        )).join('/');
+        )).join('/') + suffix;
     }
 
     // 与后端模型列表的 Path.stem 一致；内部模型名仍仅用于展示元信息。
