@@ -197,6 +197,7 @@ export function apply(ctx, config) {
     const turn = previous ? previous.then(() => done) : done
     pending.turn = turn
     let executing = false
+    let expected
     const abort = () => {
       cancelWait()
       if (!executing) finish(false)
@@ -205,11 +206,12 @@ export function apply(ctx, config) {
       if (jobResults.get(key) !== finish) return
       jobResults.delete(key)
       exec.signal.removeEventListener('abort', abort)
-      const expected = pending.path ? hint + ' ' + pending.path : pending.text
-      const shown = result && !result.isError && (!expected || result.content?.some(block =>
-        block.type === 'text' && (block.text === expected || block.text.startsWith(
-          expected.endsWith('\\n') ? expected : expected + '\\n'))))
-      if (shown) {
+      // A post-execute policy can replace a successful result's content.
+      // Acknowledge only the output (or complete locator) in the model view.
+      const delivered = expected && result && !result.isError && result.content?.some(block =>
+        block.type === 'text' && (block.text === expected ||
+          block.text.startsWith(expected.endsWith('\\n') ? expected : expected + '\\n')))
+      if (delivered) {
         delete pending.path
         delete pending.text
       }
@@ -224,7 +226,9 @@ export function apply(ctx, config) {
       if (previous && !exec.signal.aborted) await Promise.race([previous, cancelled])
       exec.signal.throwIfAborted()
       executing = true
-      return await execute(pending)
+      const result = await execute(pending)
+      if (!result.isError) expected = result.value?.text
+      return result
     } catch (error) {
       finish(false)
       throw error

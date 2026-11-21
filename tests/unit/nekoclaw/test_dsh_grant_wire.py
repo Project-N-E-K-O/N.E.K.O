@@ -93,6 +93,8 @@ async def test_pinned_dsh_reuses_source_when_searching_retained_text(tmp_path):
         pytest.skip("Set NEKOCLAW_TEST_DSH_BINARY to the pinned dsh executable")
     document = tmp_path / "minutes.txt"
     document.write_text(("hit paragraph\n" * 4200) + "hit final-decision\n", encoding="utf-8")
+    page = tmp_path / "page.txt"
+    page.write_text("first fixture line\nsecond fixture line\nthird fixture line", encoding="utf-8")
     calls = []
     stopped = False
     released = set()
@@ -135,6 +137,8 @@ async def test_pinned_dsh_reuses_source_when_searching_retained_text(tmp_path):
         elif len(contents) == 5:
             stopped = True
             name, args = "grep", {"path": saved[-1], "pattern": "final-decision"}
+        elif len(contents) == 6:
+            name, args = "read", {"file_path": str(page), "offset": 2, "limit": 1}
         else:
             return [sse_text("Done"), sse_finish()]
         return [sse_tool_call(name, args, f"call_{len(contents)}"), sse_finish("tool_calls")]
@@ -147,7 +151,8 @@ async def test_pinned_dsh_reuses_source_when_searching_retained_text(tmp_path):
             assert (await events.wait_for(lambda e: e["type"] in ("started", "error"), timeout=60))["type"] == "started"
             await runtime.prompt(spec.session_id, "Search for the final decision.")
             await events.wait_ended(spec.session_id, timeout=60)
-        assert len(contents) == 6, [s[-300:] for s in contents]
+        assert len(contents) == 7, [s[-300:] for s in contents]
+        assert "second fixture line" in contents[6] and "third fixture line" not in contents[6]
         assert "Use grep" in contents[0] and "Use grep" in contents[2]
         assert "hit final-decision" in contents[4] and "hit final-decision" not in contents[5]
         assert saved and not Path(saved[0]).exists()
