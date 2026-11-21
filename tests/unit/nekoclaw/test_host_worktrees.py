@@ -1,0 +1,1223 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Worktrees for side sessions, with real git in temporary repositories.
+
+Skipped where git cannot be run. Every repository here is made below
+pytest's temporary directory; git reads no global or system configuration
+of the machine (``_isolated_git``), so the results do not depend on it.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import os
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from nekoclaw.host import worktrees
+from nekoclaw.host.paths import HostPaths
+from nekoclaw.host.worktrees import (
+    BARE_REPOSITORY,
+    DISK_SPACE,
+    GIT_FAILED,
+    GIT_MISSING,
+    GIT_TOO_OLD,
+    IGNORED_DIRECTORY,
+    LFS,
+    NOT_A_REPOSITORY,
+    OPERATION_IN_PROGRESS,
+    REF_PREFIX,
+    SPARSE_CHECKOUT,
+    SUBMODULES,
+    FromRef,
+    MergeResult,
+    Worktree,
+    WorktreeError,
+    WorktreeManager,
+    WorktreeUnavailable,
+    _fs,
+    parse_git_version,
+)
+
+GIT = shutil.which("git")
+pytestmark = pytest.mark.skipif(GIT is None, reason="git is not installed on this machine")
+
+WINDOWS = sys.platform == "win32"
+USER = {
+    "GIT_AUTHOR_NAME": "Test",
+    "GIT_AUTHOR_EMAIL": "test@example.com",
+    "GIT_COMMITTER_NAME": "Test",
+    "GIT_COMMITTER_EMAIL": "test@example.com",
+}
+
+
+@pytest.fixture(autouse=True)
+def _isolated_git(tmp_path: Path, monkeypatch: Any) -> None:
+    empty = tmp_path / "empty-gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", *USER):
+        monkeypatch.delenv(name, raising=False)
+
+
+def git(cwd: Path, *args: str, check: bool = True, input: bytes | None = None) -> str:
+    env = {**os.environ, **USER, "GIT_OPTIONAL_LOCKS": "0"}
+    done = subprocess.run(
+        ["git", "-c", "core.longpaths=true", *args],
+        cwd=cwd,
+        input=input,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+    if check and done.returncode != 0:
+        raise AssertionError(f"git {args} failed: {done.stderr.decode('utf-8', 'replace')}")
+    return done.stdout.decode("utf-8", "surrogateescape")
+
+
+def git_succeeds(cwd: Path, *args: str) -> bool:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=False).returncode == 0
+
+
+def write(path: Path, data: str | bytes) -> None:
+    os.makedirs(os.path.dirname(_fs(path)), exist_ok=True)
+    with open(_fs(path), "wb") as handle:
+        handle.write(data.encode("utf-8") if isinstance(data, str) else data)
+
+
+def read(path: Path) -> bytes:
+    with open(_fs(path), "rb") as handle:
+        return handle.read()
+
+
+def exists(path: Path) -> bool:
+    return os.path.lexists(_fs(path))
+
+
+def digest(root: Path) -> dict[str, tuple[str, bool]]:
+    """Every file below ``root`` but ``.git``: content hash and executable bit."""
+    found = {}
+    top = _fs(root)
+    for current, dirs, files in os.walk(top):
+        dirs[:] = [name for name in dirs if not (current == top and name == ".git")]
+        for name in files:
+            full = os.path.join(current, name)
+            relative = os.path.relpath(full, top).replace(os.sep, "/")
+            if relative == ".git":
+                continue
+            with open(full, "rb") as handle:
+                content = hashlib.sha256(handle.read()).hexdigest()
+            found[relative] = (content, bool(os.lstat(full).st_mode & stat.S_IXUSR) and not WINDOWS)
+    return found
+
+
+def registered(repo: Path) -> set[str]:
+    """The names of the directories of the repository's worktrees, its own included."""
+    listed = git(repo, "worktree", "list", "--porcelain", "-z").split("\0")
+    return {Path(entry[len("worktree ") :]).name for entry in listed if entry.startswith("worktree ")}
+
+
+def repository_state(repo: Path) -> dict[str, Any]:
+    git_dir = Path(git(repo, "rev-parse", "--absolute-git-dir").strip())
+    return {
+        "status": git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored"),
+        "head": git(repo, "rev-parse", "HEAD"),
+        "symbolic": git(repo, "symbolic-ref", "-q", "HEAD", check=False),
+        "branches": git(repo, "branch", "-a", "-v"),
+        "stash": git(repo, "stash", "list"),
+        "index": (git_dir / "index").read_bytes(),
+        "config": (git_dir / "config").read_bytes(),
+        "refs": [
+            line
+            for line in git(repo, "for-each-ref", "--format=%(refname) %(objectname)").splitlines()
+            if not line.startswith(REF_PREFIX)
+        ],
+        "worktrees": git(repo, "worktree", "list", "--porcelain"),
+    }
+
+
+def make_repo(path: Path, files: dict[str, str | bytes] | None = None, **config: str) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    git(path, "init", "-q", "-b", "main")
+    git(path, "config", "core.autocrlf", "false")
+    for key, value in config.items():
+        git(path, "config", key.replace("_", "."), value)
+    for name, data in (files if files is not None else BASE_FILES).items():
+        write(path / name, data)
+    git(path, "add", "-A")
+    git(path, "commit", "-q", "-m", "base")
+    return path
+
+
+BASE_FILES: dict[str, str | bytes] = {
+    "README.md": "# demo\n",
+    ".gitignore": "ignored/\n*.log\n",
+    "a.txt": "one\ntwo\nthree\nfour\nfive\n",
+    "b.txt": "alpha\nbeta\ngamma\n",
+    "src/app.py": "print('hello')\n",
+    "src/util.py": "def f():\n    return 1\n",
+}
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    return make_repo(tmp_path / "repo")
+
+
+@pytest.fixture
+def manager() -> WorktreeManager:
+    return WorktreeManager()
+
+
+@pytest.fixture
+def base(tmp_path: Path) -> Path:
+    return tmp_path / "wt"
+
+
+@pytest.fixture(autouse=True)
+def _plenty_of_disk(monkeypatch: Any) -> None:
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_MIN_FREE_BYTES", 1)
+
+
+# -- version and probing -------------------------------------------------------
+
+
+def test_parse_git_version() -> None:
+    assert parse_git_version("git version 2.49.0.windows.1") == (2, 49, 0)
+    assert parse_git_version("git version 2.40.0") == (2, 40, 0)
+    assert parse_git_version("git version 2.39") == (2, 39, 0)
+    assert parse_git_version("no version here") is None
+
+
+async def test_probe_usable_root_and_subdirectory(repo: Path, manager: WorktreeManager) -> None:
+    found = await manager.probe(repo)
+    assert found.usable and found.reason is None
+    assert os.path.samefile(found.repo_root, repo) and found.subpath == ""
+    nested = await manager.probe(repo / "src")
+    assert nested.usable and nested.subpath == "src"
+
+
+async def test_probe_git_missing(repo: Path, tmp_path: Path) -> None:
+    found = await WorktreeManager(git=str(tmp_path / "no-such-git")).probe(repo)
+    assert found.reason == GIT_MISSING and not found.usable
+
+
+@pytest.mark.parametrize(("version", "usable"), [((2, 39, 9), False), ((2, 40, 0), True)])
+async def test_probe_git_version_floor(repo: Path, manager: WorktreeManager, monkeypatch: Any, version: Any, usable: bool) -> None:
+    async def fixed() -> tuple[int, int, int]:
+        return version
+
+    monkeypatch.setattr(manager, "git_version", fixed)
+    found = await manager.probe(repo)
+    assert found.usable is usable
+    if not usable:
+        assert found.reason == GIT_TOO_OLD
+
+
+async def test_probe_not_a_repository(tmp_path: Path, manager: WorktreeManager) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    found = await manager.probe(plain)
+    assert found.reason == NOT_A_REPOSITORY and "in no git repository" in found.detail
+    assert (await manager.probe(tmp_path / "missing")).reason == NOT_A_REPOSITORY
+
+
+async def test_probe_something_not_a_directory_in_a_repository(repo: Path, manager: WorktreeManager) -> None:
+    for path in (repo / "a.txt", repo / "missing"):
+        found = await manager.probe(path)
+        assert found.reason == NOT_A_REPOSITORY and "not a directory" in found.detail
+
+
+async def test_probe_inside_git_directory(repo: Path, manager: WorktreeManager) -> None:
+    assert (await manager.probe(repo / ".git" / "refs")).reason == NOT_A_REPOSITORY
+
+
+async def test_probe_bare(repo: Path, manager: WorktreeManager) -> None:
+    git(repo, "config", "core.bare", "true")
+    assert (await manager.probe(repo)).reason == BARE_REPOSITORY
+
+
+async def test_probe_git_failed(tmp_path: Path, manager: WorktreeManager) -> None:
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / ".git").write_text("gitdir: ./nowhere\n", encoding="utf-8")
+    assert (await manager.probe(broken)).reason == GIT_FAILED
+
+
+async def test_probe_ignored_directory(repo: Path, manager: WorktreeManager) -> None:
+    write(repo / "ignored" / "x.txt", "x")
+    found = await manager.probe(repo / "ignored")
+    assert found.reason == IGNORED_DIRECTORY and found.subpath == "ignored"
+
+
+async def test_probe_submodules_file(repo: Path, manager: WorktreeManager) -> None:
+    write(repo / ".gitmodules", '[submodule "x"]\n\tpath = x\n\turl = ../x\n')
+    assert (await manager.probe(repo)).reason == SUBMODULES
+
+
+async def test_probe_submodule_link_without_file(repo: Path, manager: WorktreeManager) -> None:
+    head = git(repo, "rev-parse", "HEAD").strip()
+    git(repo, "update-index", "--add", "--cacheinfo", f"160000,{head},vendored")
+    assert (await manager.probe(repo)).reason == SUBMODULES
+
+
+@pytest.mark.parametrize(
+    ("marker", "directory"),
+    [
+        ("MERGE_HEAD", False),
+        ("rebase-merge", True),
+        ("rebase-apply", True),
+        ("CHERRY_PICK_HEAD", False),
+        ("REVERT_HEAD", False),
+        ("BISECT_LOG", False),
+    ],
+)
+async def test_probe_operation_in_progress(repo: Path, manager: WorktreeManager, marker: str, directory: bool) -> None:
+    target = repo / ".git" / marker
+    if directory:
+        target.mkdir()
+    else:
+        target.write_text(git(repo, "rev-parse", "HEAD"), encoding="utf-8")
+    assert (await manager.probe(repo)).reason == OPERATION_IN_PROGRESS
+
+
+async def test_probe_real_merge_in_progress(repo: Path, manager: WorktreeManager) -> None:
+    git(repo, "checkout", "-q", "-b", "other")
+    write(repo / "a.txt", "ONE\n")
+    git(repo, "commit", "-qam", "other")
+    git(repo, "checkout", "-q", "main")
+    write(repo / "a.txt", "uno\n")
+    git(repo, "commit", "-qam", "main")
+    git(repo, "merge", "other", check=False)
+    assert (await manager.probe(repo)).reason == OPERATION_IN_PROGRESS
+
+
+async def test_probe_lfs_attributes(repo: Path, manager: WorktreeManager) -> None:
+    write(repo / "assets" / ".gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n")
+    assert (await manager.probe(repo)).reason == LFS
+
+
+async def test_probe_lfs_directory(repo: Path, manager: WorktreeManager) -> None:
+    (repo / ".git" / "lfs").mkdir()
+    assert (await manager.probe(repo)).reason == LFS
+
+
+async def test_probe_attributes_without_lfs(repo: Path, manager: WorktreeManager) -> None:
+    write(repo / ".gitattributes", "*.png binary\n\n# filter=lfs is only mentioned here\n")
+    assert (await manager.probe(repo)).usable
+
+
+async def test_probe_sparse_checkout(repo: Path, manager: WorktreeManager) -> None:
+    git(repo, "config", "core.sparseCheckout", "true")
+    assert (await manager.probe(repo)).reason == SPARSE_CHECKOUT
+
+
+async def test_unusable_directory_is_refused(tmp_path: Path, manager: WorktreeManager, base: Path) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    with pytest.raises(WorktreeUnavailable) as raised:
+        await manager.create(plain, base / "w1")
+    assert raised.value.reason == NOT_A_REPOSITORY
+    with pytest.raises(WorktreeUnavailable):
+        await manager.snapshot(plain)
+
+
+# -- snapshots -----------------------------------------------------------------
+
+
+def dirty(repo: Path) -> None:
+    """Uncommitted changes of every kind, a staged one, an ignored file and a stash entry."""
+    write(repo / "README.md", "# changed then stashed\n")
+    git(repo, "stash", "-q")
+    write(repo / "a.txt", "one\ntwo\nTHREE\nfour\nfive\n")
+    write(repo / "b.txt", "alpha\nBETA\ngamma\n")
+    git(repo, "add", "b.txt")
+    (repo / "src" / "util.py").unlink()
+    write(repo / "new" / "fresh.txt", "fresh\n")
+    write(repo / "ignored" / "secret.env", "TOKEN=1\n")
+    write(repo / "debug.log", "log\n")
+
+
+def tree_files(repo: Path, commit: str) -> set[str]:
+    return set(git(repo, "ls-tree", "-r", "--name-only", "-z", commit).split("\0")) - {""}
+
+
+async def test_snapshot_changes_nothing_the_user_sees(repo: Path, manager: WorktreeManager) -> None:
+    dirty(repo)
+    before = repository_state(repo)
+    files_before = digest(repo)
+    shot = await manager.snapshot(repo)
+    assert repository_state(repo) == before
+    assert digest(repo) == files_before
+    names = tree_files(repo, shot.commit)
+    assert {"a.txt", "b.txt", "new/fresh.txt", "README.md"} <= names
+    assert "src/util.py" not in names
+    assert not any(name.startswith("ignored/") or name.endswith(".log") for name in names)
+    assert git(repo, "show", f"{shot.commit}:a.txt") == "one\ntwo\nTHREE\nfour\nfive\n"
+    assert git(repo, "rev-parse", f"{shot.commit}^").strip() == git(repo, "rev-parse", "HEAD").strip()
+
+
+async def test_snapshot_identity_and_no_signing(repo: Path, manager: WorktreeManager) -> None:
+    git(repo, "config", "commit.gpgSign", "true")
+    git(repo, "config", "gpg.program", "no-such-gpg-program")
+    shot = await manager.snapshot(repo)
+    assert git(repo, "log", "-1", "--format=%an <%ae>|%cn", shot.commit).strip() == "NekoClaw <nekoclaw@localhost>|NekoClaw"
+
+
+async def test_snapshot_ignores_redirecting_environment(repo: Path, tmp_path: Path, manager: WorktreeManager, monkeypatch: Any) -> None:
+    other = make_repo(tmp_path / "other", {"elsewhere.txt": "x\n"})
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    shot = await manager.snapshot(repo)
+    monkeypatch.delenv("GIT_DIR")
+    monkeypatch.delenv("GIT_WORK_TREE")
+    assert "a.txt" in tree_files(repo, shot.commit)
+
+
+async def test_snapshot_of_a_repository_without_commits(tmp_path: Path, manager: WorktreeManager, base: Path) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    git(empty, "init", "-q", "-b", "main")
+    write(empty / "first.txt", "first\n")
+    shot = await manager.snapshot(empty)
+    assert tree_files(empty, shot.commit) == {"first.txt"}
+    tree = await manager.create(empty, base / "w1")
+    write(tree.workdir / "second.txt", "second\n")
+    write(empty / "mine.txt", "mine\n")
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed"
+    assert read(empty / "second.txt") == b"second\n" and read(empty / "mine.txt") == b"mine\n"
+    assert git(empty, "rev-parse", "--verify", "-q", "HEAD", check=False) == ""
+
+
+# -- making a worktree ---------------------------------------------------------
+
+
+async def test_worktree_holds_uncommitted_and_new_files_not_ignored(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    dirty(repo)
+    before = repository_state(repo)
+    tree = await manager.create(repo, base / "w1")
+    assert tree.id == "w1" and tree.subpath == "" and tree.workdir == tree.path
+    assert read(tree.path / "a.txt") == b"one\ntwo\nTHREE\nfour\nfive\n"
+    assert read(tree.path / "new" / "fresh.txt") == b"fresh\n"
+    assert not exists(tree.path / "src" / "util.py")
+    assert not exists(tree.path / "ignored") and not exists(tree.path / "debug.log")
+    after = repository_state(repo)
+    assert {key: value for key, value in after.items() if key != "worktrees"} == {
+        key: value for key, value in before.items() if key != "worktrees"
+    }
+    assert git(repo, "branch", "-a", "--format=%(refname)").split() == ["refs/heads/main"]
+    assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == tree.start
+    assert git(tree.path, "rev-parse", "HEAD").strip() == tree.start
+    assert git(tree.path, "symbolic-ref", "-q", "HEAD", check=False) == ""
+
+
+async def test_worktree_does_not_run_the_users_hooks(repo: Path, manager: WorktreeManager, base: Path, tmp_path: Path) -> None:
+    marker = tmp_path / "hook-ran"
+    hook = repo / ".git" / "hooks" / "post-checkout"
+    hook.write_text(f"#!/bin/sh\necho ran > '{marker.as_posix()}'\n", encoding="utf-8", newline="\n")
+    hook.chmod(0o755)
+    tree = await manager.create(repo, base / "w1")
+    assert exists(tree.path / "a.txt")
+    assert not marker.exists()
+
+
+async def test_worktree_from_a_ref(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    git(repo, "branch", "earlier")
+    write(repo / "a.txt", "later\n")
+    git(repo, "commit", "-qam", "later")
+    write(repo / "b.txt", "uncommitted\n")
+    tree = await manager.create(repo, base / "w1", FromRef("earlier"))
+    assert read(tree.path / "a.txt") == BASE_FILES["a.txt"].encode()
+    assert read(tree.path / "b.txt") == BASE_FILES["b.txt"].encode()
+    with pytest.raises(WorktreeError):
+        await manager.create(repo, base / "w2", FromRef("no-such-ref"))
+    assert not exists(base / "w2")
+
+
+async def test_create_refuses_bad_targets(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    with pytest.raises(WorktreeError):
+        await manager.create(repo, repo / "inside")
+    occupied = base / "occupied"
+    write(occupied / "x.txt", "x")
+    with pytest.raises(WorktreeError) as raised:
+        await manager.create(repo, occupied)
+    # Refused before git is asked, so nothing was registered or pinned.
+    assert type(raised.value) is WorktreeError
+    assert read(occupied / "x.txt") == b"x"
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+    (base / "empty").mkdir(parents=True)
+    assert (await manager.create(repo, base / "empty")).id == "empty"
+    with pytest.raises(ValueError):
+        await manager.create(repo, base / "bad name.")
+    first = await manager.create(repo, base / "twice")
+    await asyncio.to_thread(shutil.rmtree, _fs(first.path))
+    with pytest.raises(WorktreeError) as raised:
+        await manager.create(repo, base / "twice")
+    # The first one's start is still pinned: what it holds can still be found.
+    assert type(raised.value) is WorktreeError
+    assert git(repo, "rev-parse", f"{REF_PREFIX}twice/start").strip() == first.start
+
+
+async def test_create_checks_disk_space(repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any) -> None:
+    free = shutil.disk_usage(repo).free
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_MIN_FREE_BYTES", free * 4)
+    with pytest.raises(WorktreeUnavailable) as raised:
+        await manager.create(repo, base / "w1")
+    assert raised.value.reason == DISK_SPACE
+    assert not exists(base / "w1")
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+
+
+async def test_disk_check_numbers(repo: Path, manager: WorktreeManager, monkeypatch: Any) -> None:
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_MIN_FREE_BYTES", 100)
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_FREE_SPACE_FACTOR", 2.0)
+    small = await manager.check_disk(repo / "not" / "made" / "yet", 10)
+    assert small.needed == 100 and small.free > 0 and small.enough
+    large = await manager.check_disk(repo, 1000)
+    assert large.needed == 2000
+    huge = await manager.check_disk(repo, shutil.disk_usage(repo).free)
+    assert not huge.enough
+    exact = worktrees.DiskCheck(free=2000, needed=2000)
+    assert exact.enough and not worktrees.DiskCheck(free=1999, needed=2000).enough
+
+
+async def test_failed_worktree_add_leaves_nothing(repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any) -> None:
+    original = manager._git
+
+    async def failing(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("worktree", "add"):
+            # Half made, as a checkout that stopped part way leaves it.
+            target = Path(args[3])
+            if not exists(target):
+                write(target / "partial.txt", "partial\n")
+            raise worktrees.GitError(args, 128, b"simulated")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", failing)
+    with pytest.raises(worktrees.GitError):
+        await manager.create(repo, base / "w1")
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+    assert not exists(base / "w1")
+    # A directory that was there (empty) before stays.
+    (base / "given").mkdir()
+    with pytest.raises(worktrees.GitError):
+        await manager.create(repo, base / "given")
+    assert (base / "given").is_dir()
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+
+
+async def test_create_refuses_a_file_as_target(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    write(base / "file", "x")
+    with pytest.raises(WorktreeError):
+        await manager.create(repo, base / "file")
+
+
+async def test_git_version_is_asked_once(repo: Path, manager: WorktreeManager, monkeypatch: Any) -> None:
+    asked = []
+    original = manager._run
+
+    async def counting(cwd: Any, args: list[str], **kwargs: Any) -> Any:
+        if args == ["--version"]:
+            asked.append(1)
+        return await original(cwd, args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run", counting)
+    await manager.probe(repo)
+    await manager.probe(repo)
+    assert len(asked) == 1
+
+
+async def test_checkout_size(repo: Path, manager: WorktreeManager) -> None:
+    head = git(repo, "rev-parse", "HEAD").strip()
+    expected = sum(len(data if isinstance(data, bytes) else data.encode()) for data in BASE_FILES.values())
+    assert await manager._checkout_size(repo, head) == expected
+    # A submodule link has no size; it is not counted.
+    listing = git(repo, "ls-tree", head) + f"160000 commit {head}\tvendored\n"
+    tree = git(repo, "mktree", input=listing.encode()).strip()
+    linked = git(repo, "commit-tree", tree, "-m", "linked").strip()
+    assert await manager._checkout_size(repo, linked) == expected
+
+
+def test_worktree_dir_path(tmp_path: Path) -> None:
+    paths = HostPaths(tmp_path)
+    assert paths.worktrees_dir() == tmp_path / "wt"
+    assert paths.worktree_dir("abc123") == tmp_path / "wt" / "abc123"
+    with pytest.raises(ValueError):
+        paths.worktree_dir("../up")
+
+
+# -- landing -------------------------------------------------------------------
+
+
+async def test_clean_merge_of_different_files(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    write(repo / "src" / "app.py", "print('hello')\nprint('mine, uncommitted')\n")
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "one\ntwo\nthree\nfour\nfive\nsix\n")
+    write(tree.path / "added.txt", "made in the worktree\n")
+    # The user keeps working while the side session does.
+    write(repo / "b.txt", "alpha\nbeta\ngamma\ndelta\n")
+    write(repo / "notes.txt", "a new file of the user's\n")
+    head, index = git(repo, "rev-parse", "HEAD"), (repo / ".git" / "index").read_bytes()
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed", landed.detail
+    assert read(repo / "a.txt") == b"one\ntwo\nthree\nfour\nfive\nsix\n"
+    assert read(repo / "added.txt") == b"made in the worktree\n"
+    assert read(repo / "b.txt") == b"alpha\nbeta\ngamma\ndelta\n"
+    assert read(repo / "notes.txt") == b"a new file of the user's\n"
+    assert read(repo / "src" / "app.py") == b"print('hello')\nprint('mine, uncommitted')\n"
+    assert {(change.path, change.status) for change in landed.files} == {("a.txt", "modified"), ("added.txt", "added")}
+    assert (landed.lines_added, landed.lines_deleted) == (2, 0)
+    assert git(repo, "rev-parse", "HEAD") == head
+    assert (repo / ".git" / "index").read_bytes() == index
+    assert "?? added.txt" in git(repo, "status", "--porcelain")
+
+
+async def test_nothing_to_land(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(repo / "b.txt", "changed by the user\n")
+    before = digest(repo)
+    result = await manager.merge_back(tree)
+    assert result.status == "unchanged" and result.files == ()
+    assert digest(repo) == before
+
+
+async def test_same_line_conflict_changes_no_byte(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "one\ntwo\nworktree\nfour\nfive\n")
+    write(tree.path / "other.txt", "would land if there were no conflict\n")
+    write(repo / "a.txt", "one\ntwo\nproject\nfour\nfive\n")
+    before = digest(repo)
+    state = repository_state(repo)
+    result = await manager.merge_back(tree)
+    assert result.status == "conflict"
+    assert result.conflicts == ("a.txt",)
+    assert digest(repo) == before
+    assert repository_state(repo) == state
+
+
+async def test_conflict_prepared_resolved_and_landed(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "one\ntwo\nworktree\nfour\nfive\n")
+    write(tree.path / "extra.txt", "extra\n")
+    write(repo / "a.txt", "one\ntwo\nproject\nfour\nfive\n")
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    prepared = await manager.prepare_conflicts(tree, conflict)
+    assert prepared.start == conflict.current != tree.start
+    assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == conflict.current
+    marked = read(tree.path / "a.txt").decode()
+    assert "<<<<<<<" in marked and "project" in marked and "worktree" in marked
+    assert read(tree.path / "extra.txt") == b"extra\n"
+    write(tree.path / "a.txt", "one\ntwo\nproject and worktree\nfour\nfive\n")
+    landed = await manager.merge_back(prepared)
+    assert landed.status == "landed", landed.detail
+    assert read(repo / "a.txt") == b"one\ntwo\nproject and worktree\nfour\nfive\n"
+    assert read(repo / "extra.txt") == b"extra\n"
+    reopened = await manager.open(repo, tree.path)
+    assert reopened == prepared
+
+
+async def test_prepare_conflicts_refuses_a_changed_worktree(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "worktree\n")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    write(tree.path / "late.txt", "written after the merge was tried\n")
+    with pytest.raises(WorktreeError):
+        await manager.prepare_conflicts(tree, conflict)
+    assert read(tree.path / "a.txt") == b"worktree\n"
+
+
+
+async def test_prepare_conflicts_refuses_a_landing(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "worktree\n")
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed"
+    with pytest.raises(WorktreeError):
+        await manager.prepare_conflicts(tree, landed)
+    assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == tree.start
+
+
+async def test_kinds_of_change(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    write(repo / "tool.sh", "#!/bin/sh\necho hi\n")
+    write(repo / "image.bin", bytes(range(256)) * 4)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "more")
+    tree = await manager.create(repo, base / "w1")
+    w = tree.path
+    os.remove(w / "b.txt")
+    os.rename(w / "src" / "util.py", w / "src" / "helpers.py")
+    write(w / "pkg" / "deep" / "mod.py", "x = 1\n")
+    write(w / "image.bin", bytes(reversed(range(256))) * 4 + b"\0tail")
+    write(w / "blob.dat", b"\x00\x01\x02\xff" * 100)
+    write(w / "empty.txt", b"")
+    write(w / "spaced.txt", "trailing spaces   \n\ttab\n")
+    git(repo, "config", "apply.whitespace", "error")
+    if not WINDOWS:
+        os.chmod(w / "tool.sh", 0o755)
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed", landed.detail
+    assert not exists(repo / "b.txt") and not exists(repo / "src" / "util.py")
+    assert read(repo / "src" / "helpers.py") == BASE_FILES["src/util.py"].encode()
+    assert read(repo / "pkg" / "deep" / "mod.py") == b"x = 1\n"
+    assert read(repo / "image.bin") == read(w / "image.bin")
+    assert read(repo / "blob.dat") == read(w / "blob.dat")
+    assert exists(repo / "empty.txt") and read(repo / "empty.txt") == b""
+    assert read(repo / "spaced.txt") == b"trailing spaces   \n\ttab\n"
+    statuses = {change.path: change for change in landed.files}
+    assert statuses["b.txt"].status == "deleted" and statuses["src/helpers.py"].status == "added"
+    assert statuses["image.bin"].added is None and statuses["image.bin"].status == "modified"
+    if not WINDOWS:
+        assert os.stat(repo / "tool.sh").st_mode & stat.S_IXUSR
+        assert statuses["tool.sh"].status == "modified"
+    assert digest(repo) == digest(w)
+
+
+@pytest.mark.parametrize(
+    ("config", "attributes", "touched_ending"),
+    [
+        ({}, None, b"\n"),
+        ({"core.autocrlf": "true"}, None, b"\r\n"),
+        ({"core.autocrlf": "input"}, None, b"\n"),
+        ({}, "*.txt text eol=crlf\n", b"\r\n"),
+        ({"core.autocrlf": "true"}, "*.txt text eol=lf\n", b"\n"),
+    ],
+    ids=["plain", "autocrlf", "autocrlf-input", "eol-crlf", "eol-lf"],
+)
+async def test_line_endings(
+    tmp_path: Path, manager: WorktreeManager, base: Path, config: dict[str, str], attributes: str | None, touched_ending: bytes
+) -> None:
+    repo = make_repo(tmp_path / "repo", {"seed.txt": "seed\n"})
+    for key, value in config.items():
+        git(repo, "config", key, value)
+    if attributes:
+        write(repo / ".gitattributes", attributes)
+    # Written the way a user on either system might have them, then committed.
+    write(repo / "crlf.txt", b"one\r\ntwo\r\n")
+    write(repo / "lf.txt", b"one\ntwo\n")
+    write(repo / "touched.txt", b"keep\nchange\n")
+    write(repo / "raw.bin", b"bin\r\nary\n\0")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "endings")
+    # Uncommitted, with endings git would turn around on its next write.
+    write(repo / "mixed.txt", b"mixed\r\nendings\n")
+    write(repo / "crlf.txt", b"one\r\ntwo\r\nthree\r\n")
+    # Git would refuse to add some of these itself; a snapshot must not.
+    git(repo, "config", "core.safecrlf", "true")
+    before = digest(repo)
+    tree = await manager.create(repo, base / "w1")
+    content = read(tree.path / "touched.txt").replace(b"change", b"changed")
+    write(tree.path / "touched.txt", content)
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed", landed.detail
+    assert [change.path for change in landed.files] == ["touched.txt"]
+    after = digest(repo)
+    assert {name: value for name, value in after.items() if name != "touched.txt"} == {
+        name: value for name, value in before.items() if name != "touched.txt"
+    }
+    assert read(repo / "touched.txt") == b"keep" + touched_ending + b"changed" + touched_ending
+
+
+async def test_unusual_names(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    write(repo / "中文 目录" / "文件 一.txt", "你好\n")
+    tree = await manager.create(repo, base / "w1")
+    assert read(tree.path / "中文 目录" / "文件 一.txt") == "你好\n".encode()
+    write(tree.path / "中文 目录" / "文件 一.txt", "你好，世界\n")
+    write(tree.path / "with space.txt", "spaced\n")
+    write(tree.path / "引号\"和'.txt" if not WINDOWS else tree.path / "引号'和.txt", "quotes\n")
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed", landed.detail
+    assert read(repo / "中文 目录" / "文件 一.txt") == "你好，世界\n".encode()
+    assert read(repo / "with space.txt") == b"spaced\n"
+    assert "中文 目录/文件 一.txt" in {change.path for change in landed.files}
+
+
+async def test_long_paths(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    deep = Path(*[f"level-{index:02d}-with-a-long-name" for index in range(10)])
+    assert len(str(repo / deep)) > 260
+    write(repo / deep / "kept.txt", "kept\n")
+    tree = await manager.create(repo, base / "w1")
+    assert read(tree.path / deep / "kept.txt") == b"kept\n"
+    write(tree.path / deep / "kept.txt", "changed\n")
+    write(tree.path / deep / "more" / "new.txt", "new\n")
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed", landed.detail
+    assert read(repo / deep / "kept.txt") == b"changed\n"
+    assert read(repo / deep / "more" / "new.txt") == b"new\n"
+    await manager.remove(tree)
+    assert not exists(tree.path)
+
+
+async def test_project_in_a_subdirectory(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo / "src", base / "w1")
+    assert tree.subpath == "src" and tree.workdir == tree.path / "src"
+    assert os.path.samefile(tree.repo_root, repo)
+    write(tree.workdir / "app.py", "print('changed in the worktree')\n")
+    write(repo / "README.md", "# changed outside the project directory\n")
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed"
+    assert [change.path for change in landed.files] == ["src/app.py"]
+    assert read(repo / "src" / "app.py") == b"print('changed in the worktree')\n"
+    assert read(repo / "README.md") == b"# changed outside the project directory\n"
+    assert await manager.open(repo / "src", tree.path) == tree
+
+
+async def test_large_untracked_files_left_out(repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_UNTRACKED_MAX_BYTES", 1000)
+    big = b"B" * 1001
+    write(repo / "data" / "big.bin", big)
+    write(repo / "data" / "small.bin", b"s" * 1000)
+    write(repo / "a.txt", "x" * 5000)  # tracked: always in
+    shot = await manager.snapshot(repo)
+    assert shot.skipped == ("data/big.bin",)
+    assert "data/small.bin" in tree_files(repo, shot.commit)
+    hashed = git(repo, "hash-object", "--stdin", input=big).strip()
+    assert not git_succeeds(repo, "cat-file", "-e", hashed)
+    tree = await manager.create(repo, base / "w1")
+    assert not exists(tree.path / "data" / "big.bin")
+    assert read(tree.path / "a.txt") == b"x" * 5000
+    write(tree.path / "data" / "made.bin", b"M" * 2000)
+    write(tree.path / "b.txt", "changed\n")
+    big_before = read(repo / "data" / "big.bin")
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed"
+    assert landed.skipped == ("data/made.bin",)
+    assert not exists(repo / "data" / "made.bin")
+    assert read(repo / "data" / "big.bin") == big_before
+    assert [change.path for change in landed.files] == ["b.txt"]
+
+
+async def test_two_worktrees_at_once_land_as_one_after_the_other(tmp_path: Path, manager: WorktreeManager, base: Path) -> None:
+    async def run(repo: Path, together: bool) -> dict[str, tuple[str, bool]]:
+        first = await manager.create(repo, base / f"{repo.name}-1")
+        second = await manager.create(repo, base / f"{repo.name}-2")
+        write(first.path / "a.txt", "one\ntwo\nthree\nfour\nfive\nfrom the first\n")
+        write(first.path / "first.txt", "first\n")
+        write(second.path / "b.txt", "from the second\nalpha\nbeta\ngamma\n")
+        write(second.path / "second.txt", "second\n")
+        if together:
+            results = await asyncio.gather(manager.merge_back(first), manager.merge_back(second))
+        else:
+            results = [await manager.merge_back(first), await manager.merge_back(second)]
+        assert [result.status for result in results] == ["landed", "landed"]
+        return digest(repo)
+
+    together = await run(make_repo(tmp_path / "together"), True)
+    apart = await run(make_repo(tmp_path / "apart"), False)
+    assert together == apart
+    assert together["first.txt"] and together["second.txt"]
+
+
+async def test_landings_on_one_repository_do_not_overlap(repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any) -> None:
+    first = await manager.create(repo, base / "w1")
+    second = await manager.create(repo, base / "w2")
+    write(first.path / "one.txt", "1\n")
+    write(second.path / "two.txt", "2\n")
+    running, most = 0, 0
+    original = manager._land_on_working_files
+
+    async def counted(*args: Any) -> MergeResult:
+        nonlocal running, most
+        running += 1
+        most = max(most, running)
+        try:
+            await asyncio.sleep(0.05)
+            return await original(*args)
+        finally:
+            running -= 1
+
+    monkeypatch.setattr(manager, "_land_on_working_files", counted)
+    results = await asyncio.gather(manager.merge_back(first), manager.merge_back(second))
+    assert [result.status for result in results] == ["landed", "landed"]
+    assert most == 1
+
+
+# -- a landing that fails half way ---------------------------------------------
+
+
+async def test_failed_write_puts_everything_back(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    write(repo / "z" / "locked.txt", "locked\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "locked")
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "changed first\n")
+    write(tree.path / "new" / "deeper" / "made.txt", "new\n")
+    write(tree.path / "z" / "locked.txt", "cannot be written\n")
+    write(repo / "README.md", "# the user's, uncommitted\n")
+    before = digest(repo)
+    if WINDOWS:
+        import msvcrt  # noqa: F401  (Windows only)
+
+        holder = open(repo / "z" / "locked.txt", "rb")  # noqa: SIM115
+    else:
+        if os.geteuid() == 0:
+            pytest.skip("root writes into read-only directories")
+        os.chmod(repo / "z", 0o555)
+    try:
+        result = await manager.merge_back(tree)
+    finally:
+        if WINDOWS:
+            holder.close()
+        else:
+            os.chmod(repo / "z", 0o755)
+    assert result.status == "failed", result
+    assert result.left_changed == ()
+    assert digest(repo) == before
+    assert not exists(repo / "new")
+
+
+async def test_mismatch_after_writing_puts_everything_back(repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "merged\n")
+    os.remove(tree.path / "b.txt")
+    write(tree.path / "fresh" / "new.txt", "new\n")
+    before = digest(repo)
+    original = manager._apply
+
+    async def corrupting(root: Path, patch: bytes) -> Any:
+        done = await original(root, patch)
+        write(root / "a.txt", "not what was merged\n")
+        return done
+
+    monkeypatch.setattr(manager, "_apply", corrupting)
+    result = await manager.merge_back(tree)
+    assert result.status == "failed" and "read back" in result.detail
+    assert digest(repo) == before
+    assert not exists(repo / "fresh")
+
+
+async def test_deleted_file_still_there_is_a_mismatch(repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any) -> None:
+    tree = await manager.create(repo, base / "w1")
+    os.remove(tree.path / "b.txt")
+    before = digest(repo)
+    original = manager._apply
+
+    async def resurrecting(root: Path, patch: bytes) -> Any:
+        done = await original(root, patch)
+        write(root / "b.txt", "back again\n")
+        return done
+
+    monkeypatch.setattr(manager, "_apply", resurrecting)
+    result = await manager.merge_back(tree)
+    assert result.status == "failed"
+    assert digest(repo) == before
+
+
+async def test_files_that_cannot_be_put_back_are_reported(repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "merged a\n")
+    write(tree.path / "b.txt", "merged b\n")
+
+    async def failing(root: Path, patch: bytes) -> Any:
+        write(root / "a.txt", "half written\n")
+        write(root / "b.txt", "half written\n")
+        return worktrees._Run(1, b"", b"simulated failure")
+
+    real_restore = worktrees._restore_one
+
+    def stuck_on_b(root: Path, entry: Any) -> bool:
+        return False if entry.name == "b.txt" else real_restore(root, entry)
+
+    monkeypatch.setattr(manager, "_apply", failing)
+    monkeypatch.setattr(worktrees, "_restore_one", stuck_on_b)
+    result = await manager.merge_back(tree)
+    assert result.status == "failed" and "simulated failure" in result.detail
+    assert result.left_changed == ("b.txt",)
+    assert read(repo / "a.txt") == BASE_FILES["a.txt"].encode()
+    assert read(repo / "b.txt") == b"half written\n"
+
+
+async def test_changes_that_no_longer_apply_change_nothing(repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "worktree\n")
+    write(tree.path / "c.txt", "new\n")
+    original = manager._snapshot
+
+    async def user_types_meanwhile(root: Path, message: str) -> Any:
+        shot = await original(root, message)
+        if "before landing" in message:
+            write(repo / "c.txt", "the user made it first\n")
+        return shot
+
+    monkeypatch.setattr(manager, "_snapshot", user_types_meanwhile)
+    result = await manager.merge_back(tree)
+    assert result.status == "failed" and "do not apply" in result.detail
+    assert read(repo / "c.txt") == b"the user made it first\n"
+    assert read(repo / "a.txt") == BASE_FILES["a.txt"].encode()
+
+
+# -- changes, removal, reconciling ---------------------------------------------
+
+
+async def test_has_changes(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    assert not await manager.has_changes(tree)
+    write(repo / "a.txt", "the project changing is not the worktree changing\n")
+    assert not await manager.has_changes(tree)
+    write(tree.path / "new.txt", "new\n")
+    assert await manager.has_changes(tree)
+    await asyncio.to_thread(shutil.rmtree, _fs(tree.path))
+    assert not await manager.has_changes(tree)
+
+
+async def test_remove(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "unlanded.txt", "x\n")
+    if not WINDOWS:
+        os.chmod(tree.path / "unlanded.txt", 0o444)
+    await manager.remove(tree)
+    assert not exists(tree.path)
+    assert "w1" not in registered(repo)
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+    await manager.remove(tree)  # again: nothing left, no error
+
+
+async def test_remove_after_the_directory_was_deleted(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    await asyncio.to_thread(shutil.rmtree, _fs(tree.path))
+    await manager.remove(tree)
+    assert "w1" not in registered(repo)
+    assert not list((repo / ".git" / "worktrees").glob("*")) if (repo / ".git" / "worktrees").exists() else True
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+
+
+async def test_remove_when_git_will_not(repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any) -> None:
+    tree = await manager.create(repo, base / "w1")
+    other = await manager.create(repo, base / "w2")
+    write(tree.path / "read-only.txt", "x\n")
+    os.chmod(_fs(tree.path / "read-only.txt"), stat.S_IREAD)
+    original = manager._git
+
+    async def refusing(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("worktree", "remove"):
+            return worktrees._Run(128, b"", b"refused")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", refusing)
+    await manager.remove(tree)
+    assert not exists(tree.path)
+    assert "w1" not in registered(repo) and "w2" in registered(repo) and exists(other.path)
+    assert git(other.path, "status", "--porcelain") == ""
+
+
+async def test_reconcile(repo: Path, manager: WorktreeManager, base: Path, tmp_path: Path) -> None:
+    known = await manager.create(repo, base / "known")
+    clean = await manager.create(repo, base / "clean")
+    changed = await manager.create(repo, base / "changed")
+    gone = await manager.create(repo, base / "gone")
+    elsewhere = await manager.create(repo, tmp_path / "elsewhere" / "other")
+    write(changed.path / "work.txt", "not landed\n")
+    write(known.path / "work.txt", "not landed\n")
+    await asyncio.to_thread(shutil.rmtree, _fs(gone.path))
+    git(repo, "update-ref", f"{REF_PREFIX}orphan/start", "HEAD")
+    git(repo, "update-ref", f"{REF_PREFIX}remembered/start", "HEAD")
+    stranger = base / "stranger"
+    write(stranger / "x.txt", "not a worktree of this repository\n")
+    report = await manager.reconcile(repo, base, ["known", "remembered"])
+    assert sorted(report.removed) == ["clean", "gone"]
+    assert [path.name for path in report.kept] == ["changed"]
+    assert report.refs_removed == ["orphan"]
+    assert exists(known.path) and exists(changed.path) and exists(elsewhere.path) and exists(stranger)
+    assert not exists(clean.path)
+    assert registered(repo) == {"repo", "known", "changed", "other"}
+    refs = git(repo, "for-each-ref", "--format=%(refname)", REF_PREFIX).split()
+    assert sorted(refs) == sorted(f"{REF_PREFIX}{name}/start" for name in ("known", "changed", "other", "remembered"))
+    again = await manager.reconcile(repo, base, ["known", "remembered"])
+    assert again.removed == [] and [path.name for path in again.kept] == ["changed"]
+
+
+async def test_reconcile_keeps_a_worktree_without_its_ref(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    git(repo, "update-ref", "-d", f"{REF_PREFIX}w1/start")
+    report = await manager.reconcile(repo, base, [])
+    assert [path.name for path in report.kept] == ["w1"] and exists(tree.path)
+
+
+async def test_git_timeout_kills_the_command(repo: Path, manager: WorktreeManager, monkeypatch: Any) -> None:
+    monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_GIT_QUERY_SECONDS", 0.001)
+    with pytest.raises(worktrees.GitError) as raised:
+        await manager._git(repo, "rev-parse", "HEAD")
+    assert raised.value.returncode is None
+
+
+def test_long_path_form() -> None:
+    if WINDOWS:
+        assert _fs("C:\\x\\y") == "\\\\?\\C:\\x\\y"
+        assert _fs("\\\\server\\share\\x") == "\\\\?\\UNC\\server\\share\\x"
+        assert _fs("\\\\?\\C:\\x") == "\\\\?\\C:\\x"
+    else:
+        assert _fs("/x/y") == "/x/y"
+
+
+def test_worktree_handle() -> None:
+    root = Path("/repo")
+    tree = Worktree("w1", root, Path("/wt/w1"), "", "abc")
+    assert tree.workdir == Path("/wt/w1")
+    assert Worktree("w1", root, Path("/wt/w1"), "src/sub", "abc").workdir == Path("/wt/w1/src/sub")
+
+
+async def test_probe_lfs_in_info_attributes(repo: Path, manager: WorktreeManager) -> None:
+    write(repo / ".git" / "info" / "attributes", "*.psd filter=lfs\n")
+    assert (await manager.probe(repo)).reason == LFS
+
+
+async def test_probe_work_tree_elsewhere(repo: Path, tmp_path: Path, manager: WorktreeManager) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    git(repo, "config", "core.worktree", elsewhere.as_posix())
+    assert (await manager.probe(repo)).reason == NOT_A_REPOSITORY
+
+
+async def test_configuration_from_the_environment_is_not_taken(repo: Path, manager: WorktreeManager, monkeypatch: Any) -> None:
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.bare")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+    assert (await manager.probe(repo)).usable
+
+
+async def test_merge_that_git_cannot_do_raises(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "changed\n")
+    before = digest(repo)
+    with pytest.raises(worktrees.GitError):
+        await manager.merge_back(Worktree(tree.id, tree.repo_root, tree.path, "", "0" * 40))
+    assert digest(repo) == before
+
+
+async def test_files_that_cannot_be_copied_aside_change_nothing(repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "changed\n")
+    before = digest(repo)
+
+    def failing(*args: Any) -> Any:
+        raise PermissionError("simulated")
+
+    monkeypatch.setattr(worktrees, "_back_up", failing)
+    result = await manager.merge_back(tree)
+    assert result.status == "failed" and "copied aside" in result.detail
+    assert digest(repo) == before
+
+
+async def test_only_deletions_land(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    os.remove(tree.path / "b.txt")
+    os.remove(tree.path / "src" / "app.py")
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed", landed.detail
+    assert not exists(repo / "b.txt") and not exists(repo / "src" / "app.py")
+    assert (landed.lines_added, landed.lines_deleted) == (0, 4)
+
+
+def test_putting_back_whatever_a_failed_write_left(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    write(root / "becomes_dir.txt", "was a file\n")
+    write(root / "unchanged.txt", "never written\n")
+    write(root / "changed.txt", "before\n")
+    names = ["becomes_dir.txt", "unchanged.txt", "changed.txt", "new/deep/made.txt", "fresh.txt"]
+    if not WINDOWS:
+        write(root / "target.txt", "the link's target\n")
+        os.symlink("target.txt", root / "link")
+        write(root / "plain.txt", "plain\n")
+        write(root / "mode.sh", "#!/bin/sh\n")
+        os.chmod(root / "mode.sh", 0o755)
+        names += ["link", "plain.txt", "mode.sh"]
+    before = digest(root)
+    saved = worktrees._back_up(root, names, backup)
+    # What a write that stopped part way might leave.
+    os.remove(root / "becomes_dir.txt")
+    write(root / "becomes_dir.txt" / "inner.txt", "x\n")
+    write(root / "changed.txt", "after\n")
+    write(root / "new" / "deep" / "made.txt", "made\n")
+    write(root / "fresh.txt", "fresh\n")
+    # Left as it was, and could not be written to: it needs no putting back.
+    os.chmod(root / "unchanged.txt", stat.S_IREAD)
+    os.chmod(next(entry.copy for entry in saved if entry.name == "unchanged.txt"), stat.S_IREAD)
+    if not WINDOWS:
+        os.remove(root / "link")
+        write(root / "link", "a file where the link was\n")
+        os.remove(root / "plain.txt")
+        os.symlink("target.txt", root / "plain.txt")
+        os.chmod(root / "mode.sh", 0o644)
+    left = worktrees._restore(root, saved)
+    os.chmod(root / "unchanged.txt", stat.S_IREAD | stat.S_IWRITE)
+    assert left == []
+    assert digest(root) == before
+    assert not exists(root / "new") and not exists(root / "fresh.txt")
+    if not WINDOWS:
+        assert os.readlink(root / "link") == "target.txt"
+        assert not os.path.islink(root / "plain.txt")
+        assert read(root / "target.txt") == b"the link's target\n"
+
+
+def test_relative_paths() -> None:
+    root = Path(os.path.abspath("project"))
+    assert worktrees._relative(root, root) == ""
+    assert worktrees._relative(root / "a" / "b", root) == "a/b"
+    assert worktrees._relative(root.parent, root) is None
+    assert worktrees._relative(root.parent / "projectile", root) is None
+    if WINDOWS:
+        assert worktrees._relative(Path("Q:/elsewhere"), Path("C:/project")) is None
+
+
+async def test_a_git_command_that_fails_raises(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    write(base / "a-file", "x")
+    with pytest.raises(worktrees.GitError) as raised:
+        await manager.create(repo, base / "a-file" / "w1")
+    assert raised.value.returncode not in (0, None) and raised.value.git_args[:2] == ("worktree", "add")
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+
+
+@pytest.mark.parametrize("mark", ["--assume-unchanged", "--skip-worktree"])
+async def test_snapshot_sees_files_the_index_is_told_to_ignore(repo: Path, manager: WorktreeManager, mark: str) -> None:
+    git(repo, "update-index", mark, "a.txt")
+    write(repo / "a.txt", "changed behind the index's back\n")
+    index = (repo / ".git" / "index").read_bytes()
+    shot = await manager.snapshot(repo)
+    assert git(repo, "show", f"{shot.commit}:a.txt") == "changed behind the index's back\n"
+    assert (repo / ".git" / "index").read_bytes() == index
+
+
+async def test_snapshot_of_a_split_index_leaves_no_files(repo: Path, manager: WorktreeManager) -> None:
+    git(repo, "config", "core.splitIndex", "true")
+    git(repo, "config", "splitIndex.maxPercentChange", "0")  # every write makes a new shared part
+    git(repo, "update-index", "--split-index")
+    write(repo / "a.txt", "changed\n")
+    write(repo / "new.txt", "new\n")
+    before = sorted(path.name for path in (repo / ".git").iterdir())
+    shot = await manager.snapshot(repo)
+    assert sorted(path.name for path in (repo / ".git").iterdir()) == before
+    assert {"a.txt", "new.txt"} <= tree_files(repo, shot.commit)
+    assert git(repo, "show", f"{shot.commit}:a.txt") == "changed\n"
+
+
+async def test_snapshot_without_an_index_file(repo: Path, manager: WorktreeManager) -> None:
+    os.remove(repo / ".git" / "index")
+    write(repo / "a.txt", "changed\n")
+    shot = await manager.snapshot(repo)
+    assert git(repo, "show", f"{shot.commit}:a.txt") == "changed\n"
+    assert "b.txt" in tree_files(repo, shot.commit)
+    assert not (repo / ".git" / "index").exists()

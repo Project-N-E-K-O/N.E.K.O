@@ -1,0 +1,1151 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Git worktrees a side session works in, and landing what it did (design 3.3, 17.8).
+
+A side session does not write the user's project directory. It works in a
+git worktree made from what the project directory holds now, and when it is
+done the host lands its changes on the project's working files: a three-way
+merge of where the worktree started, the project as it is now and the
+worktree's result. Nothing is committed and no branch is made; new files
+land as ordinary untracked files.
+
+What this module may do to the user's repository, and nothing else:
+
+* write objects, and refs below ``refs/nekoclaw/``;
+* ``git worktree add`` / ``remove``, and remove the registration of a
+  worktree of its own whose directory is gone;
+* change working files, only when landing, and only the ones the merge
+  changes; a landing either changes all of them or, as far as the files
+  allow, puts every one back as it was (``MergeResult``).
+
+Its branches, index, stash, configuration and hooks are never touched:
+snapshots use a temporary index file, every git call points ``core.hooksPath``
+at a directory that does not exist, turns off the file system monitor and
+automatic housekeeping, never asks for credentials and never fetches. The
+one command that changes a checkout (``checkout``, in ``prepare_conflicts``)
+runs in the host's own worktree.
+
+Nothing calls this module yet; a later change wires it to side sessions.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import filecmp
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import uuid
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Literal
+
+import config.nekoclaw_settings as settings
+from nekoclaw.host.paths import safe_segment
+from nekoclaw.host.repo_docs import repository_root
+
+REF_PREFIX = "refs/nekoclaw/worktrees/"
+"""Refs this module keeps a worktree's commits under: ``<prefix><id>/start``."""
+
+IDENTITY = {
+    "GIT_AUTHOR_NAME": "NekoClaw",
+    "GIT_AUTHOR_EMAIL": "nekoclaw@localhost",
+    "GIT_COMMITTER_NAME": "NekoClaw",
+    "GIT_COMMITTER_EMAIL": "nekoclaw@localhost",
+}
+
+# Reasons ``probe`` gives for a directory a worktree cannot be made from.
+GIT_MISSING = "git_missing"
+GIT_TOO_OLD = "git_too_old"
+GIT_FAILED = "git_failed"
+NOT_A_REPOSITORY = "not_a_repository"
+BARE_REPOSITORY = "bare_repository"
+IGNORED_DIRECTORY = "ignored_directory"
+SUBMODULES = "submodules"
+OPERATION_IN_PROGRESS = "operation_in_progress"
+LFS = "lfs"
+SPARSE_CHECKOUT = "sparse_checkout"
+# ``create`` only.
+DISK_SPACE = "disk_space"
+
+# Files in a git directory that say an operation stopped half way.
+_IN_PROGRESS = (
+    ("MERGE_HEAD", "merge"),
+    ("rebase-merge", "rebase"),
+    ("rebase-apply", "rebase"),
+    ("CHERRY_PICK_HEAD", "cherry-pick"),
+    ("REVERT_HEAD", "revert"),
+    ("BISECT_LOG", "bisect"),
+)
+
+# Environment variables that would point git at another repository, index or
+# configuration than the one asked for.
+_REDIRECTING_ENV = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_PREFIX",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_GRAFT_FILE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_QUARANTINE_PATH",
+        "GIT_INTERNAL_SUPER_PREFIX",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    }
+)
+
+
+
+class WorktreeError(Exception):
+    """A worktree operation could not be done; nothing it was about to change was changed."""
+
+
+class GitError(WorktreeError):
+    """A git command failed or did not finish in time."""
+
+    def __init__(self, args: Iterable[str], returncode: int | None, stderr: bytes) -> None:
+        self.git_args = tuple(args)
+        self.returncode = returncode
+        self.stderr = stderr.decode("utf-8", "replace").strip()
+        what = "timed out" if returncode is None else f"exited with {returncode}"
+        super().__init__(f"git {' '.join(self.git_args[:2])} {what}: {self.stderr[:500]}")
+
+
+class WorktreeUnavailable(WorktreeError):
+    """No worktree can be made: ``reason`` is one of the reason keys above."""
+
+    def __init__(self, reason: str, detail: str = "") -> None:
+        self.reason = reason
+        self.detail = detail
+        super().__init__(f"{reason}: {detail}" if detail else reason)
+
+
+@dataclass(frozen=True)
+class Probe:
+    """Whether a worktree can be made for a directory.
+
+    ``reason`` is None when it can, else one of the reason keys; ``detail``
+    says more for a person. ``repo_root`` is the root of the repository's
+    working tree and ``subpath`` the directory relative to it, with ``/``
+    separators and ``""`` for the root itself; both are set whenever the
+    repository was found.
+    """
+
+    reason: str | None
+    detail: str = ""
+    repo_root: Path | None = None
+    subpath: str = ""
+    git_version: tuple[int, int, int] | None = None
+
+    @property
+    def usable(self) -> bool:
+        return self.reason is None
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """What a working tree held, written as a commit nothing points to but a ref of ours (or nothing).
+
+    ``skipped`` lists the files not under version control that were left out
+    because each is larger than ``WORKTREE_UNTRACKED_MAX_BYTES``.
+    """
+
+    commit: str
+    tree: str
+    skipped: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Worktree:
+    """A worktree this module made.
+
+    ``id`` is the name of its directory; ``repo_root`` the user's repository
+    it was made from; ``subpath`` where the project directory is inside it;
+    ``start`` the commit a landing merges from (where the worktree started,
+    or the project's snapshot ``prepare_conflicts`` last took).
+    """
+
+    id: str
+    repo_root: Path
+    path: Path
+    subpath: str
+    start: str
+
+    @property
+    def workdir(self) -> Path:
+        """Return the directory that stands for the project directory inside the worktree."""
+        return self.path / self.subpath if self.subpath else self.path
+
+
+@dataclass(frozen=True)
+class FileChange:
+    """A file a landing changed in the project directory; line counts are None for a binary file."""
+
+    path: str
+    status: Literal["added", "modified", "deleted"]
+    added: int | None
+    deleted: int | None
+
+
+@dataclass(frozen=True)
+class MergeResult:
+    """What a landing did.
+
+    ``status``:
+
+    * ``landed``: every file in ``files`` was changed in the project
+      directory and checked afterwards;
+    * ``unchanged``: there was nothing to land;
+    * ``conflict``: nothing was changed; ``conflicts`` lists the files that
+      both sides changed in ways that do not merge, ``merged_tree`` and
+      ``current`` are what ``prepare_conflicts`` needs;
+    * ``failed``: the changes could not be written or did not read back as
+      merged (``detail`` says which). Every file the attempt changed was put
+      back, except the ones in ``left_changed``, which are as the failed
+      attempt left them.
+
+    ``skipped`` lists files in the worktree that were not carried over
+    because they are not under version control and too large.
+    """
+
+    status: Literal["landed", "unchanged", "conflict", "failed"]
+    files: tuple[FileChange, ...] = ()
+    lines_added: int = 0
+    lines_deleted: int = 0
+    conflicts: tuple[str, ...] = ()
+    detail: str = ""
+    left_changed: tuple[str, ...] = ()
+    skipped: tuple[str, ...] = ()
+    current: str = ""
+    result: str = ""
+    result_tree: str = ""
+    merged_tree: str = ""
+
+
+@dataclass
+class ReconcileReport:
+    """What ``reconcile`` did: worktrees removed, worktrees kept because they hold changes, refs removed."""
+
+    removed: list[str] = field(default_factory=list)
+    kept: list[Path] = field(default_factory=list)
+    refs_removed: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DiskCheck:
+    """Free space where a worktree would go, against what it needs."""
+
+    free: int
+    needed: int
+
+    @property
+    def enough(self) -> bool:
+        return self.free >= self.needed
+
+
+# -- where a worktree starts --------------------------------------------------
+
+
+class Start:
+    """Where a new worktree starts. ``CurrentState`` now; a later change adds a remote branch."""
+
+    async def commit(self, manager: WorktreeManager, repo_root: Path) -> str:
+        raise NotImplementedError
+
+
+class CurrentState(Start):
+    """Start from what the project directory holds now, uncommitted changes and new files included."""
+
+    async def commit(self, manager: WorktreeManager, repo_root: Path) -> str:
+        return (await manager._snapshot(repo_root, "nekoclaw: worktree start")).commit
+
+
+@dataclass(frozen=True)
+class FromRef(Start):
+    """Start from a commit already in the repository, named by a ref or an object name. Nothing is fetched."""
+
+    ref: str
+
+    async def commit(self, manager: WorktreeManager, repo_root: Path) -> str:
+        return await manager._resolve_commit(repo_root, self.ref)
+
+
+# -- how a result lands -------------------------------------------------------
+
+
+class Landing:
+    """How a worktree's result reaches the project. ``WorkingFiles`` now; a later change adds a pull request."""
+
+    async def land(self, manager: WorktreeManager, worktree: Worktree, result: Snapshot) -> MergeResult:
+        raise NotImplementedError
+
+
+class WorkingFiles(Landing):
+    """Merge the result into the project directory's working files, committing nothing."""
+
+    async def land(self, manager: WorktreeManager, worktree: Worktree, result: Snapshot) -> MergeResult:
+        return await manager._land_on_working_files(worktree, result)
+
+
+# -- the manager --------------------------------------------------------------
+
+
+class WorktreeManager:
+    """Makes, lands and removes worktrees; one per host.
+
+    Snapshots, landings and every change to a repository's worktrees are
+    done one at a time per repository (a lock per repository root, on the
+    event loop the manager is used on).
+    """
+
+    def __init__(self, git: str = "git") -> None:
+        self._git_program = git
+        # A directory that does not exist: no hook of the user's runs.
+        self._no_hooks = str(Path(tempfile.gettempdir()) / f"nekoclaw-no-hooks-{uuid.uuid4().hex}")
+        self._version: tuple[int, int, int] | None | Literal[False] = False
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    # -- public ----------------------------------------------------------------
+
+    async def probe(self, directory: Path | str) -> Probe:
+        """Return whether a worktree can be made for ``directory``; never raises for a directory that cannot."""
+        version = await self.git_version()
+        if version is None:
+            return Probe(GIT_MISSING, f"{self._git_program!r} could not be run")
+        minimum = tuple(settings.WORKTREE_GIT_MIN_VERSION)
+        if version < minimum:
+            return Probe(
+                GIT_TOO_OLD,
+                f"git {'.'.join(map(str, version))} is older than {'.'.join(map(str, minimum))}",
+                git_version=version,
+            )
+        return await self._probe_repository(Path(directory), version)
+
+    async def snapshot(self, directory: Path | str) -> Snapshot:
+        """Write what the repository ``directory`` is in holds now as a commit; changes nothing the user sees."""
+        found = await self._usable(directory)
+        assert found.repo_root is not None
+        async with self._lock(found.repo_root):
+            return await self._snapshot(found.repo_root, "nekoclaw: snapshot")
+
+    async def create(self, project_dir: Path | str, path: Path | str, start: Start | None = None) -> Worktree:
+        """Make a worktree of the repository ``project_dir`` is in at ``path`` and return it.
+
+        ``path`` must not exist yet (an empty directory is accepted) and must
+        lie outside the repository; its last part becomes the worktree's id.
+        Raises WorktreeUnavailable when the directory does not qualify or the
+        disk is too full, WorktreeError when ``path`` cannot be used, GitError
+        when git fails; nothing is left behind then.
+        """
+        found = await self._usable(project_dir)
+        assert found.repo_root is not None
+        repo_root = found.repo_root
+        target = await asyncio.to_thread(_absolute, Path(path))
+        worktree_id = safe_segment(target.name, "worktree name")
+        await asyncio.to_thread(_check_target, target, repo_root)
+        ref = _start_ref(worktree_id)
+        async with self._lock(repo_root):
+            if await self._ref_exists(repo_root, ref):
+                raise WorktreeError(f"a worktree named {worktree_id!r} already exists in {repo_root}")
+            commit = await (start or CurrentState()).commit(self, repo_root)
+            disk = await self.check_disk(target, await self._checkout_size(repo_root, commit))
+            if not disk.enough:
+                raise WorktreeUnavailable(DISK_SPACE, f"{disk.free} bytes free, {disk.needed} needed")
+            await self._git(repo_root, "update-ref", ref, commit)
+            existed = await asyncio.to_thread(target.exists)
+            try:
+                await self._git(
+                    repo_root,
+                    "worktree",
+                    "add",
+                    "--detach",
+                    str(target),
+                    commit,
+                    timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+                )
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    await self._forget(repo_root, target, worktree_id, remove_directory=not existed)
+                raise
+        return Worktree(worktree_id, repo_root, target, found.subpath, commit)
+
+    async def open(self, project_dir: Path | str, path: Path | str) -> Worktree:
+        """Return the worktree at ``path`` made earlier for ``project_dir``, after a restart for instance."""
+        found = await self._usable(project_dir)
+        assert found.repo_root is not None
+        target = await asyncio.to_thread(_absolute, Path(path))
+        worktree_id = safe_segment(target.name, "worktree name")
+        start = await self._resolve_commit(found.repo_root, _start_ref(worktree_id))
+        return Worktree(worktree_id, found.repo_root, target, found.subpath, start)
+
+    async def merge_back(self, worktree: Worktree, landing: Landing | None = None) -> MergeResult:
+        """Land what was done in ``worktree``; see ``MergeResult`` for the outcomes. Raises GitError when git fails."""
+        async with self._lock(worktree.repo_root):
+            result = await self._snapshot(worktree.path, "nekoclaw: worktree result")
+            return await (landing or WorkingFiles()).land(self, worktree, result)
+
+    async def prepare_conflicts(self, worktree: Worktree, conflict: MergeResult) -> Worktree:
+        """Put the half-done merge of a ``conflict`` result into the worktree, with conflict markers.
+
+        The worktree then holds the merge as far as it went, and its start
+        becomes the project snapshot that merge was against, so that the
+        next ``merge_back`` lands only what is resolved from here on. Raises
+        WorktreeError when the worktree changed since the merge was tried.
+        Returns the worktree with its new start.
+        """
+        if conflict.status != "conflict":
+            raise WorktreeError("only a conflicting merge can be prepared")
+        async with self._lock(worktree.repo_root):
+            now = await self._snapshot(worktree.path, "nekoclaw: worktree result")
+            if now.tree != conflict.result_tree:
+                raise WorktreeError("the worktree changed after the merge was tried; merge again")
+            half_done = await self._commit_tree(
+                worktree.path, conflict.merged_tree, conflict.current, "nekoclaw: conflicts to resolve"
+            )
+            # The host's own worktree, not the user's checkout.
+            await self._git(
+                worktree.path,
+                "checkout",
+                "--force",
+                "--detach",
+                "--no-recurse-submodules",
+                half_done,
+                timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+            )
+            await self._git(worktree.repo_root, "update-ref", _start_ref(worktree.id), conflict.current)
+        return replace(worktree, start=conflict.current)
+
+    async def has_changes(self, worktree: Worktree) -> bool:
+        """Return whether the worktree holds anything not landed yet; False when its directory is gone."""
+        if not await asyncio.to_thread(worktree.path.is_dir):
+            return False
+        async with self._lock(worktree.repo_root):
+            return await self._has_changes(worktree.path, worktree.start)
+
+    async def remove(self, worktree: Worktree) -> None:
+        """Remove the worktree, its registration and its refs, whatever it holds; fine when already gone."""
+        async with self._lock(worktree.repo_root):
+            await self._forget(worktree.repo_root, worktree.path, worktree.id, remove_directory=True)
+
+    async def reconcile(
+        self, project_dir: Path | str, base_dir: Path | str, known: Iterable[str]
+    ) -> ReconcileReport:
+        """Remove what this module left behind for ``project_dir``'s repository that nothing knows of.
+
+        Considers the repository's worktrees directly in ``base_dir`` and its
+        refs below ``REF_PREFIX``. One whose id is not in ``known`` is
+        removed when it holds no changes (or its directory is gone) and kept
+        and reported when it does. Directories in ``base_dir`` this
+        repository does not know are left alone: they may be another's.
+        """
+        found = await self._usable(project_dir)
+        assert found.repo_root is not None
+        repo_root = found.repo_root
+        known_ids = set(known)
+        base = await asyncio.to_thread(_absolute, Path(base_dir))
+        report = ReconcileReport()
+        async with self._lock(repo_root):
+            registered = await self._registered(repo_root)
+            # A ref is left alone while a worktree of that name exists anywhere.
+            registered_ids = {path.name for path in registered}
+            for path in registered:
+                if not _same_path(path.parent, base) or path.name in known_ids:
+                    continue
+                if await asyncio.to_thread(path.is_dir):
+                    start = await self._try_resolve(repo_root, _start_ref(path.name))
+                    if start is None or await self._has_changes(path, start):
+                        report.kept.append(path)
+                        continue
+                await self._forget(repo_root, path, path.name, remove_directory=True)
+                report.removed.append(path.name)
+            for worktree_id in await self._ref_ids(repo_root):
+                if worktree_id in known_ids or worktree_id in registered_ids:
+                    continue
+                await self._delete_refs(repo_root, worktree_id)
+                report.refs_removed.append(worktree_id)
+        return report
+
+    async def check_disk(self, path: Path | str, checkout_bytes: int) -> DiskCheck:
+        """Return the free space where ``path`` would be made against what a checkout of ``checkout_bytes`` needs."""
+        free = await asyncio.to_thread(_free_space, Path(path))
+        needed = max(int(settings.WORKTREE_FREE_SPACE_FACTOR * checkout_bytes), settings.WORKTREE_MIN_FREE_BYTES)
+        return DiskCheck(free, needed)
+
+    async def git_version(self) -> tuple[int, int, int] | None:
+        """Return the version of git, or None when it cannot be run. Asked once."""
+        if self._version is False:
+            try:
+                run = await self._run(None, ["--version"], timeout=settings.WORKTREE_GIT_QUERY_SECONDS)
+            except (OSError, GitError):
+                self._version = None
+            else:
+                self._version = parse_git_version(run.decode())
+        return self._version
+
+    # -- probing ---------------------------------------------------------------
+
+    async def _usable(self, directory: Path | str) -> Probe:
+        found = await self.probe(directory)
+        if not found.usable:
+            raise WorktreeUnavailable(str(found.reason), found.detail)
+        return found
+
+    async def _probe_repository(self, directory: Path, version: tuple[int, int, int]) -> Probe:
+        def unusable(reason: str, detail: str = "", root: Path | None = None, subpath: str = "") -> Probe:
+            return Probe(reason, detail, root, subpath, version)
+
+        resolved, root = await asyncio.to_thread(_find_root, directory)
+        if not await asyncio.to_thread(resolved.is_dir):
+            return unusable(NOT_A_REPOSITORY, f"{directory} is not a directory")
+        if root is None:
+            return unusable(NOT_A_REPOSITORY, f"{directory} is in no git repository")
+        try:
+            facts = await self._git(
+                root, "rev-parse", "--path-format=absolute", "--is-bare-repository", "--absolute-git-dir", "--git-common-dir"
+            )
+            bare, git_dir, common_dir = facts.lines()[:3]
+            if bare == "true":
+                return unusable(BARE_REPOSITORY, f"{root} is a bare repository")
+            top = Path((await self._git(root, "rev-parse", "--show-toplevel")).lines()[0])
+        except (GitError, ValueError) as error:
+            return unusable(GIT_FAILED, str(error))
+        subpath = _relative(resolved, top)
+        if subpath is None:
+            return unusable(NOT_A_REPOSITORY, f"{directory} is outside {top}")
+        if subpath.split("/", 1)[0] == ".git":
+            return unusable(NOT_A_REPOSITORY, f"{directory} is inside the repository's git directory", top, subpath)
+        if subpath and (await self._git(top, "check-ignore", "-q", "--", subpath, check=False)).returncode == 0:
+            return unusable(IGNORED_DIRECTORY, f"{subpath} is ignored by the repository", top, subpath)
+        operation = await asyncio.to_thread(_operation_in_progress, Path(git_dir))
+        if operation:
+            return unusable(OPERATION_IN_PROGRESS, f"a {operation} is in progress", top, subpath)
+        sparse = await self._git(top, "config", "--type=bool", "--get", "core.sparseCheckout", check=False)
+        if sparse.decode().strip() == "true":
+            return unusable(SPARSE_CHECKOUT, "the repository uses a sparse checkout", top, subpath)
+        if await self._has_submodules(top):
+            return unusable(SUBMODULES, "the repository has submodules", top, subpath)
+        if await self._uses_lfs(top, Path(common_dir)):
+            return unusable(LFS, "the repository uses Git LFS", top, subpath)
+        return Probe(None, "", top, subpath, version)
+
+    async def _has_submodules(self, root: Path) -> bool:
+        if await asyncio.to_thread((root / ".gitmodules").exists):
+            return True
+        staged = await self._git(root, "ls-files", "-z", "--stage")
+        return any(entry.startswith(b"160000 ") for entry in staged.stdout.split(b"\0"))
+
+    async def _uses_lfs(self, root: Path, common_dir: Path) -> bool:
+        listed = await self._git(
+            root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ":(glob)**/.gitattributes"
+        )
+        names = [root / _decode(name) for name in listed.stdout.split(b"\0") if name]
+        names.append(common_dir / "info" / "attributes")
+        return await asyncio.to_thread(_lfs_in_use, names, common_dir)
+
+    # -- snapshots -------------------------------------------------------------
+
+    async def _snapshot(self, root: Path, message: str) -> Snapshot:
+        head = await self._try_resolve(root, "HEAD")
+        scratch = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="nekoclaw-index-"))
+        try:
+            env = {"GIT_INDEX_FILE": str(scratch / "index")}
+            # A copy of the real index keeps what git knows of each file's
+            # size and time, so only changed files are read again; it is
+            # only read, never written. Entries marked to be left alone
+            # (assume-unchanged, skip-worktree) would hide changes from
+            # ``add``, so then the index starts from HEAD instead.
+            real = (await self._git(root, "rev-parse", "--path-format=absolute", "--git-path", "index")).lines()[0]
+            if not await asyncio.to_thread(_copy_index, Path(real), scratch / "index") or await self._marked(root, env):
+                await self._git(root, "read-tree", *([head] if head else ["--empty"]), env=env)
+            others = await self._git(root, "ls-files", "-z", "--others", "--exclude-standard", env=env)
+            names = [_decode(name) for name in others.stdout.split(b"\0") if name]
+            skipped = await asyncio.to_thread(_too_large, root, names, settings.WORKTREE_UNTRACKED_MAX_BYTES)
+            specs = ["."] + [f":(exclude,literal,top){name}" for name in skipped]
+            await self._git(
+                root,
+                "add",
+                "--all",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+                env=env,
+                input=_nul_join(specs),
+                timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+            )
+            tree = (await self._git(root, "write-tree", env=env)).lines()[0]
+        finally:
+            await asyncio.to_thread(shutil.rmtree, scratch, True)
+        commit = await self._commit_tree(root, tree, head, message)
+        return Snapshot(commit, tree, tuple(skipped))
+
+    async def _marked(self, root: Path, env: Mapping[str, str]) -> bool:
+        """Return whether an index has entries marked assume-unchanged or skip-worktree."""
+        listed = await self._git(root, "ls-files", "-z", "-v", env=env, timeout=settings.WORKTREE_GIT_WORK_SECONDS)
+        return any(entry[:1].islower() or entry[:1] == b"S" for entry in listed.stdout.split(b"\0") if entry)
+
+    async def _commit_tree(self, root: Path, tree: str, parent: str | None, message: str) -> str:
+        args = ["commit-tree", "-m", message]
+        if parent:
+            args += ["-p", parent]
+        return (await self._git(root, *args, tree, env=IDENTITY)).lines()[0]
+
+    async def _has_changes(self, path: Path, start: str) -> bool:
+        now = await self._snapshot(path, "nekoclaw: worktree result")
+        return now.tree != await self._resolve_commit(path, f"{start}^{{tree}}", kind="tree")
+
+    # -- landing on the working files ------------------------------------------
+
+    async def _land_on_working_files(self, worktree: Worktree, result: Snapshot) -> MergeResult:
+        root = worktree.repo_root
+        current = await self._snapshot(root, "nekoclaw: project before landing")
+        merged = await self._git(
+            root,
+            "merge-tree",
+            "--write-tree",
+            "-z",
+            "--name-only",
+            "--no-messages",
+            "--merge-base",
+            worktree.start,
+            current.commit,
+            result.commit,
+            check=False,
+            timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+        )
+        if merged.returncode not in (0, 1):
+            raise GitError(["merge-tree"], merged.returncode, merged.stderr)
+        parts = [_decode(part) for part in merged.stdout.split(b"\0") if part]
+        merged_tree = parts[0]
+        common = dict(
+            skipped=result.skipped,
+            current=current.commit,
+            result=result.commit,
+            result_tree=result.tree,
+            merged_tree=merged_tree,
+        )
+        if merged.returncode == 1:
+            return MergeResult("conflict", conflicts=tuple(dict.fromkeys(parts[1:])), **common)
+        if merged_tree == current.tree:
+            return MergeResult("unchanged", **common)
+        files = await self._changes(root, current.tree, merged_tree)
+        counted = dict(
+            files=files,
+            lines_added=sum(change.added or 0 for change in files),
+            lines_deleted=sum(change.deleted or 0 for change in files),
+            **common,
+        )
+        patch = await self._git(
+            root,
+            "diff-tree",
+            "-r",
+            "-p",
+            "--binary",
+            "--full-index",
+            "--no-renames",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            current.tree,
+            merged_tree,
+            timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+        )
+        checked = await self._git(root, *_APPLY, "--check", input=patch.stdout, check=False)
+        if checked.returncode != 0:
+            return MergeResult("failed", detail=_failure("the changes do not apply", checked.stderr), **counted)
+        backup = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="nekoclaw-landing-"))
+        try:
+            try:
+                saved = await asyncio.to_thread(_back_up, root, [change.path for change in files], backup)
+            except OSError as error:
+                return MergeResult("failed", detail=f"the files to change could not be copied aside: {error}", **counted)
+            applied = await self._apply(root, patch.stdout)
+            if applied.returncode != 0:
+                detail = _failure("writing the changes failed", applied.stderr)
+            elif not await self._reads_back(root, merged_tree, files):
+                detail = "the files did not read back as merged"
+            else:
+                return MergeResult("landed", **counted)
+            left = await asyncio.to_thread(_restore, root, saved)
+            return MergeResult("failed", detail=detail, left_changed=tuple(left), **counted)
+        finally:
+            await asyncio.to_thread(shutil.rmtree, backup, True)
+
+    async def _apply(self, root: Path, patch: bytes) -> _Run:
+        return await self._git(
+            root, *_APPLY, input=patch, check=False, timeout=settings.WORKTREE_GIT_WORK_SECONDS
+        )
+
+    async def _reads_back(self, root: Path, merged_tree: str, files: tuple[FileChange, ...]) -> bool:
+        """Return whether the changed files, read as git reads them, are what the merge made."""
+        gone = [change.path for change in files if change.status == "deleted"]
+        if await asyncio.to_thread(_any_exists, root, gone):
+            return False
+        present = [change.path for change in files if change.status != "deleted"]
+        if not present:
+            return True
+        scratch = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="nekoclaw-index-"))
+        try:
+            env = {"GIT_INDEX_FILE": str(scratch / "index")}
+            await self._git(root, "read-tree", merged_tree, env=env)
+            await self._git(
+                root,
+                "add",
+                "--all",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+                env=env,
+                input=_nul_join(f":(literal,top){name}" for name in present),
+                timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+            )
+            tree = (await self._git(root, "write-tree", env=env)).lines()[0]
+        finally:
+            await asyncio.to_thread(shutil.rmtree, scratch, True)
+        return tree == merged_tree
+
+    async def _changes(self, root: Path, old: str, new: str) -> tuple[FileChange, ...]:
+        statuses = (await self._git(root, "diff-tree", "-r", "-z", "--no-renames", "--name-status", old, new)).stdout
+        fields = [_decode(part) for part in statuses.split(b"\0") if part]
+        kinds = {fields[index + 1]: fields[index] for index in range(0, len(fields) - 1, 2)}
+        counts = (await self._git(root, "diff-tree", "-r", "-z", "--no-renames", "--numstat", old, new)).stdout
+        lines: dict[str, tuple[int | None, int | None]] = {}
+        for entry in counts.split(b"\0"):
+            if not entry:
+                continue
+            added, deleted, name = entry.split(b"\t", 2)
+            lines[_decode(name)] = (_count(added), _count(deleted))
+        names = {"A": "added", "D": "deleted"}
+        return tuple(
+            FileChange(name, names.get(kind[:1], "modified"), *lines.get(name, (None, None)))  # type: ignore[arg-type]
+            for name, kind in kinds.items()
+        )
+
+    # -- worktrees and refs ----------------------------------------------------
+
+    async def _registered(self, repo_root: Path) -> list[Path]:
+        listed = await self._git(repo_root, "worktree", "list", "--porcelain", "-z")
+        return [
+            Path(_decode(entry[len(b"worktree ") :]))
+            for entry in listed.stdout.split(b"\0")
+            if entry.startswith(b"worktree ")
+        ]
+
+    async def _forget(self, repo_root: Path, path: Path, worktree_id: str, *, remove_directory: bool) -> None:
+        registered = any(_same_path(known, path) for known in await self._registered(repo_root))
+        if registered:
+            removed = await self._git(
+                repo_root,
+                "worktree",
+                "remove",
+                "--force",
+                str(path),
+                check=False,
+                timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+            )
+            if removed.returncode != 0:
+                common = Path((await self._git(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0])
+                await asyncio.to_thread(_drop_registration, common, path)
+        if remove_directory:
+            await asyncio.to_thread(_remove_tree, path)
+        await self._delete_refs(repo_root, worktree_id)
+
+    async def _delete_refs(self, repo_root: Path, worktree_id: str) -> None:
+        listed = await self._git(repo_root, "for-each-ref", "--format=%(refname)", f"{REF_PREFIX}{worktree_id}/")
+        commands = "".join(f"delete {ref}\n" for ref in listed.lines()).encode()
+        await self._git(repo_root, "update-ref", "--stdin", input=commands)
+
+    async def _ref_ids(self, repo_root: Path) -> list[str]:
+        listed = await self._git(repo_root, "for-each-ref", "--format=%(refname)", REF_PREFIX)
+        return sorted({ref[len(REF_PREFIX) :].split("/", 1)[0] for ref in listed.lines()})
+
+    async def _ref_exists(self, repo_root: Path, ref: str) -> bool:
+        return await self._try_resolve(repo_root, ref) is not None
+
+    async def _resolve_commit(self, root: Path, name: str, kind: str = "commit") -> str:
+        found = await self._try_resolve(root, name if kind != "commit" else f"{name}^{{commit}}")
+        if found is None:
+            raise WorktreeError(f"{name!r} names no {kind} in {root}")
+        return found
+
+    async def _try_resolve(self, root: Path, name: str) -> str | None:
+        found = await self._git(root, "rev-parse", "--verify", "--quiet", "--end-of-options", name, check=False)
+        lines = found.lines()
+        return lines[0] if lines else None
+
+    async def _checkout_size(self, root: Path, commit: str) -> int:
+        listed = await self._git(root, "ls-tree", "-r", "-l", "-z", commit, timeout=settings.WORKTREE_GIT_WORK_SECONDS)
+        total = 0
+        for entry in listed.stdout.split(b"\0"):
+            size = entry.split(b"\t", 1)[0].split()[-1:] if entry else []
+            if size and size[0].isdigit():
+                total += int(size[0])
+        return total
+
+    # -- running git -----------------------------------------------------------
+
+    def _lock(self, repo_root: Path) -> asyncio.Lock:
+        key = os.path.normcase(str(repo_root))
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = self._locks[key] = asyncio.Lock()
+        return lock
+
+    async def _git(
+        self,
+        cwd: Path,
+        *args: str,
+        env: Mapping[str, str] | None = None,
+        input: bytes | None = None,
+        check: bool = True,
+        timeout: float | None = None,
+    ) -> _Run:
+        run = await self._run(cwd, list(args), env=env, input=input, timeout=timeout or settings.WORKTREE_GIT_QUERY_SECONDS)
+        if check and not run.ok:
+            raise GitError(args, run.returncode, run.stderr)
+        return run
+
+    async def _run(
+        self,
+        cwd: Path | None,
+        args: list[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        input: bytes | None = None,
+        timeout: float,
+    ) -> _Run:
+        command = [
+            self._git_program,
+            "-c", f"core.hooksPath={self._no_hooks}",
+            "-c", "core.fsmonitor=false",
+            "-c", "core.longpaths=true",
+            "-c", "core.safecrlf=false",
+            # A temporary index written split would leave a shared part
+            # in the repository's git directory.
+            "-c", "core.splitIndex=false",
+            "-c", "gc.auto=0",
+            "-c", "maintenance.auto=false",
+            *args,
+        ]  # fmt: skip
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in _REDIRECTING_ENV
+        }
+        environment.update(
+            GIT_TERMINAL_PROMPT="0",
+            GCM_INTERACTIVE="never",
+            GIT_OPTIONAL_LOCKS="0",
+            GIT_NO_LAZY_FETCH="1",
+        )
+        environment.update(env or {})
+        extra = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=None if cwd is None else str(cwd),
+            stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=environment,
+            **extra,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(input), timeout)
+        except asyncio.TimeoutError:
+            await _stop(process)
+            raise GitError(args, None, f"no answer within {timeout} seconds".encode()) from None
+        except BaseException:
+            await _stop(process)
+            raise
+        return _Run(process.returncode, stdout, stderr)  # type: ignore[arg-type]
+
+
+_APPLY = ("apply", "-p1", "--whitespace=nowarn", "--binary")
+
+
+@dataclass(frozen=True)
+class _Run:
+    returncode: int
+    stdout: bytes
+    stderr: bytes
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0
+
+    def decode(self) -> str:
+        return self.stdout.decode("utf-8", "surrogateescape")
+
+    def lines(self) -> list[str]:
+        return [line for line in self.decode().splitlines() if line]
+
+
+def parse_git_version(text: str) -> tuple[int, int, int] | None:
+    """Return the version in ``git --version``'s output (``git version 2.49.0.windows.1``)."""
+    match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", text)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2)), int(match.group(3) or 0)
+
+
+def _start_ref(worktree_id: str) -> str:
+    return f"{REF_PREFIX}{worktree_id}/start"
+
+
+def _decode(raw: bytes) -> str:
+    return raw.decode("utf-8", "surrogateescape")
+
+
+def _nul_join(specs: Iterable[str]) -> bytes:
+    return b"".join(spec.encode("utf-8", "surrogateescape") + b"\0" for spec in specs)
+
+
+def _count(raw: bytes) -> int | None:
+    return int(raw) if raw.isdigit() else None
+
+
+def _failure(what: str, stderr: bytes) -> str:
+    return f"{what}: {stderr.decode('utf-8', 'replace').strip()[:500]}"
+
+
+async def _stop(process: asyncio.subprocess.Process) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        process.kill()
+    with contextlib.suppress(Exception):
+        await process.wait()
+
+
+# -- file system helpers, run in a worker thread --------------------------------
+
+
+def _fs(path: Path | str) -> str:
+    """Return ``path`` in a form Windows opens past 260 characters; unchanged elsewhere."""
+    text = os.path.abspath(str(path))
+    if sys.platform != "win32" or text.startswith("\\\\?\\"):
+        return text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text[2:]
+    return "\\\\?\\" + text
+
+
+def _absolute(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return Path(os.path.abspath(path))
+
+
+def _find_root(directory: Path) -> tuple[Path, Path | None]:
+    resolved = _absolute(directory)
+    root = repository_root(resolved)
+    try:
+        return resolved, root if (root / ".git").exists() else None
+    except OSError:
+        return resolved, None
+
+
+def _relative(path: Path, root: Path) -> str | None:
+    try:
+        relative = os.path.relpath(path, root)
+    except ValueError:  # another drive
+        return None
+    if relative == ".":
+        return ""
+    relative = relative.replace(os.sep, "/")
+    if relative == ".." or relative.startswith("../"):
+        return None
+    return relative
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+
+
+def _operation_in_progress(git_dir: Path) -> str | None:
+    for name, operation in _IN_PROGRESS:
+        if (git_dir / name).exists():
+            return operation
+    return None
+
+
+def _lfs_in_use(attribute_files: list[Path], common_dir: Path) -> bool:
+    if (common_dir / "lfs").is_dir():
+        return True
+    for path in attribute_files:
+        try:
+            if _mentions_lfs(Path(_fs(path)).read_bytes()):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _copy_index(real: Path, copy: Path) -> bool:
+    """Copy an index file with its times (git compares them with the files'); False when there is none."""
+    try:
+        shutil.copy2(real, copy)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _any_exists(root: Path, names: list[str]) -> bool:
+    return any(os.path.lexists(_fs(root / name)) for name in names)
+
+
+def _mentions_lfs(attributes: bytes) -> bool:
+    """Return whether a ``.gitattributes`` file gives some pattern the ``lfs`` filter."""
+    for line in attributes.splitlines():
+        words = line.split()
+        if words and not words[0].startswith(b"#") and b"filter=lfs" in words[1:]:
+            return True
+    return False
+
+
+def _too_large(root: Path, names: list[str], limit: int) -> list[str]:
+    large = []
+    for name in names:
+        try:
+            info = os.lstat(_fs(root / name))
+        except OSError:
+            continue
+        if info.st_size > limit:
+            large.append(name)
+    return large
+
+
+def _check_target(target: Path, repo_root: Path) -> None:
+    if _relative(target, repo_root) is not None:
+        raise WorktreeError(f"{target} is inside the repository {repo_root}")
+    if target.exists() and (not target.is_dir() or any(target.iterdir())):
+        raise WorktreeError(f"{target} already exists")
+
+
+def _free_space(path: Path) -> int:
+    probe = _absolute(path)
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    return shutil.disk_usage(probe).free
+
+
+def _remove_tree(path: Path) -> None:
+    def clear_read_only(function, failed, _info) -> None:  # type: ignore[no-untyped-def]
+        with contextlib.suppress(OSError):
+            os.chmod(failed, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+            function(failed)
+
+    shutil.rmtree(_fs(path), onerror=clear_read_only)
+
+
+def _drop_registration(common_dir: Path, path: Path) -> None:
+    """Remove the registration of a worktree of ours git would not remove, matched by where it was."""
+    for entry in (common_dir / "worktrees").iterdir():
+        try:
+            pointed = (entry / "gitdir").read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if _same_path(Path(pointed).parent, path):
+            _remove_tree(entry)
+
+
+@dataclass(frozen=True)
+class _Saved:
+    name: str
+    copy: Path | None  # None: the file did not exist before
+    made_dirs: tuple[str, ...] = ()
+
+
+def _back_up(root: Path, names: list[str], backup: Path) -> list[_Saved]:
+    saved = []
+    for index, name in enumerate(names):
+        source = _fs(root / name)
+        if os.path.lexists(source):
+            copy = backup / str(index)
+            shutil.copy2(source, _fs(copy), follow_symlinks=False)
+            saved.append(_Saved(name, copy))
+            continue
+        made = []
+        parent = (root / name).parent
+        while not os.path.lexists(_fs(parent)) and _relative(parent, root):
+            made.append(_relative(parent, root) or "")
+            parent = parent.parent
+        saved.append(_Saved(name, None, tuple(made)))
+    return saved
+
+
+def _restore(root: Path, saved: list[_Saved]) -> list[str]:
+    """Put every saved file back as it was; return the ones that could not be."""
+    left: list[str] = []
+    for entry in saved:
+        if entry.copy is None:
+            target = _fs(root / entry.name)
+            try:
+                if os.path.lexists(target):
+                    os.remove(target)
+            except OSError:
+                left.append(entry.name)
+    made = sorted({name for entry in saved for name in entry.made_dirs}, key=lambda name: name.count("/"), reverse=True)
+    for name in made:
+        with contextlib.suppress(OSError):
+            os.rmdir(_fs(root / name))
+    for entry in saved:
+        if entry.copy is not None and not _restore_one(root, entry):
+            left.append(entry.name)
+    return sorted(set(left))
+
+
+def _restore_one(root: Path, entry: _Saved) -> bool:
+    assert entry.copy is not None
+    target = _fs(root / entry.name)
+    copy = _fs(entry.copy)
+    try:
+        # Untouched by the failed write (it may be the file that stopped it,
+        # still locked): nothing to put back.
+        if (
+            os.path.isfile(target)
+            and not os.path.islink(target)
+            and not os.path.islink(copy)
+            and filecmp.cmp(target, copy, shallow=False)
+            and stat.S_IMODE(os.lstat(target).st_mode) == stat.S_IMODE(os.lstat(copy).st_mode)
+        ):
+            return True
+        # Whatever else stands there goes first: a directory, or a link that
+        # copying would follow, or that a link would not replace.
+        if os.path.lexists(target) and (os.path.islink(target) or os.path.islink(copy) or not os.path.isfile(target)):
+            if os.path.isdir(target) and not os.path.islink(target):
+                shutil.rmtree(target)
+            else:
+                os.remove(target)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copy2(copy, target, follow_symlinks=False)
+    except OSError:
+        return False
+    return True

@@ -550,6 +550,35 @@ changed its status, which is when the last one ended."""
 DEFERRED_COMMISSION_SECONDS = 3600.0
 """How long a deferred plugin result may stay open before the commission fails."""
 
+# -- worktrees a side session works in (``nekoclaw/host/worktrees.py``) ---------
+
+WORKTREE_GIT_MIN_VERSION = (2, 40, 0)
+"""The oldest git a worktree is made with. Landing merges with
+``git merge-tree --write-tree --merge-base``: ``--write-tree`` came with 2.38,
+``--merge-base`` with 2.40 (March 2023)."""
+
+WORKTREE_UNTRACKED_MAX_BYTES = 20 * 1024 * 1024
+"""A file not under version control and larger than this is left out of a
+snapshot: not copied into a worktree, and not carried back from one. Hashing
+it would make every snapshot slow (data, models, archives lying about), and
+leaving it out means a landing never touches it."""
+
+WORKTREE_MIN_FREE_BYTES = 2 * 1024**3
+"""A worktree is not made when less than this is free on its disk."""
+
+WORKTREE_FREE_SPACE_FACTOR = 2.0
+"""Nor when less than this many times the size of its checkout is free. What
+a session then installs or builds in it comes on top of the checkout."""
+
+WORKTREE_GIT_QUERY_SECONDS = 30.0
+"""How long a git command that only reads (or writes one ref) may take."""
+
+WORKTREE_GIT_WORK_SECONDS = 600.0
+"""How long a git command that goes through every file may take: a snapshot,
+making or removing a worktree, a merge, writing the merged changes. Seconds
+for a repository of a few thousand files; this is for slow disks and much
+larger repositories."""
+
 # ---------------------------------------------------------------------------
 # Sessions writing to one another, and being woken
 # ---------------------------------------------------------------------------

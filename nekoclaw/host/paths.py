@@ -26,6 +26,7 @@
     ├─ task_agent_space/         what task agents keep for later commissions
     │                            (``SpacePaths``): plain text, written by
     │                            the host only
+    ├─ wt/<name>/                git worktrees side sessions work in
     └─ task_agents/projects/<project>/sessions/<commission id>/
         ├─ transcript.jsonl      written by the runtime
         ├─ outputs/              large tool output, written by the runtime
@@ -227,6 +228,19 @@ class HostPaths:
         downloaded again, and what was said in dsh's sessions stays behind.
         """
         return self.root() / "dsh"
+
+    def worktrees_dir(self) -> Path:
+        """Return where the git worktrees side sessions work in are made (``nekoclaw.host.worktrees``).
+
+        Kept short, and each worktree should be named shortly, because a
+        worktree holds the whole repository below it and Windows tools that
+        do not handle paths past 260 characters may be run on it.
+        """
+        return self.root() / "wt"
+
+    def worktree_dir(self, name: str) -> Path:
+        """Return the directory of one worktree; raises ValueError for an unsafe name."""
+        return self.worktrees_dir() / _segment(name, "worktree name")
 
     def space(self) -> SpacePaths:
         """Return the paths of the task agent space."""
