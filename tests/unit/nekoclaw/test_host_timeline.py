@@ -610,6 +610,37 @@ async def test_queued_behind_a_commission_of_its_session(ledger):
     assert (wait["kind"], wait["target"]["type"], wait["text"]) == ("place", "place", "")
 
 
+@pytest.mark.parametrize("let_go", ["rests", "queued"])
+async def test_queued_behind_one_that_let_its_session_go_waits_for_a_place(ledger, let_go):
+    main = await _session(ledger, "main")
+    holder = await _working(ledger, main, "first")
+    queued = await _file(ledger, main, "second")
+    await ledger.append_event(queued.id, "queued", {"ahead": 0, "behind": holder.id})
+    if let_go == "rests":
+        await ledger.wake_add(
+            session_id=main.id, commission_id=holder.id, note="later", due_at=2000.0, pending_max=5, daily_max=5
+        )
+        assert await ledger.rest(holder.id) is not None
+    else:
+        assert (await ledger.transition(holder.id, "queued")).applied
+
+    kinds = {wait["waiter"]["commission_id"]: wait["kind"] for wait in await _waits(ledger)}
+
+    assert kinds[queued.id] == "place"
+
+
+async def test_queued_behind_one_waiting_for_the_user_waits_for_it(ledger):
+    main = await _session(ledger, "main")
+    holder = await _working(ledger, main, "first")
+    queued = await _file(ledger, main, "second")
+    await ledger.append_event(queued.id, "queued", {"ahead": 0, "behind": holder.id})
+    assert (await ledger.transition(holder.id, "waiting_user")).applied
+
+    kinds = {wait["waiter"]["commission_id"]: wait["kind"] for wait in await _waits(ledger)}
+
+    assert kinds[queued.id] == "queue"
+
+
 async def test_queued_behind_after_it_was_at_work_before(ledger):
     main = await _session(ledger, "main")
     holder = await _working(ledger, main, "first")

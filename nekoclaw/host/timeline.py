@@ -503,8 +503,8 @@ def read_waits(
     """
     marks = ", ".join("?" for _ in _UNDER_WAY)
     under_way = conn.execute(
-        "SELECT id, session_id, lanlan_name, project, status, parent_id, source, title, dispatch_text, "
-        f"pending_question, created_at FROM commissions WHERE status IN ({marks})",
+        "SELECT id, session_id, lanlan_name, project, status, resting_since, parent_id, source, title, "
+        f"dispatch_text, pending_question, created_at FROM commissions WHERE status IN ({marks})",
         _UNDER_WAY,
     ).fetchall()
     by_id = {row["id"]: row for row in under_way}
@@ -523,6 +523,10 @@ def read_waits(
         if last_queued is not None and (last_status is None or last_queued[0] > last_status[0]):
             behind = last_queued[2].get("behind")
             holder = by_id.get(behind) if isinstance(behind, str) else None
+            # It keeps the session only while it is worked on or waits for the
+            # user: one that rests, or is queued itself, let it go.
+            if holder is not None and (holder["status"] == "queued" or holder["resting_since"] is not None):
+                holder = None
         since = max(
             [row["created_at"], *(item[1] for item in (last_status, last_queued) if item is not None)]
         )
