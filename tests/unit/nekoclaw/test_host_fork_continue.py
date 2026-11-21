@@ -449,3 +449,127 @@ async def test_a_session_counts_only_the_opening_messages_it_took(ledger):
     assert await ledger.opened_in(second.id, session.id) is None
     assert await ledger.opened_in(second.id, "copy") is not None
     assert await ledger.opened_in(first.id, session.id) is not None
+
+
+async def test_every_finished_copy_listed_is_told_whole_within_the_limit(hosts, tmp_path):
+    scripts = {EXPORT: ScriptedLLM([_report("export added")]), "add a chart": ScriptedLLM([_report("chart added")])}
+    host = _host(hosts, tmp_path, scripts)
+    await host.space.touch_project("Budget app")
+    first = await wait_status(host, (await _dispatch(host, EXPORT)).id, "done")
+    long = " ".join(["the totals are computed month by month in tables.py"] * 40)
+    finished = []
+    for number in range(settings.TASK_AGENT_FORKED_WORK_MAX_ITEMS):
+        copy = await host.ledger.create_session(
+            lanlan_name="Lan", kind="fork", forked_from=first.session_id, name=f"copy-{number}", project="Budget app"
+        )
+        item, _created = await host.ledger.create(
+            lanlan_name="Lan", title=f"question {number}", dispatch_text="q", user_text="q", source="dispatch",
+            session_id=copy.id,
+        )
+        await host.ledger.transition(item.id, "working")
+        await host.ledger.transition(item.id, "done", result_summary=long)
+        finished.append(item)
+    third = await wait_status(host, (await _dispatch(host, "add a chart")).id, "done")
+    told = _said(scripts["add a chart"].requests[0])[-1]
+    assert told.startswith(f"Commission {third.id}\n")
+    head = told.index(brain_texts.TASK_AGENT_FORKED_WORK.split("{items}")[0])
+    part = told[head:].split("\n\n")[0]
+    from utils.tokenize import count_tokens
+
+    assert count_tokens(part) <= settings.TASK_AGENT_FORKED_WORK_MAX_TOKENS
+    # Each one put on record as told was said.
+    for item in finished:
+        assert f'"{item.title}" (done): the totals' in part
+        assert "told_to_session" in await _types(host, item.id)
+
+
+async def test_what_the_user_answered_in_the_copy_goes_back_with_it(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        RENAME: ScriptedLLM(
+            [
+                [call("report", {"status": "waiting", "summary": "Which title?"}, "call-w"), finish("tool_calls")],
+                [call("write", {"file_path": "chart.py", "content": "x"}, "call-1"), finish("tool_calls")],
+                [say("The title is set in chart.py."), finish()],
+                _report("renamed", "call-2"),
+            ]
+        ),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    await _export_at_work(host, scripts)
+    second = await _dispatch(host, RENAME)
+    await wait_status(host, second.id, "waiting_user")
+    assert await host.task_agents.answer(second.id, "Monthly totals")
+    await wait_until(lambda: _handed_back(host, second.id), what="the hand-back")
+    release.set()
+    await wait_status(host, second.id, "done")
+    said = _said(scripts[RENAME].requests[3])[-1]
+    assert said.endswith("\n\nMonthly totals")
+
+
+async def test_a_copy_whose_close_cannot_be_asked_for_is_handed_back_at_its_next_request(hosts, tmp_path, monkeypatch):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        RENAME: ScriptedLLM(
+            [
+                [call("write", {"file_path": "chart.py", "content": "x"}, "call-1"), finish("tool_calls")],
+                [call("glob", {"pattern": "*.py"}, "call-2"), finish("tool_calls")],
+                [call("glob", {"pattern": "*.md"}, "call-3"), finish("tool_calls")],
+                _report("renamed", "call-4"),
+            ]
+        ),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    first = await _export_at_work(host, scripts)
+    runtime = host.task_agents._runtimes.builtin()
+    close = runtime.close
+    failed: list[str] = []
+
+    async def failing_once(session_id: str) -> None:
+        if session_id != first.session_id and not failed:
+            failed.append(session_id)
+            raise RuntimeError("the runtime is busy")
+        await close(session_id)
+
+    monkeypatch.setattr(runtime, "close", failing_once)
+    second = await _dispatch(host, RENAME)
+    await wait_until(lambda: _handed_back(host, second.id), what="the hand-back")
+    # The close that failed left it in the copy for one more request; then it was handed back.
+    assert failed and len(scripts[RENAME].requests) == 3
+    release.set()
+    assert (await wait_status(host, second.id, "done")).session_id == first.session_id
+
+
+async def test_a_copy_that_is_gone_when_it_is_closed_is_handed_back_all_the_same(hosts, tmp_path, monkeypatch):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        RENAME: ScriptedLLM(
+            [
+                [call("write", {"file_path": "chart.py", "content": "x"}, "call-1"), finish("tool_calls")],
+                [say("It is in chart.py."), finish()],
+                _report("renamed", "call-2"),
+            ]
+        ),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    first = await _export_at_work(host, scripts)
+    runtime = host.task_agents._runtimes.builtin()
+    close = runtime.close
+
+    async def gone(session_id: str) -> None:
+        if session_id == first.session_id:
+            await close(session_id)
+            return
+        # As a runtime whose session went away meanwhile answers.
+        runtime.core._reject(session_id, "close", f'unknown session "{session_id}"')
+
+    monkeypatch.setattr(runtime, "close", gone)
+    second = await _dispatch(host, RENAME)
+    await wait_until(lambda: _handed_back(host, second.id), what="the hand-back")
+    release.set()
+    done = await wait_status(host, second.id, "done")
+    assert done.session_id == first.session_id
+    assert "\n    It is in chart.py.\n" in _said(scripts[RENAME].requests[2])[-1]

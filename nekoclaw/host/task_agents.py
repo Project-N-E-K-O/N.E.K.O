@@ -1794,8 +1794,12 @@ class TaskAgentManager:
         back: bool = False,
         excerpt: str = "",
         documents: str = "",
+        copies: str = "",
     ) -> str:
         """Return the message that opens a commission in its session.
+
+        ``copies`` is what it says of copies of the session (``_copies_said``),
+        put together once for every wording of one start.
 
         What was dispatched and what the user said; which earlier commission
         it follows up, if one; how the user wants such things done; the
@@ -1867,7 +1871,6 @@ class TaskAgentManager:
         capped = truncate_to_tokens("\n\n".join(parts), TASK_AGENT_BRIEF_MAX_TOKENS) if parts else ""
         opening = "\n\n".join(part for part in (whole, capped) if part)
         # After the cap above, each within a cap of its own.
-        copies = await self._copies_said(commission)
         if copies:
             opening += "\n\n" + copies
         if excerpt:
@@ -1902,7 +1905,7 @@ class TaskAgentManager:
         """
         from config import nekoclaw_settings as settings
         from config.prompts import prompts_nekoclaw_brain as texts
-        from utils.tokenize import truncate_to_tokens
+        from utils.tokenize import count_tokens, truncate_to_tokens
 
         self._forks_said.pop(commission.id, None)
         if not _carried_on(commission) or not commission.session_id:
@@ -1921,17 +1924,24 @@ class TaskAgentManager:
         ]
         if not done:
             return ""
-        # Told once the session took the message that says it (``_note_opened``).
-        self._forks_said[commission.id] = [item.id for item in done]
+        # Each within an even share of what is left once the words around
+        # them are counted: every one that is put on record as told below
+        # is told, and none is cut off whole by the ones before it.
+        share = max(
+            0, settings.TASK_AGENT_FORKED_WORK_MAX_TOKENS - count_tokens(texts.TASK_AGENT_FORKED_WORK.format(items=""))
+        ) // len(done)
         items = "\n".join(
-            texts.TASK_AGENT_FORKED_WORK_ITEM.format(
-                title=item.title, status=item.status, result=" ".join((item.result_summary or item.status_reason or "").split())
+            truncate_to_tokens(
+                texts.TASK_AGENT_FORKED_WORK_ITEM.format(
+                    title=item.title, status=item.status, result=" ".join((item.result_summary or item.status_reason or "").split())
+                ),
+                share,
             )
             for item in done
         )
-        return truncate_to_tokens(
-            texts.TASK_AGENT_FORKED_WORK.format(items=items), settings.TASK_AGENT_FORKED_WORK_MAX_TOKENS
-        )
+        # Told once the session took the message that says it (``_note_opened``).
+        self._forks_said[commission.id] = [item.id for item in done]
+        return texts.TASK_AGENT_FORKED_WORK.format(items=items)
 
     async def _opening_of_question(self, commission: Commission) -> str:
         """Return what opens the commission in which a copy of a session answers a question another session asked it.
@@ -2413,10 +2423,13 @@ class TaskAgentManager:
             # up, and the commission is opened after all.
             unsaid = runtime_name == RUNTIME_BUILTIN and not opens_in(RUNTIME_BUILTIN)
             documents = "" if unsaid else await self._repository_documents(workdir, session_path)
+            # Once, for whichever wording is said: what it says of copies of
+            # the session is what is put on record as told (``_note_opened``).
+            copies = await self._copies_said(commission)
 
             async def worded(*, cleared: bool, back: bool = False, excerpt: str = "") -> str:
                 return await self._opening(
-                    commission, cleared=cleared, back=back, excerpt=excerpt, documents=documents
+                    commission, cleared=cleared, back=back, excerpt=excerpt, documents=documents, copies=copies
                 )
 
             # A session that holds nothing in the runtime that takes the
@@ -4626,6 +4639,11 @@ class TaskAgentManager:
             await self._close_session(session)
         elif command == "close":
             # The session is gone already, for instance with its runtime process.
+            if session.handing_back is not None and not self._closed:
+                # A copy that was closed to hand its commission back: gone
+                # is as good as closed (``_handed_back``).
+                await self._handed_back(session)
+                return
             await self._release(commission_id)
 
     async def _close_session(self, session: _Session) -> None:
@@ -7578,7 +7596,18 @@ class TaskAgentManager:
             )
         except Exception:  # noqa: BLE001 - the note is for the record; it is handed back all the same
             logger.warning("noting that a copy handed its commission back failed", exc_info=True)
-        await self._close_session(session)
+        try:
+            await self._close_session(session)
+        except Exception:
+            # (Not where whoever asked is cancelled: the close cuts short the
+            # run that asked, in front of whose next request this may be.)
+            # The close was not asked for after all: nothing will say the copy
+            # is closed. What it wrote is kept, and the next look (before its
+            # next request) hands it back again; a copy whose runtime went
+            # away ends as any session that went away does.
+            session.findings = [session.handing_back]
+            session.handing_back = None
+            raise
         return True
 
     async def _handed_back(self, session: _Session) -> None:
@@ -7616,10 +7645,12 @@ class TaskAgentManager:
             # came while it was queued went with the work it was given
             # there. (It is handed back once: from then on it is the
             # session's own.)
+            # Also how the user answered what it asked there. In the order
+            # it was said.
             told = [
                 str(event.payload.get("text") or "")
                 for event in await self._ledger.events(commission_id)
-                if event.type == "told" and str(event.payload.get("text") or "").strip()
+                if event.type in ("told", "answered") and str(event.payload.get("text") or "").strip()
             ]
         except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
             logger.warning("handing commission %s back to its session failed: %s", commission_id, exc)
