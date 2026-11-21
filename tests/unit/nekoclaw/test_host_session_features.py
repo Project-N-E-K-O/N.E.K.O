@@ -1924,6 +1924,46 @@ async def test_the_time_a_session_is_idle_before_it_is_summed_up_is_what_the_use
     assert (await host.ledger.get_session(first.id)).status == "closed"
 
 
+async def test_a_session_that_is_waiting_keeps_the_time_it_was_given_when_the_user_sets_another(
+    hosts, tmp_path, monkeypatch
+):
+    _idle_on(monkeypatch, after=30.0)
+    summary = [say("## Current Work\n- export added"), _used(7_000, 60), finish()]
+    export = ScriptedLLM([*_long_work("export added"), summary])
+    host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=_small_window)
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    manager._drop_idle_timer(first.id)
+
+    # Its time is up in a moment; before the timer comes due the user sets 30 days (nothing is awaited
+    # between the two, so the timer cannot come due in between).
+    seen: list[float | None] = []
+    look = manager._idle_compact
+
+    async def spy(session_id: str, stops: int | None = None, after: float | None = None) -> bool:
+        seen.append(after)
+        return await look(session_id, stops, after)
+
+    monkeypatch.setattr(manager, "_idle_compact", spy)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.05)
+    await manager._schedule_idle_compact(first.id)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 30 * 86_400.0)
+
+    # The wait it was given is the one that counts: it is summed up when that is up, and no wait to
+    # day 30 is set in its place.
+    await wait_until(lambda: len(export.requests) == 6, what="the request that sums it up")
+    await _idle_work_over(host)
+    assert seen[0] == 0.05
+    assert (await host.ledger.get_session(first.id)).compacted_at is not None
+    assert first.id not in manager._idle_timers
+    # What is set after that is for the sessions that are let go from then on.
+    assert await manager._idle_after() == 30 * 86_400.0
+
+
 async def test_a_session_a_commission_took_while_the_time_was_looked_up_gets_no_timer(hosts, tmp_path, monkeypatch):
     _idle_on(monkeypatch, after=30.0)
     manager = _host(hosts, tmp_path, ScriptedLLM()).task_agents
