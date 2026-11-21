@@ -1029,6 +1029,9 @@ def _plugin_process_runner(
                 logger.debug("[Plugin Process] Could not read startup config through SDK: {}", type(e).__name__)
 
         # Configuration overrides instance defaults, preserving old checkpoint fallback order.
+        from plugin.sdk.shared.storage.state import PluginStatePersistence
+
+        valid_persist_modes = PluginStatePersistence.VALID_PERSIST_MODES
         freezable_keys = getattr(instance, "__freezable__", []) or []
         persist_mode = getattr(instance, "__persist_mode__", None)
         if persist_mode is None:
@@ -1038,7 +1041,7 @@ def _plugin_process_runner(
             state_cfg = effective_cfg.get("plugin_state", {})
             if isinstance(state_cfg, dict):
                 cfg_persist_mode = state_cfg.get("persist_mode")
-                if cfg_persist_mode in ("auto", "manual", "off"):
+                if cfg_persist_mode in valid_persist_modes:
                     persist_mode = cfg_persist_mode
                     logger.debug("[Plugin Process] persist_mode from effective config: {}", persist_mode)
             # Backward-compatible old [plugin_checkpoint] settings.
@@ -1046,7 +1049,7 @@ def _plugin_process_runner(
                 checkpoint_cfg = effective_cfg.get("plugin_checkpoint", {})
                 if isinstance(checkpoint_cfg, dict):
                     cfg_freeze_mode = checkpoint_cfg.get("freeze_mode")
-                    if cfg_freeze_mode in ("auto", "manual", "off"):
+                    if cfg_freeze_mode in valid_persist_modes:
                         persist_mode = cfg_freeze_mode
                         logger.debug("[Plugin Process] persist_mode from legacy plugin_checkpoint config: {}", persist_mode)
         except Exception as e:

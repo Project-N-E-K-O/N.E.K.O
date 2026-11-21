@@ -27,6 +27,9 @@ from plugin.sdk.shared.core.push_message_schema import (
     LEGACY_PUSH_MESSAGE_TRUTHY_ONLY_FIELDS,
     format_push_message_v1_static_diagnostic,
 )
+from plugin.sdk.shared.models.exceptions import InvalidArgumentError
+from plugin.sdk.shared.storage.database import PluginDatabase
+from plugin.sdk.shared.storage.state import PluginStatePersistence
 
 from plugin.utils.source_paths import iter_plugin_python_files
 from ..core.build_rules import reraise_walk_error
@@ -39,6 +42,73 @@ _PLUGIN_ENTRY_FIELDS_MAX = 64
 _PLUGIN_ENTRY_KEY_LENGTH_MAX = 256
 # Fields the registry coerces with bool(), so "false" would read as True.
 _PLUGIN_ENTRY_BOOL_FIELDS = ENTRY_CONTRACT_BOOL_FIELDS
+# Locales for new check messages: English first as the main line, the rest below it.
+_MESSAGE_LOCALES = ("en", "zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt")
+_STORE_BACKEND_IGNORED = {
+    "en": "[plugin.store].backend is not read by the runtime and has no effect",
+    "zh-CN": "[plugin.store].backend 不会被运行时读取，写了没有效果",
+    "zh-TW": "[plugin.store].backend 不會被執行環境讀取，寫了沒有效果",
+    "ja": "[plugin.store].backend はランタイムで読み取られないため、効果はありません",
+    "ko": "[plugin.store].backend는 런타임에서 읽지 않으므로 효과가 없습니다",
+    "ru": "[plugin.store].backend не читается средой выполнения и ни на что не влияет",
+    "es": "[plugin.store].backend no lo lee el entorno de ejecución y no tiene ningún efecto",
+    "pt": "[plugin.store].backend não é lido pelo ambiente de execução e não tem efeito",
+}
+
+
+_DATABASE_NAME_INVALID = {
+    "en": "[plugin.database].name must be a plain file name that also works on Windows: "
+    "no folders, drive letters, \"..\", characters <>:\"/\\|?*, a trailing dot or space, or reserved names such as CON or NUL",
+    "zh-CN": "[plugin.database].name 必须是在 Windows 上也能用的单纯文件名：不能带目录、盘符、\"..\"、"
+    "字符 <>:\"/\\|?*，不能以点或空格结尾，也不能用 CON、NUL 这类保留名",
+    "zh-TW": "[plugin.database].name 必須是在 Windows 上也能用的單純檔案名稱：不能帶目錄、磁碟代號、\"..\"、"
+    "字元 <>:\"/\\|?*，不能以點或空格結尾，也不能用 CON、NUL 這類保留名稱",
+    "ja": "[plugin.database].name は Windows でも使える単純なファイル名にしてください。フォルダー、ドライブ文字、"
+    "\"..\"、文字 <>:\"/\\|?*、末尾のドットや空白、CON や NUL などの予約名は使えません",
+    "ko": "[plugin.database].name은 Windows에서도 쓸 수 있는 파일 이름만 써야 합니다. 폴더, 드라이브 문자, "
+    "\"..\", 문자 <>:\"/\\|?*, 끝의 마침표나 공백, CON·NUL 같은 예약 이름은 쓸 수 없습니다",
+    "ru": "[plugin.database].name должно быть простым именем файла, допустимым и в Windows: без папок, букв дисков, "
+    "\"..\", символов <>:\"/\\|?*, точки или пробела в конце и зарезервированных имён вроде CON или NUL",
+    "es": "[plugin.database].name debe ser un nombre de archivo simple que también sirva en Windows: sin carpetas, "
+    "letras de unidad, \"..\", caracteres <>:\"/\\|?*, punto o espacio final ni nombres reservados como CON o NUL",
+    "pt": "[plugin.database].name deve ser um nome de arquivo simples que também funcione no Windows: sem pastas, "
+    "letras de unidade, \"..\", caracteres <>:\"/\\|?*, ponto ou espaço no final nem nomes reservados como CON ou NUL",
+}
+# Windows refuses these in any file name, and these device names with any extension.
+_WINDOWS_FORBIDDEN_FILENAME_CHARS = frozenset('<>:"/\\|?*') | {chr(code) for code in range(32)}
+_WINDOWS_RESERVED_FILENAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    | {f"{device}{digit}" for device in ("COM", "LPT") for digit in "123456789\u00b9\u00b2\u00b3"}
+)
+# Hint added under the persist_mode error for the old spellings; {new} / {old} are filled in.
+_PERSIST_MODE_MIGRATION_HINT = {
+    "en": 'use "{new}" instead of "{old}"',
+    "zh-CN": '请把 "{old}" 改成 "{new}"',
+    "zh-TW": '請把 "{old}" 改成 "{new}"',
+    "ja": '"{old}" の代わりに "{new}" を使ってください',
+    "ko": '"{old}" 대신 "{new}"를 사용하세요',
+    "ru": 'используйте "{new}" вместо "{old}"',
+    "es": 'usa "{new}" en lugar de "{old}"',
+    "pt": 'use "{new}" em vez de "{old}"',
+}
+
+
+def _format_multilingual(texts: dict[str, str], *, head: str | None = None) -> str:
+    """One message in all locales.
+
+    Without ``head`` the English text is the main line and the other locales follow
+    on indented lines. With ``head`` (an existing English message) that is the main
+    line and every locale, English included, follows it.
+    """
+    lines = [texts["en"] if head is None else head]
+    lines.extend(
+        f"      {locale}: {texts[locale]}" for locale in _MESSAGE_LOCALES if head is not None or locale != "en"
+    )
+    return "\n".join(lines)
+
+
+# Old persist_mode spellings check used to accept; the host never applied them.
+_PLUGIN_STATE_PERSIST_MODE_MIGRATIONS = {"always": "auto", "disabled": "off"}
 
 
 def validate_plugin_dir(
@@ -183,6 +253,7 @@ def _check_plugin_toml_schema(
         "install",
         "safety",
         "config_profiles",
+        "database",
         "dependency",
         "dependencies",
         "previous_ids",
@@ -211,6 +282,7 @@ def _check_plugin_toml_schema(
     _check_author_table(plugin_table.get("author"), issues)
     _check_sdk_table(plugin_table.get("sdk"), issues)
     _check_store_table(plugin_table.get("store"), issues)
+    _check_database_table(plugin_table.get("database"), issues)
     _check_shared_table(plugin_table.get("shared"), issues)
     _check_i18n_table(plugin_dir, plugin_table.get("i18n"), issues)
     _check_install_table(plugin_dir, plugin_table.get("install"), issues)
@@ -417,10 +489,46 @@ def _check_store_table(value: object, issues: list[tuple[str, str]]) -> None:
         issues.append(("error", "[plugin.store] must be a table"))
         return
     _warn_unknown_keys(value, {"enabled", "backend"}, "[plugin.store]", issues)
-    _check_optional_bool(value, "enabled", "[plugin.store].enabled", issues)
-    backend = value.get("backend")
-    if backend is not None:
-        _check_enum(backend, "[plugin.store].backend", {"file", "sqlite", "memory"}, issues)
+    # The SDK applies bool() (resolve_store_enabled), so enabled = "false" would turn the store on.
+    _check_entry_bool(value.get("enabled"), "[plugin.store].enabled", issues, reader="the SDK")
+    if "backend" in value:
+        # Still a known key so existing plugin.toml files keep passing, but the SDK
+        # only reads [plugin.store].enabled (resolve_store_enabled); backend is never read.
+        issues.append(("warning", _format_multilingual(_STORE_BACKEND_IGNORED)))
+
+
+def _check_database_table(value: object, issues: list[tuple[str, str]]) -> None:
+    """Check ``[plugin.database]``: the keys the SDK reads to open the plugin database."""
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.database] must be a table"))
+        return
+    _warn_unknown_keys(value, {"enabled", "name"}, "[plugin.database]", issues)
+    # The SDK applies bool() (resolve_db_config), so enabled = "false" would turn the database on.
+    _check_entry_bool(value.get("enabled"), "[plugin.database].enabled", issues, reader="the SDK")
+    name = value.get("name")
+    if name is None:
+        return
+    if not isinstance(name, str):
+        # The SDK would str() it, but a non-string file name in TOML is almost always a typo.
+        issues.append(("error", "[plugin.database].name must be a string"))
+        return
+    try:
+        PluginDatabase._normalize_db_name(name)
+        # The SDK checks with the host's own Path; a name like "C:notes.db" or "notes?.db"
+        # passes on Linux/macOS but cannot be created on Windows, so check that too.
+        valid = not name or (
+            PureWindowsPath(name).name == name
+            and not _WINDOWS_FORBIDDEN_FILENAME_CHARS.intersection(name)
+            and name.split(".", 1)[0].strip().upper() not in _WINDOWS_RESERVED_FILENAMES
+            # Windows drops a trailing dot or space, so the file would not match the name.
+            and name[-1] not in ". "
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        issues.append(("error", _format_multilingual(_DATABASE_NAME_INVALID)))
 
 
 def _check_shared_table(value: object, issues: list[tuple[str, str]]) -> None:
@@ -809,15 +917,21 @@ def _check_entry_field_types(
             ))
 
 
-def _check_entry_bool(value: object, label: str, issues: list[tuple[str, str]]) -> None:
-    # Unlike _check_optional_bool, no string spelling is safe here: the registry
+def _check_entry_bool(
+    value: object,
+    label: str,
+    issues: list[tuple[str, str]],
+    *,
+    reader: str = "the registry",
+) -> None:
+    # Unlike _check_optional_bool, no string spelling is safe here: the reader
     # applies bool(), so "false", "no", "0" and "off" all read as True.
     if value is None or isinstance(value, bool):
         return
     if isinstance(value, str):
         issues.append((
             "error",
-            f"{label} must be true/false, not a string; the registry reads any non-empty string as true",
+            f"{label} must be true/false, not a string; {reader} reads any non-empty string as true",
         ))
         return
     issues.append(("error", f"{label} must be a boolean"))
@@ -948,10 +1062,24 @@ def _check_plugin_state_table(value: object, issues: list[tuple[str, str]]) -> N
     _warn_unknown_keys(value, {"backend", "persist_mode"}, "[plugin_state]", issues)
     backend = value.get("backend")
     if backend is not None:
-        _check_enum(backend, "[plugin_state].backend", {"file", "sqlite", "memory"}, issues)
+        # Ask the SDK itself: it treats "" as "off" and ignores case.
+        try:
+            accepted = isinstance(backend, str) and bool(PluginStatePersistence.normalize_backend(backend))
+        except InvalidArgumentError:
+            accepted = False
+        if not accepted:
+            _check_enum(backend, "[plugin_state].backend", set(PluginStatePersistence.VALID_BACKENDS), issues)
     persist_mode = value.get("persist_mode")
-    if persist_mode is not None:
-        _check_enum(persist_mode, "[plugin_state].persist_mode", {"auto", "always", "manual", "disabled"}, issues)
+    if persist_mode is not None and persist_mode not in PluginStatePersistence.VALID_PERSIST_MODES:
+        message = (
+            "[plugin_state].persist_mode must be one of: "
+            f"{', '.join(sorted(PluginStatePersistence.VALID_PERSIST_MODES))}"
+        )
+        replacement = _PLUGIN_STATE_PERSIST_MODE_MIGRATIONS.get(persist_mode) if isinstance(persist_mode, str) else None
+        if replacement is not None:
+            hint = {locale: text.format(new=replacement, old=persist_mode) for locale, text in _PERSIST_MODE_MIGRATION_HINT.items()}
+            message = _format_multilingual(hint, head=message)
+        issues.append(("error", message))
 
 
 def _check_entry_target(
