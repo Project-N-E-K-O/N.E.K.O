@@ -820,14 +820,17 @@ class DshRuntime:
         session.asks.add(task)
         try:
             if control_check:
-                name, _ = session.tool_calls[call_id]
+                name, arguments = session.tool_calls[call_id]
                 if name not in TASK_CONTROL_TOOLS:
                     return _REJECT
                 # ACP represents every prompt as user text. A framed peer message must
                 # not establish or change a goal on the strength of that transport role.
-                eligible = not (session.in_turn and name in {"create_goal", "update_goal"}) or (
-                    session.spec.top_level and session.human_in_turn
-                )
+                eligible = True
+                if name in {"create_goal", "update_goal"}:
+                    # Between host prompts, dsh may run its own goal round. Its goal
+                    # tool validates the exact goal, revision and round on execution.
+                    terminal = name == "update_goal" and isinstance(arguments, dict) and arguments.get("action") in ("complete", "blocked")
+                    eligible = session.spec.top_level and (session.human_in_turn if session.in_turn else terminal)
                 if "task_control_begin" not in self._host.capabilities:
                     return _ALLOW if eligible else _REJECT
                 payload = {"tool": name, "call_id": call_id}

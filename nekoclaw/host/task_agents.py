@@ -1082,6 +1082,7 @@ class TaskAgentManager:
         # noted with nothing of the same session in between.
         self._usage_locks: dict[str, asyncio.Lock] = {}
         self._starting: set[asyncio.Task[Any]] = set()
+        self._control_settlements: set[asyncio.Task[None]] = set()
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pump: asyncio.Task[None] | None = None
         self._closed = False
@@ -2023,7 +2024,8 @@ class TaskAgentManager:
         self, commission_id: str, *, prompt: str | None = None, still_wanted: Callable[[], bool] | None = None
     ) -> bool:
         """Start a commission whose place is taken; a place it leaves unused goes to the queue."""
-        started = await self._start(commission_id, prompt=prompt, still_wanted=still_wanted)
+        with call_audit.commission_entry():
+            started = await self._start(commission_id, prompt=prompt, still_wanted=still_wanted)
         if not started:
             await self._start_next()
         return started
@@ -2741,7 +2743,9 @@ class TaskAgentManager:
         if session is not None:
             for record, grant in session.control_calls.values():
                 self._permissions.release_grant(grant)
-                self._spawn(call_audit.finish_call(record, "cancelled"))
+                settlement = asyncio.create_task(call_audit.finish_call(record, "cancelled"))
+                self._control_settlements.add(settlement)
+                settlement.add_done_callback(self._control_settlements.discard)
             session.control_calls.clear()
 
     def _discard(self, commission_id: str) -> None:
@@ -2903,7 +2907,8 @@ class TaskAgentManager:
                 return
             self._queue.remove(commission_id)
             if self._take_place(commission_id):
-                await self._start(commission_id, prompt=self._resume.pop(commission_id, None))
+                with call_audit.commission_entry():
+                    await self._start(commission_id, prompt=self._resume.pop(commission_id, None))
             else:
                 # Its session is not known, which every way into the queue
                 # sees to: it must not stay queued for nobody.
@@ -7847,8 +7852,8 @@ class TaskAgentManager:
             self._discard(commission_id)
         # Discarding a session with a native control still in flight schedules
         # its cancellation write. Let it finish while the ledger is open.
-        if self._starting:
-            await asyncio.wait(list(self._starting), timeout=_SHUTDOWN_START_WAIT_SECONDS)
+        if self._control_settlements:
+            await asyncio.wait(list(self._control_settlements), timeout=_SHUTDOWN_START_WAIT_SECONDS)
         self._held_by.clear()
         self._unsubscribe()
         # And once more, now that no run ends any more: the sessions that

@@ -113,7 +113,7 @@ async def test_native_controls_reserve_and_settle_only_their_own_call(env, monke
                 "tool_name": name, "is_error": name == "todo_write", "text": "private local state",
             })
         manager._run_over(source.id)
-        await asyncio.gather(*manager._starting)
+        await asyncio.gather(*manager._control_settlements)
         rows = (await trace(host, source))[1:]
         assert {r["target"]: r["status"] for r in rows} == {
             "get_goal": "completed", "todo_write": "failed", "create_goal": "cancelled", "update_goal": "cancelled",

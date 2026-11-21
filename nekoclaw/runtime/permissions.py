@@ -218,7 +218,7 @@ def make_permission_hook(
                 return True, "task control could not be registered"
             if reply is None:
                 return True, "Operation aborted"
-            return (False, None) if reply.get("allow") is True else (True, reply.get("reason") or NO_APPROVER_REASON)
+            return (False, None) if reply.get("allow") is True else (True, reply.get("reason") or "task control was not admitted")
         request = classify(call.name, call.arguments, workdir, readable=readable)
         if request.category == "other":
             return False, None

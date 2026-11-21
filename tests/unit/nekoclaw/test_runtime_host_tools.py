@@ -536,3 +536,5 @@ async def test_task_control_admission_precedes_local_todo_change(tmp_path, allow
     assert requests == [("s1", {"tool": "todo_write", "call_id": "control-1"})]
     end, = events.of("tool_end")
     assert end["is_error"] is not allow
+    if not allow:
+        assert "task control was not admitted" in end["text"]

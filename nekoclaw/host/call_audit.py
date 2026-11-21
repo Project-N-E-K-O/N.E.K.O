@@ -18,7 +18,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Coroutine
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -239,6 +239,16 @@ class Call:
                 (opaque_id, _identifier(target), self.call_id),
             )
         )
+
+
+@contextmanager
+def commission_entry():
+    """Detached commission work starts at its own ledger node, even in an inherited task context."""
+    token = _CURRENT.set(None)
+    try:
+        yield
+    finally:
+        _CURRENT.reset(token)
 
 
 async def start_call(ledger: Ledger, commission_id: str, kind: str, target: str) -> Call:

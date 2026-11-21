@@ -30,6 +30,7 @@ from typing import Any
 import pytest
 
 from config.prompts import prompts_nekoclaw_sessions as words
+from nekoclaw.host import call_audit
 from nekoclaw.host.task_agents import ForkRefused
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish, say, usage
 from tests.unit.nekoclaw.host_fakes import (
@@ -162,6 +163,9 @@ async def test_a_session_is_asked_a_question_that_a_copy_of_it_answers_and_it_is
     [child] = await host.ledger.select(parent_id=asker)
     assert (child.source, child.status, child.name) == ("ask", "done", "ask-1")
     assert child.title == 'Question to "photos"' and child.dispatch_text == QUESTION
+    rows = await host.ledger.run(lambda db: call_audit.read_trace(db, asker, now=0))
+    child_brief, = [r for r in rows if r["commission_id"] == child.id and r["target"] == "space_brief"]
+    assert child_brief["parent_call_id"] == child.id
     copy = await host.ledger.get_session(child.session_id)
     assert (copy.kind, copy.forked_from, copy.workdir) == ("fork", photos.session_id, photos.workdir)
 
