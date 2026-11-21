@@ -4,7 +4,7 @@ import { createApp, h, markRaw, nextTick, reactive } from 'vue'
 import type { Component } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
-import { powerMessages } from '@/i18n/power'
+import words from '@/i18n/power/en-US'
 import type { SpaceEntry, SpaceProject } from '@/api/console'
 import FamiliarSpace from '@/views/FamiliarSpace.vue'
 import NotesPane from './NotesPane.vue'
@@ -28,7 +28,6 @@ const replace = vi.fn((to: { query: Record<string, string | undefined> }) => {
 })
 vi.mock('vue-router', () => ({ useRoute: () => route, useRouter: () => ({ replace }) }))
 
-const words = powerMessages['en-US']
 const refusal = (code: string) => Object.assign(new Error(code), { code, response: { status: 404 } })
 const project = (over: Partial<SpaceProject> = {}): SpaceProject => ({
   name: 'Ledger tool', description: 'Keeps the books', workdir: 'D:/code/ledger-tool', status: 'active', created_at: 0,

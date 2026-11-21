@@ -3,7 +3,7 @@ import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
 import { authoringMessages } from '../authoring'
-import { powerMessages } from '../power'
+import powerMessages from '../power/zh-CN'
 
 /**
  * 中文语言包
@@ -14,7 +14,7 @@ export default {
   marketFeedback: marketFeedbackMessages['zh-CN'],
   modelApi: modelApiMessages['zh-CN'],
   modelBindings: modelBindingsMessages['zh-CN'],
-  power: powerMessages['zh-CN'],
+  power: powerMessages,
   common: {
     chooseLanguage: "选择语言",
     surfaceLanguagePending: "应用语言已更改。为保留未保存内容，此面板暂时保留原语言。",
@@ -1104,7 +1104,7 @@ export default {
     }
   },
   app: {
-    titleSuffix: 'N.E.K.O 插件管理'
+    titleSuffix: 'N.E.K.O 喵能力'
   },
   tutorial: {
     yuiGuide: {

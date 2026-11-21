@@ -1,5 +1,5 @@
 const en = {
-  title: 'Plugin studio',
+  title: 'Plugin forge',
   newProject: 'New plugin',
   search: 'Search projects…',
   noProjects: 'Your next plugin starts here.',
@@ -355,7 +355,7 @@ export type AuthoringMessageKey = keyof typeof en
 export const authoringMessages = {
   'en-US': en,
   'zh-CN': {
-    title: '插件制作工作台',
+    title: '插件工坊',
     newProject: '新建插件',
     search: '搜索名称、ID 或简介…',
     noProjects: '你的下一个插件，从这里开始。',
@@ -698,7 +698,7 @@ export const authoringMessages = {
     submissionWorkspaceLoadFailed: '无法读取 Market 审核意见。',
   },
   'zh-TW': {
-    title: '外掛製作工作台',
+    title: '外掛工坊',
     newProject: '新增外掛',
     search: '搜尋名稱、ID 或簡介…',
     noProjects: '你的下一個外掛，從這裡開始',
@@ -1041,7 +1041,7 @@ export const authoringMessages = {
     submissionWorkspaceLoadFailed: '無法讀取 Market 審核意見。',
   },
   ja: {
-    title: 'プラグイン制作',
+    title: 'プラグイン工房',
     newProject: '新規プラグイン',
     search: 'プロジェクトを検索…',
     noProjects: '次のプラグインをここから',
@@ -1394,7 +1394,7 @@ export const authoringMessages = {
     submissionWorkspaceLoadFailed: 'Market のレビュー意見を読み込めませんでした。',
   },
   ko: {
-    title: '플러그인 제작실',
+    title: '플러그인 공방',
     newProject: '새 플러그인',
     search: '프로젝트 검색…',
     noProjects: '다음 플러그인을 시작하세요',

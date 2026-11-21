@@ -52,7 +52,7 @@ for (const activation of ['left', 'middle', 'keyboard'] as const) {
     await docs.bringToFront()
     await docs.waitForLoadState('domcontentloaded')
     await expect(docs).toHaveURL(DOCS_URL)
-    await expect(page).toHaveURL(`${PREVIEW_ORIGIN}/ui/workbench`)
+    await expect(page).toHaveURL(`${PREVIEW_ORIGIN}/ui/plugins/_forge`)
     expect(await page.evaluate(() => (window as unknown as ExternalProbe).scriptOpenCalls)).toBe(0)
     await docs.close()
   })
@@ -65,6 +65,6 @@ for (const activation of ['left', 'middle', 'keyboard'] as const) {
     await expect.poll(() => page.evaluate(() => (window as unknown as ExternalProbe).externalUrls)).toEqual([DOCS_URL])
     expect(await page.evaluate(() => (window as unknown as ExternalProbe).scriptOpenCalls)).toBe(0)
     expect(context.pages()).toHaveLength(1)
-    await expect(page).toHaveURL(`${PREVIEW_ORIGIN}/ui/workbench`)
+    await expect(page).toHaveURL(`${PREVIEW_ORIGIN}/ui/plugins/_forge`)
   })
 }

@@ -124,8 +124,8 @@ describe('Sidebar navigation', () => {
     await nextTick()
     expect(queryByRole(mounted.container, 'button', { name: 'nav.expandSidebar' })).toBeNull()
     expect(queryByRole(mounted.container, 'button', { name: 'nav.collapseSidebar' })).toBeNull()
-    expect(getByRole(mounted.container, 'button', { name: 'nav.dashboard' }).getAttribute('title')).toBe('nav.dashboard')
-    expect(document.activeElement).toBe(getByRole(mounted.container, 'button', { name: 'nav.dashboard' }))
+    expect(getByRole(mounted.container, 'button', { name: 'power.nav.home' }).getAttribute('title')).toBe('power.nav.home')
+    expect(document.activeElement).toBe(getByRole(mounted.container, 'button', { name: 'power.nav.home' }))
     Object.assign(media, { matches: false })
     media.dispatchEvent(Object.assign(new Event('change'), { matches: false }))
     await nextTick()
@@ -151,8 +151,9 @@ describe('Sidebar navigation', () => {
   it('保留主入口顺序与路径，折叠后详情页仍标记插件管理为当前页', async () => {
     routeState.path = '/plugins/demo'
     const mounted = await mountSidebar()
-    expect(Array.from(mounted.container.querySelectorAll('[data-to]')).slice(0, 9).map((element) => element.getAttribute('data-to'))).toEqual([
-      '/', '/familiars/space', '/familiars/runtime', '/plugins', '/knowledge', '/model-api', '/runs', '/logs/_server', '/workbench',
+    expect(Array.from(mounted.container.querySelectorAll('[data-to]')).slice(0, 10).map((element) => element.getAttribute('data-to'))).toEqual([
+      '/', '/familiars/space', '/familiars/runtime', '/plugins', '/plugins/_overview', '/plugins/_forge',
+      '/knowledge', '/model-api', '/runs', '/logs/_server',
     ])
     expect(getByRole(mounted.container, 'button', { name: 'nav.plugins' }).getAttribute('aria-current')).toBe('page')
     getByRole(mounted.container, 'button', { name: 'nav.collapseSidebar' }).click()
@@ -160,6 +161,24 @@ describe('Sidebar navigation', () => {
     expect(getByRole(mounted.container, 'button', { name: 'nav.plugins' }).getAttribute('aria-current')).toBe('page')
     expect(getByRole(mounted.container, 'button', { name: 'nav.plugins' }).getAttribute('data-yui-guide-id')).toBe('sidebar-plugins')
     mounted.unmount()
+  })
+
+  it('插件下面的两个子项是当前页时，「插件管理」本身不标成当前页', async () => {
+    routeState.path = '/plugins/_overview'
+    const mounted = await mountSidebar()
+    expect(getByRole(mounted.container, 'button', { name: 'power.nav.overview' }).getAttribute('aria-current')).toBe('page')
+    expect(getByRole(mounted.container, 'button', { name: 'nav.plugins' }).getAttribute('aria-current')).toBeNull()
+    expect(getByRole(mounted.container, 'button', { name: 'authoring.title' }).getAttribute('aria-current')).toBeNull()
+    expect(getByRole(mounted.container, 'button', { name: 'power.nav.overview' }).getAttribute('data-yui-guide-id')).toBe('sidebar-dashboard')
+    mounted.unmount()
+
+    // 首页只在根路径上是当前页；使魔空间不因为别的 /familiars 路径被标上。
+    routeState.path = '/familiars/runtime'
+    const other = await mountSidebar()
+    expect(getByRole(other.container, 'button', { name: 'power.nav.runtime' }).getAttribute('aria-current')).toBe('page')
+    expect(getByRole(other.container, 'button', { name: 'power.nav.space' }).getAttribute('aria-current')).toBeNull()
+    expect(getByRole(other.container, 'button', { name: 'power.nav.home' }).getAttribute('aria-current')).toBeNull()
+    other.unmount()
   })
 
   it('适配器子项的 id 编码后再进路径段，普通 id 不受影响', async () => {

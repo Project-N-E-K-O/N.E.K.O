@@ -206,6 +206,78 @@ export const setDeviceSwitch = (key: DeviceSwitch, value: boolean) =>
 export const getBrowser = () => get<BrowserView>('/console/browser')
 export const setBrowser = (settings: Partial<BrowserSettings>) => send<BrowserView>('post', '/console/browser', settings)
 
+// -- the familiars at a glance --------------------------------------------------
+
+/** What a familiar asks while it waits for the user. */
+export interface BoardAsk {
+  id?: string
+  kind?: string
+  category?: string
+  detail?: Record<string, unknown>
+  options?: string[]
+  question?: string
+  questions?: unknown[]
+}
+
+export interface BoardCommission {
+  id: string
+  title: string
+  /** `working`, `waiting_user`, `resting`, `queued`. */
+  status: string
+  started_at: number | string | null
+  ask?: BoardAsk | null
+}
+
+export type FamiliarState = 'working' | 'waiting_user' | 'idle' | 'asleep' | 'compacting' | (string & {})
+
+/** One familiar: a session of a task agent, as the board shows it. */
+export interface BoardCard {
+  id: string
+  name: string
+  kind: string
+  lanlan_name: string | null
+  runtime: string | null
+  workdir: string | null
+  preset: string
+  avatar: string
+  /** The name a template of the user's gave itself; empty for a built-in preset. */
+  label: string
+  description: string
+  /** Empty until the first review: the preset's name is shown then. */
+  title: string
+  duty: string
+  duty_by: string
+  doing: string
+  summary?: string
+  state: FamiliarState
+  leader: boolean
+  parent: string | null
+  model: string | null
+  context_tokens?: number
+  last_active_at?: number | null
+  commission: BoardCommission | null
+}
+
+export interface BoardProject {
+  name: string
+  description: string
+  workdir: string | null
+  archived: boolean
+  done_today: number
+  members: BoardCard[]
+}
+
+export interface Board {
+  revision: string
+  /** True when nothing changed since the revision that was sent along: nothing else is in the answer then. */
+  unchanged?: boolean
+  projects?: BoardProject[]
+  loose?: BoardCard[]
+}
+
+export const getBoard = (knownRevision?: string) =>
+  get<Board>('/console/board', knownRevision ? { known_revision: knownRevision } : undefined)
+
 // -- the runtime --------------------------------------------------------------
 
 export const getRuntime = () => get<RuntimeView>('/console/runtime')

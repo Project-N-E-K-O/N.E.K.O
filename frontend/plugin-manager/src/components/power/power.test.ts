@@ -4,7 +4,7 @@ import { createApp, markRaw, nextTick } from 'vue'
 import type { Component } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
-import { powerMessages } from '@/i18n/power'
+import words from '@/i18n/power/en-US'
 import type { PermissionsView, RuntimeView } from '@/api/console'
 import { describeConsoleError, formatBytes, joinIdle, splitIdle } from './powerFormat'
 import BuiltinTab from './BuiltinTab.vue'
@@ -22,7 +22,6 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('@/api/console', () => api)
 
-const words = powerMessages['en-US']
 const refusal = (code: string) => Object.assign(new Error(code), { code, response: { status: 409 } })
 
 function runtime(dsh: Partial<RuntimeView['dsh']> = {}): RuntimeView {
