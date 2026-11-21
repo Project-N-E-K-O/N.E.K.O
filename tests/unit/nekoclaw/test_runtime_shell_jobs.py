@@ -834,3 +834,40 @@ async def test_finishing_job_notifies_only_output_not_handed_over(tmp_path, monk
         assert ("first-part" in result) == receive
     finally:
         await session.close()
+
+
+@pytest.mark.parametrize("receive", [False, True])
+async def test_promoted_command_advances_output_only_after_handoff(tmp_path, monkeypatch, receive):
+    from types import SimpleNamespace
+
+    done = asyncio.Event()
+    async def spawn(argv, **kwargs):
+        kwargs["stdout"].feed(b"first-chunk\n")
+        return SimpleNamespace(wait=done.wait, kill=done.set, stdout=kwargs["stdout"], stderr=kwargs["stderr"],
+                               kill_requested=False, signal_name=None, returncode=0)
+    monkeypatch.setattr(procs, "spawn", spawn)
+
+    async def audit(_, payload):
+        if payload["phase"] == "begin":
+            return {"allow": True, "receipt": payload["tool"]}
+        if payload["phase"] == "job_notice":
+            return {"allow": False}
+        if payload["phase"] == "finish" and payload["receipt"] == SHELL:
+            done.set()
+            return {"allow": receive}
+        return {"allow": True}
+
+    llm = ScriptedLLM([[call(SHELL, {"command": "fixture", "description": "fixture", "timeoutMs": 2}, "start"),
+                        finish("tool_calls")],
+                       [call("job_output", {"job_id": "job-1", "wait": True}, "reread"), finish("tool_calls")],
+                       [say("done"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm, HostCallbacks(execution_action=audit))
+    try:
+        session.prompt("Collect the command output")
+        await events.wait_ended()
+        replies = {m["tool_call_id"]: m["content"] for batch in llm.requests for m in batch if m.get("tool_call_id")}
+        assert ("first-chunk" in replies["start"]) == receive
+        assert ("first-chunk" in replies["reread"]) != receive
+    finally:
+        done.set()
+        await session.close()

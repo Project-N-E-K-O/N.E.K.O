@@ -46,6 +46,16 @@ class JobHandoff:
     acknowledge: Callable[[], None] | None = None
     release: Callable[[], None] | None = None
 
+    async def reserve_output(self, job: Job, call: ToolCallInfo) -> None:
+        async def reserve():
+            await job.output_lock.acquire()
+            self.release = job.output_lock.release
+
+        if job.output_lock.locked():
+            await run_cancellable(reserve(), call)
+        else:
+            await reserve()
+
 
 JOB_HANDOFF: ContextVar[JobHandoff | None] = ContextVar("job_handoff", default=None)
 
@@ -351,10 +361,7 @@ def build_job_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> lis
                 released = "user steered"
         handoff = JOB_HANDOFF.get()
         if handoff is not None:
-            async def reserve_read():
-                await job.output_lock.acquire()
-                handoff.release = job.output_lock.release
-            await run_cancellable(reserve_read(), call)
+            await handoff.reserve_output(job, call)
         body, cursors = registry.peek(job)
         notice = registry.pending_notices.get(job.id)
 

@@ -75,8 +75,8 @@ def managed_tool(tool: AgentTool, host: HostBridge, session: str, workdir: Path,
 
         from nekoclaw.runtime.tools.jobs import JOB_HANDOFF, JobHandoff
 
-        handoff = JobHandoff(frozenset(ruling.get("origins", []))) if tool.name in JOB_TOOLS else None
         output = CommandOutput(receipt) if tool.name in {"bash", "pwsh"} else None
+        handoff = JobHandoff(frozenset(ruling.get("origins", []))) if tool.name in JOB_TOOLS or output else None
 
         protected = OutputScope(receipt) if spill is not None else None
 

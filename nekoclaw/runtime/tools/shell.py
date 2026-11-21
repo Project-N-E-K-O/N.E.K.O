@@ -39,7 +39,7 @@ from nekoclaw.runtime.tools.base import (
     ToolError,
     define_tool,
 )
-from nekoclaw.runtime.tools.jobs import KILL_SETTLE_SECONDS, Job, render_delta
+from nekoclaw.runtime.tools.jobs import JOB_HANDOFF, KILL_SETTLE_SECONDS, Job, render_delta
 
 # dsh pwsh-local / bash-local defaults.
 MAX_OUTPUT_BYTES = 64_000
@@ -255,10 +255,17 @@ def build_shell_tool(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
             raise ToolAborted
         if outcome == "timeout":
             # The command keeps running as the job it already was.
+            handoff = JOB_HANDOFF.get()
+            if handoff is None:
+                initial_output = registry.read(job)
+            else:
+                await handoff.reserve_output(job, call)
+                initial_output, cursors = registry.peek(job)
+                handoff.acknowledge = lambda: registry.commit(job, cursors)
             job.foreground = False
             if output is not None:
                 output.retained = True
-            return render_promoted(job, registry.read(job), timeout_ms)
+            return render_promoted(job, initial_output, timeout_ms)
         progress.tick(force=True)
         registry.remove(job)
         return render_result(job)
