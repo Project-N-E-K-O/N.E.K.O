@@ -16,7 +16,7 @@ pytestmark = pytest.mark.plugin_unit
 
 
 def host_slot(**updates):
-    fields = {"name": "Host assist", "source": "host_follow", "host_api": "conversation"}
+    fields = {"name": "Host assist", "source": "host_follow", "host_api": "agent"}
     fields.update(updates)
     return ModelSlot(**fields)
 
@@ -97,8 +97,7 @@ def test_resolve_reads_the_main_app_config(monkeypatch):
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
     assert resolve_host_slot(host_slot()).model == "m"
-    assert resolve_host_slot(host_slot(host_api="agent")).base_url == "https://x.test/v1"
-    assert seen == ["conversation", "agent"]
+    assert seen == ["agent"]
 
 
 def test_status_reports_configuration_without_credentials(monkeypatch):

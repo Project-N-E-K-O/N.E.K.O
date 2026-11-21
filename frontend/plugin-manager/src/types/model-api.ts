@@ -1,7 +1,7 @@
 export type ModelCapability = 'text' | 'image_input' | 'tool_calling' | 'streaming'
 export type ModelProtocol = 'openai_chat' | 'anthropic_messages'
 export type ModelSlotSource = 'manual' | 'host_follow'
-export type HostApiSource = 'conversation' | 'agent'
+export type HostApiSource = 'agent'
 
 export interface ModelSlotInput {
   name: string

@@ -67,11 +67,13 @@ provider capabilities.
 `host_follow`. A host-follow slot sets `host_api` to a main-app model tier
 and stores no `base_url`, `model` or `api_key`; those belong to the main app's
 `core_config.json`. The followable tiers are the table `HOST_API_MODEL_TYPES`
-in `plugin/server/domain/model_config.py`: `conversation` (the chat model) and
+in `plugin/server/domain/model_config.py`. Plugins and task agents are one
+thing in the main app, so plugins draw only on the familiar tiers: today
 `agent` (the familiar model that task agents, keyboard-and-mouse control and
-the browser use). Each value is the `model_type` passed to
-`get_model_api_config`; a new tier is one more row there (plus the `HostApi`
-literal). Voice tiers are not followable: their endpoints are WebSocket. At
+the browser use); a smaller familiar tier joins it as one more row there (plus
+the `HostApi` literal). The chat, memory and voice tiers stay the main app's
+own and are not followable. Each value is the `model_type` passed to
+`get_model_api_config`. At
 call time the gateway resolves the slot through `get_model_api_config` and
 materializes an executable snapshot, so main-app provider, key and custom-API
 changes apply to the next request without notification hooks. Anthropic
@@ -111,20 +113,20 @@ free-tier plugin calls. Any other key, whether in a manual slot or a paid
 main-app API, is never metered.
 
 After a committed install, `notify_install_committed` binds still-unbound
-declared usages to the shared host-follow chat slot (reused across plugins,
-`text` + `streaming` capabilities) on a background thread, never on the event
+declared usages to the shared host-follow familiar slot (reused across
+plugins) on a background thread, never on the event
 loop. Only usages the user has never bound or unbound are auto-bound: a
 recorded binding version marks prior user intent, so an explicit unbind
 survives updates and reinstalls. Existing bindings are never overwritten;
 usages the shared slot cannot serve stay unbound for explicit user choice.
 Auto-bind failures only log a warning and never fail the install. Note that a
-freshly installed plugin can therefore call the main app's chat model —
+freshly installed plugin can therefore call the main app's familiar model —
 including a paid user key, which is not metered — without further setup;
 unbinding a usage in the manager opts it out permanently.
 
-Two default host-follow slots — "Host chat model" (`conversation`, `text` +
-`streaming`) and "Host task agent model" (`agent`, `text` + `streaming` +
-`tool_calling` + `image_input`) — are seeded so the panel is usable without
+One default host-follow slot — "Familiar model" (`agent`, `text` +
+`streaming` + `tool_calling` + `image_input`) — is seeded so the panel is
+usable without
 manual setup. Seeding runs best-effort at plugin-server startup and lazily on
 the first slot list or install commit, under the store's write transaction;
 during a read-only maintenance window the list still serves the existing

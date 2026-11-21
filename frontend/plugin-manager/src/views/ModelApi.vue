@@ -99,7 +99,6 @@
         <template v-if="form.source === 'host_follow'">
           <el-form-item :label="t('modelApi.hostApiLabel')" required>
             <el-select v-model="form.host_api" data-testid="slot-host-api" :disabled="saving">
-              <el-option :label="t('modelApi.hostApi.conversation')" value="conversation" />
               <el-option :label="t('modelApi.hostApi.agent')" value="agent" />
             </el-select>
             <p class="field-hint">{{ t(`modelApi.hostHint.${form.host_api}`) }}</p>

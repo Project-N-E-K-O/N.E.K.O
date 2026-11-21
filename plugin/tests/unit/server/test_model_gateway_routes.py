@@ -931,7 +931,7 @@ HOST_SLOT_ID = "slot_" + "b" * 32
 
 def bind_host_slot(setup_gateway, **slot_updates):
     fields = {
-        "name": "Host assist", "source": "host_follow", "host_api": "conversation",
+        "name": "Host assist", "source": "host_follow", "host_api": "agent",
         "capabilities": ["text", "streaming"],
     }
     fields.update(slot_updates)
@@ -946,7 +946,7 @@ def patch_host_config(monkeypatch, config):
 
     class Manager:
         def get_model_api_config(self, model_type):
-            assert model_type == "conversation"
+            assert model_type == "agent"
             return dict(config)
 
         async def aget_model_api_config(self, model_type):
@@ -1073,7 +1073,7 @@ async def test_unusable_host_fallback_does_not_reject_healthy_primary(http_clien
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
     unusable = "slot_" + "c" * 32
     setup_gateway.config.slots[unusable] = ModelSlot(
-        name="Host task agent model", source="host_follow", host_api="agent",
+        name="Familiar model", source="host_follow", host_api="agent",
         capabilities=["text", "image_input", "streaming"],
     )
     setup_gateway.config.slots[SLOT_ID].fallback_slot_id = unusable
@@ -1090,7 +1090,7 @@ async def test_free_host_fallback_consumes_quota_after_paid_primary_fails(http_c
     # Keep the binding on the paid manual primary; the free host slot is only
     # its fallback (bind_host_slot would rebind the usage to the host slot).
     setup_gateway.config.slots[HOST_SLOT_ID] = ModelSlot(
-        name="Host assist", source="host_follow", host_api="conversation",
+        name="Host assist", source="host_follow", host_api="agent",
         capabilities=["text", "image_input", "streaming"],
     )
     setup_gateway.config.slots[SLOT_ID].fallback_slot_id = HOST_SLOT_ID
@@ -1126,7 +1126,7 @@ async def test_free_host_fallback_quota_exhaustion_is_final(http_client, setup_g
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
     # Binding stays on the paid manual primary; the free host slot is its fallback.
     setup_gateway.config.slots[HOST_SLOT_ID] = ModelSlot(
-        name="Host assist", source="host_follow", host_api="conversation",
+        name="Host assist", source="host_follow", host_api="agent",
         capabilities=["text", "image_input", "streaming"],
     )
     setup_gateway.config.slots[SLOT_ID].fallback_slot_id = HOST_SLOT_ID
@@ -1276,7 +1276,7 @@ async def test_legacy_disk_document_reads_through_real_store_and_explicit_temper
         "schema_version": 1, "seed_version": 1,
         "slots": {
             HOST_SLOT_ID: {
-                "name": "Legacy host", "source": "host_follow", "host_api": "conversation",
+                "name": "Legacy host", "source": "host_follow", "host_api": "agent",
                 "capabilities": ["text", "streaming"],
                 "defaults": {"temperature": 1.5},
             },

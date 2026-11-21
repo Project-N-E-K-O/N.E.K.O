@@ -26,7 +26,7 @@ class ReadOnlyStore:
     def __init__(self, protocol="openai_chat", timeout_seconds=60.0, host_follow=False):
         if host_follow:
             primary = ModelSlot(
-                name="Host assist", source="host_follow", host_api="conversation",
+                name="Host assist", source="host_follow", host_api="agent",
                 timeout_seconds=timeout_seconds,
             )
             backup = None
@@ -343,7 +343,7 @@ async def test_probe_resolves_host_follow_slot_from_main_app(setup_probe, monkey
 
     class Manager:
         def get_model_api_config(self, model_type):
-            assert model_type == "conversation"
+            assert model_type == "agent"
             return {"model": "saved-model", "base_url": "https://saved.test/v1", "api_key": SECRET}
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())

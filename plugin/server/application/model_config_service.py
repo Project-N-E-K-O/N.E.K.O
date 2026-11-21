@@ -24,16 +24,15 @@ from utils.http.url import same_endpoint
 Requirements = dict[PluginModelUsageId, PluginModelRequirementSchema]
 _requirements_adapter = TypeAdapter(Requirements)
 
-# Default slots every user gets without manual setup: one shared chat slot
-# (bindable out of the box) and one task agent slot (the model the main app
-# configures for agents: tool calling and image input). Deterministic IDs keep
-# seeding idempotent across processes; the persisted seed_version keeps
-# deleted defaults deleted.
+# Default slot every user gets without manual setup: the main app's familiar
+# (agent) model, which plugins and task agents share; new plugins bind to it
+# out of the box. It declares what that tier is configured for: tool calling
+# and image input. Deterministic IDs keep seeding idempotent across processes;
+# the persisted seed_version keeps a deleted default deleted.
 HOST_SLOT_SEED_VERSION = 1
-SHARED_HOST_API = "conversation"
+SHARED_HOST_API = "agent"
 HOST_SLOT_SEEDS = (
-    ("conversation", "Host chat model", ("text", "streaming")),
-    ("agent", "Host task agent model", ("text", "streaming", "tool_calling", "image_input")),
+    ("agent", "Familiar model", ("text", "streaming", "tool_calling", "image_input")),
 )
 
 
@@ -344,7 +343,7 @@ class ModelConfigService:
         """Bind still-unbound declared usages to a shared host-follow slot.
 
         Called after a committed install so a fresh plugin works against the
-        main app's chat model without manual setup. Existing bindings are never
+        main app's familiar model without manual setup. Existing bindings are never
         touched; usages the shared slot cannot serve stay unbound for the user.
         ``requirements`` lets the caller read the manifest under the plugin
         operation lock and write the binding after releasing it.
@@ -356,7 +355,7 @@ class ModelConfigService:
 
         def change(config):
             # An install can be the first model-config write ever; seed the
-            # default slots here too so the shared chat slot has a stable ID.
+            # default slots here too so the shared familiar slot has a stable ID.
             self._seed_default_slots(config)
             slot_id = next(
                 (key for key, slot in config.slots.items()
@@ -366,7 +365,7 @@ class ModelConfigService:
             created_slot = slot_id is None
             if slot_id is None:
                 if config.seed_version >= HOST_SLOT_SEED_VERSION:
-                    # Seeding already ran and no shared chat slot remains: the user
+                    # Seeding already ran and no shared familiar slot remains: the user
                     # deleted the default. Respect that; leave usages unbound.
                     return {"bound": [], "slot_id": None}
                 slot_id = "slot_" + uuid4().hex
@@ -393,7 +392,7 @@ class ModelConfigService:
             if not versions:
                 config.binding_versions.pop(plugin_id, None)
             if created_slot and not bound:
-                # Defensive only: seeding normally provides the shared chat slot.
+                # Defensive only: seeding normally provides the shared familiar slot.
                 del config.slots[slot_id]
                 slot_id = None
             return {"bound": bound, "slot_id": slot_id}

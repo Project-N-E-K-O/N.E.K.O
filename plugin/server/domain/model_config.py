@@ -17,16 +17,15 @@ from plugin.config.schema import ModelCapability, PluginModelUsageId
 
 SECRET_MASK = "__NEKO_SECRET_MASKED__"
 
-# Main-app model tiers a host-follow slot may follow. Each value is the
-# ``model_type`` passed to ``ConfigManager.get_model_api_config``; adding a
-# tier here (and to ``HostApi``) is all a new followable tier needs. Voice
-# tiers are absent on purpose: their endpoints are WebSocket and cannot serve
-# chat requests.
+# Main-app model tiers a host-follow slot may follow. Plugins and task agents
+# are one thing in the main app, so plugins draw only on the familiar (agent)
+# tiers; the chat, memory and voice tiers stay the main app's own. Each value
+# is the ``model_type`` passed to ``ConfigManager.get_model_api_config``;
+# adding a tier here (and to ``HostApi``) is all a new followable tier needs.
 HOST_API_MODEL_TYPES: dict[str, str] = {
-    "conversation": "conversation",
     "agent": "agent",
 }
-HostApi = Literal["conversation", "agent"]
+HostApi = Literal["agent"]
 MAX_OUTPUT_TOKENS = 1_000_000
 SlotId = Annotated[StrictStr, Field(pattern=r"^slot_[0-9a-f]{32}$")]
 PluginId = Annotated[StrictStr, Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")]

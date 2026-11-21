@@ -23,7 +23,7 @@ from utils.file_utils import atomic_write_json
 pytestmark = pytest.mark.plugin_unit
 
 MANUAL_ID = "slot_" + "1" * 32
-CHAT_ID = "slot_" + "2" * 32
+PLAIN_ID = "slot_" + "2" * 32
 AGENT_ID = "slot_" + "3" * 32
 
 
@@ -73,7 +73,6 @@ def follow(host_api, **updates):
 @pytest.fixture
 def env(tmp_path):
     manager = Manager(tmp_path, host={
-        "conversation": {"model": "chat-model", "base_url": "https://chat.test/v1", "api_key": "free-access"},
         "agent": {
             "model": "agent-model", "base_url": "https://api.kimi.com/coding/", "api_key": "sk-host",
             "provider_type": "anthropic",
@@ -81,7 +80,7 @@ def env(tmp_path):
     })
     write_slots(manager, {
         MANUAL_ID: manual(),
-        CHAT_ID: follow("conversation"),
+        PLAIN_ID: follow("agent"),
         AGENT_ID: follow("agent", capabilities=["text", "tool_calling", "image_input"]),
     })
     return manager
@@ -91,7 +90,7 @@ def test_followable_tiers_match_the_validated_literal():
     assert set(typing.get_args(HostApi)) == set(HOST_API_MODEL_TYPES)
 
 
-@pytest.mark.parametrize("host_api", ["assist", "core", "realtime", "vision"])
+@pytest.mark.parametrize("host_api", ["conversation", "summary", "assist", "core", "realtime", "vision"])
 def test_unlisted_main_app_tiers_cannot_be_followed(host_api):
     with pytest.raises(ValueError):
         follow(host_api)
@@ -109,12 +108,13 @@ def test_manual_slot_resolves_to_its_own_settings(env):
 
 
 def test_follow_slot_resolves_the_main_app_tier_now(env):
-    resolved = resolve_model_slot(CHAT_ID, config_manager=env)
-    assert env.asked == ["conversation"]
-    assert (resolved.base_url, resolved.model, resolved.protocol) == ("https://chat.test/v1", "chat-model", "openai_chat")
+    env.host["agent"] = {"model": "free-agent-model", "base_url": "https://free.test/v1", "api_key": "free-access"}
+    resolved = resolve_model_slot(PLAIN_ID, config_manager=env)
+    assert env.asked == ["agent"]
+    assert (resolved.base_url, resolved.model, resolved.protocol) == ("https://free.test/v1", "free-agent-model", "openai_chat")
     assert resolved.free is True
-    env.host["conversation"] = {"model": "paid-model", "base_url": "https://paid.test/v1", "api_key": "sk-paid"}
-    again = resolve_model_slot(CHAT_ID, config_manager=env)
+    env.host["agent"] = {"model": "paid-model", "base_url": "https://paid.test/v1", "api_key": "sk-paid"}
+    again = resolve_model_slot(PLAIN_ID, config_manager=env)
     assert (again.model, again.free) == ("paid-model", False)
 
 
@@ -151,7 +151,7 @@ def test_deleted_slot_is_not_found(env):
 
 
 def test_missing_capability_is_reported_before_resolving(env):
-    error = failure(env, CHAT_ID, require=["text", "tool_calling", "image_input"])
+    error = failure(env, PLAIN_ID, require=["text", "tool_calling", "image_input"])
     assert error.code == "capability_missing"
     assert "image_input" in error.message and "tool_calling" in error.message
     assert env.asked == []
@@ -164,13 +164,13 @@ def test_missing_capability_is_reported_before_resolving(env):
     (RuntimeError("broken config"), "host_api_not_configured"),
 ])
 def test_unusable_main_app_tier(env, host, code):
-    env.host["conversation"] = host
-    assert failure(env, CHAT_ID).code == code
+    env.host["agent"] = host
+    assert failure(env, PLAIN_ID).code == code
 
 
 def test_unreadable_document(env):
     env.get_runtime_config_path(CONFIG_FILENAME).write_text("{not json", encoding="utf-8")
-    assert failure(env, CHAT_ID).code == "model_config_unreadable"
+    assert failure(env, PLAIN_ID).code == "model_config_unreadable"
     with pytest.raises(ModelSlotUnavailable) as caught:
         list_model_slots(config_manager=env)
     assert caught.value.code == "model_config_unreadable"
@@ -180,26 +180,26 @@ def test_missing_document_has_no_slots(tmp_path):
     manager = Manager(tmp_path)
     assert list_model_slots(config_manager=manager) == []
     with pytest.raises(ModelSlotUnavailable) as caught:
-        resolve_model_slot(CHAT_ID, config_manager=manager)
+        resolve_model_slot(PLAIN_ID, config_manager=manager)
     assert caught.value.code == "slot_not_found"
     assert not manager.get_runtime_config_path(CONFIG_FILENAME).exists()
 
 
 def test_list_shows_what_each_slot_resolves_to_without_credentials(env):
-    env.host["agent"] = {"model": "m", "base_url": "wss://voice.test/realtime"}
     listed = {summary.slot_id: summary for summary in list_model_slots(config_manager=env)}
-    assert list(listed) == [MANUAL_ID, CHAT_ID, AGENT_ID]
+    assert list(listed) == [MANUAL_ID, PLAIN_ID, AGENT_ID]
     assert (listed[MANUAL_ID].configured, listed[MANUAL_ID].model, listed[MANUAL_ID].free) == (True, "own-model", False)
-    chat = listed[CHAT_ID]
-    assert (chat.host_api, chat.configured, chat.model, chat.protocol, chat.free) == (
-        "conversation", True, "chat-model", "openai_chat", True,
-    )
     agent = listed[AGENT_ID]
-    assert (agent.configured, agent.error_code, agent.model, agent.protocol) == (
-        False, "host_api_unsupported", "", None,
+    assert (agent.host_api, agent.configured, agent.model, agent.protocol, agent.free) == (
+        "agent", True, "agent-model", "anthropic_messages", False,
     )
     assert agent.capabilities == ("text", "tool_calling", "image_input")
     assert all("sk-" not in repr(summary) for summary in listed.values())
+    env.host["agent"] = {"model": "m", "base_url": "wss://voice.test/realtime"}
+    broken = {summary.slot_id: summary for summary in list_model_slots(config_manager=env)}[AGENT_ID]
+    assert (broken.configured, broken.error_code, broken.model, broken.protocol) == (
+        False, "host_api_unsupported", "", None,
+    )
 
 
 # Not "base_url": pytest-base-url owns a session fixture by that name.

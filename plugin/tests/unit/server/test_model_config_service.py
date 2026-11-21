@@ -94,17 +94,15 @@ def test_first_list_seeds_default_host_slots_and_read_stays_read(config_env):
     listed = service.list_slots()
     assert listed["schema_version"] == 1
     seeded = {slot["id"]: slot for slot in listed["slots"]}
-    assert set(seeded) == {host_slot_seed_id("conversation"), host_slot_seed_id("agent")}
+    assert set(seeded) == {host_slot_seed_id("agent")}
     for slot in seeded.values():
         assert slot["source"] == "host_follow"
         assert slot["base_url"] == slot["model"] == slot["api_key"] == ""
         assert slot["host_status"]["configured"] is False
         assert slot["host_status"]["error_code"] == "host_api_not_configured"
-    assert seeded[host_slot_seed_id("conversation")]["host_api"] == "conversation"
     assert seeded[host_slot_seed_id("agent")]["host_api"] == "agent"
-    # The chat slot is what new plugins auto-bind to; the task agent slot
-    # declares what task agents need (tools and screenshots).
-    assert seeded[host_slot_seed_id("conversation")]["capabilities"] == ["text", "streaming"]
+    # Plugins and task agents share this slot; it declares what the familiar
+    # tier is configured for (tools and screenshots).
     assert seeded[host_slot_seed_id("agent")]["capabilities"] == ["text", "streaming", "tool_calling", "image_input"]
     assert cm.get_runtime_config_path(CONFIG_FILENAME).exists()
     # Seeding is a one-time write; later lists never touch the store again.
@@ -220,9 +218,7 @@ def test_delete_requires_explicit_unbind_and_stale_binding_can_be_cleaned(config
     service.delete_binding("alpha", "analysis", 1)
     service.delete_slot(slot_id)
     assert service.store.read().bindings == {}
-    assert {slot["id"] for slot in service.list_slots()["slots"]} == {
-        host_slot_seed_id("conversation"), host_slot_seed_id("agent"),
-    }
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {host_slot_seed_id("agent")}
 
 
 def test_fallback_references_cannot_dangle_cycle_or_lose_capabilities(config_env):
@@ -348,9 +344,7 @@ def test_store_with_real_config_manager_and_write_transaction(tmp_path, monkeypa
         fresh.delete_slot("not-a-slot")
     assert error.value.code == "MODEL_SLOT_NOT_FOUND"
     fresh.delete_slot(slot_id)
-    assert {slot["id"] for slot in fresh.list_slots()["slots"]} == {
-        host_slot_seed_id("conversation"), host_slot_seed_id("agent"),
-    }
+    assert {slot["id"] for slot in fresh.list_slots()["slots"]} == {host_slot_seed_id("agent")}
 
 
 @pytest.mark.parametrize("key,preview", [
@@ -391,7 +385,7 @@ def test_output_default_limit_is_validated_before_saving(config_env):
 
 
 def host_payload(**updates):
-    return {"name": "Host assist", "source": "host_follow", "host_api": "conversation", **updates}
+    return {"name": "Host assist", "source": "host_follow", "host_api": "agent", **updates}
 
 
 def test_host_follow_slot_stores_no_credentials(config_env, monkeypatch):
@@ -419,13 +413,13 @@ def test_host_follow_slot_rejects_stored_endpoint_or_key(config_env):
             service.create_slot(host_payload(**updates))
         assert error.value.code == "MODEL_SLOT_INVALID"
     with pytest.raises(ServerDomainError):
-        service.create_slot(slot_payload(host_api="conversation"))
+        service.create_slot(slot_payload(host_api="agent"))
 
 
 def test_switching_sources_clears_inapplicable_fields(config_env):
     _, service, _ = config_env
     manual_id = service.create_slot(slot_payload())["id"]
-    switched = service.update_slot(manual_id, {"source": "host_follow", "host_api": "conversation"})
+    switched = service.update_slot(manual_id, {"source": "host_follow", "host_api": "agent"})
     assert switched["base_url"] == switched["model"] == ""
     assert switched["api_key"] == ""
     back = service.update_slot(manual_id, {
@@ -450,30 +444,39 @@ def test_ensure_host_follow_binding_creates_shared_slot_and_binds_compatible_usa
     cm, service, declarations = config_env
     declarations["beta"]["vision"] = PluginModelRequirementSchema(label="Vision", capabilities=["image_input"])
     first = service.ensure_host_follow_binding("beta")
-    assert first["bound"] == ["analysis"]
+    # The familiar slot declares tools and image input, so both usages bind.
+    assert first["bound"] == ["analysis", "vision"]
     slot_id = first["slot_id"]
-    assert service.get_bindings("beta")["bindings"] == {"analysis": slot_id}
-    assert service.get_bindings("beta")["requirements"]["vision"]["status"] == "unbound"
+    assert slot_id == host_slot_seed_id("agent")
+    assert service.get_bindings("beta")["bindings"] == {"analysis": slot_id, "vision": slot_id}
     # A second plugin reuses the same shared slot; existing bindings are untouched.
     service.set_binding("beta", "analysis", service.create_slot(slot_payload())["id"], 1)
     second = service.ensure_host_follow_binding("alpha")
-    assert second["slot_id"] == slot_id
-    assert second["bound"] == []  # alpha requires image_input, the shared slot is text+streaming
+    assert second == {"bound": ["analysis"], "slot_id": slot_id}
     assert service.get_bindings("beta")["bindings"]["analysis"] != slot_id
-    # The two seeded defaults plus the manual slot beta was rebound to.
-    assert len(service.list_slots()["slots"]) == 3
+    # The seeded default plus the manual slot beta was rebound to.
+    assert len(service.list_slots()["slots"]) == 2
+
+
+def test_auto_bind_leaves_usages_the_shared_slot_cannot_serve(config_env):
+    _, service, declarations = config_env
+    service.list_slots()
+    # The user narrowed the shared slot before installing.
+    service.update_slot(host_slot_seed_id("agent"), {"capabilities": ["text", "streaming"]})
+    declarations["beta"]["vision"] = PluginModelRequirementSchema(label="Vision", capabilities=["image_input"])
+    result = service.ensure_host_follow_binding("beta")
+    assert result == {"bound": ["analysis"], "slot_id": host_slot_seed_id("agent")}
+    assert service.get_bindings("beta")["requirements"]["vision"]["status"] == "unbound"
 
 
 def test_ensure_host_follow_binding_is_idempotent_and_skips_undeclared_plugins(config_env):
     _, service, _ = config_env
     assert service.ensure_host_follow_binding("legacy") == {"bound": [], "slot_id": None}
-    assert {slot["id"] for slot in service.list_slots()["slots"]} == {
-        host_slot_seed_id("conversation"), host_slot_seed_id("agent"),
-    }
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {host_slot_seed_id("agent")}
     first = service.ensure_host_follow_binding("beta")
     again = service.ensure_host_follow_binding("beta")
     assert again == {"bound": [], "slot_id": first["slot_id"]}
-    assert len(service.list_slots()["slots"]) == 2
+    assert len(service.list_slots()["slots"]) == 1
     version = service.get_bindings("beta")["requirements"]["analysis"]["version"]
     assert version == 1
 
@@ -483,31 +486,28 @@ def test_deleted_default_slots_are_not_resurrected(config_env):
     service.list_slots()
     service.delete_slot(host_slot_seed_id("agent"))
     remaining = {slot["id"] for slot in service.list_slots()["slots"]}
-    assert remaining == {host_slot_seed_id("conversation")}
+    assert remaining == set()
     # A later install must not resurrect the deleted default either.
     service.ensure_host_follow_binding("beta")
     assert {slot["id"] for slot in service.list_slots()["slots"]} == remaining
 
 
-def test_install_before_first_list_seeds_defaults_and_binds_shared_chat(config_env):
+def test_install_before_first_list_seeds_defaults_and_binds_shared_familiar(config_env):
     _, service, _ = config_env
     result = service.ensure_host_follow_binding("beta")
-    assert result["slot_id"] == host_slot_seed_id("conversation")
+    assert result["slot_id"] == host_slot_seed_id("agent")
     assert result["bound"] == ["analysis"]
-    assert {slot["id"] for slot in service.list_slots()["slots"]} == {
-        host_slot_seed_id("conversation"), host_slot_seed_id("agent"),
-    }
-    assert service.get_bindings("beta")["bindings"] == {"analysis": host_slot_seed_id("conversation")}
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {host_slot_seed_id("agent")}
+    assert service.get_bindings("beta")["bindings"] == {"analysis": host_slot_seed_id("agent")}
 
 
-def test_existing_chat_slot_is_reused_without_duplicate_seed(config_env):
+def test_existing_familiar_slot_is_reused_without_duplicate_seed(config_env):
     _, service, _ = config_env
-    manual_assist = service.create_slot(host_payload(name="My own assist"))["id"]
+    manual_assist = service.create_slot(host_payload(name="My own familiar"))["id"]
     result = service.ensure_host_follow_binding("beta")
     assert result["slot_id"] == manual_assist
     slots = {slot["id"]: slot for slot in service.list_slots()["slots"]}
-    assert host_slot_seed_id("conversation") not in slots  # no duplicate chat slot
-    assert host_slot_seed_id("agent") in slots
+    assert host_slot_seed_id("agent") not in slots  # no duplicate familiar slot
     assert service.get_bindings("beta")["bindings"] == {"analysis": manual_assist}
 
 
@@ -515,9 +515,7 @@ def test_ensure_default_slots_is_idempotent_and_never_raises(config_env, monkeyp
     cm, service, _ = config_env
     assert service.ensure_default_slots() == {"seeded": True}
     assert service.ensure_default_slots() == {"seeded": False}
-    assert {slot["id"] for slot in service.list_slots()["slots"]} == {
-        host_slot_seed_id("conversation"), host_slot_seed_id("agent"),
-    }
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {host_slot_seed_id("agent")}
     # A read-only storage window must degrade to lazy seeding, not raise.
     import utils.cloudsave_runtime as cloudsave
 
@@ -540,19 +538,19 @@ def test_concurrent_first_lists_seed_exactly_once(config_env):
 
     with ThreadPoolExecutor(max_workers=6) as executor:
         results = list(executor.map(list_slots, range(12)))
-    expected = {host_slot_seed_id("conversation"), host_slot_seed_id("agent")}
+    expected = {host_slot_seed_id("agent")}
     for result in results:
         assert {slot["id"] for slot in result["slots"]} == expected
     assert set(ModelConfigStore(cm).read().slots) == expected
 
 
-def test_deleted_chat_default_is_not_recreated_by_later_install(config_env):
+def test_deleted_familiar_default_is_not_recreated_by_later_install(config_env):
     _, service, _ = config_env
     service.list_slots()
-    service.delete_slot(host_slot_seed_id("conversation"))
+    service.delete_slot(host_slot_seed_id("agent"))
     result = service.ensure_host_follow_binding("beta")
     assert result == {"bound": [], "slot_id": None}
-    assert {slot["id"] for slot in service.list_slots()["slots"]} == {host_slot_seed_id("agent")}
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == set()
     assert service.get_bindings("beta")["bindings"] == {}
 
 
@@ -586,7 +584,7 @@ def test_list_slots_during_maintenance_serves_existing_document(config_env, monk
     # Seeding retries once writes are possible again.
     monkeypatch.setattr(cloudsave, "cloudsave_writable_transaction", writable)
     assert {slot["name"] for slot in service.list_slots()["slots"]} == {
-        "Legacy manual", "Host chat model", "Host task agent model",
+        "Legacy manual", "Familiar model",
     }
 
 
@@ -727,7 +725,7 @@ def test_legacy_high_temperature_document_stays_readable_and_updatable(config_en
     atomic_write_json(cm.get_runtime_config_path(CONFIG_FILENAME), {
         "schema_version": 1, "seed_version": 1,
         "slots": {slot_id: {
-            "name": "Legacy host", "source": "host_follow", "host_api": "conversation",
+            "name": "Legacy host", "source": "host_follow", "host_api": "agent",
             "defaults": {"temperature": 1.5},
         }},
         "bindings": {}, "binding_versions": {},

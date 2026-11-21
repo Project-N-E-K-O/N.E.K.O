@@ -14,7 +14,7 @@ from plugin.server.model_gateway.errors import ModelGatewayError
 
 def _host_model_type(slot: ModelSlot) -> str:
     # The domain validator guarantees host_api is one of the followable tiers.
-    return HOST_API_MODEL_TYPES[slot.host_api or "conversation"]
+    return HOST_API_MODEL_TYPES[slot.host_api or "agent"]
 
 
 def host_protocol(config: dict[str, Any]) -> str:
