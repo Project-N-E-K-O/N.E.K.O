@@ -988,3 +988,20 @@ def test_cloudsave_local_live2d_fallback_never_swaps_in_a_different_model(librar
     assert resolve() == blocked
     monkeypatch.setattr(builtins, "open", _open)
     assert resolve() is None
+
+
+def test_vrm_workshop_roots_skip_a_library_that_raises_on_stat(libraries, monkeypatch):
+    """A registered library that later loses access must not turn into a 500."""
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    locked = libraries.b.resolve()
+    real_is_dir = Path.is_dir
+
+    def _is_dir(self):
+        if self == locked:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", _is_dir)
+    roots = vrm_router._workshop_roots()
+    assert locked not in roots
+    assert libraries.a.resolve() in roots

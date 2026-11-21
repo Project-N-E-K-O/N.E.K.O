@@ -832,9 +832,11 @@ def _resolve_binding_file_path(
             return None
 
         ranked_candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
-        # The best-ranked model, from the first library whose copy can be read. Only
-        # copies of that same model (same rank and same path under their own root)
-        # are retried; a different model is never taken in its place.
+        # The best-ranked model, from the first root whose copy can be read. Only
+        # candidates with the same rank and the same path under their own root are
+        # retried; any other model ends the search. This fallback matches by name, so
+        # such a candidate can sit in a different Workshop item (e.g. two items both
+        # shipping Foo/Foo.model3.json), just as it could when the top one is missing.
         best_key = ranked_candidates[0][:3]
         for ranked_candidate in ranked_candidates:
             if ranked_candidate[:3] != best_key:

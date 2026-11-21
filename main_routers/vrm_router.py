@@ -742,7 +742,11 @@ def _workshop_roots() -> list[Path]:
             resolved = Path(root).resolve()
         except (OSError, RuntimeError):  # Python 3.11 raises RuntimeError on symlink loops
             continue
-        if resolved.is_dir() and resolved not in roots:
+        try:
+            is_dir = resolved.is_dir()
+        except OSError:  # e.g. a registered library that lost its access permission
+            continue
+        if is_dir and resolved not in roots:
             roots.append(resolved)
     return roots
 
