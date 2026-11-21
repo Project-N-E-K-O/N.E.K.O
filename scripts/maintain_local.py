@@ -83,6 +83,7 @@ def official_required(repo):
 # out on purpose: this identity gates code that is fetched and merged locally.
 _URL_SCHEME_PORTS = {"https": 443, "ssh": 22, "git+ssh": 22, "ssh+git": 22}
 # scp-like syntax: [user@]host:path, where the first colon precedes any slash.
+_AMBIGUOUS_URL_CHARS = re.compile(r"[\\\s\x00-\x1f\x7f]")
 _SCP_LIKE = re.compile(r"^(?:[^@/:]+@)?(?P<host>[^@/:]+):(?P<path>[^/].*)$")
 
 
@@ -93,6 +94,10 @@ def repo_identity(url):
     to the same identity; case, a trailing slash and ``.git`` are ignored.
     """
     url = url.strip()
+    # Parsers disagree on backslashes, whitespace and stray "@" in the
+    # authority; refuse such URLs instead of guessing which host Git contacts.
+    if _AMBIGUOUS_URL_CHARS.search(url):
+        return None
     if "://" in url:
         try:
             parts = urlsplit(url)
@@ -104,6 +109,8 @@ def repo_identity(url):
             return None
         if parts.query or parts.fragment:
             return None
+        if parts.netloc.count("@") > 1:
+            return None
         host, path = parts.hostname, parts.path
     else:
         match = _SCP_LIKE.match(url)
@@ -111,6 +118,8 @@ def repo_identity(url):
             return None
         host, path = match["host"], match["path"]
     if not host:
+        return None
+    if "//" in path:
         return None
     path = path.strip("/")
     if path.lower().endswith(".git"):
