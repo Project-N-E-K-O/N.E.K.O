@@ -121,12 +121,7 @@ def read_file(path: Path, *, offset: int, limit: int, protected=None) -> str:
         with protected.reader() as handle:
             raw = handle.read(READ_MAX_BYTES + 1)
     else:
-        try:
-            if path.stat().st_size > READ_MAX_BYTES:
-                raise ToolError(hint)
-        except OSError:
-            pass
-        raw = textio.read_bytes(path, verb="read", display=display, max_bytes=READ_MAX_BYTES)
+        raw = textio.read_bytes(path, verb="read", display=display, max_bytes=READ_MAX_BYTES, limit_message=hint)
     if len(raw) > READ_MAX_BYTES:
         raise ToolError(hint)
     text, _fmt = textio.decode_text(raw, verb="read", display=display)

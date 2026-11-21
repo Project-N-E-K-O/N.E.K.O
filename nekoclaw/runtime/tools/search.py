@@ -60,7 +60,8 @@ from nekoclaw.runtime.tools.base import (
     define_tool,
     run_cancellable,
 )
-from nekoclaw.runtime.tools.textio import BINARY_SAMPLE_BYTES
+from nekoclaw.runtime.tools.fs import READ_MAX_BYTES
+from nekoclaw.runtime.tools.textio import BINARY_SAMPLE_BYTES, detect_legacy_encoding
 
 GLOB_MAX_RESULTS = 100
 GREP_MAX_MATCHES = 250
@@ -431,6 +432,28 @@ def preview_line(line: str, max_bytes: int = GREP_MAX_LINE_BYTES, *, match_start
     return f"{kept} (line truncated)"
 
 
+def _legacy_readline(source):
+    # ASCII headers can extend beyond the leading sample. Detect on the first
+    # non-UTF-8 line and keep that encoding for the rest of this file.
+    encoding = None
+    attempted = False
+
+    def readline(size):
+        nonlocal encoding, attempted
+        raw = source.readline(size)
+        if not attempted and raw and not raw.isascii():
+            try:
+                codecs.getincrementaldecoder("utf-8")().decode(raw, final=len(raw) < size)
+            except UnicodeDecodeError:
+                attempted = True
+                sample = raw + source.peek(BINARY_SAMPLE_BYTES)[:BINARY_SAMPLE_BYTES]
+                complete, separator, _ = sample.rpartition(b"\n")
+                encoding = detect_legacy_encoding(complete if separator and complete else raw)
+        return raw.decode(encoding, errors="replace").encode("utf-8") if encoding else raw
+
+    return readline
+
+
 @contextmanager
 def _grep_lines(path, protected):
     with (protected.reader() if protected is not None else open(path, "rb")) as source:
@@ -440,7 +463,12 @@ def _grep_lines(path, protected):
         elif sample.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
             encoding = "utf-16"
         else:
-            yield None if _NUL in sample else source.readline
+            if _NUL in sample:
+                yield None
+            elif protected is None and os.fstat(source.fileno()).st_size > READ_MAX_BYTES:
+                yield _legacy_readline(source)
+            else:
+                yield source.readline
             return
         text = io.TextIOWrapper(source, encoding=encoding, errors="replace")
         try:

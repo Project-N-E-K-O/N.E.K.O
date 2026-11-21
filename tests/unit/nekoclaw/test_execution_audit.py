@@ -143,8 +143,8 @@ def test_private_outputs_share_one_file_and_keep_interleaved_bytes_separate(tmp_
         store.close()
 
 
-@pytest.mark.parametrize("encoding", ["utf-16", "utf-32"])
-def test_oversize_bom_text_is_searchable_by_keyword(tmp_path, encoding):
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-32", "gbk"])
+def test_oversize_encoded_text_is_searchable_by_keyword(tmp_path, encoding):
     import threading
     import time
     import regex
@@ -152,10 +152,11 @@ def test_oversize_bom_text_is_searchable_by_keyword(tmp_path, encoding):
     from nekoclaw.runtime.tools.base import ToolError
 
     document = tmp_path / "source.txt"
-    document.write_text("会议纪要\n" * 8000 + "needle 议定\n", encoding=encoding)
+    content = "header\n" * 2000 + "会议纪要：这是保存的会议记录。\n" * 8000 + "needle 议定\n"
+    document.write_text(content, encoding=encoding)
     with pytest.raises(ToolError, match="Use grep"):
         fs.read_file(document, offset=1, limit=1)
-    matches = search.grep_files(document, regex.compile("needle"), None, tmp_path,
+    matches = search.grep_files(document, regex.compile("议定"), None, tmp_path,
                                 search._Budget(threading.Event(), time.monotonic() + 15),
                                 case_insensitive_globs=False)
     assert len(matches) == 1 and matches[0].line == "needle 议定"
