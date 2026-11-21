@@ -1210,3 +1210,121 @@ class CorrectionsMixin:
                     f"[Persona] {name}: dead-letter 丢弃 {dropped} 条 correction，"
                     f"剩余 {len(kept)} 条"
                 )
+
+    async def aresolve_correction_manual(
+        self,
+        name: str,
+        correction_index: int,
+        action: str,
+        *,
+        merged_text: str | None = None,
+    ) -> dict:
+        """Manually resolve one pending persona correction from the UI.
+
+        Supported actions: ``keep_new``, ``keep_old``, ``merge``, ``keep_both``.
+        """
+        from config import PERSONA_VERSION_HISTORY_MAX
+
+        if action not in ("keep_new", "keep_old", "merge", "keep_both"):
+            raise ValueError(f"Unsupported correction action: {action}")
+
+        async with self._get_resolve_alock(name):
+            async with self._get_alock(name):
+                corrections = await self.aload_pending_corrections(name)
+                if not (0 <= correction_index < len(corrections)):
+                    raise IndexError("Correction index out of range")
+                item = corrections[correction_index]
+                entity = str(item.get("entity") or "master")
+                old_text = str(item.get("old_text") or "").strip()
+                new_text = str(item.get("new_text") or "").strip()
+                final_text = str(merged_text or "").strip()
+
+                persona = await self._aensure_persona_locked(name)
+                section_facts = self._get_section_facts(persona, entity)
+                now_iso = datetime.now().isoformat()
+                persona_changed = False
+
+                def _make_entry(text_val: str) -> dict:
+                    return self._normalize_entry({
+                        "id": f"manual_{uuid.uuid4().hex[:8]}",
+                        "text": text_val,
+                        "source": "manual",
+                        "created_at": now_iso,
+                    })
+
+                if action == "keep_old":
+                    pass
+                elif action == "keep_both":
+                    text_to_add = final_text or new_text
+                    if text_to_add and not any(
+                        (e.get("text") if isinstance(e, dict) else str(e)) == text_to_add
+                        for e in section_facts
+                    ):
+                        section_facts.append(_make_entry(text_to_add))
+                        persona_changed = True
+                elif action in ("keep_new", "merge"):
+                    replacement_text = (
+                        final_text if action == "merge" and final_text
+                        else (final_text or new_text or old_text)
+                    )
+                    if not replacement_text:
+                        raise ValueError("Resolved text cannot be empty")
+                    replaced = False
+                    for idx, existing in enumerate(section_facts):
+                        et = (
+                            existing.get("text", "")
+                            if isinstance(existing, dict)
+                            else str(existing)
+                        )
+                        if et == old_text and not (
+                            isinstance(existing, dict) and existing.get("protected")
+                        ):
+                            if isinstance(existing, dict):
+                                prior = list(existing.get("version_history") or [])
+                                prior.append({
+                                    "text": old_text,
+                                    "replaced_at": now_iso,
+                                    "reason": f"manual_correction_{action}",
+                                })
+                                existing["text"] = replacement_text
+                                existing["version_history"] = prior[-PERSONA_VERSION_HISTORY_MAX:]
+                                self._invalidate_token_count_cache(existing)
+                                self._invalidate_embedding_cache(existing)
+                                section_facts[idx] = self._normalize_entry(existing)
+                            else:
+                                entry_obj = _make_entry(replacement_text)
+                                entry_obj["version_history"] = [{
+                                    "text": old_text,
+                                    "replaced_at": now_iso,
+                                    "reason": f"manual_correction_{action}",
+                                }]
+                                section_facts[idx] = entry_obj
+                            replaced = True
+                            persona_changed = True
+                            break
+                    if not replaced:
+                        section_facts.append(_make_entry(replacement_text))
+                        persona_changed = True
+
+                if persona_changed:
+                    await self.asave_persona(name, persona)
+
+                remaining = [
+                    c for i, c in enumerate(corrections) if i != correction_index
+                ]
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{name}/persona_corrections.json",
+                )
+                await atomic_write_json_async(
+                    self._corrections_path(name),
+                    remaining,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+                return {
+                    "action": action,
+                    "entity": entity,
+                    "remaining_corrections": len(remaining),
+                }

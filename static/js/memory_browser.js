@@ -4083,6 +4083,11 @@
                 '当前存储位置还未就绪。请先完成存储位置选择、恢复或等待迁移完成，然后再查看记忆。'
             );
             editDiv.appendChild(placeholder);
+            window.__nekoMemoryLimitedMode = true;
+            if (window.nekoMemoryImprint && typeof window.nekoMemoryImprint.setActiveTab === 'function') {
+                window.nekoMemoryImprint.setActiveTab('recent');
+            }
+            window.dispatchEvent(new CustomEvent('neko:memory-limited-state'));
         }
 
         const saveRow = document.getElementById('save-row');
@@ -4772,6 +4777,7 @@
             Array.from(document.getElementById('memory-file-list').children).forEach(function (item) {
                 setRoleSelected(item, item === listItem);
             });
+            window.dispatchEvent(new CustomEvent('neko:memory-refresh-overview'));
             return;
         }
         await selectMemoryFile(
@@ -5208,6 +5214,10 @@
                 const bubble = document.createElement('div');
                 bubble.className = 'chat-bubble';
                 bubble.textContent = content;
+                bubble.title = translate('memory.doubleClickToEditBubble', '双击可编辑本条内容');
+                bubble.addEventListener('dblclick', function () {
+                    beginBubbleInlineEdit(bubble, i, 'ai');
+                });
                 contentWrapper.appendChild(bubble);
 
                 if (timeStr) {
@@ -5236,6 +5246,10 @@
                 const bubble = document.createElement('div');
                 bubble.className = 'chat-bubble';
                 bubble.textContent = msg.text;
+                bubble.title = translate('memory.doubleClickToEditBubble', '双击可编辑本条内容');
+                bubble.addEventListener('dblclick', function () {
+                    beginBubbleInlineEdit(bubble, i, 'human');
+                });
                 contentWrapper.appendChild(bubble);
 
                 const deleteWrapper = document.createElement('div');
@@ -5266,6 +5280,57 @@
         } else {
             chatData[idx].text = value;
         }
+    }
+
+    function beginBubbleInlineEdit(bubbleEl, idx, role) {
+        if (!bubbleEl || bubbleEl.classList.contains('is-inline-editing')) return;
+        const msg = chatData[idx];
+        if (!msg) return;
+        const originalText = role === 'ai'
+            ? (function () {
+                const m = String(msg.text || '').match(/^(\[[^\]]+\])([\s\S]*)$/);
+                return (m && m[2]) ? m[2].trim() : String(msg.text || '');
+            })()
+            : String(msg.text || '');
+
+        bubbleEl.classList.add('is-inline-editing');
+        bubbleEl.textContent = '';
+        const textarea = document.createElement('textarea');
+        textarea.className = 'chat-bubble-inline-input';
+        textarea.value = originalText;
+        bubbleEl.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+
+        let committed = false;
+        function finish(commit) {
+            if (committed) return;
+            committed = true;
+            const nextVal = textarea.value.trim();
+            bubbleEl.classList.remove('is-inline-editing');
+            if (commit && nextVal && nextVal !== originalText) {
+                if (role === 'ai') {
+                    updateAIContent(idx, ' ' + nextVal);
+                } else {
+                    chatData[idx].text = nextVal;
+                }
+                setMemoryDirty(true);
+                bubbleEl.textContent = nextVal;
+            } else {
+                bubbleEl.textContent = originalText;
+            }
+        }
+
+        textarea.addEventListener('blur', function () { finish(true); });
+        textarea.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Escape') {
+                ev.preventDefault();
+                finish(false);
+            } else if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+                ev.preventDefault();
+                finish(true);
+            }
+        });
     }
     // 备忘录正文里 LLM 按 SUMMARY_STALE_HINT 约定，用 `---` 单独占行的分隔符
     // 把"较久前"尾段从主体切开。这里识别"`---` 单独成行（前后都换行了）"——
@@ -5634,6 +5699,9 @@
         }
         setMemoryCurrentRoleName(currentCatName);
         setMemoryRolePanelOpen(false, false);
+        window.dispatchEvent(new CustomEvent('neko:memory-character-selected', {
+            detail: { catName: currentCatName, filename: filename },
+        }));
         const editDiv = document.getElementById('memory-chat-edit');
 
         // 清空并使用 textContent 设置加载中状态

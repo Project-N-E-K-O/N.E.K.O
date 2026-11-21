@@ -1142,6 +1142,175 @@ class FactsMixin:
             )
             return True
 
+    async def aedit_persona_entry(
+        self, name: str, entity_key: str, entry_id: str, new_text: str,
+    ) -> dict | None:
+        """Manually edit one non-protected persona entry, preserving version_history."""
+        from config import PERSONA_VERSION_HISTORY_MAX
+        from memory.event_log import EVT_PERSONA_ENTRY_UPDATED
+
+        cleaned = str(new_text or "").strip()
+        if not cleaned or len(cleaned) > 1000:
+            raise ValueError("Persona text must be 1..1000 chars")
+        if self._event_log is None:
+            raise RuntimeError("[Persona.aedit_persona_entry] event_log 未注入")
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                return None
+            section_facts = section.get('facts', [])
+            entry = self._find_entry_in_section(section_facts, entry_id)
+            if entry is None:
+                return None
+            if entry.get('protected') or entry.get('source') == 'character_card':
+                raise PermissionError("Character card entries are protected")
+
+            old_text = str(entry.get('text') or '').strip()
+            if old_text == cleaned:
+                return dict(entry)
+
+            now_iso = datetime.now().isoformat()
+            prev_history = list(entry.get('version_history') or [])
+            prev_history.append({
+                'text': old_text,
+                'replaced_at': now_iso,
+                'reason': 'manual_edit',
+            })
+            updated_history = prev_history[-PERSONA_VERSION_HISTORY_MAX:]
+
+            payload = {
+                'entity_key': entity_key,
+                'entry_id': entry_id,
+                'text': cleaned,
+                'previous_text': old_text,
+                'version_history': updated_history,
+                'source': 'manual_edit',
+            }
+
+            def _sync_load(_n: str):
+                return persona
+
+            def _sync_mutate(_view):
+                entry['text'] = cleaned
+                entry['version_history'] = updated_history
+                self._invalidate_token_count_cache(entry)
+                self._invalidate_embedding_cache(entry)
+
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_ENTRY_UPDATED, payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate,
+                sync_save_view=self._sync_save_persona_view,
+            )
+            return dict(entry)
+
+    async def aset_persona_flags(
+        self,
+        name: str,
+        entity_key: str,
+        entry_id: str,
+        *,
+        user_pinned: bool | None = None,
+        suppress: bool | None = None,
+    ) -> dict | None:
+        """Toggle user_pinned or suppress flags on a non-protected persona entry."""
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                return None
+            section_facts = section.get('facts', [])
+            entry = self._find_entry_in_section(section_facts, entry_id)
+            if entry is None:
+                return None
+            if entry.get('protected') or entry.get('source') == 'character_card':
+                raise PermissionError("Character card entries are protected")
+
+            changed = False
+            if user_pinned is not None:
+                entry['user_pinned'] = bool(user_pinned)
+                changed = True
+            if suppress is not None:
+                want_suppress = bool(suppress)
+                entry['suppress'] = want_suppress
+                entry['suppressed_at'] = datetime.now().isoformat() if want_suppress else None
+                if not want_suppress:
+                    entry['recent_mentions'] = []
+                changed = True
+            if changed:
+                await self.asave_persona(name, persona)
+            return dict(entry)
+
+    async def arestore_persona_version(
+        self, name: str, entity_key: str, entry_id: str, version_index: int,
+    ) -> dict | None:
+        """Restore a historical text snapshot from version_history."""
+        from config import PERSONA_VERSION_HISTORY_MAX
+        from memory.event_log import EVT_PERSONA_ENTRY_UPDATED
+
+        if self._event_log is None:
+            raise RuntimeError("[Persona.arestore_persona_version] event_log 未注入")
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                return None
+            section_facts = section.get('facts', [])
+            entry = self._find_entry_in_section(section_facts, entry_id)
+            if entry is None:
+                return None
+            if entry.get('protected') or entry.get('source') == 'character_card':
+                raise PermissionError("Character card entries are protected")
+            vh = entry.get('version_history')
+            if not isinstance(vh, list) or not (0 <= version_index < len(vh)):
+                raise IndexError("Invalid version_index")
+            target_snap = vh[version_index]
+            restored_text = str(
+                target_snap.get('text') if isinstance(target_snap, dict) else ''
+            ).strip()
+            if not restored_text:
+                raise ValueError("Target version snapshot is empty")
+
+            current_text = str(entry.get('text') or '').strip()
+            now_iso = datetime.now().isoformat()
+            new_history = list(vh)
+            if current_text and current_text != restored_text:
+                new_history.append({
+                    'text': current_text,
+                    'replaced_at': now_iso,
+                    'reason': 'manual_restore',
+                })
+            new_history = new_history[-PERSONA_VERSION_HISTORY_MAX:]
+
+            payload = {
+                'entity_key': entity_key,
+                'entry_id': entry_id,
+                'text': restored_text,
+                'previous_text': current_text,
+                'version_history': new_history,
+                'source': 'manual_restore',
+            }
+
+            def _sync_load(_n: str):
+                return persona
+
+            def _sync_mutate(_view):
+                entry['text'] = restored_text
+                entry['version_history'] = new_history
+                self._invalidate_token_count_cache(entry)
+                self._invalidate_embedding_cache(entry)
+
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_ENTRY_UPDATED, payload,
+                sync_load_view=_sync_load,
+                sync_mutate_view=_sync_mutate,
+                sync_save_view=self._sync_save_persona_view,
+            )
+            return dict(entry)
+
     def _get_section_facts(self, persona: dict, entity: str, *, subject=None) -> list:
         if subject is not None:
             section = persona.setdefault(subject.persona_section_key, {})

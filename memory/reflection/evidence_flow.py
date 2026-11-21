@@ -398,3 +398,97 @@ class EvidenceFlowMixin:
             self._normalize_reflection(item)
             for item in data if isinstance(item, dict) and 'id' in item
         ]
+
+    async def amanual_review_reflection(
+        self,
+        lanlan_name: str,
+        reflection_id: str,
+        decision: str,
+        *,
+        edited_text: str | None = None,
+    ) -> dict | None:
+        """Manually confirm, edit, or forget (archive) a reflection from the UI."""
+        from memory.event_log import (
+            EVIDENCE_SOURCE_USER_CONFIRM,
+            EVT_REFLECTION_STATE_CHANGED,
+        )
+
+        if decision not in ("confirm", "edit", "forget"):
+            raise ValueError(f"Unsupported reflection review decision: {decision}")
+
+        if decision == "forget":
+            ok = await self.aarchive_reflection(lanlan_name, reflection_id)
+            return {"id": reflection_id, "decision": "forget", "archived": ok} if ok else None
+
+        cleaned = str(edited_text).strip() if edited_text is not None else None
+        if decision == "edit" and not cleaned:
+            raise ValueError("edited_text is required when decision='edit'")
+        if cleaned is not None and len(cleaned) > 1000:
+            raise ValueError("Reflection text too long")
+
+        async with self._get_alock(lanlan_name):
+            reflections_full = await self._aload_reflections_full(lanlan_name)
+            entry = self._find_reflection_in_list(reflections_full, reflection_id)
+            if entry is None:
+                return None
+            prev_status = str(entry.get("status") or "pending")
+            now_iso = datetime.now().isoformat()
+
+            if cleaned and cleaned != entry.get("text"):
+                entry["text"] = cleaned
+                entry.pop("embedding", None)
+                entry.pop("embedding_model", None)
+                entry.pop("embedding_text_hash", None)
+
+            if decision == "confirm" and prev_status == "pending":
+                entry["status"] = "confirmed"
+                entry["confirmed_at"] = now_iso
+                if self._event_log is not None:
+                    payload = {
+                        "reflection_id": reflection_id,
+                        "from": prev_status,
+                        "to": "confirmed",
+                        "source": EVIDENCE_SOURCE_USER_CONFIRM,
+                    }
+
+                    def _sync_load(_n: str):
+                        return reflections_full
+
+                    def _sync_mutate(_view):
+                        pass
+
+                    def _sync_save(n: str, view):
+                        assert_cloudsave_writable(
+                            self._config_manager,
+                            operation="save",
+                            target=f"memory/{n}/reflections.json",
+                        )
+                        atomic_write_json(
+                            self._reflections_path(n), view, indent=2, ensure_ascii=False,
+                        )
+
+                    await self._event_log.arecord_and_save(
+                        lanlan_name, EVT_REFLECTION_STATE_CHANGED, payload,
+                        sync_load_view=_sync_load,
+                        sync_mutate_view=_sync_mutate,
+                        sync_save_view=_sync_save,
+                    )
+                else:
+                    await self.asave_reflections(lanlan_name, reflections_full)
+            else:
+                await self.asave_reflections(lanlan_name, reflections_full)
+
+        if decision == "confirm" and self._event_log is not None:
+            await self.aapply_signal(
+                lanlan_name,
+                reflection_id,
+                {"reinforcement": 1.5, "disputation": 0.0},
+                source=EVIDENCE_SOURCE_USER_CONFIRM,
+            )
+
+        return {
+            "id": reflection_id,
+            "decision": decision,
+            "status": "confirmed" if decision == "confirm" and prev_status == "pending" else prev_status,
+            "text": cleaned or entry.get("text"),
+        }

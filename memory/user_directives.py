@@ -566,6 +566,55 @@ class UserDirectivesManager:
         with self._pending_guard:
             self._pending_injection.discard(name)
 
+    def remove(self, name: str, term: str) -> bool:
+        """Remove a specific ban-topic directive by case-insensitive term match."""
+        if not name or not isinstance(term, str) or not term.strip():
+            return False
+        target = term.strip().casefold()
+        with self._get_lock(name):
+            entries = self._load_unlocked(name)
+            kept = [e for e in entries if str(e.get("term") or "").casefold() != target]
+            if len(kept) == len(entries):
+                return False
+            self._cache[name] = kept
+            self._save_unlocked(name)
+            return True
+
+    async def aget_active(
+        self,
+        name: str,
+        *,
+        now: Optional[float] = None,
+        limit: int = USER_DIRECTIVE_MAX_ACTIVE,
+    ) -> List[Dict[str, Any]]:
+        import asyncio
+        return await asyncio.to_thread(self.get_active, name, now=now, limit=limit)
+
+    async def arecord(
+        self,
+        name: str,
+        *,
+        locale: str,
+        kind: str,
+        term: str,
+        source: str = "manual",
+        now: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        import asyncio
+        return await asyncio.to_thread(
+            self.record,
+            name,
+            locale=locale,
+            kind=kind,
+            term=term,
+            source=source,
+            now=now,
+        )
+
+    async def aremove(self, name: str, term: str) -> bool:
+        import asyncio
+        return await asyncio.to_thread(self.remove, name, term)
+
 
 # -- Process singleton and registration --
 _GLOBAL_MANAGER: Optional[UserDirectivesManager] = None

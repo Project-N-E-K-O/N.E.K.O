@@ -7048,3 +7048,74 @@ class FactStore:
                 f"when={event_when_raw}"
             )
         return ok
+
+    async def aedit_fact_manual(self, name: str, fact_id: str, new_text: str) -> dict | None:
+        """Manually edit one active fact's text and invalidate its embedding cache."""
+        cleaned = str(new_text or "").strip()
+        if not cleaned or len(cleaned) > 1000:
+            raise ValueError("Fact text must be 1..1000 chars")
+
+        def _edit() -> dict | None:
+            with self._get_lock(name):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{name}/facts.json",
+                )
+                current = self.load_facts(name)
+                target = None
+                for fact in current:
+                    if isinstance(fact, dict) and fact.get("id") == fact_id:
+                        target = fact
+                        break
+                if target is None:
+                    return None
+                target["text"] = cleaned
+                target.pop("embedding", None)
+                target.pop("embedding_model", None)
+                target.pop("embedding_text_hash", None)
+                self.save_facts(name, _fact_lock_held=True)
+                return dict(target)
+
+        return await asyncio.to_thread(_edit)
+
+    async def aarchive_fact_manual(self, name: str, fact_id: str) -> bool:
+        """Manually archive (forget) one active fact into facts_archive.json."""
+        def _archive() -> bool:
+            with self._get_lock(name):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="archive",
+                    target=f"memory/{name}/facts_archive.json",
+                )
+                current = self.load_facts(name)
+                kept: list[dict] = []
+                removed: dict | None = None
+                for fact in current:
+                    if removed is None and isinstance(fact, dict) and fact.get("id") == fact_id:
+                        removed = dict(fact)
+                        continue
+                    kept.append(fact)
+                if removed is None:
+                    return False
+                removed["archived_at"] = datetime.now().isoformat()
+                removed["archive_reason"] = "manual_forget"
+                archive_path = self._facts_archive_path(name)
+                existing_archive: list[dict] = []
+                if os.path.exists(archive_path):
+                    try:
+                        with open(archive_path, encoding="utf-8") as fh:
+                            loaded = json.load(fh)
+                        if isinstance(loaded, list):
+                            existing_archive = loaded
+                    except (OSError, json.JSONDecodeError):
+                        existing_archive = []
+                existing_archive.append(removed)
+                atomic_write_json(
+                    archive_path, existing_archive, indent=2, ensure_ascii=False,
+                )
+                self._facts[name] = kept
+                self.save_facts(name, _fact_lock_held=True)
+                return True
+
+        return await asyncio.to_thread(_archive)

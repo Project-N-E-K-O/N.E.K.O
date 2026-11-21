@@ -1350,3 +1350,33 @@ VECTORS_MODEL_PROFILE_ID = "local-text-retrieval-v1"  # anonymous profile id + l
 # event after startup. The warmup task waits up to this many seconds
 # after startup OR until first /process call, whichever comes first.
 VECTORS_WARMUP_DELAY_SECONDS = 30
+
+# ---- Memory: Imprint warm note (manual UI trigger, summary tier) ----
+IMPRINT_NOTE_INPUT_MAX_TOKENS = 2400
+"""手动生成「印记暖心总结/评语/寄语」时，拼装输入上下文的总 token 上限。"""
+IMPRINT_NOTE_MAX_TOKENS = 600
+"""「印记暖心总结/评语/寄语」LLM 输出的 max_completion_tokens 上限。"""
+IMPRINT_NOTE_TIMEOUT_SECONDS = 45
+"""「印记暖心总结/评语/寄语」LLM 单次请求超时（秒）。"""
+
+# ---- Memory: Star Map cluster theme labeling (ArchiveSweep weekly cache + manual UI) ----
+STAR_MAP_MIN_EMBEDDED_ENTRIES = 15
+"""记忆星图从冷启动进度态切换到星云图的最少已嵌入条目数。"""
+STAR_MAP_LABEL_REFRESH_DAYS = 7
+"""ArchiveSweep 后台低频刷新星云主题缓存的最小天数间隔。"""
+STAR_MAP_LABEL_INPUT_MAX_TOKENS = 2000
+"""星云主题批量命名 LLM 输入上下文总 token 上限。"""
+STAR_MAP_LABEL_MAX_TOKENS = 400
+"""星云主题批量命名 LLM 输出的 max_completion_tokens 上限。"""
+STAR_MAP_LABEL_TIMEOUT_SECONDS = 45
+"""星云主题批量命名 LLM 单次请求超时（秒）。"""
+
+# ---- Memory: Browser Phase 3 (Snapshots & Manual Deep Conflict Check) ----
+MEMORY_BROWSER_SNAPSHOT_MAX_KEEP = 10
+"""每个角色在记忆浏览器中最多保留的轻快照数量（滚动淘汰最旧）。"""
+DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS = 2800
+"""开发者模式手动深度矛盾裁决 LLM 输入总 token 上限。"""
+DEEP_CONFLICT_CHECK_MAX_TOKENS = 900
+"""开发者模式手动深度矛盾裁决 LLM 输出 max_completion_tokens 上限。"""
+DEEP_CONFLICT_CHECK_TIMEOUT_SECONDS = 60
+"""开发者模式手动深度矛盾裁决 LLM 单次请求超时（秒）。"""
