@@ -24,6 +24,8 @@ session nothing is at work in for long is summed up, when that is switched on.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import functools
 import json
 from pathlib import Path
 from typing import Any
@@ -94,6 +96,10 @@ class _WentWrong:
     What is raised there is taken by the runtime, and the test would see
     only that a session did not get where it waited for it, and only when
     that wait timed out.
+
+    What is wrapped with ``noting`` is wrapped whole: a host callback with the
+    host's own code in it as well. What that code raises, which the runtime
+    goes on from (it only logs it), fails the test too.
     """
 
     def __init__(self) -> None:
@@ -103,9 +109,10 @@ class _WentWrong:
     def noting(self, waits: Any) -> Any:
         """Return ``waits``, which notes here what goes wrong in it before it raises it."""
 
-        async def noted(*args: Any) -> Any:
+        @functools.wraps(waits)
+        async def noted(*args: Any, **kwargs: Any) -> Any:
             try:
-                return await waits(*args)
+                return await waits(*args, **kwargs)
             except Exception as exc:
                 self.errors.append(exc)
                 self._happened.set()
@@ -124,6 +131,11 @@ class _WentWrong:
             if not waited.done():
                 waited.cancel()
             await asyncio.gather(waited, went_wrong, return_exceptions=True)
+        if not self.errors and not waited.cancelled() and waited.exception() is not None:
+            # The test's own wait ran out first: what went wrong inside a session, should it
+            # have run out at about the same time, is noted a moment later.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._happened.wait(), 0.2)
         if self.errors and (waited.cancelled() or waited.exception() is not None):
             raise self.errors[0] from (None if waited.cancelled() else waited.exception())
         return waited.result()
@@ -676,10 +688,10 @@ async def test_what_the_task_agents_it_started_use_is_the_commissions_own_and_th
     assert await host.answer(child.id, "no", choice="deny")
 
     # Both are told to hand over, and the user is not asked a second time for the one that started it.
-    assert (await wait_status(host, child.id, "blocked")).result_summary == "counted 12 of them"
+    assert (await went_wrong.unless(wait_status(host, child.id, "blocked"))).result_summary == "counted 12 of them"
     release.set()
-    stuck = await wait_status(host, first.id, "blocked")
-    await _let_go(host)
+    stuck = await went_wrong.unless(wait_status(host, first.id, "blocked"))
+    await went_wrong.unless(_let_go(host))
     assert stuck.result_summary == "the count is missing"
     notice = brain_texts.TASK_AGENT_USAGE_WIND_UP.format(requests=settings.TASK_AGENT_USAGE_WIND_UP_REQUESTS)
     assert notice in _user_messages(scripts["count the jpgs"].requests[1])
@@ -754,7 +766,7 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
     question = await went_wrong.unless(_asked(host, first.id))
     assert question["category"] == "usage_limit" and question["detail"] == {"used": "1k", "more": "1k"}
     # The task agent it started waits for that answer, at work as it was, and is not asked about a second time.
-    await asyncio.wait_for(manager._usage_asks[first.id].waited_for.wait(), 10)
+    await went_wrong.unless(asyncio.wait_for(manager._usage_asks[first.id].waited_for.wait(), 10))
     assert (await host.ledger.get(child.id)).status == "working"
     assert len(scripts["count the jpgs"].requests) == 1
     assert len(await outbox(host, "question")) == 1
@@ -762,9 +774,9 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
     assert await host.answer(first.id, "go on", choice="once")
 
     # Allowed, both go on.
-    assert (await wait_status(host, child.id, "done")).result_summary == "counted 12 of them"
-    assert (await wait_status(host, first.id, "done")).result_summary == "sorted"
-    await _let_go(host)
+    assert (await went_wrong.unless(wait_status(host, child.id, "done"))).result_summary == "counted 12 of them"
+    assert (await went_wrong.unless(wait_status(host, first.id, "done"))).result_summary == "sorted"
+    await went_wrong.unless(_let_go(host))
     assert len(scripts["count the jpgs"].requests) == 2
     asked = [
         commission_id
