@@ -645,3 +645,31 @@ def test_a_commission_is_counted_once_while_it_is_both_copied_for_and_at_work_in
     manager._copying_for["main"] = {"c1", "c2"}
     assert manager._carrying_on("main") == 2
     del manager._sessions["c1"]
+
+
+async def test_a_follow_up_in_the_copy_that_needs_a_change_is_handed_back_too(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        FILES: ScriptedLLM([_report("tables.py")]),
+        # Said after the answer: change what it found.
+        "now rename the table": ScriptedLLM(
+            [
+                [call("edit", {"file_path": "tables.py", "old_string": "a", "new_string": "b"}, "call-e"), finish("tool_calls")],
+                [say("The table is in tables.py."), finish()],
+                _report("renamed", "call-r"),
+            ]
+        ),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    first = await _export_at_work(host, scripts)
+    answered = await wait_status(host, (await _dispatch(host, FILES)).id, "done")
+    follow_up, _created = await host.ledger.create(
+        lanlan_name="Lan", title="now rename the table", dispatch_text="now rename the table", user_text="now rename the table",
+        source="dispatch", session_id=answered.session_id, continues=answered.id, lang="en",
+    )
+    await host.task_agents.submit(follow_up)
+    await wait_until(lambda: _handed_back(host, follow_up.id), what="the hand-back of the follow-up")
+    release.set()
+    done = await wait_status(host, follow_up.id, "done")
+    assert done.session_id == first.session_id

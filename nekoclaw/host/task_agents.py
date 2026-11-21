@@ -1923,7 +1923,7 @@ class TaskAgentManager:
         if place is None:
             return ""
         if place.kind == "fork":
-            carried = place.forked_from and await self._ledger.has_event(commission.id, "carried_on_in_copy")
+            carried = place.forked_from and await self._ledger.carried_on_in(place.id)
             return texts.TASK_AGENT_COMMISSION_IN_COPY if carried else ""
         if place.kind != "project":
             return ""
@@ -2281,11 +2281,12 @@ class TaskAgentManager:
                 kept.kind == "fork"
                 and kept.forked_from
                 and _carried_on(commission)
-                and await self._ledger.has_event(commission.id, "carried_on_in_copy")
+                and await self._ledger.carried_on_in(kept.id)
             ):
                 # A commission of the project carried on in a copy of its
                 # session (``_carry_on_in_copy``), also when it is taken
-                # up again there; not one filed in a copy by other means.
+                # up again there, or one that follows it up there; not one
+                # filed in a copy made by other means.
                 session.carries_on_for = kept.forked_from
             # Where a session is kept and where its task agent works are the
             # session's, on record from when it was first opened. Until then

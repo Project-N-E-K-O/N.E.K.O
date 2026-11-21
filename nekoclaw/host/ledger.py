@@ -3062,6 +3062,25 @@ class Ledger:
 
         return await self.run(work)
 
+    async def carried_on_in(self, session_id: str) -> bool:
+        """Return whether a session is a copy the host made to carry a commission on in (``TaskAgentManager``).
+
+        Told by the ``carried_on_in_copy`` event of the commission it was
+        made for, which names the copy: that commission may be the session
+        itself's by now (handed back), and a later one that follows it up
+        in the copy has no such event of its own.
+        """
+
+        def work(conn: sqlite3.Connection) -> bool:
+            row = conn.execute(
+                "SELECT 1 FROM events WHERE type = 'carried_on_in_copy' AND json_valid(payload) "
+                "AND json_extract(payload, '$.session_id') = ? LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            return row is not None
+
+        return await self.run(work)
+
     async def forked_work(self, session_id: str, *, limit: int) -> list[Commission]:
         """Return the commissions copies of a session finished that the session was not told of yet, the most recent first.
 
