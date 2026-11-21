@@ -240,6 +240,9 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
         from plugin.server.infrastructure.package_download import aclose_package_http_client
 
         await aclose_package_http_client()
+        from plugin.server.routes.console_proxy import close_console_proxy
+
+        await close_console_proxy()
         stop_event.set()
         heartbeat_task.cancel()
         try:
@@ -369,6 +372,9 @@ def build_plugin_server_app(
     app.include_router(media_router)
     app.include_router(frontend_router)
     app.include_router(security_router)
+    from plugin.server.routes.console_proxy import router as console_proxy_router
+
+    app.include_router(console_proxy_router)
     app.include_router(websocket_router)
     app.include_router(plugin_ui_router)
     # Built-in plugin routes are optional. In AppImage/Nuitka builds,

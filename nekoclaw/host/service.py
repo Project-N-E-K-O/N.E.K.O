@@ -534,6 +534,71 @@ class NekoClawHost:
 
             raise DshUnavailable("dsh is in use: a commission is running in it")
 
+    # -- settings a page shows --------------------------------------------
+    #
+    # For the page about the runtime (``app/agent_server/api_console.py``).
+
+    async def model_window(self) -> dict[str, Any] | None:
+        """Return what sessions of the task agent model are managed for; None while no model is configured.
+
+        ``ModelCapabilityStore.describe_window`` of the model as it is
+        configured now, with ``model``: its name.
+        """
+        config = await self._task_agent_model()
+        if not config or not config.get("model"):
+            return None
+        described = await self.model_capabilities.describe_window(config.get("base_url"), config.get("model"))
+        return {"model": str(config.get("model")), **described}
+
+    async def set_model_window(self, **changes: Any) -> dict[str, Any]:
+        """Change what sessions of the task agent model are managed for; returns ``model_window``.
+
+        ``context_window`` and ``compact_at`` in tokens, ``idle_compact_after``
+        in seconds; None for one of them goes back to the setting, and one
+        that is not given stays as it is. Raises ``LookupError`` while no
+        model is configured, ``ValueError`` for a value the store refuses
+        (nothing is changed then) and ``TypeError`` for a name that is none
+        of the three.
+        """
+        unknown = sorted(set(changes) - {"context_window", "compact_at", "idle_compact_after"})
+        if unknown:
+            raise TypeError(f"unknown window setting: {', '.join(unknown)}")
+        config = await self._task_agent_model()
+        if not config or not config.get("model"):
+            raise LookupError("no task agent model is configured")
+        base_url, model = config.get("base_url"), config.get("model")
+        store = self.model_capabilities
+        before = await store.describe_window(base_url, model)
+        setters = (
+            ("context_window", store.set_context_window, "set"),
+            ("compact_at", store.set_compact_at, "compact_at_set"),
+            ("idle_compact_after", store.set_idle_compact_after, "idle_compact_after_set"),
+        )
+        done: list[tuple[Any, Any]] = []
+        try:
+            for name, setter, was in setters:
+                if name in changes:
+                    await setter(base_url, model, changes[name])
+                    done.append((setter, before.get(was)))
+        except ValueError:
+            # One page saves them together: none of them is to stay changed.
+            for setter, value in reversed(done):
+                await setter(base_url, model, value)
+            raise
+        window = await self.model_window()
+        assert window is not None
+        return window
+
+    def places(self) -> list[dict[str, Any]]:
+        """Return where the host keeps what, for showing it: ``key`` and ``path``, in the order shown."""
+        root = self.paths.root()
+        return [
+            {"key": "task_agents", "path": str(root / "task_agents")},
+            {"key": "space", "path": str(self.paths.space().root)},
+            {"key": "dsh", "path": str(self.paths.dsh())},
+            {"key": "browser_profile", "path": str(root / "browser_profile")},
+        ]
+
     # -- upkeep -----------------------------------------------------------
 
     def invalidate_capabilities(self) -> None:

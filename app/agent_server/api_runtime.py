@@ -28,6 +28,7 @@ from collections import OrderedDict
 
 from utils.shutdown_steps import ShutdownCancellationBudget, run_shutdown_step
 
+from .api_console import build_console_router
 from .api_shared import (  # noqa: F401
     AgentServerEventBridge,
     Any,
@@ -1026,6 +1027,18 @@ async def cancel_task(task_id: str):
         return {"success": False, "error": "task is not active", "status": current.get("status")}
     logger.info("[Agent] Task %s (%s) cancelled by user", task_id, task.get("type"))
     return {"success": True, "task_id": task_id, "status": "cancelled"}
+
+
+def _console_token() -> str:
+    """What the console routes ask for: the token of this launch, as the plugin server holds it."""
+    from config import AUTOSTART_CSRF_TOKEN
+
+    return AUTOSTART_CSRF_TOKEN
+
+
+# What the console pages read and change of the task agents; the plugin
+# server passes their requests on to here.
+app.include_router(build_console_router(ready_host, _console_token))
 
 
 @app.get("/builtin/activity")

@@ -2233,3 +2233,26 @@ async def test_stopping_everything_drops_the_notes_that_wait_for_sessions(wiring
     # A note handed over after the stop would start a turn: it is dropped with the stop.
     assert await ledger.wakes_pending(session_id=target.session_id) == []
     assert (await ledger.message_get(message.id)).status == "void"
+
+
+async def test_the_console_routes_are_mounted_and_ask_for_the_token_of_this_launch(wiring, monkeypatch):
+    """The agent process offers ``/console/...`` over its own host, to whoever holds the launch's token."""
+    import httpx
+
+    import config
+    from app.agent_server.api_console import TOKEN_HEADER
+    from app.agent_server.api_shared import app
+
+    monkeypatch.setattr(config, "AUTOSTART_CSRF_TOKEN", "the-launch", raising=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
+        assert (await client.get("/console/permissions")).status_code == 403
+        assert (await client.get("/console/permissions", headers={TOKEN_HEADER: "another"})).status_code == 403
+        seen = await client.get("/console/permissions", headers={TOKEN_HEADER: "the-launch"})
+        assert seen.status_code == 200 and seen.json()["success"] is True
+        changed = await client.post(
+            "/console/permissions", headers={TOKEN_HEADER: "the-launch"}, json={"category": "browser", "mode": "deny"},
+        )
+        assert changed.status_code == 200
+    # It is this process's host that was changed.
+    host = await wiring.mount_module.ready_host()
+    assert await host.permission_store.mode("browser") == "deny"

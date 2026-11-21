@@ -153,6 +153,13 @@ export default defineConfig({
         changeOrigin: true,
         secure: false
       },
+      // What the pages about the task agents read and change; the backend
+      // passes it on to the agent process.
+      '^/console/': {
+        target: BACKEND_TARGET,
+        changeOrigin: true,
+        secure: false
+      },
       // CSRF token bootstrap used by the shared mutation request interceptor.
       '^/security/csrf-token(?:\\?.*)?$': {
         target: BACKEND_TARGET,
