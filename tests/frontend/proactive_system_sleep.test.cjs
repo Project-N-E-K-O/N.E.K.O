@@ -1,0 +1,250 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+const vm = require('node:vm');
+
+// The pytest wrapper copies this file to a temp path, so __dirname may not be the repo.
+const fileRoot = path.resolve(__dirname, '..', '..');
+const PROJECT_ROOT = fs.existsSync(path.join(fileRoot, 'static')) ? fileRoot : process.cwd();
+const source = fs.readFileSync(path.join(PROJECT_ROOT, 'static', 'app', 'app-proactive.js'), 'utf8');
+const clock = { now: 1_000_000 };
+const channels = [];
+const queue = [];
+
+class FakeBroadcastChannel {
+    constructor(name) {
+        this.name = name;
+        this.onmessage = null;
+        channels.push(this);
+    }
+    postMessage(data) {
+        const copy = JSON.parse(JSON.stringify(data));
+        for (const peer of channels) {
+            if (peer !== this && peer.name === this.name) {
+                queue.push(() => peer.onmessage && peer.onmessage({ data: copy }));
+            }
+        }
+    }
+    close() {}
+}
+
+function flush() {
+    while (queue.length) queue.shift()();
+}
+
+function createWindow(pathname) {
+    const timers = new Map();
+    let nextTimer = 1;
+    const listeners = { document: {}, window: {} };
+    const fetches = [];
+    const appState = {
+        proactiveChatEnabled: true,
+        proactiveNewsChatEnabled: true,
+        proactiveChatInterval: 10,
+        proactiveChatBackoffLevel: 0,
+        proactiveChatTimer: null,
+        isRecording: false,
+        isProactiveChatRunning: false,
+        _proactiveStartupDelayApplied: true,
+    };
+    const input = {
+        nodeType: 1,
+        id: 'textInputBox',
+        disabled: false,
+        readOnly: false,
+        matches(selector) {
+            return String(selector).split(',').some((part) => part.trim() === '#textInputBox');
+        },
+    };
+    const document = {
+        activeElement: null,
+        hasFocus: () => true,
+        body: { classList: { contains: () => false }, getAttribute: () => null },
+        addEventListener(type, fn) {
+            (listeners.document[type] || (listeners.document[type] = [])).push(fn);
+        },
+        getElementById: () => null,
+        querySelector: () => null,
+    };
+    const window = {
+        console: { log() {}, info() {}, debug() {}, warn() {}, error() {} },
+        location: { pathname, origin: 'https://local.test' },
+        appState,
+        appConst: {},
+        lastUserInputTime: 0,
+        localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+        document,
+        navigator: { userAgent: 'node' },
+        addEventListener(type, fn) {
+            (listeners.window[type] || (listeners.window[type] = [])).push(fn);
+        },
+        setTimeout(fn, delay) {
+            const id = nextTimer++;
+            timers.set(id, { fn, delay, due: clock.now + delay });
+            return id;
+        },
+        clearTimeout(id) { timers.delete(id); },
+        setInterval() { return 0; },
+        clearInterval() {},
+        fetch(url) {
+            fetches.push(url);
+            const body = window.__proactiveResponse || { success: false, action: 'pass' };
+            return Promise.resolve({
+                ok: true,
+                status: 200,
+                json: async () => body,
+            });
+        },
+        BroadcastChannel: FakeBroadcastChannel,
+    };
+    window.window = window;
+    vm.createContext(window);
+    window.__clock = clock;
+    vm.runInContext('Date.now = () => globalThis.__clock.now;', window);
+    vm.runInContext(source, window, { filename: 'static/app/app-proactive.js' });
+    return {
+        window, appState, document, input, timers, fetches, listeners,
+        emit(type, target) {
+            for (const fn of listeners.document[type] || []) fn({ target });
+        },
+        scheduledDelay() {
+            const timer = appState.proactiveChatTimer && timers.get(appState.proactiveChatTimer);
+            return timer ? timer.delay : null;
+        },
+        async fire() {
+            const timer = timers.get(appState.proactiveChatTimer);
+            assert.ok(timer, '应有待触发的主动搭话定时器');
+            assert.ok(clock.now >= timer.due, '定时器尚未到期');
+            timers.delete(appState.proactiveChatTimer);
+            await timer.fn();
+        },
+    };
+}
+
+const INACTIVE = { success: true, action: 'pass', reason_code: 'PASS_SYSTEM_INACTIVE', system_inactive_reason: 'display_off' };
+const MODEL_PASS = { success: true, action: 'pass', reason_code: 'PASS_MODEL_PASS' };
+
+function setup() {
+    channels.length = 0;
+    queue.length = 0;
+    clock.now = 1_000_000;
+    const pet = createWindow('/');
+    flush();
+    return pet;
+}
+
+function proactiveFetches(pet) {
+    return pet.fetches.filter((url) => url === '/api/proactive_chat').length;
+}
+
+test('text tick fired long after its due time (system sleep) is dropped and the schedule restarts quietly', async () => {
+    const pet = setup();
+    pet.window.scheduleProactiveChat();
+    clock.now += pet.scheduledDelay() + 10 * 60 * 1000;
+    await pet.fire();
+    assert.equal(proactiveFetches(pet), 0, 'no catch-up proactive right after wake');
+    assert.equal(pet.appState.proactiveChatBackoffLevel, 0, 'a dropped tick is not an attempt');
+    assert.ok(pet.scheduledDelay() >= 60000, 'stays quiet for at least 60s after wake');
+
+    clock.now += pet.scheduledDelay();
+    await pet.fire();
+    assert.equal(proactiveFetches(pet), 1, 'resumes normally after the quiet window');
+});
+
+test('moderately late text tick (load / throttling) is not mistaken for sleep', async () => {
+    const pet = setup();
+    pet.window.scheduleProactiveChat();
+    clock.now += pet.scheduledDelay() + 90 * 1000;  // late, but under the 120s floor
+    await pet.fire();
+    assert.equal(proactiveFetches(pet), 1);
+});
+
+test('lateness below one base interval is not sleep even above the floor', async () => {
+    const pet = setup();
+    pet.appState.proactiveChatInterval = 300;
+    pet.window.scheduleProactiveChat();
+    clock.now += pet.scheduledDelay() + 200 * 1000;  // > 120s floor, < 300s base
+    await pet.fire();
+    assert.equal(proactiveFetches(pet), 1);
+});
+
+test('voice tick after system sleep is dropped without counting as no-response', async () => {
+    const pet = setup();
+    pet.appState.isRecording = true;
+    pet.appState._voiceProactiveNoResponseCount = 0;
+    pet.window.scheduleProactiveChat();
+    assert.equal(pet.scheduledDelay(), 10000);
+    clock.now += 10000 + 30 * 60 * 1000;
+    await pet.fire();
+    assert.equal(proactiveFetches(pet), 0);
+    assert.equal(pet.appState._voiceProactiveNoResponseCount, 0);
+    assert.ok(pet.scheduledDelay() >= 60000, 'voice also waits out the quiet window');
+
+    clock.now += pet.scheduledDelay();
+    await pet.fire();
+    assert.equal(proactiveFetches(pet), 1);
+});
+
+test('PASS_SYSTEM_INACTIVE does not raise the text backoff level; ordinary pass still does', async () => {
+    const pet = setup();
+    pet.window.__proactiveResponse = INACTIVE;
+    pet.window.scheduleProactiveChat();
+    for (let i = 0; i < 5; i += 1) {
+        clock.now += pet.scheduledDelay();
+        await pet.fire();
+    }
+    assert.equal(proactiveFetches(pet), 5);
+    assert.equal(pet.appState.proactiveChatBackoffLevel, 0, 'inactive passes are not attempts');
+
+    pet.window.__proactiveResponse = MODEL_PASS;
+    clock.now += pet.scheduledDelay();
+    await pet.fire();
+    assert.equal(pet.appState.proactiveChatBackoffLevel, 1, 'control: a model pass is an attempt');
+});
+
+test('PASS_SYSTEM_INACTIVE does not consume the voice no-response quota; ordinary pass still does', async () => {
+    const pet = setup();
+    pet.appState.isRecording = true;
+    pet.appState._voiceProactiveNoResponseCount = 0;
+    pet.window.__proactiveResponse = INACTIVE;
+    pet.window.scheduleProactiveChat();
+    for (let i = 0; i < 12; i += 1) {
+        clock.now += pet.scheduledDelay();
+        await pet.fire();
+    }
+    assert.equal(proactiveFetches(pet), 12, 'keeps polling through a long screen-off');
+    assert.equal(pet.appState._voiceProactiveNoResponseCount, 0);
+
+    pet.window.__proactiveResponse = MODEL_PASS;
+    clock.now += pet.scheduledDelay();
+    await pet.fire();
+    assert.equal(pet.appState._voiceProactiveNoResponseCount, 1, 'control: a delivered voice nudge counts');
+});
+
+test('typing that keeps deferring a tick for minutes is not mistaken for sleep', async () => {
+    const pet = setup();
+    const sleepLogs = [];
+    pet.window.console.log = (msg) => { if (/system sleep/.test(String(msg))) sleepLogs.push(msg); };
+    pet.window.scheduleProactiveChat();
+    pet.document.activeElement = pet.input;
+    pet.emit('focusin', pet.input);
+    // Keep typing for well over the 120s floor; each due tick re-defers.
+    const typingEnd = clock.now + 200 * 1000;
+    while (clock.now < typingEnd) {
+        clock.now += 20 * 1000;
+        pet.emit('input', pet.input);
+        const timer = pet.timers.get(pet.appState.proactiveChatTimer);
+        if (timer && clock.now >= timer.due) await pet.fire();
+    }
+    assert.equal(proactiveFetches(pet), 0, 'still typing: no proactive');
+    pet.document.activeElement = null;
+    for (let i = 0; i < 5 && proactiveFetches(pet) === 0; i += 1) {
+        const timer = pet.timers.get(pet.appState.proactiveChatTimer);
+        assert.ok(timer, 'a tick stays scheduled');
+        clock.now = Math.max(clock.now, timer.due);
+        await pet.fire();
+    }
+    assert.equal(proactiveFetches(pet), 1, 'speaks once typing stops');
+    assert.deepEqual(sleepLogs, [], 'input deferrals must not trip the sleep guard');
+});

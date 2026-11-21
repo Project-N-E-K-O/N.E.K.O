@@ -21,11 +21,14 @@ from typing import Any
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from main_logic.activity.system_presence import get_system_inactive_reason
+from main_logic.activity.system_signals import is_remote_backend_deployment
 from main_logic.proactive_chat import service as proactive_service
 from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_ERROR_INTERNAL,
     PROACTIVE_REASON_ERROR_TIMEOUT,
     PROACTIVE_REASON_PASS_ROUTE_ACTIVE,
+    PROACTIVE_REASON_PASS_SYSTEM_INACTIVE,
     ProactiveChatCommand,
     _proactive_error_body,
     _proactive_pass_body,
@@ -43,7 +46,7 @@ from utils.theater_activity import is_theater_active
 from main_routers.recommendation_router import capture_owner, attach_music_recommendation, attach_proactive_recommendations
 
 from ..shared_state import get_config_manager, get_session_manager
-from ._shared import _validate_local_mutation_request, logger, router
+from ._shared import _is_loopback_request, _validate_local_mutation_request, logger, router
 
 __all__ = [
     "_PHASE1_FETCH_PER_SOURCE",
@@ -141,6 +144,24 @@ def _adapt_result(result) -> JSONResponse:
     return JSONResponse(result.body, status_code=result.status_code)
 
 
+def _local_system_inactive_reason(request: Request) -> str | None:
+    """Why the local desktop session should not be spoken to, or ``None``.
+
+    The OS signals describe the machine the backend runs on. They only say
+    something about the user when the request comes straight from this
+    machine; for remote clients (another device, a proxy, a declared remote
+    deployment) they are ignored and only the frontend's own wake guard
+    applies.
+    """
+    try:
+        if is_remote_backend_deployment() or not _is_loopback_request(request):
+            return None
+        return get_system_inactive_reason()
+    except Exception as exc:  # noqa: BLE001 - this guard must never block proactive chat
+        logger.debug("System presence check skipped: %s", exc)
+        return None
+
+
 @router.post("/proactive_chat")
 async def proactive_chat(request: Request):
     """Validate HTTP input and delegate proactive behavior to the domain service."""
@@ -179,6 +200,19 @@ async def proactive_chat(request: Request):
         payload = await request.json()
         command = ProactiveChatCommand.from_payload(payload)
         lanlan_name = command.lanlan_name or her_name_current
+        inactive_reason = _local_system_inactive_reason(request)
+        if inactive_reason is not None:
+            # Display off, session locked, asleep, or just back from one of
+            # those: nobody is there to hear it. The frontend treats this
+            # like a busy server and does not count it as an attempt.
+            logger.info("[%s] 主动搭话本轮未发起：系统处于非活动状态 (%s)", lanlan_name, inactive_reason)
+            return JSONResponse(
+                _proactive_pass_body(
+                    PROACTIVE_REASON_PASS_SYSTEM_INACTIVE,
+                    message="local session inactive; proactive skipped",
+                    system_inactive_reason=inactive_reason,
+                )
+            )
         if is_theater_active(lanlan_name):
             # Server-side backstop for the frontend theater suppression: a
             # performance owns the character, so ordinary proactive chat passes.

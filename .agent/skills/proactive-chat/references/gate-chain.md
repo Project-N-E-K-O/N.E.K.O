@@ -4,6 +4,8 @@
 
 ## 入口闸（还没占位）
 
+路由层（`main_routers/system_router/proactive_chat_flow.py`）在进服务层之前还有两道兜底：本机会话非活动（熄屏、锁屏、睡眠，或刚从这些状态回来 60 秒内，见 `main_logic/activity/system_presence.py`，只在 Windows、请求来自本机时生效）→ `PASS_SYSTEM_INACTIVE`；小剧场演绎中 → `PASS_ROUTE_ACTIVE`。`PASS_SYSTEM_INACTIVE` 前端不计入退避和语音「连续无回复」。这道闸只有亲眼见过一次亮屏和未锁之后才会拦，任何出错都放行。
+
 | 顺序 | 闸 | 含义 | 结果 |
 |---|---|---|---|
 | 1 | `_decide_manager_entry_guard` | 角色不存在；或会话处于告别后的静默（`is_goodbye_silent`） | 404 / `PASS_DISABLED` |

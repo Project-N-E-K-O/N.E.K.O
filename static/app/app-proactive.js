@@ -525,8 +525,56 @@
         // 短合并可能留下一个比新截止时间更早的定时器。这里只补到窗口结束再判定，
         // 不走 scheduleProactiveChat：那条路径在输入框仍聚焦时会再给一整段最小延迟。
         console.log(label);
+        _noteProactiveTimerDue(remaining);
         S.proactiveChatTimer = setTimeout(retry, remaining);
         return true;
+    }
+
+    // ======================== system sleep / inactive session ========================
+    //
+    // While the machine sleeps every timer is frozen; on wake the overdue
+    // proactive tick fires immediately, i.e. right when the user comes back
+    // (#3552). The tick compares its actual firing time with the time it was
+    // armed for: being late by more than one base interval (and never less
+    // than SYSTEM_SLEEP_LATE_FLOOR_MS, so CPU load or hidden-tab throttling
+    // cannot trigger it) means the machine slept. That tick is dropped and the
+    // schedule restarts with at least SYSTEM_RETURN_QUIET_MS of quiet.
+    //
+    // The backend additionally answers PASS_SYSTEM_INACTIVE while the local
+    // display is off, the session is locked or just came back (Windows only,
+    // requests from this machine only). Such a pass is not an attempt: it does
+    // not raise the text backoff level nor the voice no-response counter.
+    var PROACTIVE_REASON_PASS_SYSTEM_INACTIVE = 'PASS_SYSTEM_INACTIVE';
+    var SYSTEM_SLEEP_LATE_FLOOR_MS = 120 * 1000;
+    // Mirrors SYSTEM_RETURN_QUIET_SECONDS in main_logic/activity/system_presence.py.
+    var SYSTEM_RETURN_QUIET_MS = 60 * 1000;
+    var _proactiveTimerDueAt = 0;
+    var _systemQuietUntil = 0;
+
+    function _noteProactiveTimerDue(delay) {
+        _proactiveTimerDueAt = Date.now() + Math.max(0, Number(delay) || 0);
+    }
+
+    function _getSystemQuietDelay() {
+        return Math.max(0, _systemQuietUntil - Date.now());
+    }
+
+    // Called first thing in a firing tick. Returns true when the tick is a
+    // catch-up after system sleep and must be dropped.
+    function _proactiveTickMissedBySleep() {
+        if (!_proactiveTimerDueAt) return false;
+        var lateBy = Date.now() - _proactiveTimerDueAt;
+        var baseMs = (Number(S.proactiveChatInterval) || 0) * 1000;
+        if (lateBy <= Math.max(baseMs, SYSTEM_SLEEP_LATE_FLOOR_MS)) return false;
+        _systemQuietUntil = Date.now() + SYSTEM_RETURN_QUIET_MS;
+        console.log('[ProactiveChat] Timer fired ' + Math.round(lateBy / 1000) + 's late (system sleep); dropping this tick and staying quiet for ' + (SYSTEM_RETURN_QUIET_MS / 1000) + 's');
+        return true;
+    }
+    mod._proactiveTickMissedBySleep = _proactiveTickMissedBySleep;
+
+    function _isSystemInactivePass(result) {
+        return !!(result && result.action === 'pass'
+            && result.reason_code === PROACTIVE_REASON_PASS_SYSTEM_INACTIVE);
     }
 
     document.addEventListener('focusin', function (event) {
@@ -936,12 +984,22 @@
                 return;
             }
             var delay = S.proactiveChatInterval * 1000;
+            var voiceQuietDelay = _getSystemQuietDelay();
+            if (voiceQuietDelay > 0) {
+                delay = Math.max(delay, voiceQuietDelay);
+            }
             console.log('[ProactiveChat] 语音模式：' + (delay / 1000) + '秒后触发（无退避，无回复计数：' + (S._voiceProactiveNoResponseCount || 0) + '/10）');
 
+            _noteProactiveTimerDue(delay);
             S.proactiveChatTimer = setTimeout(async function retryProactiveVoiceTick() {
                 // setTimeout firing does not clear our stored handle.
                 S.proactiveChatTimer = null;
                 if (S.isProactiveChatRunning) return;
+                // Catch-up after system sleep: not an attempt, not counted.
+                if (_proactiveTickMissedBySleep()) {
+                    scheduleProactiveChat();
+                    return;
+                }
                 // 设计说明（by 用户意图）：
                 // 这里不"rearm-after-playback"——那样每句话说完都要严格等满一个固定间隔
                 // 才能接下一句，节奏太死板。改为"继续按固定间隔轮询"：
@@ -1093,18 +1151,31 @@
             delay = Math.max(delay, inputSlowdownDelay);
         }
 
+        // Quiet window after system sleep is also orthogonal to fixed/tier mode.
+        var systemQuietDelay = _getSystemQuietDelay();
+        if (systemQuietDelay > 0) {
+            delay = Math.max(delay, systemQuietDelay);
+        }
+
         if (fixedMode) {
             console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（屏幕专注态固定间隔，base=' + baseInterval + 's，level 已重置，后端注入抖动，启动延迟：' + (startupDelay / 1000) + '秒，输入放缓：' + (inputSlowdownDelay ? ((inputSlowdownDelay / 1000) + '秒') : '无') + '）');
         } else {
             console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒，输入放缓：' + (inputSlowdownDelay ? ((inputSlowdownDelay / 1000) + '秒') : '无') + '）');
         }
 
+        _noteProactiveTimerDue(delay);
         S.proactiveChatTimer = setTimeout(async function retryProactiveTextTick() {
             // setTimeout firing does not clear our stored handle.
             S.proactiveChatTimer = null;
             // 双重检查锁：定时器触发时再次检查是否正在执行
             if (S.isProactiveChatRunning) {
                 console.log('主动搭话定时器触发时发现正在执行中，跳过本次');
+                return;
+            }
+
+            // Catch-up after system sleep: drop it without touching the backoff level.
+            if (_proactiveTickMissedBySleep()) {
+                scheduleProactiveChat();
                 return;
             }
 
@@ -1344,6 +1415,12 @@
                 }
                 requestSent = true;
                 var result = await resp.json();
+                if (_isSystemInactivePass(result)) {
+                    // Local session asleep / locked / display off: not an attempt.
+                    console.log('[ProactiveChat] 语音模式：系统处于非活动状态 (' + (result.system_inactive_reason || '-') + ')，不消耗 attempt');
+                    S._voiceProactiveLastResult = 'pass';
+                    return false;
+                }
                 if (result.success && result.action === 'chat' && canOfferRecommendations() && window.nekoRecommendations) {
                     (result.proactive_recommendations || []).slice(0, 3).forEach(function (item) {
                         window.nekoRecommendations.offer(item, result.turn_id);
@@ -1699,6 +1776,15 @@
             // Codex P2 review: PR #1327。
             if (typeof result.next_schedule_fixed_mode === 'boolean') {
                 S.proactiveFixedScheduleMode = result.next_schedule_fixed_mode;
+            }
+
+            // Local session asleep / locked / display off: the server did not
+            // run the round, so (like 409) do not consume a backoff attempt,
+            // and hand back the screenshot cooldown this round reserved.
+            if (_isSystemInactivePass(result)) {
+                restoreScreenCooldownAfterInputCancel();
+                console.log('[ProactiveChat] 系统处于非活动状态 (' + (result.system_inactive_reason || '-') + ')，不消耗 backoff attempt');
+                return false;
             }
 
             if (result.success) {
