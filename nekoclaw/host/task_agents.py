@@ -4960,9 +4960,14 @@ class TaskAgentManager:
         if payload.get("phase") == "check":
             return {"allow": self._execution_audit.active(commission, session_id, payload.get("receipt"), kind=kind)}
         if payload.get("phase") == "finish":
-            outcome = await self._execution_audit.finish(
-                commission, session_id, payload.get("receipt", ""), payload.get("status", ""), kind=kind
-            )
+            receipt = payload.get("receipt", "")
+            try:
+                outcome = await self._execution_audit.finish(
+                    commission, session_id, receipt, payload.get("status", ""), kind=kind
+                )
+            except (asyncio.CancelledError, Exception):
+                session.job_sources.pop(receipt, None)
+                raise
             if outcome is None:
                 return {"allow": False}
             if payload.get("started_job") is True:
@@ -5056,10 +5061,13 @@ class TaskAgentManager:
 
                 parent = copy_context()
 
-                async def notice():
-                    return await asyncio.create_task(deliver(record, source_live), context=parent.copy())
+                def available():
+                    return (record.status != "cancelled" and (record.closed or current()) and source_live())
 
-                session.job_sources[record.call_id] = (source_live, notice)
+                async def notice():
+                    return await asyncio.create_task(deliver(record, available), context=parent.copy())
+
+                session.job_sources[record.call_id] = (available, notice)
             return answer
 
         async def deliver(record, eligible=live):

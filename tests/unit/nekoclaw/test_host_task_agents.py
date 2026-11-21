@@ -4014,8 +4014,8 @@ async def test_space_read_uses_workdir_rule_at_delivery(hosts, tmp_path, monkeyp
     assert ("knowledge fixture" in result) == (not tighten_at_delivery)
 
 
-@pytest.mark.parametrize("cancel_before_finish", [False, True])
-async def test_job_source_requires_a_completed_command(hosts, tmp_path, monkeypatch, cancel_before_finish):
+@pytest.mark.parametrize("interruption", ["none", "before_finish", "during_finish"])
+async def test_job_source_requires_a_completed_command(hosts, tmp_path, monkeypatch, interruption):
     import os
     tool, command = ("pwsh", "Write-Output held-job") if os.name == "nt" else ("bash", "echo held-job")
     llm = ScriptedLLM([[call(tool, {"command": command, "description": "fixture", "run_in_background": True}, "start"),
@@ -4027,8 +4027,12 @@ async def test_job_source_requires_a_completed_command(hosts, tmp_path, monkeypa
     await host.permission_store.set_mode("run_command", "allow")
     audit = host.task_agents._execution_audit
     original = audit.begin
+    delivering = asyncio.Event()
     async def begin(commission, session, kind, target, permit, deliver, live):
         async def refuse(record):
+            delivering.set()
+            if interruption == "during_finish":
+                await asyncio.Event().wait()
             return False
         return await original(commission, session, kind, target, permit, refuse if target == tool else deliver, live)
     monkeypatch.setattr(audit, "begin", begin)
@@ -4037,13 +4041,22 @@ async def test_job_source_requires_a_completed_command(hosts, tmp_path, monkeypa
     async def action(session, payload):
         if payload.get("phase") == "job_notice":
             return {"allow": False}
-        if cancel_before_finish and payload.get("phase") == "finish" and payload.get("started_job"):
-            await manager._run_over(manager._held_by[session])
+        if payload.get("phase") == "finish" and payload.get("started_job"):
+            if interruption == "before_finish":
+                await manager._run_over(manager._held_by[session])
+            elif interruption == "during_finish":
+                finishing = asyncio.create_task(original_action(session, payload))
+                await asyncio.wait_for(delivering.wait(), 3)
+                finishing.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await finishing
+                await manager._run_over(manager._held_by[session])
+                return {"allow": False}
         return await original_action(session, payload)
     monkeypatch.setattr(manager, "_cb_execution_action", action)
     receipt = await _dispatch(host, "Collect the example job")
     await wait_status(host, receipt.commission_id, "done")
     replies = {m["tool_call_id"]: m["content"] for batch in llm.requests for m in batch if m.get("tool_call_id")}
     assert "could not be delivered" in replies["start"]
-    assert ("job-1" in replies["list"]) == (not cancel_before_finish)
-    assert ("held-job" in replies["output"]) == (not cancel_before_finish)
+    assert ("job-1" in replies["list"]) == (interruption == "none")
+    assert ("held-job" in replies["output"]) == (interruption == "none")
