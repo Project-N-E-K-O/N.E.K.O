@@ -906,6 +906,7 @@ def test_every_prompt_table_sent_to_a_model_is_under_that_check():
         "TASK_BRAIN_COARSE_SCREEN_PROMPT",
         "TURN_CHECK_PROMPT",
         "PLUGIN_SHORT_DESCRIPTION_SYSTEM_PROMPT",
+        "TASK_BRAIN_SIDE_QUESTION_PROMPT",
     }
 
 
@@ -915,6 +916,59 @@ def test_the_short_description_prompt_opens_as_the_analyzers_did():
     from config.prompts.prompts_nekoclaw_brain import PLUGIN_SHORT_DESCRIPTION_SYSTEM_PROMPT
 
     assert "automation assessment agent" in PLUGIN_SHORT_DESCRIPTION_SYSTEM_PROMPT.splitlines()[0]
+
+
+def test_the_side_question_prompt_opens_as_the_analyzers_did():
+    # One text for every language, like the short description's.
+    from config.prompts.prompts_nekoclaw_brain import TASK_BRAIN_SIDE_QUESTION_PROMPT
+
+    assert "automation assessment agent" in TASK_BRAIN_SIDE_QUESTION_PROMPT.splitlines()[0]
+
+
+@pytest.mark.parametrize(
+    ("answer", "verdict"),
+    [
+        ('{"side_question": true}', True),
+        ('{"side_question": false}', False),
+        ('```json\n{"side_question": true}\n```', True),
+        ("yes", None),
+        ('{"side_question": "true"}', None),
+        ("{}", None),
+    ],
+)
+async def test_whether_a_commission_is_a_side_question_is_read_from_the_small_model(answer, verdict):
+    from nekoclaw.host.decision import TIER_SIDE_QUESTION, LexicalDecisionModel
+
+    asked: list[tuple[str, list[dict[str, Any]]]] = []
+
+    class Model:
+        async def complete(self, tier: str, messages: list[dict[str, Any]], **_: Any) -> str:
+            asked.append((tier, messages))
+            return answer
+
+    said = await LexicalDecisionModel(Model()).side_question("where is the chart drawn", "where's the chart?")
+    assert said is verdict
+    [(tier, messages)] = asked
+    assert tier == TIER_SIDE_QUESTION
+    assert "Request: where is the chart drawn" in messages[1]["content"]
+    assert "What the user said: where's the chart?" in messages[1]["content"]
+
+
+async def test_a_side_question_that_cannot_be_asked_is_not_told():
+    from nekoclaw.host.decision import LexicalDecisionModel
+
+    class Model:
+        async def complete(self, tier: str, messages: list[dict[str, Any]], **_: Any) -> str:
+            raise RuntimeError("down")
+
+    assert await LexicalDecisionModel(Model()).side_question("where is it", "where is it") is None
+
+
+def test_the_side_question_request_says_the_user_words_only_where_they_differ():
+    from config.prompts.prompts_nekoclaw_brain import build_side_question_request
+
+    assert build_side_question_request(task="look", user_said=" look ") == "Request: look"
+    assert build_side_question_request(task="look", user_said="") == "Request: look"
 
 
 def test_every_language_of_the_fine_selection_keeps_the_identifiers_it_parses():

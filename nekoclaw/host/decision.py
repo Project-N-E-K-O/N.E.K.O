@@ -74,6 +74,9 @@ from nekoclaw.host.selection import (
 logger = logging.getLogger(__name__)
 
 TIER_COARSE = "coarse"
+# Whether a commission is a side question (``LexicalDecisionModel.side_question``):
+# on the small tier, like the coarse screen.
+TIER_SIDE_QUESTION = "side_question"
 TIER_FINE = "fine"
 # The turn check: the small model again, with a budget of its own.
 TIER_TURN_CHECK = "turn_check"
@@ -290,8 +293,11 @@ class ConfiguredDecisionLLM:
             TURN_CHECK_OUTPUT_MAX_TOKENS,
         )
 
+        from config.nekoclaw_settings import SIDE_QUESTION_OUTPUT_MAX_TOKENS
+
         budget = {
             TIER_COARSE: AGENT_PLUGIN_COARSE_MAX_TOKENS,
+            TIER_SIDE_QUESTION: SIDE_QUESTION_OUTPUT_MAX_TOKENS,
             TIER_TURN_CHECK: TURN_CHECK_OUTPUT_MAX_TOKENS,
             TIER_SHORT_DESCRIPTION: AGENT_PLUGIN_SHORTDESC_MAX_TOKENS,
             TIER_REVIEW: TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS,
@@ -729,6 +735,40 @@ class LexicalDecisionModel:
 
     def __init__(self, llm: DecisionLLM) -> None:
         self._llm = llm
+
+    async def side_question(self, dispatch_text: str, user_text: str) -> bool | None:
+        """Say whether a commission is a side question: answered by looking, with nothing changed. None when it cannot be told.
+
+        One request on the small tier (``TIER_SIDE_QUESTION``). Asked only
+        where it decides something: a commission of a project whose session
+        another one holds, which a side question need not wait for
+        (``TaskAgentManager._carry_on_in_copy``). Anything else, an answer
+        that cannot be read included, is work, and waits for the session.
+        """
+        from config.nekoclaw_settings import DISPATCH_TEXT_MAX_TOKENS, DISPATCH_USER_TEXT_MAX_TOKENS
+        from config.prompts.prompts_nekoclaw_brain import TASK_BRAIN_SIDE_QUESTION_PROMPT, build_side_question_request
+        from utils.tokenize import truncate_to_tokens
+
+        messages = [
+            {"role": "system", "content": TASK_BRAIN_SIDE_QUESTION_PROMPT},
+            {
+                "role": "user",
+                "content": build_side_question_request(
+                    task=truncate_to_tokens(dispatch_text, DISPATCH_TEXT_MAX_TOKENS),
+                    user_said=truncate_to_tokens(user_text, DISPATCH_USER_TEXT_MAX_TOKENS),
+                ),
+            },
+        ]
+        try:
+            raw = await self._llm.complete(TIER_SIDE_QUESTION, messages)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - not told: it waits, as work does
+            logger.warning("telling whether a commission is a side question failed: %s", type(exc).__name__)
+            return None
+        decision = parse_json_object(raw or "")
+        verdict = decision.get("side_question") if decision is not None else None
+        return verdict if isinstance(verdict, bool) else None
 
     # -- first round ------------------------------------------------------
 
