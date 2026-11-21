@@ -108,6 +108,9 @@
             var box;
             try { box = el.getBoundingClientRect(); } catch (e) { continue; }
             if (!box || !(box.width > 0) || !(box.height > 0)) continue;
+            // Cheap rejection before the style walks below (long histories).
+            if (box.left >= viewportW || box.top >= viewportH
+                || box.left + box.width <= 0 || box.top + box.height <= 0) continue;
             if (!isEffectivelyVisible(el, win)) continue;
             // Content scrolled out of a clipping container (e.g. older messages
             // in the history list) is not on screen; clip before padding.
@@ -130,8 +133,12 @@
     /**
      * Map viewport CSS rects into the captured image, normalized to 0..1.
      * Same convention as getAvatarScreenPosition in app-screen.js:
-     *   'viewport' — the capture is this tab's viewport;
-     *   'screen'   — the capture is the whole (single) display;
+     *   'viewport' — the capture is this tab's viewport (exact);
+     *   'screen'   — the capture is the whole (single) display. Best effort:
+     *                the browser chrome offset is estimated from outer/inner
+     *                window sizes, so page zoom other than 100% or unusual
+     *                window frames can shift the result by a few pixels; the
+     *                MASK_PADDING_CSS_PX margin absorbs small errors only;
      *   anything else — position unknown.
      * Normalized output makes the capture resolution / devicePixelRatio
      * irrelevant: the painter multiplies by the real image size.
@@ -271,11 +278,13 @@
 
     // ======================== Geometry resolution ========================
 
+    // Same captured surface as far as the shell query is concerned: the C2
+    // request only carries sourceId and surface, so captureType (decided from
+    // the frame after capture) must not be part of the comparison.
     function sameMaskTarget(a, b) {
         if (!a || !b) return false;
         return (a.sourceId || null) === (b.sourceId || null)
-            && surfaceForContext(a) === surfaceForContext(b)
-            && (a.captureType || null) === (b.captureType || null);
+            && surfaceForContext(a) === surfaceForContext(b);
     }
 
     /**
@@ -429,7 +438,7 @@
 
     // ======================== Chat-window reporter (contract C1) ========================
 
-    var REPORT_THROTTLE_MS = 80;
+    var REPORT_THROTTLE_MS = 150;
     var REPORT_RECHECK_MS = 1000;
 
     function buildReportPayload(doc, win) {

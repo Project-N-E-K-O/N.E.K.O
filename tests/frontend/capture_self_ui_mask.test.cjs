@@ -566,3 +566,59 @@ test('buildMaskedStreamDataMessage: camera frames pass through untouched', async
     const msg = await w.appScreen.buildMaskedStreamDataMessage(RAW_FRAME, 'camera');
     assert.equal(msg.data, RAW_FRAME);
 });
+
+test('shell: production hints carry no captureType and the pre-capture answer is still unioned', async () => {
+    const answers = [
+        { ok: true, rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }] },
+        { ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.1, height: 0.1 }] },
+    ];
+    const shell = shellStub(async (_req, n) => answers[n - 1] || answers[1]);
+    const { w } = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1000, 1000] } });
+    // Callers only know sourceId / via before capture; captureType is decided afterwards.
+    const session = w.appCaptureMask.beginMaskSession({ sourceId: 'screen:1:0', via: 'stream' });
+    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { sourceId: 'screen:1:0', via: 'stream', captureType: 'screen' }, session);
+    assert.deepEqual(fillsOf(out), [[0, 0, 100, 100], [500, 500, 100, 100]]);
+});
+
+test('voice-time vision heartbeat: the stream_data frame is masked before it is sent', async () => {
+    for (const revokeDuringMask of [false, true]) {
+        let resolveShell;
+        const shell = shellStub(async (_req, n) => {
+            if (n === 2 && revokeDuringMask) {
+                // Consent is withdrawn while the post-capture mask query is pending.
+                await new Promise((r) => { resolveShell = r; setImmediate(() => { env.S.proactiveVisionEnabled = false; r(); }); });
+            }
+            return { ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] };
+        });
+        const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+        const { w, S, sent } = env;
+        Object.assign(S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
+        const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
+        const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+        w.appScreen.acquireOrReuseCachedStream = async () => stream;
+        w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
+        w.document.getElementById = () => null;
+        vm.runInContext(proactiveSource, w);
+        await w.appProactive.sendOneProactiveVisionFrame();
+        if (revokeDuringMask) {
+            assert.equal(sent.length, 0, 'a frame whose consent was revoked during masking is not sent');
+            continue;
+        }
+        assert.equal(sent.length, 1);
+        assert.equal(sent[0].action, 'stream_data');
+        assert.deepEqual(fillsOf(sent[0].data), [[500, 400, 250, 200]], 'heartbeat frame must be masked');
+        assert.equal(shell.calls[0].surface, 'source');
+        assert.equal(shell.calls.length, 2, 'regions sampled before and after capture');
+    }
+});
+
+test('native screen share: the stream_data frame is masked before it is sent', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.25, y: 0.25, width: 0.5, height: 0.5 }] }));
+    const { w, sent } = bootScreen({ multiWindow: true, shell, defaultImageSize: [1200, 800] });
+    w.captureDesktopSourceWithTimeout = async () => ({ success: true, dataUrl: RAW_FRAME });
+    const provider = { nativeFrameCapture: true, captureSourceAsDataUrl() {} };
+    await w.appScreen.startNativeScreenStreaming(provider, 'screen:3:0', 'screen');
+    assert.equal(sent.length, 1, 'first native frame sent');
+    assert.deepEqual(fillsOf(sent[0].data), [[300, 200, 600, 400]], 'native frame must be masked');
+    assert.deepEqual(shell.calls[0], { version: 1, sourceId: 'screen:3:0', surface: 'source' });
+});

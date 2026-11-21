@@ -1746,7 +1746,10 @@
                 }
             }
 
-            var senderInterval = setInterval(async function () {
+            // 遮罩（#3474）让每帧多了一次异步等待：上一帧还没发完时跳过这一拍，
+            // 避免相邻两帧重叠、乱序发送。
+            var frameInFlight = false;
+            async function sendOneScreenShareFrame() {
                 if (!isCurrentStream()) {
                     clearInterval(senderInterval);
                     if (S.videoSenderInterval === senderInterval) {
@@ -1758,11 +1761,12 @@
                     return;
                 }
                 if (!isCurrentStream()) return;
+                if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
                 // 同一帧的源 ID 在抓帧时钉住；截图前后各取一次遮罩区域（#3474）。
                 var frameSourceId = S.selectedScreenSourceId || null;
                 var maskSession = beginScreenFrameMaskSession(input_type, { sourceId: frameSourceId, via: 'stream' });
                 var frame = captureCanvasFrame(video, 0.8);
-                if (frame && frame.dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
+                if (frame && frame.dataUrl) {
                     var frameMessage = await buildMaskedStreamDataMessage(
                         frame.dataUrl, input_type, undefined, undefined,
                         { sourceId: frameSourceId, via: 'stream', session: maskSession }
@@ -1777,6 +1781,16 @@
                     if (isCurrentStream()) {
                         S.screenCaptureStreamLastUsed = Date.now();
                     }
+                }
+            }
+
+            var senderInterval = setInterval(async function () {
+                if (frameInFlight) return;
+                frameInFlight = true;
+                try {
+                    await sendOneScreenShareFrame();
+                } finally {
+                    frameInFlight = false;
                 }
             }, 1000);
             if (!isCurrentStream()) {
