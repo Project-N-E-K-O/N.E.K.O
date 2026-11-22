@@ -250,7 +250,7 @@ async def test_probe_git_missing(repo: Path, tmp_path: Path) -> None:
     assert found.reason == GIT_MISSING and not found.usable
 
 
-@pytest.mark.parametrize(("version", "usable"), [((2, 39, 9), False), ((2, 40, 0), True)])
+@pytest.mark.parametrize(("version", "usable"), [((2, 43, 9), False), ((2, 44, 0), True)])
 async def test_probe_git_version_floor(repo: Path, manager: WorktreeManager, monkeypatch: Any, version: Any, usable: bool) -> None:
     async def fixed() -> tuple[int, int, int]:
         return version
@@ -3771,3 +3771,48 @@ async def test_no_merge_driver_runs_at_a_path_a_directory_rename_would_guess(
     except WorktreeUnavailable:
         pass
     assert not exists(marker)  # no driver ran, whatever the merge came to
+
+
+async def test_no_making_where_git_has_a_worktree_registered(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    theirs = base / "theirs"
+    git(repo, "worktree", "add", "-q", "--detach", str(theirs))
+    shutil.rmtree(_fs(theirs))  # the user's, its directory gone; git still has it
+    with pytest.raises(WorktreeError, match="registered as a worktree"):
+        await manager.create(repo, theirs)
+    assert "theirs" in registered(repo)  # left as it was
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+
+
+async def test_probe_a_link_that_loops(tmp_path: Path, manager: WorktreeManager) -> None:
+    try:
+        os.symlink(tmp_path / "b", tmp_path / "a", target_is_directory=True)
+        os.symlink(tmp_path / "a", tmp_path / "b", target_is_directory=True)
+    except OSError:
+        pytest.skip("links to directories cannot be made here")
+    assert (await manager.probe(tmp_path / "a")).reason == NOT_A_REPOSITORY
+
+
+async def test_copies_marked_read_only_are_removed_after_landing(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "worktree\n")
+    os.chmod(_fs(repo / "a.txt"), stat.S_IREAD)  # its copy keeps the mark
+    real = worktrees._back_up
+    where: list[Path] = []
+
+    def recorded(root: Path, names: list[str], backup: Path) -> Any:
+        where.append(backup)
+        return real(root, names, backup)
+
+    monkeypatch.setattr(worktrees, "_back_up", recorded)
+    try:
+        result = await manager.merge_back(tree)
+    finally:
+        os.chmod(_fs(repo / "a.txt"), stat.S_IREAD | stat.S_IWRITE)
+    assert result.status == "landed", result.detail
+    for _ in range(100):  # removed in the background
+        if not exists(where[0]):
+            break
+        await asyncio.sleep(0.05)
+    assert not exists(where[0])

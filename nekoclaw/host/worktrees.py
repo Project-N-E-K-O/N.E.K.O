@@ -428,6 +428,10 @@ class WorktreeManager:
     ) -> Worktree:
         if await self._ref_exists(repo_root, ref):
             raise WorktreeError(f"a worktree named {worktree_id!r} already exists in {repo_root}")
+        # One of the user's, its directory gone: cleaning up after a failed
+        # make would take its registration for this one's.
+        if any(_same_path(known, target) for known in await self._registered(repo_root)):
+            raise WorktreeError(f"{target} is registered as a worktree of {repo_root} already")
         commit = await start.commit(self, repo_root)
         if subpath:  # the project's directory, which the worktree is worked in
             kind = await self._git(repo_root, "cat-file", "-t", f"{commit}:{subpath}", check=False)
@@ -663,7 +667,7 @@ class WorktreeManager:
                 )
                 had_index = await _to_the_end(asyncio.to_thread(_copy_index, index, saved / "index"))
             except BaseException:
-                await _to_the_end(asyncio.to_thread(shutil.rmtree, saved, True))
+                await _to_the_end(asyncio.to_thread(_remove_tree, saved))
                 raise
             keep_saved = False
             try:
@@ -769,7 +773,7 @@ class WorktreeManager:
                 # Not waited for: once prepared, no cancellation can come in
                 # between that and the result.
                 if not keep_saved:
-                    asyncio.get_running_loop().run_in_executor(None, shutil.rmtree, saved, True)
+                    asyncio.get_running_loop().run_in_executor(None, _remove_tree, saved)
         return replace(worktree, start=conflict.current)
 
     async def has_changes(self, worktree: Worktree) -> bool:
@@ -939,8 +943,9 @@ class WorktreeManager:
     async def _partial_clone(self, root: Path) -> bool:
         """Return whether the repository is a partial clone.
 
-        Objects missing from one are fetched when read; git before 2.44 does
-        not let that be turned off (GIT_NO_LAZY_FETCH).
+        Objects missing from one would be fetched when read: every git the
+        host runs is told not to (GIT_NO_LAZY_FETCH), and a partial clone is
+        not taken on, so nothing is left wanting an object it lacks.
         """
         extension = await self._git(root, "config", "--get", "extensions.partialClone", check=False)
         promisors = await self._git(
@@ -1137,7 +1142,7 @@ class WorktreeManager:
                 raise WorktreeUnavailable(SUBMODULES, f"{_decode(links[0])} is a submodule link")
             tree = (await self._git(root, "write-tree", env=env)).lines()[0]
         finally:
-            await asyncio.to_thread(shutil.rmtree, scratch, True)
+            await asyncio.to_thread(_remove_tree, scratch)
         commit = await self._commit_tree(root, tree, head, message)
         return Snapshot(commit, tree, tuple(skipped))
 
@@ -1367,7 +1372,7 @@ class WorktreeManager:
             if not keep:
                 # Not waited for: once landed, no cancellation can come in
                 # between the landing and its result.
-                asyncio.get_running_loop().run_in_executor(None, shutil.rmtree, backup, True)
+                asyncio.get_running_loop().run_in_executor(None, _remove_tree, backup)
 
     async def _apply(self, root: Path, patch: bytes) -> _Run:
         return await self._git(
@@ -1398,7 +1403,7 @@ class WorktreeManager:
             )
             tree = (await self._git(root, "write-tree", env=env)).lines()[0]
         finally:
-            await asyncio.to_thread(shutil.rmtree, scratch, True)
+            await asyncio.to_thread(_remove_tree, scratch)
         return tree == merged_tree
 
     async def _changes(self, root: Path, old: str, new: str) -> tuple[FileChange, ...]:
@@ -1450,8 +1455,8 @@ class WorktreeManager:
         if whose == "unknown":
             raise WorktreeError(
                 f"{path} is no longer known to be this worktree (its .git is gone, and which directory it was "
-                f"made in was not noted); it is left, and so are its registration and refs: remove the "
-                f"directory by hand, then remove the worktree again"
+                f"made in was not noted); it is left, and so are its registration and refs. It may be "
+                f"another's: move it somewhere safe, then remove the worktree again"
             )
         # Not `git worktree remove`: when it cannot remove every file it
         # drops the registration all the same (and with it the note of
@@ -1751,7 +1756,7 @@ async def _temporary_directory(prefix: str) -> Path:
     making = asyncio.ensure_future(asyncio.to_thread(tempfile.mkdtemp, prefix=prefix))
     if await _settle(making):
         if making.exception() is None:
-            await _to_the_end(asyncio.to_thread(shutil.rmtree, making.result(), True))
+            await _to_the_end(asyncio.to_thread(_remove_tree, making.result()))
         raise asyncio.CancelledError
     return Path(making.result())
 
@@ -1844,7 +1849,7 @@ def _fs(path: Path | str) -> str:
 def _absolute(path: Path) -> Path:
     try:
         return path.resolve()
-    except OSError:
+    except (OSError, RuntimeError):  # RuntimeError: links that loop (Python before 3.13)
         return Path(os.path.abspath(path))
 
 
