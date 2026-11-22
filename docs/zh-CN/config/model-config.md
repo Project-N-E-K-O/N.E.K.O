@@ -8,7 +8,7 @@ N.E.K.O. 按**角色**解析模型，而不是只读一个全局模型名。选�
 | 会话 | `CONVERSATION_MODEL` |
 | 记忆整理（原摘要、纠错） | `SUMMARY_MODEL` |
 | 情感 | `EMOTION_MODEL` |
-| 视觉 | `VISION_MODEL` |
+| 视觉（已弃用：图片交给聊天模型；看图档取消前单独配置过的看图模型在正式版前继续优先使用，后端打弃用警告、前端每次启动提示一次） | `VISION_MODEL` |
 | Agent | `AGENT_MODEL` |
 | Agent (small) | `AGENT_SMALL_MODEL` |
 | 实时 | `REALTIME_MODEL` |
@@ -16,7 +16,7 @@ N.E.K.O. 按**角色**解析模型，而不是只读一个全局模型名。选�
 
 推荐在 Web UI 选择语音模型供应商（Core）和通用模型供应商（Assist），填写相应凭据并运行连通性检查，再按需设置受支持的角色 model/URL/key。已保存的端点只有在仍属于当前 profile 候选列表时才会复用。
 
-「按功能单独指定模型」中某个角色的模型 ID 留空时，按该角色实际指向的 Provider 取同档默认模型：「跟随通用模型供应商」取 Assist Provider 的默认，「跟随语音模型供应商」取 Core Provider 的默认，具名 Provider 取它自己的默认。免费版与固定模型的 Provider（如 Kimi Code）始终使用自身模型，忽略已保存的模型 ID。「自定义 API」端点没有 Provider 默认值，留空时沿用通用模型供应商当前的模型名，建议显式填写。例外是「使魔模型·小」（`agent_small`）：自定义时模型名或地址留空，这一格的设置整格不生效，地址、模型名、Key 都跟随识别模型（`emotion`）。
+「按功能单独指定模型」中某个角色的模型 ID 留空时，按该角色实际指向的 Provider 取同档默认模型：「跟随通用模型供应商」取 Assist Provider 的默认，「跟随语音模型供应商」取 Core Provider 的默认，具名 Provider 取它自己的默认。免费版与固定模型的 Provider（如 Kimi Code）始终使用自身模型，忽略已保存的模型 ID。「自定义 API」端点没有 Provider 默认值，留空时沿用通用模型供应商当前的模型名，建议显式填写。例外是「使魔模型·小型」（`agent_small`）：自定义时模型名或地址留空，这一格的设置整格不生效，地址、模型名、Key 都跟随识别模型（`emotion`）。
 
 Web UI 中每个模型 ID 输入框旁都有「拉取模型」按钮，可列出上游端点提供的模型（`POST /api/config/list_models`），并按输入内容筛选；留空时输入框以灰色占位文字显示当前实际使用的模型。填了也不会生效的位置按钮不可用：免费版与固定模型的 Provider、镜像对话/摘要的小游戏槽，以及实时、TTS、小游戏槽的跟随模式。
 

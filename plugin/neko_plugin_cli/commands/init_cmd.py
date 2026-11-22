@@ -14,6 +14,7 @@ from plugin._types.plugin_types import SCAFFOLDABLE_PLUGIN_TYPES
 
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
+from ..git_env import git_env
 from ..repo_state import git_output
 from ..templates import agent_kit
 from ..templates.generator import PluginSpec, generate_repo_support_files
@@ -677,6 +678,8 @@ def _gh_create_repository(plugin_dir: Path, *, slug: str, private: bool) -> None
         completed = subprocess.run(
             ["gh", "repo", "create", slug, visibility, "--source", ".", "--remote", "origin"],
             cwd=plugin_dir,
+            # gh runs git in --source to add the remote.
+            env=git_env(),
             encoding="utf-8",
             errors="replace",
             stdout=subprocess.PIPE,
@@ -787,6 +790,7 @@ def _run_git(command: list[str], *, cwd: Path) -> None:
         subprocess.run(
             ["git", *command],
             cwd=cwd,
+            env=git_env(),
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

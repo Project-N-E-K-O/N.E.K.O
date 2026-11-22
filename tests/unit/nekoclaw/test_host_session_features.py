@@ -707,6 +707,7 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
     hosts, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    release, wait = _gate()
     started: list[str] = []
     went_wrong = _WentWrong()
 
@@ -728,7 +729,8 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
             [
                 [call("subagent", {"description": "count", "prompt": "count the jpgs"}), _used(300, 10), finish("tool_calls")],
                 [once_the_task_agent_it_started_has_used_its_share, call("glob", {"pattern": "*.none"}, "call-2"), _used(20, 10), finish("tool_calls")],
-                [call("report", {"status": "ready", "summary": "sorted"}, "call-9"), _used(330, 10), finish("tool_calls")],
+                # Hold the parent's final report until its child finishes so finishing does not cancel the child.
+                [wait, call("report", {"status": "ready", "summary": "sorted"}, "call-9"), _used(330, 10), finish("tool_calls")],
             ]
         ),
         "count the jpgs": ScriptedLLM(
@@ -775,6 +777,7 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
 
     # Allowed, both go on.
     assert (await went_wrong.unless(wait_status(host, child.id, "done"))).result_summary == "counted 12 of them"
+    release.set()
     assert (await went_wrong.unless(wait_status(host, first.id, "done"))).result_summary == "sorted"
     await went_wrong.unless(_let_go(host))
     assert len(scripts["count the jpgs"].requests) == 2

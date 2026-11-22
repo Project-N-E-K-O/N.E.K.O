@@ -451,10 +451,17 @@ class EvidenceFlowMixin:
                         "from": prev_status,
                         "to": "confirmed",
                         "source": EVIDENCE_SOURCE_USER_CONFIRM,
+                        # Same value the save writes to confirmed_at; replay
+                        # uses it to tell a lost save from a later edit.
+                        "ts": now_iso,
                     }
                     if text_changed and cleaned is not None:
                         import hashlib
                         payload["rewrite_text_sha256"] = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
+                        payload["rewrite_text"] = cleaned
+                        payload["previous_text_sha256"] = hashlib.sha256(
+                            str(entry.get("text") or "").encode("utf-8"),
+                        ).hexdigest()
 
                     def _sync_load(_n: str):
                         return reflections_full
@@ -580,6 +587,11 @@ class EvidenceFlowMixin:
                 "entry_snapshot": archive_entry,
                 "merged_keep_id": keep_id,
                 "merged_keep_text_sha256": hashlib.sha256(cleaned.encode("utf-8")).hexdigest(),
+                "merged_keep_text": cleaned,
+                "merged_keep_status": str(keep_entry.get("status") or "pending"),
+                "merged_keep_previous_text_sha256": hashlib.sha256(
+                    str(keep_entry.get("text") or "").encode("utf-8"),
+                ).hexdigest(),
             }
 
             def _sync_load(_n: str):

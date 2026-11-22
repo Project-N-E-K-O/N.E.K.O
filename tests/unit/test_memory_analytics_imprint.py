@@ -896,8 +896,8 @@ async def test_greptile_regression_guards_replay_stale_sha_and_correction_id(tmp
     emb_dim = next(d for d in overview["health"]["dimensions"] if d["key"] == "embedding")
     assert emb_dim["metrics"]["stale"] == 1
 
-    # 2. EVT_PERSONA_ENTRY_UPDATED uses RFC §3.3.6 rewrite_text_sha256 (no plaintext in log)
-    #    and raises RuntimeError when the view text drifted from the recorded sha256.
+    # 2. EVT_PERSONA_ENTRY_UPDATED from an older journal carries only rewrite_text_sha256:
+    #    a drifted view is skipped with a warning instead of pausing replay.
     with patch("memory.persona.manager.get_config_manager", return_value=cm):
         pm = PersonaManager()
         pm._config_manager = cm
@@ -911,15 +911,18 @@ async def test_greptile_regression_guards_replay_stale_sha_and_correction_id(tmp
                 "rewrite_text_sha256": matching_sha,
             },
         ) is False
-        with pytest.raises(RuntimeError):
-            handler(
-                char_name,
-                {
-                    "entity_key": "master",
-                    "entry_id": "p_stale",
-                    "rewrite_text_sha256": "f" * 64,
-                },
-            )
+        assert handler(
+            char_name,
+            {
+                "entity_key": "master",
+                "entry_id": "p_stale",
+                "rewrite_text_sha256": "f" * 64,
+                "reinforcement": 9.0,
+            },
+        ) is False
+        skipped_view = json.loads((char_dir / "persona.json").read_text(encoding="utf-8"))
+        assert skipped_view["master"]["facts"][0]["text"] == "现在改喝乌龙茶"
+        assert "reinforcement" not in skipped_view["master"]["facts"][0]
 
     # 3. Stale correction_id raises LookupError instead of mutating another queued item
     _write_json(
@@ -1137,8 +1140,8 @@ async def test_round2_merges_snapshot_archives_directives_and_redaction(tmp_path
         assert await pm.aarchive_persona_entry(char_name, "master", "p_keep", skip_pinned=True) is False
         assert any(e["id"] == "p_keep" for e in (await pm.aensure_persona(char_name))["master"]["facts"])
 
-        # Reflection merge archive replay pauses with RuntimeError (leaving drop_id active)
-        # when the surviving reflection's merged wording was not persisted to reflections.json
+        # An older reflection merge archive event (no merged text) whose survivor wording
+        # does not match is skipped whole, leaving drop_id active, without pausing replay
         from memory.evidence_handlers import make_reflection_archive_handler
         _write_json(
             char_dir / "reflections.json",
@@ -1148,18 +1151,17 @@ async def test_round2_merges_snapshot_archives_directives_and_redaction(tmp_path
             ],
         )
         refl_arch_handler = make_reflection_archive_handler(re_eng)
-        with pytest.raises(RuntimeError):
-            refl_arch_handler(
-                char_name,
-                {
-                    "reflection_id": "r_old_drop",
-                    "to": "archived",
-                    "archive_shard_path": "2026-05-01_12345678.json",
-                    "entry_snapshot": {"id": "r_old_drop", "text": "相似旧文案"},
-                    "merged_keep_id": "r_surv",
-                    "merged_keep_text_sha256": hashlib.sha256("新合并文案".encode("utf-8")).hexdigest(),
-                },
-            )
+        assert refl_arch_handler(
+            char_name,
+            {
+                "reflection_id": "r_old_drop",
+                "to": "archived",
+                "archive_shard_path": "2026-05-01_12345678.json",
+                "entry_snapshot": {"id": "r_old_drop", "text": "相似旧文案"},
+                "merged_keep_id": "r_surv",
+                "merged_keep_text_sha256": hashlib.sha256("新合并文案".encode("utf-8")).hexdigest(),
+            },
+        ) is False
         after_abort_refls = json.loads((char_dir / "reflections.json").read_text(encoding="utf-8"))
         assert {r["id"] for r in after_abort_refls} == {"r_surv", "r_old_drop"}
 

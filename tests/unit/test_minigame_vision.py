@@ -76,7 +76,7 @@ async def test_analyze_uses_vision_configuration_and_returns_only_text(monkeypat
     observed = {}
 
     async def config(slot):
-        observed["slot"] = slot
+        observed.setdefault("slots", []).append(slot)
         return {"model": "configured-vision", "base_url": "https://example.invalid", "api_key": "test-key", "provider_type": "test-provider"}
 
     class LLM:
@@ -108,7 +108,8 @@ async def test_analyze_uses_vision_configuration_and_returns_only_text(monkeypat
     await asyncio.sleep(0)
     assert result == {"ok": True, "text": "A blue board."}
     assert len(encodes) == 1, "legacy capture must use only the shared sanitizer's encoding"
-    assert observed["slot"] == "vision"
+    # Frames go to the chat model; the retired vision slot is read only as a fallback.
+    assert observed["slots"][0] == "conversation"
     assert observed["kwargs"]["max_retries"] == 0
     assert observed["kwargs"]["max_completion_tokens"] == 1024
     assert observed["closed"]
