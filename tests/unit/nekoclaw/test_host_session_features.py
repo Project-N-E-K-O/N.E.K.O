@@ -5783,7 +5783,15 @@ async def test_the_user_changes_where_a_project_works_and_the_next_commission_st
     await host.space.touch_project("Budget app")
     first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
     await wait_status(host, first.id, "working")
-    old = (await host.ledger.get_session(first.id)).workdir
+    # Where it works is written when its session is opened, a moment after the commission is taken up.
+    old = None
+    for _ in range(500):
+        session = await host.ledger.get_session(first.id)
+        old = session.workdir if session is not None else None
+        if old:
+            break
+        await asyncio.sleep(0.02)
+    assert old, "the session never got a working directory"
     (Path(old) / "notes.txt").write_text("kept", encoding="utf-8")
     new = tmp_path / "code" / "budget-app"
     new.mkdir(parents=True)
