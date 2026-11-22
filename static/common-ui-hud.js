@@ -82,9 +82,12 @@ const AGENT_TASK_HUD_HAND_IN_TRIES = 3;
 let agentTaskHudPreferenceHandInTries = 0;
 // 本页最后照着做的值。本地存储是同源页面共用的，另一页先写了同一个值，本页的复选框和悬浮窗也还得自己改。
 let agentTaskHudPreferenceApplied = null;
+// 最后一次确认后端存着的值：快照带来的、或者小面板复选框存成功的。复选框存失败时恢复到它。
+let agentTaskHudPreferenceConfirmed = null;
 
 // 返回 true 表示本页照着新值改了。
 window.AgentHUD.syncTaskHudPreference = function (value) {
+    if (typeof value === 'boolean') agentTaskHudPreferenceConfirmed = value;
     if (typeof value !== 'boolean') {
         // 后端还没记过：本地关过的（以前在小面板里关的）交给后端一次，喵能力界面上才看得到它是关的。
         // 没交上（请求失败）就等下一份快照再交，最多交 AGENT_TASK_HUD_HAND_IN_TRIES 次。
@@ -511,17 +514,31 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     setAgentTaskHudVisiblePreferenceEnabled(taskHudCheckbox.checked);
                     // 不交给后端的话，下一份状态快照会把它改回去；没存上就当场改回，不让它悄悄变回去。
                     // 只有最后一次改动的回复能改回去：连点几下时，先发的请求可能后回来。
+                    // 失败时恢复的是最后一次确认存着的值，不是这次的反面（连点几下都失败时两者不同）。
                     const wanted = taskHudCheckbox.checked;
+                    if (agentTaskHudPreferenceConfirmed === null) {
+                        // 还没收到过后端的值：这次改动之前生效的就是它的反面。
+                        agentTaskHudPreferenceConfirmed = !wanted;
+                    }
                     const change = (taskHudCheckbox._taskHudChange || 0) + 1;
                     taskHudCheckbox._taskHudChange = change;
                     window.AgentHUD.saveTaskHudPreference(wanted).then((saved) => {
-                        if (saved || taskHudCheckbox._taskHudChange !== change) return;
+                        if (saved) {
+                            // 存成功的，按发出的先后取最后一个，回复晚到也算。
+                            if (change > (taskHudCheckbox._taskHudSaved || 0)) {
+                                taskHudCheckbox._taskHudSaved = change;
+                                agentTaskHudPreferenceConfirmed = wanted;
+                            }
+                            return;
+                        }
+                        if (taskHudCheckbox._taskHudChange !== change) return;
                         if (taskHudCheckbox.checked !== wanted) return;
-                        taskHudCheckbox.checked = !wanted;
+                        const confirmed = agentTaskHudPreferenceConfirmed;
+                        taskHudCheckbox.checked = confirmed;
                         if (typeof taskHudCheckbox._updateStyle === 'function') {
                             taskHudCheckbox._updateStyle();
                         }
-                        setAgentTaskHudVisiblePreferenceEnabled(!wanted);
+                        setAgentTaskHudVisiblePreferenceEnabled(confirmed);
                         if (typeof window.checkAndToggleTaskHUD === 'function') {
                             window.checkAndToggleTaskHUD();
                         }

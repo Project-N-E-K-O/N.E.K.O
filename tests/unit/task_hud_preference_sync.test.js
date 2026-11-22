@@ -174,6 +174,66 @@ test('a late failure of an earlier click does not undo the last one', async () =
     assert.equal(harness.storage.get(KEY), 'false');
 });
 
+test('when the last of several clicks fails too, the box goes back to what is known to be kept', async () => {
+    const harness = load({ saveOk: false });
+    harness.window.AgentHUD.syncTaskHudPreference(true); // the agent process keeps "shown"
+    const { checkbox, change } = popupCheckbox(harness);
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    checkbox.checked = false; change();
+    checkbox.checked = true; change();
+    checkbox.checked = false; change();
+    checkbox.checked = true; change();
+    // Now the last click asked for "shown" but could not be kept either; "shown" is still what is kept.
+    await settle();
+    assert.equal(checkbox.checked, true);
+    assert.equal(harness.storage.get(KEY), 'true');
+
+    checkbox.checked = false; change();
+    checkbox.checked = true; change();
+    checkbox.checked = false; change();
+    await settle();
+    // The last of these asked for "hidden" and failed: back to "shown", not to the opposite of an earlier click.
+    assert.equal(checkbox.checked, true);
+    assert.equal(harness.storage.get(KEY), 'true');
+});
+
+test('a click that was kept, answered only after the next one, is what a failure goes back to', async () => {
+    const held = [];
+    const harness = load({ held });
+    harness.window.AgentHUD.syncTaskHudPreference(true);
+    const { checkbox, change } = popupCheckbox(harness);
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    checkbox.checked = false; change(); // kept, but its answer comes late
+    checkbox.checked = true; change();  // not kept
+    held[0](true);
+    await settle();
+    held[1](false);
+    await settle();
+
+    // The agent process keeps "hidden" now: so does the page.
+    assert.equal(checkbox.checked, false);
+    assert.equal(harness.storage.get(KEY), 'false');
+});
+
+test('an early failure while later clicks are still on their way leaves the last choice alone', async () => {
+    const held = [];
+    const harness = load({ held });
+    harness.window.AgentHUD.syncTaskHudPreference(true);
+    const { checkbox, change } = popupCheckbox(harness);
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    checkbox.checked = false; change();
+    checkbox.checked = true; change();
+    checkbox.checked = false; change(); // the last choice, as the first
+    held[0](false);                      // the first fails before the others answer
+    await settle();
+
+    assert.equal(checkbox.checked, false);
+    assert.equal(harness.storage.get(KEY), 'false');
+});
+
 test('the popup box that was saved stays as it is', async () => {
     const harness = load();
     const { checkbox, change } = popupCheckbox(harness);
