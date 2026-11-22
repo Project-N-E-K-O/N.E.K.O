@@ -382,6 +382,12 @@ test('browser: only what the samples before and after capture agree on is masked
 
 // ---------------------------------------------------------------- desktop shell (C2 stub)
 
+// A stream handed out by getDisplayMedia through the numbered request (as the
+// app does): a stream with no recorded source and no number is position unknown.
+function numberStream(env, stream) {
+    return env.w.appCaptureMask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(stream) }, {});
+}
+
 function shellStub(behaviour) {
     const calls = [];
     return {
@@ -619,6 +625,7 @@ test('voice-time vision heartbeat: the stream_data frame is masked before it is 
         Object.assign(S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
         const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
         const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+        await numberStream(env, stream);
         w.appScreen.acquireOrReuseCachedStream = async () => stream;
         w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
         w.document.getElementById = () => null;
@@ -838,6 +845,7 @@ test('single-shot: a remembered window that changes while the frame is being mas
     });
     const env = bootProactive({ multiWindow: true, shell });
     env.S.selectedScreenSourceId = 'window:42:0';
+    await numberStream(env, env.S.screenCaptureStream);
     env.w.prepareRememberedWindowCapture = async () => ({ required: true, allowed: true, isCurrent: () => current });
     const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
     assert.equal(shot.dataUrl, null);
@@ -848,6 +856,7 @@ test('single-shot: a remembered window that changes while the frame is being mas
     const steadyShell = shellStub(async () => ({ ok: true, rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }] }));
     const steady = bootProactive({ multiWindow: true, shell: steadyShell });
     steady.S.selectedScreenSourceId = 'window:42:0';
+    await numberStream(steady, steady.S.screenCaptureStream);
     steady.w.prepareRememberedWindowCapture = async () => ({ required: true, allowed: true, isCurrent: () => true });
     const steadyShot = await steady.w.appProactive.captureProactiveChatScreenshotWithSource();
     assert.ok(steadyShot.dataUrl && fillsOf(steadyShot.dataUrl).length === 1);
@@ -866,6 +875,7 @@ test('screen share: a frame captured on one connection is not sent on a reconnec
     env.lateSent = [];
     const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
     const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    await numberStream(env, stream);
     env.S.screenCaptureStream = stream;
     env.w.startScreenVideoStreaming(stream, 'screen');
     for (let i = 0; i < 10 && env.intervals.length === 0; i++) await new Promise((r) => setImmediate(r));
@@ -1174,6 +1184,7 @@ test('voice heartbeat: a frame captured on one connection is not sent on a recon
     Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
     const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
     const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    await numberStream(env, stream);
     env.w.appScreen.acquireOrReuseCachedStream = async () => stream;
     env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
     vm.runInContext(proactiveSource, env.w);
@@ -1710,6 +1721,7 @@ test('stream frames pass only the source recorded for the stream; an unrecorded 
         const shell = shellStub(answer);
         const env = bootProactive({ multiWindow: true, shell });
         env.S.selectedScreenSourceId = 'screen:3:0';
+        await numberStream(env, env.S.screenCaptureStream);
         env.w.appScreen.getStreamCaptureSourceId = (st) => (st === env.S.screenCaptureStream ? recorded : null);
         const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
         assert.equal(shot.via, 'stream');
@@ -1722,6 +1734,7 @@ test('stream frames pass only the source recorded for the stream; an unrecorded 
         Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
         const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
         const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+        await numberStream(env, stream);
         env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:3:0'; return stream; };
         env.w.appScreen.getStreamCaptureSourceId = (st) => (st === stream ? recorded : null);
         env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
@@ -1743,6 +1756,7 @@ test('manual screen share: a stream with no recorded source (getDisplayMedia) qu
     const track = { readyState: 'live', kind: 'video', addEventListener() {}, getSettings: () => ({ displaySurface: 'monitor' }), stop() {} };
     const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
     // A getDisplayMedia stream: current, but never recorded with a source.
+    await numberStream(env, stream);
     env.S.screenCaptureStream = stream;
     env.S.selectedScreenSourceId = 'screen:9:0';
     env.w.getDesktopCaptureProvider = () => ({ getSources() {} });
@@ -1785,6 +1799,32 @@ test('getDisplayMedia: the latest stream queries the shell with null; a supersed
 
     assert.deepEqual(fillsOf(await frame(B)), [[800, 225, 400, 450]], 'new latest stream: masked');
     assert.equal(shell.calls.length, 4);
+});
+
+test('desktop: a stream with neither a recorded source nor a request number is position unknown; web paths are unaffected', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    spyReasons(env.w);
+    const mask = env.w.appCaptureMask;
+    const frame = (ctx) => mask.maskFrameForModel(RAW_FRAME, ctx, mask.beginMaskSession(ctx));
+    const B = displayStream('B');
+    // Not handed out through requestDisplayMedia: no shell query before or after, sent as captured.
+    assert.equal(await frame({ captureType: 'screen', sourceId: null, via: 'stream', stream: B }), RAW_FRAME);
+    assert.equal(shell.calls.length, 0);
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
+    // The same stream with a recorded source names it: masked.
+    assert.deepEqual(fillsOf(await frame({ captureType: 'screen', sourceId: 'screen:1:0', via: 'stream', stream: B })), [[800, 225, 400, 450]]);
+    // Numbered through requestDisplayMedia: queried with null and masked.
+    await numberStream(env, B);
+    assert.deepEqual(fillsOf(await frame({ captureType: 'screen', sourceId: null, via: 'stream', stream: B })), [[800, 225, 400, 450]]);
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:1:0', 'screen:1:0', null, null]);
+
+    // Web page: a tab share of this tab that never went through the numbered request is still masked.
+    const web = makeWindow({ captureHandle: true, elements: chatElements({ galOpen: true }), imageSizes: { [RAW_FRAME]: [1000, 800] } });
+    const own = tabStream(web.w.appCaptureMask.OWN_CAPTURE_HANDLE);
+    const session = web.w.appCaptureMask.beginMaskSession({ via: 'stream', stream: own });
+    const out = await web.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream', stream: own }, session);
+    assert.deepEqual(fillsOf(out), [[592, 92, 316, 416], [592, 512, 316, 116]]);
 });
 
 test('getDisplayMedia: a cancelled newer request also supersedes the older stream; streams with a recorded source are not affected', async () => {

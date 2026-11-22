@@ -375,7 +375,10 @@
         if (!ctx || ctx.sourceId || ctx.via === 'backend' || !ctx.stream || !displayMediaStreamSeqs) return null;
         if (displayMediaRequestsOpen > 0) return 'display_media_request_open';
         var seq = displayMediaStreamSeqs.get(ctx.stream);
-        return typeof seq === 'number' && seq !== displayMediaRequestSeq ? 'superseded_stream' : null;
+        // Neither a recorded source nor a number: not handed out through
+        // requestDisplayMedia, so the shell record says nothing about it.
+        if (typeof seq !== 'number') return 'unsequenced_stream';
+        return seq !== displayMediaRequestSeq ? 'superseded_stream' : null;
     }
 
     // ======================== Geometry resolution ========================
