@@ -931,6 +931,7 @@
                 status.className = 'st-tile-status';
                 row.append(thumb, text, status);
                 row.addEventListener('click', () => {
+                    if (stripDrag || stageDrag) return;
                     // 每次点都重新解析：结构复用后，闭包里不能攥着旧的 node 引用
                     const node = nodeForState(stateKey) || ensureNodeForState(stateKey);
                     selected = node.id;
@@ -1450,6 +1451,9 @@
 
         function renderUserImages() {
             const entries = userImages();
+            const focused = document.activeElement;
+            const focusedId = userImageGrid.contains(focused) && focused.classList.contains('st-userimg-bind')
+                ? focused.closest('.st-userimg').dataset.imageId : null;
             userImageGrid.replaceChildren(...entries.map((entry) => {
                 const tile = document.createElement('div');
                 tile.className = 'st-userimg';
@@ -1501,6 +1505,10 @@
                 holdToDrag(bind, { kind: 'image', id: entry.id, label: entry.label });
                 return tile;
             }));
+            if (focusedId) {
+                [...userImageGrid.children].find(tile => tile.dataset.imageId === focusedId)
+                    ?.querySelector('.st-userimg-bind')?.focus({ preventScroll: true });
+            }
             userImageEmpty.hidden = entries.length > 0;
             imageImport.hidden = false;
         }

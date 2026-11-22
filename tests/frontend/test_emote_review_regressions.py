@@ -179,7 +179,7 @@ def test_gif_decode_failure_cannot_silently_drop_a_frame_source_from_an_export(e
     _import(editor, spine_zip())
     encoded = io.BytesIO()
     Image.new('RGB', (16, 16), (0,255,0)).save(encoded, 'GIF', save_all=True,
-        append_images=[Image.new('RGB',(16,16),(0,0,255))], duration=[100,200], loop=0)
+        append_images=[Image.new('RGB',(16,16),(0,0,255))], duration=[900,200], loop=0)
     editor.evaluate('''async ([format,gif]) => {
         const q=reviewEditor,c=document.createElement('canvas');c.width=c.height=16;
         const ctx=c.getContext('2d');ctx.fillStyle='#ff0000';ctx.fillRect(0,0,16,16);
@@ -188,7 +188,7 @@ def test_gif_decode_failure_cannot_silently_drop_a_frame_source_from_an_export(e
             new File([Uint8Array.from(atob(gif),c=>c.charCodeAt(0))],'two.gif',{type:'image/gif'})]);
         const ids=q.stageImages().map(i=>i.id);
         if(ids.length!==2)throw new Error('missing-two-test-images');
-        Object.assign(q.state,{packMode:'graph',packFormat:format,exportResolution:64,exportFps:30,
+        Object.assign(q.state,{packMode:'graph',packFormat:format,exportResolution:format==='layered'?512:64,exportFps:30,
             nodeGraph:NekoEmoteNodeGraph.normalizeGraph({schemaVersion:1,nodes:[
                 {id:'root',type:'source.default',params:{}},
                 {id:'images',type:'source.image',params:{imageIds:ids,imageId:ids[0]}},
@@ -207,18 +207,32 @@ def test_gif_decode_failure_cannot_silently_drop_a_frame_source_from_an_export(e
     files = editor.evaluate('''async () => {
         const built=await reviewEditor.buildPngtuberPackage();
         if(!built)throw new Error('gif-retry-did-not-recover');
-        return built.files.filter(file=>/idle\\.gif$|idle_image\\.png$/.test(file.path)).map(file=>({
-            path:file.path,data:btoa(String.fromCharCode(...file.data))}));
+        const encode=bytes=>{
+            let binary='';
+            for(let i=0;i<bytes.length;i+=32768)binary+=String.fromCharCode(...bytes.subarray(i,i+32768));
+            return btoa(binary);
+        };
+        return {files:built.files.filter(file=>/idle\\.gif$|idle_image\\.png$/.test(file.path)).map(file=>({
+            path:file.path,data:encode(file.data)})),
+            metadata:reviewEditor.state.packFormat==='layered' ? JSON.parse(new TextDecoder().decode(
+                built.files.find(file=>/metadata\\.json$/.test(file.path)).data)) : null};
     }''')
-    assert len(files) == 1
-    with Image.open(io.BytesIO(base64.b64decode(files[0]['data']))) as output:
+    assert len(files['files']) == 1
+    with Image.open(io.BytesIO(base64.b64decode(files['files'][0]['data']))) as output:
         if pack_format == 'flat':
             observed = []
             for index in range(output.n_frames):
                 output.seek(index)
                 observed.append(output.convert('RGB').getpixel((32,32)))
         else:
-            observed = [output.convert('RGB').getpixel((x,32)) for x in range(32,output.width,64)]
+            layer = next(layer for layer in files['metadata']['layers'] if layer['name'] == 'idle_image')
+            state = next(state for state in layer['states'] if state['visible'])
+            assert state['frames'] > state['hframes'], 'fixture must exercise more than one atlas row'
+            width, height = state['frame_width'], state['frame_height']
+            observed = [output.convert('RGB').getpixel((
+                index % state['hframes'] * width + width // 2,
+                index // state['hframes'] * height + height // 2,
+            )) for index in range(state['frames'])]
     assert _collapsed_colors(observed) == [(255,0,0),(0,255,0),(0,0,255)]
 
 
@@ -359,9 +373,20 @@ def test_stage_image_binding_and_deletion_are_separate_native_keyboard_actions(e
     removed = []
     editor.on('request', lambda request: removed.append(request.url)
               if '/api/emote-maker/library/textures/remove?' in request.url else None)
+    buttons.first.focus()
     for index, key in enumerate(['Enter', 'Space']):
-        buttons.nth(index).focus()
+        buttons.nth(index).evaluate("node=>node.dataset.reviewOldButton='true'")
         editor.keyboard.press(key)
+        editor.wait_for_function('''id=>{
+            const button=document.activeElement;
+            return button?.classList.contains('st-userimg-bind') && !button.dataset.reviewOldButton
+                && button.closest('.st-userimg').dataset.imageId===id;
+        }''', arg=ids[index])
+        if index == 0:
+            editor.keyboard.press('Tab')
+            assert editor.locator('.st-userimg-remove').first.evaluate('node=>node===document.activeElement')
+            editor.keyboard.press('Tab')
+            assert buttons.nth(1).evaluate('node=>node===document.activeElement')
     assigned = editor.evaluate('''() => {
         const q=reviewEditor,node=q.state.nodeGraph.nodes.find(n=>n.params.stateKey==='idle_image');
         return NekoEmoteNodeGraph.findSource(q.state.nodeGraph,node.id,'source').params.imageIds;

@@ -59,6 +59,31 @@ def test_strip_gestures_ignore_other_pointer_ids(page, running_server, foreign_e
     assert page.evaluate("__STAGE.getGraph().nodes.find(n=>n.params.stateKey==='idle_image').params.seconds") < before
 
 
+@pytest.mark.parametrize('gesture', ['strip', 'stage'])
+def test_state_keyboard_click_during_a_pointer_gesture_does_not_redirect_the_edit(page, running_server, gesture):
+    _boot(page, running_server)
+    before = page.evaluate('__STAGE.getGraph()')
+    target = page.locator('.st-strip-canvas' if gesture == 'strip' else '.st-stage')
+    box = target.bounding_box()
+    x, y = box['x'] + box['width'] * .7, box['y'] + box['height'] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    try:
+        page.locator('.st-tile[data-state="talking_image"]').focus()
+        page.keyboard.press('Enter')
+        assert page.locator('.st-tile.is-selected').get_attribute('data-state') == 'idle_image'
+        page.mouse.move(box['x'] + box['width'] * .45, box['y'] + box['height'] * .3, steps=4)
+    finally:
+        page.mouse.up()
+    after = page.evaluate('__STAGE.getGraph()')
+
+    def params(graph, state):
+        return next(node['params'] for node in graph['nodes'] if node['params'].get('stateKey') == state)
+
+    assert params(after, 'talking_image') == params(before, 'talking_image')
+    assert params(after, 'idle_image') != params(before, 'idle_image')
+
+
 def test_flat_stage_double_click_preserves_saved_layered_pose_and_layered_still_resets(page, running_server):
     _boot(page, running_server)
     page.evaluate('''async () => {

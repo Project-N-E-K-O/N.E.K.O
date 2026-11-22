@@ -831,8 +831,12 @@ def test_texture_removal_does_not_succeed_before_a_failed_publication_can_recove
         with ThreadPoolExecutor(max_workers=2) as executor:
             removal = executor.submit(remove)
             assert checked.wait(2)
-            publication = executor.submit(write)
             try:
+                acquired = store_module._replacement_lock.acquire(blocking=False)
+                if acquired:
+                    store_module._replacement_lock.release()
+                assert not acquired, 'delete must retain the replacement lock after validation'
+                publication = executor.submit(write)
                 writer_done.wait(.2)
             finally:
                 allow_removal.set()
