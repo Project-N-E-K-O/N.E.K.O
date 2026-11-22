@@ -819,13 +819,14 @@
             ]),
         ]);
         reflections.forEach(function (r) {
-            if (r.text && r.text !== target.text) {
+            const displayText = r.text || (r.archived ? tr('memory.badgeArchived', '已归档') : '');
+            if (displayText && displayText !== target.text) {
                 step3.appendChild(el('div', { className: 'lineage-snippet' }, [
                     el('div', { className: 'lineage-snippet-meta' }, [
                         el('span', { textContent: tr('memory.lineageLinkedReflection', '中间总结') }),
                         el('span', { textContent: formatShortDate(r.created_at) }),
                     ]),
-                    el('div', { textContent: r.text }),
+                    el('div', { textContent: displayText }),
                 ]));
             }
         });

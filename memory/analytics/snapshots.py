@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from config import MEMORY_BROWSER_SNAPSHOT_MAX_KEEP
-from memory.archive_shards import PERSONA_ARCHIVE_DIRNAME, REFLECTION_ARCHIVE_DIRNAME
+from memory import cold_store
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_bytes, atomic_write_json
@@ -54,12 +54,7 @@ _SNAPSHOT_FILES: tuple[str, ...] = (
     "persona_corrections.json",
     "user_directives.json",
 )
-_SNAPSHOT_ARCHIVE_DIRS: tuple[str, ...] = (
-    PERSONA_ARCHIVE_DIRNAME,
-    REFLECTION_ARCHIVE_DIRNAME,
-)
 _SAFE_SNAPSHOT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{4,64}$")
-_SAFE_ARCHIVE_FILENAME_RE = re.compile(r"^(?:\.migrated_from_flat|[A-Za-z0-9_.-]+\.json)$")
 
 
 def _is_allowed_snapshot_relpath(relpath: str) -> bool:
@@ -68,25 +63,18 @@ def _is_allowed_snapshot_relpath(relpath: str) -> bool:
         return False
     if relpath in _SNAPSHOT_FILES:
         return True
-    parts = relpath.split("/")
-    if len(parts) == 2 and parts[0] in _SNAPSHOT_ARCHIVE_DIRS:
-        return bool(_SAFE_ARCHIVE_FILENAME_RE.match(parts[1])) and ".." not in parts[1]
-    return False
+    return cold_store.is_managed_relative(relpath)
 
 
 def _collect_managed_relpaths(char_dir: Path) -> list[str]:
-    """Return all currently existing managed flat files and archive shard files."""
+    """Return all currently existing managed flat files and cold archive shard files."""
     relpaths: list[str] = []
     for fname in _SNAPSHOT_FILES:
         if (char_dir / fname).is_file():
             relpaths.append(fname)
-    for dirname in _SNAPSHOT_ARCHIVE_DIRS:
-        adir = char_dir / dirname
-        if not adir.is_dir():
-            continue
-        for child in sorted(adir.iterdir(), key=lambda p: p.name):
-            if child.is_file() and _SAFE_ARCHIVE_FILENAME_RE.match(child.name):
-                relpaths.append(f"{dirname}/{child.name}")
+    for rel in sorted(cold_store.shard_relatives(str(char_dir))):
+        if cold_store.is_managed_relative(rel) and (char_dir / rel).is_file():
+            relpaths.append(rel)
     return relpaths
 
 

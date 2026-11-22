@@ -1602,10 +1602,25 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
     assert len(story["steps"]["reflections"]) == 1
     assert story["steps"]["reflections"][0]["id"] == "r_archived_tea"
     assert story["steps"]["reflections"][0]["archived"] is True
+    assert story["steps"]["reflections"][0]["text"] == ""  # cold-store stub never leaks archived text
+
+    fact_story = build_memory_lineage_story(
+        char_name,
+        kind="fact",
+        entry_id="f_old_tea",
+        memory_dir=cm.memory_dir,
+    )
+    assert fact_story is not None
+    assert any(
+        r["id"] == "r_archived_tea" and r["archived"] is True and r["text"] == ""
+        for r in fact_story["steps"]["reflections"]
+    )
 
     dag = await abuild_full_lineage_graph(char_name, memory_dir=cm.memory_dir)
-    dag_node_ids = {n["id"] for n in dag["nodes"]}
-    assert "reflection:r_archived_tea" in dag_node_ids
+    dag_nodes = {n["id"]: n for n in dag["nodes"]}
+    assert "reflection:r_archived_tea" in dag_nodes
+    assert dag_nodes["reflection:r_archived_tea"]["archived"] is True
+    assert "冬天喜欢喝焙茶" not in dag_nodes["reflection:r_archived_tea"]["label"]
     assert any(
         e["source"] == "fact:f_old_tea" and e["target"] == "reflection:r_archived_tea"
         for e in dag["edges"]

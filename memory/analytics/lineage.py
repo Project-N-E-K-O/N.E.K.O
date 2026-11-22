@@ -179,44 +179,53 @@ def _load_archived_reflections_by_id(
     char_dir: Path,
     needed_ids: set[str],
 ) -> dict[str, dict[str, Any]]:
-    """On-demand lookup of specific reflection IDs in sharded and legacy archives."""
+    """On-demand cold-store stub lookup (no archived text) for referenced reflections."""
     if not needed_ids:
         return {}
+    from memory import cold_store
+
     found: dict[str, dict[str, Any]] = {}
-    remaining = set(needed_ids)
+    try:
+        stubs = cold_store.status(str(char_dir), kind="reflection", ids=needed_ids)
+    except (cold_store.ColdStoreUnreadable, OSError) as exc:
+        logger.debug("[MemoryLineage] cold-store reflection stub lookup degraded: %s", exc)
+        return {}
+    for item in stubs:
+        if not isinstance(item, dict):
+            continue
+        rid = str(item.get("id") or "")
+        if rid and rid in needed_ids:
+            found[rid] = item
+    return found
+
+
+def _find_archived_reflections_for_fact(
+    char_dir: Path,
+    fact_id: str,
+    *,
+    exclude_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Find archived reflection stubs that reference ``fact_id`` in ``source_fact_ids``."""
+    if not fact_id:
+        return []
+    from memory import cold_store
 
     try:
-        from memory.archive_shards import REFLECTION_ARCHIVE_DIRNAME, _list_shard_files
-        archive_dir = char_dir / REFLECTION_ARCHIVE_DIRNAME
-        shard_files = _list_shard_files(str(archive_dir))
-        for fn, _date_str, _uuid8 in reversed(shard_files):
-            if not remaining:
-                break
-            entries = _read_json_safe(archive_dir / fn, [])
-            if not isinstance(entries, list):
-                continue
-            for r in entries:
-                if not isinstance(r, dict):
-                    continue
-                rid = str(r.get("id") or "")
-                if rid in remaining:
-                    found[rid] = r
-                    remaining.discard(rid)
-    except Exception as exc:
-        logger.debug("[MemoryLineage] archived reflection shard scan skipped: %s", exc)
-
-    if remaining:
-        legacy = _read_json_safe(char_dir / "reflections_archive.json", [])
-        if isinstance(legacy, list):
-            for r in legacy:
-                if not isinstance(r, dict):
-                    continue
-                rid = str(r.get("id") or "")
-                if rid in remaining:
-                    found[rid] = r
-                    remaining.discard(rid)
-
-    return found
+        stubs = cold_store.status(str(char_dir), kind="reflection")
+    except (cold_store.ColdStoreUnreadable, OSError) as exc:
+        logger.debug("[MemoryLineage] cold-store fact-link stub lookup degraded: %s", exc)
+        return []
+    hits: list[dict[str, Any]] = []
+    for item in stubs:
+        if not isinstance(item, dict):
+            continue
+        rid = str(item.get("id") or "")
+        if rid in exclude_ids:
+            continue
+        src_ids = item.get("source_fact_ids") or []
+        if fact_id in src_ids or any(str(s) == fact_id for s in src_ids):
+            hits.append(item)
+    return hits
 
 
 def build_memory_lineage_story(
@@ -330,9 +339,16 @@ def build_memory_lineage_story(
         target = pair[0]
         target_entity = str(target.get("entity") or "master")
         linked_fact_ids.append(entry_id)
+        seen_fact_rids: set[str] = set()
         for r in reflections_raw:
             if isinstance(r, dict) and entry_id in (r.get("source_fact_ids") or []):
                 linked_reflections.append((r, False))
+                if r.get("id"):
+                    seen_fact_rids.add(str(r["id"]))
+        for stub in _find_archived_reflections_for_fact(
+            char_dir, entry_id, exclude_ids=seen_fact_rids,
+        ):
+            linked_reflections.append((stub, True))
     else:
         return None
 
@@ -585,20 +601,22 @@ def build_full_lineage_graph(
             if mid:
                 referenced_refl_ids.add(str(mid))
 
-    # Lane 3: reflections (prioritize those linked to persona, including archived shards, then recent active)
+    # Lane 3: reflections (prioritize those linked to persona, including cold-store stubs, then recent active)
     refl_by_id: dict[str, tuple[dict[str, Any], bool]] = {}
     for r in reflections_raw:
         if isinstance(r, dict) and r.get("id") and str(r.get("text") or "").strip():
             refl_by_id[str(r["id"])] = (r, False)
     missing_refl_ids = {rid for rid in referenced_refl_ids if rid not in refl_by_id}
     if missing_refl_ids:
-        for rid, r in _load_archived_reflections_by_id(char_dir, missing_refl_ids).items():
-            if str(r.get("text") or "").strip():
-                refl_by_id[rid] = (r, True)
+        for rid, stub in _load_archived_reflections_by_id(char_dir, missing_refl_ids).items():
+            # Cold-store stubs intentionally omit archived wording while preserving provenance links.
+            refl_by_id[rid] = (stub, True)
 
     selected_refls: list[tuple[dict[str, Any], bool]] = []
     seen_r: set[str] = set()
-    for rid in referenced_refl_ids:
+    for rid in sorted(referenced_refl_ids):
+        if len(selected_refls) >= max_nodes_per_lane:
+            break
         pair = refl_by_id.get(rid)
         if pair is not None and rid not in seen_r:
             selected_refls.append(pair)
@@ -618,13 +636,16 @@ def build_full_lineage_graph(
     for r, is_archived in selected_refls:
         rid = str(r["id"])
         r_nid = f"reflection:{rid}"
+        label_text = str(r.get("text") or "").strip()[:100]
+        if not label_text:
+            label_text = f"[archived] {rid}" if is_archived else rid
         _add_node({
             "id": r_nid,
             "lane": "reflection",
             "kind": "reflection",
             "raw_id": rid,
             "entity": str(r.get("entity") or "master"),
-            "label": str(r.get("text") or "").strip()[:100],
+            "label": label_text,
             "status": str(r.get("status") or "pending"),
             "archived": is_archived,
             "created_at": r.get("created_at"),

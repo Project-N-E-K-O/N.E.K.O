@@ -539,6 +539,7 @@ async def alabel_star_map_clusters(
                 if (now_dt - prev_dt) < timedelta(days=STAR_MAP_LABEL_REFRESH_DAYS):
                     return {"skipped": True, "reason": "within_cooldown", "labels": prev_labels}
             except (ValueError, TypeError):
+                # Ignore malformed cached timestamp and fall through to refresh.
                 pass
 
     assert_cloudsave_writable(
