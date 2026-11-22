@@ -612,8 +612,8 @@ def _resolve_target_managers(role: Optional[str]) -> List[Any]:
 #                Reregistered names move to tail, preserving last-writer-wins replay.
 #   unregister → role=None removes all name records; role=X removes (X,name), global record skips X.
 #   clear → same as unregister, matched by source.
-#   Register refused on ownership by a target registry → that target never held the tool: drop the record
-#                if every target refused, else exclude the refusing roles from the global record.
+#   Register refused on ownership by a target registry → that target never held the tool: exclude the role from
+#                the global record at once (a scoped record is dropped); drop it if every attempted target refused.
 #   Dead-plugin eviction → remove registrations matching the failed callback or host.
 #   Character slot delete/rename → ``forget_role``: manager/registry gone together.
 # Process-local: main_server restart clears ledger, still requiring plugin reregistration.
@@ -650,7 +650,7 @@ def _ledger_record(tool: ToolDefinition, role: Optional[str]) -> None:
 
 
 def _ledger_withdraw_refused(
-    tool: ToolDefinition, role: Optional[str], refused_roles: List[str], every_target: bool,
+    tool: ToolDefinition, role: Optional[str], refused_roles: List[str], *, drop: bool = False,
 ) -> None:
     """Undo the ledger record of a registration some targets refused on ownership.
 
@@ -659,9 +659,10 @@ def _ledger_withdraw_refused(
     record must not keep claiming the name there (it would replay over the
     other source's tool and make the ledger conflict check refuse that
     source's own refresh). Only the record this request wrote is touched: a
-    later registration that replaced it is left alone. When every target
-    refused, nothing accepted the registration and the record goes; otherwise
-    a global record just skips the refusing roles.
+    later registration that replaced it is left alone. A global record skips
+    the refusing roles; it is dropped when ``drop`` is set (no attempted
+    target accepted it). A role-scoped record has a single target and is
+    dropped whenever that target refuses.
     """
     if not refused_roles:
         return
@@ -669,7 +670,7 @@ def _ledger_withdraw_refused(
     entry = _remote_tool_ledger.get(key)
     if entry is None or entry.tool is not tool:
         return
-    if every_target or role is not None:
+    if drop or role is not None:
         del _remote_tool_ledger[key]
     else:
         entry.excluded_roles.update(refused_roles)
@@ -796,6 +797,7 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
     affected: List[str] = []
     failed: List[Dict[str, str]] = []
     ownership_refused: List[str] = []
+    attempted = 0
     for mgr in targets:
         role_name = getattr(mgr, "lanlan_name", "?")
         try:
@@ -805,6 +807,7 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
                     # Another task can retire or replace this registration
                     # while a previous role awaits its session update.
                     continue
+            attempted += 1
             # Reject cross-source name collisions: name-keyed registry replace=True overwrites unconditionally;
             # without protection, later plugins silently displace existing same-name tools from other sources,
             # rerouting model calls to new callback and permitting original plugin to unregister another's tool.
@@ -821,6 +824,9 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             # Nothing was written to this registry (unlike a sync failure below,
             # where the registry already holds the tool and the record stays).
             ownership_refused.append(role_name)
+            # Exclude the role before the next await: a manager rebuilt meanwhile
+            # must not get the refused tool replayed into its registry.
+            _ledger_withdraw_refused(tool, req.role, [role_name])
             existing_source = _tool_source(e.existing)
             logger.warning(
                 "register_tool refused cross-source overwrite on %s: name='%s' owned_by='%s' incoming='%s'",
@@ -837,7 +843,10 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             err_text = f"{type(e).__name__}: {e}"
             logger.warning("register_tool to %s failed: %s", role_name, err_text)
             failed.append({"role": role_name, "error": err_text})
-    _ledger_withdraw_refused(tool, req.role, ownership_refused, len(ownership_refused) == len(targets))
+    # Every target this request actually tried refused: no registry holds the tool, so the record goes.
+    # Targets skipped above (record retired / replaced, role excluded) do not count as accepting.
+    if ownership_refused and len(ownership_refused) == attempted:
+        _ledger_withdraw_refused(tool, req.role, ownership_refused, drop=True)
     # All failed → ok=False informs plugins registration failed (former always-True
     # made plugins assume availability until next model tool call failed at runtime).
     # Partial success → ok=True plus failed_roles for caller handling, e.g. retry role.

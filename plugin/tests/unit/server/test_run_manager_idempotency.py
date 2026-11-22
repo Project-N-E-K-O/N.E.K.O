@@ -110,7 +110,7 @@ async def test_different_key_or_entry_creates_new_run(runs, second):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", [None, ""], ids=["none", "empty"])
+@pytest.mark.parametrize("key", [None, "", "   "], ids=["none", "empty", "blank"])
 async def test_without_key_every_request_creates_a_run(runs, key):
     a = await manager.create_run(_req(key=key), client_host=None)
     b = await manager.create_run(_req(key=key), client_host=None)

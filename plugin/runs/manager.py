@@ -110,6 +110,9 @@ class ExportStore(Protocol):
 class RunStore(Protocol):
     def create(self, rec: RunRecord) -> None: ...
 
+    # Required: ``create_run`` calls it for every request with an idempotency
+    # key. There is deliberately no fallback to ``create`` for stores lacking
+    # it, since that would silently execute retried calls twice.
     def create_or_get_idempotent(self, rec: RunRecord) -> Tuple[RunRecord, bool]: ...
 
     def get(self, run_id: str) -> Optional[RunRecord]: ...
@@ -197,6 +200,11 @@ def validate_run_transition(current: str, target: str) -> None:
         raise InvalidRunTransition(current, target)
 
 
+def _has_idempotency_key(key: Optional[str]) -> bool:
+    """A key that is empty or only whitespace counts as no key."""
+    return bool(key and key.strip())
+
+
 class InMemoryRunStore:
     def __init__(self, max_completed: int = 0) -> None:
         self._lock = threading.Lock()
@@ -210,7 +218,7 @@ class InMemoryRunStore:
 
     @staticmethod
     def _idempotency_index_key(rec: RunRecord) -> Optional[Tuple[str, str, str]]:
-        if not rec.idempotency_key:
+        if not _has_idempotency_key(rec.idempotency_key):
             return None
         return (rec.plugin_id, rec.entry_id, rec.idempotency_key)
 
@@ -843,7 +851,7 @@ def _resolve_run_execution_timeout(args: Dict[str, Any]) -> float | None:
 async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> RunCreateResponse:
     """Create a run and start executing it.
 
-    With a non-empty ``idempotency_key`` the request is deduplicated against
+    With a non-blank ``idempotency_key`` the request is deduplicated against
     runs the store still holds for the same ``(plugin_id, entry_id)``: a retry
     whose first response was lost gets the original ``run_id`` and its current
     status back, and the entry is not executed a second time. A key stops
@@ -866,7 +874,7 @@ async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> Ru
         cancel_requested=False,
         result_refs=[],
     )
-    if req.idempotency_key:
+    if _has_idempotency_key(req.idempotency_key):
         stored, created = _run_store.create_or_get_idempotent(rec)
         if not created:
             logger.debug(

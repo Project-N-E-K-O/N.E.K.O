@@ -271,6 +271,57 @@ async def test_global_register_refused_in_one_role_keeps_record_for_accepting_ro
         tr._remote_tool_ledger.clear()
 
 
+def _two_managers(monkeypatch, *, host_id=None):
+    tr._remote_tool_ledger.clear()
+    alpha = _PausingMgr("Alpha")
+    beta = _PausingMgr("Beta")
+    monkeypatch.setattr(tr, "get_session_manager", lambda: {"Alpha": alpha, "Beta": beta})
+    request = tr.ToolRegisterRequest(
+        name="x", description="", callback_url="http://127.0.0.1:9001/cb", source="plugin:a",
+        host_instance_id=host_id, host_pid=1 if host_id else None,
+        host_process_started_at=1 if host_id else None,
+    )
+    return alpha, beta, request
+
+
+@pytest.mark.asyncio
+async def test_refused_role_is_excluded_before_the_next_target_is_awaited(monkeypatch):
+    alpha, beta, request = _two_managers(monkeypatch)
+    try:
+        pending = asyncio.create_task(tr.register_tool(request))
+        await alpha.paused.wait()
+        alpha.tool_registry.register(_tool("x", "plugin:b"))
+        alpha.release.set()
+        await beta.paused.wait()
+        # Beta is still syncing; an Alpha rebuilt now must not replay plugin:a's tool.
+        assert tr._remote_tool_ledger[(None, "x")].excluded_roles == {"Alpha"}
+        assert tr.replay_remote_tools(SimpleNamespace(tool_registry=ToolRegistry()), "Alpha") == []
+        beta.release.set()
+        result = await pending
+        assert result["affected_roles"] == ["Beta"]
+    finally:
+        tr._remote_tool_ledger.clear()
+
+
+@pytest.mark.asyncio
+async def test_record_dropped_when_every_attempted_target_refused_and_rest_skipped(monkeypatch):
+    alpha, beta, request = _two_managers(monkeypatch, host_id="host-1")
+    try:
+        pending = asyncio.create_task(tr.register_tool(request))
+        await alpha.paused.wait()
+        alpha.tool_registry.register(_tool("x", "plugin:b"))
+        # Beta leaves the record meanwhile (e.g. a role-scoped unregister), so it is skipped.
+        tr._remote_tool_ledger[(None, "x")].excluded_roles.add("Beta")
+        alpha.release.set()
+        result = await pending
+
+        assert result["ok"] is False
+        assert not beta.paused.is_set()  # Beta was never attempted
+        assert (None, "x") not in tr._remote_tool_ledger
+    finally:
+        tr._remote_tool_ledger.clear()
+
+
 @pytest.mark.asyncio
 async def test_register_whose_sync_fails_keeps_its_ledger_record(mgr, monkeypatch):
     class _SyncFails(_PausingMgr):

@@ -568,9 +568,10 @@ class ToolRegistry:
     ) -> None:
         self._tools: Dict[str, ToolDefinition] = {}
         self._lock = asyncio.Lock()
-        # Guards every write so an ownership check and the write it permits
-        # are one step (register/unregister ``owner_check``), also when a
-        # caller reaches the registry from another thread.
+        # Serializes writes, so an ownership check and the write it permits
+        # are one step (register/unregister ``owner_check``) with respect to
+        # every other write. Reads do not take it: the registry is used from
+        # the event loop, where no write can run while a read iterates.
         self._write_lock = threading.RLock()
         self._remote_dispatcher = remote_dispatcher
         # Telemetry: last execution timing for each tool. Useful for
