@@ -375,14 +375,13 @@ def test_no_spare_while_the_previous_round_socket_is_still_closing(monkeypatch):
     assert _sent_types(second) == ["tts.create", "tts.text.delta", "tts.text.done"]
 
 
-def test_cutting_off_a_spare_does_not_wait_on_its_close(monkeypatch):
-    # A peer that never answers the close handshake held the speech (and any
-    # queued interrupt) for websockets' whole close_timeout.
+def test_cutting_off_a_spare_does_not_hold_a_queued_interrupt(monkeypatch):
+    # A peer that never answers the close handshake held the cut-off (and the
+    # interrupt queued behind it) for websockets' whole close_timeout.
     _route_to_lanlan_app(monkeypatch)
     monkeypatch.setattr(_step_protocol, "_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS", 0.1)
     stuck = _SlowCloseStatefulSocket([])  # connects, never confirms, slow to close
-    fresh = _socket("fresh", final_events=_app_round_end("fresh"))
-    _install_sockets(monkeypatch, _warmup_socket(), stuck, fresh)
+    _install_sockets(monkeypatch, _warmup_socket(), stuck)
     observations = {}
     backstop = threading.Timer(3.0, stuck.release.set)
     backstop.start()
@@ -391,12 +390,14 @@ def test_cutting_off_a_spare_does_not_wait_on_its_close(monkeypatch):
             _Requests(
                 _PRECONNECT,
                 ("speech-1", _OPENING),
-                (None, None),
+                ("__interrupt__", None),
+                # The worker only asks for the next request after it handled
+                # the interrupt.
                 _observe(
                     observations,
-                    "spoke_while_spare_still_closing",
-                    lambda: bool(fresh.sent) and not stuck.closed.is_set(),
-                    timeout=1.5,
+                    "interrupt_handled_while_spare_closing",
+                    lambda: not stuck.closed.is_set(),
+                    timeout=0,
                 ),
                 stuck.release.set,
             ),
@@ -405,8 +406,78 @@ def test_cutting_off_a_spare_does_not_wait_on_its_close(monkeypatch):
     finally:
         backstop.cancel()
 
-    assert observations == {"spoke_while_spare_still_closing": True}
+    assert observations == {"interrupt_handled_while_spare_closing": True}
     assert stuck.closed.is_set(), "the cut-off spare is still closed in the end"
+
+
+def _recording_connects(monkeypatch, sockets, on_connect):
+    remaining = list(sockets)
+    connects = []
+
+    async def connect(*_args, **_kwargs):
+        socket = remaining.pop(0)
+        on_connect(socket)
+        connects.append(socket)
+        return socket
+
+    monkeypatch.setattr(_step_protocol.websockets, "connect", connect)
+    return connects
+
+
+def test_speech_connects_only_after_a_cut_off_spare_finished_closing(monkeypatch):
+    # The background close must not let a second connection overlap it: the
+    # free server limits connections per IP.
+    _route_to_lanlan_app(monkeypatch)
+    monkeypatch.setattr(_step_protocol, "_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS", 0.1)
+    stuck = _SlowCloseStatefulSocket([])  # connects, never confirms, slow to close
+    fresh = _socket("fresh", final_events=_app_round_end("fresh"))
+    spare_closed_at_fresh_connect = []
+
+    def on_connect(socket):
+        if socket is fresh:
+            spare_closed_at_fresh_connect.append(stuck.closed.is_set())
+
+    _recording_connects(monkeypatch, [_warmup_socket(), stuck, fresh], on_connect)
+    release = threading.Timer(0.3, stuck.release.set)
+    release.start()
+    try:
+        _run(_Requests(_PRECONNECT, ("speech-1", _OPENING), (None, None)), queue.Queue())
+    finally:
+        release.cancel()
+
+    assert spare_closed_at_fresh_connect == [True]
+    assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
+
+
+def test_no_new_spare_while_a_retired_one_is_still_closing(monkeypatch):
+    _route_to_lanlan_app(monkeypatch)
+    monkeypatch.setattr(_step_protocol, "_PRECONNECT_IDLE_SECONDS", 0.05)
+    expired = _SlowCloseStatefulSocket(
+        [{"type": "tts.connection.done", "data": {"session_id": "expired"}}],
+    )
+    fresh = _socket("fresh", final_events=_app_round_end("fresh"))
+    connects = _install_sockets(monkeypatch, _warmup_socket(), expired, fresh)
+    observations = {}
+    backstop = threading.Timer(2.0, expired.release.set)
+    backstop.start()
+    try:
+        _run(
+            _Requests(
+                _PRECONNECT,
+                _wait(lambda: expired.closing),  # expired, closing in the background
+                _PRECONNECT,
+                _pause(0.1),
+                _observe(observations, "connects", lambda: len(connects), timeout=0),
+                expired.release.set,
+                ("speech-1", _OPENING),
+                (None, None),
+            ),
+            queue.Queue(),
+        )
+    finally:
+        backstop.cancel()
+
+    assert observations == {"connects": 2}, "a spare beside the closing expired one"
     assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
 
 

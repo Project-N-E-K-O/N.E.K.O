@@ -411,6 +411,7 @@ def run_step_protocol_tts_worker(
                     logger.debug("关闭失效 TTS WebSocket 失败: %s", close_exc)
 
             try:
+                await _await_spare_cleanup()
                 ws = await websockets.connect(tts_url, additional_headers=headers)
                 session_id = None
                 session_ready.clear()
@@ -625,6 +626,20 @@ def run_step_protocol_tts_worker(
                 logger.debug("预建 TTS 连接 %.0fs 内未被使用，关闭", _PRECONNECT_IDLE_SECONDS)
                 _discard_spare_socket(from_expiry=True)
 
+        async def _await_spare_cleanup() -> None:
+            """Let retired spares finish closing before the speech connects.
+
+            The speech path has always closed its old socket before opening
+            the next one, so the free server, which limits connections per IP,
+            never sees two. A retired spare closes in the background so the
+            cut-off itself returns at once (a queued interrupt is handled
+            meanwhile); this is where the speech now waits for it. Each close
+            is bounded by websockets' own close_timeout, as the old socket's
+            close on this path is.
+            """
+            if spare_cleanup_tasks:
+                await asyncio.wait(set(spare_cleanup_tasks))
+
         def _keep_until_done(task) -> None:
             spare_cleanup_tasks.add(task)
             task.add_done_callback(spare_cleanup_tasks.discard)
@@ -668,6 +683,9 @@ def run_step_protocol_tts_worker(
                 return
             if warmup_close_task is not None and not warmup_close_task.done():
                 # Same for the warmup socket, closed in the background.
+                return
+            if spare_cleanup_tasks:
+                # Same for a retired spare still closing in the background.
                 return
             spare_progress = {"connected": asyncio.Event(), "connected_at": None}
             spare_task = asyncio.create_task(_open_spare_socket(spare_progress))
@@ -1124,6 +1142,7 @@ def run_step_protocol_tts_worker(
                         if spare is not None:
                             candidate_ws, candidate_session_id = spare
                         elif not handshake_timed_out:
+                            await _await_spare_cleanup()
                             candidate_ws = await websockets.connect(
                                 tts_url,
                                 additional_headers=headers,
