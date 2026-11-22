@@ -2149,9 +2149,24 @@ def test_what_a_checkout_would_overwrite(tmp_path: Path) -> None:
     write(tmp_path / "file.txt", "x")
     write(tmp_path / "data" / "blob.bin", "x")
     write(tmp_path / "plain", "a file")
-    hit = worktrees._in_the_way(tmp_path, ["file.txt", "data", "plain/inside.txt", "new/thing.txt", "database"])
-    assert hit == ["data", "file.txt", "plain"]
-    assert worktrees._in_the_way(tmp_path, ["data/new.txt"]) == []  # beside what is there, in a directory
+    write(tmp_path / "saved" / "one.txt", "x")
+    write(tmp_path / "kept", "a file the snapshot has")
+    write(tmp_path / "sub" / "own.txt", "a repository's own")
+    held = {"saved/one.txt", "kept"}
+
+    def hits(written: list[str], nested: frozenset[str] = frozenset()) -> list[str]:
+        return worktrees._in_the_way(tmp_path, written, held, set(nested))
+
+    # Not the snapshot's: in the way.
+    assert hits(["file.txt", "data", "plain/inside.txt", "new/thing.txt", "database"]) == ["data", "file.txt", "plain"]
+    assert hits(["data/new.txt"]) == []  # beside what is there, in a directory
+    # The snapshot's: replaced as the merge says.
+    assert hits(["saved"]) == []  # a directory of saved files becomes a file
+    assert hits(["kept/inside.txt"]) == []  # a saved file becomes a directory
+    write(tmp_path / "saved" / "extra.log", "ignored, not saved")
+    assert hits(["saved"]) == ["saved"]
+    # Inside a repository of its own: always in the way.
+    assert hits(["sub/new.txt"], frozenset({"sub"})) == ["sub/"]
     assert worktrees._parents("a/b/c") == ["a", "a/b"] and worktrees._parents("a") == []
 
 
@@ -2615,3 +2630,67 @@ async def test_has_changes_after_a_removal_queued_first(repo: Path, manager: Wor
     asking = asyncio.ensure_future(manager.has_changes(tree))
     await removing
     assert await asking is False
+
+
+# -- review round 21 -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("direction", ["directory-to-file", "file-to-directory"])
+async def test_a_swap_in_the_project_does_not_stop_preparing(
+    repo: Path, manager: WorktreeManager, base: Path, direction: str
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "worktree\n")
+    write(repo / "a.txt", "project\n")
+    if direction == "directory-to-file":
+        shutil.rmtree(_fs(repo / "src"))
+        write(repo / "src", "now a file\n")
+    else:
+        os.remove(repo / "b.txt")
+        write(repo / "b.txt" / "inside.txt", "now a directory\n")
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    prepared = await manager.prepare_conflicts(tree, conflict)
+    assert "<<<<<<<" in read(prepared.path / "a.txt").decode()
+    if direction == "directory-to-file":
+        assert read(prepared.path / "src") == b"now a file\n"
+    else:
+        assert read(prepared.path / "b.txt" / "inside.txt") == b"now a directory\n"
+
+
+async def test_preparing_writes_nothing_into_a_repository_of_its_own(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    make_nested(tree.path / "sub")
+    write(tree.path / "a.txt", "worktree\n")
+    write(repo / "sub" / "new.txt", "the project's\n")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    before = digest(tree.path / "sub")
+    with pytest.raises(WorktreeError) as raised:
+        await manager.prepare_conflicts(tree, conflict)
+    assert "sub/" in str(raised.value)
+    assert digest(tree.path / "sub") == before and not exists(tree.path / "sub" / "new.txt")
+
+
+async def test_probe_filter_named_like_no_filter(repo: Path, manager: WorktreeManager) -> None:
+    write(repo / ".gitattributes", "*.txt filter=unspecified\n")
+    git(repo, "config", "filter.unspecified.clean", "cat")
+    assert (await manager.probe(repo)).reason == CONTENT_FILTERS
+
+
+async def test_a_submodule_link_staged_in_a_worktree_is_refused_and_kept(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    make_nested(tree.path / "embedded")
+    git(tree.path, "add", "embedded")  # staged as a submodule link
+    before = digest(repo)
+    with pytest.raises(WorktreeUnavailable) as raised:
+        await manager.merge_back(tree)
+    assert raised.value.reason == SUBMODULES and "embedded" in raised.value.detail
+    assert digest(repo) == before
+    report = await manager.reconcile(repo, base, [])
+    assert [path.name for path, _why in report.failed] == ["w1"] and exists(tree.path / "embedded" / "inside.txt")

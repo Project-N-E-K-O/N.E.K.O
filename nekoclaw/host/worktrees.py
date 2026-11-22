@@ -538,9 +538,11 @@ class WorktreeManager:
             # where it needs a directory, is the worktree's alone (ignored,
             # left out as too large, a repository of its own): it would be
             # overwritten, so nothing is checked out.
-            held = await self._git(worktree.path, "ls-tree", "-r", "-z", "--name-only", now.tree)
-            written = sorted(_decode(name) for name in set(names) - set(held.stdout.split(b"\0")) if name)
-            hit = await asyncio.to_thread(_in_the_way, worktree.path, written)
+            listed_held = await self._git(worktree.path, "ls-tree", "-r", "-z", "--name-only", now.tree)
+            held = {_decode(name) for name in listed_held.stdout.split(b"\0") if name}
+            written = sorted({_decode(name) for name in names} - held)
+            nested = {name.rstrip("/") for name in now.skipped if name.endswith("/")}
+            hit = await asyncio.to_thread(_in_the_way, worktree.path, written, held, nested)
             if hit:
                 raise WorktreeError(
                     f"preparing would overwrite what only the worktree has (ignored, too large, or a "
@@ -806,6 +808,13 @@ class WorktreeManager:
         driver = default.stdout[:-1] if default.stdout.endswith(b"\0") else default.stdout
         if default.returncode == 0 and driver in theirs:
             return MERGE_DRIVERS, f"merge.default is {_decode(driver)}"
+        # A filter named unspecified, unset or set reads, in check-attr's
+        # output, the same as no filter at all.
+        ambiguous = await self._git(
+            root, "config", "-z", "--name-only", "--get-regexp", r"^filter\.(unspecified|unset|set)\.", check=False
+        )
+        if ambiguous.stdout.strip(b"\0"):
+            return CONTENT_FILTERS, "a content filter is configured under a name check-attr cannot tell from none"
         checked = await self._git(
             root,
             "check-attr",
@@ -909,6 +918,12 @@ class WorktreeManager:
                     input=_nul_join(f":(literal,top){name}" for name in kept),
                     timeout=settings.WORKTREE_GIT_WORK_SECONDS,
                 )
+            # A repository staged as a submodule link since the worktree was
+            # made: its files would be lost, landed as an empty directory.
+            staged = await self._git(root, "ls-files", "-z", "--stage", env=env)
+            links = [entry.split(b"\t", 1)[-1] for entry in staged.stdout.split(b"\0") if entry.startswith(b"160000 ")]
+            if links:
+                raise WorktreeUnavailable(SUBMODULES, f"{_decode(links[0])} is a submodule link")
             tree = (await self._git(root, "write-tree", env=env)).lines()[0]
         finally:
             await asyncio.to_thread(shutil.rmtree, scratch, True)
@@ -1336,18 +1351,38 @@ def _worktree_id(target: Path) -> str:
     return worktree_name(target.name)
 
 
-def _in_the_way(root: Path, written: list[str]) -> list[str]:
-    """Return what under ``root`` a checkout writing ``written`` would overwrite.
+def _in_the_way(root: Path, written: list[str], held: set[str], nested: set[str]) -> list[str]:
+    """Return what under ``root`` that is the worktree's alone a checkout writing ``written`` would overwrite.
 
-    That is anything at one of those paths, and a file (or link) where one
-    of them needs a directory.
+    ``held`` is what the worktree's snapshot has: the checkout replaces that
+    as it should. Overwritten are a file at one of those paths, a directory
+    there holding anything ``held`` has not, a file not ``held`` where one
+    needs a directory, and anything inside a repository of its own
+    (``nested``, directories).
     """
     hit: set[str] = set()
     for path in written:
-        if os.path.lexists(_fs(root / path)):
+        full = _fs(root / path)
+        if _is_file_or_link(full) or (os.path.isdir(full) and _holds_unsaved(root, path, held)):
             hit.add(path)
-        hit.update(up for up in _parents(path) if _is_file_or_link(_fs(root / up)))
+        for up in _parents(path):
+            if up in nested:
+                hit.add(up + "/")
+            elif up not in held and _is_file_or_link(_fs(root / up)):
+                hit.add(up)
     return sorted(hit)
+
+
+def _holds_unsaved(root: Path, directory: str, held: set[str]) -> bool:
+    """Return whether ``directory`` under ``root`` has a file or link that ``held`` has not."""
+    top = _fs(root / directory)
+    for current, dirs, files in os.walk(top):
+        names = files + [name for name in dirs if os.path.islink(os.path.join(current, name))]
+        for name in names:
+            relative = os.path.relpath(os.path.join(current, name), top).replace(os.sep, "/")
+            if f"{directory}/{relative}" not in held:
+                return True
+    return False
 
 
 def _parents(path: str) -> list[str]:
