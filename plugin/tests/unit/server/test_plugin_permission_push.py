@@ -400,6 +400,7 @@ def _idle(service) -> bool:
         and not service._all
         and not service._wakeup.is_set()
         and not service._inflight
+        and not service._collecting
     )
 
 
@@ -476,18 +477,40 @@ async def test_first_load_pushes_to_every_running_plugin(service, store, hosts):
     assert len(hosts["a"].pushes) == 1 and len(hosts["b"].pushes) == 1
 
 
-async def test_changes_are_coalesced_and_the_last_state_wins(service, store, hosts):
+async def test_changes_are_coalesced_and_the_last_state_wins(monkeypatch, service, store, hosts):
+    import threading
+
     host = hosts["demo"] = Host()
     host.set_initial_permissions(permission_service.permission_snapshot("demo"))
+    await _until(lambda: host.pushes and _idle(service))  # the store's first load
+    before = len(host.pushes)
+    # Hold the push for the first change at its host lookup while three more
+    # changes arrive; they must fold into a single follow-up push.
+    gate, entered = threading.Event(), threading.Event()
+    lookup = permission_push._running_hosts
 
-    def burst():
-        for state in ("granted", "denied", "granted", "denied"):
+    def held_lookup():
+        entered.set()
+        gate.wait(5)
+        return lookup()
+
+    monkeypatch.setattr(permission_push, "_running_hosts", held_lookup)
+    await asyncio.to_thread(store.decide, "demo", MEMORY_READ, "granted")
+    await asyncio.to_thread(entered.wait, 5)
+
+    def rest():
+        for state in ("denied", "granted", "denied"):
             store.decide("demo", MEMORY_READ, state)
 
-    await asyncio.to_thread(burst)
-    await _until(lambda: host.permissions.get(MEMORY_READ).status == "denied" and _idle(service))
+    await asyncio.to_thread(rest)
+    gate.set()
+    await _until(lambda: _idle(service) and len(host.pushes) > before)
+    await _until(lambda: _idle(service))
+    # Four changes: the held push plus one rerun, both reading the last state.
+    new = host.pushes[before:]
+    assert len(new) == 2
+    assert all(snapshot["states"][MEMORY_READ]["status"] == "denied" for snapshot in new)
     assert host.permissions.get(MEMORY_READ).status == "denied"
-    assert 1 <= len(host.pushes) <= 4
 
 
 async def test_stale_snapshots_arriving_late_are_ignored(store, hosts):
@@ -729,14 +752,17 @@ async def test_a_fallback_launch_push_is_retried_by_the_service(monkeypatch, sto
     monkeypatch.setattr(permission_push, "READ_RETRY_SECONDS", 0.05)
     monkeypatch.setattr(permission_service, "logger", Log())
     # Grants and the launch snapshot are in place before the service listens,
-    # so only the direct push below can hand anything over to it.
+    # and the plugin is listed only after start()'s sweep, so only the direct
+    # push below can hand anything over to it.
     store.decide("demo", MEMORY_READ, "granted")
-    host = hosts["demo"] = Host()
+    host = Host()
     host.set_initial_permissions(permission_service.permission_snapshot("demo"))
     service = permission_push.permission_push_service
     service.start()
     try:
-        assert not service._timers and _idle(service)
+        await _until(lambda: _idle(service))  # start()'s sweep, before the plugin is listed
+        hosts["demo"] = host
+        assert not service._timers and not host.pushes
         real_record = permission_service.permission_record
         broken = {"on": True}
 
@@ -809,14 +835,17 @@ async def test_a_failed_direct_push_is_handed_to_the_service(monkeypatch, store,
     monkeypatch.setattr(plugin_permissions, "_change_listeners", [])
     monkeypatch.setattr(permission_push, "READ_RETRY_SECONDS", 0.05)
     monkeypatch.setattr(permission_push, "logger", Log())
-    # The grant is stored before the service listens, so only the direct
-    # push below can hand a retry over to it.
+    # The grant is stored before the service listens and the plugin is listed
+    # only after start()'s sweep, so only the direct push below can hand a
+    # retry over to it.
     store.decide("demo", MEMORY_READ, "granted")
-    host = hosts["demo"] = Host(fail=RuntimeError("downlink stuck"))
+    host = Host(fail=RuntimeError("downlink stuck"))
     service = permission_push.permission_push_service
     service.start()
     try:
-        assert not service._timers and _idle(service) and host.attempts == 0
+        await _until(lambda: _idle(service))  # start()'s sweep, before the plugin is listed
+        hosts["demo"] = host
+        assert not service._timers and host.attempts == 0
         assert await permission_push.push_permissions("demo", host) is False
         assert host.attempts == 1
         await _until(lambda: "demo" in service._timers)
@@ -1066,3 +1095,20 @@ async def test_starting_on_another_loop_drops_the_old_loops_state(monkeypatch, s
     finally:
         stale_task.cancel()
         old_loop.close()
+
+
+async def test_starting_the_service_brings_running_plugins_up_to_date(monkeypatch, store, hosts):
+    """A plugin started before the service got only its direct push; a change
+    in between reached nobody, so start() pushes once to every running plugin."""
+    monkeypatch.setattr(plugin_permissions, "_change_listeners", [])
+    host = hosts["demo"] = Host()
+    host.set_initial_permissions(permission_service.permission_snapshot("demo"))
+    store.decide("demo", MEMORY_READ, "granted")  # nobody listening yet
+    assert host.permissions.get(MEMORY_READ).status == "undecided" and not host.pushes
+    service = permission_push.PermissionPushService()
+    service.start()
+    try:
+        await _until(lambda: host.permissions.get(MEMORY_READ).status == "granted" and _idle(service))
+        assert len(host.pushes) == 1
+    finally:
+        await service.stop()

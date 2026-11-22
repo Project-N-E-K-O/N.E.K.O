@@ -174,6 +174,19 @@ def test_async_callbacks_are_rejected(make):
     with pytest.raises(TypeError):
         driver.perms.on_change(callback)
 
+    class AsyncCallable:
+        async def __call__(self, permission, state):
+            return None
+
+    with pytest.raises(TypeError):
+        driver.perms.on_change(AsyncCallable())
+
+    class SyncCallable:
+        def __call__(self, permission, state):
+            return None
+
+    driver.perms.on_change(SyncCallable()).cancel()
+
 
 # ---------------------------------------------------------------------------
 # Real implementation only: snapshots from the host
@@ -269,6 +282,24 @@ def test_a_failing_callback_is_logged_and_the_others_still_run():
     assert any(level == "exception" for level, _ in log.lines)
 
 
+def test_a_callback_raising_cancelled_error_does_not_stop_the_others():
+    import asyncio
+
+    log = Log()
+    perms = PluginPermissions(log)
+    perms.apply(_snapshot(1))
+    seen = []
+
+    def cancels(permission, state):
+        raise asyncio.CancelledError
+
+    perms.on_change(cancels)
+    perms.on_change(lambda permission, state: seen.append(permission))
+    assert perms.apply(_snapshot(2, **{MEMORY: "granted"}))
+    assert seen == [MEMORY]
+    assert any(level == "exception" for level, _ in log.lines)
+
+
 def test_a_callback_returning_a_coroutine_is_closed_and_logged():
     log = Log()
     perms = PluginPermissions(log)
@@ -282,19 +313,39 @@ def test_a_callback_returning_a_coroutine_is_closed_and_logged():
     assert any(level == "error" and "synchronous" in line for level, line in log.lines)
 
 
-def test_a_context_from_before_permissions_is_wrapped_and_falls_back():
+async def test_a_context_from_before_permissions_keeps_its_methods_and_falls_back():
     from types import SimpleNamespace
 
     from plugin.sdk.shared.core import context as context_module
-    from plugin.sdk.shared.core.context import SdkContext, ensure_sdk_context
+    from plugin.sdk.shared.core.context import ensure_sdk_context
 
     old = SimpleNamespace(
         plugin_id="old", metadata={}, logger=None, config_path=None, bus=None, images=None, models=None,
     )
     for name in context_module._SDK_CONTEXT_METHOD_NAMES:
         setattr(old, name, lambda: None)
+    calls = []
+
+    async def run_update(**kwargs):  # no run_update_async on this context
+        calls.append(("run_update", kwargs))
+        return "updated"
+
+    async def export_push(**kwargs):  # no export_push_async either
+        calls.append(("export_push", kwargs))
+        return "pushed"
+
+    old.run_update, old.export_push = run_update, export_push
     context = ensure_sdk_context(old)
-    assert isinstance(context, SdkContext) and context.plugin_id == "old"
+    assert context is not old and context.plugin_id == "old"
+    assert ensure_sdk_context(context) is context
+    assert await context.run_update(run_id="r", progress=0.5) == "updated"
+    assert await context.export_push(export_type="text", text="hi") == "pushed"
+    assert calls == [
+        ("run_update", {"run_id": "r", "progress": 0.5}),
+        ("export_push", {"export_type": "text", "text": "hi"}),
+    ]
+    context.marker = 1
+    assert old.marker == 1
     assert context.permissions is context.permissions
     assert context.permissions.get(MEMORY) == PermissionState("denied", enforced=True)
 

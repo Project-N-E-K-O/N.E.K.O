@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -39,6 +40,14 @@ def known_permission(permission: str) -> str:
     if not isinstance(permission, str) or permission not in PERMISSIONS:
         raise ValueError(f"unknown permission id: {permission!r}")
     return permission
+
+
+def is_async_callable(callback: object) -> bool:
+    """``async def`` functions (also behind ``functools.partial``) and
+    objects whose ``__call__`` is ``async def``."""
+    return inspect.iscoroutinefunction(callback) or inspect.iscoroutinefunction(
+        getattr(callback, "__call__", None)
+    )
 
 
 class PermissionSubscription:
@@ -78,5 +87,6 @@ __all__ = [
     "PermissionState",
     "PermissionStatus",
     "PermissionSubscription",
+    "is_async_callable",
     "known_permission",
 ]

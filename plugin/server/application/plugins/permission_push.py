@@ -154,6 +154,8 @@ class PermissionPushService:
         self._inflight: dict[str, asyncio.Task] = {}
         self._rerun: set[str] = set()
         self._busy_retries: dict[str, int] = {}
+        # True while a batch is being collected (host table lookup included).
+        self._collecting = False
         self._read_retry_delay: dict[str, float] = {}
         # At most one pending retry per plugin ("*" = every running plugin).
         self._timers: dict[str, asyncio.TimerHandle] = {}
@@ -172,6 +174,10 @@ class PermissionPushService:
             self._wakeup = asyncio.Event()
         self._task = loop.create_task(self._run(), name="plugin-permission-push")
         plugin_permissions.add_change_listener(self.notify)
+        # A plugin started before the service only got its one direct push;
+        # changes since then reported to nobody, so bring every running
+        # plugin up to date once.
+        self.notify(None)
 
     async def stop(self) -> None:
         plugin_permissions.remove_change_listener(self.notify)
@@ -363,6 +369,7 @@ class PermissionPushService:
         while True:
             await wakeup.wait()
             wakeup.clear()
+            self._collecting = True
             try:
                 for plugin_id in sorted(await self._take()):
                     self._spawn(plugin_id)
@@ -371,6 +378,8 @@ class PermissionPushService:
             except Exception as exc:
                 # Keep serving later changes; this batch is reported, not retried.
                 logger.error("permission update batch failed: error={}", type(exc).__name__)
+            finally:
+                self._collecting = False
 
 
 permission_push_service = PermissionPushService()

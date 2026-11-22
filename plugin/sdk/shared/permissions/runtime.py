@@ -17,6 +17,7 @@ the copy already holds is ignored, so delivery order does not matter.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import threading
 from collections.abc import Callable, Mapping
@@ -27,6 +28,7 @@ from .state import (
     PERMISSION_STATUSES,
     PermissionState,
     PermissionSubscription,
+    is_async_callable,
     known_permission,
 )
 
@@ -115,7 +117,7 @@ class PluginPermissions:
         return state if state is not None else unavailable_state(permission)
 
     def on_change(self, callback: ChangeCallback) -> PermissionSubscription:
-        if inspect.iscoroutinefunction(callback):
+        if is_async_callable(callback):
             raise TypeError("ctx.permissions.on_change callbacks must be synchronous")
         with self._lock:
             self._callbacks.append(callback)
@@ -152,7 +154,10 @@ class PluginPermissions:
     def _notify(self, callback: ChangeCallback, permission: str, state: PermissionState) -> None:
         try:
             result = callback(permission, state)
-        except Exception:
+        except (Exception, asyncio.CancelledError):
+            # A synchronous callback cannot be hit by a real task cancellation
+            # (that only lands at an await), so a CancelledError here is the
+            # callback's own: keep the other subscribers and the command loop going.
             self._log("exception", "ctx.permissions.on_change callback failed for {}", permission)
             return
         if inspect.iscoroutine(result):

@@ -602,17 +602,50 @@ class SdkContext:
         self._host_ctx.update_status(status)
 
 
-def _is_sdk_context_compatible(ctx: object) -> bool:
-    return all(hasattr(ctx, attr_name) for attr_name in _SDK_CONTEXT_ATTR_NAMES) and all(
+def _is_sdk_context_compatible(ctx: object, attr_names: tuple[str, ...] = _SDK_CONTEXT_ATTR_NAMES) -> bool:
+    return all(hasattr(ctx, attr_name) for attr_name in attr_names) and all(
         callable(getattr(ctx, method_name, None)) for method_name in _SDK_CONTEXT_METHOD_NAMES
     )
 
 
+class _PermissionsFallbackContext:
+    """A compatible context from before ``ctx.permissions``: everything is
+    the original object's, only ``permissions`` is added (reading as if the
+    grants could not be read)."""
+
+    def __init__(self, ctx: object) -> None:
+        object.__setattr__(self, "_wrapped_ctx", ctx)
+        object.__setattr__(self, "_fallback_permissions", None)
+
+    @property
+    def permissions(self) -> PluginPermissionsProtocol:
+        if self._fallback_permissions is None:
+            from plugin.sdk.shared.permissions.runtime import PluginPermissions
+
+            object.__setattr__(
+                self, "_fallback_permissions", PluginPermissions(getattr(self._wrapped_ctx, "logger", None))
+            )
+        return cast(PluginPermissionsProtocol, self._fallback_permissions)
+
+    def __getattr__(self, name: str) -> object:
+        if name in ("_wrapped_ctx", "_fallback_permissions"):
+            # Not set yet (e.g. copy creates the instance without __init__).
+            raise AttributeError(name)
+        return getattr(self._wrapped_ctx, name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        setattr(self._wrapped_ctx, name, value)
+
+
 def ensure_sdk_context(ctx: PluginContextProtocol | object) -> PluginContextProtocol:
-    if isinstance(ctx, SdkContext):
-        return ctx
+    if isinstance(ctx, (SdkContext, _PermissionsFallbackContext)):
+        return cast(PluginContextProtocol, ctx)
     if _is_sdk_context_compatible(ctx):
         return cast(PluginContextProtocol, ctx)
+    if _is_sdk_context_compatible(ctx, tuple(n for n in _SDK_CONTEXT_ATTR_NAMES if n != "permissions")):
+        # Compatible apart from ``permissions``: keep every existing call on
+        # the original object rather than re-routing it through SdkContext.
+        return cast(PluginContextProtocol, _PermissionsFallbackContext(ctx))
     return cast(PluginContextProtocol, SdkContext(ctx))
 
 

@@ -15,7 +15,7 @@ from dataclasses import replace
 
 from ..models.exceptions import PermissionDeniedError
 from .catalog import PERMISSIONS
-from .state import PermissionState, PermissionSubscription, known_permission
+from .state import PermissionState, PermissionSubscription, is_async_callable, known_permission
 
 StateLike = str | PermissionState | Mapping[str, object]
 ChangeCallback = Callable[[str, PermissionState], object]
@@ -73,7 +73,7 @@ class FakePermissions:
         return self.get(permission)
 
     def on_change(self, callback: ChangeCallback) -> PermissionSubscription:
-        if inspect.iscoroutinefunction(callback):
+        if is_async_callable(callback):
             raise TypeError("FakePermissions.on_change callbacks must be synchronous")
         self._callbacks.append(callback)
         return PermissionSubscription(self._callbacks, callback)
