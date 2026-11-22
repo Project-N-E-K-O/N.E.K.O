@@ -26,8 +26,8 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import platform
+import subprocess
 import sys
 from pathlib import Path
 
@@ -39,6 +39,11 @@ PYTHON_EXE = sys.executable
 HANDLER_MODULE = "plugin.server.market_protocol_handler"
 # Protocol-handler command.
 HANDLER_CMD = f'"{PYTHON_EXE}" -m {HANDLER_MODULE} "%1"'
+# macOS Launch Services registration tool.
+LSREGISTER = (
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+    "LaunchServices.framework/Support/lsregister"
+)
 
 
 def _desktop_exec_quote(value: str) -> str:
@@ -74,6 +79,34 @@ def _posix_shell_quote(value: str) -> str:
     """Quote a value for the small macOS shell launcher."""
 
     return "'" + str(value).replace("'", "'\"'\"'") + "'"
+
+
+def _run_required(args: list[str], what: str) -> bool:
+    """Run a registration command whose failure means registration failed."""
+    try:
+        result = subprocess.run(args, check=False)
+    except OSError as exc:
+        print(f"[FAIL] {what} could not be started ({args[0]}): {exc}")
+        return False
+    if result.returncode != 0:
+        print(f"[FAIL] {what} exited with status {result.returncode}: {args[0]}")
+        return False
+    return True
+
+
+def _run_optional(args: list[str]) -> None:
+    """Run a best-effort refresh command; missing tools and failures are ignored."""
+    try:
+        subprocess.run(
+            args,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        # The refresh is optional: a missing or broken tool only delays the
+        # desktop's cache update and must not fail the registration.
+        pass
 
 
 def register() -> bool:
@@ -227,9 +260,10 @@ exec {quoted_python_exe} -m {HANDLER_MODULE} "$@"
     handler_path.chmod(0o755)
 
     # Register the URL scheme.
-    os.system("/System/Library/Frameworks/CoreServices.framework/Frameworks/"
-              "LaunchServices.framework/Support/lsregister "
-              f"-R '{app_dir}'")
+    if not _run_required([LSREGISTER, "-R", str(app_dir)], "lsregister"):
+        print("[FAIL] neko:// protocol was not registered (macOS)")
+        print(f"     App bundle left at: {app_dir}")
+        return False
 
     print(f"[OK] Registered neko:// protocol (macOS)")
     print(f"     App: {app_dir}")
@@ -266,10 +300,17 @@ MimeType=x-scheme-handler/neko;
 """
     desktop_file.write_text(desktop_content)
 
+    # Update the desktop database first (optional refresh) so the cache sees
+    # the new .desktop file even if setting the default handler fails.
+    _run_optional(["update-desktop-database", str(desktop_dir)])
     # Register the MIME type.
-    os.system(f"xdg-mime default neko-protocol-handler.desktop x-scheme-handler/neko")
-    # Update the desktop database.
-    os.system(f"update-desktop-database {desktop_dir} 2>/dev/null || true")
+    if not _run_required(
+        ["xdg-mime", "default", desktop_file.name, "x-scheme-handler/neko"],
+        "xdg-mime",
+    ):
+        print("[FAIL] neko:// protocol was not registered (Linux)")
+        print(f"     Desktop file left at: {desktop_file}")
+        return False
 
     print(f"[OK] Registered neko:// protocol (Linux)")
     print(f"     Desktop file: {desktop_file}")
@@ -281,7 +322,7 @@ def _remove_linux() -> bool:
     desktop_file = Path.home() / ".local" / "share" / "applications" / "neko-protocol-handler.desktop"
     if desktop_file.exists():
         desktop_file.unlink()
-        os.system(f"update-desktop-database {desktop_file.parent} 2>/dev/null || true")
+        _run_optional(["update-desktop-database", str(desktop_file.parent)])
     print("[OK] Removed neko:// protocol (Linux)")
     return True
 

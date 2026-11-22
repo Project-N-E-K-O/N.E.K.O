@@ -7,8 +7,9 @@ import { readErrorCode } from '@/utils/request'
 export const ANALYZING_STATUSES = new Set(['queued', 'running', 'unavailable'])
 export const INCOMPLETE_STATUSES = new Set(['partial', 'failed'])
 
+/** Earlier names (`memory.read`) and permission ids (`plugin_sdk.main_agent.memory:read`) alike. */
 export function capabilityMessageKey(capability: string, field: 'title' | 'description') {
-  return `pluginConsent.capabilities.${capability.replace(/\./g, '_')}.${field}`
+  return `pluginConsent.capabilities.${capability.replace(/[.:]/g, '_')}.${field}`
 }
 
 export function consentSnapshot(consent: PluginConsent): ConsentSnapshot {

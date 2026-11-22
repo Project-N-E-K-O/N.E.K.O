@@ -31,7 +31,7 @@ description: 不会写代码也能做 N.E.K.O 插件：选一个 Coding Agent，
 
    ![第一次打开网页时填写模型 API](/images/plugins/onboarding/neko-api-setup.png)
 
-   1. 选择一个核心 API 服务商。
+   1. 选择一个语音模型供应商。
    2. 填入你的 API Key。
    3. 点「保存设置」。
 

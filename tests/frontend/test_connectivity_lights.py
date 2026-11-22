@@ -165,10 +165,12 @@ def test_provider_switch_key_reresolution(mock_page: Page, running_server: str):
     game_defaults = mock_page.evaluate("""() => ({
         gameMain: getDefaultProviderForModelType('gameMain'),
         gameSummary: getDefaultProviderForModelType('gameSummary'),
+        agentSmall: getDefaultProviderForModelType('agentSmall'),
     })""")
     assert game_defaults == {
         "gameMain": "follow_conversation",
         "gameSummary": "follow_summary",
+        "agentSmall": "follow_emotion",
     }
 
     game_fold_state = mock_page.evaluate("""() => {
@@ -294,7 +296,7 @@ def test_custom_api_test_button(mock_page: Page, running_server: str):
     summary_count = mock_page.evaluate("""() => {
         return document.querySelectorAll('.connectivity-summary-light').length;
     }""")
-    assert summary_count == 10, "Summary lights should cover all custom model slots"
+    assert summary_count == 11, "Summary lights should cover all custom model slots"
 
     tooltip_state = mock_page.evaluate("""() => {
         const summaryLight = document.querySelector('.connectivity-summary-light[data-model-type="conversation"]');
@@ -354,6 +356,7 @@ def test_custom_api_summary_lights_navigate_to_model_config(mock_page: Page, run
         "decision": "decision-model-content",
         "vision": "vision-model-content",
         "agent": "agent-model-content",
+        "agentSmall": "agent-small-model-content",
         "omni": "omni-model-content",
         "tts": "tts-model-content",
     }
@@ -479,6 +482,144 @@ def test_custom_api_deduplicates_same_custom_endpoint_and_model(mock_page: Page,
 
     assert len(matching_requests) == 1
     assert matching_requests[0]["provider_type"] == "openai_compatible"
+
+
+@pytest.mark.frontend
+def test_incomplete_small_familiar_custom_tests_the_recognition_connection(mock_page: Page, running_server: str):
+    """Custom small familiar without both URL and model is the whole recognition slot at runtime;
+    the connectivity check must test that same connection, not the half-filled inputs."""
+    _goto_and_wait(mock_page, running_server)
+    _wait_for_lights_settled(mock_page, timeout=15000)
+
+    state = mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        if (typeof toggleCustomApi === 'function') toggleCustomApi();
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            el.value = value;
+            el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+        };
+        set('emotionModelProvider', 'custom');
+        set('emotionModelUrl', 'https://emotion.test/v1');
+        set('emotionModelId', 'emotion-model');
+        set('emotionModelApiKey', 'sk-emotion-test');
+        set('agentSmallModelProvider', 'custom');
+        set('agentSmallModelUrl', 'https://emotion.test/v1');
+        set('agentSmallModelId', '');
+        set('agentSmallModelApiKey', '');
+        const pick = r => ({ url: r.url, key: r.key, model: r.model, providerType: r.providerType });
+        const emotion = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'emotion' }));
+        const incomplete = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'agentSmall' }));
+        set('agentSmallModelId', 'own-model');
+        const complete = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'agentSmall' }));
+        return { emotion, incomplete, complete };
+    }""")
+
+    assert state["incomplete"] == state["emotion"]
+    assert state["emotion"]["key"] == "sk-emotion-test"
+    assert state["complete"]["model"] == "own-model"
+    assert state["complete"]["url"] == "https://emotion.test/v1"
+    assert state["complete"]["key"] == ""
+
+
+@pytest.mark.frontend
+def test_follow_chain_keeps_the_source_cache_identity_under_mimo_token_plan(mock_page: Page, running_server: str):
+    """agentSmall=follow_emotion with emotion=follow_assist on MiMo Token Plan is one connection:
+    the follower must reuse the source cacheId, not re-derive it from its own dropdown value."""
+    _goto_and_wait(mock_page, running_server)
+    _wait_for_lights_settled(mock_page, timeout=15000)
+    mock_page.wait_for_selector('#assistApiSelect option[value="mimo"]', state='attached', timeout=30000)
+
+    state = mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        if (typeof toggleCustomApi === 'function') toggleCustomApi();
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            el.value = value;
+            el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+        };
+        set('assistApiSelect', 'mimo');
+        set('assistApiKeyInput', 'sk-mimo-test');
+        const toggle = document.getElementById('useMimoTokenPlan');
+        toggle.checked = true;
+        toggle.dispatchEvent(new Event('change', { bubbles: true }));
+        set('mimoTokenPlanKeyInput', 'tp-mimo-test');
+        set('emotionModelProvider', 'follow_assist');
+        set('agentSmallModelProvider', 'follow_emotion');
+        const resolve = mt => ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: mt });
+        return { emotion: resolve('emotion').cacheId, small: resolve('agentSmall').cacheId };
+    }""")
+
+    assert state["emotion"]
+    assert "mimo_token_plan" in state["emotion"]
+    assert state["small"] == state["emotion"]
+
+
+@pytest.mark.frontend
+def test_incomplete_small_familiar_custom_light_moves_with_the_recognition_slot(mock_page: Page, running_server: str):
+    """The incomplete custom small familiar tests the recognition connection, so editing the
+    recognition endpoint must move its light too, while its own drafted fields stay put."""
+    _goto_and_wait(mock_page, running_server)
+    _wait_for_lights_settled(mock_page, timeout=15000)
+
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        if (typeof toggleCustomApi === 'function') toggleCustomApi();
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            el.value = value;
+            el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+        };
+        set('emotionModelProvider', 'custom');
+        set('emotionModelUrl', 'https://emotion-old.test/v1');
+        set('emotionModelId', 'emotion-model');
+        set('emotionModelApiKey', 'sk-emotion-test');
+        set('agentSmallModelProvider', 'custom');
+        set('agentSmallModelUrl', 'https://draft.test/v1');
+        set('agentSmallModelId', '');
+    }""")
+    mock_page.wait_for_timeout(600)
+    mock_page.evaluate("""() => {
+        const el = document.getElementById('emotionModelUrl');
+        el.value = 'https://emotion-new.test/v1';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+    }""")
+    mock_page.wait_for_timeout(600)
+
+    state = mock_page.evaluate("""() => {
+        const cacheId = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'emotion' }).cacheId;
+        const summary = document.querySelector('.connectivity-summary-light[data-model-type="agentSmall"]');
+        return {
+            hasSummary: !!summary,
+            onNewKey: (ConnectivityManager.keyLightsMap[cacheId] || []).includes(summary),
+            draftUrl: document.getElementById('agentSmallModelUrl').value,
+            provider: document.getElementById('agentSmallModelProvider').value,
+        };
+    }""")
+
+    assert state["hasSummary"]
+    assert state["onNewKey"]
+    assert state["draftUrl"] == "https://draft.test/v1"
+    assert state["provider"] == "custom"
+
+    # Changing the recognition key moves it as well.
+    mock_page.evaluate("""() => {
+        const el = document.getElementById('emotionModelApiKey');
+        el.value = 'sk-emotion-new';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+    }""")
+    mock_page.wait_for_timeout(600)
+    assert mock_page.evaluate("""() => {
+        const cacheId = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'emotion' }).cacheId;
+        const summary = document.querySelector('.connectivity-summary-light[data-model-type="agentSmall"]');
+        return (ConnectivityManager.keyLightsMap[cacheId] || []).includes(summary);
+    }""")
 
 
 # ---------------------------------------------------------------------------

@@ -91,6 +91,11 @@ _CHARACTER_WRITE_ROUTES: tuple[tuple[str, frozenset[str]], ...] = (
     # Only PUT writes; GET reads sidecars and bypasses fencing.
     # Callers already treat 409 as retryable (cloud-save maintenance fences also return it).
     ("/prompt-locale/", frozenset({"PUT"})),
+    # Memory Browser character-scoped writers (cache files & safety snapshots).
+    ("/internal/memory/browser/imprint_note/", frozenset({"POST"})),
+    ("/internal/memory/browser/star_map/label_clusters/", frozenset({"POST"})),
+    ("/internal/memory/browser/snapshots/create/", frozenset({"POST"})),
+    ("/internal/memory/browser/snapshots/restore/", frozenset({"POST"})),
 )
 # Group-memory writes use /internal/memory/{lanlan_name}/<op>, ultimately writing the character's
 # FactStore / TimeIndexedMemory. Missing fences neither reject nor drain these requests during deletion,

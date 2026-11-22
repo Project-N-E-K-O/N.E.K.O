@@ -38,7 +38,7 @@ from utils.deployment import has_forwarding_metadata
 from utils.social_base import social_base_url, validate_http_url
 
 from plugin.server.application.plugins.capability_analysis_service import (
-    notify_install_committed,
+    notify_install_committed_async,
 )
 from plugin.server.application.plugin_cli import get_plugin_cli_service
 from plugin.logging_config import get_logger
@@ -4706,7 +4706,7 @@ async def _replace_market_plugin_transaction(
             validate_channel_specific=validate_channel_specific,
             on_rollback_start=on_rollback_start,
         )
-        notify_install_committed(result.install_result)
+        await notify_install_committed_async(result.install_result)
         return result
     except ReplacePluginError:
         if rollback_install_source is not None:

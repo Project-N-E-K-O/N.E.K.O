@@ -364,9 +364,10 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             omni: rect(cards[4]),
             tts: rect(cards[5]),
             agent: rect(cards[6]),
-            game: rect(cards[7]),
-            image: rect(cards[8]),
-            vision: rect(cards[9]),
+            agentSmall: rect(cards[7]),
+            game: rect(cards[8]),
+            image: rect(cards[9]),
+            vision: rect(cards[10]),
         };
     }""")
 
@@ -380,6 +381,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "omni-model-content",
         "tts-model-content",
         "agent-model-content",
+        "agent-small-model-content",
         "game-model-content",
         "image-model-content",
         "vision-model-content",
@@ -392,6 +394,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "api.realtimeModelConfig",
         "api.ttsModelConfig",
         "api.agentApiConfigTitle",
+        "api.agentSmallApiConfigTitle",
         "api.gameModelsConfig",
         "api.imageModelConfig",
         "api.visionModelConfig",
@@ -403,6 +406,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "emotion",
         "omni",
         "agent",
+        "agentSmall",
         "tts",
         "gameMain",
         "gameSummary",
@@ -415,10 +419,10 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "decision": "emotion",
         "omni": "tts",
         "tts": "omni",
-        "agent": "game",
-        "game": "agent",
-        "image": "vision",
-        "vision": "image",
+        "agent": "agent-small",
+        "agent-small": "agent",
+        "game": "image",
+        "image": "game",
     }
     assert desktop["conversation"]["top"] == desktop["summary"]["top"]
     assert desktop["conversation"]["left"] < desktop["summary"]["left"]
@@ -427,10 +431,12 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["emotion"]["left"] < desktop["decision"]["left"]
     assert abs(desktop["emotion"]["width"] - desktop["decision"]["width"]) <= 1
     assert desktop["omni"]["top"] == desktop["tts"]["top"]
-    assert desktop["agent"]["top"] == desktop["game"]["top"]
+    assert desktop["agent"]["top"] == desktop["agentSmall"]["top"]
+    assert desktop["agent"]["left"] < desktop["agentSmall"]["left"]
     assert desktop["agent"]["top"] > desktop["omni"]["top"]
-    assert desktop["image"]["top"] == desktop["vision"]["top"]
-    assert desktop["image"]["left"] < desktop["vision"]["left"]
+    assert desktop["game"]["top"] == desktop["image"]["top"]
+    assert desktop["game"]["left"] < desktop["image"]["left"]
+    assert desktop["vision"]["top"] > desktop["game"]["top"]
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(350)
@@ -1626,10 +1632,15 @@ def test_custom_tts_without_voice_explains_core_voice_fallback(mock_page: Page, 
     type_voice("")
     provider.select_option("custom", force=True, timeout=5000)
     expect(hint).to_have_css("display", "block")
-    expect(hint).to_have_text("Voice ID 未填写时，没有设置音色的角色将使用核心 API 自带的声音。")
+    expect(hint).to_have_text("Voice ID 未填写时，没有设置音色的角色将使用语音模型自带的声音。")
 
+    # Switching language rebuilds the provider dropdowns asynchronously (the option
+    # text itself is retranslated at once, so it is no signal). Wait until the old
+    # option node is replaced so the rebuild cannot race with the edits below.
+    old_custom_option = mock_page.locator("#ttsModelProvider option[value='custom']").element_handle()
     mock_page.evaluate("window.changeLanguage('en')")
-    expect(hint).to_contain_text("Core API's built-in voice")
+    expect(hint).to_contain_text("Voice Model's built-in voice")
+    mock_page.wait_for_function("(el) => !el.isConnected", arg=old_custom_option, timeout=10000)
 
     type_voice("af_heart")
     expect(hint).to_have_css("display", "none")

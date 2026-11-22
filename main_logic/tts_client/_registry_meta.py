@@ -171,7 +171,7 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         output_streaming=True,
         client_sentence_split=True,
         audio_format="PCM 24kHz → resample 48kHz",
-        notes="mimo-v2.5-tts；辅助 API 选择 MiMo 时使用",
+        notes="mimo-v2.5-tts；通用模型供应商选择 MiMo 时使用",
     ),
     "doubao_tts": TTSProviderMeta(
         name="doubao_tts",

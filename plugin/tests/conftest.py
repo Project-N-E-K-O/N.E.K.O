@@ -116,7 +116,7 @@ def _isolate_runtime_overrides(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture(autouse=True)
 def isolated_plugin_consent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Real consent and report stores, isolated in a temporary directory."""
+    """Real consent, permission and report stores, isolated in a temporary directory."""
     import json
     from plugin.server.infrastructure import plugin_consent
     from plugin.server.application.plugins import (
@@ -136,6 +136,16 @@ def isolated_plugin_consent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     store = plugin_consent.PluginConsentStore(Manager())
     monkeypatch.setattr(plugin_consent, "consent_store", store)
     monkeypatch.setattr(consent_service, "consent_store", store)
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import PluginPermissionStore
+
+    monkeypatch.setattr(
+        permission_service,
+        "permission_store",
+        PluginPermissionStore(
+            Manager(), source_resolver=permission_service.current_source
+        ),
+    )
     runner = capability_analysis_service.CapabilityAnalysisService(
         CapabilityReportStore(tmp_path / "reports")
     )

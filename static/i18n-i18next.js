@@ -38,8 +38,10 @@
     // 新增决策模型槽位（api.decisionModelConfig / api.decisionModelApiKeyPlaceholder）八语言文案，刷新客户端缓存。
     // Merge main's decision-model copy with the unified knowledge manager.
     // 新增百炼业务空间 ID（api.bailianWorkspaceId* / connectivity.error.invalid_workspace_id / connectivity.decisionFallback.*）八语言文案，刷新客户端缓存。
-    // Refresh both branches' caches after merging memory-tier copy and the unified knowledge manager.
-    const LOCALE_VERSION = '2026-11-22-knowledge-memory-tier-merge';
+    // 新增「使魔模型·小」（api.agentSmall* / api.customModelProviderFollowEmotion / api.customModelProviderFollowAgent）八语言文案，
+    // 并入记忆浏览器那批文案后的 key 结构，刷新客户端缓存。
+    // Merge the upstream locale additions with the unified knowledge manager without reusing either cache key.
+    const LOCALE_VERSION = '2026-11-22-knowledge-task-order-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
