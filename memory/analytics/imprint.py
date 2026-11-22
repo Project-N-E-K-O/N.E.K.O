@@ -36,6 +36,7 @@ from typing import Any
 
 from memory.evidence import evidence_score
 from memory.evidence_analytics import funnel_counts, to_naive_local
+from memory.introspection import is_permanently_suppressed
 from memory.user_directives import get_user_directives_manager
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
@@ -630,7 +631,7 @@ def build_memory_overview(
         if entity not in _CORE_ENTITIES:
             continue
         status = str(r.get("status") or "pending")
-        if status in ("archived", "merged", "denied"):
+        if status in ("archived", "merged", "denied") or is_permanently_suppressed(r):
             continue
         text = str(r.get("text") or "").strip()
         rid = str(r.get("id") or "")

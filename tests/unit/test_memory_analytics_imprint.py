@@ -1041,6 +1041,7 @@ async def test_round2_merges_snapshot_archives_directives_and_redaction(tmp_path
         patch("memory.persona.facts.assert_cloudsave_writable"),
         patch("memory.persona.corrections.assert_cloudsave_writable"),
         patch("memory.reflection.persistence.assert_cloudsave_writable"),
+        patch("memory.reflection.promotion_merge.assert_cloudsave_writable"),
         patch("memory.reflection.evidence_flow.assert_cloudsave_writable"),
         patch("memory.facts.get_config_manager", return_value=cm),
         patch("memory.facts.assert_cloudsave_writable"),
@@ -1826,7 +1827,8 @@ async def test_round13_lock_order_scoped_conflicts_keepsake_archives_provenance_
         assert "raw/facts_archive.json" in names
         assert "raw/reflection_archive/2026-05-01_11223344.json" in names
 
-    # 4. Manual correction keep_new replaces speaker provenance; merge conservatively clears/folds it
+    # 4. Manual correction keep_new replaces speaker provenance & event window;
+    #    merge conservatively folds speaker provenance & unions event windows
     _write_json(
         char_dir / "persona.json",
         {
@@ -1836,17 +1838,23 @@ async def test_round13_lock_order_scoped_conflicts_keepsake_archives_provenance_
                         "id": "p_sp1",
                         "text": "喜欢喝咖啡",
                         "source": "reflection",
-                        "speaker_id": "spk_high",
+                        "speaker_id": "discord:high",
                         "speaker_entity_id": "ent_high",
                         "speaker_trust": 0.9,
+                        "event_when_raw": "2026年1月",
+                        "event_start_at": "2026-01-01T00:00:00",
+                        "event_end_at": "2026-01-31T23:59:59",
                     },
                     {
                         "id": "p_sp2",
                         "text": "喜欢看电影",
                         "source": "reflection",
-                        "speaker_id": "spk_high",
+                        "speaker_id": "discord:high",
                         "speaker_entity_id": "ent_high",
                         "speaker_trust": 0.9,
+                        "event_when_raw": "2026年1月",
+                        "event_start_at": "2026-01-01T00:00:00",
+                        "event_end_at": "2026-01-31T23:59:59",
                     },
                 ]
             }
@@ -1860,18 +1868,24 @@ async def test_round13_lock_order_scoped_conflicts_keepsake_archives_provenance_
                 "entity": "master",
                 "old_text": "喜欢喝咖啡",
                 "new_text": "改喝抹茶拿铁",
-                "new_speaker_id": "spk_low",
+                "new_speaker_id": "discord:low",
                 "new_speaker_entity_id": "ent_low",
                 "new_speaker_trust": 0.2,
+                "new_event_when_raw": "2026年6月",
+                "new_event_start_at": "2026-06-01T00:00:00",
+                "new_event_end_at": "2026-06-30T23:59:59",
             },
             {
                 "correction_id": "cid_sp_merge",
                 "entity": "master",
                 "old_text": "喜欢看电影",
                 "new_text": "也喜欢看纪录片",
-                "new_speaker_id": "spk_other",
+                "new_speaker_id": "discord:other",
                 "new_speaker_entity_id": "ent_other",
                 "new_speaker_trust": 0.3,
+                "new_event_when_raw": "2026年6月",
+                "new_event_start_at": "2026-06-01T00:00:00",
+                "new_event_end_at": "2026-06-30T23:59:59",
             },
         ],
     )
@@ -1893,14 +1907,19 @@ async def test_round13_lock_order_scoped_conflicts_keepsake_archives_provenance_
         updated_facts = (await pm.aensure_persona(char_name))["master"]["facts"]
         p1 = next(e for e in updated_facts if e["id"] == "p_sp1")
         assert p1["text"] == "改喝抹茶拿铁"
-        assert p1.get("speaker_id") == "spk_low"
+        assert p1.get("speaker_id") == "discord:low"
         assert p1.get("speaker_entity_id") == "ent_low"
         assert p1.get("speaker_trust") == 0.2
+        assert p1.get("event_when_raw") == "2026年6月"
+        assert p1.get("event_start_at") == "2026-06-01T00:00:00"
+        assert p1.get("event_end_at") == "2026-06-30T23:59:59"
         p2 = next(e for e in updated_facts if e["id"] == "p_sp2")
         assert p2["text"] == "喜欢看电影和纪录片"
         assert "speaker_id" not in p2
         assert "speaker_entity_id" not in p2
         assert p2.get("speaker_provenance_mixed") is True
+        assert p2.get("event_start_at") == "2026-01-01T00:00:00"
+        assert p2.get("event_end_at") == "2026-06-30T23:59:59"
 
     # 5. FactDedupResolver._aapply_decisions skips stale verdict if live fact text changed since prompt
     _write_json(
@@ -1930,4 +1949,128 @@ async def test_round13_lock_order_scoped_conflicts_keepsake_archives_provenance_
         assert len(processed) == 1
         surviving_ids = {f["id"] for f in await fs.aload_facts(char_name)}
         assert surviving_ids == {"fd_cand", "fd_exist"}
+
+
+@pytest.mark.asyncio
+async def test_round14_promotion_merge_fence_and_retired_reflection_dedup_guard(tmp_path: Path):
+    """Regression tests for Round 14 review fixes:
+    1. _apromote_with_merge fences merge_into against concurrent manual persona edits.
+    2. Permanently suppressed reflections are excluded from overview duplicate suggestions
+       and rejected under lock by amerge_reflections.
+    """
+    cm = _FakeConfigManager(tmp_path)
+    cm.aget_character_data = AsyncMock(
+        return_value=("", "", "", "", {"human": "主人"}, {}, {}, {}, {}),
+    )
+    char_name = "防护猫"
+    char_dir = cm.memory_dir / char_name
+    char_dir.mkdir(parents=True, exist_ok=True)
+    now_iso = datetime.now().isoformat()
+
+    _write_json(
+        char_dir / "persona.json",
+        {
+            "master": {
+                "facts": [
+                    {
+                        "id": "p_prom",
+                        "text": "平时喜欢喝美式咖啡",
+                        "source": "reflection",
+                        "reinforcement": 4.0,
+                        "disputation": 0.0,
+                        "created_at": now_iso,
+                    }
+                ]
+            }
+        },
+    )
+    r_prom = {
+        "id": "r_prom",
+        "entity": "master",
+        "text": "最近每天早上喝手冲咖啡",
+        "status": "confirmed",
+        "reinforcement": 8.0,
+        "disputation": 0.0,
+        "created_at": now_iso,
+        "last_reinforced_at": now_iso,
+    }
+    _write_json(
+        char_dir / "reflections.json",
+        [
+            r_prom,
+            {
+                "id": "r_retired",
+                "entity": "master",
+                "text": "每天晚上十点准时去河边散步",
+                "status": "confirmed",
+                "permanent_suppression": {"reason": "hollow"},
+                "created_at": now_iso,
+            },
+            {
+                "id": "r_active",
+                "entity": "master",
+                "text": "每天晚上十点准时去河边散步",
+                "status": "confirmed",
+                "created_at": now_iso,
+            },
+        ],
+    )
+
+    # Overview must exclude retired reflections from near-duplicate merge suggestions
+    overview = build_memory_overview(char_name, memory_dir=cm.memory_dir)
+    near_dup_ids = {
+        eid
+        for pair in overview["memories"]["near_duplicates"]
+        for eid in (pair.get("a_id"), pair.get("b_id"))
+    }
+    assert "r_retired" not in near_dup_ids
+
+    with (
+        patch("memory.event_log.get_config_manager", return_value=cm),
+        patch("memory.persona.manager.get_config_manager", return_value=cm),
+        patch("memory.persona.persistence.assert_cloudsave_writable"),
+        patch("memory.persona.facts.assert_cloudsave_writable"),
+        patch("memory.reflection.manager.get_config_manager", return_value=cm),
+        patch("memory.reflection.persistence.assert_cloudsave_writable"),
+        patch("memory.reflection.promotion_merge.assert_cloudsave_writable"),
+        patch("memory.reflection.evidence_flow.assert_cloudsave_writable"),
+        patch("memory.facts.get_config_manager", return_value=cm),
+        patch("memory.facts.assert_cloudsave_writable"),
+    ):
+        ev_log = EventLog()
+        pm = PersonaManager(event_log=ev_log)
+        pm._config_manager = cm
+        fs = FactStore()
+        fs._config_manager = cm
+        re_eng = ReflectionEngine(fact_store=fs, persona_manager=pm, event_log=ev_log)
+        re_eng._config_manager = cm
+
+        # amerge_reflections must refuse retired keep_id/drop_id under lock
+        with pytest.raises(LookupError):
+            await re_eng.amerge_reflections(
+                char_name, "r_retired", "r_active", "每天晚上十点准时去河边散步",
+            )
+        live_refls = await re_eng._aload_reflections_full(char_name)
+        assert any(r.get("id") == "r_active" and r.get("status") == "confirmed" for r in live_refls)
+
+        # Concurrent manual edit during promotion LLM await must fence stale merge_into
+        async def _llm_merge_with_concurrent_edit(*_args, **_kwargs):
+            await pm.aedit_persona_entry(char_name, "master", "p_prom", "现在已经戒咖啡改喝白开水")
+            return {
+                "action": "merge_into",
+                "target_id": "persona.master.p_prom",
+                "merged_text": "平时喜欢喝美式和手冲咖啡",
+            }
+
+        with patch.object(re_eng, "_allm_call_promotion_merge", side_effect=_llm_merge_with_concurrent_edit):
+            outcome = await re_eng._apromote_with_merge(char_name, dict(r_prom))
+
+        assert outcome == "skip_retry_pending"
+        facts = (await pm.aensure_persona(char_name))["master"]["facts"]
+        p_after = next(e for e in facts if e["id"] == "p_prom")
+        assert p_after["text"] == "现在已经戒咖啡改喝白开水"
+        refls_after = await re_eng._aload_reflections_full(char_name)
+        r_after = next(r for r in refls_after if r["id"] == "r_prom")
+        assert r_after["status"] == "confirmed"
+
 

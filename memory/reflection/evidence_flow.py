@@ -515,6 +515,7 @@ class EvidenceFlowMixin:
         from memory._embeddings.schema import clear_embedding_fields
         from memory.archive_shards import aappend_to_shard, apick_today_shard_path
         from memory.event_log import EVT_REFLECTION_STATE_CHANGED
+        from memory.introspection import is_permanently_suppressed
 
         cleaned = str(merged_text or "").strip()
         if not cleaned or len(cleaned) > 1000:
@@ -532,9 +533,17 @@ class EvidenceFlowMixin:
             reflections_full = await self._aload_reflections_full(lanlan_name)
             keep_entry = self._find_reflection_in_list(reflections_full, keep_id)
             drop_entry = self._find_reflection_in_list(reflections_full, drop_id)
-            if keep_entry is None or str(keep_entry.get("status") or "pending") in _INELIGIBLE_STATUSES:
+            if (
+                keep_entry is None
+                or str(keep_entry.get("status") or "pending") in _INELIGIBLE_STATUSES
+                or is_permanently_suppressed(keep_entry)
+            ):
                 raise LookupError("keep_id not found")
-            if drop_entry is None or str(drop_entry.get("status") or "pending") in _INELIGIBLE_STATUSES:
+            if (
+                drop_entry is None
+                or str(drop_entry.get("status") or "pending") in _INELIGIBLE_STATUSES
+                or is_permanently_suppressed(drop_entry)
+            ):
                 raise LookupError("drop_id not found")
             if keep_entry.get("protected") or drop_entry.get("protected"):
                 raise PermissionError("Protected reflection cannot be merged")

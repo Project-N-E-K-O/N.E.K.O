@@ -1422,6 +1422,29 @@ class CorrectionsMixin:
                     if new_speaker_source.get("speaker_provenance_mixed") is True:
                         target_entry["speaker_provenance_mixed"] = True
 
+                _EVENT_WINDOW_KEYS = (
+                    "event_when_raw",
+                    "event_start_at",
+                    "event_end_at",
+                )
+                _QUEUED_EVENT_KEY_MAP = (
+                    ("new_event_when_raw", "event_when_raw"),
+                    ("new_event_start_at", "event_start_at"),
+                    ("new_event_end_at", "event_end_at"),
+                )
+
+                def _apply_event_window_on_replace(target_entry: dict, mode: str) -> None:
+                    if mode == "keep_new":
+                        for key in _EVENT_WINDOW_KEYS:
+                            target_entry.pop(key, None)
+                        for queued_key, entry_key in _QUEUED_EVENT_KEY_MAP:
+                            if queued_key in item:
+                                target_entry[entry_key] = deepcopy(item[queued_key])
+                        return
+                    merged_events = _merged_correction_event_fields(target_entry, item)
+                    if merged_events:
+                        target_entry.update(merged_events)
+
                 def _make_entry(text_val: str) -> dict:
                     raw = {
                         "id": f"manual_{uuid.uuid4().hex[:8]}",
@@ -1435,6 +1458,9 @@ class CorrectionsMixin:
                         raw.update(item_subject.as_entry_fields())
                     if new_speaker_source:
                         raw.update(new_speaker_source)
+                    for queued_key, entry_key in _QUEUED_EVENT_KEY_MAP:
+                        if queued_key in item:
+                            raw[entry_key] = deepcopy(item[queued_key])
                     return self._normalize_entry(raw)
 
                 already_applied = bool(
@@ -1485,6 +1511,7 @@ class CorrectionsMixin:
                                 existing["text"] = replacement_text
                                 existing["version_history"] = prior[-PERSONA_VERSION_HISTORY_MAX:]
                                 _apply_provenance_on_replace(existing, action)
+                                _apply_event_window_on_replace(existing, action)
                                 if item_cid:
                                     _record_applied_cid(existing, item_cid)
                                 self._invalidate_token_count_cache(existing)

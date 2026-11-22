@@ -635,6 +635,8 @@ class FactsMixin:
         source_reflection_id: str,
         merged_from_ids: list[str] | None = None,
         source_provenance: dict | None = None,
+        expected_target_text: str | None = None,
+        expected_target_version: tuple[int, str] | None = None,
     ) -> str:
         """Merge a reflection's content into an existing persona entry.
 
@@ -751,6 +753,28 @@ class FactsMixin:
                     f"target={canonical_entry_id} src={source_reflection_id}"
                 )
                 return 'noop'
+
+            if expected_target_text is not None:
+                if str(target_entry.get('text') or '') != expected_target_text:
+                    logger.info(
+                        f"[Persona] {name}: amerge_into stale target text "
+                        f"target={canonical_entry_id} src={source_reflection_id}"
+                    )
+                    return 'stale_target'
+            if expected_target_version is not None:
+                vh = target_entry.get('version_history')
+                cur_len = len(vh) if isinstance(vh, list) else 0
+                cur_ts = (
+                    str(vh[-1].get('replaced_at') or '')
+                    if isinstance(vh, list) and vh and isinstance(vh[-1], dict)
+                    else ''
+                )
+                if (cur_len, cur_ts) != expected_target_version:
+                    logger.info(
+                        f"[Persona] {name}: amerge_into stale target version "
+                        f"target={canonical_entry_id} src={source_reflection_id}"
+                    )
+                    return 'stale_target'
 
             merged_provenance = None
             if source_provenance is not None:
