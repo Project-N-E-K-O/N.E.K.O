@@ -32,7 +32,7 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary', 'decision'];
+const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary', 'decision'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
@@ -56,7 +56,23 @@ const MODEL_DEFAULT_PROVIDER = {
     omni: 'follow_core',
     gameMain: 'follow_conversation',
     gameSummary: 'follow_summary',
+    agentSmall: 'follow_agent',
 };
+// follow_<source> 下拉值 → 被跟随的槽位；照搬后端 get_core_config 的 follow_* 规则。
+const FOLLOW_SOURCE_BY_PROVIDER = Object.freeze({
+    follow_conversation: 'conversation',
+    follow_summary: 'summary',
+    follow_agent: 'agent',
+});
+// 被跟随的槽位 → 默认跟随它的槽位（源槽位改动时要同步刷新）。
+const MODEL_FOLLOWER_BY_SOURCE = Object.freeze({
+    conversation: 'gameMain',
+    summary: 'gameSummary',
+    agent: 'agentSmall',
+});
+function followedModelType(provider) {
+    return FOLLOW_SOURCE_BY_PROVIDER[provider] || '';
+}
 const MODEL_CONFIG_EXPANSION_PATHS = {
     conversation: ['conversation'],
     summary: ['summary'],
@@ -67,6 +83,7 @@ const MODEL_CONFIG_EXPANSION_PATHS = {
     decision: ['decision'],
     vision: ['vision'],
     agent: ['agent'],
+    agentSmall: ['agent-small'],
     omni: ['omni'],
     tts: ['tts'],
 };
@@ -80,6 +97,7 @@ const MODEL_PROVIDER_FIELD_BY_TYPE = {
     decision: 'decision_model',
     vision: 'vision_model',
     agent: 'agent_model',
+    agentSmall: 'agent_model',
     omni: 'core_model',
 };
 // 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
@@ -1479,13 +1497,10 @@ function getProviderModeSourceKey(modelType, providerMode, visited = new Set()) 
     const visitKey = `${modelType}:${providerMode}`;
     if (visited.has(visitKey)) return '';
     visited.add(visitKey);
-    if (providerMode === 'follow_conversation') {
-        const sourceSelect = document.getElementById('conversationModelProvider');
-        return getProviderModeSourceKey('conversation', sourceSelect ? sourceSelect.value : '', visited);
-    }
-    if (providerMode === 'follow_summary') {
-        const sourceSelect = document.getElementById('summaryModelProvider');
-        return getProviderModeSourceKey('summary', sourceSelect ? sourceSelect.value : '', visited);
+    const followedType = followedModelType(providerMode);
+    if (followedType) {
+        const sourceSelect = document.getElementById(`${followedType}ModelProvider`);
+        return getProviderModeSourceKey(followedType, sourceSelect ? sourceSelect.value : '', visited);
     }
     if (providerMode === 'follow_core') {
         const coreSelect = document.getElementById('coreApiSelect');
@@ -1553,6 +1568,13 @@ function populateModelProviderDropdowns() {
                 'follow_summary',
                 'api.customModelProviderFollowSummary',
                 '跟随摘要模型'
+            );
+        } else if (mt === 'agentSmall') {
+            appendModelProviderOption(
+                sel,
+                'follow_agent',
+                'api.customModelProviderFollowAgent',
+                '跟随使魔模型'
             );
         }
 
@@ -1706,8 +1728,8 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         removeKeyBookLink(input);
     };
 
-    if (provider === 'follow_conversation' || provider === 'follow_summary') {
-        const sourceType = provider === 'follow_conversation' ? 'conversation' : 'summary';
+    if (followedModelType(provider)) {
+        const sourceType = followedModelType(provider);
         const sourceUrl = document.getElementById(`${sourceType}ModelUrl`);
         const sourceModel = document.getElementById(`${sourceType}ModelId`);
         const sourceKey = document.getElementById(`${sourceType}ModelApiKey`);
@@ -2000,6 +2022,7 @@ const MODEL_TIER_BY_TYPE = {
     decision: 'decision',
     vision: 'vision',
     agent: 'agent',
+    agentSmall: 'agent',
 };
 const MODEL_PICKER_UNAVAILABLE_TEXT = {
     noProvider: ['api.modelPicker.unavailable.noProvider', '请先选择服务商'],
@@ -2071,7 +2094,7 @@ function getAssistProfileTierModelId(providerKey, tier) {
 }
 
 function getAssistDefaultTierModelId(providerKey, tier) {
-    // 后端 AGENT_MODEL 缺省时回退到 VISION_MODEL
+    // 后端 AGENT_MODEL 缺省时回退到 VISION_MODEL（使魔模型·小的档位默认值就是使魔模型）
     return getAssistProfileTierModelId(providerKey, tier)
         || (tier === 'agent' ? getAssistProfileTierModelId(providerKey, 'vision') : '');
 }
@@ -2147,8 +2170,8 @@ function resolveSlotModelState(modelType, visited = new Set()) {
     const provider = providerSel ? providerSel.value : '';
     const followsApi = provider === 'follow_core' || provider === 'follow_assist';
 
-    if (provider === 'follow_conversation' || provider === 'follow_summary') {
-        return mirrorSlotModelState(provider === 'follow_conversation' ? 'conversation' : 'summary', visited);
+    if (followedModelType(provider)) {
+        return mirrorSlotModelState(followedModelType(provider), visited);
     }
 
     if (modelType === 'omni') {
@@ -2645,9 +2668,9 @@ function initModelIdPickers() {
             const input = document.getElementById(`${modelType}${suffix}`);
             if (input) input.addEventListener('input', () => {
                 const affected = [modelType];
-                ['gameMain', 'gameSummary'].forEach(gameType => {
-                    const select = document.getElementById(`${gameType}ModelProvider`);
-                    if (select && select.value === `follow_${modelType}`) affected.push(gameType);
+                Object.values(MODEL_FOLLOWER_BY_SOURCE).forEach(followerType => {
+                    const select = document.getElementById(`${followerType}ModelProvider`);
+                    if (select && select.value === `follow_${modelType}`) affected.push(followerType);
                 });
                 scheduleModelIdHintsRefresh(affected);
             });
@@ -3030,6 +3053,9 @@ async function loadCurrentApiKey() {
             setInputValue('agentModelUrl', data.agentModelUrl);
             setInputValue('agentModelId', data.agentModelId);
             setSecretInputValue('agentModelApiKey', data.agentModelApiKey);
+            setInputValue('agentSmallModelUrl', data.agentSmallModelUrl);
+            setInputValue('agentSmallModelId', data.agentSmallModelId);
+            setSecretInputValue('agentSmallModelApiKey', data.agentSmallModelApiKey);
 
             setInputValue('omniModelUrl', data.omniModelUrl);
             setInputValue('omniModelId', data.omniModelId);
@@ -3833,6 +3859,9 @@ async function save_button_down(e) {
     const agentModelUrl = getVal('agentModelUrl');
     const agentModelId = getVal('agentModelId');
     const agentModelApiKey = getKeyVal('agentModelApiKey');
+    const agentSmallModelUrl = getVal('agentSmallModelUrl');
+    const agentSmallModelId = getVal('agentSmallModelId');
+    const agentSmallModelApiKey = getKeyVal('agentSmallModelApiKey');
 
     const omniModelUrl = getVal('omniModelUrl');
     const omniModelId = getVal('omniModelId');
@@ -3909,6 +3938,7 @@ async function save_button_down(e) {
         decisionModelUrl, decisionModelId, decisionModelApiKey,
         visionModelUrl, visionModelId, visionModelApiKey,
         agentModelUrl, agentModelId, agentModelApiKey,
+        agentSmallModelUrl, agentSmallModelId, agentSmallModelApiKey,
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
         mcpToken, enableCustomApi,
@@ -4015,6 +4045,9 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         if (providerMode === 'follow_summary') {
             return params.summaryModelUrl || resolveUrl('summary', params.summaryModelProvider, visited);
         }
+        if (providerMode === 'follow_agent') {
+            return params.agentModelUrl || resolveUrl('agent', params.agentModelProvider, visited);
+        }
 
         let providerKey = providerMode;
         let scope = 'assist';
@@ -4054,6 +4087,12 @@ function refreshAutoResolvedModelUrlsForSave(params) {
             return inherited !== undefined && inherited !== null
                 ? inherited
                 : resolveModel('summary', params.summaryModelProvider, visited);
+        }
+        if (providerMode === 'follow_agent') {
+            const inherited = snapshotModelId('agent');
+            return inherited !== undefined && inherited !== null
+                ? inherited
+                : resolveModel('agent', params.agentModelProvider, visited);
         }
 
         let providerKey = providerMode;
@@ -4477,10 +4516,12 @@ const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
     vision: 'conversation',
     summary: 'correction',
     correction: 'summary',
-    emotion: 'omni',
-    omni: 'emotion',
-    agent: 'tts',
-    tts: 'agent',
+    emotion: 'decision',
+    decision: 'emotion',
+    omni: 'tts',
+    tts: 'omni',
+    agent: 'agent-small',
+    'agent-small': 'agent',
     game: 'image',
     image: 'game',
 });
@@ -4606,7 +4647,7 @@ function navigateToCustomModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'correction', 'emotion', 'decision', 'vision', 'image', 'agent', 'omni', 'tts', 'gptsovits'];
+    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'correction', 'emotion', 'decision', 'vision', 'image', 'agent', 'agent-small', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
@@ -4720,6 +4761,7 @@ function getCustomModelDisplayLabel(modelType) {
         decision: ['api.decisionModelConfig', '决策模型'],
         vision: ['api.visionModelConfig', '视觉聊天模型'],
         agent: ['api.agentApiConfigTitle', 'Agent API（需支持视觉功能）'],
+        agentSmall: ['api.agentSmallApiConfigTitle', '使魔模型·小'],
         omni: ['api.realtimeModelConfig', '实时全模态模型（Local模式）'],
         tts: ['api.ttsModelConfig', 'TTS模型'],
     };
@@ -5039,8 +5081,8 @@ const ConnectivityManager = {
             const provider = providerSel.value;
             result.url = urlInput ? urlInput.value.trim() : '';
 
-            if (provider === 'follow_conversation' || provider === 'follow_summary') {
-                const sourceType = provider === 'follow_conversation' ? 'conversation' : 'summary';
+            if (followedModelType(provider)) {
+                const sourceType = followedModelType(provider);
                 const sourceResult = this.resolveEffectiveKey({ type: 'custom', modelType: sourceType });
                 Object.assign(result, sourceResult);
                 if (modelIdInput) {
@@ -6058,12 +6100,16 @@ function initConnectivityLights() {
     }
 
     function syncModelFollowers(sourceType) {
-        const followerType = sourceType === 'conversation' ? 'gameMain' : 'gameSummary';
+        const followerType = MODEL_FOLLOWER_BY_SOURCE[sourceType];
+        if (!followerType) return;
         const providerSel = document.getElementById(`${followerType}ModelProvider`);
-        const expectedProvider = sourceType === 'conversation' ? 'follow_conversation' : 'follow_summary';
-        if (!providerSel || providerSel.value !== expectedProvider) return;
+        if (!providerSel || providerSel.value !== `follow_${sourceType}`) return;
         onCustomModelProviderChange(followerType);
         reRegisterModelSlot(followerType);
+    }
+
+    function syncAllModelFollowers() {
+        Object.keys(MODEL_FOLLOWER_BY_SOURCE).forEach(syncModelFollowers);
     }
 
     function refreshFollowModelSlot(modelType) {
@@ -6141,8 +6187,7 @@ function initConnectivityLights() {
                     refreshFollowModelSlot(mt);
                 }
             });
-            syncModelFollowers('conversation');
-            syncModelFollowers('summary');
+            syncAllModelFollowers();
         }, 300);
 
         apiKeyInput.addEventListener('input', handleCoreKeyChange);
@@ -6168,8 +6213,7 @@ function initConnectivityLights() {
                     refreshFollowModelSlot(mt);
                 }
             });
-            syncModelFollowers('conversation');
-            syncModelFollowers('summary');
+            syncAllModelFollowers();
         }, 300);
 
         assistApiKeyInput.addEventListener('input', handleAssistKeyChange);
@@ -6197,7 +6241,7 @@ function initConnectivityLights() {
             if (oldKey && oldKey !== customCurrentKeys[mt]) {
                 cascadeResetForKey(oldKey);
             }
-            if (mt === 'conversation' || mt === 'summary') {
+            if (MODEL_FOLLOWER_BY_SOURCE[mt]) {
                 syncModelFollowers(mt);
             }
             // 新 key 不需要 cascadeReset — reRegister 已经从缓存正确恢复了状态
@@ -6215,7 +6259,7 @@ function initConnectivityLights() {
 
             const handleCustomEndpointChange = debounce(() => {
                 reRegisterModelSlot(mt);
-                if (mt === 'conversation' || mt === 'summary') {
+                if (MODEL_FOLLOWER_BY_SOURCE[mt]) {
                     syncModelFollowers(mt);
                 }
             }, 300);
@@ -6261,8 +6305,7 @@ function initConnectivityLights() {
                     refreshFollowModelSlot(mt);
                 }
             });
-            syncModelFollowers('conversation');
-            syncModelFollowers('summary');
+            syncAllModelFollowers();
         });
     }
 
@@ -6282,8 +6325,7 @@ function initConnectivityLights() {
                     refreshFollowModelSlot(mt);
                 }
             });
-            syncModelFollowers('conversation');
-            syncModelFollowers('summary');
+            syncAllModelFollowers();
         });
     }
 
@@ -6305,8 +6347,7 @@ function initConnectivityLights() {
                     refreshFollowModelSlot(mt);
                 }
             });
-            syncModelFollowers('conversation');
-            syncModelFollowers('summary');
+            syncAllModelFollowers();
         });
     }
 
@@ -6317,7 +6358,7 @@ function initConnectivityLights() {
 
         providerSel.addEventListener('change', () => {
             reRegisterModelSlot(mt);
-            if (mt === 'conversation' || mt === 'summary') {
+            if (MODEL_FOLLOWER_BY_SOURCE[mt]) {
                 syncModelFollowers(mt);
             }
         });

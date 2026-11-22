@@ -9,7 +9,7 @@ const SOURCE_PATH = path.join(PROJECT_ROOT, 'static', 'js', 'api_key_settings.js
 const source = fs.readFileSync(SOURCE_PATH, 'utf8');
 
 const MASKED = '__NEKO_SECRET_MASKED__';
-const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary'];
+const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary'];
 
 function sourceBetween(startMarker, endMarker) {
     const start = source.indexOf(startMarker);
@@ -207,6 +207,7 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
         'fetchModelList', 'getModelPickerErrorMessage', 'initModelIdPickers',
     ];
     vm.runInContext([
+        sourceBetween('const FOLLOW_SOURCE_BY_PROVIDER', 'const MODEL_CONFIG_EXPANSION_PATHS'),
         sourceBetween('function getProviderDefaultModelId(', 'function setModelIdFieldHidden('),
         sourceBetween('// ==================== 模型 ID 选择器 ====================', '// ==================== 加载API服务商选项 ===================='),
         ...exported.map(name => `globalThis.${name} = ${name};`),
@@ -226,6 +227,7 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
     MODEL_TYPES.forEach(modelType => select(`${modelType}ModelProvider`, 'follow_assist'));
     select('gameMainModelProvider', 'follow_conversation');
     select('gameSummaryModelProvider', 'follow_summary');
+    select('agentSmallModelProvider', 'follow_agent');
     select('omniModelProvider', 'follow_core');
     select('coreApiSelect', 'qwen');
     select('assistApiSelect', 'openrouter');
@@ -347,6 +349,17 @@ test('game slots mirror or follow the text slots and ignore their own input in f
 
     setSlot('gameSummary', 'follow_core');
     assert.equal(context.resolveSlotModelState('gameSummary').defaultModelId, 'qwen3.8-flash');
+});
+
+test('the small familiar slot mirrors the familiar slot by default and has its own tier otherwise', () => {
+    const { context, setSlot } = createPickerContext();
+    setSlot('agent', 'custom', 'my-agent-model');
+    assert.deepEqual(plain(context.resolveSlotModelState('agentSmall')), {
+        defaultModelId: 'my-agent-model', acceptsTypedModelId: false, fixedModelProvider: '',
+    });
+
+    setSlot('agentSmall', 'follow_assist', 'ignored');
+    assert.equal(context.resolveSlotModelState('agentSmall').defaultModelId, 'google/gemini-3.8-flash');
 });
 
 test('game slots keep the fixed-model marker of the text slot they mirror', () => {

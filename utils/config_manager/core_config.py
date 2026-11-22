@@ -154,6 +154,9 @@ class CoreConfigMixin:
         'decision': 'DECISION_MODEL',
         'vision': 'VISION_MODEL',
         'agent': 'AGENT_MODEL',
+        # The small familiar tier has no profile default of its own: a named
+        # provider's tier default is that provider's agent model.
+        'agentSmall': 'AGENT_MODEL',
     }
 
     @staticmethod
@@ -305,7 +308,7 @@ class CoreConfigMixin:
             # see _normalize_agent_url and the rewrite-loop exemption), so region selection has no effect on it.
             # Including it as needing region would start probing an unrewritten URL when neither core nor assist is free,
             # exposing IP pointlessly (invariant #2).
-            if key == 'AGENT_MODEL_URL':
+            if key in ('AGENT_MODEL_URL', 'AGENT_SMALL_MODEL_URL'):
                 continue
             try:
                 parsed = urlparse(value)
@@ -1047,6 +1050,7 @@ class CoreConfigMixin:
             'ASSIST_API_KEY_OPENROUTER': DEFAULT_CORE_API_KEY,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
+            'AGENT_SMALL_MODEL': DEFAULT_AGENT_MODEL,
             'REALTIME_MODEL': DEFAULT_REALTIME_MODEL,
             'TTS_MODEL': DEFAULT_TTS_MODEL,
             'CONVERSATION_MODEL_URL': DEFAULT_CONVERSATION_MODEL_URL,
@@ -1067,6 +1071,8 @@ class CoreConfigMixin:
             'VISION_MODEL_API_KEY': DEFAULT_VISION_MODEL_API_KEY,
             'AGENT_MODEL_URL': DEFAULT_AGENT_MODEL_URL,
             'AGENT_MODEL_API_KEY': DEFAULT_AGENT_MODEL_API_KEY,
+            'AGENT_SMALL_MODEL_URL': DEFAULT_AGENT_MODEL_URL,
+            'AGENT_SMALL_MODEL_API_KEY': DEFAULT_AGENT_MODEL_API_KEY,
             'REALTIME_MODEL_URL': DEFAULT_REALTIME_MODEL_URL,
             'REALTIME_MODEL_API_KEY': DEFAULT_REALTIME_MODEL_API_KEY,
             'TTS_MODEL_URL': DEFAULT_TTS_MODEL_URL,
@@ -1355,7 +1361,7 @@ class CoreConfigMixin:
         # configuration, avoiding expanding sensitive fields in general configuration snapshots.
         for _model_provider_prefix in (
             'conversation', 'summary', 'gameMain', 'gameSummary', 'correction',
-            'emotion', 'decision', 'vision', 'agent', 'omni', 'tts',
+            'emotion', 'decision', 'vision', 'agent', 'agentSmall', 'omni', 'tts',
         ):
             _raw_provider = str(
                 core_cfg.get(f'{_model_provider_prefix}ModelProvider', '') or ''
@@ -1417,6 +1423,8 @@ class CoreConfigMixin:
                     return config.get('CONVERSATION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
                 if provider == 'follow_summary':
                     return config.get('SUMMARY_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
+                if provider == 'follow_agent':
+                    return config.get('AGENT_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
                 if provider != 'follow_core':
                     return ''
 
@@ -1495,6 +1503,8 @@ class CoreConfigMixin:
                 ('decision',     'DECISION_MODEL',      'DECISION_MODEL_URL',     'DECISION_MODEL_API_KEY'),
                 ('vision',       'VISION_MODEL',        'VISION_MODEL_URL',       'VISION_MODEL_API_KEY'),
                 ('agent',        'AGENT_MODEL',         'AGENT_MODEL_URL',        'AGENT_MODEL_API_KEY'),
+                # After agent: follow_agent reads the agent values resolved just above.
+                ('agentSmall',   'AGENT_SMALL_MODEL',   'AGENT_SMALL_MODEL_URL',  'AGENT_SMALL_MODEL_API_KEY'),
                 ('omni',         'REALTIME_MODEL',      'REALTIME_MODEL_URL',     'REALTIME_MODEL_API_KEY'),
                 ('tts',          'TTS_MODEL',           'TTS_MODEL_URL',          'TTS_MODEL_API_KEY'),
             ]
@@ -1530,7 +1540,9 @@ class CoreConfigMixin:
                 # Note: under follow_*, omni/tts cannot rely on get_model_api_config fallback
                 # to read user-entered modelId (fallback uses CORE_MODEL, not REALTIME_MODEL/TTS_MODEL),
                 # so these special prefixes retain existing follow resolution.
-                is_follow = provider in ('follow_core', 'follow_assist', 'follow_conversation', 'follow_summary')
+                is_follow = provider in (
+                    'follow_core', 'follow_assist', 'follow_conversation', 'follow_summary', 'follow_agent',
+                )
                 # With GSV enabled, ttsModelUrl is the GPT-SoVITS server URL, not a follow_*-linked
                 # LLM URL. Even with default ttsModelProvider=follow_assist,
                 # preserve the GSV URL first, or conversation TTS would connect to assist LLM endpoints.
@@ -1564,6 +1576,8 @@ class CoreConfigMixin:
                     config[model_key] = config.get('CONVERSATION_MODEL', '')
                 elif provider == 'follow_summary':
                     config[model_key] = config.get('SUMMARY_MODEL', '')
+                elif provider == 'follow_agent':
+                    config[model_key] = config.get('AGENT_MODEL', '')
                 elif provider in ('follow_core', 'follow_assist'):
                     followed_provider = core_api_value if provider == 'follow_core' else assist_api_value
                     if (
@@ -1616,6 +1630,8 @@ class CoreConfigMixin:
                     config[apikey_key] = config.get('CONVERSATION_MODEL_API_KEY', '')
                 elif provider == 'follow_summary':
                     config[apikey_key] = config.get('SUMMARY_MODEL_API_KEY', '')
+                elif provider == 'follow_agent':
+                    config[apikey_key] = config.get('AGENT_MODEL_API_KEY', '')
                 else:
                     # Named-provider slots: the API ledger (ASSIST_API_KEY_*) is authoritative for keys,
                     # not slot fields. Selecting a provider copies ledger values into a readonly slot input,
@@ -1750,7 +1766,8 @@ class CoreConfigMixin:
                     # non_mainland=False rather than skipping the call entirely: livestream-prefix derivation
                     # precedes region rewriting in _adjust_free_api_url. Exempt region selection,
                     # not local forwarding.
-                    non_mainland=False if key == 'AGENT_MODEL_URL' else snapshot_non_mainland,
+                    # The small familiar URL follows the same pinned endpoint by default.
+                    non_mainland=False if key in ('AGENT_MODEL_URL', 'AGENT_SMALL_MODEL_URL') else snapshot_non_mainland,
                 )
 
         # Agent model always uses international API regardless of region
@@ -1784,6 +1801,8 @@ class CoreConfigMixin:
                 - 'correction': correction model (falls back to assist API)
                 - 'emotion': emotion analysis model (falls back to assist API)
                 - 'vision': vision model (falls back to assist API)
+                - 'agent': familiar (task agent) model; used even without custom API
+                - 'agent_small': small familiar model (follows 'agent' unless configured)
                 - 'realtime': realtime speech model (falls back to core API)
                 - 'tts_default': default TTS (falls back to core API, used by OmniOfflineClient)
                 - 'tts_custom': custom TTS (falls back to assist API, used for voice_id scenarios)
@@ -1898,6 +1917,13 @@ class CoreConfigMixin:
                 'default_model': 'AGENT_MODEL',
                 'fallback_type': 'assist',
             },
+            'agent_small': {
+                'custom_model': 'AGENT_SMALL_MODEL',
+                'custom_url': 'AGENT_SMALL_MODEL_URL',
+                'custom_key': 'AGENT_SMALL_MODEL_API_KEY',
+                'default_model': 'AGENT_SMALL_MODEL',
+                'fallback_type': 'agent',  # The small familiar model follows the familiar model by default.
+            },
             'realtime': {
                 'custom_model': 'REALTIME_MODEL',
                 'custom_url': 'REALTIME_MODEL_URL',
@@ -1958,6 +1984,7 @@ class CoreConfigMixin:
                 'decision': 'decision',
                 'vision': 'vision',
                 'agent': 'agent',
+                'agent_small': 'agentSmall',
                 'realtime': 'omni',
                 'tts_default': 'tts',
                 'tts_custom': 'tts',
@@ -1987,6 +2014,8 @@ class CoreConfigMixin:
                     return _resolved_provider_type_for_model('conversation', seen)
                 if fallback_type == 'summary':
                     return _resolved_provider_type_for_model('summary', seen)
+                if fallback_type == 'agent':
+                    return _resolved_provider_type_for_model('agent', seen)
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
 
             # Named-provider **protocols** likewise apply only when the slot URL truly belongs to that provider.
@@ -2022,6 +2051,8 @@ class CoreConfigMixin:
                     return _resolved_provider_type_for_model('conversation', seen)
                 if fallback_type == 'summary':
                     return _resolved_provider_type_for_model('summary', seen)
+                if fallback_type == 'agent':
+                    return _resolved_provider_type_for_model('agent', seen)
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
             return _provider_type_from_assist_key(provider)
 
@@ -2299,6 +2330,8 @@ class CoreConfigMixin:
             return self.get_model_api_config('conversation', _core_config=core_config)
         elif mapping['fallback_type'] == 'summary':
             return self.get_model_api_config('summary', _core_config=core_config)
+        elif mapping['fallback_type'] == 'agent':
+            return self.get_model_api_config('agent', _core_config=core_config)
         else:
             # Fall back to assist API configuration with matching protocol, as explained above.
             return _finalize_model_config({

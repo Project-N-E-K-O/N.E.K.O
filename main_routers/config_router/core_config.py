@@ -41,7 +41,7 @@ CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
 
 CORE_CONFIG_MODEL_TYPES = (
     'conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion',
-    'decision', 'vision', 'agent', 'omni', 'tts', 'image',
+    'decision', 'vision', 'agent', 'agentSmall', 'omni', 'tts', 'image',
 )
 
 CORE_CONFIG_ASSIST_API_KEY_FIELDS = (

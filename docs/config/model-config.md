@@ -11,6 +11,7 @@ N.E.K.O. resolves models by **role**, not through one global model string. The s
 | Emotion | `EMOTION_MODEL` |
 | Vision | `VISION_MODEL` |
 | Agent | `AGENT_MODEL` |
+| Agent (small) | `AGENT_SMALL_MODEL` |
 | Realtime | `REALTIME_MODEL` |
 | TTS | `TTS_MODEL` |
 

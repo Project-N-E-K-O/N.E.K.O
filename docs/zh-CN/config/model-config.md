@@ -11,6 +11,7 @@ N.E.K.O. 按**角色**解析模型，而不是只读一个全局模型名。选�
 | 情感 | `EMOTION_MODEL` |
 | 视觉 | `VISION_MODEL` |
 | Agent | `AGENT_MODEL` |
+| Agent (small) | `AGENT_SMALL_MODEL` |
 | 实时 | `REALTIME_MODEL` |
 | TTS | `TTS_MODEL` |
 

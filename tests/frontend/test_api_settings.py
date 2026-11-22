@@ -362,11 +362,13 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             summary: rect(cards[2]),
             correction: rect(cards[3]),
             emotion: rect(cards[4]),
-            omni: rect(cards[5]),
-            agent: rect(cards[6]),
+            decision: rect(cards[5]),
+            omni: rect(cards[6]),
             tts: rect(cards[7]),
-            game: rect(cards[8]),
-            image: rect(cards[9]),
+            agent: rect(cards[8]),
+            agentSmall: rect(cards[9]),
+            game: rect(cards[10]),
+            image: rect(cards[11]),
         };
     }""")
 
@@ -378,12 +380,13 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "summary-model-content",
         "correction-model-content",
         "emotion-model-content",
+        "decision-model-content",
         "omni-model-content",
-        "agent-model-content",
         "tts-model-content",
+        "agent-model-content",
+        "agent-small-model-content",
         "game-model-content",
         "image-model-content",
-        "decision-model-content",
     ]
     assert desktop["titleKeys"] == [
         "api.conversationModelConfig",
@@ -391,12 +394,13 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "api.summaryModelConfig",
         "api.correctionModelConfig",
         "api.emotionModelConfig",
+        "api.decisionModelConfig",
         "api.realtimeModelConfig",
-        "api.agentApiConfigTitle",
         "api.ttsModelConfig",
+        "api.agentApiConfigTitle",
+        "api.agentSmallApiConfigTitle",
         "api.gameModelsConfig",
         "api.imageModelConfig",
-        "api.decisionModelConfig",
     ]
     assert desktop["summaryTypes"] == [
         "conversation",
@@ -406,6 +410,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "emotion",
         "omni",
         "agent",
+        "agentSmall",
         "tts",
         "gameMain",
         "gameSummary",
@@ -416,10 +421,12 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "vision": "conversation",
         "summary": "correction",
         "correction": "summary",
-        "emotion": "omni",
-        "omni": "emotion",
-        "agent": "tts",
-        "tts": "agent",
+        "emotion": "decision",
+        "decision": "emotion",
+        "omni": "tts",
+        "tts": "omni",
+        "agent": "agent-small",
+        "agent-small": "agent",
         "game": "image",
         "image": "game",
     }
@@ -429,8 +436,10 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["summary"]["top"] == desktop["correction"]["top"]
     assert desktop["summary"]["left"] < desktop["correction"]["left"]
     assert abs(desktop["summary"]["width"] - desktop["correction"]["width"]) <= 1
-    assert desktop["emotion"]["top"] == desktop["omni"]["top"]
-    assert desktop["agent"]["top"] == desktop["tts"]["top"]
+    assert desktop["emotion"]["top"] == desktop["decision"]["top"]
+    assert desktop["omni"]["top"] == desktop["tts"]["top"]
+    assert desktop["agent"]["top"] == desktop["agentSmall"]["top"]
+    assert desktop["agent"]["left"] < desktop["agentSmall"]["left"]
     assert desktop["game"]["top"] > desktop["agent"]["top"]
     assert desktop["game"]["top"] == desktop["image"]["top"]
     assert desktop["game"]["left"] < desktop["image"]["left"]

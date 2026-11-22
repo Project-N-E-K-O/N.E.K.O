@@ -1971,6 +1971,30 @@ def test_agent_url_survives_the_overseas_rewrite_end_to_end(config_manager, monk
 
 
 @pytest.mark.unit
+def test_small_agent_url_follows_the_pinned_agent_entry_overseas(config_manager, monkeypatch):
+    """The small familiar URL copies the Agent URL under follow_agent and shares its exemption."""
+    import json as _json
+
+    path = config_manager.get_config_path('core_config.json')
+    with open(str(path), 'w', encoding='utf-8') as fh:
+        _json.dump({'coreApi': 'free', 'enableCustomApi': True, 'agentSmallModelProvider': 'follow_agent'}, fh)
+
+    monkeypatch.setattr(ConfigManager, '_region_cache', True)
+    monkeypatch.setattr(ConfigManager, '_ip_check_cache', True)
+
+    cfg = config_manager.get_core_config()
+    assert 'lanlan.tech' in (cfg.get('AGENT_SMALL_MODEL_URL') or '')
+    assert cfg.get('AGENT_SMALL_MODEL_URL') == cfg.get('AGENT_MODEL_URL')
+
+
+@pytest.mark.unit
+def test_small_agent_url_alone_never_triggers_the_probe():
+    assert ConfigManager._config_needs_region(
+        {'AGENT_SMALL_MODEL_URL': 'https://www.lanlan.tech/text/v1',
+         'CORE_URL': 'https://api.openai.com/v1'}) is False
+
+
+@pytest.mark.unit
 def test_kicked_probe_counts_as_in_flight_immediately(monkeypatch):
     """A kicked (deliberately awakened) attempt must be waitable before it is scheduled.
 

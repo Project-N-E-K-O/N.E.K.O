@@ -165,10 +165,12 @@ def test_provider_switch_key_reresolution(mock_page: Page, running_server: str):
     game_defaults = mock_page.evaluate("""() => ({
         gameMain: getDefaultProviderForModelType('gameMain'),
         gameSummary: getDefaultProviderForModelType('gameSummary'),
+        agentSmall: getDefaultProviderForModelType('agentSmall'),
     })""")
     assert game_defaults == {
         "gameMain": "follow_conversation",
         "gameSummary": "follow_summary",
+        "agentSmall": "follow_agent",
     }
 
     game_fold_state = mock_page.evaluate("""() => {
@@ -294,7 +296,7 @@ def test_custom_api_test_button(mock_page: Page, running_server: str):
     summary_count = mock_page.evaluate("""() => {
         return document.querySelectorAll('.connectivity-summary-light').length;
     }""")
-    assert summary_count == 11, "Summary lights should cover all custom model slots"
+    assert summary_count == 12, "Summary lights should cover all custom model slots"
 
     tooltip_state = mock_page.evaluate("""() => {
         const summaryLight = document.querySelector('.connectivity-summary-light[data-model-type="conversation"]');
@@ -355,6 +357,7 @@ def test_custom_api_summary_lights_navigate_to_model_config(mock_page: Page, run
         "decision": "decision-model-content",
         "vision": "vision-model-content",
         "agent": "agent-model-content",
+        "agentSmall": "agent-small-model-content",
         "omni": "omni-model-content",
         "tts": "tts-model-content",
     }
