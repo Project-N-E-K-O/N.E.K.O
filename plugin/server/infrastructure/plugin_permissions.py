@@ -488,6 +488,30 @@ class PluginPermissionStore:
             self._commit(manager, document)
             return copy.deepcopy(record)
 
+    def bind_unbound_source(self, plugin_id: str, source: PluginSource) -> bool:
+        """Bind a record that has no source yet to ``source`` and save it.
+
+        For a caller that has confirmed the plugin's source by other means
+        before changing it. A record that already has a source, or no record,
+        is left alone. Unlike :meth:`sync_source`, a failed save raises; that
+        includes a first-use import still held in memory that holds this
+        plugin's record, so the record is on disk before the source changes.
+        Returns whether the record was bound.
+        """
+        with self._lock:
+            self._load()
+            cached = self._document["plugins"].get(plugin_id)
+            if cached is None:
+                return False
+            if PluginSource.from_dict(cached.get("source")) is not None:
+                self._load_for_write()
+                return False
+            document = copy.deepcopy(self._document)
+            self._apply_source(document["plugins"][plugin_id], source)
+            manager = self._load_for_write()
+            self._commit(manager, document)
+            return True
+
     @staticmethod
     def _apply_source(record: dict, current: PluginSource | None) -> bool:
         if current is None:

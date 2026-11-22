@@ -64,6 +64,10 @@ from plugin.server.application.plugins.source_switch import (
     switch_builtin_source,
 )
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+from plugin.server.application.plugins.permission_service import (
+    bind_current_permission_source,
+    forget_installed_plugins,
+)
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
     ResolvedPluginSource,
@@ -585,6 +589,15 @@ class PluginCliService:
                 details=asdict(plan),
             )
 
+        # Before anything changes, on the paths that record a new source (a
+        # requested install source, a manual takeover): a grant record without
+        # a source yet is bound to the plugin's current source, so the new
+        # package's source is a source change rather than a first binding. A
+        # failed save stops the replacement here, unchanged. A replacement
+        # that records no source keeps the current one, so it needs no binding.
+        if install_source is not None or plan.reason == "manual_takeover":
+            await asyncio.to_thread(bind_current_permission_source, plan.plugin_id)
+
         # If the target directory contains only config/data/cache and no plugin.toml, install_plan
         # chooses reinstall — but by definition that replacement path does not register pending approval. Yet no plugin code was previously installed there:
         # this attempt places executable code for the **first time**, and default enabled/auto_start
@@ -786,12 +799,22 @@ class PluginCliService:
             "restarted": result.restarted,
             "rollback_status": result.rollback_status,
         }
-        if manual_manager is None:
-            response = await self._record_requested_install_source(
+        if manual_manager is None and install_source is not None:
+            warning = await self._requested_install_source_warning(
                 install_result=response,
                 package=package,
-                source=install_source,
             )
+            if warning is not None:
+                # The new package runs, but its source still reads as the
+                # previous package's, so the grants given to that package
+                # would carry over. Drop them; the plugin is asked again.
+                if not await asyncio.to_thread(
+                    forget_installed_plugins,
+                    response,
+                    plugin_ids=(plan.plugin_id,),
+                ):
+                    warning += "; permission grants of the previous package could not be cleared"
+                response = {**response, "install_source_warning": warning}
         if _analyze_after_commit:
             await notify_install_committed_async(response)
         return response
@@ -1135,7 +1158,22 @@ class PluginCliService:
     ) -> dict[str, object]:
         if source is None:
             return install_result
+        warning = await self._requested_install_source_warning(
+            install_result=install_result,
+            package=package,
+        )
+        if warning is None:
+            return install_result
+        return {**install_result, "install_source_warning": warning}
 
+    async def _requested_install_source_warning(
+        self,
+        *,
+        install_result: dict[str, object],
+        package: str,
+    ) -> str | None:
+        """Record ``package`` as the imported source; ``None`` on success,
+        otherwise the ``install_source_warning`` text. Never raises."""
         try:
             package_path = self._resolve_package_path(package)
             package_sha256 = await asyncio.to_thread(self._sha256_file, package_path)
@@ -1145,19 +1183,13 @@ class PluginCliService:
                 type(exc).__name__,
                 str(exc),
             )
-            return {
-                **install_result,
-                "install_source_warning": f"install_source_prepare_failed: {exc}",
-            }
-        warning = await self._record_install_source_best_effort(
+            return f"install_source_prepare_failed: {exc}"
+        return await self._record_install_source_best_effort(
             install_result=install_result,
             package_filename=package_path.name,
             package_sha256=package_sha256,
             override=None,
         )
-        if warning is None:
-            return install_result
-        return {**install_result, "install_source_warning": warning}
 
     async def _record_manual_takeover_source(
         self,

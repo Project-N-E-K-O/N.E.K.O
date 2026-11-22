@@ -109,6 +109,17 @@ def _local_day(value: float) -> date:
     return datetime.fromtimestamp(value).date()
 
 
+def _coerce_used_at(record: Mapping[str, Any]) -> float | None:
+    raw = record.get("used_at")
+    try:
+        value = float(0.0 if raw is None else raw)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    return value
+
+
 def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
     interest = _clean_text(material.get("interest"), token_limit=90)
     if not interest:
@@ -860,6 +871,33 @@ class TopicHookPool:
             name=f"topic_trigger_{name}",
         )
 
+    async def _check_trigger_usage_gates(
+        self,
+        name: str,
+        current_material: dict[str, Any],
+        lang: str,
+    ) -> bool:
+        if self._daily_quota_reached(name):
+            logger.debug("[%s] topic material trigger waiting: daily quota reached", name)
+            self._reschedule_trigger_retry(name, current_material, lang)
+            return False
+        if self._topic_was_recently_used(name, current_material):
+            current_material["status"] = "skipped"
+            self._materials[name] = []
+            await self._discard_delivered_signals_async(name, current_material)
+            logger.info("[%s] topic material trigger skipped: already used", name)
+            return False
+        trigger_gap_seconds = self._seconds_until_next_topic_trigger(name)
+        if trigger_gap_seconds > 0:
+            self._reschedule_trigger_after_delay(
+                name,
+                current_material,
+                lang,
+                trigger_gap_seconds,
+            )
+            return False
+        return True
+
     async def _run_trigger_when_available(
         self,
         name: str,
@@ -877,24 +915,7 @@ class TopicHookPool:
                 return
             if current_material.get("status") != "pending":
                 return
-            if self._daily_quota_reached(name):
-                logger.debug("[%s] topic material trigger waiting: daily quota reached", name)
-                self._reschedule_trigger_retry(name, current_material, lang)
-                return
-            if self._topic_was_recently_used(name, current_material):
-                current_material["status"] = "skipped"
-                self._materials[name] = []
-                await self._discard_delivered_signals_async(name, current_material)
-                logger.info("[%s] topic material trigger skipped: already used", name)
-                return
-            trigger_gap_seconds = self._seconds_until_next_topic_trigger(name)
-            if trigger_gap_seconds > 0:
-                self._reschedule_trigger_after_delay(
-                    name,
-                    current_material,
-                    lang,
-                    trigger_gap_seconds,
-                )
+            if not await self._check_trigger_usage_gates(name, current_material, lang):
                 return
             # "Search first, then chat": once the delivery bridge looks open,
             # prepare a deeper online lead off the user hot path. A later gate
@@ -904,6 +925,13 @@ class TopicHookPool:
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
             await self._deepen_material(name, current_material, lang)
+            current_after = self._materials.get(name) or []
+            if not current_after or current_after[0] is not current_material:
+                return
+            if current_material.get("status") != "pending":
+                return
+            if not await self._check_trigger_usage_gates(name, current_material, lang):
+                return
             if not self._delivery_available_now(name):
                 logger.debug("[%s] topic material trigger waiting: delivery gate closed after prepare", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
@@ -1037,8 +1065,18 @@ class TopicHookPool:
             records = []
             today_records = []
             for record in self._used_topics.get(name, []):
-                used_at = float(record.get("used_at") or 0.0)
-                used_day = _local_day(used_at)
+                used_at = _coerce_used_at(record)
+                if used_at is None:
+                    continue
+                try:
+                    used_day = _local_day(used_at)
+                except (OSError, OverflowError, ValueError):
+                    continue
+                if used_at > current_time:
+                    # Keep records within the retention horizon across clock rollbacks.
+                    if used_at - current_time < _USED_TOPIC_RECENT_SECONDS:
+                        records.append(record)
+                    continue
                 if used_day == current_day or current_time - used_at < _USED_TOPIC_RECENT_SECONDS:
                     records.append(record)
                 if used_day == current_day:
@@ -1055,11 +1093,15 @@ class TopicHookPool:
     def _recent_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
         current_time = float(now if now is not None else time.time())
         with self._used_topics_lock:
-            return [
-                record
-                for record in self._used_topics.get(name, [])
-                if current_time - float(record.get("used_at") or 0.0) < _USED_TOPIC_RECENT_SECONDS
-            ]
+            recent = []
+            for record in self._used_topics.get(name, []):
+                used_at = _coerce_used_at(record)
+                if used_at is None:
+                    continue
+                elapsed = current_time - used_at
+                if 0.0 <= elapsed < _USED_TOPIC_RECENT_SECONDS:
+                    recent.append(record)
+            return recent
 
     def _daily_quota_reached(self, name: str, *, now: float | None = None) -> bool:
         if self._daily_topic_limit <= 0:
@@ -1074,7 +1116,7 @@ class TopicHookPool:
         records = self._recent_used_topics(name, now=now)
         if not records:
             return 0.0
-        latest_used_at = max(float(record.get("used_at") or 0.0) for record in records)
+        latest_used_at = max(_coerce_used_at(record) or 0.0 for record in records)
         current_time = float(now if now is not None else time.time())
         elapsed = max(0.0, current_time - latest_used_at)
         return max(0.0, self._min_trigger_gap_seconds - elapsed)
@@ -1240,7 +1282,9 @@ class TopicHookPool:
                     continue
                 try:
                     used_at = float(entry.get("used_at"))
-                except (TypeError, ValueError):
+                except (OverflowError, TypeError, ValueError):
+                    continue
+                if not math.isfinite(used_at):
                     continue
                 loaded.append(
                     {

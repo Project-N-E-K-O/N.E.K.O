@@ -1471,11 +1471,11 @@ async def test_unregister_tool_router_isolates_per_role_failures():
 
     class _GoodMgr:
         lanlan_name = "Good"
-        async def unregister_tool_and_sync(self, name): return True
+        async def unregister_tool_and_sync(self, name, *, owner_check=None): return True
 
     class _BadMgr:
         lanlan_name = "Bad"
-        async def unregister_tool_and_sync(self, name):
+        async def unregister_tool_and_sync(self, name, *, owner_check=None):
             raise RuntimeError("fake sync failure")
 
     targets = [_GoodMgr(), _BadMgr()]

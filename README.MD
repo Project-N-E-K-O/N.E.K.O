@@ -144,7 +144,7 @@ Supporting machinery:
 - **Plugins**:
   - a plugin SDK with a `neko-plugin` CLI and a Vue plugin manager;
   - a plugin market and a knowledge-pack market;
-  - built-in plugins for web search, MCP, music, reminders, WeChat, Minecraft and more.
+  - built-in plugins for web search, MCP, music, reminders, Minecraft and more.
 - **Cloud**: a free hosted route covers realtime voice, text, vision, agent models and TTS, with no key required.
 
 </details>
