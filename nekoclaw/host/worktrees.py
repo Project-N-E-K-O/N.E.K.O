@@ -496,6 +496,20 @@ class WorktreeManager:
             result = await self._snapshot(worktree.path, "nekoclaw: worktree result", start)
             return await (landing or WorkingFiles()).land(self, worktree, result)
 
+    async def _touched_by_preparing(self, root: Path, commits: list[str | None]) -> list[str]:
+        """Return the paths that differ between any two neighbours of ``commits`` (None ones left out)."""
+        named = [commit for commit in commits if commit]
+        touched: set[str] = set()
+        for older, newer in zip(named, named[1:]):
+            if older == newer:
+                continue
+            listed = await self._git(
+                root, "diff-tree", "-r", "-z", "--name-only", "--no-renames", older, newer,
+                timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+            )
+            touched.update(_decode(name) for name in listed.stdout.split(b"\0") if name)
+        return sorted(touched)
+
     async def _unfinished(self, root: Path) -> str | None:
         """Return what git operation is half done in ``root`` (or that its index has unmerged entries), or None."""
         git_dir = (await self._git(root, "rev-parse", "--absolute-git-dir")).lines()[0]
@@ -582,7 +596,19 @@ class WorktreeManager:
                 (await self._git(worktree.path, "rev-parse", "--path-format=absolute", "--git-path", "index")).lines()[0]
             )
             saved = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="nekoclaw-index-"))
-            had_index = await asyncio.to_thread(_copy_index, index, saved / "index")
+            # The bytes of every file the checkouts may write: checking the
+            # result out again gives back its content, not its bytes (line
+            # endings an eol rule converts, for one).
+            try:
+                touched = await self._touched_by_preparing(
+                    worktree.path, [start, own_head, conflict.result, half_done]
+                )
+                (saved / "files").mkdir()
+                files_saved = await asyncio.to_thread(_back_up, worktree.path, touched, saved / "files")
+                had_index = await asyncio.to_thread(_copy_index, index, saved / "index")
+            except BaseException:
+                await _to_the_end(asyncio.to_thread(shutil.rmtree, saved, True))
+                raise
             keep_saved = False
             try:
                 # The host's own worktree, not the user's checkout.
@@ -607,6 +633,7 @@ class WorktreeManager:
                 # its start as it was, so the same conflict can be prepared
                 # again: one piece no further cancellation cuts.
                 async def put_back() -> None:
+                    nonlocal keep_saved
                     # Each step is tried whatever the one before did (a git
                     # that times out or cannot start included); what fails
                     # is said, and the index's copy is kept.
@@ -627,7 +654,16 @@ class WorktreeManager:
                             )
                     except Exception as failed:
                         error.add_note(f"the worktree could not be put back: {failed}")
-                    nonlocal keep_saved
+                    try:
+                        left = await asyncio.to_thread(_restore, worktree.path, files_saved)
+                    except Exception as failed:
+                        left = [f"({failed})"]
+                    if left:
+                        keep_saved = True
+                        error.add_note(
+                            f"files of the worktree could not be put back byte for byte: {', '.join(left)}; "
+                            f"what they were is kept in {saved / 'files'} (see manifest.json)"
+                        )
                     # Back on its branch (which preparing never moved), or at
                     # its commit when it was detached.
                     was = own_branch or own_head

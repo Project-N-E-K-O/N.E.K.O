@@ -3114,3 +3114,27 @@ async def test_removing_finishes_before_the_lock_is_let_go(
 
 def _same(left: Path, right: Path) -> bool:
     return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+
+
+async def test_a_failed_prepare_puts_files_back_byte_for_byte(
+    tmp_path: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    repo = make_repo(tmp_path / "eol", {".gitattributes": "*.txt text eol=crlf\n", "a.txt": "base\r\n", "b.txt": "b\r\n"})
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", b"worktree\nmixed\r\n")  # bytes the eol rule would not write
+    write(tree.path / "b.txt", b"changed\n")
+    write(repo / "a.txt", b"project\r\n")
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    original = manager._git
+
+    async def ref_locked(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("update-ref", f"{REF_PREFIX}w1/start") and args[2] == conflict.current:
+            raise worktrees.GitError(args, 128, b"cannot lock ref")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", ref_locked)
+    with pytest.raises(worktrees.GitError):
+        await manager.prepare_conflicts(tree, conflict)
+    assert read(tree.path / "a.txt") == b"worktree\nmixed\r\n"
+    assert read(tree.path / "b.txt") == b"changed\n"
