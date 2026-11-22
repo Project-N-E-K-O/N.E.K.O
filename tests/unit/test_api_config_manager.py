@@ -2556,8 +2556,8 @@ class TestGptsovitsEnabledSaveMigration:
             'coreApiKey': 'sk-core-qwen',
             'assistApi': 'qwen',
             'assistApiKeyQwen': 'sk-assist-qwen',
-            'summaryModelUrl': 'https://custom.invalid/v1',
-            'summaryModelId': 'custom-summary',
+            'memoryModelUrl': 'https://custom.invalid/v1',
+            'memoryModelId': 'custom-summary',
             'imageModelProvider': 'custom',
             'imageModelUrl': 'https://custom.invalid/v1',
             'imageModelId': 'custom-img',
@@ -2570,9 +2570,9 @@ class TestGptsovitsEnabledSaveMigration:
 
         cfg = config_manager.get_core_config()
         assert cfg['ENABLE_CUSTOM_API'] is False
-        assert cfg['SUMMARY_MODEL_URL'] != 'https://custom.invalid/v1'
+        assert cfg['MEMORY_MODEL_URL'] != 'https://custom.invalid/v1'
 
-        summary_cfg = config_manager.get_model_api_config('summary')
+        summary_cfg = config_manager.get_model_api_config('memory')
         assert summary_cfg['is_custom'] is False
         assert summary_cfg['model'] != 'custom-summary'
 
@@ -2580,12 +2580,12 @@ class TestGptsovitsEnabledSaveMigration:
         assert image_cfg['enabled'] is False
 
         direct_summary = config_manager.get_model_api_config(
-            'summary',
+            'memory',
             _core_config={
                 **cfg,
                 'ENABLE_CUSTOM_API': raw_flag,
-                'SUMMARY_MODEL': 'custom-summary',
-                'SUMMARY_MODEL_URL': 'https://custom.invalid/v1',
+                'MEMORY_MODEL': 'custom-summary',
+                'MEMORY_MODEL_URL': 'https://custom.invalid/v1',
             },
         )
         assert direct_summary['is_custom'] is False

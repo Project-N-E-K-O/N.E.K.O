@@ -1054,8 +1054,8 @@ what task agents file themselves is still kept, and idle projects are still
 archived."""
 
 TASK_AGENT_REVIEW_MODEL_SLOT = "memory"
-"""Which of the user's configured models writes reviews: ``summary`` (the
-cheap one) or ``emotion``."""
+"""Which of the user's configured models writes reviews: ``memory`` (the
+large memory-upkeep model) or ``recognition`` (the small one)."""
 
 SPACE_ARCHIVE_MODEL_SLOT = "memory"
 """Which of the user's configured models summarises a project that is
