@@ -79,8 +79,25 @@ _BUCKET_STAT_KEYS = (
 
 
 def _is_finite_stat_number(val) -> bool:
-    """Return True when ``val`` is an int or float (excluding bool) with a finite value."""
-    return isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val)
+    """Return True when ``val`` is an int or finite float (excluding bool)."""
+    if isinstance(val, bool):
+        return False
+    if isinstance(val, int):
+        return True
+    if isinstance(val, float):
+        return math.isfinite(val)
+    return False
+
+
+def _is_valid_batch_seq(value) -> bool:
+    """Return True when ``value`` is a non-empty UTF-8 encodable batch sequence."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _is_valid_day_stats(day_val) -> bool:
@@ -430,9 +447,10 @@ class ReportingMixin:
 
         raw_daily, raw_records = data.get("daily", {}), data.get("records", [])
         raw_next_daily, raw_next_records = data.get("next_daily", {}), data.get("next_records", [])
-        has_batch_seq = isinstance(data.get("batch_seq"), str) and bool(data["batch_seq"])
+        raw_batch_seq = data.get("batch_seq")
+        has_batch_seq = _is_valid_batch_seq(raw_batch_seq)
         has_next_window = "next_daily" in data or "next_records" in data
-        is_numbered_snapshot = has_batch_seq or has_next_window
+        is_numbered_snapshot = has_batch_seq or has_next_window or raw_batch_seq is not None
         primary_valid = self._is_valid_unsent_window(raw_daily, raw_records)
         next_valid = (
             self._is_valid_unsent_window(raw_next_daily, raw_next_records)
@@ -481,7 +499,7 @@ class ReportingMixin:
                     ensure_ascii=False,
                     allow_nan=False,
                 ).encode("utf-8")
-            except (TypeError, ValueError, AttributeError, UnicodeEncodeError) as exc:
+            except (TypeError, ValueError, AttributeError, UnicodeEncodeError, OverflowError) as exc:
                 logger.debug("Token tracker: ignoring malformed unsent queue totals: %s", exc)
                 merged_daily = copy.deepcopy(self._unsent_daily)
                 merged_records = list(self._unsent_records)

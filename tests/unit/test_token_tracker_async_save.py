@@ -1145,6 +1145,70 @@ def test_legacy_migration_rejects_lone_surrogate_and_syncs_dir_before_pruning_st
     assert "migrated_legacy_files" not in after_ok_sync
 
 
+def test_unsent_queue_handles_huge_int_without_overflow_and_isolates_surrogate_batch_seq(
+    tracker_factory, monkeypatch
+):
+    """Huge integer stats must not raise OverflowError and lone-surrogate batch_seq must not block next window."""
+    from datetime import date
+
+    today = date.today().isoformat()
+    huge_int = 10**400
+
+    # Part A: huge int in primary window + valid next window + live delta -> no OverflowError, both send cleanly.
+    seed = tracker_factory()
+    seed._unsent_queue_path.write_text(
+        json.dumps(
+            {
+                "batch_seq": "seq-huge",
+                "daily": {today: {"total_tokens": huge_int, "call_count": 1}},
+                "records": [{"ts": 1.0, "model": "model-huge"}],
+                "next_daily": {today: {"total_tokens": 12, "call_count": 1}},
+                "next_records": [{"ts": 2.0, "model": "model-next"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    tracker_huge = tracker_factory()
+    sent_huge = []
+    monkeypatch.setattr(tracker_huge, "_send_report", lambda *args: sent_huge.append(args))
+    tracker_huge.record("model-live", 3, 2, 5)
+    tracker_huge.save()
+
+    assert len(sent_huge) == 2
+    assert sent_huge[0][0][today]["total_tokens"] == huge_int
+    assert sent_huge[0][2] == "seq-huge" and sent_huge[0][3] is True
+    assert sent_huge[1][0][today]["total_tokens"] == 17
+    assert [r["model"] for r in sent_huge[1][1]] == ["model-next", "model-live"]
+    assert not tracker_huge._unsent_queue_path.exists()
+
+    # Part B: lone surrogate in batch_seq quarantines unencodable primary batch and recovers next window + live delta.
+    seed._unsent_queue_path.write_text(
+        json.dumps(
+            {
+                "batch_seq": "\ud800",
+                "daily": {today: {"total_tokens": 10, "call_count": 1}},
+                "records": [{"ts": 1.0, "model": "orphaned-surrogate-seq"}],
+                "next_daily": {today: {"total_tokens": 25, "call_count": 1}},
+                "next_records": [{"ts": 2.0, "model": "valid-next"}],
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    tracker_surr = tracker_factory()
+    sent_surr = []
+    monkeypatch.setattr(tracker_surr, "_send_report", lambda *args: sent_surr.append(args))
+    tracker_surr.record("model-live2", 4, 1, 5)
+    tracker_surr.save()
+
+    assert len(sent_surr) == 1
+    assert sent_surr[0][0][today]["total_tokens"] == 30
+    assert [r["model"] for r in sent_surr[0][1]] == ["valid-next", "model-live2"]
+    assert sent_surr[0][3] is False
+    assert not tracker_surr._unsent_queue_path.exists()
+
+
+
 
 
 
