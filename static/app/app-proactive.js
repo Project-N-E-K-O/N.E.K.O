@@ -2611,7 +2611,7 @@
         }
 
         // 外层在遮罩（异步）完成后还要再确认一次记忆窗口没换（#3474）。
-        if (captureScope) captureScope.rememberedCaptureStillCurrent = rememberedCaptureStillCurrent;
+        captureScope.rememberedCaptureStillCurrent = rememberedCaptureStillCurrent;
 
         function discardSupersededRememberedFrame(path) {
             if (rememberedCaptureStillCurrent()) return false;
