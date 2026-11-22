@@ -608,19 +608,32 @@ class WorktreeManager:
                     )
                     if not back.ok:
                         error.add_note(f"the worktree could not be put back: {_failure('checkout', back.stderr)}")
+                    # Each step is tried whatever the one before did; what
+                    # fails is said, and the index's copy is kept.
+                    nonlocal keep_saved
                     if own_head:
-                        await self._git(worktree.path, "update-ref", "--no-deref", "HEAD", own_head)
+                        try:
+                            head = await self._git(
+                                worktree.path, "update-ref", "--no-deref", "HEAD", own_head, check=False
+                            )
+                            if not head.ok:
+                                error.add_note(f"the worktree's HEAD could not be put back to {own_head}: "
+                                               f"{_failure('update-ref', head.stderr)}")
+                        except Exception as failed:
+                            error.add_note(f"the worktree's HEAD could not be put back to {own_head}: {failed}")
                     if had_index:
                         try:
                             await asyncio.to_thread(_put_index_back, saved / "index", index)
-                        except OSError as failed:
-                            nonlocal keep_saved
+                        except Exception as failed:
                             keep_saved = True
                             error.add_note(
                                 f"the worktree's index could not be put back ({failed}); "
                                 f"what it was is kept in {saved / 'index'}"
                             )
-                    await self._put_start_back(worktree, start, error)
+                    try:
+                        await self._put_start_back(worktree, start, error)
+                    except Exception as failed:
+                        error.add_note(f"the start of worktree {worktree.id} could not be set back to {start}: {failed}")
 
                 putting = asyncio.ensure_future(put_back())
                 cancelled = await _settle(putting)
@@ -1007,12 +1020,11 @@ class WorktreeManager:
         base = await self._start(worktree)
         # The user's files may hold conflict markers of their own then: no
         # landing on top of them.
-        git_dir = (await self._git(root, "rev-parse", "--absolute-git-dir")).lines()[0]
-        operation = await asyncio.to_thread(_operation_in_progress, Path(git_dir))
-        if operation:
+        unfinished = await self._unfinished(root)  # an operation, or a stash pop's unmerged entries
+        if unfinished:
             return MergeResult(
                 "failed",
-                detail=f"a {operation} is in progress in the project; land when it is done",
+                detail=f"{unfinished} in the project; land when that is done",
                 skipped=result.skipped,
                 result=result.commit,
                 result_tree=result.tree,

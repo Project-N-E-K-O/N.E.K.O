@@ -2901,3 +2901,49 @@ async def test_removing_finishes_before_putting_back(
     assert finished  # done before putting back began
     assert read(tree.path / "note.txt") == b"landed from the worktree\n"  # put back, not removed after
     assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == conflict.base
+
+
+async def test_a_head_that_cannot_be_put_back_does_not_stop_the_rest(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "staged\n")
+    git(tree.path, "add", "a.txt")
+    write(tree.path / "a.txt", "working\n")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    original = manager._git
+
+    async def locked(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("update-ref", f"{REF_PREFIX}w1/start") and args[2] == conflict.current:
+            raise worktrees.GitError(args, 128, b"cannot lock ref")
+        if args[:3] == ("update-ref", "--no-deref", "HEAD"):
+            if kwargs.get("check", True):
+                raise worktrees.GitError(args, 128, b"HEAD.lock exists")
+            return worktrees._Run(128, b"", b"HEAD.lock exists")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", locked)
+    with pytest.raises(worktrees.GitError) as raised:
+        await manager.prepare_conflicts(tree, conflict)
+    monkeypatch.setattr(manager, "_git", original)
+    notes = " ".join(getattr(raised.value, "__notes__", []))
+    assert "HEAD could not be put back" in notes
+    assert git(tree.path, "show", ":a.txt") == "staged\n"  # the index went back all the same
+    assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == conflict.base  # and the start
+
+
+async def test_no_landing_while_the_project_has_unmerged_entries(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "b.txt", "worktree\n")
+    ours = git(repo, "hash-object", "-w", "--stdin", input=b"ours\n").strip()
+    theirs = git(repo, "hash-object", "-w", "--stdin", input=b"theirs\n").strip()
+    entries = f"0 {'0' * 40}\ta.txt\n100644 {ours} 2\ta.txt\n100644 {theirs} 3\ta.txt\n"
+    git(repo, "update-index", "--index-info", input=entries.encode())  # as a stash pop leaves it
+    write(repo / "a.txt", "<<<<<<< Updated upstream\nours\n=======\ntheirs\n>>>>>>> Stashed changes\n")
+    before = digest(repo)
+    result = await manager.merge_back(tree)
+    assert result.status == "failed" and "in the project" in result.detail
+    assert digest(repo) == before
