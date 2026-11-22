@@ -6,9 +6,9 @@ seoSchemaType: WebPage
 
 # N.E.K.O. は会話やメモリをどこへ送信しますか？
 
-N.E.K.O. はキャラクターメモリを既定でローカルに保存します。ただし、モデル Provider、memory processing task、無料 API 経路、cloud speech、Steam Cloud、Workshop、online feed、Browser 機能、remote Agent channel を使うと、関連する内容がデバイス外へ送られる場合があります。
+N.E.K.O. はキャラクターメモリを既定でローカルに保存します。ただし、モデル Provider、memory processing task、無料 API 経路、cloud speech、オプションのクロスデバイス会話・メモリ同期、Steam Cloud、Workshop、online feed、Browser 機能、remote Agent channel を使うと、関連する内容がデバイス外へ送られる場合があります。
 
-最終事実確認日：**2026-07-23**。
+最終事実確認日：**2026-11-22**。
 
 ::: warning 技術データフローに関する注意
 このページは、現在の実装と公式配布時の説明を技術的に整理したものです。特定地域向けの Privacy Policy、Provider agreement、法的レビューの代わりにはなりません。
@@ -24,6 +24,7 @@ N.E.K.O. はキャラクターメモリを既定でローカルに保存しま�
 ├── 無料 API の転送経路
 ├── オプションの Telemetry
 ├── オプションの proactive screen context
+├── オプションのクロスデバイス会話・メモリ同期
 ├── ユーザーが実行する Steam Cloud / Workshop 操作
 └── オンラインコンテンツ、Browser、音声、Agent サービス
 ```
@@ -39,6 +40,7 @@ N.E.K.O. はキャラクターメモリを既定でローカルに保存しま�
 | 同梱の無料 API 経路 | 無料 request に必要な入力 | N.E.K.O. の転送サービスとサービスパートナー | 現在の Steam EULA は自分の有料 API を使う経路と区別している |
 | Telemetry | 下記の利用・運用 metadata | N.E.K.O. telemetry service | 環境変数で無効化できる |
 | Proactive vision | 有効な機能に必要な screen stream / screenshot | ローカル pipeline と設定した vision / model 経路 | Privacy mode は proactive viewing を止める。手動 screenshot は別経路 |
+| クロスデバイス会話・メモリ同期 | キャラクターごとに有効化した会話原文、最近のメモリ、学習済みメモリスナップショット（`facts`、`persona`、`reflections`）、承認済みキャラクタープロフィールやモデル紐付け | N.E.K.O. 同期サービス（`sync.nekotech.cn`、`community.project-neko.cn` のコミュニティ OAuth ログインで認証） | 既定では無効。キャラクターカードで同期を有効化して保存すると既存の最近のメモリ履歴も含まれます（デスクトップ UI は `includeHistory: true` を送信し、履歴用の別トグルはありません）。`includeHistory` が既定で `false` になるのはフィールドを省略した直接の REST 呼び出し時のみ。Steam Cloud とは別経路 |
 | Steam Cloud | Allowlist 内のキャラクター設定・memory file | Steam Auto Cloud | Snapshot は memory directory 全体の backup ではない |
 | Workshop 公開 | ユーザーが選択した card、対応 model file、preview、任意の reference voice | Steam Workshop | 公開判断と asset license はユーザーが管理する |
 | DEBUG 診断 | 一部 debug 経路の query / tool argument | ユーザーが共有しない限りローカル log | すべての log が content-free とは限らない |
@@ -99,6 +101,10 @@ Cloud Save は Steam Auto Cloud を通じて一つのキャラクターユニッ
 
 Download はローカルの同名キャラクターデータを置き換える可能性があるため、確認、active session の処理、ローカル operation backup を使います。完全な backup / migration と呼ぶ前に [Cloud Save API](/ja/api/rest/cloudsave)を確認してください。
 
+## クロスデバイス会話・メモリ同期はキャラクターごとのオプトイン
+
+Steam Auto Cloud とは別に、N.E.K.O. にはオプションのクロスデバイス会話・メモリ同期経路（`services/chat_sync/`、ローカル API プレフィックス `/api/chat-sync`）があります。既定では無効であり、選択が保存されていないキャラクターはオフのままで、利用にはコミュニティ OAuth ログイン（`community.project-neko.cn`）が必要です。キャラクターカードで同期スイッチをオンにして保存すると、デスクトップ UI は無条件で `includeHistory: true` を送信し、履歴用の別トグルは存在しないため、そのキャラクターの既存の最近のメモリ履歴も含めて同期対象になります（`includeHistory` の既定値 `false` は、このフィールドを省略して REST API を直接呼び出した場合にのみ適用されます）。有効化したキャラクターでは、会話原文、最近のメモリ、学習済みメモリスナップショット（`facts`、`persona`、`reflections`）、承認済みキャラクタープロフィールやモデル紐付けが N.E.K.O. 同期サービス（`sync.nekotech.cn`）へ転送されます。
+
 ## 現在利用できる制御
 
 | 制御 | 実行できること | 証明できないこと |
@@ -107,6 +113,7 @@ Download はローカルの同名キャラクターデータを置き換える�
 | Telemetry を無効化 | プロジェクト自身の Telemetry 経路を止める | 第三者 Provider への request がゼロであること |
 | Privacy mode を有効化 | Proactive screen viewing を止める | Manual screenshot が要求されないこと |
 | Agent channel を無効化 | その channel からの dispatch を止める | Chat / memory Provider がローカルであること |
+| 会話同期をオフに保つ / 停止する | そのキャラクターの自動クロスデバイス会話・メモリ同期を止める | 以前にアップロードされたリモートスナップショットや他デバイスのコピーが削除されること |
 | Cloud / Workshop を使わない | その任意転送経路を避ける | Model API がオフラインであること |
 | 現在のキャラクターを削除 | 現在の runtime character memory path を削除する | すべての historical legacy directory や Provider 側の copy が削除されること |
 
