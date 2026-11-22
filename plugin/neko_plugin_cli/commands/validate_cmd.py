@@ -1541,33 +1541,54 @@ def _check_symlink_tree(
     # the checkout before dependency sync, so vendor/ (which pip may populate
     # with link wrappers) and .git/ are out of scope here too, and so is
     # anything git ignores (e.g. node_modules/): a checkout never holds it.
+    # Those links are still counted into one warning, because a local
+    # ``neko-plugin build`` packages ignored paths and copies a link's target.
     # Symlinks and Windows junctions follow the same rule.
-    skipped = {plugin_dir / path.rstrip("/") for path in ignored_paths}
+    ignored = {plugin_dir / path.rstrip("/") for path in ignored_paths}
     links: list[Path] = []
+    ignored_links: list[Path] = []
     try:
         for root, directories, files in os.walk(plugin_dir, onerror=reraise_walk_error, followlinks=False):
             base = Path(root)
             if base == plugin_dir:
                 directories[:] = [name for name in directories if name not in {"vendor", ".git"}]
                 files = [name for name in files if name not in {"vendor", ".git"}]
-            if skipped:
-                directories[:] = [name for name in directories if base / name not in skipped]
-                files = [name for name in files if base / name not in skipped]
+            base_ignored = base in ignored
+            if base_ignored:
+                # Everything below an ignored directory is ignored too.
+                ignored.update(base / name for name in directories)
             # _is_link also catches a Windows junction, which is_symlink()
             # misses on Python 3.11 (and which os.walk would descend into).
             # Junctions are always directories, so files need only is_symlink().
             linked = {name for name in directories if _is_link(base / name)}
             linked.update(name for name in files if (base / name).is_symlink())
-            links.extend(base / name for name in (*directories, *files) if name in linked)
+            for name in (*directories, *files):
+                if name in linked:
+                    path = base / name
+                    (ignored_links if base_ignored or path in ignored else links).append(path)
             directories[:] = [name for name in directories if name not in linked]
     except OSError as exc:
         # Still report the links found before the failure.
         issues.append(("warning", f"plugin source tree could not be scanned for links: {exc}"))
-    if not links:
-        return
-    shown = ", ".join(str(path.relative_to(plugin_dir)) for path in links[:5])
-    suffix = f" (+{len(links) - 5} more)" if len(links) > 5 else ""
-    issues.append(("error", f"plugin source must not contain symbolic links: {shown}{suffix}"))
+    if ignored_links:
+        issues.append(
+            (
+                "warning",
+                f"{len(ignored_links)} symbolic link(s) in gitignored paths "
+                f"({_shown_paths(plugin_dir, ignored_links)}): Market CI will not see them, "
+                "but a local neko-plugin build would copy their targets",
+            )
+        )
+    if links:
+        issues.append(
+            ("error", f"plugin source must not contain symbolic links: {_shown_paths(plugin_dir, links)}")
+        )
+
+
+def _shown_paths(plugin_dir: Path, paths: list[Path]) -> str:
+    shown = ", ".join(str(path.relative_to(plugin_dir)) for path in paths[:5])
+    suffix = f" (+{len(paths) - 5} more)" if len(paths) > 5 else ""
+    return f"{shown}{suffix}"
 
 
 # --- Advisory checks -------------------------------------------------------

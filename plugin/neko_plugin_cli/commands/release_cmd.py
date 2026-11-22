@@ -73,6 +73,9 @@ def handle_check(args: argparse.Namespace) -> int:
         defaults = args._defaults.with_plugins_root(getattr(args, "plugins_root", None))
         plugin_dir = resolve_plugin_dir_candidate(args.plugin, defaults=defaults)
         source = load_plugin_source(plugin_dir)
+        # Plain check only: the release build packages the working tree,
+        # ignored paths included, and copy2 follows a link into it.
+        ignored_paths = _link_scan_ignored_paths(plugin_dir, defaults)
         issues = validate_plugin_dir(
             plugin_dir,
             strict=args.strict,
@@ -80,10 +83,12 @@ def handle_check(args: argparse.Namespace) -> int:
                 plugin_dir,
                 defaults,
             ),
-            # Plain check only: the release build packages the working tree,
-            # ignored paths included, and copy2 follows a link into it.
-            ignored_paths=_link_scan_ignored_paths(plugin_dir, defaults),
+            ignored_paths=ignored_paths or (),
         )
+        if ignored_paths is None:
+            issues.append(
+                ("warning", "could not read gitignored paths from git, so links inside them are reported as errors")
+            )
         issues.extend(_diagnose_repository(plugin_dir, defaults=defaults))
         issues.extend(_diagnose_agent_kit(plugin_dir))
         # Advisory only: printed, never counted toward the exit code. Release
@@ -221,15 +226,16 @@ def _repository_root(plugin_dir: Path, defaults: CliDefaults) -> Path | None:
     return None if root == defaults.repo_root.resolve() else root
 
 
-def _link_scan_ignored_paths(plugin_dir: Path, defaults: CliDefaults) -> list[str]:
+def _link_scan_ignored_paths(plugin_dir: Path, defaults: CliDefaults) -> list[str] | None:
     """What git ignores in the plugin's own repository, for plain check's link scan.
 
-    Nothing without such a repository (including the built-in root, where
-    Market CI mounts a fresh checkout) or when git fails: scan everything.
+    Empty without such a repository (including the built-in root, where
+    Market CI mounts a fresh checkout); None when git cannot list them. In
+    both cases everything is scanned.
     """
     if _repository_root(plugin_dir, defaults) is None:
         return []
-    return ignored_untracked_paths(plugin_dir) or []
+    return ignored_untracked_paths(plugin_dir)
 
 
 def _diagnose_repository(plugin_dir: Path, *, defaults: CliDefaults, release: bool = False) -> list[Issue]:

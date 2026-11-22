@@ -3442,9 +3442,9 @@ def _isolate_git_from_the_calling_repository(monkeypatch: pytest.MonkeyPatch) ->
     pytest runs from a git hook) would point them at another repository.
     Tests that need these variables set them explicitly.
     """
-    from plugin.neko_plugin_cli.repo_state import _REPOSITORY_ENV_VARS
+    from plugin.neko_plugin_cli.git_env import REPOSITORY_ENV_VARS
 
-    for name in _REPOSITORY_ENV_VARS:
+    for name in REPOSITORY_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -3497,10 +3497,15 @@ def test_link_scan_skips_paths_git_ignores(
     plugin_dir = _plugin_with_ignored_links(tmp_path, monkeypatch, junction=junction)
 
     assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 1
-    err = capsys.readouterr().err
-    # A checkout never holds node_modules/, so only the other link is reported.
-    assert f"plugin source must not contain symbolic links: {Path('assets/pkg')}\n" in err
-    assert "node_modules" not in err
+    captured = capsys.readouterr()
+    # A checkout never holds node_modules/, so only the other link is an error.
+    assert f"plugin source must not contain symbolic links: {Path('assets/pkg')}\n" in captured.err
+    assert "node_modules" not in captured.err
+    # Not hidden either: a local build would still package it.
+    assert (
+        f"[WARNING] 1 symbolic link(s) in gitignored paths ({Path('node_modules/.pnpm/pkg')}): "
+        "Market CI will not see them, but a local neko-plugin build would copy their targets"
+    ) in captured.out
 
 
 def test_link_scan_still_reports_a_tracked_link_that_matches_an_ignore_rule(
@@ -3601,7 +3606,9 @@ def test_link_scan_skips_a_link_that_is_itself_ignored(
             pytest.skip("symlinks are not available here")
 
     assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
-    assert "symbolic links" not in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "symbolic links" not in captured.err
+    assert "[WARNING] 1 symbolic link(s) in gitignored paths (shared_cache)" in captured.out
 
 
 def test_release_check_still_rejects_a_link_in_an_ignored_path(
@@ -3669,3 +3676,85 @@ def test_git_queries_ignore_an_inherited_repository_location(
 
     assert ignored_untracked_paths(plugin_dir) is None
     assert release_cmd._repository_root(plugin_dir, neko_plugin_cli.resolve_default_paths()) is None
+
+
+def test_check_says_when_git_cannot_list_ignored_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _plugin_with_ignored_links(tmp_path, monkeypatch, junction=False)
+    # e.g. the git timeout on a huge tree: everything is scanned, and said so.
+    monkeypatch.setattr(release_cmd, "ignored_untracked_paths", lambda _dir: None)
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 1
+    captured = capsys.readouterr()
+    assert "could not read gitignored paths from git, so links inside them are reported as errors" in captured.out
+    assert f"symbolic links: {Path('node_modules/.pnpm/pkg')}" in captured.err
+
+
+def test_link_scan_ignores_no_paths_when_the_repository_is_the_neko_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A custom plugins root inside the N.E.K.O checkout: the repository around
+    # the plugin is N.E.K.O itself, not the plugin's own, so its rules don't count.
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    root = tmp_path / "neko"
+    defaults = CliDefaults(root / "plugin", root / "target", root / "my_plugins", root / "profiles")
+    plugin_dir = _make_plugin_dir(root / "my_plugins", "checkout_links")
+    (root / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+    (plugin_dir / "node_modules").mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+
+    assert release_cmd._repository_root(plugin_dir, defaults) is None
+    assert release_cmd._link_scan_ignored_paths(plugin_dir, defaults) == []
+
+
+def test_every_cli_git_call_ignores_an_inherited_repository_location(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # publish must tag and push the repository its checks looked at, also
+    # when run from another repository's hook.
+    from plugin.neko_plugin_cli.commands import publish_cmd
+    from plugin.neko_plugin_cli.core import project
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=plugin_dir, check=True)
+    outer = tmp_path / "outer"
+    subprocess.run(["git", "init", "-q", str(outer)], check=True)
+    # The outer repository has the tag; the plugin's does not.
+    for args in (
+        ["-c", "user.name=CLI Test", "-c", "user.email=cli@example.com", "commit", "-q", "--allow-empty", "-m", "x"],
+        ["tag", "v0.0.1"],
+    ):
+        subprocess.run(["git", *args], cwd=outer, check=True, capture_output=True)
+    monkeypatch.setenv("GIT_DIR", str(outer / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(outer))
+
+    assert Path(publish_cmd._git(plugin_dir, "rev-parse", "--show-toplevel")).resolve() == plugin_dir.resolve()
+    init_cmd._run_git(["config", "neko.test", "init"], cwd=plugin_dir)
+    project._run_git(["config", "neko.test2", "project"], cwd=plugin_dir)
+    assert publish_cmd._git_config_values(plugin_dir, "neko.test") == ["init"]
+    assert publish_cmd._local_tag_commit(plugin_dir, "v0.0.1") is None
+
+    def config(repo: Path, key: str) -> str:
+        completed = subprocess.run(
+            ["git", "config", "--get", key],
+            cwd=repo,
+            env={k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k == "GIT_CEILING_DIRECTORIES"},
+            capture_output=True,
+            text=True,
+        )
+        return completed.stdout.strip()
+
+    assert config(plugin_dir, "neko.test2") == "project"
+    assert config(outer, "neko.test") == ""
+    assert config(outer, "neko.test2") == ""
