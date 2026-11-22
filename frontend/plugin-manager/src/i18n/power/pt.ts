@@ -196,7 +196,7 @@ const messages: PowerMessages = {
       notes: {
         plugin_entry: 'Cada plugin tem o próprio interruptor.',
         managed_delivery: 'Mesmo quando permitido, pergunta para cada destinatário.',
-        other: 'Confirmado na instalação do plugin.',
+        other: 'Permitido sem perguntar; você pode mudar para perguntar sempre ou para negar.',
       },
     },
     window: {

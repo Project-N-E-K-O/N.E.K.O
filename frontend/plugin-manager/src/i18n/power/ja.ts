@@ -196,7 +196,7 @@ const messages: PowerMessages = {
       notes: {
         plugin_entry: 'プラグインごとにスイッチがあります。',
         managed_delivery: '許可していても、受け取り先ごとに確認します。',
-        other: 'プラグインのインストール時に確認済みです。',
+        other: '確認なしで許可します。「毎回確認」や「禁止」に変更できます。',
       },
     },
     window: {

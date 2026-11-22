@@ -324,7 +324,14 @@ async def post_agent_command(request: Request):
 
         t_proxy = time.perf_counter()
         client = _get_http_client()
-        r = await client.post(f"{TOOL_SERVER_BASE}/agent/command", json=data, timeout=8.0)
+        try:
+            r = await client.post(f"{TOOL_SERVER_BASE}/agent/command", json=data, timeout=8.0)
+        except httpx.ConnectError:
+            # It was never sent: the session's switches go back to what they were.
+            # (After a timeout it is not known whether it was taken; they are left.)
+            if mgr and old_flags is not None:
+                mgr.update_agent_flags(old_flags)
+            raise
         proxy_ms = round((time.perf_counter() - t_proxy) * 1000, 2)
         if not r.is_success:
             # Rollback local state on upstream failure.

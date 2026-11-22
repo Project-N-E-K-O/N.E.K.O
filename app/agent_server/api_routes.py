@@ -518,14 +518,17 @@ async def agent_command(payload: Dict[str, Any]):
             # startup for the re-enabled master.
             # A restore at start replays the switch (``_persist_intent``
             # False) and is not the user switching it on: plugins the user
-            # switched off by their own switch since then stay off.
+            # switched off by their own switch since then stay off. When
+            # the user switches it on, that is kept for the plugins as
+            # well: an older "off" of theirs does not undo it at the
+            # next start.
             from app.agent_runtime_intent import get_intent
 
             if persist_intent or get_intent("user_plugin_enabled") is not False:
                 await set_agent_flags({
                     "user_plugin_enabled": True,
                     "lanlan_name": lanlan_name,
-                    "_persist_intent": False,
+                    "_persist_intent": persist_intent,
                 })
         else:
             Modules.analyzer_enabled = False

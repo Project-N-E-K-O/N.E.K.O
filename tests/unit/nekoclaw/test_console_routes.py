@@ -1035,3 +1035,43 @@ async def test_a_preference_numbered_beyond_any_row_is_none(console, identifier)
     removed = await client.delete(f"/console/preferences/{identifier}", headers=HEADERS)
     for refused in (changed, removed):
         assert refused.status_code == 404 and refused.json()["detail"]["code"] == "no_preference"
+
+
+async def test_the_reviews_of_an_archived_project_are_not_those_of_the_one_begun_after_it(console):
+    from .test_host_space import _commission
+
+    client, host, _ = console
+    await host.space.touch_project("ledger-tool")
+    await host.space.write_review("ledger-tool", _commission(id="of-the-old"), "The old one.")
+    archived = await host.space.archive_project("ledger-tool", summary="done")
+    assert archived is not None
+    await host.space.touch_project("ledger-tool")
+    await host.space.write_review("ledger-tool", _commission(id="of-the-new"), "The new one.")
+
+    async def listed(**params: str) -> list[str]:
+        answer = await client.get("/console/space/reviews", headers=HEADERS, params=params)
+        return [review["commission_id"] for review in answer.json()["reviews"]]
+
+    assert await listed(project="ledger-tool") == ["of-the-new"]
+    assert await listed(project="ledger-tool", archive_year=archived.archive_year) == ["of-the-old"]
+    assert sorted(await listed()) == ["of-the-new", "of-the-old"]
+
+
+async def test_rules_are_not_written_for_an_archived_project_nor_beside_one(console):
+    client, host, _ = console
+    await host.space.touch_project("ledger-tool")
+    await host.space.write_rules("- the old rules\n", "ledger-tool")
+    archived = await host.space.archive_project("ledger-tool", summary="done")
+    assert archived is not None
+    # Named by its year, it is refused: what is archived is shown as it was.
+    refused = await client.put("/console/space/rules", headers=HEADERS, json={
+        "text": "- new\n", "project": archived.directory or archived.name, "archive_year": archived.archive_year,
+    })
+    assert refused.status_code == 400 and refused.json()["detail"]["code"] == "space_refused"
+    assert [project.name for project in await host.space.list_projects(include_archived=False)] == []
+
+    # Archived between the page's look and the write: brought back, not begun anew beside the archived one.
+    await host.space.write_rules("- written a moment later\n", "ledger-tool")
+    projects = await host.space.list_projects()
+    assert [(project.name, project.archive_year) for project in projects] == [("ledger-tool", None)]
+    assert await host.space.read_rules("ledger-tool") == "- written a moment later\n"

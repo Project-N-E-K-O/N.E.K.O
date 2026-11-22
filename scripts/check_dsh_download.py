@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import http.client
 import os
 import platform
 import sys
@@ -112,7 +113,8 @@ def fetch(director: urllib.request.OpenerDirector, url: str, wheel: dict[str, An
                         sys.stderr.flush()
     except urllib.error.HTTPError as exc:
         return {"ok": False, "reason": f"HTTP {exc.code}"}
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+    except (urllib.error.URLError, http.client.HTTPException, OSError, TimeoutError) as exc:
+        # ``HTTPException``: an answer cut off in the middle (``IncompleteRead``).
         reason = getattr(exc, "reason", exc)
         return {"ok": False, "reason": f"{type(reason).__name__}: {reason}", "fetched": fetched}
     finally:
@@ -140,7 +142,7 @@ def ping(director: urllib.request.OpenerDirector, url: str, timeout: float) -> s
             return f"通，{(time.monotonic() - started) * 1000:.0f} 毫秒"
     except urllib.error.HTTPError as exc:
         return f"有回应但 HTTP {exc.code}"
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+    except (urllib.error.URLError, http.client.HTTPException, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", exc)
         return f"不通（{type(reason).__name__}: {reason}）"
 
@@ -174,12 +176,14 @@ def main() -> int:
     print("只下载和核对，不安装；文件下到系统临时目录，核对完就删。\n")
 
     good = 0
+    tried = 0
     lines: list[str] = []
     for number in picked:
         if not 1 <= number <= len(hosts):
             print(f"没有第 {number} 个地址（一共 {len(hosts)} 个）")
             continue
         host = hosts[number - 1]
+        tried += 1
         url = f"{host.rstrip('/')}/{wheel['path']}/{wheel['file']}"
         print(f"[{number}/{len(hosts)}] {host}")
         result = fetch(director, url, wheel, timeout)
@@ -201,11 +205,15 @@ def main() -> int:
             lines.append(f"npm {url}：{line}")
         print()
 
+    tried_all = set(range(1, len(hosts) + 1)) <= set(picked)
     print("=== 结果（整段贴回去即可）===")
     print(f"dsh {settings['DSH_VERSION']} / {tag} / {'系统代理' if options.use_system_proxy else '直连'} / {time.strftime('%Y-%m-%d %H:%M')}")
     for line in lines:
         print(line)
-    print(f"结论：{good} 个地址能下到正确的文件。" + ("" if good else "应用里的下载按钮在这个网络上会失败。"))
+    # Only of the addresses that were tried: the application goes through all of them.
+    print(f"结论：试了 {tried} 个地址，{good} 个能下到正确的文件。" + (
+        "" if good else ("应用里的下载按钮在这个网络上会失败。" if tried_all else "这次选的地址都没下成；没试的地址不在结论里。")
+    ))
     return 0 if good else 1
 
 

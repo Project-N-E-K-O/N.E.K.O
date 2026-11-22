@@ -95,7 +95,7 @@
             <NotesPane :scope="scope" :readonly="isArchived" />
           </el-tab-pane>
           <el-tab-pane v-if="selected" :label="t('power.space.tabs.reviews')" name="reviews" lazy>
-            <ReviewsPane :project="selected.name" />
+            <ReviewsPane :project="selected.name" :archive-year="selected.archive_year || null" />
           </el-tab-pane>
           <el-tab-pane v-if="!selected" :label="t('power.space.tabs.preferences')" name="preferences" lazy>
             <PreferencesPane />
@@ -160,7 +160,10 @@ const tab = computed({
     const wanted = String(route.query.tab || (familiarId.value ? 'familiars' : 'rules'))
     return offered.includes(wanted) ? wanted : 'rules'
   },
-  set: (name: string) => void router.replace({ query: { ...route.query, tab: name === 'rules' ? undefined : name } }),
+  // Left out of the address when it is the tab the address opens on by itself.
+  set: (name: string) => void router.replace({
+    query: { ...route.query, tab: name === (familiarId.value ? 'familiars' : 'rules') ? undefined : name },
+  }),
 })
 
 function chooseFamiliar(id: string) {

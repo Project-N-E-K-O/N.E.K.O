@@ -19,7 +19,7 @@
           {{ t('power.runtime.window.context') }}
           <small>{{ t('power.runtime.window.contextHint') }} {{ t('power.runtime.window.default', { value: window.default.toLocaleString() }) }}</small>
         </div>
-        <el-input-number v-model="form.context" :min="1" :step="1000" :controls="false" :placeholder="String(window.default)" data-testid="window-context" />
+        <el-input-number v-model="form.context" :min="1" :step="1000" :controls="false" :disabled="saving" :placeholder="String(window.default)" data-testid="window-context" />
         <el-button link :disabled="form.context === null" @click="form.context = null">{{ t('power.runtime.window.useDefault') }}</el-button>
       </div>
 
@@ -28,7 +28,7 @@
           {{ t('power.runtime.window.compactAt') }}
           <small>{{ t('power.runtime.window.compactAtHint') }}</small>
         </div>
-        <el-input-number v-model="form.compactAt" :min="1" :step="1000" :controls="false" :placeholder="String(window.compact_at)" data-testid="window-compact-at" />
+        <el-input-number v-model="form.compactAt" :min="1" :step="1000" :controls="false" :disabled="saving" :placeholder="String(window.compact_at)" data-testid="window-compact-at" />
         <el-button link :disabled="form.compactAt === null" @click="form.compactAt = null">{{ t('power.runtime.window.useDefault') }}</el-button>
       </div>
 
@@ -45,7 +45,7 @@
           {{ t('power.runtime.window.idleAfter') }}
           <small>{{ t('power.runtime.window.idleAfterHint') }}</small>
         </div>
-        <el-input-number v-model="form.idleAmount" :min="0" :controls="false" :disabled="!form.idleOn" :placeholder="String(idleDefault.amount)" data-testid="window-idle" />
+        <el-input-number v-model="form.idleAmount" :min="0" :controls="false" :disabled="!form.idleOn || saving" :placeholder="String(idleDefault.amount)" data-testid="window-idle" />
         <el-select v-model="form.idleUnit" class="unit" :disabled="!form.idleOn" :aria-label="t('power.runtime.window.idleAfter')">
           <el-option v-for="unit in units" :key="unit" :value="unit" :label="t(`power.runtime.window.units.${unit}`)" />
         </el-select>
@@ -82,7 +82,14 @@ const form = reactive<{ context: number | null; compactAt: number | null; idleAm
 })
 
 const idleDefault = computed(() => splitIdle(window.value?.idle_compact_after ?? 0))
-const idleSeconds = computed(() => (form.idleAmount === null ? null : joinIdle(form.idleAmount, form.idleUnit)))
+// What the idle time was shown as, and the seconds it stands for: shown rounded, it is not saved rounded.
+const shownIdle = ref<{ amount: number; unit: IdleUnit; seconds: number } | null>(null)
+const idleSeconds = computed(() => {
+  if (form.idleAmount === null) return null
+  const shown = shownIdle.value
+  if (shown && form.idleAmount === shown.amount && form.idleUnit === shown.unit) return shown.seconds
+  return joinIdle(form.idleAmount, form.idleUnit)
+})
 const dirty = computed(() => {
   const now = window.value
   if (!now) return false
@@ -99,10 +106,12 @@ function show(next: ModelWindow | null) {
   if (next.idle_compact_after_set === null) {
     form.idleAmount = null
     form.idleUnit = splitIdle(next.idle_compact_after).unit
+    shownIdle.value = null
   } else {
     const split = splitIdle(next.idle_compact_after_set)
     form.idleAmount = split.amount
     form.idleUnit = split.unit
+    shownIdle.value = { ...split, seconds: next.idle_compact_after_set }
   }
 }
 

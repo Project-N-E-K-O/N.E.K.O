@@ -196,7 +196,7 @@ const messages: PowerMessages = {
       notes: {
         plugin_entry: '플러그인마다 스위치가 따로 있어요.',
         managed_delivery: '허용해도 받는 쪽마다 물어요.',
-        other: '플러그인을 설치할 때 확인했어요.',
+        other: '묻지 않고 허용해요. 매번 묻기나 금지로 바꿀 수 있어요.',
       },
     },
     window: {

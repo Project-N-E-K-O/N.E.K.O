@@ -8,7 +8,7 @@
       v-model="text"
       type="textarea"
       :autosize="{ minRows: 8, maxRows: 24 }"
-      :readonly="readonly || !ready"
+      :readonly="readonly || !ready || saving"
       :placeholder="t('power.space.rules.placeholder')"
       :aria-label="t('power.space.tabs.rules')"
       data-testid="rules-text"

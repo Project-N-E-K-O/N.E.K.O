@@ -172,6 +172,13 @@ describe('Sidebar navigation', () => {
     expect(getByRole(mounted.container, 'button', { name: 'power.nav.overview' }).getAttribute('data-yui-guide-id')).toBe('sidebar-dashboard')
     mounted.unmount()
 
+    // 插件自己的 id 可以以下划线开头：它的详情页仍算在「插件管理」下面。
+    routeState.path = '/plugins/_demo'
+    const detail = await mountSidebar()
+    expect(getByRole(detail.container, 'button', { name: 'nav.plugins' }).getAttribute('aria-current')).toBe('page')
+    expect(getByRole(detail.container, 'button', { name: 'power.nav.overview' }).getAttribute('aria-current')).toBeNull()
+    detail.unmount()
+
     // 首页只在根路径上是当前页；使魔空间不因为别的 /familiars 路径被标上。
     routeState.path = '/familiars/runtime'
     const other = await mountSidebar()

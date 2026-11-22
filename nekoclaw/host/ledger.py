@@ -1835,6 +1835,37 @@ class Ledger:
 
         return await self.run(work)
 
+    async def move_project(self, project: str, workdir: str) -> bool:
+        """Write where a project's own sessions work, unless something is under way in it; returns whether it was written.
+
+        Looked at and written in one transaction, for the sessions of
+        every character: a commission that begins a moment later finds
+        the new directory, and one that began a moment earlier keeps
+        the directory from being changed under it. Under way: a
+        session of the project open with a run, waiting or being
+        summed up, or a commission of it queued, at work or waiting.
+        The sessions task agents started, and copies, work where they
+        were sent and are left as they are.
+        """
+
+        def work(conn: sqlite3.Connection) -> bool:
+            rows = conn.execute("SELECT id, status FROM sessions WHERE project = ?", (project,)).fetchall()
+            if any(row["status"] in ("running", "waiting", "compacting") for row in rows):
+                return False
+            ids = [row["id"] for row in rows]
+            theirs = f" OR session_id IN ({', '.join('?' for _ in ids)})" if ids else ""
+            under_way = conn.execute(
+                "SELECT 1 FROM commissions WHERE status IN ('queued', 'working', 'waiting_user') "
+                f"AND (project = ?{theirs}) LIMIT 1",
+                (project, *ids),
+            ).fetchone()
+            if under_way is not None:
+                return False
+            conn.execute("UPDATE sessions SET workdir = ? WHERE project = ? AND kind = 'project'", (workdir, project))
+            return True
+
+        return await self.run(work)
+
     async def update_session(self, session_id: str, **values: Any) -> Session | None:
         """Write columns of a session; ``active=True`` also notes that it was in use just now."""
         touched = bool(values.pop("active", False))

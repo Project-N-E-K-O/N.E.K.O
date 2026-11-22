@@ -230,6 +230,17 @@ describe('the context tab', () => {
     expect((document.querySelector('[data-testid="window-context"] input') as HTMLInputElement).value).toBe('64000')
   })
 
+  it('saves an idle time it showed rounded as the seconds it was, unless the user changed it', async () => {
+    // 1441 seconds is shown as 24.02 minutes; written back as shown it would be another time.
+    api.getWindow.mockResolvedValue({ window: { ...modelWindow, idle_compact_after: 1441, idle_compact_after_set: 1441 } })
+    api.setWindow.mockResolvedValue({ window: { ...modelWindow, idle_compact_after: 1441, idle_compact_after_set: 1441, compact_at: 90000, compact_at_set: 90000 } })
+    await mount(WindowTab)
+    expect((byTest('window-save') as HTMLButtonElement).disabled).toBe(true)
+    await type('window-compact-at', '90000')
+    await click(byTest('window-save'))
+    expect(api.setWindow).toHaveBeenCalledWith({ model_id: 'a1b2c3d4e5f60718', compact_at: 90000 })
+  })
+
   it('shows that there is no model to set anything for', async () => {
     api.getWindow.mockResolvedValue({ window: null })
     await mount(WindowTab)

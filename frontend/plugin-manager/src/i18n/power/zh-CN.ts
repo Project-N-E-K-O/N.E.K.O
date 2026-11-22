@@ -196,7 +196,7 @@ const messages: PowerMessages = {
       notes: {
         plugin_entry: '插件各有自己的开关。',
         managed_delivery: '即使允许，也按接收方询问。',
-        other: '装插件时确认过。',
+        other: '直接放行；可以改成每次都问或禁止。',
       },
     },
     window: {

@@ -499,6 +499,9 @@ def build_console_router(
         """Write the rules as the user gave them."""
         payload = payload or {}
         project, _ = scope(payload.get("project"))
+        if payload.get("archive_year") is not None:
+            # Archived rules are shown as they were; written, they would go to a project of the same name.
+            raise _refuse(400, "space_refused")
         text = text_of(payload, "text", required=True)
         host = await get_host()
         await there(host, project)
@@ -592,11 +595,19 @@ def build_console_router(
         return {"success": True, "removed": notes.get("removed", [])}
 
     @router.get("/space/reviews")
-    async def list_reviews(project: str | None = None, limit: int = 100) -> dict[str, Any]:
-        """Return the reviews of a project, or of every project, newest first, without their text."""
+    async def list_reviews(project: str | None = None, archive_year: str | None = None, limit: int = 100) -> dict[str, Any]:
+        """Return the reviews of a project, or of every project, newest first, without their text.
+
+        Of a project that is named, those of the one that is there now;
+        with ``archive_year``, those of the one archived that year. Two
+        projects of a name are two projects.
+        """
         host = await get_host()
-        project, _ = scope(project)
-        reviews = await space_call(host.space.list_reviews(project, limit=max(1, min(int(limit), 500))))
+        project, archive_year = scope(project, archive_year)
+        wanted = max(1, min(int(limit), 500))
+        reviews = await space_call(host.space.list_reviews(project, limit=None if project is not None else wanted))
+        if project is not None:
+            reviews = [review for review in reviews if review.archive_year == archive_year][:wanted]
         return {"success": True, "reviews": [review.to_json() for review in reviews]}
 
     @router.get("/space/reviews/{commission_id}")

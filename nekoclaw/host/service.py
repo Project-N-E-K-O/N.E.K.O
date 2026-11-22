@@ -296,6 +296,8 @@ class NekoClawHost:
         self._shut_down = False
         # Held while a familiar is made for the user: the name is looked for and taken in one go.
         self._open_session_lock = asyncio.Lock()
+        # Held while a page's settings of a model are written: one request's going back does not undo another's.
+        self._model_window_lock = asyncio.Lock()
         # Set by the first call that does work; see ``_first_use``.
         self._used = False
         self._shutdown_task: asyncio.Future[None] | None = None
@@ -674,6 +676,11 @@ class NekoClawHost:
             # nor to one of the same name at another address.
             raise ModelChanged(str(model))
         store = self.model_capabilities
+        async with self._model_window_lock:
+            return await self._write_model_window(store, base_url, model, changes)
+
+    async def _write_model_window(self, store: Any, base_url: Any, model: Any, changes: dict[str, Any]) -> dict[str, Any]:
+        """Write what ``set_model_window`` was given; all of it, or none of it."""
         before = await store.describe_window(base_url, model)
         # The window last: setting it forgets what the user was told about the model, which
         # going back cannot bring back. By then the others were taken, and a window that
@@ -837,16 +844,14 @@ class NekoClawHost:
         busy = await self._project_busy(project)
         if busy is not None:
             raise ProjectBusy(busy)
+        # The project's own sessions of every character first, looked at once more and written in
+        # one go: each starts from the directory it keeps, so a commission that begins from here
+        # on begins in the new one, and one that began since the look above stops the change.
+        if not await self.ledger.move_project(project, str(wanted)):
+            raise ProjectBusy("at_work")
         changed = await self.space.set_project_workdir(project, str(wanted))
         if changed is None:
             raise LookupError(project)
-        # The project's own sessions of every character: each starts from the directory it keeps.
-        rows = await self.ledger.find_sessions(project=project, kind="project", limit=500, commissions_each=0)
-        for row in rows:
-            # One that came to be at work since the look above goes on where it began.
-            if row.session.status in _SESSION_AT_WORK:
-                continue
-            await self.ledger.update_session(row.session.id, workdir=str(wanted))
         return changed.to_json()
 
     def places(self) -> list[dict[str, Any]]:

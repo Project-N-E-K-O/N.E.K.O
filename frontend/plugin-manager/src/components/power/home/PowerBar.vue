@@ -102,7 +102,11 @@ async function readMeters() {
 onMounted(() => {
   void load()
   void readMeters()
-  timer = setInterval(() => void readMeters(), METERS_MS)
+  timer = setInterval(() => {
+    void readMeters()
+    // The switch could not be read (the service was not up yet): asked again, so that it comes to be usable.
+    if (!switches.value && !switching.value) void load()
+  }, METERS_MS)
 })
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer)

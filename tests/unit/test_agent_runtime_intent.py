@@ -492,12 +492,14 @@ async def test_the_switch_brings_the_plugins_on_with_it_and_leaves_the_device_sw
 
     The keyboard and mouse and the browser stay as they were: they say what
     a task agent may touch on this computer, and are switched on by hand.
-    The intent kept for the plugins is not written by this: a restore that
-    replays the switch brings them on the same way.
+    What is kept for the plugins says "on" from then: the user switched
+    them on with it, whatever they had kept of the plugins' own switch.
     """
     srv = agent_state_isolation
-    from app.agent_runtime_intent import get_intent
+    from app.agent_runtime_intent import get_intent, set_intent
 
+    # Switched off by its own switch some time ago.
+    set_intent("user_plugin_enabled", False)
     assert srv.Modules.agent_flags.get("user_plugin_enabled") is not True
     before = set(srv.Modules._persistent_tasks)
     with patch.object(
@@ -510,7 +512,8 @@ async def test_the_switch_brings_the_plugins_on_with_it_and_leaves_the_device_sw
     assert srv.Modules.agent_flags["user_plugin_enabled"] is True
     assert srv.Modules.agent_flags.get("computer_use_enabled") is not True
     assert srv.Modules.agent_flags.get("browser_use_enabled") is not True
-    assert get_intent("analyzer_enabled") is True and get_intent("user_plugin_enabled") is None
+    # Kept for the plugins as well: a restore brings them on, and an older "off" of theirs is over.
+    assert get_intent("analyzer_enabled") is True and get_intent("user_plugin_enabled") is True
 
 
 @pytest.mark.asyncio

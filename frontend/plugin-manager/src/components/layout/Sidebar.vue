@@ -139,7 +139,11 @@ const navItems = computed<NavItem[]>(() => [
 function isRouteActive(path: string): boolean {
   if (path === '/') return route.path === '/'
   // The plugins' own entry is not the current page while one of the two below it is.
-  if (path === '/plugins') return route.path === path || (route.path.startsWith('/plugins/') && !route.path.startsWith('/plugins/_'))
+  // Only those two: a plugin's own id may begin with an underscore.
+  if (path === '/plugins') {
+    const below = ['/plugins/_overview', '/plugins/_forge'].some(own => route.path === own || route.path.startsWith(`${own}/`))
+    return route.path === path || (route.path.startsWith('/plugins/') && !below)
+  }
   return route.path === path || route.path.startsWith(`${path}/`)
 }
 

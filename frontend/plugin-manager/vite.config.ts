@@ -154,7 +154,10 @@ export default defineConfig({
         secure: false
       },
       // What the pages about the task agents read and change; the backend
-      // passes it on to the agent process.
+      // passes it on to the agent process. A change sent from this dev
+      // server carries its own origin, which the backend does not trust:
+      // start the backend with NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS set to
+      // this server's address to save settings from here.
       '^/console/': {
         target: BACKEND_TARGET,
         changeOrigin: true,

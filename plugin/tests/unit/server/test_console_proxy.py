@@ -265,4 +265,6 @@ def test_the_router_is_part_of_the_plugin_server():
     from pathlib import Path
 
     source = (Path(console_proxy.__file__).resolve().parents[1] / "http_app.py").read_text(encoding="utf-8")
-    assert "console_proxy_router" in source and "close_console_proxy" in source
+    assert "console_proxy_router" in source
+    # Awaited where the server shuts down, not only imported.
+    assert "await close_console_proxy()" in source

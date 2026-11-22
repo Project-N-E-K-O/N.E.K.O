@@ -47,7 +47,7 @@ import { deleteReview, listReviews, readReview } from '@/api/console'
 import type { SpaceReview } from '@/api/console'
 import { describeConsoleError } from '../powerFormat'
 
-const props = defineProps<{ project?: string | null }>()
+const props = defineProps<{ project?: string | null; archiveYear?: string | null }>()
 const { t, te } = useI18n()
 const reviews = ref<SpaceReview[]>([])
 const loading = ref(false)
@@ -64,7 +64,7 @@ async function load(keep = false) {
   const mine = ++turn
   loading.value = true
   try {
-    const answer = await listReviews(props.project)
+    const answer = await listReviews(props.project, props.archiveYear)
     if (mine !== turn) return
     reviews.value = answer.reviews
     if (!keep) error.value = ''
@@ -109,7 +109,7 @@ async function remove() {
   }
 }
 
-watch(() => props.project, () => void load(), { immediate: true })
+watch(() => [props.project, props.archiveYear], () => void load(), { immediate: true })
 </script>
 
 <style scoped>

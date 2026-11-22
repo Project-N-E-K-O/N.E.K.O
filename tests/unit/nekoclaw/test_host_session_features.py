@@ -5881,3 +5881,53 @@ async def test_where_a_project_works_is_the_projects_and_not_one_characters(host
     assert changed["workdir"] == str(new)
     assert (await host.ledger.get_session(lan.id)).workdir == str(new)
     assert (await host.ledger.get_session(mei.id)).workdir == str(new)
+
+
+async def test_a_commission_that_began_after_the_look_stops_the_change_of_where_its_project_works(hosts, tmp_path):
+    """Looked at once more where the sessions are written: nothing is half changed."""
+    from nekoclaw.host.service import ProjectBusy
+
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app")
+    lan, _ = await host.ledger.project_session("Lan", "Budget app")
+    mei, _ = await host.ledger.project_session("Mei", "Budget app")
+    new = tmp_path / "code"
+    new.mkdir()
+
+    looked = host._project_busy
+
+    async def then_it_begins(project: str) -> str | None:
+        answer = await looked(project)
+        # Nothing was under way when it was looked at; a moment later Mei's session has a run.
+        await host.ledger.update_session(mei.id, status="running")
+        return answer
+
+    host._project_busy = then_it_begins
+    with pytest.raises(ProjectBusy, match="at_work"):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.space.get_project("Budget app")).workdir != str(new)
+    assert (await host.ledger.get_session(lan.id)).workdir != str(new)
+    assert (await host.ledger.get_session(mei.id)).workdir != str(new)
+
+    # The same for a commission that was filed since the look.
+    await host.ledger.update_session(mei.id, status="idle")
+    filed: list[str] = []
+
+    async def then_it_is_filed(project: str) -> str | None:
+        answer = await looked(project)
+        commission, _ = await host.ledger.create(
+            lanlan_name="Mei", title="just now", dispatch_text="just now", source="dispatch", project="Budget app",
+        )
+        filed.append(commission.id)
+        return answer
+
+    host._project_busy = then_it_is_filed
+    with pytest.raises(ProjectBusy, match="at_work"):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.space.get_project("Budget app")).workdir != str(new)
+    assert (await host.ledger.get_session(lan.id)).workdir != str(new)
+    # Once it is over, the change is taken.
+    assert (await host.ledger.transition(filed[0], "cancelled")).applied
+    host._project_busy = looked
+    assert (await host.set_project_workdir("Budget app", str(new)))["workdir"] == str(new)
+    assert (await host.ledger.get_session(mei.id)).workdir == str(new)

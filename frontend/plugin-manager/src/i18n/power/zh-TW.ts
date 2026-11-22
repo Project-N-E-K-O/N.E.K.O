@@ -196,7 +196,7 @@ const messages: PowerMessages = {
       notes: {
         plugin_entry: '外掛各有自己的開關。',
         managed_delivery: '即使允許，也依接收方詢問。',
-        other: '裝外掛時確認過。',
+        other: '直接放行；可以改成每次都問或禁止。',
       },
     },
     window: {

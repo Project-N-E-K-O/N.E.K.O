@@ -189,8 +189,9 @@ async function flip(key: DeviceSwitch, value: boolean) {
   // a switch can be put off again right away (a model that cannot be reached).
   try {
     switches.value = (await getSwitches()).switches
-  } catch {
-    /* The message above stays. */
+  } catch (failure) {
+    // The change may have been taken and cannot be shown: said, unless why it was not taken is said already.
+    if (!error.value) error.value = describeConsoleError(failure, t, te)
   } finally {
     switching.value = ''
   }

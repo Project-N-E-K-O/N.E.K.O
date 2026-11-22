@@ -363,7 +363,7 @@ export const pickDirectory = (start?: string | null) =>
   send<{ path?: string; cancelled?: boolean }>('post', '/console/space/pick-directory', { start: start || undefined }, undefined, PICK_TIMEOUT_MS)
 export const readRules = (scope?: SpaceScope) => get<{ text: string }>('/console/space/rules', scopeParams(scope))
 export const writeRules = (text: string, scope: SpaceScope = {}) =>
-  send<{ text: string }>('put', '/console/space/rules', { text, project: scope.project || undefined })
+  send<{ text: string }>('put', '/console/space/rules', { text, project: scope.project || undefined, archive_year: scope.archive_year || undefined })
 export const readIndex = (scope?: SpaceScope) => get<{ text: string }>('/console/space/index', scopeParams(scope))
 export const listEntries = (scope?: SpaceScope) => get<{ entries: SpaceEntry[] }>('/console/space/entries', scopeParams(scope))
 export const readEntry = (id: string, scope?: SpaceScope) =>
@@ -382,8 +382,12 @@ export const editEntry = (
 export const deleteEntry = (id: string, scope?: SpaceScope) =>
   send<{ success: boolean }>('delete', `/console/space/entries/${encodeURIComponent(id)}`, undefined, scopeParams(scope))
 export const listRemoved = (scope?: SpaceScope) => get<{ removed: unknown[] }>('/console/space/removed', scopeParams(scope))
-export const listReviews = (project?: string | null) =>
-  get<{ reviews: SpaceReview[] }>('/console/space/reviews', project ? { project } : undefined)
+export const listReviews = (project?: string | null, archiveYear?: string | null) =>
+  get<{ reviews: SpaceReview[] }>(
+    '/console/space/reviews',
+    // Of an archived project by its year: one begun after it under the same name has reviews of its own.
+    project ? { project, ...(archiveYear ? { archive_year: archiveYear } : {}) } : undefined,
+  )
 export const readReview = (commissionId: string) =>
   get<{ review: SpaceReview }>(`/console/space/reviews/${encodeURIComponent(commissionId)}`)
 export const deleteReview = (commissionId: string) =>

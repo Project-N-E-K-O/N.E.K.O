@@ -203,7 +203,7 @@ const messages = {
       notes: {
         plugin_entry: 'Each plugin has its own switch.',
         managed_delivery: 'Asked per recipient even when allowed.',
-        other: 'Confirmed when the plugin is installed.',
+        other: 'Allowed without asking; can be set to ask every time or to deny.',
       },
     },
     window: {

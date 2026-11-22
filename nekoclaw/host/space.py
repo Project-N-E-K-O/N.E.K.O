@@ -5764,7 +5764,13 @@ class TaskAgentSpace:
 
     async def write_rules(self, text: str, project: str | None = None) -> None:
         """Write the rules as the user gave them. The host itself never calls this."""
-        await self._write(lambda: self._put_text(self._paths().rules(project), text))
+
+        def work() -> None:
+            # Archived a moment ago: brought back, not begun anew beside the archived one.
+            self._revive(project)
+            self._put_text(self._paths().rules(project), text)
+
+        await self._write(work)
 
     async def read_index(self, project: str | None = None, *, archive_year: str | None = None) -> str:
         """Return the index of a project or of every task agent; with ``archive_year``, of an archived project."""

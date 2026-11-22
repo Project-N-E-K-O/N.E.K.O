@@ -208,3 +208,44 @@ async def test_the_switch_puts_the_plugins_on_for_the_session_as_the_agent_proce
         "agent_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False, "user_plugin_enabled": False,
     }
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_switch_that_never_reached_the_agent_process_leaves_the_session_as_it_was(monkeypatch):
+    """The main server writes its copy of the switches before it sends the command on: not sent, they go back."""
+    import httpx
+
+    from main_routers import agent_router
+
+    class Manager:
+        def __init__(self) -> None:
+            self.agent_flags: dict = {"agent_enabled": False, "user_plugin_enabled": False}
+
+        def update_agent_flags(self, flags: dict) -> None:
+            self.agent_flags.update(flags)
+
+    class Config:
+        def get_character_data(self):
+            return (None, "Lan", None, None, None, None, None, None, None)
+
+        def is_agent_free(self) -> bool:
+            return False
+
+    manager = Manager()
+
+    def agent(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(agent))
+    monkeypatch.setattr(agent_router, "_remote_backend_block", lambda: None)
+    monkeypatch.setattr(agent_router, "get_session_manager", lambda: {"Lan": manager})
+    monkeypatch.setattr(agent_router, "get_config_manager", lambda: Config())
+    monkeypatch.setattr(agent_router, "_get_http_client", lambda: client)
+
+    class Asked:
+        async def json(self) -> dict:
+            return {"command": "set_agent_enabled", "enabled": True}
+
+    answer = await agent_router.post_agent_command(Asked())
+    assert answer.status_code == 502
+    assert manager.agent_flags == {"agent_enabled": False, "user_plugin_enabled": False}

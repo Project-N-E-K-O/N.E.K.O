@@ -150,10 +150,20 @@ function show(next: RuntimeView) {
   if (next.dsh.downloading && alive) timer = setTimeout(() => void load(true), POLL_MS)
 }
 
+// Answers are shown in the order they were asked for: one that was asked for before a change does not undo it.
+let asked = 0
+let shown = 0
+function showIfNewer(mine: number, next: RuntimeView) {
+  if (mine < shown) return
+  shown = mine
+  show(next)
+}
+
 async function load(quiet = false) {
   if (!quiet) loading.value = true
+  const mine = ++asked
   try {
-    show(await getRuntime())
+    showIfNewer(mine, await getRuntime())
     error.value = ''
   } catch (failure) {
     error.value = describeConsoleError(failure, t, te)
@@ -165,8 +175,9 @@ async function load(quiet = false) {
 
 async function act(work: () => Promise<RuntimeView>) {
   busy.value = true
+  const mine = ++asked
   try {
-    show(await work())
+    showIfNewer(mine, await work())
     error.value = ''
     return true
   } catch (failure) {

@@ -247,7 +247,7 @@ describe('the reviews and the preferences', () => {
     api.readReview.mockResolvedValue({ review: { ...review, content: 'What went well: the table.' } })
     api.deleteReview.mockResolvedValue({ success: true })
     const { container } = await mount(ReviewsPane, { project: 'Ledger tool' })
-    expect(api.listReviews).toHaveBeenCalledWith('Ledger tool')
+    expect(api.listReviews).toHaveBeenCalledWith('Ledger tool', undefined)
     await click(buttonSaying(container.querySelector('[data-review="c1"]')!, words.space.reviews.open))
     expect(byTest('review-text')?.textContent).toBe('What went well: the table.')
     await click(buttonSaying(container.querySelector('[data-review="c1"]')!, words.space.reviews.remove))
@@ -365,10 +365,27 @@ describe('the familiar space page', () => {
     expect(byTest('workdir-change')).toBeNull()
   })
 
+  it('goes to the rules from the familiar an address opened on', async () => {
+    route.query = { project: 'Ledger tool', familiar: 's1' }
+    const { container } = await mount(FamiliarSpace)
+    const active = () => container.querySelector('.el-tabs__item.is-active')?.textContent?.trim()
+    expect(active()).toBe(words.space.familiars.tab)
+    const rules = [...container.querySelectorAll('.el-tabs__item')].find(tab => tab.textContent?.trim() === words.space.tabs.rules)
+    await click(rules)
+    expect(route.query.tab).toBe('rules')
+    expect(active()).toBe(words.space.tabs.rules)
+  })
+
+  it('asks for the reviews of an archived project by its year', async () => {
+    route.query = { project: 'moving-list', year: '2026', tab: 'reviews' }
+    await mount(FamiliarSpace)
+    expect(api.listReviews).toHaveBeenCalledWith(expect.any(String), '2026')
+  })
+
   it('takes the project and the tab from the address', async () => {
     route.query = { project: 'Ledger tool', tab: 'reviews' }
     await mount(FamiliarSpace)
-    expect(api.listReviews).toHaveBeenCalledWith('Ledger tool')
+    expect(api.listReviews).toHaveBeenCalledWith('Ledger tool', null)
     // A tab the scope does not have falls back to the rules.
     cleanup?.()
     route.query = { tab: 'reviews' }
