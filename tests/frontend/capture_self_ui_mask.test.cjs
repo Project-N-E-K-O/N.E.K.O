@@ -645,6 +645,17 @@ test('native screen share: the stream_data frame is masked before it is sent', a
     assert.equal(sent.length, 1, 'first native frame sent');
     assert.deepEqual(fillsOf(sent[0].data), [[300, 200, 600, 400]], 'native frame must be masked');
     assert.deepEqual(shell.calls[0], { version: 1, sourceId: 'screen:3:0', surface: 'source' });
+    // Before and after capture: the id the shell actually captured.
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:3:0', 'screen:3:0']);
+});
+
+test('native paths pass the source the shell actually captured, even when the selection cache names another', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [] }));
+    const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1200, 800] });
+    env.S.selectedScreenSourceId = 'screen:8:0';
+    env.w.captureDesktopSourceWithTimeout = async (_p, _m, id) => { assert.equal(id, 'screen:3:0'); return { success: true, dataUrl: RAW_FRAME }; };
+    await env.w.appScreen.startNativeScreenStreaming({ nativeFrameCapture: true, captureSourceAsDataUrl() {} }, 'screen:3:0', 'screen');
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:3:0', 'screen:3:0']);
 });
 
 // ---------------------------------------------------------------- C1 payload limits (shell validation)
