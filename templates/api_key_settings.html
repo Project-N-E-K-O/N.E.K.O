@@ -761,14 +761,16 @@
 
                                 <!-- 使魔模型·小 -->
                                 <div class="model-config-container">
-                                    <div class="model-header" onclick="toggleModelConfig('agent-small')">
+                                    <button type="button" class="model-header" onclick="toggleModelConfig('agent-small')"
+                                        aria-controls="agent-small-model-content" aria-expanded="false"
+                                        style="width: 100%; border: 0; text-align: left; font: inherit;">
                                         <span class="model-title">
                                             <img src="/static/icons/correction_model_icon.png"
                                                 data-i18n-alt="api.agentSmallApiConfigTitle" class="model-title-icon">
                                             <span data-i18n="api.agentSmallApiConfigTitle">使魔模型·小</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>
-                                    </div>
+                                    </button>
                                     <div id="agent-small-model-content" class="model-content">
                                         <div class="field-row">
                                             <label for="agentSmallModelProvider" data-i18n="api.providerLabel">服务商</label>

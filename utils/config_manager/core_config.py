@@ -1423,8 +1423,6 @@ class CoreConfigMixin:
                     return config.get('CONVERSATION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
                 if provider == 'follow_summary':
                     return config.get('SUMMARY_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
-                if provider == 'follow_agent':
-                    return config.get('AGENT_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
                 if provider != 'follow_core':
                     return ''
 
@@ -1460,7 +1458,9 @@ class CoreConfigMixin:
                 profile_key = self._SLOT_PROFILE_MODEL_KEYS.get(prefix)
                 if not profile_key:
                     return ''
-                is_game_slot = prefix in ('gameMain', 'gameSummary')
+                # Slots whose seed is another slot's resolved value: under follow_assist
+                # they must take the assist provider's tier default instead.
+                is_game_slot = prefix in ('gameMain', 'gameSummary', 'agentSmall')
                 if provider == 'follow_core':
                     # URL and key now use the core provider, so the model must too; retaining the snapshot's
                     # assist model would send provider A's model name to provider B's endpoint.
@@ -1513,6 +1513,12 @@ class CoreConfigMixin:
                 # without realtime support, the snapshot already falls back to follow_core. URL/model/key
                 # overrides must follow that same path, avoiding leftover autofilled values.
                 provider = config.get(f'{prefix}ModelProvider', '')
+                if prefix == 'agentSmall':
+                    # Blank or partial small-familiar fields complete from the familiar
+                    # model just resolved above, never from a hardcoded seed.
+                    config[model_key] = config.get('AGENT_MODEL', '')
+                    config[url_key] = config.get('AGENT_MODEL_URL', '')
+                    config[apikey_key] = config.get('AGENT_MODEL_API_KEY', '')
                 if prefix == 'tts' and provider == 'deepseek':
                     # The hosted worker uses the DeepSeek key book and fixed endpoint.
                     # Retain a saved DashScope slot for existing CosyVoice clones,

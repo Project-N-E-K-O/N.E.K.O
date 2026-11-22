@@ -163,3 +163,48 @@ def test_save_connectivity_probes_a_named_small_familiar_provider():
         'enableCustomApi': True, 'agentSmallModelProvider': 'qwen_intl',
     }
     assert 'assist:qwen_intl' in _build_save_connectivity_targets(core_cfg, api_config)
+
+
+@pytest.mark.parametrize('small', [
+    {'agentSmallModelProvider': 'follow_assist', 'agentSmallModelId': ''},
+    {'agentSmallModelProvider': 'custom', 'agentSmallModelUrl': 'https://my.test/v1', 'agentSmallModelId': ''},
+])
+def test_blank_small_familiar_model_id_resolves_like_the_familiar_tier(config_manager, small):
+    # A blank model ID must land on the assist provider's familiar model, the same
+    # one the familiar tier would pick with these settings, never a hardcoded default.
+    from utils.config_manager import get_assist_api_profiles
+
+    openai_agent = get_assist_api_profiles()['openai']['AGENT_MODEL']
+    _write_core_config(config_manager, {
+        'coreApiKey': 'sk-core', 'coreApi': 'openai', 'assistApi': 'openai', 'assistApiKeyOpenai': 'sk-openai-test',
+        'enableCustomApi': True, **small,
+    })
+    assert config_manager.get_core_config()['AGENT_SMALL_MODEL'] == openai_agent
+    assert config_manager.get_model_api_config('agent_small')['model'] == openai_agent
+
+
+def test_follow_assist_takes_the_assist_familiar_model_even_when_the_familiar_tier_is_custom(config_manager):
+    from utils.config_manager import get_assist_api_profiles
+
+    qwen = get_assist_api_profiles()['qwen']
+    _write_core_config(config_manager, {
+        **BASE, 'enableCustomApi': True, **AGENT_CUSTOM,
+        'agentSmallModelProvider': 'follow_assist', 'agentSmallModelId': '',
+    })
+    small = config_manager.get_model_api_config('agent_small')
+    assert small['model'] == qwen['AGENT_MODEL']
+    assert small['base_url'] != 'https://agent.custom.test/v1'
+
+
+def test_follow_agent_ignores_stale_values_left_in_the_small_familiar_fields(config_manager):
+    # Fields typed before switching to follow_agent stay on disk; following must win over them.
+    _write_core_config(config_manager, {
+        **BASE, 'enableCustomApi': True, **AGENT_CUSTOM,
+        'agentSmallModelProvider': 'follow_agent',
+        'agentSmallModelUrl': 'https://stale.test/v1', 'agentSmallModelId': 'stale-model',
+        'agentSmallModelApiKey': 'sk-stale',
+    })
+    small = config_manager.get_model_api_config('agent_small')
+    assert _endpoint(small) == (
+        'agent-custom-model', 'https://agent.custom.test/v1', 'sk-agent-custom', 'openai_compatible',
+    )
