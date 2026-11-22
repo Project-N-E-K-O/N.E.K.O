@@ -223,6 +223,7 @@ async function showIndex() {
     readingHint.value = t('power.space.notes.indexHint')
     reading.value = true
   } catch (failure) {
+    if (mine !== scopeTurn) return
     error.value = describeConsoleError(failure, t, te)
   }
 }
@@ -238,6 +239,7 @@ async function showRemoved() {
     readingHint.value = t('power.space.notes.removedHint')
     reading.value = true
   } catch (failure) {
+    if (mine !== scopeTurn) return
     error.value = describeConsoleError(failure, t, te)
   }
 }

@@ -175,9 +175,14 @@ async function load(quiet = false) {
 
 async function act(work: () => Promise<RuntimeView>) {
   busy.value = true
-  const mine = ++asked
+  // No asking meanwhile: what the change answers is where the service stands.
+  if (timer) clearTimeout(timer)
+  timer = null
   try {
-    showIfNewer(mine, await work())
+    const next = await work()
+    // Whatever was asked for before this came back is older than it.
+    shown = ++asked
+    show(next)
     error.value = ''
     return true
   } catch (failure) {

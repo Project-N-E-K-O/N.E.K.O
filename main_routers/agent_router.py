@@ -303,15 +303,31 @@ async def post_agent_command(request: Request):
                 lanlan = None
         mgr = session_manager.get(lanlan) if lanlan else None
         old_flags = dict(getattr(mgr, "agent_flags", {}) or {}) if mgr else None
+        # What this request wrote of the session's switches, for taking it back.
+        written: dict = {}
+
+        def write(flags: dict) -> None:
+            written.update(flags)
+            mgr.update_agent_flags(flags)
+
+        def take_back() -> None:
+            # Only what this request wrote, and only where it still says so: another request's
+            # switch, written and taken meanwhile, is not put back to what it was before.
+            if not mgr or old_flags is None:
+                return
+            now = getattr(mgr, "agent_flags", {}) or {}
+            back = {key: old_flags.get(key, False) for key, value in written.items() if now.get(key) == value}
+            if back:
+                mgr.update_agent_flags(back)
 
         # Keep main_server core flags in sync with command path.
         if mgr and command == "set_agent_enabled":
             enabled = bool(data.get("enabled"))
             if enabled:
                 # Plugins come on with the switch, as in the agent process.
-                mgr.update_agent_flags({"agent_enabled": True, "user_plugin_enabled": True})
+                write({"agent_enabled": True, "user_plugin_enabled": True})
             else:
-                mgr.update_agent_flags({
+                write({
                     "agent_enabled": False,
                     "computer_use_enabled": False,
                     "browser_use_enabled": False,
@@ -320,7 +336,7 @@ async def post_agent_command(request: Request):
         elif mgr and command == "set_flag":
             key = data.get("key")
             if key in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}:
-                mgr.update_agent_flags({key: bool(data.get("value"))})
+                write({key: bool(data.get("value"))})
 
         t_proxy = time.perf_counter()
         client = _get_http_client()
@@ -329,14 +345,12 @@ async def post_agent_command(request: Request):
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
             # It was never sent: the session's switches go back to what they were.
             # (After a timeout of the answer it is not known whether it was taken; they are left.)
-            if mgr and old_flags is not None:
-                mgr.update_agent_flags(old_flags)
+            take_back()
             raise
         proxy_ms = round((time.perf_counter() - t_proxy) * 1000, 2)
         if not r.is_success:
             # Rollback local state on upstream failure.
-            if mgr and old_flags is not None:
-                mgr.update_agent_flags(old_flags)
+            take_back()
             logger.warning("[MainAgentTiming] request_id=%s upstream_status=%s proxy_ms=%s", request_id, r.status_code, proxy_ms)
             return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=502)
         payload = r.json()

@@ -5982,3 +5982,109 @@ async def test_a_change_of_where_a_project_works_that_is_not_recorded_is_not_hal
     assert (await host.ledger.get_session(lan.id)).workdir == str(old)
     assert (await host.ledger.get_session(mei.id)).workdir != str(new)
     assert (await host.space.get_project("Budget app")).workdir == str(old)
+
+
+async def test_a_change_of_where_a_project_works_is_carried_through_when_whoever_asked_goes_away(hosts, tmp_path):
+    """Its two writes are both made, though the request was given up between them."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app")
+    lan, _ = await host.ledger.project_session("Lan", "Budget app")
+    new = tmp_path / "new"
+    new.mkdir()
+
+    write = host.space.set_project_workdir
+    reached = asyncio.Event()
+    go_on = asyncio.Event()
+
+    async def held(name: str, workdir: str) -> Any:
+        reached.set()
+        await go_on.wait()
+        return await write(name, workdir)
+
+    host.space.set_project_workdir = held
+    asked = asyncio.ensure_future(host.set_project_workdir("Budget app", str(new)))
+    await reached.wait()
+    # The sessions say the new place already; the record does not yet. The request is given up here.
+    asked.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asked
+    go_on.set()
+    for _ in range(200):
+        if not host._changes:
+            break
+        await asyncio.sleep(0.01)
+    assert (await host.space.get_project("Budget app")).workdir == str(new)
+    assert (await host.ledger.get_session(lan.id)).workdir == str(new)
+
+
+async def test_no_change_of_where_a_project_works_comes_between_the_two_writes_of_a_new_task_agent(hosts, tmp_path):
+    """A task agent made for the user: its project's record and its session say the same place."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    make = host.ledger.project_session
+    changing: list[asyncio.Future] = []
+
+    async def then_a_change_is_asked_for(lanlan_name: str, project: str, **values: Any) -> Any:
+        # The project is on record, its session not yet: a change asked for now waits for it.
+        changing.append(asyncio.ensure_future(host.set_project_workdir(project, str(second))))
+        await asyncio.sleep(0.05)
+        return await make(lanlan_name, project, **values)
+
+    host.ledger.project_session = then_a_change_is_asked_for
+    made = await host.open_session("Lan", "Budget app", workdir=str(first))
+    await changing[0]
+    record = (await host.space.get_project("Budget app")).workdir
+    assert record == str(second)
+    assert (await host.ledger.get_session(made["session_id"])).workdir == record
+
+
+@pytest.mark.parametrize("error", [asyncio.CancelledError, RuntimeError])
+async def test_a_record_that_was_written_before_its_write_failed_keeps_the_sessions_where_they_were_put(hosts, tmp_path, error):
+    """A write given up after the record was on disk did change it: the sessions are not put back."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app")
+    lan, _ = await host.ledger.project_session("Lan", "Budget app")
+    new = tmp_path / "new"
+    new.mkdir()
+    write = host.space.set_project_workdir
+
+    async def written_then_fails(name: str, workdir: str) -> Any:
+        await write(name, workdir)
+        raise error("after the record was written")
+
+    host.space.set_project_workdir = written_then_fails
+    with pytest.raises(error):
+        await host._change_project_workdir("Budget app", new)
+    assert (await host.space.get_project("Budget app")).workdir == str(new)
+    assert (await host.ledger.get_session(lan.id)).workdir == str(new)
+
+
+async def test_a_session_that_began_work_before_the_change_was_undone_stays_where_it_began(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    old = tmp_path / "old"
+    old.mkdir()
+    await host.space.touch_project("Budget app", workdir=str(old))
+    lan, _ = await host.ledger.project_session("Lan", "Budget app", workdir=str(old))
+    mei, _ = await host.ledger.project_session("Mei", "Budget app", workdir=str(old))
+    kim, _ = await host.ledger.project_session("Kim", "Budget app", workdir=str(old))
+    new = tmp_path / "new"
+    new.mkdir()
+
+    async def fails_after_work_began(name: str, workdir: str) -> Any:
+        # Mei's session has a run by now, and a commission was filed for Kim's: both began in the new place.
+        await host.ledger.update_session(mei.id, status="running")
+        await host.ledger.create(
+            lanlan_name="Kim", title="just now", dispatch_text="just now", source="dispatch", session_id=kim.id,
+            project="Budget app",
+        )
+        raise OSError("the record cannot be written")
+
+    host.space.set_project_workdir = fails_after_work_began
+    with pytest.raises(OSError):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.ledger.get_session(lan.id)).workdir == str(old)
+    assert (await host.ledger.get_session(mei.id)).workdir == str(new)
+    assert (await host.ledger.get_session(kim.id)).workdir == str(new)

@@ -311,6 +311,8 @@ describe('a familiar up close', () => {
     const overlay = byTest('card-save')?.closest('.el-overlay') as HTMLElement | null
     expect(overlay).toBeTruthy()
     expect(overlay?.style.display).not.toBe('none')
+    // Why it was not taken is said in the editor, not only on the page it covers.
+    expect(byTest('card-error')?.textContent).toContain(words.errors.agent_unreachable)
     // Still the same editor: pressed again, the same line is sent again.
     await click(byTest('card-save'))
     expect(api.writeCard).toHaveBeenCalledTimes(2)

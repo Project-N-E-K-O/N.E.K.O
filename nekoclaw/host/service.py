@@ -294,10 +294,11 @@ class NekoClawHost:
         )
         # Set when shutting down starts; the task finishes when it is done.
         self._shut_down = False
-        # Held while a familiar is made for the user: the name is looked for and taken in one go.
-        self._open_session_lock = asyncio.Lock()
-        # Held while where a project works is changed: its sessions and its record are written as one.
-        self._project_workdir_lock = asyncio.Lock()
+        # Held while a task agent is made for the user (the name is looked for and taken in one go)
+        # and while where a project works is changed (its sessions and its record are written as one).
+        self._project_lock = asyncio.Lock()
+        # Changes of where a project works that are under way: kept so that they are carried through.
+        self._changes: set[asyncio.Future[Any]] = set()
         # Held while a page's settings of a model are written: one request's going back does not undo another's.
         self._model_window_lock = asyncio.Lock()
         # Set by the first call that does work; see ``_first_use``.
@@ -778,7 +779,9 @@ class NekoClawHost:
         ``name`` is the project's and the session's; ``preset`` what kind
         of task agent it is (one of ``templates()`` that is valid);
         ``title`` and ``duty`` go on its card and ``description`` on the
-        project, all as the user's own words, which nothing writes over;
+        project, as the user's own words where the user wrote some, which
+        nothing writes over (a line left empty is nobody's, and the first
+        review fills it in);
         ``workdir`` is where it works (as for ``set_project_workdir``),
         the directory the host gives it when none is named; ``rules`` are
         written as the project's rules when there are some. Nothing is
@@ -807,7 +810,9 @@ class NekoClawHost:
             raise ValueError("bad_preset")
         wanted = await self._working_directory(workdir) if workdir else None
         # One at a time: of two asked for at once under one name, the second finds the name taken.
-        async with self._open_session_lock:
+        # The same lock as changing where a project works: the record of the project and its
+        # session are written here one after the other, and no change comes between the two.
+        async with self._project_lock:
             # Among the archived ones as well: commissions are filed by the name, and two of a name would be one.
             # Compared as the space compares names when it files a commission (``normalize_name``).
             if any(normalize_name(project.name) == normalize_name(name) for project in await self.space.list_projects()):
@@ -844,9 +849,18 @@ class NekoClawHost:
         ``ProjectBusy`` while something is at work in the project.
         """
         wanted = await self._working_directory(workdir)
-        # One change at a time: of two asked for at once, the sessions and the project's record
-        # end up saying the same directory, the one asked for last.
-        async with self._project_workdir_lock:
+        # Carried through once begun, also when whoever asked for it goes away meanwhile: its two
+        # writes are both made or both undone, with the lock held until then.
+        change = asyncio.ensure_future(self._change_project_workdir(project, wanted))
+        self._changes.add(change)
+        change.add_done_callback(self._changes.discard)
+        return await asyncio.shield(change)
+
+    async def _change_project_workdir(self, project: str, wanted: Path) -> dict[str, Any]:
+        """Write what ``set_project_workdir`` was asked for; see there."""
+        # One change at a time, and none while a task agent is being made for the user: the
+        # sessions and the project's record end up saying the same directory.
+        async with self._project_lock:
             if await self.space.get_project(project) is None:
                 raise LookupError(project)
             busy = await self._project_busy(project)
@@ -862,12 +876,33 @@ class NekoClawHost:
             try:
                 changed = await self.space.set_project_workdir(project, str(wanted))
             except BaseException:
-                await self.ledger.restore_project(before, str(wanted))
+                await self._undo_project_move(project, before, str(wanted))
                 raise
             if changed is None:
-                await self.ledger.restore_project(before, str(wanted))
+                await self._undo_project_move(project, before, str(wanted))
                 raise LookupError(project)
             return changed.to_json()
+
+    async def _undo_project_move(self, project: str, before: dict[str, str | None], wanted: str) -> None:
+        """Put a project's sessions back where they worked, after its record could not be written.
+
+        Not when the record says ``wanted`` after all: a write that was
+        given up or failed after the record was on disk did change it,
+        and the sessions are right as they are. A session in which
+        something began meanwhile is left where it is (``Ledger.restore_project``).
+        """
+        try:
+            kept = await self.space.get_project(project)
+        except Exception:  # noqa: BLE001 - the record cannot be read: taken as not written
+            kept = None
+        if kept is not None and kept.workdir == wanted:
+            return
+        left = await self.ledger.restore_project(before, wanted)
+        if left:
+            logger.warning(
+                "where a project works could not be recorded and %d of its sessions began work meanwhile: "
+                "they stay in the directory asked for", len(left),
+            )
 
     def places(self) -> list[dict[str, Any]]:
         """Return where the host keeps what, for showing it: ``key`` and ``path``, in the order shown."""

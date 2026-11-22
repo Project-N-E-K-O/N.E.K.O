@@ -91,6 +91,8 @@
           <el-input v-model="draft.summary" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" maxlength="600" data-testid="card-summary" />
         </el-form-item>
       </el-form>
+      <!-- Said here as well: the page behind the editor is covered by it. -->
+      <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon data-testid="card-error" />
       <template #footer>
         <el-button @click="editing = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :loading="busy === 'card'" data-testid="card-save" @click="saveCard">{{ t('power.space.familiars.save') }}</el-button>

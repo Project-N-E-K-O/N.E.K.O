@@ -1870,14 +1870,35 @@ class Ledger:
 
         return await self.run(work)
 
-    async def restore_project(self, before: dict[str, str | None], workdir: str) -> None:
-        """Put back where sessions worked, as ``move_project`` returned it, for those that still say ``workdir``."""
+    async def restore_project(self, before: dict[str, str | None], workdir: str) -> tuple[str, ...]:
+        """Put back where sessions worked, as ``move_project`` returned it; returns the sessions left as they are.
 
-        def work(conn: sqlite3.Connection) -> None:
+        Only those that still say ``workdir``, and not one in which
+        something began since: it began in ``workdir`` and goes on
+        there. Looked at and written in one transaction, as in
+        ``move_project``.
+        """
+
+        def work(conn: sqlite3.Connection) -> tuple[str, ...]:
+            left: list[str] = []
             for session_id, was in before.items():
-                conn.execute("UPDATE sessions SET workdir = ? WHERE id = ? AND workdir = ?", (was, session_id, workdir))
+                row = conn.execute(
+                    "SELECT status FROM sessions WHERE id = ? AND workdir = ?", (session_id, workdir)
+                ).fetchone()
+                if row is None:
+                    continue
+                under_way = row["status"] in ("running", "waiting", "compacting") or conn.execute(
+                    "SELECT 1 FROM commissions WHERE session_id = ? "
+                    "AND status IN ('queued', 'working', 'waiting_user') LIMIT 1",
+                    (session_id,),
+                ).fetchone() is not None
+                if under_way:
+                    left.append(session_id)
+                    continue
+                conn.execute("UPDATE sessions SET workdir = ? WHERE id = ?", (was, session_id))
+            return tuple(left)
 
-        await self.run(work)
+        return await self.run(work)
 
     async def update_session(self, session_id: str, **values: Any) -> Session | None:
         """Write columns of a session; ``active=True`` also notes that it was in use just now."""

@@ -249,3 +249,46 @@ async def test_a_switch_that_never_reached_the_agent_process_leaves_the_session_
     answer = await agent_router.post_agent_command(Asked())
     assert answer.status_code == 502
     assert manager.agent_flags == {"agent_enabled": False, "user_plugin_enabled": False}
+
+
+@pytest.mark.asyncio
+async def test_taking_a_switch_back_leaves_what_another_request_wrote_meanwhile(monkeypatch):
+    """Only what this request wrote goes back, and only where it still says so."""
+    import httpx
+
+    from main_routers import agent_router
+
+    class Manager:
+        def __init__(self) -> None:
+            self.agent_flags: dict = {"agent_enabled": True, "browser_use_enabled": False, "computer_use_enabled": False}
+
+        def update_agent_flags(self, flags: dict) -> None:
+            self.agent_flags.update(flags)
+
+    class Config:
+        def get_character_data(self):
+            return (None, "Lan", None, None, None, None, None, None, None)
+
+        def is_agent_free(self) -> bool:
+            return False
+
+    manager = Manager()
+
+    def agent(request: httpx.Request) -> httpx.Response:
+        # While this one is on its way, another request switched the keyboard and mouse on, and was taken.
+        manager.update_agent_flags({"computer_use_enabled": True})
+        return httpx.Response(500, json={"success": False})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(agent))
+    monkeypatch.setattr(agent_router, "_remote_backend_block", lambda: None)
+    monkeypatch.setattr(agent_router, "get_session_manager", lambda: {"Lan": manager})
+    monkeypatch.setattr(agent_router, "get_config_manager", lambda: Config())
+    monkeypatch.setattr(agent_router, "_get_http_client", lambda: client)
+
+    class Asked:
+        async def json(self) -> dict:
+            return {"command": "set_flag", "key": "browser_use_enabled", "value": True}
+
+    answer = await agent_router.post_agent_command(Asked())
+    assert answer.status_code == 502
+    assert manager.agent_flags == {"agent_enabled": True, "browser_use_enabled": False, "computer_use_enabled": True}
