@@ -189,8 +189,8 @@ def handle_release_check(args: argparse.Namespace) -> int:
     print(f"  payload_hash_verified={inspect_result.payload_hash_verified}")
     print(f"  tests={test_result}")
     for severity, message in issues:
-        if severity == "warning":
-            print(f"  [WARNING] {message}")
+        if severity in ("warning", "info"):
+            print(f"  [{severity.upper()}] {message}")
     return 0
 
 

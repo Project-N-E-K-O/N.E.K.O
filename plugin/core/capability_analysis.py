@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import ast
+import os
 import re
 import tokenize
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event
 from collections.abc import Iterator
 
+from plugin.core.permission_declarations import (
+    PermissionDeclarations,
+    PermissionIssue,
+    parse_permission_declarations,
+)
 from plugin.utils.source_paths import iter_plugin_python_files
 
 CAPABILITIES = ("conversations.read", "memory.read", "messages.push")
 # Bump when a change to analysis makes persisted reports stale.
-ANALYZER_VERSION = 4
+# 5: permission ids, declarations, blind spots; legacy capabilities unchanged.
+ANALYZER_VERSION = 5
 MAX_FILES = 500
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 MAX_FILE_BYTES = 1024 * 1024
@@ -164,6 +172,19 @@ def _outer_scope_children(node):
 def _resolve(
     value: str, bindings: dict[str, tuple[str | None, bool]]
 ) -> tuple[str, bool]:
+    resolved, external, _bound = _resolve_with_origin(value, bindings)
+    return resolved, external
+
+
+def _resolve_with_origin(
+    value: str, bindings: dict[str, tuple[str | None, bool]]
+) -> tuple[str, bool, bool | None]:
+    """Like ``_resolve``; the third item tells how the root name is bound.
+
+    True: rewritten through a binding (an import, alias or definition).
+    False: bound in this scope but not resolvable (a parameter, a local).
+    None: not bound at all (a builtin or an undefined global).
+    """
     # Bindings already contain resolved paths. A module segment in a resolved
     # path can share a name with a local variable, so never look it up again.
     ends = [match.start() for match in _REFERENCE_BOUNDARY.finditer(value)]
@@ -173,11 +194,11 @@ def _resolve(
         if prefix in bindings:
             replacement, external = bindings[prefix]
             if replacement is None:
-                return value, False
+                return value, False, False
             if len(replacement) + len(value) - end > MAX_REFERENCE_LENGTH:
                 raise _AnalysisBudgetExceeded
-            return replacement + value[end:], external
-    return value, False
+            return replacement + value[end:], external, True
+    return value, False, None
 
 
 def _sdk_module(path: str) -> bool:
@@ -203,13 +224,33 @@ def _getattr_reference(node: ast.AST) -> tuple[ast.AST, str] | None:
     return None
 
 
+@dataclass(frozen=True, eq=False)
+class _Reference:
+    """One resolved reference, with what the permission scan needs on top."""
+
+    node: ast.AST
+    method: str
+    external: bool
+    # See _resolve_with_origin.
+    bound: bool | None
+    function: str
+    is_call: bool
+
+
 def _resolved_references(tree, walker: _AnalysisWalker):
-    def scope(body, inherited, parameters=()):
+    """Yield ``(node, (method, external))`` like before; see _references."""
+    for reference in _references(tree, walker):
+        if not isinstance(reference.node, (ast.Import, ast.ImportFrom)):
+            yield reference.node, (reference.method, reference.external)
+
+
+def _references(tree, walker: _AnalysisWalker):
+    def scope(body, inherited, parameters=(), function=""):
         nodes = list(walker.scope_nodes(body))
         declared, assignments = _collect_declarations(nodes, parameters, walker)
         bindings = _build_bindings(declared, inherited, nodes, walker)
         _propagate_assignments(assignments, bindings, walker)
-        yield from _emit_references(nodes, bindings, scope, walker)
+        yield from _emit_references(nodes, bindings, scope, walker, function)
 
     yield from scope(tree.body, {})
 
@@ -322,12 +363,18 @@ def _propagate_self_attributes(node, bindings, walker):
     return class_bindings
 
 
-def _emit_references(nodes, bindings, scope, walker):
+def _qualified(function: str, name: str) -> str:
+    return f"{function}.{name}" if function else name
+
+
+def _emit_references(nodes, bindings, scope, walker, function=""):
     for node in nodes:
         walker.check()
         if isinstance(node, ast.ClassDef):
             yield from scope(
-                node.body, _propagate_self_attributes(node, bindings, walker)
+                node.body,
+                _propagate_self_attributes(node, bindings, walker),
+                function=_qualified(function, node.name),
             )
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             args = node.args
@@ -338,17 +385,27 @@ def _emit_references(nodes, bindings, scope, walker):
                 arg.arg for arg in (args.vararg, args.kwarg) if arg is not None
             ]
             body = [node.body] if isinstance(node, ast.Lambda) else node.body
-            yield from scope(body, bindings, parameters)
+            name = function if isinstance(node, ast.Lambda) else _qualified(function, node.name)
+            yield from scope(body, bindings, parameters, function=name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            yield _Reference(node, "", False, None, function, False)
         elif isinstance(node, (ast.Attribute, ast.Call)):
             getattr_reference = _getattr_reference(node)
             if getattr_reference is not None:
                 receiver, attribute = getattr_reference
-                resolved, external = _resolve(_name(receiver), bindings)
-                yield node, (resolved + "." + attribute, external)
+                resolved, external, bound = _resolve_with_origin(_name(receiver), bindings)
+                yield _Reference(
+                    node, resolved + "." + attribute, external, bound, function,
+                    isinstance(node, ast.Call),
+                )
             else:
-                yield node, _resolve(
+                resolved, external, bound = _resolve_with_origin(
                     _name(node.func if isinstance(node, ast.Call) else node),
                     bindings,
+                )
+                yield _Reference(
+                    node, resolved, external, bound, function,
+                    isinstance(node, ast.Call),
                 )
 
 
@@ -369,11 +426,388 @@ def _is_test_source(relative: Path) -> bool:
     )
 
 
+# Legacy capability names (still used by the consent flow) and the permission
+# id each one is reported under in ``permissions``.
+LEGACY_CAPABILITY_PERMISSIONS = {
+    "conversations.read": "plugin_sdk.main_agent.conversations:read",
+    "memory.read": "plugin_sdk.main_agent.memory:read",
+    "messages.push": "plugin_sdk.main_agent.messages:push",
+}
+assert set(LEGACY_CAPABILITY_PERMISSIONS) == set(CAPABILITIES)
+
+# How a permission finding was established, strongest first.
+BASIS_RESOLVED_CALL = "resolved_call"
+BASIS_RESOLVED_REFERENCE = "resolved_reference"
+BASIS_SUFFIX_MATCH = "suffix_match"
+BASIS_IMPORT_ONLY = "import_only"
+BASIS_DECLARED_ONLY = "declared_only"
+_BASIS_RANK = {
+    BASIS_RESOLVED_CALL: 4,
+    BASIS_RESOLVED_REFERENCE: 3,
+    BASIS_SUFFIX_MATCH: 2,
+    BASIS_IMPORT_ONLY: 1,
+}
+DIRECT_BASES = frozenset({BASIS_RESOLVED_CALL, BASIS_RESOLVED_REFERENCE})
+# Static evidence for these is never definite: the path may be inside the
+# plugin's own data directory, which needs no permission.
+POSSIBLE_ONLY_PERMISSIONS = frozenset({"system.fs:read", "system.fs:write"})
+MAX_PERMISSION_EVIDENCE = 50
+MAX_BLIND_SPOTS = 200
+
+BLIND_SPOT_TYPES = (
+    "dynamic_import",
+    "reflective_access",
+    "code_exec",
+    "native_loader",
+    "context_loss",
+    "not_analyzed",
+)
+
+_NETWORK = "system.network:connect"
+_PROCESS = "system.process:spawn"
+_ENV = "system.env:read"
+_FS_READ = "system.fs:read"
+_FS_WRITE = "system.fs:write"
+
+# Standard-library and well-known third-party origins. A reference matches a
+# pattern when it equals it or continues it with "." or "()".
+_EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        _NETWORK,
+        (
+            "socket.socket",
+            "socket.create_connection",
+            "socket.create_server",
+            "urllib.request.urlopen",
+            "urllib.request.build_opener",
+            "http.client.HTTPConnection",
+            "http.client.HTTPSConnection",
+            "asyncio.open_connection",
+            "asyncio.start_server",
+            "ftplib.FTP",
+            "ftplib.FTP_TLS",
+            "smtplib.SMTP",
+            "smtplib.SMTP_SSL",
+            "imaplib.IMAP4",
+            "imaplib.IMAP4_SSL",
+            "poplib.POP3",
+            "poplib.POP3_SSL",
+            *(
+                f"{module}.{name}"
+                for module in ("requests", "httpx")
+                for name in ("get", "post", "put", "patch", "delete", "head", "options", "request")
+            ),
+            "requests.Session",
+            "requests.session",
+            "httpx.stream",
+            "httpx.Client",
+            "httpx.AsyncClient",
+            "aiohttp.ClientSession",
+            "aiohttp.request",
+            "websockets.connect",
+            "websockets.client.connect",
+            "websocket.create_connection",
+            "websocket.WebSocketApp",
+            "urllib3.PoolManager",
+            "urllib3.request",
+        ),
+    ),
+    (
+        _PROCESS,
+        (
+            "subprocess.Popen",
+            "subprocess.run",
+            "subprocess.call",
+            "subprocess.check_call",
+            "subprocess.check_output",
+            "subprocess.getoutput",
+            "subprocess.getstatusoutput",
+            "os.system",
+            "os.popen",
+            "os.posix_spawn",
+            "os.posix_spawnp",
+            "os.startfile",
+            *(f"os.spawn{suffix}" for suffix in ("l", "le", "lp", "lpe", "v", "ve", "vp", "vpe")),
+            *(f"os.exec{suffix}" for suffix in ("l", "le", "lp", "lpe", "v", "ve", "vp", "vpe")),
+            "asyncio.create_subprocess_exec",
+            "asyncio.create_subprocess_shell",
+            "multiprocessing.Process",
+            "pty.spawn",
+        ),
+    ),
+    (_ENV, ("os.environ", "os.environb", "os.getenv", "os.getenvb")),
+    (
+        _FS_READ,
+        (
+            "os.listdir",
+            "os.scandir",
+            "os.walk",
+            "pathlib.Path().read_text",
+            "pathlib.Path().read_bytes",
+            "pathlib.Path().iterdir",
+            "pathlib.Path().glob",
+            "pathlib.Path().rglob",
+            "glob.glob",
+            "glob.iglob",
+        ),
+    ),
+    (
+        _FS_WRITE,
+        (
+            "os.remove",
+            "os.unlink",
+            "os.rename",
+            "os.replace",
+            "os.mkdir",
+            "os.makedirs",
+            "os.rmdir",
+            "os.removedirs",
+            "shutil.copy",
+            "shutil.copy2",
+            "shutil.copyfile",
+            "shutil.copytree",
+            "shutil.move",
+            "shutil.rmtree",
+            "pathlib.Path().write_text",
+            "pathlib.Path().write_bytes",
+            "pathlib.Path().mkdir",
+            "pathlib.Path().touch",
+            "pathlib.Path().unlink",
+            "pathlib.Path().rmdir",
+            "pathlib.Path().rename",
+            "pathlib.Path().replace",
+        ),
+    ),
+)
+# open()-like calls: function -> positional index of the mode argument.
+_OPEN_CALLS = {
+    "builtins.open": 1,
+    "io.open": 1,
+    "codecs.open": 1,
+    "aiofiles.open": 1,
+    "pathlib.Path().open": 0,
+    "os.open": None,
+}
+# Importing these alone suggests the permission (weakest basis).
+_IMPORT_HINTS = {
+    "socket": _NETWORK,
+    "requests": _NETWORK,
+    "httpx": _NETWORK,
+    "aiohttp": _NETWORK,
+    "websockets": _NETWORK,
+    "websocket": _NETWORK,
+    "urllib3": _NETWORK,
+    "urllib.request": _NETWORK,
+    "http.client": _NETWORK,
+    "ftplib": _NETWORK,
+    "smtplib": _NETWORK,
+    "subprocess": _PROCESS,
+}
+# Builtins the scan cares about; only when the name is not rebound.
+_BUILTINS = frozenset({"open", "eval", "exec", "compile", "getattr", "__import__"})
+
+_DYNAMIC_IMPORT_CALLS = ("importlib.import_module", "importlib.__import__", "builtins.__import__")
+_CODE_EXEC_CALLS = ("builtins.eval", "builtins.exec", "builtins.compile", "runpy.run_path", "runpy.run_module")
+_NATIVE_LOADERS = (
+    "ctypes.CDLL",
+    "ctypes.WinDLL",
+    "ctypes.OleDLL",
+    "ctypes.PyDLL",
+    "ctypes.cdll",
+    "ctypes.windll",
+    "ctypes.oledll",
+    "ctypes.pydll",
+    "ctypes.LibraryLoader",
+    "_ctypes.dlopen",
+    "cffi.FFI().dlopen",
+)
+_CONTEXT_LOSS = (
+    "threading.Thread",
+    "threading.Timer",
+    "_thread.start_new_thread",
+    "concurrent.futures.ThreadPoolExecutor",
+    "concurrent.futures.ProcessPoolExecutor",
+    "concurrent.futures.thread.ThreadPoolExecutor",
+    "multiprocessing.pool.ThreadPool",
+)
+# Analysis warnings that leave part of the plugin unscanned.
+_NOT_ANALYZED_WARNINGS = frozenset(
+    {"budget_exceeded", "source_too_large", "source_unreadable", "analysis_failed"}
+)
+# Non-Python code the scan does not read (hosted UI scripts and the like).
+_NON_PYTHON_CODE_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".vue"})
+_NON_PYTHON_SKIPPED_DIRS = frozenset({".git", "node_modules", "__pycache__", ".venv", "venv", "vendor"})
+_MAX_TREE_ENTRIES = 5000
+_MAX_NON_PYTHON_REPORTED = 20
+_MAX_MANIFEST_BYTES = 1024 * 1024
+
+
+def _matches(name: str, patterns) -> bool:
+    return any(
+        name == pattern or name.startswith((pattern + ".", pattern + "("))
+        for pattern in patterns
+    )
+
+
+def _origin_name(reference: _Reference) -> str | None:
+    """Fully qualified external name, or None when the origin is not external."""
+    if reference.bound is None and reference.method in _BUILTINS:
+        return "builtins." + reference.method
+    if reference.external and reference.bound:
+        return reference.method
+    return None
+
+
+def _literal_string(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _call_argument(call: ast.Call, index: int | None, keyword: str) -> ast.AST | None:
+    for item in call.keywords:
+        if item.arg == keyword:
+            return item.value
+    if index is not None and index < len(call.args):
+        return call.args[index]
+    return None
+
+
+def _open_permissions(reference: _Reference, name: str) -> tuple[tuple[str, ...], str]:
+    """Permissions an open()-like call may need, and the mode as read/write/unknown."""
+    index = _OPEN_CALLS[name]
+    node = reference.node
+    if index is None or not isinstance(node, ast.Call):
+        return (_FS_READ, _FS_WRITE), "unknown"
+    argument = _call_argument(node, index, "mode")
+    if argument is None:
+        return (_FS_READ,), "read"
+    mode = _literal_string(argument)
+    if mode is None:
+        return (_FS_READ, _FS_WRITE), "unknown"
+    if any(flag in mode for flag in "wax+"):
+        return (_FS_WRITE,), "write"
+    return (_FS_READ,), "read"
+
+
+def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]:
+    """(permission, basis, extra evidence fields) for one reference."""
+    results: list[tuple[str, str, dict]] = []
+    direct = BASIS_RESOLVED_CALL if reference.is_call else BASIS_RESOLVED_REFERENCE
+    if not reference.external:
+        capability = _capability_for(reference.method)
+        if capability:
+            sdk_resolved = reference.bound is True and _sdk_module(reference.method)
+            results.append(
+                (
+                    LEGACY_CAPABILITY_PERMISSIONS[capability],
+                    direct if sdk_resolved else BASIS_SUFFIX_MATCH,
+                    {},
+                )
+            )
+    name = _origin_name(reference)
+    if name is None:
+        return results
+    if name in _OPEN_CALLS and reference.is_call:
+        permissions, mode = _open_permissions(reference, name)
+        results.extend((permission, direct, {"mode": mode}) for permission in permissions)
+        return results
+    for permission, patterns in _EXTERNAL_RULES:
+        if _matches(name, patterns):
+            results.append((permission, direct, {}))
+    return results
+
+
+def _import_hints(node: ast.Import | ast.ImportFrom) -> set[str]:
+    if isinstance(node, ast.ImportFrom):
+        modules = [node.module] if node.module and not node.level else []
+    else:
+        modules = [item.name for item in node.names]
+    hints = set()
+    for module in modules:
+        for prefix, permission in _IMPORT_HINTS.items():
+            if module == prefix or module.startswith(prefix + "."):
+                hints.add(permission)
+    return hints
+
+
+def _reference_blind_spot(reference: _Reference) -> str | None:
+    node = reference.node
+    name = _origin_name(reference)
+    method = reference.method
+    if name is not None:
+        if reference.is_call and name in _DYNAMIC_IMPORT_CALLS:
+            if _literal_string(_call_argument(node, 0, "name")) is None:
+                return "dynamic_import"
+            return None
+        if reference.is_call and name == "builtins.getattr":
+            # Constant names resolve like attribute access; see _getattr_reference.
+            return "reflective_access"
+        if _matches(name, ("operator.attrgetter",)):
+            return "reflective_access"
+        if reference.is_call and name in _CODE_EXEC_CALLS:
+            return "code_exec"
+        if _matches(name, _NATIVE_LOADERS):
+            return "native_loader"
+        if _matches(name, _CONTEXT_LOSS):
+            return "context_loss"
+    if method.endswith(".__dict__") and (
+        (reference.bound is True and _sdk_module(method)) or ("." + method).endswith(".ctx.__dict__")
+    ):
+        return "reflective_access"
+    if reference.is_call and method.endswith(".run_in_executor"):
+        executor = _call_argument(node, 0, "executor")
+        if not (isinstance(executor, ast.Constant) and executor.value is None):
+            return "context_loss"
+    return None
+
+
 @dataclass
 class CapabilitySources:
     files: list[tuple[str, str]] = field(default_factory=list)
     warnings: list[dict] = field(default_factory=list)
     size: int = 0
+    # Parsed plugin.toml; None when absent or unreadable.
+    manifest: dict | None = None
+    # Parts of the plugin the scan does not read: [{"reason", "file"}].
+    skipped: list[dict] = field(default_factory=list)
+
+
+def _read_manifest(root: Path) -> dict | None:
+    path = root / "plugin.toml"
+    try:
+        if not path.is_file() or path.stat().st_size > _MAX_MANIFEST_BYTES:
+            return None
+        with path.open("rb") as stream:
+            return tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError, UnicodeError):
+        return None
+
+
+def _skipped_parts(root: Path, stop: Event | None) -> list[dict]:
+    """vendor/ and non-Python code files, bounded."""
+    skipped: list[dict] = []
+    try:
+        if (root / "vendor").is_dir():
+            skipped.append({"reason": "vendor", "file": "vendor"})
+        visited = 0
+        found = 0
+        for current, directories, files in os.walk(root, followlinks=False):
+            if stop is not None and stop.is_set():
+                break
+            directories[:] = sorted(name for name in directories if name not in _NON_PYTHON_SKIPPED_DIRS)
+            for name in sorted(files):
+                visited += 1
+                if visited > _MAX_TREE_ENTRIES:
+                    return skipped
+                if Path(name).suffix.lower() in _NON_PYTHON_CODE_SUFFIXES:
+                    found += 1
+                    if found <= _MAX_NON_PYTHON_REPORTED:
+                        relative = (Path(current) / name).relative_to(root).as_posix()
+                        skipped.append({"reason": "non_python", "file": relative})
+    except OSError:
+        pass
+    return skipped
 
 
 def read_capability_sources(root: Path, *, stop: Event | None = None) -> CapabilitySources:
@@ -403,17 +837,110 @@ def read_capability_sources(root: Path, *, stop: Event | None = None) -> Capabil
                 sources.warnings.append({"code": "source_unreadable", "file": relative})
     except OSError:
         sources.warnings.append({"code": "source_unreadable"})
+    sources.manifest = _read_manifest(root)
+    sources.skipped = _skipped_parts(root, stop)
     return sources
 
 
+class _PermissionCollector:
+    def __init__(self) -> None:
+        # permission -> (file, line) -> evidence row
+        self.findings: dict[str, dict[tuple[str, int], dict]] = {}
+        self.import_hints: dict[str, dict] = {}
+        self.blind_spots: dict[tuple[str, str | None, int | None], dict] = {}
+
+    def add_finding(self, permission: str, basis: str, row: dict) -> None:
+        rows = self.findings.setdefault(permission, {})
+        key = (row["file"], row["line"])
+        previous = rows.get(key)
+        if previous is None:
+            if len(rows) >= MAX_PERMISSION_EVIDENCE:
+                return
+            rows[key] = {**row, "basis": basis}
+        elif _BASIS_RANK[basis] > _BASIS_RANK[previous["basis"]]:
+            rows[key] = {**row, "basis": basis}
+
+    def add_blind_spot(self, kind: str, file: str | None, line: int | None, **extra) -> None:
+        key = (kind, file, line)
+        if key in self.blind_spots or len(self.blind_spots) >= MAX_BLIND_SPOTS:
+            return
+        self.blind_spots[key] = {"type": kind, "file": file, "line": line, **extra}
+
+    def scan(self, relative: str, reference: _Reference) -> None:
+        node = reference.node
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for permission in _import_hints(node):
+                self.import_hints.setdefault(
+                    permission,
+                    {
+                        "file": relative,
+                        "line": node.lineno,
+                        "function": reference.function,
+                        "method": "import",
+                        "basis": BASIS_IMPORT_ONLY,
+                    },
+                )
+            return
+        row = {
+            "file": relative,
+            "line": node.lineno,
+            "function": reference.function,
+            "method": reference.method,
+        }
+        for permission, basis, extra in _reference_permissions(reference):
+            self.add_finding(permission, basis, {**row, **extra})
+        kind = _reference_blind_spot(reference)
+        if kind:
+            self.add_blind_spot(kind, relative, node.lineno, method=reference.method)
+
+    def report(self, declarations: PermissionDeclarations, warnings, skipped) -> tuple[dict, list[dict]]:
+        for warning in warnings:
+            code = warning.get("code")
+            if code in _NOT_ANALYZED_WARNINGS:
+                self.add_blind_spot("not_analyzed", warning.get("file"), None, reason=code)
+        for item in skipped:
+            self.add_blind_spot("not_analyzed", item.get("file"), None, reason=item["reason"])
+        for permission, row in self.import_hints.items():
+            if permission not in self.findings:
+                self.findings[permission] = {(row["file"], row["line"]): row}
+        permissions: dict[str, dict] = {}
+        for permission in sorted(set(self.findings) | declarations.ids()):
+            rows = sorted(
+                self.findings.get(permission, {}).values(),
+                key=lambda row: (row["file"], row["line"]),
+            )
+            basis = (
+                max((row["basis"] for row in rows), key=_BASIS_RANK.__getitem__)
+                if rows
+                else BASIS_DECLARED_ONLY
+            )
+            permissions[permission] = {
+                "declared": declarations.level(permission),
+                "findings": rows,
+                "basis": basis,
+            }
+        blind_spots = sorted(
+            self.blind_spots.values(),
+            key=lambda row: (row["file"] or "", row["line"] or 0, row["type"]),
+        )
+        return permissions, blind_spots
+
+
 def analyze_capabilities(
-    root: Path, *, stop: Event | None = None, sources: CapabilitySources | None = None
+    root: Path,
+    *,
+    stop: Event | None = None,
+    sources: CapabilitySources | None = None,
+    declarations: PermissionDeclarations | None = None,
 ) -> dict:
     walker = _AnalysisWalker(stop)
     sources = sources if sources is not None else read_capability_sources(root, stop=stop)
+    if declarations is None:
+        declarations, _issues = parse_permission_declarations(sources.manifest or {})
     evidence: list[dict] = []
     capabilities: set[str] = set()
     warnings = list(sources.warnings)
+    collector = _PermissionCollector()
     count = 0
     try:
         for relative, source in sources.files:
@@ -426,7 +953,11 @@ def analyze_capabilities(
             count += 1
             walker.check()
             seen: set[tuple[str, int]] = set()
-            for node, (method, external) in _resolved_references(tree, walker):
+            for reference in _references(tree, walker):
+                collector.scan(relative, reference)
+                if isinstance(reference.node, (ast.Import, ast.ImportFrom)):
+                    continue
+                node, method, external = reference.node, reference.method, reference.external
                 capability = None if external else _capability_for(method)
                 if capability:
                     capabilities.add(capability)
@@ -445,6 +976,7 @@ def analyze_capabilities(
     except (_AnalysisBudgetExceeded, RecursionError):
         warnings.append({"code": "budget_exceeded"})
     status = "partial" if warnings else "completed" if count else "unavailable"
+    permissions, blind_spots = collector.report(declarations, warnings, sources.skipped)
     return {
         "status": status,
         "capabilities": sorted(capabilities),
@@ -452,4 +984,85 @@ def analyze_capabilities(
         "warnings": warnings[:50],
         "files_analyzed": count,
         "source_bytes": sources.size,
+        "declarations": declarations.status,
+        "permissions": permissions,
+        "blind_spots": blind_spots,
     }
+
+
+def compare_declarations(report: dict) -> list[PermissionIssue]:
+    """Declared vs. found, with the severities ``check -r`` applies.
+
+    Used but not declared: an error when the evidence resolves to an SDK or
+    standard-library origin, otherwise a warning (it may be a false match).
+    Declared but not found: a warning, since dynamic use is invisible to the
+    scan. Blind spots are reported separately (see ``blind_spot_issues``).
+    """
+    if report.get("declarations") == "invalid":
+        return []
+    issues: list[PermissionIssue] = []
+    status = report.get("status")
+    for permission, item in (report.get("permissions") or {}).items():
+        findings = item.get("findings") or []
+        if item.get("declared") is None and findings:
+            direct = [row for row in findings if row.get("basis") in DIRECT_BASES]
+            definite = bool(direct) and permission not in POSSIBLE_ONLY_PERMISSIONS
+            shown = direct if definite else findings
+            locations = [f"{row['file']}:{row['line']}" for row in shown[:3]]
+            issues.append(
+                PermissionIssue(
+                    "error" if definite else "warning",
+                    "used_undeclared" if definite else "used_undeclared_possible",
+                    {
+                        "permission": permission,
+                        "locations": ", ".join(locations),
+                        "more": str(max(0, len(shown) - len(locations))),
+                    },
+                )
+            )
+        elif item.get("declared") is not None and not findings and status != "unavailable":
+            issues.append(PermissionIssue("warning", "declared_unused", {"permission": permission}))
+    return issues
+
+
+def scan_note(report: dict) -> str:
+    """Which user-facing scan sentence applies: never a safety claim.
+
+    "no_extra_usage": completed with no blind spots; "blind_spots": the scan
+    ran but has known blind spots or is partial; "unavailable" otherwise.
+    """
+    status = report.get("status")
+    if status == "completed" and not report.get("blind_spots"):
+        return "no_extra_usage"
+    if status in ("completed", "partial"):
+        return "blind_spots"
+    return "unavailable"
+
+
+def summarize_permissions(report: dict) -> dict:
+    """Summary rows, each labelled with where it comes from.
+
+    ``declared`` rows are the author's own statement, ``detected`` rows come
+    from the scan only, ``unconfirmed`` rows are blind-spot types the scan
+    could not see through. The three sources are never merged into one row.
+    """
+    declared: list[dict] = []
+    detected: list[dict] = []
+    for permission, item in (report.get("permissions") or {}).items():
+        if item.get("declared"):
+            declared.append({"permission": permission, "source": "declared", "level": item["declared"]})
+        elif item.get("findings"):
+            first = item["findings"][0]
+            detected.append(
+                {
+                    "permission": permission,
+                    "source": "detected",
+                    "basis": item.get("basis"),
+                    "file": first.get("file"),
+                    "line": first.get("line"),
+                }
+            )
+    rows = declared + detected
+    blind_types = sorted({row["type"] for row in report.get("blind_spots") or []}, key=BLIND_SPOT_TYPES.index)
+    rows.extend({"type": kind, "source": "unconfirmed"} for kind in blind_types)
+    return {"rows": rows, "note": scan_note(report), "blind_spot_types": blind_types}

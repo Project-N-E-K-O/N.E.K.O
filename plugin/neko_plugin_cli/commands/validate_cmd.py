@@ -23,7 +23,18 @@ from plugin._types.plugin_types import (
     format_removed_plugin_host,
 )
 from plugin.config.schema import PluginModelRequirementSchema, PluginModelUsageId
+from plugin.core.capability_analysis import (
+    analyze_capabilities,
+    compare_declarations,
+    summarize_permissions,
+)
 from plugin.core.entry_points import plugin_package_matches_directory
+from plugin.core.permission_declarations import (
+    PermissionDeclarations,
+    PermissionIssue,
+    narrowing_issues,
+    parse_permission_declarations,
+)
 from plugin.core.ui_manifest import PERMISSIONS as UI_PERMISSIONS
 from plugin.sdk.shared.core.push_message_schema import (
     LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS,
@@ -39,6 +50,7 @@ from plugin.utils.source_paths import iter_plugin_python_files
 from ..core.build_rules import reraise_walk_error
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
+from . import _permission_messages as permission_messages
 
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 _PLUGIN_ENTRIES_MAX = 1024
@@ -219,7 +231,13 @@ def validate_plugin_dir(
     _check_optional_file(plugin_dir / ".github" / "workflows" / "verify.yml", ".github/workflows/verify.yml", issues, strict=strict)
 
     _check_gitignore(plugin_dir / ".gitignore", issues, strict=strict)
-    _check_python_decorators(plugin_dir, issues)
+    declarations, _declaration_issues = parse_permission_declarations(source.plugin_toml)
+    _check_python_decorators(
+        plugin_dir,
+        issues,
+        declared=declarations.ids() if declarations.status != "invalid" else None,
+    )
+    _check_permission_usage(plugin_dir, declarations, issues)
     _check_symlink_tree(plugin_dir, issues)
 
     return issues
@@ -314,6 +332,7 @@ def _check_plugin_toml_schema(
     _check_ui_table(plugin_dir, plugin_table.get("ui"), issues)
     _check_runtime_table(config.get("plugin_runtime"), issues)
     _check_plugin_state_table(config.get("plugin_state"), issues)
+    _check_permissions_table(config, issues)
 
     adapter_table = config.get("adapter")
     if adapter_table is not None:
@@ -1206,7 +1225,112 @@ def _plugin_python_files(plugin_dir: Path) -> list[Path]:
     return sorted(iter_plugin_python_files(plugin_dir))
 
 
-def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) -> None:
+def _permission_issue(issue: PermissionIssue) -> tuple[str, str]:
+    return issue.severity, _format_multilingual(permission_messages.texts(issue.code, dict(issue.params)))
+
+
+def _check_permissions_table(config: dict[str, object], issues: list[tuple[str, str]]) -> None:
+    """Top-level [permissions.require] / [permissions.ask] declarations.
+
+    Not to be confused with the UI entry ``permissions`` list under
+    [[plugin.ui.panel]] / [[plugin.ui.guide]], which is checked elsewhere.
+    """
+    _declarations, found = parse_permission_declarations(config)
+    issues.extend(_permission_issue(issue) for issue in found)
+
+
+# Component decorators that may narrow the plugin's declared permissions.
+_PERMISSION_NARROWING_DECORATORS = frozenset(
+    {"plugin_entry", "llm_tool", "hook", "on_event", "custom_event", "timer_interval"}
+)
+
+
+def _check_permission_narrowing(
+    decorator: ast.expr, label: str, declared: frozenset[str] | None, issues: list[tuple[str, str]]
+) -> None:
+    if declared is None or not isinstance(decorator, ast.Call):
+        return
+    for item in decorator.keywords:
+        if item.arg != "permissions":
+            continue
+        try:
+            value = ast.literal_eval(item.value)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            issues.append(_permission_issue(PermissionIssue("info", "narrowing_unconfirmed", {"label": label})))
+            return
+        issues.extend(_permission_issue(issue) for issue in narrowing_issues(value, declared, label))
+
+
+def _check_permission_usage(
+    plugin_dir: Path, declarations: PermissionDeclarations, issues: list[tuple[str, str]]
+) -> None:
+    """Compare plugin.toml declarations with what the code scan finds."""
+    report = analyze_capabilities(plugin_dir, declarations=declarations)
+    found = compare_declarations(report)
+    issues.extend(_permission_issue(issue) for issue in found)
+
+    by_type: dict[str, list[dict]] = {}
+    for spot in report.get("blind_spots") or []:
+        by_type.setdefault(spot["type"], []).append(spot)
+    for kind, spots in by_type.items():
+        shown = [
+            f"{spot['file']}:{spot['line']}" if spot.get("line") else (spot.get("file") or plugin_dir.name)
+            for spot in spots[:3]
+        ]
+        if len(spots) > len(shown):
+            shown.append(f"+{len(spots) - len(shown)}")
+        reasons = sorted({spot["reason"] for spot in spots if spot.get("reason")})
+        suffix = f"; {', '.join(reasons)}" if reasons else ""
+        texts = permission_messages.texts(
+            "blind_spot_context_loss" if kind == "context_loss" else "blind_spot",
+            {"location": ", ".join(shown)},
+            type=lambda locale, kind=kind: permission_messages.blind_spot_label(kind, locale) + suffix,
+        )
+        issues.append(("info", _format_multilingual(texts)))
+
+    summary = summarize_permissions(report)
+    if summary["rows"]:
+
+        def rows(locale: str) -> str:
+            parts = []
+            for row in summary["rows"]:
+                label = permission_messages.source_label(row["source"], locale)
+                if row["source"] == "unconfirmed":
+                    parts.append(f"[{label}] {permission_messages.blind_spot_label(row['type'], locale)}")
+                elif row["source"] == "declared":
+                    parts.append(f"[{label}] {row['permission']} ({row['level']})")
+                else:
+                    parts.append(f"[{label}] {row['permission']} ({row['file']}:{row['line']})")
+            return "; ".join(parts)
+
+        issues.append(("info", _format_multilingual(permission_messages.texts("summary", rows=rows))))
+
+    undeclared = any(issue.code.startswith("used_undeclared") for issue in found)
+    if summary["note"] == "no_extra_usage" and not undeclared and report.get("permissions"):
+        issues.append(("info", _format_multilingual(permission_messages.texts("scan_no_extra_usage"))))
+    elif summary["note"] == "blind_spots" and summary["blind_spot_types"]:
+        types = summary["blind_spot_types"]
+        issues.append(
+            (
+                "info",
+                _format_multilingual(
+                    permission_messages.texts(
+                        "scan_blind_spots",
+                        types=lambda locale: ", ".join(
+                            permission_messages.blind_spot_label(kind, locale) for kind in types
+                        ),
+                    )
+                ),
+            )
+        )
+
+
+def _check_python_decorators(
+    plugin_dir: Path,
+    issues: list[tuple[str, str]],
+    *,
+    declared: frozenset[str] | None = None,
+) -> None:
     seen_ids: dict[str, str] = {}
     for path in _plugin_python_files(plugin_dir):
         relative = path.relative_to(plugin_dir)
@@ -1219,6 +1343,10 @@ def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) ->
                 continue
             for decorator in node.decorator_list:
                 name = _decorator_name(decorator)
+                if name in _PERMISSION_NARROWING_DECORATORS:
+                    _check_permission_narrowing(
+                        decorator, f"@{name} in {relative}:{node.lineno}", declared, issues
+                    )
                 if name == "plugin_entry":
                     entry_id = _decorator_keyword_string(decorator, "id") or node.name
                     _check_identifier(entry_id, f"@plugin_entry id in {relative}:{node.lineno}", issues)
