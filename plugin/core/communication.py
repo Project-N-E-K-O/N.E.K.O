@@ -15,7 +15,6 @@ from typing import Any, Awaitable, Callable, ClassVar, Dict, Optional, TypeVar
 from plugin._types.entry_metadata import MAX_SCHEMA_DEPTH, entry_contract_fields, schema_depth_exceeds
 from plugin._types.exceptions import PluginExecutionError
 from plugin.core.call_registry import CallLink, current_delivery_link
-from plugin.core.capability_policy import policy_enabled
 from plugin.core.rpc import RpcPeer, RpcRemoteError
 from plugin.core.zmq_transport import (
     CH_COMM,
@@ -384,8 +383,6 @@ class PluginCommunicationResourceManager:
         call_link: CallLink | None,
     ) -> Any:
         """Send one TRIGGER / TRIGGER_CUSTOM, registered for the call chain."""
-        if not policy_enabled():
-            return await self._send_command_and_wait_local(req_id, msg, timeout, error_context)
         from plugin.server.application.plugins import capability_gate
 
         record = capability_gate.begin_call(self.plugin_id, req_id, event_type, event_id, call_link)
@@ -783,10 +780,9 @@ class PluginCommunicationResourceManager:
         if msg.get("type") == "MESSAGE_PUSH":
             # Internal field: never forwarded, whatever either side's setting.
             parent = msg.pop("_rpc_parent_request_id", None)
-            if policy_enabled():
-                from plugin.server.application.plugins import capability_gate
+            from plugin.server.application.plugins import capability_gate
 
-                capability_gate.check(self.plugin_id, parent, "messages.push", "MESSAGE_PUSH")
+            capability_gate.check(self.plugin_id, parent, capability_gate.MESSAGES_PUSH, "MESSAGE_PUSH")
         await self._forward_message(msg)
 
     def _publish_message_to_plane(self, msg: Dict[str, Any]) -> bool:

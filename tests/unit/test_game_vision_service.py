@@ -22,7 +22,7 @@ def model(monkeypatch):
     observed = {"calls": 0}
 
     async def config(slot):
-        assert slot == "vision"
+        assert slot in ("conversation", "vision")
         return {"model": "example-vision"}
 
     class LLM:

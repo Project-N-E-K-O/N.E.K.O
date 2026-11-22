@@ -10,9 +10,7 @@
       <p v-if="plugin.unconfirmed.length" class="consent-notice__caps">
         {{
           plugin.unconfirmed
-            .map((capability) =>
-              t(`pluginConsent.capabilities.${capability.replace('.', '_')}.title`),
-            )
+            .map((capability) => t(capabilityMessageKey(capability, 'title')))
             .join('、')
         }}
       </p>
@@ -41,7 +39,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import type { PluginConsentNotice } from '@/api/pluginConsent'
-import { isConsentChanged } from '@/utils/pluginCapabilities'
+import { capabilityMessageKey, isConsentChanged } from '@/utils/pluginCapabilities'
 import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { usePluginStore } from '@/stores/plugin'
 

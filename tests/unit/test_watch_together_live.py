@@ -302,7 +302,9 @@ def model(monkeypatch):
         captured.update(system=system, content=content, kwargs=kwargs)
         return value
     monkeypatch.setattr(engine, 'structured_json_completion', completion)
-    monkeypatch.setattr(engine, 'vision_model_config', AsyncMock(return_value={'model': 'vision'}))
+    from utils.legacy_vision import choose_image_model
+    monkeypatch.setattr(engine, 'vision_model_choice',
+                        AsyncMock(return_value=choose_image_model({'model': 'vision'}, None)))
     return SimpleNamespace(captured=captured, reply=reply)
 
 

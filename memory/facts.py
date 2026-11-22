@@ -7048,3 +7048,277 @@ class FactStore:
                 f"when={event_when_raw}"
             )
         return ok
+
+    def _load_facts_locked(self, name: str) -> list[dict]:
+        """Load facts for ``name`` assuming caller ALREADY holds ``self._get_lock(name)``."""
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
+        if name in self._facts:
+            return self._facts[name]
+        path = self._facts_path(name)
+        if os.path.exists(path):
+            try:
+                with consistent_view_read(path):
+                    with open(path, encoding='utf-8') as f:
+                        data = json.load(f)
+                if isinstance(data, list):
+                    data = self._without_cold_copies(name, data)
+                    if self._migrate_v1_entity_values(data):
+                        try:
+                            assert_cloudsave_writable(
+                                self._config_manager,
+                                operation="migrate",
+                                target=f"memory/{name}/facts.json",
+                            )
+                            atomic_write_json(path, data, indent=2, ensure_ascii=False)
+                            logger.info(f"[FactStore] {name}: v1→v2 entity 值迁移完成")
+                        except MaintenanceModeError as exc:
+                            logger.debug(f"[FactStore] {name}: 维护态跳过 facts.json 迁移落盘: {exc}")
+                    self._facts[name] = data
+                    return data
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"[FactStore] 加载 facts 文件失败: {e}")
+        self._facts[name] = []
+        return self._facts[name]
+
+    @staticmethod
+    def _recompute_fact_hash(target: dict, cleaned_text: str) -> str:
+        """Recompute exact-dedup hash preserving daily event_date and subject/scope salts."""
+        ext = target.get("external_import")
+        daily_date = (
+            str(ext.get("event_date"))
+            if isinstance(ext, dict) and ext.get("section") == "daily" and ext.get("event_date")
+            else None
+        )
+        hash_input = f"{daily_date}\n{cleaned_text}" if daily_date else cleaned_text
+        subj = subject_from_entry(target)
+        if subj is not None:
+            hash_input = f"{subj.key}\n{subj.scope}\n{hash_input}"
+        return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+
+    @staticmethod
+    async def _run_shielded_async(coro_fn):
+        """Run an async persist+index sequence shielded against repeated cancellations."""
+        task = asyncio.create_task(coro_fn())
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            if not task.cancelled():
+                task.exception()
+            raise asyncio.CancelledError
+        return task.result()
+
+    async def aedit_fact_manual(self, name: str, fact_id: str, new_text: str) -> dict | None:
+        """Manually edit one active fact's text, recompute dedup hash, and clear embedding cache."""
+        from memory._embeddings.schema import clear_embedding_fields
+
+        cleaned = str(new_text or "").strip()
+        if not cleaned or len(cleaned) > 1000:
+            raise ValueError("Fact text must be 1..1000 chars")
+
+        def _edit() -> dict | None:
+            with self._get_lock(name):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{name}/facts.json",
+                )
+                current = self._load_facts_locked(name)
+                matches = [
+                    fact for fact in current
+                    if isinstance(fact, dict) and fact.get("id") == fact_id
+                ]
+                if not matches:
+                    return None
+                if len(matches) > 1:
+                    raise ValueError("Ambiguous duplicate fact_id across scopes")
+                target = matches[0]
+                target["text"] = cleaned
+                target["hash"] = self._recompute_fact_hash(target, cleaned)
+                clear_embedding_fields(target)
+                target.pop("embedding_model", None)
+                target.pop("embedding_text_hash", None)
+                self.save_facts(name, _fact_lock_held=True)
+                return dict(target)
+
+        async def _commit_and_index() -> dict | None:
+            result = await asyncio.to_thread(_edit)
+            if result is not None and self._time_indexed is not None:
+                try:
+                    await self._time_indexed.aindex_fact(
+                        name, fact_id, result["text"], replace=True,
+                    )
+                except Exception as exc:
+                    logger.warning(f"[FactStore] {name}: 刷新编辑后 FTS 索引失败 ({fact_id}): {exc}")
+            return result
+
+        async with self._get_persist_alock(name):
+            return await self._run_shielded_async(_commit_and_index)
+
+    async def aarchive_fact_manual(self, name: str, fact_id: str) -> bool:
+        """Manually archive (forget) one active fact with recall-honored retirement markers."""
+        def _archive() -> bool:
+            with self._get_lock(name):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="archive",
+                    target=f"memory/{name}/facts_archive.json",
+                )
+                current = self._load_facts_locked(name)
+                matches = [
+                    fact for fact in current
+                    if isinstance(fact, dict) and fact.get("id") == fact_id
+                ]
+                if not matches:
+                    return False
+                if len(matches) > 1:
+                    raise ValueError("Ambiguous duplicate fact_id across scopes")
+                target = matches[0]
+                removed = dict(target)
+                kept = [fact for fact in current if fact is not target]
+                now_iso = datetime.now().isoformat()
+                removed["archived_at"] = now_iso
+                removed["arbitration_archived_at"] = now_iso
+                removed["arbitration_reason"] = "manual_forget"
+                removed["archive_reason"] = "manual_forget"
+                archive_path = self._facts_archive_path(name)
+                existing_archive: list[dict] = []
+                if os.path.exists(archive_path):
+                    with open(archive_path, encoding="utf-8") as fh:
+                        loaded = json.load(fh)
+                    if not isinstance(loaded, list):
+                        raise ValueError(
+                            f"facts_archive.json expected list, got {type(loaded).__name__}"
+                        )
+                    existing_archive = loaded
+                merged_archive = _merge_archive_entries(existing_archive, [removed])
+                atomic_write_json(
+                    archive_path, merged_archive, indent=2, ensure_ascii=False,
+                )
+                # Mutate cached list in-place to preserve list identity for concurrent holders.
+                current[:] = kept
+                self.save_facts(name, _fact_lock_held=True)
+                return True
+
+        async def _commit_and_delete_index() -> bool:
+            archived = await asyncio.to_thread(_archive)
+            if archived and self._time_indexed is not None:
+                try:
+                    await self._time_indexed.adelete_fact_from_index(name, fact_id)
+                except Exception as exc:
+                    logger.warning(f"[FactStore] {name}: 清理归档事实 FTS 索引失败 ({fact_id}): {exc}")
+            return archived
+
+        async with self._get_persist_alock(name):
+            return await self._run_shielded_async(_commit_and_delete_index)
+
+    async def amerge_facts_manual(
+        self, name: str, keep_id: str, drop_id: str, merged_text: str,
+    ) -> dict | None:
+        """Atomically update ``keep_id`` with ``merged_text`` and archive ``drop_id`` under locks."""
+        from memory._embeddings.schema import clear_embedding_fields
+
+        cleaned = str(merged_text or "").strip()
+        if not cleaned or len(cleaned) > 1000:
+            raise ValueError("Fact text must be 1..1000 chars")
+        if keep_id == drop_id:
+            raise ValueError("keep_id and drop_id must differ")
+
+        def _merge() -> dict | None:
+            with self._get_lock(name):
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="archive",
+                    target=f"memory/{name}/facts_archive.json",
+                )
+                current = self._load_facts_locked(name)
+                keep_matches = [
+                    fact for fact in current
+                    if isinstance(fact, dict) and fact.get("id") == keep_id
+                ]
+                drop_matches = [
+                    fact for fact in current
+                    if isinstance(fact, dict) and fact.get("id") == drop_id
+                ]
+                if not keep_matches:
+                    raise LookupError("keep_id not found")
+                if not drop_matches:
+                    raise LookupError("drop_id not found")
+                if len(keep_matches) > 1 or len(drop_matches) > 1:
+                    raise ValueError("Ambiguous duplicate fact_id across scopes")
+                keep_obj = keep_matches[0]
+                drop_obj = drop_matches[0]
+                if (
+                    str(keep_obj.get("entity") or "master") != str(drop_obj.get("entity") or "master")
+                    or subject_from_entry(keep_obj) != subject_from_entry(drop_obj)
+                    or str(keep_obj.get("scope") or "") != str(drop_obj.get("scope") or "")
+                ):
+                    raise ValueError("Cannot merge facts from different subjects or scopes")
+
+                archive_path = self._facts_archive_path(name)
+                orig_archive_bytes: bytes | None = None
+                existing_archive: list[dict] = []
+                if os.path.exists(archive_path):
+                    with open(archive_path, "rb") as raw_fh:
+                        orig_archive_bytes = raw_fh.read()
+                    loaded = json.loads(orig_archive_bytes.decode("utf-8"))
+                    if not isinstance(loaded, list):
+                        raise ValueError(
+                            f"facts_archive.json expected list, got {type(loaded).__name__}"
+                        )
+                    existing_archive = loaded
+
+                now_iso = datetime.now().isoformat()
+                removed = dict(drop_obj)
+                removed["archived_at"] = now_iso
+                removed["arbitration_archived_at"] = now_iso
+                removed["arbitration_reason"] = "manual_merge"
+                removed["archive_reason"] = "manual_merge"
+                removed["merged_into"] = keep_id
+
+                orig_current = [dict(f) if isinstance(f, dict) else f for f in current]
+                merged_archive = _merge_archive_entries(existing_archive, [removed])
+                try:
+                    atomic_write_json(
+                        archive_path, merged_archive, indent=2, ensure_ascii=False,
+                    )
+                    keep_obj["text"] = cleaned
+                    keep_obj["hash"] = self._recompute_fact_hash(keep_obj, cleaned)
+                    clear_embedding_fields(keep_obj)
+                    keep_obj.pop("embedding_model", None)
+                    keep_obj.pop("embedding_text_hash", None)
+
+                    kept = [f for f in current if f is not drop_obj]
+                    current[:] = kept
+                    self.save_facts(name, _fact_lock_held=True)
+                except Exception:
+                    current[:] = orig_current
+                    try:
+                        if orig_archive_bytes is not None:
+                            from utils.file_utils import atomic_write_bytes
+                            atomic_write_bytes(archive_path, orig_archive_bytes)
+                        elif os.path.exists(archive_path):
+                            os.remove(archive_path)
+                    except OSError as rb_exc:
+                        logger.warning(f"[FactStore] {name}: 合并回滚 archive 失败: {rb_exc}")
+                    raise
+                return dict(keep_obj)
+
+        async def _commit_and_update_index() -> dict | None:
+            kept_fact = await asyncio.to_thread(_merge)
+            if kept_fact is not None and self._time_indexed is not None:
+                try:
+                    await self._time_indexed.aindex_fact(
+                        name, keep_id, kept_fact["text"], replace=True,
+                    )
+                    await self._time_indexed.adelete_fact_from_index(name, drop_id)
+                except Exception as exc:
+                    logger.warning(f"[FactStore] {name}: 合并事实后刷新 FTS 索引失败: {exc}")
+            return kept_fact
+
+        async with self._get_persist_alock(name):
+            return await self._run_shielded_async(_commit_and_update_index)

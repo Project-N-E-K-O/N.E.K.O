@@ -13,7 +13,7 @@ listed URL is served, and that the MMD animation can be deleted.
 import io
 import zipfile
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import quote
 
 from fastapi import FastAPI
@@ -84,7 +84,8 @@ def vrm_app(tmp_path, monkeypatch):
     app.include_router(vrm_router.router)
     app.mount("/user_vrm/animation", CustomStaticFiles(directory=str(user_anim)))
     app.mount("/static", StaticRootFiles(directory=str(project_root / "static")))
-    return SimpleNamespace(app=app, static_anim=static_anim, user_anim=user_anim)
+    return SimpleNamespace(app=app, static_anim=static_anim, user_anim=user_anim,
+                           static_vrm=static_anim.parent, vrm_dir=vrm_dir)
 
 
 MMD_ANIMATION_NAMES = ["lower.vmd", "UPPER.VMD", "Mixed.Vmd"]
@@ -337,6 +338,8 @@ def test_models_list_skips_uncheckable_paths_and_keeps_the_rest(mmd_app, monkeyp
         return real_is_file(self)
 
     monkeypatch.setattr(Path, "is_file", is_file)
+    logger = MagicMock()
+    monkeypatch.setattr(mmd_router, "logger", logger)
     with TestClient(mmd_app.app) as client:
         response = client.get("/api/model/mmd/models")
 
@@ -346,6 +349,7 @@ def test_models_list_skips_uncheckable_paths_and_keeps_the_rest(mmd_app, monkeyp
         "/user_mmd/Good/Good.pmx",
         "/workshop/123/Shop.pmx",
     ]
+    logger.warning.assert_any_call("跳过 3 个无法检查类型的 MMD 模型路径")
     assert (mmd_app.mmd_dir / "Locked" / "Locked.PMX").exists()
 
 
@@ -413,3 +417,140 @@ def test_live2d_user_models_skip_an_uncheckable_vrm_and_keep_scanning(tmp_path, 
     assert sorted(model["path"] for model in models if model.get("type") == "vrm") == [
         "/user_vrm/A.vrm", "/user_vrm/Z.VRM",
     ]
+
+
+def _raise_for_names(monkeypatch, method, names):
+    """Make ``Path.<method>()`` raise PermissionError for the given names, as it
+    does on Python 3.11 for e.g. a link into an unreadable folder."""
+    from pathlib import Path
+
+    real = getattr(Path, method)
+
+    def check(self):
+        if self.name in names:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(Path, method, check)
+
+
+def test_vrm_models_list_skips_uncheckable_paths_and_keeps_the_rest(vrm_app, monkeypatch):
+    monkeypatch.setattr(vrm_router, "get_subscribed_workshop_items", AsyncMock(return_value={"success": True, "items": []}))
+    (vrm_app.static_vrm / "Builtin.vrm").write_bytes(b"glTF")
+    (vrm_app.static_vrm / "Locked.VRM").write_bytes(b"glTF")
+    (vrm_app.vrm_dir / "Good.VRM").write_bytes(b"glTF")
+    (vrm_app.vrm_dir / "Hidden.vrm").write_bytes(b"glTF")
+    _raise_for_names(monkeypatch, "is_file", {"Locked.VRM", "Hidden.vrm"})
+    logger = MagicMock()
+    monkeypatch.setattr(vrm_router, "logger", logger)
+
+    with TestClient(vrm_app.app) as client:
+        response = client.get("/api/model/vrm/models")
+
+    assert response.status_code == 200, response.text
+    assert sorted(model["url"] for model in response.json()["models"]) == [
+        "/static/vrm/Builtin.vrm", "/user_vrm/Good.VRM",
+    ]
+    logger.warning.assert_any_call("跳过 2 个无法检查类型的 VRM 模型路径")
+
+
+def test_vrm_uncheckable_model_still_counts_as_existing(vrm_app, monkeypatch):
+    # Like the MMD folder checks: a model whose type cannot be checked keeps
+    # protecting its shared mappings instead of failing or reading as absent.
+    (vrm_app.vrm_dir / "Avatar.vrm").write_bytes(b"glTF")
+    (vrm_app.vrm_dir / "Avatar.VRM").write_bytes(b"glTF")
+    (vrm_app.static_vrm / "Solo.vrm").write_bytes(b"glTF")
+    _raise_for_names(monkeypatch, "is_file", {"Avatar.vrm", "Solo.vrm"})
+
+    assert vrm_router._vrm_model_stem_exists("solo", [vrm_app.static_vrm])
+    assert vrm_router._vrm_model_stem_exists("avatar", [vrm_app.vrm_dir])
+    # Lookup skips the uncheckable canonical file and returns the readable variant.
+    assert vrm_router._find_vrm_model_file(vrm_app.vrm_dir, "Avatar") == (vrm_app.vrm_dir / "Avatar.VRM").resolve()
+
+
+def test_mmd_models_list_skips_an_uncheckable_top_folder(mmd_app, monkeypatch):
+    # The residue scan over mmd_dir called is_dir() unguarded: one entry whose
+    # type cannot be checked failed the whole list with 500.
+    (mmd_app.mmd_dir / "Good").mkdir()
+    (mmd_app.mmd_dir / "Good" / "Good.pmx").write_bytes(b"pmx")
+    (mmd_app.mmd_dir / "Residue").mkdir()
+    (mmd_app.mmd_dir / "Residue" / "tex.png").write_bytes(b"png")
+    (mmd_app.mmd_dir / "Locked").mkdir()
+    _raise_for_names(monkeypatch, "is_dir", {"Locked"})
+    logger = MagicMock()
+    monkeypatch.setattr(mmd_router, "logger", logger)
+
+    with TestClient(mmd_app.app) as client:
+        response = client.get("/api/model/mmd/models")
+
+    assert response.status_code == 200, response.text
+    models = response.json()["models"]
+    assert sorted(model["url"] for model in models if not model.get("broken")) == ["/user_mmd/Good/Good.pmx"]
+    assert sorted(model["url"] for model in models if model.get("broken")) == ["/user_mmd/Residue"]
+    logger.warning.assert_any_call("跳过 1 个无法检查类型的 MMD 模型路径")
+
+
+def test_mmd_delete_by_folder_refuses_an_uncheckable_folder(mmd_app, monkeypatch):
+    # is_dir() raising on the folder answered 500; it is now refused like any
+    # other non-deletable path, and the folder is kept.
+    (mmd_app.mmd_dir / "Locked").mkdir()
+    (mmd_app.mmd_dir / "Locked" / "tex.png").write_bytes(b"png")
+    _raise_for_names(monkeypatch, "is_dir", {"Locked"})
+
+    with TestClient(mmd_app.app) as client:
+        response = client.request("DELETE", "/api/model/mmd/model", json={"url": "/user_mmd/Locked"})
+
+    assert response.status_code == 400, response.text
+    assert (mmd_app.mmd_dir / "Locked" / "tex.png").exists()
+
+
+@pytest.mark.parametrize("url", ["/user_mmd/Residue", "/user_mmd/Model/Model.pmx"])
+def test_mmd_delete_counts_around_an_uncheckable_file(mmd_app, monkeypatch, url):
+    # The deleted-file count called is_file() unguarded, so one uncheckable entry
+    # failed the delete with 500 and left the folder in place.
+    for folder, files in {"Residue": ["tex.png", "Locked.png"],
+                          "Model": ["Model.pmx", "tex.png", "Locked.png"]}.items():
+        (mmd_app.mmd_dir / folder).mkdir()
+        for name in files:
+            (mmd_app.mmd_dir / folder / name).write_bytes(b"x")
+    _raise_for_names(monkeypatch, "is_file", {"Locked.png"})
+
+    with TestClient(mmd_app.app) as client:
+        response = client.request("DELETE", "/api/model/mmd/model", json={"url": url})
+
+    assert response.status_code == 200, response.text
+    folder = url.split("/")[2]
+    assert response.json()["deleted_files"] == (1 if folder == "Residue" else 2)
+    assert not (mmd_app.mmd_dir / folder).exists()
+
+
+@pytest.mark.parametrize("spelling", ["link", "relative"])
+def test_mmd_zip_import_into_a_linked_or_relative_mmd_dir(mmd_app, monkeypatch, tmp_path, spelling):
+    # The import resolves the extraction folder; relative_to(mmd_dir) with an
+    # unresolved mmd_dir raised ValueError, and the error cleanup deleted the
+    # model it had just extracted.
+    if spelling == "link":
+        mmd_dir = tmp_path / "mmd-link"
+        try:
+            mmd_dir.symlink_to(mmd_app.mmd_dir, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks are not available")
+    else:
+        monkeypatch.chdir(tmp_path)
+        mmd_dir = mmd_app.mmd_dir.relative_to(tmp_path)
+    config = SimpleNamespace(project_root=tmp_path / "project", mmd_dir=mmd_dir,
+                             mmd_animation_dir=mmd_dir / "animation")
+    monkeypatch.setattr(mmd_router, "get_config_manager", lambda: config)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("Miku/Miku.pmx", b"pmx")
+        archive.writestr("Miku/tex.png", b"png")
+
+    with TestClient(mmd_app.app) as client:
+        response = client.post("/api/model/mmd/upload_zip",
+                               files={"file": ("Miku.zip", buffer.getvalue(), "application/zip")})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["model_url"] == "/user_mmd/Miku/Miku.pmx"
+    assert response.json()["file_count"] == 2
+    assert (mmd_app.mmd_dir / "Miku" / "Miku.pmx").read_bytes() == b"pmx"

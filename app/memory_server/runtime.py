@@ -91,6 +91,11 @@ _CHARACTER_WRITE_ROUTES: tuple[tuple[str, frozenset[str]], ...] = (
     # Only PUT writes; GET reads sidecars and bypasses fencing.
     # Callers already treat 409 as retryable (cloud-save maintenance fences also return it).
     ("/prompt-locale/", frozenset({"PUT"})),
+    # Memory Browser character-scoped writers (cache files & safety snapshots).
+    ("/internal/memory/browser/imprint_note/", frozenset({"POST"})),
+    ("/internal/memory/browser/star_map/label_clusters/", frozenset({"POST"})),
+    ("/internal/memory/browser/snapshots/create/", frozenset({"POST"})),
+    ("/internal/memory/browser/snapshots/restore/", frozenset({"POST"})),
 )
 # Group-memory writes use /internal/memory/{lanlan_name}/<op>, ultimately writing the character's
 # FactStore / TimeIndexedMemory. Missing fences neither reject nor drain these requests during deletion,
@@ -563,6 +568,11 @@ async def reload_memory_components(
             _register_evidence_handlers(new_reconciler, new_persona, new_reflection)
             from .long_term_sync import register_replay
             register_replay(new_reconciler, new_persona, new_facts)
+            from memory.analytics.snapshots import register_snapshot_restore_replay
+            register_snapshot_restore_replay(
+                new_reconciler, persona_manager=new_persona, fact_store=new_facts,
+                reflection_engine=new_reflection,
+            )
             # P2 step 2: rebind the existing fact_dedup_resolver to the
             # NEW FactStore in place rather than constructing a new
             # resolver. Going via rebind_fact_store preserves the
@@ -1190,6 +1200,11 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         _register_evidence_handlers(reconciler, persona_manager, reflection_engine)
         from .long_term_sync import register_replay
         register_replay(reconciler, persona_manager, fact_store)
+        from memory.analytics.snapshots import register_snapshot_restore_replay
+        register_snapshot_restore_replay(
+            reconciler, persona_manager=persona_manager, fact_store=fact_store,
+            reflection_engine=reflection_engine,
+        )
 
         try:
             from utils.token_tracker import TokenTracker, install_hooks
@@ -1229,11 +1244,39 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
             if catgirl_names:
+                # A Memory Browser restore interrupted by a crash is finished
+                # before the persona check below can rewrite persona.json
+                # (card sync, cold-copy drop); its replay handler would then
+                # see a third version and leave memories from two points in
+                # time. The full reconcile further down replays it again as a
+                # no-op and advances the sentinel.
+                from memory.event_log import EVT_MEMORY_SNAPSHOT_RESTORED
+
+                async def _finish_pending_restore(n: str) -> bool:
+                    try:
+                        if await reconciler.arun_pending_ahead(n, EVT_MEMORY_SNAPSHOT_RESTORED):
+                            logger.info(f"[Memory] {n}: 已补完上次被打断的快照恢复")
+                        return True
+                    except Exception as e:
+                        logger.warning(
+                            f"[Memory] {n}: 补完被打断的快照恢复失败，本次启动不做 persona 检查，"
+                            f"留待下次启动续做: {e}"
+                        )
+                        return False
+
+                finished = await asyncio.gather(
+                    *(_finish_pending_restore(n) for n in catgirl_names),
+                )
+                # Best effort: a character whose restore could not be finished
+                # skips this check, so it does not rewrite persona.json now.
+                # Later steps (reconcile, migrations, card sync on first use)
+                # may still write it before the next start retries.
+                checked = [n for n, ok in zip(catgirl_names, finished) if ok]
                 results = await asyncio.gather(
-                    *(persona_manager.aensure_persona(n) for n in catgirl_names),
+                    *(persona_manager.aensure_persona(n) for n in checked),
                     return_exceptions=True,
                 )
-                for name, result in zip(catgirl_names, results):
+                for name, result in zip(checked, results):
                     if isinstance(result, Exception):
                         logger.warning(
                             f"[Memory] Persona 迁移检查失败: {name}: {result}",

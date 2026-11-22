@@ -25,6 +25,7 @@ from plugin.utils.github_release import (
 from ..core.build_rules import VENDOR_SYNC_GLOBS
 from ..core.lint import ruff_command
 from ..core.plugin_source import load_plugin_source
+from ..git_env import git_env
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
 from ..repo_state import git_output, worktree_dirty_paths
@@ -791,6 +792,7 @@ def _local_tag_commit(plugin_dir: Path, tag: str) -> str | None:
     completed = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}"],
         cwd=plugin_dir,
+        env=git_env(),
         encoding="utf-8",
         errors="replace",
         stdout=subprocess.PIPE,
@@ -1047,6 +1049,7 @@ def _git(plugin_dir: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", *args],
         cwd=plugin_dir,
+        env=git_env(),
         encoding="utf-8",
         errors="replace",
         stdout=subprocess.PIPE,
@@ -1069,6 +1072,7 @@ def _git_config_values(plugin_dir: Path, key: str) -> list[str]:
     completed = subprocess.run(
         ["git", "config", "--get-all", key],
         cwd=plugin_dir,
+        env=git_env(),
         encoding="utf-8",
         errors="replace",
         stdout=subprocess.PIPE,
