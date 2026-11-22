@@ -4190,6 +4190,8 @@
             "autoMemoryRecallTooltip": "Si está activado, antes de responder en el chat de texto (incluida la voz transcrita) se recuerdan automáticamente momentos pasados relacionados; si está desactivado, solo se recuerda cuando hace falta.",
             "slopFilter": "Expresión natural",
             "slopFilterTooltip": "Reduce las expresiones repetitivas y estereotipadas de las respuestas anteriores para que se exprese con más naturalidad.",
+            "captureSelfUiMask": "Ocultar chat en capturas",
+            "captureSelfUiMaskTooltip": "Cuando mira tu pantalla, el historial de chat y las opciones de N.E.K.O se tapan antes de enviar la imagen al modelo, siempre que se pueda saber dónde están en la pantalla. Si no se puede (por ejemplo, el navegador no está en primer plano al compartir la pantalla completa), la imagen se envía sin tapar. El cuadro de texto sigue visible.",
             "catSettings": "Configuración de gata",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",

@@ -278,6 +278,49 @@ Don't need UI? Just don't include this section. See [Hosted UI](./hosted-ui) for
 
 ---
 
+### `[permissions]` — What the plugin needs from the user
+
+```toml
+[permissions.require]
+"system.network:connect" = { reason = "Look up the weather service", hosts = ["api.example.com"] }
+
+[permissions.ask]
+"plugin_sdk.main_agent.memory:read" = { reason = { en = "Use your home city for the forecast", zh-CN = "按你常住的城市给出天气" } }
+"plugin_sdk.models:invoke" = { reason = "Turn the forecast into one sentence" }
+```
+
+> **Current status:** declarations are currently used only by `neko-plugin check` / `check -r`, which compare them with the code. Confirming `require` permissions at install time and asking for `ask` permissions on first use are planned for a later release and are not active yet.
+
+- `require`: the plugin cannot work without it; the user will be asked to agree when installing.
+- `ask`: the user will be asked the first time the plugin really uses it.
+- Every entry needs a `reason`. Users see it next to the permission, so write it for them. It is either one string or a table of language codes; languages you leave out fall back to one you wrote.
+- An `ask` entry may add `background = true` together with a `background_reason` when the plugin also needs it while the user is not using it.
+- `hosts` (only for `system.network:connect`) is shown to the user for reference.
+
+Permission ids:
+
+| Id | Meaning |
+|---|---|
+| `plugin_sdk.main_agent.memory:read` | Read memory |
+| `plugin_sdk.main_agent.conversations:read` | Read conversations |
+| `plugin_sdk.main_agent.messages:push` | Send messages, cards or reply attachments to N.E.K.O |
+| `plugin_sdk.models:invoke` | Call AI models |
+| `system.network:connect` | Connect to the network |
+| `system.fs:read` / `system.fs:write` | Read / write files outside the plugin's own data directory |
+| `system.process:spawn` | Start other programs |
+| `system.env:read` | Read environment variables |
+
+`neko-plugin check` and `check -r` compare the declarations with a scan of the plugin's Python code:
+
+- Code that clearly uses a permission the plugin does not declare is an error and fails `check -r` (and therefore Market CI). Add the declaration with a reason. For now, a plugin with no `[permissions]` table at all gets a warning instead; this will become an error in a later release.
+- A possible use the scan cannot be sure about (an unresolved receiver, an import only, a file path that may be the plugin's own data) is a warning.
+- A declaration the scan found no use for is a warning; it is fine when the use is dynamic.
+- Code the scan cannot see through (dynamic imports, `getattr` with a computed name, `eval`/`exec`, `ctypes`, threads, `vendor/`, non-Python files) is listed as info. "No findings" never means the plugin was proven harmless.
+
+This top-level table is unrelated to the `permissions` list of `[[plugin.ui.panel]]` / `[[plugin.ui.guide]]`.
+
+---
+
 ### Custom sections — Your business config
 
 ```toml
@@ -294,7 +337,7 @@ notes_cfg = cfg.get("notes", {})
 max_per_page = notes_cfg.get("max_per_page", 20)
 ```
 
-You can define as many custom sections as you want, named however you like.
+You can define as many custom sections as you want, named however you like, except `permissions`: the top-level `[permissions]` table is reserved for permission declarations (see above). A plugin that already uses `[permissions]` for its own settings should rename that section, otherwise `neko-plugin check` reports it as an invalid declaration.
 
 ---
 

@@ -11,7 +11,18 @@ from plugin.neko_plugin_cli.core.lint import RUFF_LINT_SPEC, RuffLintSpec
 pytestmark = pytest.mark.plugin_unit
 
 
-def _make_plugin(tmp_path: Path, source: str, plugin_id: str = "adv_demo") -> Path:
+# Declarations for what ALL_VIOLATIONS uses, so the permission check stays quiet.
+_DECLARED_PERMISSIONS = [
+    "[permissions.require]",
+    '"system.network:connect" = { reason = "fetch data" }',
+    '"system.process:spawn" = { reason = "run a helper" }',
+    "",
+]
+
+
+def _make_plugin(
+    tmp_path: Path, source: str, plugin_id: str = "adv_demo", *, permissions: list[str] | None = None
+) -> Path:
     plugin_dir = tmp_path / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
     (plugin_dir / "plugin.toml").write_text(
@@ -28,6 +39,7 @@ def _make_plugin(tmp_path: Path, source: str, plugin_id: str = "adv_demo") -> Pa
                 'recommended = ">=0.1.0,<0.2.0"',
                 'supported = ">=0.1.0,<0.3.0"',
                 "",
+                *(permissions or []),
             ]
         ),
         encoding="utf-8",
@@ -260,7 +272,7 @@ def test_check_prints_advisories_without_changing_exit_code(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    plugin_dir = _make_plugin(tmp_path, ALL_VIOLATIONS)
+    plugin_dir = _make_plugin(tmp_path, ALL_VIOLATIONS, permissions=_DECLARED_PERMISSIONS)
 
     exit_code = neko_plugin_cli.main(["check", str(plugin_dir)])
 
@@ -275,8 +287,15 @@ def test_check_prints_advisories_without_changing_exit_code(
     assert len(explanation_lines) == len(_ADVISORY_RULES)
     for code in _ADVISORY_RULES:
         assert any(line.startswith(f"  [ADVISORY] {code}: ") for line in hit_lines), code
+    advisory_locale_lines = []
+    in_advisory = False
+    for line in captured.out.splitlines():
+        if line.startswith("  ["):
+            in_advisory = line.startswith("  [ADVISORY] ")
+        elif in_advisory:
+            advisory_locale_lines.append(line)
     for locale in LOCALES:
-        assert sum(line.startswith(f"      {locale}: ") for line in captured.out.splitlines()) == 7, locale
+        assert sum(line.startswith(f"      {locale}: ") for line in advisory_locale_lines) == 7, locale
     assert "[ADVISORY]" not in captured.err
 
 

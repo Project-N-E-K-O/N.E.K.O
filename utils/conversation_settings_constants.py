@@ -34,6 +34,9 @@ ALLOWED_CONVERSATION_SETTINGS = frozenset({
     "autoMemoryRecallEnabled",
     "avatarReactionBubbleEnabled",
     "slopFilterEnabled",
+    # Mask N.E.K.O's own chat history / option regions in screen frames sent
+    # to the model (static/app/app-capture-mask.js). Frontend only; default on.
+    "captureSelfUiMaskEnabled",
     "proactiveChatInterval",
     "proactiveVisionInterval",
     "subtitleEnabled",

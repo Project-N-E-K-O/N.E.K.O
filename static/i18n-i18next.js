@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 新增「使魔模型·高级」「小游戏识别模型」（api.agentAdvanced* / api.gameRecognitionModelConfig）八语言文案，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-23-agent-advanced-game-recognition';
+    const LOCALE_VERSION = '2026-11-23-agent-advanced-game-recognition-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

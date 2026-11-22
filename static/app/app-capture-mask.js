@@ -298,6 +298,89 @@
         return { known: true, rects: clipNormalizedRects(res.rects) };
     }
 
+    // ======================== User switch ========================
+
+    // Settings switch captureSelfUiMaskEnabled (default on). Read on every
+    // frame, never cached: another window (e.g. the chat window in desktop
+    // multi-window mode) can change it, and app-settings.js applies that
+    // change here through the shared settings snapshot. Only an explicit
+    // false turns masking off.
+    function isMaskEnabled(win) {
+        try {
+            var S = win.appState;
+            var value = S && typeof S.captureSelfUiMaskEnabled === 'boolean'
+                ? S.captureSelfUiMaskEnabled
+                : win.captureSelfUiMaskEnabled;
+            return value !== false;
+        } catch (e) { return true; }
+    }
+
+    // ======================== getDisplayMedia hand-out order (desktop shell) ========================
+
+    // For a stream without a recorded source the shell query names no source,
+    // and the shell answers with the source its display-media handler last
+    // handed this window. That record follows the latest request to finish
+    // (the handler answers when the source is picked), not the stream: once a
+    // newer getDisplayMedia request finished here, an older stream still in
+    // use would be masked at the newer source's position, and while a request
+    // is still open the record may already have changed under any stream.
+    // So every request is numbered when it finishes (a cancelled or failed
+    // one too: it may have changed the record), its stream remembers the
+    // number, and frames of a superseded stream, or of any such stream while
+    // a request is open, are position unknown without asking.
+    var displayMediaRequestSeq = 0;
+    var displayMediaRequestsOpen = 0;
+    var displayMediaStreamSeqs = typeof WeakMap === 'function' ? new WeakMap() : null;
+
+    /**
+     * getDisplayMedia, numbered. Call it in place of
+     * mediaDevices.getDisplayMedia(): it calls that synchronously (user
+     * activation is kept) and resolves to the same stream.
+     */
+    function requestDisplayMedia(mediaDevices, constraints) {
+        displayMediaRequestsOpen += 1;
+        var finished = false;
+        function finish() {
+            if (!finished) {
+                finished = true;
+                displayMediaRequestsOpen -= 1;
+            }
+            return ++displayMediaRequestSeq;
+        }
+        var request;
+        try {
+            request = mediaDevices.getDisplayMedia(constraints);
+        } catch (e) {
+            // Thrown synchronously, so no request was made (in practice:
+            // mediaDevices missing or replaced; bad constraints and
+            // unsupported cases reject the promise instead and are counted):
+            // the shell handler never ran, its record is unchanged.
+            displayMediaRequestsOpen -= 1;
+            throw e;
+        }
+        return Promise.resolve(request).then(function (stream) {
+            var seq = finish();
+            if (stream && displayMediaStreamSeqs) displayMediaStreamSeqs.set(stream, seq);
+            return stream;
+        }, function (err) {
+            finish();
+            throw err;
+        });
+    }
+
+    // Why a query that would name no source for a display-media stream must
+    // not be made, or null when it may: the stream is no longer this
+    // window's latest finished request, or a request is still open.
+    function displayMediaStreamUnknownReason(ctx) {
+        if (!ctx || ctx.sourceId || ctx.via === 'backend' || !ctx.stream || !displayMediaStreamSeqs) return null;
+        if (displayMediaRequestsOpen > 0) return 'display_media_request_open';
+        var seq = displayMediaStreamSeqs.get(ctx.stream);
+        // Neither a recorded source nor a number: not handed out through
+        // requestDisplayMedia, so the shell record says nothing about it.
+        if (typeof seq !== 'number') return 'unsequenced_stream';
+        return seq !== displayMediaRequestSeq ? 'superseded_stream' : null;
+    }
+
     // ======================== Geometry resolution ========================
 
     // Same captured surface as far as the shell query is concerned: the C2
@@ -320,8 +403,20 @@
     function beginMaskSession(ctxHint) {
         var win = window;
         var hint = ctxHint || {};
+        // Switched off: no sample, no shell query. The session still records
+        // that, so a frame whose capture started while off is sent as
+        // captured even if the switch is turned on before it is masked (no
+        // pre-capture sample to intersect with: when unsure, mask less).
+        if (!isMaskEnabled(win)) return { hint: hint, switchedOff: true };
         if (isDesktopMultiWindow(win)) {
-            return { hint: hint, pending: queryShellMask(win, hint) };
+            var preUnknown = displayMediaStreamUnknownReason(hint);
+            if (preUnknown) {
+                return { hint: hint, pending: Promise.resolve({ known: false, rects: [], reason: preUnknown }) };
+            }
+            // The request number at the time of the query: a request that
+            // finishes before the frame is resolved may change what a query
+            // naming no source answers for (see resolveGeometry).
+            return { hint: hint, pending: queryShellMask(win, hint), displayMediaSeq: displayMediaRequestSeq };
         }
         // Keep the window geometry of this sample too: if the browser window
         // moves before the post-capture sample, each sample is mapped with
@@ -334,9 +429,15 @@
     // captured (see mapLocalSample).
     function sampleLocal(win) {
         var doc = win.document;
+        var focused = false;
+        try { focused = !!doc && typeof doc.hasFocus === 'function' && doc.hasFocus() === true; } catch (e) { focused = false; }
         return {
             rects: collectLocalMaskRects(doc, win, { includeHiddenDocument: true }),
-            hidden: !!doc && doc.visibilityState === 'hidden'
+            hidden: !!doc && doc.visibilityState === 'hidden',
+            // Only a focused browser window is known to be in front. Without
+            // focus, another application may cover the chat regions, and a
+            // mask painted at their screen position would land on it.
+            focused: focused
         };
     }
 
@@ -360,6 +461,13 @@
         }
         // A background tab is not on any screen or window capture.
         if (sample.hidden) return { known: true, rects: [] };
+        // Whole-screen capture of a browser window that is not in front: the
+        // regions may be covered by another application, so what the frame
+        // shows there is unknown. When unsure, mask less. (A tab capture
+        // above gets the page itself, covered or not.)
+        if (captureType === 'screen' && !sample.focused && sample.rects && sample.rects.length > 0) {
+            return { known: false, rects: [] };
+        }
         return mapViewportRectsToCapture(sample.rects, captureType, geom);
     }
 
@@ -441,13 +549,28 @@
     async function resolveGeometry(session, ctx) {
         var win = window;
         if (isDesktopMultiWindow(win)) {
+            var postUnknown = displayMediaStreamUnknownReason(ctx);
+            if (postUnknown) return { known: false, rects: [], reason: postUnknown };
             var post = await queryShellMask(win, ctx);
             var pre = null;
             // A snapshot taken for a different capture target describes a
             // different surface; only the post-capture query applies then.
             if (session && session.pending && sameMaskTarget(session.hint, ctx)) {
                 pre = await session.pending;
+                // The pre-capture query named no source and a getDisplayMedia
+                // request finished since: it may have answered for the
+                // previous source, even if the frame comes from the new stream.
+                if (!ctx.sourceId && ctx.via !== 'backend'
+                    && typeof session.displayMediaSeq === 'number'
+                    && session.displayMediaSeq !== displayMediaRequestSeq) {
+                    return { known: false, rects: [], reason: 'display_media_changed_since_pre' };
+                }
             }
+            // Another request may have opened, or opened and finished, while
+            // the queries were in flight: the shell may have answered for
+            // that request's source.
+            var lateUnknown = displayMediaStreamUnknownReason(ctx);
+            if (lateUnknown) return { known: false, rects: [], reason: lateUnknown };
             return intersectGeometry(pre, post);
         }
         var geom = readBrowserGeometry(win);
@@ -499,7 +622,10 @@
     /**
      * The chat history / option regions may be in the frame, but where they
      * are is unknown: several displays in the browser, or a display count the
-     * browser does not report (no Screen.isExtended); a shared window that may
+     * browser does not report (no Screen.isExtended); a whole-screen share
+     * while the browser window is not focused (another application may cover
+     * the regions; a desktop shell chat window that is not always-on-top is
+     * the shell's ok:false); a shared window that may
      * or may not be this browser; a shared browser tab that cannot be tied to
      * this page (no Capture Handle) or shows another N.E.K.O page of the same
      * origin; the samples before and after capture where either side is
@@ -592,6 +718,10 @@
      */
     async function maskFrameForModel(dataUrl, ctx, session) {
         if (!dataUrl) return dataUrl;
+        // Switched off: the frame goes out as captured, without reading any
+        // region or asking the desktop shell.
+        if (!isMaskEnabled(window)) return dataUrl;
+        if (session && session.switchedOff) return dataUrl;
         var geometry;
         try {
             geometry = await resolveGeometry(session, ctx || {});
@@ -749,6 +879,7 @@
         clipNormalizedRects: clipNormalizedRects,
         paintMaskRects: paintMaskRects,
         beginMaskSession: beginMaskSession,
+        requestDisplayMedia: requestDisplayMedia,
         maskFrameForModel: maskFrameForModel,
         decideWhenGeometryUnavailable: decideWhenGeometryUnavailable,
         buildReportPayload: buildReportPayload,

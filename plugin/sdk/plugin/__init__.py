@@ -49,6 +49,8 @@ quick_action = _decorators.quick_action
 # --- LLM tool ---
 llm_tool = _llm_tool.llm_tool
 LlmToolMeta = _llm_tool.LlmToolMeta
+LlmToolRegisterResult = _llm_tool.LlmToolRegisterResult
+LlmToolUnregisterResult = _llm_tool.LlmToolUnregisterResult
 
 # --- Activity ---
 OsActivitySnapshot = _activity.OsActivitySnapshot
@@ -105,6 +107,8 @@ __all__ = [
     # LLM tool
     "llm_tool",
     "LlmToolMeta",
+    "LlmToolRegisterResult",
+    "LlmToolUnregisterResult",
     # Activity
     "OsActivitySnapshot",
     "get_os_activity_snapshot",
