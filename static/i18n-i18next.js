@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 新增记忆浏览器印记首页 / 星图 / 溯源 / 安全点 / 开发者诊断八语言文案，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-21-memory-browser-imprint';
+    // 合并记忆浏览器印记首页 / 星图 / 溯源 / 安全点 / 开发者诊断与记忆整理模型档八语言文案，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-11-22-memory-browser-imprint-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

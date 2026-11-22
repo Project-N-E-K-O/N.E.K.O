@@ -80,7 +80,7 @@ def _correction_queue_identity(item: dict) -> tuple[str, ...] | None:
 
 
 def _correction_prompt_trust_band(item: dict, side: str) -> str:
-    """Return exactly the provenance band exposed to the correction model."""
+    """Return exactly the provenance band exposed to the summary (memory) model."""
     from memory.speaker_trust import trust_band
 
     if item.get(f'{side}_speaker_provenance_mixed') is True:
@@ -419,9 +419,9 @@ class CorrectionsMixin:
         *,
         prompt_locale_resolver=None,
     ) -> int:
-        """Batch-review the contradiction queue with the correction model (single LLM call).
+        """Batch-review the contradiction queue with the summary model (single LLM call).
 
-        Merges all pending corrections into one prompt for the correction model;
+        Merges all pending corrections into one prompt for the summary model;
         returns the number of contradictions processed.
 
         C4 refactor + thinking: the LLM call runs outside the data lock. The
@@ -573,7 +573,7 @@ class CorrectionsMixin:
                 from utils.token_tracker import set_call_type
                 from memory.thinking_llm import ainvoke_thinking
                 set_call_type("memory_correction")
-                api_config = await self._config_manager.aget_model_api_config('correction')
+                api_config = await self._config_manager.aget_model_api_config('summary')
                 # timeout: see MEMORY_LLM_HARD_TIMEOUT_SECONDS (upstream forwarding
                 # hard cap is 120s, so this must be ≤110). Batch decisions (keep_old /
                 # keep_new / keep_both / merge + rewrite merged_text) deserve full
@@ -595,7 +595,7 @@ class CorrectionsMixin:
                 if not isinstance(results, list):
                     results = [results]
             except Exception as e:
-                logger.warning(f"[Persona] {name}: correction model 调用失败: {e}")
+                logger.warning(f"[Persona] {name}: summary model 调用失败: {e}")
                 # Liveness fallback: bump resolve_attempts for this batch's corrections;
                 # move entries that reach MEMORY_LIVENESS_MAX_ATTEMPTS to the dead-letter queue.
                 # Otherwise the same queue-head entry with (old_text, new_text) is sent into the same prompt on every resolve
@@ -630,7 +630,7 @@ class CorrectionsMixin:
                     )
                     return 0
                 logger.warning(
-                    f"[Persona] {name}: correction model 输出 {len(results)} "
+                    f"[Persona] {name}: summary model 输出 {len(results)} "
                     f"条 action 全部无效（invalid index / unknown action），"
                     f"batch 0 条 correction 消费，按 attempt 失败计"
                 )

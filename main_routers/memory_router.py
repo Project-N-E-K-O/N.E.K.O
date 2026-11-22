@@ -3039,7 +3039,7 @@ async def get_memory_lineage_graph(catgirl_name: str):
 
 @router.post('/deep_conflicts/{catgirl_name}')
 async def run_memory_deep_conflict_check(catgirl_name: str, request: Request):
-    """Manually trigger Developer Mode correction-tier deep conflict audit."""
+    """Manually trigger Developer Mode summary-tier deep conflict audit."""
     err_resp = _validate_browser_character_or_400(catgirl_name)
     if err_resp is not None:
         return err_resp

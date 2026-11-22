@@ -322,6 +322,7 @@ _NATIVE_OK_THEN_SWITCH = (
 _HELPER_TMPL = """
 const isHomeTutorialFeatureSuppressed = () => false;
 const isProactiveVisionEnabledNow = () => true;
+const isVisionConsentHeldNow = () => true;
 const releaseProactiveVisionStream = () => {};
 const results = {};
 let selected = __SOURCE_ID__;
@@ -409,6 +410,7 @@ def test_proactive_chat_discards_frames_when_remembered_identity_changes(mode: s
 const mode = '__MODE__';
 const isHomeTutorialFeatureSuppressed = () => false;
 const isProactiveVisionEnabledNow = () => true;
+const isVisionConsentHeldNow = () => true;
 const releaseProactiveVisionStream = () => {};
 const results = {};
 let current = true;
@@ -1235,6 +1237,7 @@ recaptureWithoutNeko({
 _PROACTIVE_REMEMBERED_TMPL = """
 const isHomeTutorialFeatureSuppressed = () => false;
 const isProactiveVisionEnabledNow = () => true;
+const isVisionConsentHeldNow = () => true;
 const releaseProactiveVisionStream = () => {};
 const results = { calls: [] };
 const S = {

@@ -52,6 +52,7 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
+from nekoclaw.host.board import Board
 from nekoclaw.host.capabilities import BuiltinCapabilities, CapabilityRegistry
 from nekoclaw.host.decision import ConfiguredDecisionLLM, DecisionLLM, DecisionModel, LexicalDecisionModel
 from nekoclaw.host.task_agents import (
@@ -235,6 +236,16 @@ class NekoClawHost:
             forget_dsh_session=self.dsh.forget_session,
         )
         self.ledger.subscribe(self.space_keeper.watch)
+        # The presets sessions are opened by, and the board of sessions a
+        # page shows: both read when they are asked for.
+        self.templates_store = self.task_agents.templates
+        self._board = Board(
+            ledger=self.ledger,
+            space=self.space,
+            templates=self.templates_store,
+            paths=self.paths.space,
+            model=self._task_agent_model_name,
+        )
         # A plugin's request for confirmation is put to the user by the
         # gateway, through the same waiting the task agents' own questions use.
         self.gateway.set_ask_user(self.task_agents.ask_user)
@@ -474,6 +485,119 @@ class NekoClawHost:
         if session is None or session.kind != "fork":
             return False
         return await self.space_keeper.clear_session(session_id)
+
+    # -- the board of sessions --------------------------------------------
+    #
+    # For a page that shows the task agents by project and one that sets a
+    # new one up. No route leads here yet; whoever adds one calls these.
+
+    async def _task_agent_model_name(self) -> str | None:
+        """Return the name of the model task agents use, and nothing else of it."""
+        config = await self._task_agent_model()
+        name = config.get("model") if config else None
+        return str(name) if name else None
+
+    async def board(
+        self, project: str | None = None, lanlan_name: str | None = None, known_revision: str | None = None
+    ) -> dict[str, Any]:
+        """Return the sessions by project, one card each; see ``nekoclaw/host/board.py``.
+
+        ``project`` leaves one project's, ``lanlan_name`` one character's.
+        With ``known_revision``, the revision a board had that the caller
+        still holds, ``{"revision", "unchanged": True}`` comes back while
+        nothing on it changed. Reads only: no model and no runtime is
+        asked, and nothing is started.
+        """
+        return await self._board.view(project, lanlan_name, known_revision)
+
+    async def templates(self, project: str | None = None) -> list[dict[str, Any]]:
+        """Return the presets a session can have, for a project or for none; see ``nekoclaw/host/templates.py``.
+
+        One ``{"name", "label", "description", "avatar", "source",
+        "read_only", "writes", "memory", "model", "valid", "error"}``
+        each, the built-in ones first. A template file that is wrong is
+        listed with ``valid`` False and what is wrong with it.
+        """
+        listed = await asyncio.to_thread(self.templates_store.listing, project)
+        return [item.to_json() for item in listed]
+
+    async def draft_session(
+        self, text: str, workdir: str | None = None, lanlan_name: str | None = None
+    ) -> dict[str, str]:
+        """Fill in the form of a new session from what the user wrote of it; see ``nekoclaw/host/drafts.py``.
+
+        Returns ``{name, title, preset, duty, description, rules}``, or
+        raises ``drafts.DraftError`` with a reason. One call of the
+        summary model; nothing is made or written. ``workdir`` is the
+        folder chosen for the session, of which names and sizes are read.
+        ``lanlan_name`` is whose task agent it is to be: the form is the
+        same for every character, and it is taken so that a caller need
+        not know that.
+        """
+        from nekoclaw.host.drafts import draft_session
+
+        del lanlan_name
+        return await draft_session(self._decision_llm, self.templates_store, text, workdir)
+
+    # -- what happened between sessions -----------------------------------
+    #
+    # For a screen that draws the task agents of a project as a group, with
+    # the lines between them, and replays what they did (no route leads
+    # here yet). Both only read the ledger; no model is called. See
+    # ``nekoclaw/host/timeline.py`` for the kinds and the cursor.
+
+    async def timeline(
+        self,
+        project: str | None = None,
+        lanlan_name: str | None = None,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Return a page of what happened among sessions, in the order it happened.
+
+        ``project`` / ``lanlan_name`` keep to one project, one character;
+        neither, everything. ``after`` is the ``next`` of the page before,
+        or the ``cursor`` of an entry; none starts from the beginning.
+        ``limit`` entries at most (``TIMELINE_PAGE_ROWS`` when not given,
+        at least one, never more than ``TIMELINE_PAGE_MAX_ROWS``). Returns
+        ``{"entries", "next", "more", "latest"}``; see
+        ``timeline.read_timeline``. A cursor that is not one raises
+        ``ValueError``.
+        """
+        from config.nekoclaw_settings import TIMELINE_PAGE_MAX_ROWS, TIMELINE_PAGE_ROWS
+
+        rows = TIMELINE_PAGE_ROWS if limit is None else max(1, min(int(limit), TIMELINE_PAGE_MAX_ROWS))
+        page = await self.ledger.timeline(project=project, lanlan_name=lanlan_name, after=after, limit=rows)
+        await self._shorten(page["entries"])
+        return page
+
+    async def waits(self, project: str | None = None, lanlan_name: str | None = None) -> dict[str, Any]:
+        """Return who waits for whom now: ``{"waits", "more"}``; see ``timeline.read_waits``.
+
+        ``project`` keeps to the waits with one side in that project,
+        ``lanlan_name`` to those of one character.
+        """
+        from config.nekoclaw_settings import WAITS_MAX_ROWS
+
+        result = await self.ledger.waits(project=project, lanlan_name=lanlan_name, limit=WAITS_MAX_ROWS)
+        await self._shorten(result["waits"])
+        return result
+
+    @staticmethod
+    async def _shorten(items: list[dict[str, Any]]) -> None:
+        """Cut the ``text`` of each item to ``TIMELINE_TEXT_MAX_TOKENS``, on a thread of its own.
+
+        Not on the ledger's: counting tokens of a thousand long notes takes
+        a good part of a second, and every write would wait for it.
+        """
+        from config.nekoclaw_settings import TIMELINE_TEXT_MAX_TOKENS
+        from utils.tokenize import truncate_to_tokens
+
+        def shorten() -> None:
+            for item in items:
+                item["text"] = truncate_to_tokens(item["text"], TIMELINE_TEXT_MAX_TOKENS)
+
+        await asyncio.to_thread(shorten)
 
     # -- dsh --------------------------------------------------------------
     #

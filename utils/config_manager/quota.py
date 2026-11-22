@@ -82,13 +82,42 @@ class QuotaMixin:
         When the preferred amount is unavailable but ``minimum_units`` still fits,
         only the minimum is consumed. This lets optional model work reserve the
         required primary call without a check-then-consume race.
+
+        Metering applies only while the actual Agent model is the free one;
+        callers whose own credentials are free-tier (e.g. plugin host-follow
+        calls) must use ``reserve_free_daily_quota`` instead.
         """
+        return self._reserve_daily_quota(source, units, minimum_units, metered=self.is_agent_free())
+
+    def reserve_free_daily_quota(
+        self,
+        source: str = "",
+        units: int = 1,
+        minimum_units: int = 1,
+    ) -> tuple[int, dict]:
+        """Reserve against the shared free daily allowance unconditionally.
+
+        The caller has already established that the credentials it will use are
+        the built-in free tier; the separately configured Agent model must not
+        gate that decision. Shares the same counter, lock and limit as
+        ``reserve_agent_daily_quota``.
+        """
+        return self._reserve_daily_quota(source, units, minimum_units, metered=True)
+
+    def _reserve_daily_quota(
+        self,
+        source: str,
+        units: int,
+        minimum_units: int,
+        *,
+        metered: bool,
+    ) -> tuple[int, dict]:
         requested_units = max(1, int(units or 1))
         required_units = max(0, min(requested_units, int(minimum_units or 0)))
 
         from utils.config_manager import ConfigManager
 
-        is_metered = self.is_agent_free()
+        is_metered = metered
         today = date.today().isoformat()
         limit = int(self._free_agent_daily_limit)
         if not is_metered:
@@ -189,3 +218,18 @@ class QuotaMixin:
         The sync version must not run directly on the event loop (open+fsync blocks).
         """
         return await asyncio.to_thread(self.consume_agent_daily_quota, source, units)
+
+    def consume_free_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
+        """Consume the shared free daily allowance regardless of the Agent model.
+
+        For callers holding built-in free-tier credentials of their own (plugin
+        host-follow calls); see ``reserve_free_daily_quota``.
+        """
+        if units <= 0:
+            units = 1
+        reserved, info = self.reserve_free_daily_quota(source=source, units=units, minimum_units=units)
+        return reserved == units, info
+
+    async def aconsume_free_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
+        """Async wrapper of ``consume_free_daily_quota`` (filesystem I/O off-loop)."""
+        return await asyncio.to_thread(self.consume_free_daily_quota, source, units)

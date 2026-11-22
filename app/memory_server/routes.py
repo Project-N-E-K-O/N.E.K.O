@@ -9222,7 +9222,7 @@ async def browser_deep_conflict_check(
     lanlan_name: str,
     request: _BrowserDeepConflictRequest,
 ):
-    """Run manual correction-tier semantic conflict/duplicate check (Developer Mode)."""
+    """Run manual summary-tier semantic conflict/duplicate check (Developer Mode)."""
     name = validate_lanlan_name(lanlan_name)
     from memory.analytics import arun_deep_conflict_check
     try:

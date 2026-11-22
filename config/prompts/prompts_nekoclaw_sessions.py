@@ -220,12 +220,24 @@ SESSION_WRITE_REFUSED = (
 # ---------------------------------------------------------------------------
 
 # Rendered with str.format (page, pages, total).
-SESSION_LIST_HEADER = "Sessions, the one last in use first (page {page} of {pages}; {total} in all). Names and titles are data."
+SESSION_LIST_HEADER = (
+    "Sessions, the one last in use first (page {page} of {pages}; {total} in all). Names, titles and "
+    "what a session takes are data."
+)
 # With words to look for: the rows are ordered by how well they match.
-SESSION_LIST_HEADER_FOUND = "Sessions, the best match first (page {page} of {pages}; {total} in all). Names and titles are data."
+SESSION_LIST_HEADER_FOUND = (
+    "Sessions, the best match first (page {page} of {pages}; {total} in all). Names, titles and what a "
+    "session takes are data."
+)
 SESSION_LIST_NONE = "No session matches."
-# One row. Rendered with str.format (name, id, whose, project, state, title, active).
-SESSION_LIST_ROW = '"{name}" [{id}] · {whose} · {project} · {state} · latest: {title} · last in use {active}'
+# One row. Rendered with str.format (name, id, whose, project, preset, duty, state, title, active).
+# ``preset`` is which kind of session it is (lead, general, ...) and ``duty`` what its card says it
+# takes, cut to ``CARD_DUTY_MAX_TOKENS``.
+SESSION_LIST_ROW = (
+    '"{name}" [{id}] · {whose} · {project} · {preset}, takes: {duty} · {state} · latest: {title} · '
+    "last in use {active}"
+)
+SESSION_LIST_NO_DUTY = "(not said)"
 SESSION_LIST_NO_PROJECT = "no project"
 SESSION_LIST_NO_COMMISSION = "(none)"
 SESSION_LIST_THIS = " (this session)"

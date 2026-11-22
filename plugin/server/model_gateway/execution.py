@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -19,6 +19,9 @@ from .observation import AttemptObservation
 
 _FALLBACK_ERRORS = frozenset({
     "upstream_connection_error", "upstream_timeout", "upstream_rate_limited", "upstream_error",
+    # The attempt was rejected before any content reached the plugin, so a
+    # configured (e.g. paid manual) backup can safely serve the call instead.
+    "agent_quota_exceeded",
 })
 # With a fallback slot, the primary may use only this share of the total budget,
 # so a stalled primary still leaves time to switch within the same deadline.
@@ -28,7 +31,14 @@ logger = get_logger("server.model_gateway.execution")
 
 @dataclass(frozen=True)
 class ResolvedModelCall:
-    """One host-resolved snapshot; no configuration reads during execution."""
+    """One host-resolved snapshot; no configuration reads during execution.
+
+    ``fallback_slot`` may be an unresolved host-follow slot: it is materialized
+    lazily so a misconfigured backup cannot reject a healthy primary.
+    ``before_attempt`` runs after the attempt's request passed validation and
+    before each real upstream send (quota reservation); its errors follow the normal fallback
+    rules — quota exhaustion on the primary can switch to a configured backup.
+    """
 
     plugin_id: str
     usage_id: str
@@ -37,6 +47,7 @@ class ResolvedModelCall:
     fallback_slot_id: str | None = None
     fallback_slot: ModelSlot | None = None
     deadline: float | None = None
+    before_attempt: Callable[[str, ModelSlot], Awaitable[None]] | None = None
 
 
 @dataclass
@@ -317,6 +328,7 @@ class ModelExecutor:
             try:
                 return await self._attempt(
                     slot_id, slot, body, attempts, deadline, stream, primary_cutoff if index == 0 else None,
+                    call.before_attempt,
                 )
             except ModelGatewayError as exc:
                 if (
@@ -325,17 +337,22 @@ class ModelExecutor:
                     or (stream is not None and stream.delivered)
                 ):
                     raise
-                if not set(slot.capabilities).issubset(call.fallback_slot.capabilities):
+                if stream is not None:
+                    stream.discard_pending()
+                # Materialize a host-follow backup only now: its configuration
+                # problems must not have rejected the healthy primary earlier.
+                from plugin.server.infrastructure.host_model_slots import resolve_host_slot
+
+                fallback = await asyncio.to_thread(resolve_host_slot, call.fallback_slot)
+                if not set(slot.capabilities).issubset(fallback.capabilities):
                     raise ModelGatewayError(
                         "model_capability_mismatch", "Fallback slot does not meet the bound slot capabilities", 409, "model",
                     ) from None
-                if stream is not None:
-                    stream.discard_pending()
                 # The lower service prepares the original request again against
                 # the fallback slot, including protocol-specific validation.
-                slot_id, slot = call.fallback_slot_id, call.fallback_slot
+                slot_id, slot = call.fallback_slot_id, fallback.model_copy(deep=True)
 
-    async def _attempt(self, slot_id, slot, body, attempts, deadline, stream, cutoff=None):
+    async def _attempt(self, slot_id, slot, body, attempts, deadline, stream, cutoff=None, call_before_attempt=None):
         loop = asyncio.get_running_loop()
         started = loop.time()
 
@@ -372,9 +389,20 @@ class ModelExecutor:
         try:
             try:
                 async with budget:
+                    before_send = None
+                    if call_before_attempt is not None:
+                        async def before_send() -> None:
+                            # The gateway calls this after request validation and
+                            # before every real upstream send (including the
+                            # stream_options retry), so locally rejected requests
+                            # never reserve quota. Exhaustion follows the
+                            # fallback rules like other pre-output rejections.
+                            await call_before_attempt(slot_id, slot)
                     if stream is None:
-                        return await self.gateway.complete(slot, body, observation=observation)
-                    upstream = self.gateway.stream(slot, body, observation=observation)
+                        return await self.gateway.complete(
+                            slot, body, observation=observation, before_send=before_send,
+                        )
+                    upstream = self.gateway.stream(slot, body, observation=observation, before_send=before_send)
                     try:
                         async for chunk in upstream:
                             if chunk:

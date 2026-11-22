@@ -132,7 +132,13 @@ def prepare_request(request: dict[str, Any]) -> dict[str, Any]:
     if request.get("response_format", {"type": "text"}) != {"type": "text"}:
         raise _unsupported("response_format")
     if request.get("temperature", 0) > 1:
-        raise _unsupported("temperature")
+        # The effective request value exceeds the range (an explicit override
+        # or a legacy saved default); a valid explicit override never lands here.
+        raise ModelGatewayError(
+            "model_defaults_incompatible",
+            "Anthropic allows temperature up to 1; lower the request value or this slot's default temperature.",
+            status_code=400, param="temperature",
+        )
 
     body: dict[str, Any] = {
         "model": request["model"],

@@ -13,10 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Manual developer-mode semantic conflict and duplicate audit via correction tier.
+"""Manual developer-mode semantic conflict and duplicate audit via summary tier.
 
 LLM discipline:
-- Uses ``correction`` tier from ``config_manager.aget_model_api_config('correction')``.
+- Uses ``summary`` tier from ``config_manager.aget_model_api_config('summary')``.
 - Never passes ``temperature``.
 - Enforces both input token budget (``DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS``) and
   output budget + timeout (``DEEP_CONFLICT_CHECK_MAX_TOKENS``,
@@ -305,7 +305,7 @@ async def arun_deep_conflict_check(
         .replace("{PAIRS_BLOCK}", pairs_block)
     )
 
-    api_config = await cm.aget_model_api_config("correction")
+    api_config = await cm.aget_model_api_config("summary")
     set_call_type("memory_deep_conflict_check")
     llm = await create_chat_llm_async(
         api_config["model"],

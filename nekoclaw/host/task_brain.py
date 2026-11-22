@@ -707,7 +707,14 @@ class TaskBrain:
                 return
             goes_on = bool(follows) and selection.route == "task_agent" and self._task_agents is not None
             if goes_on:
-                commission = await self._ledger.update(commission.id, **(follows or {})) or commission
+                values = dict(follows or {})
+                project = values.pop("project", None)
+                if project:
+                    # Under the project of the one it goes on with, noted as
+                    # such: it was filed with none (``Ledger.file_under_project``).
+                    commission = await self._ledger.file_under_project(commission.id, project, **values) or commission
+                else:
+                    commission = await self._ledger.update(commission.id, **values) or commission
             await self._ledger.append_event(
                 commission.id,
                 "decision",
