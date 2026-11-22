@@ -578,21 +578,29 @@ class QwenVoiceCloneClient:
                 timeout=60,
             )
             if response.status_code in (408, 504):
-                raise QwenVoiceCloneError(f"ResponseTimeout: HTTP {response.status_code}")
+                raise QwenVoiceCloneError(
+                    f"音色注册超时 (ResponseTimeout: HTTP {response.status_code})"
+                )
             if response.status_code == 415:
-                raise QwenVoiceCloneError("Download audio failed (HTTP 415)")
+                raise QwenVoiceCloneError("无法下载音频文件 (Download audio failed: HTTP 415)")
             result = response.json()
             if response.status_code != 200 or result.get("code"):
-                raise QwenVoiceCloneError(
-                    f"{response.status_code} {result.get('code', '')}: {result.get('message', '')}"
-                )
+                detail = f"{response.status_code} {result.get('code', '')}: {result.get('message', '')}"
+                lower = detail.lower()
+                if any(kw in lower for kw in ("responsetimeout", "response timeout", "timeout")):
+                    raise QwenVoiceCloneError(f"音色注册超时 ({detail})")
+                if "download audio failed" in lower:
+                    raise QwenVoiceCloneError(f"无法下载音频文件 ({detail})")
+                raise QwenVoiceCloneError(detail)
             output = result["output"]
             if not isinstance(output, dict):
                 raise TypeError("invalid enrollment output")
             return output, result.get("request_id")
         except httpx.TransportError as exc:
             # A lost response can follow a committed mutation.
-            raise QwenVoiceCloneError("ResponseTimeout: enrollment outcome unknown") from exc
+            raise QwenVoiceCloneError(
+                "音色注册超时，远端状态未知 (ResponseTimeout: enrollment outcome unknown)"
+            ) from exc
         except (KeyError, TypeError, AttributeError, ValueError) as exc:
             raise QwenVoiceCloneError("Invalid DashScope enrollment response") from exc
 

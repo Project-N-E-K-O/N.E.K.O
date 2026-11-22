@@ -411,6 +411,54 @@ def _normalize_collision_key(name: str) -> str:
     return unicodedata.normalize("NFC", str(name or "").strip()).casefold()
 
 
+def _find_shared_memory_source(
+    config_manager,
+    character_name: str,
+    *,
+    existing_names: Iterable[str] | None = None,
+) -> tuple[Path, str] | None:
+    """Return ``(shared_path, other_name)`` if ``character_name`` shares source storage."""
+    if config_manager is None:
+        return None
+    names = (
+        [str(name) for name in existing_names if isinstance(name, str) and name]
+        if existing_names is not None
+        else _iter_registered_catgirl_names(config_manager)
+    )
+    roots = iter_character_memory_roots(config_manager)
+    source_paths = list_character_memory_paths(config_manager, character_name)
+    for other_name in names:
+        if other_name == character_name:
+            continue
+        for base_dir in roots:
+            source_dir = base_dir / character_name
+            if _paths_refer_to_same_entry(base_dir / other_name, source_dir):
+                return source_dir, other_name
+        if not source_paths:
+            continue
+        other_paths = list_character_memory_paths(config_manager, other_name)
+        for source_path in source_paths:
+            for other_path in other_paths:
+                if _paths_refer_to_same_entry(other_path, source_path):
+                    return source_path, other_name
+    return None
+
+
+def find_character_shared_memory_owner(
+    config_manager,
+    character_name: str,
+    *,
+    existing_names: Iterable[str] | None = None,
+) -> str | None:
+    """Return another configured character name sharing source memory storage."""
+    match = _find_shared_memory_source(
+        config_manager,
+        character_name,
+        existing_names=existing_names,
+    )
+    return match[1] if match is not None else None
+
+
 def find_character_name_collision(
     config_manager,
     candidate_name: str,
@@ -676,6 +724,13 @@ def rename_character_memory_storage(
     runtime_target_dir = get_runtime_character_memory_dir(config_manager, new_name)
     roots = iter_character_memory_roots(config_manager)
     if old_name != new_name:
+        shared_source = _find_shared_memory_source(config_manager, old_name)
+        if shared_source is not None:
+            shared_path, co_owner = shared_source
+            raise FileExistsError(
+                f"Refusing to rename memory storage {old_name!r} -> {new_name!r}: "
+                f"source path {shared_path} is shared with existing character {co_owner!r}"
+            )
         colliding_name = find_character_name_collision(
             config_manager,
             new_name,

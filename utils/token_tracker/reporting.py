@@ -29,6 +29,7 @@ import urllib.error
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from utils import file_utils as _file_utils
 from utils.file_utils import PublishedFileSyncError, atomic_write_json
 
 from ._shared import _file_lock, _merge_day_stats, logger
@@ -321,35 +322,84 @@ class ReportingMixin:
         finally:
             _TELEMETRY_SERVER_URL = ""
 
+    def _load_unsent_queue_locked(self) -> bool:
+        """Load persisted unsent queue while the caller holds ``self._get_report_lock()``.
+
+        Returns True once the disk state has been loaded (or is confirmed absent or
+        unrecoverable syntax/schema), and False on transient ``OSError`` so later
+        saves retry recovery instead of overwriting the unconfirmed disk queue.
+        """
+        if self._unsent_queue_loaded:
+            return True
+        try:
+            data = json.loads(self._unsent_queue_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("invalid telemetry queue")
+            daily, records = data.get("daily", {}), data.get("records", [])
+            next_daily, next_records = data.get("next_daily", {}), data.get("next_records", [])
+            if (
+                not all(isinstance(days, dict) for days in (daily, next_daily))
+                or not all(isinstance(items, list) for items in (records, next_records))
+                or not all(
+                    isinstance(day_val, dict)
+                    for days in (daily, next_daily)
+                    for day_val in days.values()
+                )
+            ):
+                raise ValueError("invalid telemetry queue")
+        except FileNotFoundError:
+            self._unsent_queue_loaded = True
+            return True
+        except OSError as exc:
+            logger.debug("Token tracker: failed to load unsent queue: %s", exc)
+            return False
+        except (ValueError, AttributeError, TypeError) as exc:
+            logger.debug("Token tracker: ignoring invalid unsent queue: %s", exc)
+            self._unsent_queue_loaded = True
+            return True
+
+        with self._lock:
+            if isinstance(data.get("batch_seq"), str) and data["batch_seq"]:
+                pending_seq: str | None = data["batch_seq"]
+                pending_daily, pending_records = daily, records
+                recovered_daily, recovered_records = next_daily, next_records
+            else:
+                pending_seq = None
+                pending_daily, pending_records = {}, []
+                recovered_daily, recovered_records = daily, records
+
+            try:
+                merged_daily = copy.deepcopy(recovered_daily)
+                for day_key, day_delta in self._unsent_daily.items():
+                    if day_key not in merged_daily:
+                        merged_daily[day_key] = copy.deepcopy(day_delta)
+                    else:
+                        _merge_day_stats(merged_daily[day_key], day_delta)
+                merged_records = (list(recovered_records) + list(self._unsent_records))[-200:]
+            except (TypeError, ValueError, AttributeError) as exc:
+                logger.debug("Token tracker: ignoring malformed unsent queue totals: %s", exc)
+                self._unsent_queue_loaded = True
+                return True
+
+            self._pending_batch_seq = pending_seq
+            self._pending_daily = pending_daily
+            self._pending_records = pending_records
+            self._unsent_daily = merged_daily
+            self._unsent_records = merged_records
+            self._unsent_queue_loaded = True
+        return True
+
     def _load_unsent_queue(self):
         """Load remote data that previously failed to report, at startup."""
         if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
             return
         with self._get_report_lock():
-            if self._unsent_queue_loaded:
-                return
-            try:
-                data = json.loads(self._unsent_queue_path.read_text(encoding="utf-8"))
-                daily, records = data.get("daily", {}), data.get("records", [])
-                next_daily, next_records = data.get("next_daily", {}), data.get("next_records", [])
-                if not all(isinstance(days, dict) for days in (daily, next_daily)) or not all(
-                    isinstance(items, list) for items in (records, next_records)
-                ):
-                    raise ValueError("invalid telemetry queue")
-                if isinstance(data.get("batch_seq"), str) and data["batch_seq"]:
-                    self._pending_daily, self._pending_records = daily, records
-                    self._pending_batch_seq = data["batch_seq"]
-                    daily, records = next_daily, next_records
-                self._unsent_daily, self._unsent_records = daily, records
-            except FileNotFoundError:
-                pass
-            except (OSError, ValueError, AttributeError, TypeError) as exc:
-                logger.debug("Token tracker: failed to load unsent queue: %s", exc)
-                return
-            self._unsent_queue_loaded = True
+            self._load_unsent_queue_locked()
 
     def _save_unsent_queue(self) -> bool:
         """Persist both windows atomically while the caller holds the report lock."""
+        if not self._unsent_queue_loaded:
+            return False
         data = {
             "batch_seq": self._pending_batch_seq,
             "daily": self._unsent_daily,
@@ -399,6 +449,8 @@ class ReportingMixin:
         """
         report_options = {} if report_timeout is None else {"timeout": report_timeout}
         with self._lock:
+            needs_dir_sync = bool(getattr(self, "_storage_dir_sync_pending", False))
+            dir_sync_epoch = int(getattr(self, "_storage_dir_sync_epoch", 0))
             if not self._dirty:
                 report_only = True
                 delta_daily: dict = {}
@@ -413,6 +465,15 @@ class ReportingMixin:
                 self._dirty = False
 
         if report_only:
+            if needs_dir_sync:
+                try:
+                    _file_utils._fsync_directory(self._storage_path.parent)
+                except OSError as exc:
+                    logger.warning("Token usage directory sync retry failed: %s", exc)
+                else:
+                    with self._lock:
+                        if int(getattr(self, "_storage_dir_sync_epoch", 0)) == dir_sync_epoch:
+                            self._storage_dir_sync_pending = False
             # No local LLM data to write; check only pending instruments.
             try:
                 self._report_to_server(delta_daily, delta_records, **report_options)
@@ -450,12 +511,24 @@ class ReportingMixin:
                     del existing["daily_stats"][k]
 
                 existing["last_saved"] = datetime.now().isoformat()
+                with self._lock:
+                    write_sync_epoch = int(getattr(self, "_storage_dir_sync_epoch", 0))
                 try:
                     atomic_write_json(self._storage_path, existing)
                 except PublishedFileSyncError as exc:
                     # The totals are already visible to the next read-merge-write.
                     # Restoring this delta would add it to the same file twice.
+                    # Mark parent directory sync pending so a later save retries fsync only.
+                    with self._lock:
+                        self._storage_dir_sync_epoch = int(
+                            getattr(self, "_storage_dir_sync_epoch", 0)
+                        ) + 1
+                        self._storage_dir_sync_pending = True
                     logger.warning("Token usage was published with uncertain durability: %s", exc)
+                else:
+                    with self._lock:
+                        if int(getattr(self, "_storage_dir_sync_epoch", 0)) == write_sync_epoch:
+                            self._storage_dir_sync_pending = False
 
             # After local save, try remote reporting outside the file lock to avoid blocking other processes.
             try:
@@ -494,6 +567,8 @@ class ReportingMixin:
             if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
                 return
 
+            queue_loaded = self._load_unsent_queue_locked()
+
             # Accumulate unsent data.
             now = time.time()
             with self._lock:
@@ -506,9 +581,16 @@ class ReportingMixin:
                 if len(self._unsent_records) > 200:
                     self._unsent_records = self._unsent_records[-200:]
                 last_report_time = self._last_report_time
-                bypass_interval = bool(getattr(self, "_bypass_report_interval", False))
+                bypass_interval = (
+                    bool(getattr(self, "_bypass_report_interval", False))
+                    if queue_loaded
+                    else False
+                )
                 if bypass_interval:
                     self._bypass_report_interval = False
+
+            if not queue_loaded:
+                return
 
             if not bypass_interval and now - last_report_time < self._report_interval:
                 if delta_daily or delta_records:

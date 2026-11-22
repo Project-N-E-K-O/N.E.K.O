@@ -23,6 +23,12 @@ from utils.file_utils import atomic_write_json
 
 from ._shared import _file_lock, _merge_day_stats, logger
 
+
+def _reject_non_finite_json_constant(token: str) -> None:
+    """Reject non-standard NaN/Infinity tokens when parsing legacy files."""
+    raise ValueError(f"non-finite JSON constant in legacy token_usage: {token}")
+
+
 class StorageMixin:
     """Local token-usage storage and migration methods."""
 
@@ -86,7 +92,7 @@ class StorageMixin:
                         if migrated_map.get(p.name) == file_digest:
                             cleanup_files.append(p)
                             continue
-                        data = json.loads(raw)
+                        data = json.loads(raw, parse_constant=_reject_non_finite_json_constant)
                         if not isinstance(data, dict) or data.get("version") != 1:
                             raise ValueError("unsupported legacy token_usage version")
                         daily_stats = data["daily_stats"]
@@ -102,6 +108,8 @@ class StorageMixin:
                             _merge_day_stats(staged, delta)
                             staged_days[day] = staged
                         staged_records = self._dedupe_records(existing["recent_records"] + records)
+                        # Reject overflow to inf/nan produced while summing finite floats.
+                        json.dumps({"daily_stats": staged_days, "recent_records": staged_records}, allow_nan=False)
                         existing["daily_stats"].update(staged_days)
                         existing["recent_records"] = staged_records
                         migrated_map[p.name] = file_digest

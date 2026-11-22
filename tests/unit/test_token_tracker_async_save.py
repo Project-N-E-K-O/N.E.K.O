@@ -525,6 +525,9 @@ def test_numbered_queue_write_failure_defers_post(tracker_factory, monkeypatch):
 @pytest.mark.parametrize("bad", [
     "{", '{"version": 2}', '{"version": 1, "daily_stats":{"day":{"total_tokens":10,"by_model":[]}}}',
     '{"version":1,"daily_stats":{"day":{"total_tokens":10}},"recent_records":[null]}',
+    '{"version": 1, "daily_stats": {"day": {"total_tokens": NaN}}}',
+    '{"version": 1, "daily_stats": {"day": {"total_tokens": Infinity}}}',
+    '{"version": 1, "daily_stats": {"day": {"total_tokens": 1}}, "recent_records": [{"ts": 1, "tt": NaN}]}',
 ])
 def test_invalid_legacy_file_cannot_contribute_or_be_removed(tracker_factory, bad):
     tracker = tracker_factory()
@@ -616,5 +619,153 @@ def test_legacy_migration_is_idempotent_across_partial_unlink_permission_errors(
     merged_4 = json.loads(fourth._storage_path.read_text(encoding="utf-8"))
     assert merged_4["daily_stats"]["2026-11-01"]["total_tokens"] == 350
     assert merged_4["daily_stats"]["2026-11-01"]["call_count"] == 4
+
+
+def test_legacy_migration_rejects_numeric_overflow_without_blocking_valid_files(tracker_factory):
+    """Overflowing float addition during migration rejects only the offending legacy file."""
+    tracker = tracker_factory()
+    folder = tracker._storage_dir
+    (folder / "token_usage_a.json").write_text(
+        json.dumps({"version": 1, "daily_stats": {"day": {"total_tokens": 1e308}}}),
+        encoding="utf-8",
+    )
+    overflowing = folder / "token_usage_b.json"
+    overflowing.write_text(
+        json.dumps({"version": 1, "daily_stats": {"day": {"total_tokens": 1e308}}}),
+        encoding="utf-8",
+    )
+    (folder / "token_usage_c.json").write_text(
+        json.dumps({"version": 1, "daily_stats": {"other_day": {"total_tokens": 7}}}),
+        encoding="utf-8",
+    )
+
+    tracker._migrate_legacy_files()
+    assert not (folder / "token_usage_a.json").exists()
+    assert overflowing.exists()
+    assert not (folder / "token_usage_c.json").exists()
+    merged = json.loads(tracker._storage_path.read_text(encoding="utf-8"))
+    assert merged["daily_stats"]["day"]["total_tokens"] == 1e308
+    assert merged["daily_stats"]["other_day"]["total_tokens"] == 7
+    assert overflowing.name not in merged.get("migrated_legacy_files", {})
+
+
+def test_unsent_queue_retries_recovery_before_overwriting_disk_snapshot(tracker_factory, monkeypatch):
+    """Startup read OSError keeps unsent file intact across saves and replays A before B on recovery."""
+    from datetime import date
+    from pathlib import Path
+    from utils.token_tracker import reporting
+
+    seed = tracker_factory()
+    today = date.today().isoformat()
+    initial_queue = {
+        "batch_seq": "seq-a",
+        "daily": {today: {"total_tokens": 10, "call_count": 1}},
+        "records": [{"ts": 1.0, "model": "model-a", "tt": 10}],
+    }
+    seed._unsent_queue_path.write_text(json.dumps(initial_queue), encoding="utf-8")
+
+    real_read_text = Path.read_text
+    fail_queue_read = True
+
+    def flaky_read_text(self, *args, **kwargs):
+        if fail_queue_read and self == seed._unsent_queue_path:
+            raise OSError("temporary share lock")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+
+    tracker = tracker_factory()
+    assert tracker._unsent_queue_loaded is False
+
+    queue_writes = []
+    real_write = reporting.atomic_write_json
+
+    def spy_write(path, data, *args, **kwargs):
+        if path == tracker._unsent_queue_path:
+            queue_writes.append(data)
+        return real_write(path, data, *args, **kwargs)
+
+    sent = []
+    monkeypatch.setattr(reporting, "atomic_write_json", spy_write)
+    monkeypatch.setattr(tracker, "_send_report", lambda *args: sent.append(args))
+
+    tracker._report_interval = float("inf")
+    tracker.record("model-b", 12, 8, 20)
+    tracker.save()
+
+    tracker._report_interval = 0
+    tracker.save()
+
+    assert queue_writes == []
+    assert sent == []
+    assert json.loads(real_read_text(tracker._unsent_queue_path, encoding="utf-8")) == initial_queue
+
+    fail_queue_read = False
+    tracker.save()
+
+    assert len(sent) == 2
+    assert sent[0][0][today]["total_tokens"] == 10
+    assert [r["model"] for r in sent[0][1]] == ["model-a"]
+    assert sent[0][2] == "seq-a"
+    assert sent[0][3] is True
+
+    assert sent[1][0][today]["total_tokens"] == 20
+    assert [r["model"] for r in sent[1][1]] == ["model-b"]
+    assert sent[1][2] != "seq-a"
+    assert sent[1][3] is False
+    assert not tracker._unsent_queue_path.exists()
+
+
+def test_storage_dir_sync_failure_retries_only_fsync_without_replaying_deltas(
+    tracker_factory, monkeypatch
+):
+    """PublishedFileSyncError marks parent dir sync pending and retries on idle save without doubling totals."""
+    import errno
+    from utils import file_utils
+    from utils.token_tracker import reporting
+
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", True)
+    monkeypatch.setattr(reporting, "_TELEMETRY_SERVER_URL", "")
+    tracker = tracker_factory()
+
+    sync_calls = []
+
+    def flaky_fsync_dir(path):
+        sync_calls.append(path)
+        if len(sync_calls) <= 2:
+            raise OSError(errno.EIO, "directory sync failed")
+
+    monkeypatch.setattr(file_utils, "_fsync_directory", flaky_fsync_dir)
+
+    tracker.record("sync-model", 6, 4, 10)
+    tracker.save()
+
+    assert len(sync_calls) == 1
+    assert tracker._dirty is False
+    assert tracker._storage_dir_sync_pending is True
+    persisted = json.loads(tracker._storage_path.read_text(encoding="utf-8"))
+    assert persisted["daily_stats"]
+    only_day = next(iter(persisted["daily_stats"].values()))
+    assert only_day["total_tokens"] == 10
+
+    # Idle save with remote reporting disabled still retries directory fsync (fails once more).
+    tracker.save()
+    assert len(sync_calls) == 2
+    assert sync_calls[1] == tracker._storage_path.parent
+    assert tracker._storage_dir_sync_pending is True
+    persisted_after_fail = json.loads(tracker._storage_path.read_text(encoding="utf-8"))
+    assert next(iter(persisted_after_fail["daily_stats"].values()))["total_tokens"] == 10
+
+    # Next idle save succeeds and clears pending flag without replaying delta.
+    tracker.save()
+    assert len(sync_calls) == 3
+    assert tracker._storage_dir_sync_pending is False
+    persisted_after_ok = json.loads(tracker._storage_path.read_text(encoding="utf-8"))
+    assert next(iter(persisted_after_ok["daily_stats"].values()))["total_tokens"] == 10
+
+    # Further idle save performs no extra directory fsync.
+    tracker.save()
+    assert len(sync_calls) == 3
+
 
 

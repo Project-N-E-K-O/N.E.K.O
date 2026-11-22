@@ -7885,4 +7885,50 @@ def test_f0064_same_character_whitespace_padded_case_only_rename_succeeds(tmp_pa
     assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["padded-fact"]'
 
 
+@pytest.mark.unit
+def test_f0064_rename_refuses_shared_source_directory(tmp_path):
+    """Renaming a character whose source directory is co-owned by another character must fail."""
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": "Neko",
+            "猫娘": {
+                "Neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "neko": {"_reserved": {"character_id": "character_" + "2" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "3" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    neko_upper = memory_root / "Neko"
+    neko_upper.mkdir(parents=True)
+    (neko_upper / "facts.json").write_text('["shared-fact"]', encoding="utf-8")
+    neko_lower = memory_root / "neko"
+    if not neko_lower.exists():
+        neko_lower.symlink_to(neko_upper, target_is_directory=True)
+    assert neko_lower.samefile(neko_upper)
+    assert character_memory.list_character_memory_paths(cm, "neko")
+
+    other_dir = memory_root / "other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "facts.json").write_text('["other-fact"]', encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="shared with existing character"):
+        character_memory.rename_character_memory_storage(cm, "neko", "NewNeko")
+
+    assert not (memory_root / "NewNeko").exists()
+    assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
+
+    # Unshared character in the same config still renames normally.
+    moved = character_memory.rename_character_memory_storage(cm, "other", "OtherNew")
+    assert moved["runtime_dir"] == memory_root / "OtherNew"
+    assert (memory_root / "OtherNew" / "facts.json").read_text(encoding="utf-8") == '["other-fact"]'
+
+
+
 

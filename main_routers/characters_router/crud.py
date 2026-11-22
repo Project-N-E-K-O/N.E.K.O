@@ -71,6 +71,7 @@ from utils.character_memory import (
     finalize_character_recent_delete,
     finalize_character_recent_rename,
     find_character_name_collision,
+    find_character_shared_memory_owner,
     list_character_memory_paths,
     rename_character_memory_storage,
     release_character_recent_transaction,
@@ -1095,6 +1096,15 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commi
         exclude_names=(old_name,), existing_names=characters['猫娘'],
     ):
         return JSONResponse({'success': False, 'error': '新档案名已存在'}, status_code=400)
+    shared_owner = await asyncio.to_thread(
+        find_character_shared_memory_owner, _config_manager, old_name,
+        existing_names=characters['猫娘'],
+    )
+    if shared_owner is not None:
+        return JSONResponse(
+            {'success': False, 'error': f'原档案的记忆存储与现有角色「{shared_owner}」共享，无法直接重命名'},
+            status_code=400,
+        )
 
     # If renaming the active neko, cache its WebSocket first;
     # notify only after all persistence and reload succeeds, preventing frontend switches to uncommitted state.

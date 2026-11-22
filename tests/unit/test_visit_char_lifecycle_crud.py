@@ -155,6 +155,33 @@ async def test_case_only_rename_keeps_character_identity(env):
     assert _uid(cm, "OLD") == uid
 
 
+async def test_rename_refuses_shared_source_memory_before_release(tmp_path):
+    cm, path = _backfilled_manager(tmp_path, {
+        "Neko": {}, "neko": {},
+    })
+    memory_root = Path(cm.memory_dir)
+    neko_upper = memory_root / "Neko"
+    neko_upper.mkdir(parents=True)
+    (neko_upper / "facts.json").write_text('["shared-fact"]', encoding="utf-8")
+    neko_lower = memory_root / "neko"
+    if not neko_lower.exists():
+        neko_lower.symlink_to(neko_upper, target_is_directory=True)
+    assert neko_lower.samefile(neko_upper)
+
+    before = path.read_bytes()
+    with patch("utils.config_manager._config_manager", cm):
+        crud, (release, reload) = _crud(cm)
+        with release as release_memory, reload as reload_memory:
+            status, body = _result(await crud.rename_catgirl("neko", _DummyRequest({"new_name": "FreshName"})))
+            assert status == 400
+            assert "共享" in body["error"]
+            release_memory.assert_not_awaited()
+            reload_memory.assert_not_awaited()
+    assert path.read_bytes() == before
+    assert not (memory_root / "FreshName").exists()
+    assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
+
+
 async def test_rename_migrates_roster_and_spools(env):
     cm, _path, config_dir = env
     roster, uid, persona_path = await _seed(cm, config_dir)
