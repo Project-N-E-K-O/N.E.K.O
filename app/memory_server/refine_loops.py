@@ -98,7 +98,7 @@ async def _run_persona_refine_for_character(character: str) -> None:
         # ordering. Recovery paths: apply_refine_actions resets the count to 0 when
         # stamping succeeds; or manually edit persona.json; or recover with time —
         # after MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS in the frozen state, allow one probe so
-        # a one-off correction-model outage can self-heal (do not permanently freeze an innocent entry).
+        # a one-off summary-model outage can self-heal (do not permanently freeze an innocent entry).
         entries = [
             annotate_entry(e, type_='persona', entity=entity)
             for e in section

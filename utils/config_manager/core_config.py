@@ -149,11 +149,13 @@ class CoreConfigMixin:
         'summary': 'SUMMARY_MODEL',
         'gameMain': 'CONVERSATION_MODEL',
         'gameSummary': 'SUMMARY_MODEL',
-        'correction': 'CORRECTION_MODEL',
         'emotion': 'EMOTION_MODEL',
         'decision': 'DECISION_MODEL',
         'vision': 'VISION_MODEL',
         'agent': 'AGENT_MODEL',
+        # The small familiar tier has no profile default of its own: a named
+        # provider's tier default is that provider's small (emotion) model.
+        'agentSmall': 'EMOTION_MODEL',
     }
 
     @staticmethod
@@ -980,7 +982,6 @@ class CoreConfigMixin:
             DEFAULT_OPENROUTER_URL,
             DEFAULT_CONVERSATION_MODEL,
             DEFAULT_SUMMARY_MODEL,
-            DEFAULT_CORRECTION_MODEL,
             DEFAULT_EMOTION_MODEL,
             DEFAULT_DECISION_MODEL,
             DEFAULT_VISION_MODEL,
@@ -991,8 +992,6 @@ class CoreConfigMixin:
             DEFAULT_CONVERSATION_MODEL_API_KEY,
             DEFAULT_SUMMARY_MODEL_URL,
             DEFAULT_SUMMARY_MODEL_API_KEY,
-            DEFAULT_CORRECTION_MODEL_URL,
-            DEFAULT_CORRECTION_MODEL_API_KEY,
             DEFAULT_EMOTION_MODEL_URL,
             DEFAULT_EMOTION_MODEL_API_KEY,
             DEFAULT_DECISION_MODEL_URL,
@@ -1020,7 +1019,6 @@ class CoreConfigMixin:
             'SUMMARY_MODEL': DEFAULT_SUMMARY_MODEL,
             'GAME_MAIN_MODEL': DEFAULT_CONVERSATION_MODEL,
             'GAME_SUMMARY_MODEL': DEFAULT_SUMMARY_MODEL,
-            'CORRECTION_MODEL': DEFAULT_CORRECTION_MODEL,
             'EMOTION_MODEL': DEFAULT_EMOTION_MODEL,
             'DECISION_MODEL': DEFAULT_DECISION_MODEL,
             'DECISION_PROTOCOL': '',
@@ -1047,6 +1045,7 @@ class CoreConfigMixin:
             'ASSIST_API_KEY_OPENROUTER': DEFAULT_CORE_API_KEY,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
+            'AGENT_SMALL_MODEL': DEFAULT_EMOTION_MODEL,
             'REALTIME_MODEL': DEFAULT_REALTIME_MODEL,
             'TTS_MODEL': DEFAULT_TTS_MODEL,
             'CONVERSATION_MODEL_URL': DEFAULT_CONVERSATION_MODEL_URL,
@@ -1057,8 +1056,6 @@ class CoreConfigMixin:
             'GAME_MAIN_MODEL_API_KEY': DEFAULT_CONVERSATION_MODEL_API_KEY,
             'GAME_SUMMARY_MODEL_URL': DEFAULT_SUMMARY_MODEL_URL,
             'GAME_SUMMARY_MODEL_API_KEY': DEFAULT_SUMMARY_MODEL_API_KEY,
-            'CORRECTION_MODEL_URL': DEFAULT_CORRECTION_MODEL_URL,
-            'CORRECTION_MODEL_API_KEY': DEFAULT_CORRECTION_MODEL_API_KEY,
             'EMOTION_MODEL_URL': DEFAULT_EMOTION_MODEL_URL,
             'EMOTION_MODEL_API_KEY': DEFAULT_EMOTION_MODEL_API_KEY,
             'DECISION_MODEL_URL': DEFAULT_DECISION_MODEL_URL,
@@ -1067,6 +1064,8 @@ class CoreConfigMixin:
             'VISION_MODEL_API_KEY': DEFAULT_VISION_MODEL_API_KEY,
             'AGENT_MODEL_URL': DEFAULT_AGENT_MODEL_URL,
             'AGENT_MODEL_API_KEY': DEFAULT_AGENT_MODEL_API_KEY,
+            'AGENT_SMALL_MODEL_URL': DEFAULT_EMOTION_MODEL_URL,
+            'AGENT_SMALL_MODEL_API_KEY': DEFAULT_EMOTION_MODEL_API_KEY,
             'REALTIME_MODEL_URL': DEFAULT_REALTIME_MODEL_URL,
             'REALTIME_MODEL_API_KEY': DEFAULT_REALTIME_MODEL_API_KEY,
             'TTS_MODEL_URL': DEFAULT_TTS_MODEL_URL,
@@ -1354,8 +1353,8 @@ class CoreConfigMixin:
         # Exclude credential ttsModelApiKey; tts_client.py still reads it from persisted
         # configuration, avoiding expanding sensitive fields in general configuration snapshots.
         for _model_provider_prefix in (
-            'conversation', 'summary', 'gameMain', 'gameSummary', 'correction',
-            'emotion', 'decision', 'vision', 'agent', 'omni', 'tts',
+            'conversation', 'summary', 'gameMain', 'gameSummary',
+            'emotion', 'decision', 'vision', 'agent', 'agentSmall', 'omni', 'tts',
         ):
             _raw_provider = str(
                 core_cfg.get(f'{_model_provider_prefix}ModelProvider', '') or ''
@@ -1452,7 +1451,9 @@ class CoreConfigMixin:
                 profile_key = self._SLOT_PROFILE_MODEL_KEYS.get(prefix)
                 if not profile_key:
                     return ''
-                is_game_slot = prefix in ('gameMain', 'gameSummary')
+                # Slots whose seed is another slot's resolved value: under follow_assist
+                # they must take the assist provider's tier default instead.
+                is_game_slot = prefix in ('gameMain', 'gameSummary', 'agentSmall')
                 if provider == 'follow_core':
                     # URL and key now use the core provider, so the model must too; retaining the snapshot's
                     # assist model would send provider A's model name to provider B's endpoint.
@@ -1490,11 +1491,11 @@ class CoreConfigMixin:
                 ('summary',      'SUMMARY_MODEL',      'SUMMARY_MODEL_URL',      'SUMMARY_MODEL_API_KEY'),
                 ('gameMain',     'GAME_MAIN_MODEL',    'GAME_MAIN_MODEL_URL',    'GAME_MAIN_MODEL_API_KEY'),
                 ('gameSummary',  'GAME_SUMMARY_MODEL', 'GAME_SUMMARY_MODEL_URL', 'GAME_SUMMARY_MODEL_API_KEY'),
-                ('correction',   'CORRECTION_MODEL',    'CORRECTION_MODEL_URL',   'CORRECTION_MODEL_API_KEY'),
                 ('emotion',      'EMOTION_MODEL',       'EMOTION_MODEL_URL',      'EMOTION_MODEL_API_KEY'),
                 ('decision',     'DECISION_MODEL',      'DECISION_MODEL_URL',     'DECISION_MODEL_API_KEY'),
                 ('vision',       'VISION_MODEL',        'VISION_MODEL_URL',       'VISION_MODEL_API_KEY'),
                 ('agent',        'AGENT_MODEL',         'AGENT_MODEL_URL',        'AGENT_MODEL_API_KEY'),
+                ('agentSmall',   'AGENT_SMALL_MODEL',   'AGENT_SMALL_MODEL_URL',  'AGENT_SMALL_MODEL_API_KEY'),
                 ('omni',         'REALTIME_MODEL',      'REALTIME_MODEL_URL',     'REALTIME_MODEL_API_KEY'),
                 ('tts',          'TTS_MODEL',           'TTS_MODEL_URL',          'TTS_MODEL_API_KEY'),
             ]
@@ -1503,6 +1504,17 @@ class CoreConfigMixin:
                 # without realtime support, the snapshot already falls back to follow_core. URL/model/key
                 # overrides must follow that same path, avoiding leftover autofilled values.
                 provider = config.get(f'{prefix}ModelProvider', '')
+                if prefix == 'agentSmall' and provider in ('', 'follow_emotion', 'follow_agent'):
+                    # Followed at runtime: get_model_api_config delegates to the followed tier.
+                    # Fields saved before switching must not linger in the snapshot; an old
+                    # free-route URL here would wake the region probe for nothing.
+                    config[model_key] = config[url_key] = config[apikey_key] = ''
+                    continue
+                if prefix == 'agentSmall':
+                    # Own settings start blank: only a URL and model the user (or the chosen
+                    # provider) actually supplies count. Anything incomplete is handed whole to
+                    # the recognition tier at runtime, never patched field by field.
+                    config[model_key] = config[url_key] = config[apikey_key] = ''
                 if prefix == 'tts' and provider == 'deepseek':
                     # The hosted worker uses the DeepSeek key book and fixed endpoint.
                     # Retain a saved DashScope slot for existing CosyVoice clones,
@@ -1524,7 +1536,7 @@ class CoreConfigMixin:
                 #     forces api_type='local' (TODO unimplemented) -> core_api_type='local' ->
                 #     TTS dispatch reaches dummy_tts_worker -> silence
                 #   - tts: linked values pollute TTS_MODEL_URL and send tts_custom to the wrong provider
-                # Other model types (conversation/summary/correction/emotion/vision/agent)
+                # Other model types (conversation/summary/emotion/vision/agent)
                 # use chat-completion REST without a local branch; skipping URLs would alter their
                 # follow_* routing (see PR #1084 review thread), so skip only for omni/tts.
                 # Note: under follow_*, omni/tts cannot rely on get_model_api_config fallback
@@ -1701,6 +1713,16 @@ class CoreConfigMixin:
                     elif cfg_key is not None:
                         config[apikey_key] = cfg_key
 
+            # The small familiar tier stands on its own only with both a URL and a model;
+            # anything less is the recognition tier at runtime. Drop the unused fields here
+            # so a leftover free-route URL cannot wake the region probe (invariant #2).
+            if not (
+                str(config.get('AGENT_SMALL_MODEL') or '').strip()
+                and str(config.get('AGENT_SMALL_MODEL_URL') or '').strip()
+            ):
+                config['AGENT_SMALL_MODEL'] = config['AGENT_SMALL_MODEL_URL'] = ''
+                config['AGENT_SMALL_MODEL_API_KEY'] = ''
+
             # TTS Voice ID serves as fallback for character voice_id.
             if core_cfg.get('ttsVoiceId') is not None:
                 config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
@@ -1780,10 +1802,11 @@ class CoreConfigMixin:
 
         Args:
             model_type: model type, one of:
-                - 'summary': summary model (falls back to assist API)
-                - 'correction': correction model (falls back to assist API)
+                - 'summary': memory model, shown as "memory upkeep" (falls back to assist API)
                 - 'emotion': emotion analysis model (falls back to assist API)
                 - 'vision': vision model (falls back to assist API)
+                - 'agent': familiar (task agent) model; used even without custom API
+                - 'agent_small': small familiar model (follows 'emotion' unless configured)
                 - 'realtime': realtime speech model (falls back to core API)
                 - 'tts_default': default TTS (falls back to core API, used by OmniOfflineClient)
                 - 'tts_custom': custom TTS (falls back to assist API, used for voice_id scenarios)
@@ -1863,13 +1886,6 @@ class CoreConfigMixin:
                 'default_model': 'GAME_SUMMARY_MODEL',
                 'fallback_type': 'summary',
             },
-            'correction': {
-                'custom_model': 'CORRECTION_MODEL',
-                'custom_url': 'CORRECTION_MODEL_URL',
-                'custom_key': 'CORRECTION_MODEL_API_KEY',
-                'default_model': 'CORRECTION_MODEL',
-                'fallback_type': 'assist',
-            },
             'emotion': {
                 'custom_model': 'EMOTION_MODEL',
                 'custom_url': 'EMOTION_MODEL_URL',
@@ -1897,6 +1913,13 @@ class CoreConfigMixin:
                 'custom_key': 'AGENT_MODEL_API_KEY',
                 'default_model': 'AGENT_MODEL',
                 'fallback_type': 'assist',
+            },
+            'agent_small': {
+                'custom_model': 'AGENT_SMALL_MODEL',
+                'custom_url': 'AGENT_SMALL_MODEL_URL',
+                'custom_key': 'AGENT_SMALL_MODEL_API_KEY',
+                'default_model': 'AGENT_SMALL_MODEL',
+                'fallback_type': 'emotion',  # The small familiar model follows the recognition (small) model by default.
             },
             'realtime': {
                 'custom_model': 'REALTIME_MODEL',
@@ -1953,11 +1976,11 @@ class CoreConfigMixin:
                 'summary': 'summary',
                 'game_main': 'gameMain',
                 'game_summary': 'gameSummary',
-                'correction': 'correction',
                 'emotion': 'emotion',
                 'decision': 'decision',
                 'vision': 'vision',
                 'agent': 'agent',
+                'agent_small': 'agentSmall',
                 'realtime': 'omni',
                 'tts_default': 'tts',
                 'tts_custom': 'tts',
@@ -1987,6 +2010,8 @@ class CoreConfigMixin:
                     return _resolved_provider_type_for_model('conversation', seen)
                 if fallback_type == 'summary':
                     return _resolved_provider_type_for_model('summary', seen)
+                if fallback_type == 'emotion':
+                    return _resolved_provider_type_for_model('emotion', seen)
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
 
             # Named-provider **protocols** likewise apply only when the slot URL truly belongs to that provider.
@@ -2022,6 +2047,8 @@ class CoreConfigMixin:
                     return _resolved_provider_type_for_model('conversation', seen)
                 if fallback_type == 'summary':
                     return _resolved_provider_type_for_model('summary', seen)
+                if fallback_type == 'emotion':
+                    return _resolved_provider_type_for_model('emotion', seen)
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
             return _provider_type_from_assist_key(provider)
 
@@ -2062,6 +2089,22 @@ class CoreConfigMixin:
             provider = str(core_config.get('gameSummaryModelProvider') or 'follow_summary').strip()
             if not treat_as_custom or provider == 'follow_summary':
                 return self.get_model_api_config('summary', _core_config=core_config)
+        elif model_type == 'agent_small':
+            # Unless configured separately the small familiar model is the recognition
+            # (small) model; follow_agent makes it the familiar model instead. Delegating
+            # keeps each followed tier's own endpoint rules (region rewrite, pinned agent URL).
+            provider = str(core_config.get('agentSmallModelProvider') or 'follow_emotion').strip()
+            if not treat_as_custom:
+                return self.get_model_api_config('emotion', _core_config=core_config)
+            if provider == 'follow_agent':
+                return self.get_model_api_config('agent', _core_config=core_config)
+            if not (
+                str(core_config.get('AGENT_SMALL_MODEL') or '').strip()
+                and str(core_config.get('AGENT_SMALL_MODEL_URL') or '').strip()
+            ):
+                # Its own settings count only when complete (URL and model); otherwise the
+                # whole slot is the recognition model, key and protocol included.
+                return self.get_model_api_config('emotion', _core_config=core_config)
         
         # Agent always uses dedicated AGENT_MODEL_URL, but is_custom is True only with enableCustomApi.
         # AGENT_MODEL_URL does **not** undergo region rewriting: _normalize_agent_url

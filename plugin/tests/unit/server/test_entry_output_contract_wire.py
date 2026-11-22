@@ -139,6 +139,97 @@ def test_dynamic_entry_rejects_a_non_mapping_schema():
         plugin.register_dynamic_entry("dyn", lambda: None, output_schema="object")  # type: ignore[arg-type]
 
 
+def _nested_schema(depth: int) -> dict[str, object]:
+    """An object schema nested through ``depth`` objects (``2 * depth - 1`` container levels)."""
+    schema: dict[str, object] = {"type": "object"}
+    for _ in range(depth - 1):
+        schema = {"type": "object", "properties": {"x": schema}}
+    return schema
+
+
+def test_schema_depth_bound():
+    from plugin._types.entry_metadata import MAX_SCHEMA_DEPTH, schema_depth_exceeds
+
+    # Every mapping and list is a level, the outermost one included.
+    assert schema_depth_exceeds({"a": [{"b": {}}]}, limit=4) is False
+    assert schema_depth_exceeds({"a": [{"b": {}}]}, limit=3) is True
+    assert schema_depth_exceeds(None) is False
+    chain: dict[str, object] = {}
+    for _ in range(MAX_SCHEMA_DEPTH - 1):
+        chain = {"x": chain}
+    assert schema_depth_exceeds(chain) is False
+    assert schema_depth_exceeds({"x": chain}) is True
+    assert schema_depth_exceeds(_nested_schema(MAX_SCHEMA_DEPTH // 2)) is False
+    deep = _nested_schema(5000)
+    assert schema_depth_exceeds(deep) is True
+    cyclic: dict[str, object] = {"type": "object"}
+    cyclic["properties"] = {"self": cyclic}
+    assert schema_depth_exceeds(cyclic) is True
+    # Shared sub-schemas are not re-walked per path (2**60 paths here).
+    shared: object = {"type": "string"}
+    for _ in range(60):
+        shared = {"anyOf": [shared, shared]}
+    assert schema_depth_exceeds(shared, limit=1000) is False
+
+
+def test_too_deep_dynamic_schema_is_rejected_without_registering_anything():
+    ctx = _Ctx(Path(tempfile.mkdtemp()) / "plugin.toml")
+    plugin = _Plugin(ctx)
+
+    async def handler():
+        return {"n": 1}
+
+    with pytest.raises(ValueError, match="output_schema nests deeper than"):
+        plugin.register_dynamic_entry("dyn", handler, output_schema=_nested_schema(5000))
+    assert "dyn" not in plugin._dynamic_entries
+    assert ctx.message_queue.items == []
+    assert all(item["id"] != "dyn" for item in plugin.list_entries(include_disabled=True))
+
+    assert plugin.register_dynamic_entry("dyn", handler, output_schema=SCHEMA) is True
+    assert _register_payload(ctx, "dyn")["output_schema"] == SCHEMA
+
+
+def test_failed_registration_message_leaves_no_half_registered_entry(monkeypatch):
+    ctx = _Ctx(Path(tempfile.mkdtemp()) / "plugin.toml")
+    plugin = _Plugin(ctx)
+
+    async def handler():
+        return {"n": 1}
+
+    def failing(*args, **kwargs):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr("plugin.sdk.plugin.base._dynamic_entry_registration", failing)
+    with pytest.raises(RecursionError):
+        plugin.register_dynamic_entry("dyn", handler, output_schema=SCHEMA)
+    assert "dyn" not in plugin._dynamic_entries
+    assert ctx.message_queue.items == []
+    plugin.list_entries(include_disabled=True)
+
+    monkeypatch.undo()
+    assert plugin.register_dynamic_entry("dyn", handler, output_schema=SCHEMA) is True
+    assert _register_payload(ctx, "dyn")["output_schema"] == SCHEMA
+    assert any(item["id"] == "dyn" for item in plugin.list_entries())
+
+
+async def test_router_add_entry_rejects_a_too_deep_schema():
+    router = PluginRouter(prefix="r_")
+
+    async def handler():
+        return {}
+
+    result = await router.add_entry("dyn", handler, output_schema=_nested_schema(5000))
+    assert result.is_err()
+    assert "output_schema nests deeper than" in str(result.error)
+    assert "r_dyn" not in router.collect_entries()
+    assert (await router.add_entry("dyn", handler, output_schema=SCHEMA)).is_ok()
+
+
+def test_decorator_rejects_a_too_deep_schema():
+    with pytest.raises(ValueError, match="output_schema nests deeper than"):
+        plugin_entry(id="deep", output_schema=_nested_schema(5000))
+
+
 # ---------------------------------------------------------------------------
 # Host side: IPC registration, previews, packaged metadata, GET /plugins
 # ---------------------------------------------------------------------------
@@ -184,6 +275,36 @@ async def test_host_ipc_registration_keeps_the_output_contract():
             state._snapshot_cache = cache_backup
 
 
+async def test_host_ipc_registration_rejects_a_too_deep_schema():
+    from plugin.core.communication import PluginCommunicationResourceManager
+    from plugin.core.state import state
+
+    manager = PluginCommunicationResourceManager(plugin_id="demo", transport=_Transport(), logger=_Logger())
+    handlers_backup = dict(state.event_handlers)
+    cache_backup = copy.deepcopy(state._snapshot_cache)
+    try:
+        with state.acquire_event_handlers_write_lock():
+            state.event_handlers.clear()
+        state.invalidate_snapshot_cache("handlers")
+        for entry_id, schema in (("deep", _nested_schema(5000)), ("ok", SCHEMA)):
+            await manager._handle_entry_update({
+                "type": "ENTRY_UPDATE",
+                "action": "register",
+                "plugin_id": "demo",
+                "entry_id": entry_id,
+                "meta": {"id": entry_id, "name": entry_id, "output_schema": schema},
+            })
+        with state.acquire_event_handlers_read_lock():
+            assert "demo.deep" not in state.event_handlers
+            assert state.event_handlers["demo.ok"].meta.output_schema == SCHEMA
+    finally:
+        with state.acquire_event_handlers_write_lock():
+            state.event_handlers.clear()
+            state.event_handlers.update(handlers_backup)
+        with state._snapshot_cache_lock:
+            state._snapshot_cache = cache_backup
+
+
 class _PreviewPlugin:
     __routers__ = [_Router]
 
@@ -206,6 +327,28 @@ def test_previews_carry_the_output_contract_only_when_declared():
     assert previews["explicit"]["strict_output"] is True
     assert "output_schema" not in previews["plain_main"]
     assert "strict_output" not in previews["plain_main"]
+
+
+class _ForwardRouter(PluginRouter):
+    @plugin_entry(id="forward")
+    async def forward(self) -> "Later":
+        return self.Later(n=1)
+
+    class Later(BaseModel):
+        n: int
+
+
+class _ForwardPreviewPlugin:
+    __routers__ = [_ForwardRouter]
+
+
+def test_router_class_preview_resolves_forward_references_like_runtime():
+    from plugin.core.registry import _extract_entries_preview
+
+    previews = {item["id"]: item for item in _extract_entries_preview("demo", _ForwardPreviewPlugin, {}, {})}
+    runtime = _ForwardRouter().collect_entries()["forward"].meta
+    assert previews["forward"]["output_schema"] == _ForwardRouter.Later.model_json_schema() == runtime.output_schema
+    assert getattr(_ForwardRouter.forward, EVENT_META_ATTR).output_schema is None
 
 
 def test_packaged_handler_metadata_carries_the_output_contract():

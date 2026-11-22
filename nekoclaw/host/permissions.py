@@ -102,6 +102,10 @@ def _effective_mode(category: str, mode: str, *, category_mode: str = "auto") ->
     return AUTO_POLICY.get(category, "always_ask")
 
 
+# Native categories that follow ``AUTO_POLICY`` when left on ``auto``; see
+# ``PermissionStore.native_mode``.
+NATIVE_AUTO_CATEGORIES: frozenset[str] = frozenset({"workdir_files", "other"})
+
 # Categories whose tools are single small steps. "once" covers the rest of
 # the run that asked instead of one call, in both asking modes.
 RUN_SCOPED_CATEGORIES: frozenset[str] = frozenset({"keyboard_mouse", "browser"})
@@ -287,12 +291,21 @@ class PermissionStore:
         return _effective_mode(name, configured, category_mode=category_mode)
 
     async def native_mode(self, category: str) -> str:
-        """Keep the local-file default. Other native auto decisions require a fresh answer."""
+        """Return the rule for a native call whose owner the host cannot verify.
+
+        Left on ``auto``, files inside the working directory and the tools
+        of dsh plugins (``other``) follow ``AUTO_POLICY``, which allows
+        both: a plugin is confirmed by the user when it is installed, as
+        code that runs inside dsh with all dsh may do, so asking at each of
+        its calls adds no boundary. Every other category on ``auto`` stays
+        ``auto``, which the gate answers by asking each time. A setting the
+        user made is returned as it is.
+        """
         await self._ensure_loaded()
         if self._unreadable:
             return _UNREADABLE_MODE
         configured = self._categories.get(category, "auto")
-        if configured == "auto" and category == "workdir_files":
+        if configured == "auto" and category in NATIVE_AUTO_CATEGORIES:
             return AUTO_POLICY[category]
         return configured
 

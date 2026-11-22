@@ -376,8 +376,6 @@ type HostedApi = {
   permissions = ["state:read", "document:parse"]
   ```
 
-  `neko-plugin check` 目前仍会警告 `document:parse` 不是可识别的 UI 权限（[#3809](https://github.com/Project-N-E-K-O/N.E.K.O/issues/3809)）。运行时接受这个权限；该警告不会让检查失败，可以忽略。
-
   请在真实用户操作的事件处理器中直接调用，例如文件输入框的 `onChange`、点击或拖放。Hosted UI 运行时会把这些处理器内的同步调用标记为用户发起；先执行无关异步工作、再调用会被拒绝。
 - `api.refresh()` 重新拉取 context 并重新渲染。
 - 如果 action 设置了 `refresh_context=false`，则不会自动刷新。

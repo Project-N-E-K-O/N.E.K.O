@@ -817,8 +817,8 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
 
     if core_cfg.get("enableCustomApi", False):
         model_types = [
-            "conversation", "summary", "gameMain", "gameSummary", "correction", "emotion",
-            "decision", "vision", "agent", "omni", "tts",
+            "conversation", "summary", "gameMain", "gameSummary", "emotion",
+            "decision", "vision", "agent", "agentSmall", "omni", "tts",
         ]
         def _add_model_target(model_type: str, provider: str, seen: set[str] | None = None) -> None:
             seen = seen or set()

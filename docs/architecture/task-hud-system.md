@@ -1,11 +1,11 @@
 # Task HUD System
 
-The Task HUD is the browser/Electron view of Agent task state. It is a client-side projection of the commissions in the NekoClaw host's ledger, not an independent task scheduler. See [Agent System](/architecture/agent-system) for how a commission is filed and carried out.
+The Task HUD is the browser/Electron view of Agent task state. It is a client-side projection of the commissions in the NekoPower host's ledger, not an independent task scheduler. See [Agent System](/architecture/agent-system) for how a commission is filed and carried out.
 
 ## Current data path
 
 ```text
-NekoClaw host (a commission is filed or changes status)
+NekoPower host (a commission is filed or changes status)
     │ task_update
     ▼
 AgentServerEventBridge ── ZMQ :48962 ──> MainServerAgentBridge

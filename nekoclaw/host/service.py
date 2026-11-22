@@ -48,10 +48,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
+from nekoclaw.host.board import Board
 from nekoclaw.host.capabilities import BuiltinCapabilities, CapabilityRegistry
 from nekoclaw.host.decision import ConfiguredDecisionLLM, DecisionLLM, DecisionModel, LexicalDecisionModel
 from nekoclaw.host.task_agents import (
@@ -99,6 +101,35 @@ async def configured_task_agent_model() -> dict[str, Any] | None:
         "api_key": config.get("api_key"),
         "provider_type": config.get("provider_type"),
     }
+
+
+# The states of a session in which something is being done with it.
+_SESSION_AT_WORK = ("running", "waiting", "compacting")
+
+
+class HostShuttingDown(RuntimeError):
+    """The host is being shut down: what was asked for is not begun."""
+
+
+class ProjectUnreadable(RuntimeError):
+    """The record of a project cannot be read, so it cannot be changed: it is left as it is."""
+
+
+class ProjectBusy(RuntimeError):
+    """Something is at work in a project, so where it works cannot be changed now. Its text is why (a code)."""
+
+
+def _model_identity(base_url: Any, model: Any) -> str:
+    """Return what a page tells a model by: its settings are kept by address and name, the page is given neither."""
+    import hashlib
+
+    from nekoclaw.host.model_capabilities import model_key
+
+    return hashlib.sha256(model_key(base_url, model).encode("utf-8")).hexdigest()[:16]
+
+
+class ModelChanged(RuntimeError):
+    """The task agent model is another than the one the settings were read for. Its text is the model now."""
 
 
 class NekoClawHost:
@@ -235,6 +266,16 @@ class NekoClawHost:
             forget_dsh_session=self.dsh.forget_session,
         )
         self.ledger.subscribe(self.space_keeper.watch)
+        # The presets sessions are opened by, and the board of sessions a
+        # page shows: both read when they are asked for.
+        self.templates_store = self.task_agents.templates
+        self._board = Board(
+            ledger=self.ledger,
+            space=self.space,
+            templates=self.templates_store,
+            paths=self.paths.space,
+            model=self._task_agent_model_name,
+        )
         # A plugin's request for confirmation is put to the user by the
         # gateway, through the same waiting the task agents' own questions use.
         self.gateway.set_ask_user(self.task_agents.ask_user)
@@ -261,6 +302,13 @@ class NekoClawHost:
         )
         # Set when shutting down starts; the task finishes when it is done.
         self._shut_down = False
+        # Held while a task agent is made for the user (the name is looked for and taken in one go)
+        # and while where a project works is changed (its sessions and its record are written as one).
+        self._project_lock = asyncio.Lock()
+        # Changes of where a project works that are under way: kept so that they are carried through.
+        self._changes: set[asyncio.Future[Any]] = set()
+        # Held while a page's settings of a model are written: one request's going back does not undo another's.
+        self._model_window_lock = asyncio.Lock()
         # Set by the first call that does work; see ``_first_use``.
         self._used = False
         self._shutdown_task: asyncio.Future[None] | None = None
@@ -475,6 +523,119 @@ class NekoClawHost:
             return False
         return await self.space_keeper.clear_session(session_id)
 
+    # -- the board of sessions --------------------------------------------
+    #
+    # For a page that shows the task agents by project and one that sets a
+    # new one up. No route leads here yet; whoever adds one calls these.
+
+    async def _task_agent_model_name(self) -> str | None:
+        """Return the name of the model task agents use, and nothing else of it."""
+        config = await self._task_agent_model()
+        name = config.get("model") if config else None
+        return str(name) if name else None
+
+    async def board(
+        self, project: str | None = None, lanlan_name: str | None = None, known_revision: str | None = None
+    ) -> dict[str, Any]:
+        """Return the sessions by project, one card each; see ``nekoclaw/host/board.py``.
+
+        ``project`` leaves one project's, ``lanlan_name`` one character's.
+        With ``known_revision``, the revision a board had that the caller
+        still holds, ``{"revision", "unchanged": True}`` comes back while
+        nothing on it changed. Reads only: no model and no runtime is
+        asked, and nothing is started.
+        """
+        return await self._board.view(project, lanlan_name, known_revision)
+
+    async def templates(self, project: str | None = None) -> list[dict[str, Any]]:
+        """Return the presets a session can have, for a project or for none; see ``nekoclaw/host/templates.py``.
+
+        One ``{"name", "label", "description", "avatar", "source",
+        "read_only", "writes", "memory", "model", "valid", "error"}``
+        each, the built-in ones first. A template file that is wrong is
+        listed with ``valid`` False and what is wrong with it.
+        """
+        listed = await asyncio.to_thread(self.templates_store.listing, project)
+        return [item.to_json() for item in listed]
+
+    async def draft_session(
+        self, text: str, workdir: str | None = None, lanlan_name: str | None = None
+    ) -> dict[str, str]:
+        """Fill in the form of a new session from what the user wrote of it; see ``nekoclaw/host/drafts.py``.
+
+        Returns ``{name, title, preset, duty, description, rules}``, or
+        raises ``drafts.DraftError`` with a reason. One call of the
+        summary model; nothing is made or written. ``workdir`` is the
+        folder chosen for the session, of which names and sizes are read.
+        ``lanlan_name`` is whose task agent it is to be: the form is the
+        same for every character, and it is taken so that a caller need
+        not know that.
+        """
+        from nekoclaw.host.drafts import draft_session
+
+        del lanlan_name
+        return await draft_session(self._decision_llm, self.templates_store, text, workdir)
+
+    # -- what happened between sessions -----------------------------------
+    #
+    # For a screen that draws the task agents of a project as a group, with
+    # the lines between them, and replays what they did (no route leads
+    # here yet). Both only read the ledger; no model is called. See
+    # ``nekoclaw/host/timeline.py`` for the kinds and the cursor.
+
+    async def timeline(
+        self,
+        project: str | None = None,
+        lanlan_name: str | None = None,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Return a page of what happened among sessions, in the order it happened.
+
+        ``project`` / ``lanlan_name`` keep to one project, one character;
+        neither, everything. ``after`` is the ``next`` of the page before,
+        or the ``cursor`` of an entry; none starts from the beginning.
+        ``limit`` entries at most (``TIMELINE_PAGE_ROWS`` when not given,
+        at least one, never more than ``TIMELINE_PAGE_MAX_ROWS``). Returns
+        ``{"entries", "next", "more", "latest"}``; see
+        ``timeline.read_timeline``. A cursor that is not one raises
+        ``ValueError``.
+        """
+        from config.nekoclaw_settings import TIMELINE_PAGE_MAX_ROWS, TIMELINE_PAGE_ROWS
+
+        rows = TIMELINE_PAGE_ROWS if limit is None else max(1, min(int(limit), TIMELINE_PAGE_MAX_ROWS))
+        page = await self.ledger.timeline(project=project, lanlan_name=lanlan_name, after=after, limit=rows)
+        await self._shorten(page["entries"])
+        return page
+
+    async def waits(self, project: str | None = None, lanlan_name: str | None = None) -> dict[str, Any]:
+        """Return who waits for whom now: ``{"waits", "more"}``; see ``timeline.read_waits``.
+
+        ``project`` keeps to the waits with one side in that project,
+        ``lanlan_name`` to those of one character.
+        """
+        from config.nekoclaw_settings import WAITS_MAX_ROWS
+
+        result = await self.ledger.waits(project=project, lanlan_name=lanlan_name, limit=WAITS_MAX_ROWS)
+        await self._shorten(result["waits"])
+        return result
+
+    @staticmethod
+    async def _shorten(items: list[dict[str, Any]]) -> None:
+        """Cut the ``text`` of each item to ``TIMELINE_TEXT_MAX_TOKENS``, on a thread of its own.
+
+        Not on the ledger's: counting tokens of a thousand long notes takes
+        a good part of a second, and every write would wait for it.
+        """
+        from config.nekoclaw_settings import TIMELINE_TEXT_MAX_TOKENS
+        from utils.tokenize import truncate_to_tokens
+
+        def shorten() -> None:
+            for item in items:
+                item["text"] = truncate_to_tokens(item["text"], TIMELINE_TEXT_MAX_TOKENS)
+
+        await asyncio.to_thread(shorten)
+
     # -- dsh --------------------------------------------------------------
     #
     # For a page about the runtimes (there is none yet, and no route leads
@@ -539,6 +700,310 @@ class NekoClawHost:
 
             raise DshUnavailable("dsh is in use: a commission is running in it")
 
+    # -- settings a page shows --------------------------------------------
+    #
+    # For the page about the runtime (``app/agent_server/api_console.py``).
+
+    async def model_window(self) -> dict[str, Any] | None:
+        """Return what sessions of the task agent model are managed for; None while no model is configured.
+
+        ``ModelCapabilityStore.describe_window`` of the model as it is
+        configured now, with ``model``: its name.
+        """
+        config = await self._task_agent_model()
+        if not config or not config.get("model"):
+            return None
+        described = await self.model_capabilities.describe_window(config.get("base_url"), config.get("model"))
+        return {
+            "model": str(config.get("model")),
+            "id": _model_identity(config.get("base_url"), config.get("model")),
+            **described,
+        }
+
+    async def set_model_window(self, **changes: Any) -> dict[str, Any]:
+        """Change what sessions of the task agent model are managed for; returns ``model_window``.
+
+        ``context_window`` and ``compact_at`` in tokens, ``idle_compact_after``
+        in seconds; None for one of them goes back to the setting, and one
+        that is not given stays as it is. ``idle_compact_on`` (a bool)
+        switches summing up idle sessions on or off. Raises ``LookupError``
+        while no model is configured, ``ValueError`` for a value the store
+        refuses (nothing is changed then) and ``TypeError`` for a name that
+        is none of the four. With ``expected_model`` (the ``id`` of the
+        model the page read the settings of, from ``model_window``),
+        raises ``ModelChanged`` when the model configured now is another,
+        or one of the same name at another address: nothing is written.
+        """
+        expected_model = changes.pop("expected_model", None)
+        unknown = sorted(set(changes) - {"context_window", "compact_at", "idle_compact_after", "idle_compact_on"})
+        if unknown:
+            raise TypeError(f"unknown window setting: {', '.join(unknown)}")
+        config = await self._task_agent_model()
+        if not config or not config.get("model"):
+            raise LookupError("no task agent model is configured")
+        base_url, model = config.get("base_url"), config.get("model")
+        if expected_model is not None and _model_identity(base_url, model) != expected_model:
+            # The page shows the settings of one model; they are not written to another,
+            # nor to one of the same name at another address.
+            raise ModelChanged(str(model))
+        store = self.model_capabilities
+        async with self._model_window_lock:
+            return await self._write_model_window(store, base_url, model, changes)
+
+    async def _write_model_window(self, store: Any, base_url: Any, model: Any, changes: dict[str, Any]) -> dict[str, Any]:
+        """Write what ``set_model_window`` was given; all of it, or none of it."""
+        before = await store.describe_window(base_url, model)
+        # The window last: setting it forgets what the user was told about the model, which
+        # going back cannot bring back. By then the others were taken, and a window that
+        # will not do is refused before anything of it is written.
+        setters = (
+            ("compact_at", store.set_compact_at, "compact_at_set"),
+            ("idle_compact_after", store.set_idle_compact_after, "idle_compact_after_set"),
+            ("idle_compact_on", store.set_idle_compact_on, "idle_compact_on"),
+            ("context_window", store.set_context_window, "set"),
+        )
+        done: list[tuple[Any, Any]] = []
+        try:
+            for name, setter, was in setters:
+                if name in changes:
+                    await setter(base_url, model, changes[name])
+                    done.append((setter, before.get(was)))
+        except ValueError:
+            # One page saves them together: none of them is to stay changed.
+            for setter, value in reversed(done):
+                await setter(base_url, model, value)
+            raise
+        window = await self.model_window()
+        assert window is not None
+        return window
+
+    async def _project_busy(self, project: str) -> str | None:
+        """Return why a project's working directory cannot be changed now, or None when it can.
+
+        ``"at_work"`` while a session of the project is open in a runtime
+        with a run under way, waiting for the user or being summed up, or
+        has a commission that is queued, at work or waiting: what is under
+        way goes on where it began. Whoever adds another way for a project
+        to be in the middle of something (a session writing in a copy of
+        the directory, a copy not brought back yet) adds it here.
+        """
+        # Of every character: the directory is the project's, not one character's.
+        rows = await self.ledger.find_sessions(project=project, limit=500, commissions_each=0)
+        if any(row.session.status in _SESSION_AT_WORK for row in rows):
+            return "at_work"
+        # Every commission under way, not the last few of each session: one that waits may be old.
+        sessions = {row.session.id for row in rows}
+        under_way = await self.ledger.select(statuses=("queued", "working", "waiting_user"))
+        if any(commission.project == project or commission.session_id in sessions for commission in under_way):
+            return "at_work"
+        return None
+
+    async def working_directory(self, workdir: Any) -> Path:
+        """Return a directory task agents may be given to work in; see ``_working_directory``."""
+        return await self._working_directory(workdir)
+
+    async def _working_directory(self, workdir: Any) -> Path:
+        """Return a directory the user named for task agents to work in; ``ValueError`` with a code for one that will not do.
+
+        ``not_absolute`` for what is not a whole path, ``not_a_directory``
+        for one that is not there, ``host_directory`` for where the host
+        keeps its own things (the ledger, the permissions, the task agent
+        space), anything inside that, and anything that holds it.
+        """
+        from nekoclaw.runtime.permissions import is_inside
+
+        if not isinstance(workdir, str) or not workdir.strip() or "\0" in workdir or not os.path.isabs(workdir):
+            raise ValueError("not_absolute")
+        wanted = Path(workdir)
+
+        def looked_at() -> tuple[bool, Path, Path]:
+            return wanted.is_dir(), Path(os.path.realpath(wanted)), Path(os.path.realpath(self.paths.root()))
+
+        try:
+            is_directory, actual, own = await asyncio.to_thread(looked_at)
+        except (OSError, ValueError):
+            # A name the system will not look at is no directory.
+            raise ValueError("not_a_directory") from None
+        if not is_directory:
+            raise ValueError("not_a_directory")
+        if is_inside(actual, own) or is_inside(own, actual):
+            raise ValueError("host_directory")
+        return wanted
+
+    async def open_session(
+        self,
+        lanlan_name: str,
+        name: str,
+        *,
+        preset: str = "boss",
+        title: str = "",
+        duty: str = "",
+        description: str = "",
+        workdir: str | None = None,
+        rules: str = "",
+    ) -> dict[str, Any]:
+        """Make a task agent for something lasting, as the user asks: a new project and its own session.
+
+        ``name`` is the project's and the session's; ``preset`` what kind
+        of task agent it is (one of ``templates()`` that is valid);
+        ``title`` and ``duty`` go on its card and ``description`` on the
+        project, as the user's own words where the user wrote some, which
+        nothing writes over (a line left empty is nobody's, and the first
+        review fills it in);
+        ``workdir`` is where it works (as for ``set_project_workdir``),
+        the directory the host gives it when none is named; ``rules`` are
+        written as the project's rules when there are some. Nothing is
+        started: it has no commission until one is filed under the project.
+
+        Returns ``{"project": ..., "session_id": ...}``. Raises
+        ``ValueError`` with a code: ``no_character``, ``bad_name`` (no name
+        of a directory, or the name commissions without a project are filed
+        under), ``name_taken`` (a project of the name is there, archived
+        ones included), ``bad_preset``, or one of the directory's.
+        """
+        from nekoclaw.host.paths import safe_segment
+        from nekoclaw.host.space import normalize_name
+
+        if not isinstance(lanlan_name, str) or not lanlan_name.strip():
+            raise ValueError("no_character")
+        # A name that begins with ``_`` is the host's own (``DEFAULT_PROJECT`` is one).
+        if not isinstance(name, str) or not name.strip() or name.strip().startswith("_"):
+            raise ValueError("bad_name")
+        name = name.strip()
+        try:
+            safe_segment(name, "project")
+        except ValueError:
+            raise ValueError("bad_name") from None
+        if not any(item["valid"] and item["name"] == preset for item in await self.templates(None)):
+            raise ValueError("bad_preset")
+        wanted = await self._working_directory(workdir) if workdir else None
+        # One at a time: of two asked for at once under one name, the second finds the name taken.
+        # The same lock as changing where a project works: the record of the project and its
+        # session are written here one after the other, and no change comes between the two.
+        async with self._project_lock:
+            # Among the archived ones as well: commissions are filed by the name, and two of a name would be one.
+            # Compared as the space compares names when it files a commission (``normalize_name``).
+            if any(normalize_name(project.name) == normalize_name(name) for project in await self.space.list_projects()):
+                raise ValueError("name_taken")
+            project = await self.space.touch_project(name, workdir=str(wanted) if wanted else None, count=False)
+            if description.strip():
+                project = await self.space.describe_project(name, description, by="user") or project
+            if rules.strip():
+                await self.space.write_rules(rules, name)
+            session, _made = await self.ledger.project_session(
+                lanlan_name.strip(), name,
+                workdir=str(wanted) if wanted else None, preset=preset,
+                # The user's where the user wrote something. A line left empty in the form was not
+                # emptied by the user: it is nobody's, and the first review fills it in.
+                title=title, title_by="user" if title.strip() else None,
+                duty=duty, duty_by="user" if duty.strip() else None,
+            )
+        return {"project": project.to_json(), "session_id": session.id}
+
+    async def set_project_workdir(self, project: str, workdir: str) -> dict[str, Any]:
+        """Change where the task agents of a project work, as the user asks; returns the project as a page shows it.
+
+        ``workdir`` is a directory that is there, given whole (not relative
+        to anything), and not one the host keeps its own things in. The
+        project's record and the sessions of the project that are its own
+        (not the ones a task agent started, which work where they were
+        sent) are written: the next commission starts there, and is told
+        that the directory is another. Nothing is moved; what was in the
+        old directory stays there.
+
+        Raises ``LookupError`` for a project that is not there (or is
+        archived), ``ValueError`` with a code for a directory that will not
+        do (``not_absolute``, ``not_a_directory``, ``host_directory``),
+        ``ProjectUnreadable`` for a project whose record cannot be read,
+        and ``ProjectBusy`` while something is at work in the project.
+        """
+        wanted = await self._working_directory(workdir)
+        # Carried through once begun, also when whoever asked for it goes away meanwhile: its two
+        # writes are both made or both undone, with the lock held until then.
+        # None begins once the host is shutting down: those under way are waited for before the
+        # ledger is closed (``_settle_changes``), and one begun after that look would not be.
+        if self._shut_down:
+            raise HostShuttingDown("the host is shutting down")
+        change = asyncio.ensure_future(self._change_project_workdir(project, wanted))
+        self._changes.add(change)
+        change.add_done_callback(self._changes.discard)
+        return await asyncio.shield(change)
+
+    async def _change_project_workdir(self, project: str, wanted: Path) -> dict[str, Any]:
+        """Write what ``set_project_workdir`` was asked for; see there."""
+        # One change at a time, and none while a task agent is being made for the user: the
+        # sessions and the project's record end up saying the same directory.
+        async with self._project_lock:
+            # Before anything is moved: a record that cannot be read cannot be written either
+            # (``_project_to_change`` refuses), and the sessions would be moved for nothing.
+            kept, readable = await self.space.read_project(project)
+            if kept is None:
+                raise LookupError(project)
+            if not readable:
+                raise ProjectUnreadable(project)
+            busy = await self._project_busy(project)
+            if busy is not None:
+                raise ProjectBusy(busy)
+            # The project's own sessions of every character first, looked at once more and written in
+            # one go: each starts from the directory it keeps, so a commission that begins from here
+            # on begins in the new one, and one that began since the look above stops the change.
+            before = await self.ledger.move_project(project, str(wanted))
+            if before is None:
+                raise ProjectBusy("at_work")
+            # The record is written second: not written, the sessions go back, so that nothing is half changed.
+            try:
+                changed = await self.space.set_project_workdir(project, str(wanted))
+            except BaseException:
+                await self._undo_project_move(project, before, str(wanted))
+                raise
+            if changed is None:
+                await self._undo_project_move(project, before, str(wanted))
+                raise LookupError(project)
+            return changed.to_json()
+
+    async def _undo_project_move(self, project: str, before: dict[str, str | None], wanted: str) -> None:
+        """Put a project's sessions back where they worked, after its record could not be written.
+
+        Not when the record says ``wanted`` after all: a write that was
+        given up or failed after the record was on disk did change it,
+        and the sessions are right as they are. Nor when the record
+        cannot be read to tell. A session in which
+        something began meanwhile is left where it is (``Ledger.restore_project``).
+        """
+        try:
+            # ``read_project`` and not ``get_project``: the latter shows a project whose file
+            # cannot be read by its name alone, with no working directory, as if nothing were written.
+            kept, readable = await self.space.read_project(project)
+        except Exception as exc:  # noqa: BLE001 - whatever keeps the record from being read
+            kept, readable = None, False
+            logger.debug("the record of a project could not be read (exc_type=%s)", type(exc).__name__)
+        if not readable:
+            # Not known whether it was written: the sessions are left where they were put
+            # sooner than put back under a record that may say the new directory.
+            logger.warning(
+                "where a project works could not be recorded, and its record cannot be read to tell "
+                "whether it was: its sessions stay in the directory asked for"
+            )
+            return
+        if kept is not None and kept.workdir == wanted:
+            return
+        left = await self.ledger.restore_project(before, wanted)
+        if left:
+            logger.warning(
+                "where a project works could not be recorded and %d of its sessions began work meanwhile: "
+                "they stay in the directory asked for", len(left),
+            )
+
+    def places(self) -> list[dict[str, Any]]:
+        """Return where the host keeps what, for showing it: ``key`` and ``path``, in the order shown."""
+        root = self.paths.root()
+        return [
+            {"key": "task_agents", "path": str(root / "task_agents")},
+            {"key": "space", "path": str(self.paths.space().root)},
+            {"key": "dsh", "path": str(self.paths.dsh())},
+            {"key": "browser_profile", "path": str(root / "browser_profile")},
+        ]
+
     # -- upkeep -----------------------------------------------------------
 
     def invalidate_capabilities(self) -> None:
@@ -567,6 +1032,11 @@ class NekoClawHost:
             self._shutdown_task = asyncio.ensure_future(self._shutdown_steps())
         await asyncio.shield(self._shutdown_task)
 
+    async def _settle_changes(self) -> None:
+        """Wait for the changes of where a project works that have begun; what they raise is theirs to tell."""
+        if self._changes:
+            await asyncio.gather(*list(self._changes), return_exceptions=True)
+
     async def _release_builtins(self) -> None:
         """Give the desktop and the browser back and let the provider clean up after them."""
         self.leases.release_all()
@@ -574,6 +1044,9 @@ class NekoClawHost:
 
     async def _shutdown_steps(self) -> None:
         steps = (
+            # First: a change of where a project works that is under way is carried
+            # through (or undone) while the ledger it writes to is still open.
+            ("changes under way", self._settle_changes),
             # Before the task agents are stopped: every commission that ends
             # by that would start work for the space that is then cut off.
             ("task agent space, no new work", self.space_keeper.stand_down),

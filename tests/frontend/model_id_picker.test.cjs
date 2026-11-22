@@ -9,7 +9,7 @@ const SOURCE_PATH = path.join(PROJECT_ROOT, 'static', 'js', 'api_key_settings.js
 const source = fs.readFileSync(SOURCE_PATH, 'utf8');
 
 const MASKED = '__NEKO_SECRET_MASKED__';
-const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary'];
+const MODEL_TYPES = ['conversation', 'vision', 'summary', 'emotion', 'omni', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary'];
 
 function sourceBetween(startMarker, endMarker) {
     const start = source.indexOf(startMarker);
@@ -24,7 +24,6 @@ const ASSIST_PROVIDERS = {
         is_free_version: true,
         conversation_model: 'free-model',
         summary_model: 'free-model',
-        correction_model: 'free-model',
         emotion_model: 'free-mini-model',
         vision_model: 'free-vision-model',
         agent_model: 'free-agent-model',
@@ -33,7 +32,6 @@ const ASSIST_PROVIDERS = {
         conversation_model: 'google/gemini-2.5-flash',
         vision_model: 'google/gemini-2.5-flash',
         summary_model: 'deepseek/deepseek-v4-flash',
-        correction_model: 'deepseek/deepseek-v4-flash',
         emotion_model: 'qwen/qwen3.5-9b',
         agent_model: 'google/gemini-3.8-flash',
     },
@@ -41,24 +39,28 @@ const ASSIST_PROVIDERS = {
         conversation_model: 'qwen3.8-flash',
         vision_model: 'qwen3.8-flash',
         summary_model: 'qwen3.8-flash',
-        correction_model: 'qwen3.8-flash',
         emotion_model: 'qwen3.7-flash',
         agent_model: 'qwen3.8-flash',
     },
     kimi: {
-        conversation_model: 'kimi-k2.6',
-        vision_model: 'kimi-k2.6',
-        summary_model: 'kimi-k2.6',
-        correction_model: 'kimi-k2.6',
-        emotion_model: 'kimi-k2.6',
+        conversation_model: 'kimi-k3',
+        vision_model: 'kimi-k3',
+        summary_model: 'kimi-k3',
+        emotion_model: 'kimi-k3',
         agent_model: '',
+    },
+    fixedduo: {
+        fixed_model: true,
+        openrouter_url: 'https://fixedduo.test/v1',
+        conversation_model: 'duo-chat',
+        emotion_model: 'duo-small',
+        agent_model: 'duo-agent',
     },
     kimi_code: {
         fixed_model: true,
         conversation_model: 'kimi-for-coding',
         vision_model: 'kimi-for-coding',
         summary_model: 'kimi-for-coding',
-        correction_model: 'kimi-for-coding',
         emotion_model: 'kimi-for-coding',
         agent_model: 'kimi-for-coding',
     },
@@ -68,7 +70,7 @@ const ASSIST_PROVIDERS = {
 const CORE_PROVIDERS = {
     free: { is_free_version: true, core_model: 'free-model' },
     qwen: { core_model: 'qwen3.8-omni-flash-realtime' },
-    step: { core_model: 'stepaudio-3-realtime-preview' },
+    step: { core_model: 'stepaudio-3-realtime' },
 };
 Object.entries(ASSIST_PROVIDERS).forEach(([key, profile]) => {
     profile.openrouter_url = `https://${key}.example.test/v1`;
@@ -175,7 +177,6 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
             summary: 'summary_model',
             gameMain: 'conversation_model',
             gameSummary: 'summary_model',
-            correction: 'correction_model',
             emotion: 'emotion_model',
             vision: 'vision_model',
             agent: 'agent_model',
@@ -204,10 +205,14 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
     const exported = [
         'translateModelPickerText', 'getAssistTierModelId', 'resolveSlotModelState', 'applyModelIdPlaceholder',
         'refreshModelIdHints', 'resolveSlotModelPickerRequest', 'resolveImageModelPickerRequest',
-        'fetchModelList', 'getModelPickerErrorMessage', 'initModelIdPickers',
+        'fetchModelList', 'getModelPickerErrorMessage', 'initModelIdPickers', 'getResolvedCustomModelId',
+        'applyFixedModelProviderUi',
     ];
     vm.runInContext([
+        sourceBetween('const FOLLOW_SOURCE_BY_PROVIDER', 'const MODEL_CONFIG_EXPANSION_PATHS'),
         sourceBetween('function getProviderDefaultModelId(', 'function setModelIdFieldHidden('),
+        'function setModelIdFieldHidden() {}',
+        sourceBetween('function applyFixedModelProviderUi(', 'function populateModelProviderDropdowns('),
         sourceBetween('// ==================== 模型 ID 选择器 ====================', '// ==================== 加载API服务商选项 ===================='),
         ...exported.map(name => `globalThis.${name} = ${name};`),
         'globalThis.invalidateModelLists = invalidateModelLists;',
@@ -226,6 +231,7 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
     MODEL_TYPES.forEach(modelType => select(`${modelType}ModelProvider`, 'follow_assist'));
     select('gameMainModelProvider', 'follow_conversation');
     select('gameSummaryModelProvider', 'follow_summary');
+    select('agentSmallModelProvider', 'follow_emotion');
     select('omniModelProvider', 'follow_core');
     select('coreApiSelect', 'qwen');
     select('assistApiSelect', 'openrouter');
@@ -259,7 +265,7 @@ test('follow_assist text slots use the tier default of the selected assist provi
 test('agent tier falls back to the vision model when the provider has no agent model', () => {
     const { context, select } = createPickerContext();
     select('assistApiSelect', 'kimi');
-    assert.equal(context.getAssistTierModelId('agent'), 'kimi-k2.6');
+    assert.equal(context.getAssistTierModelId('agent'), 'kimi-k3');
 });
 
 test('follow_core text slots stay on the core provider chain and never borrow assist models', () => {
@@ -268,7 +274,7 @@ test('follow_core text slots stay on the core provider chain and never borrow as
     assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'qwen3.8-flash');
 
     select('coreApiSelect', 'step');
-    assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'stepaudio-3-realtime-preview');
+    assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'stepaudio-3-realtime');
 });
 
 test('free and fixed-model sources do not accept a typed model ID', () => {
@@ -279,8 +285,8 @@ test('free and fixed-model sources do not accept a typed model ID', () => {
     });
 
     select('assistApiSelect', 'openrouter');
-    setSlot('correction', 'kimi_code', 'typed');
-    assert.deepEqual(plain(context.resolveSlotModelState('correction')), {
+    setSlot('emotion', 'kimi_code', 'typed');
+    assert.deepEqual(plain(context.resolveSlotModelState('emotion')), {
         defaultModelId: 'kimi-for-coding', acceptsTypedModelId: false, fixedModelProvider: 'kimi_code',
     });
 });
@@ -347,6 +353,52 @@ test('game slots mirror or follow the text slots and ignore their own input in f
 
     setSlot('gameSummary', 'follow_core');
     assert.equal(context.resolveSlotModelState('gameSummary').defaultModelId, 'qwen3.8-flash');
+});
+
+test('the small familiar slot mirrors the recognition slot by default, the familiar slot on request, and has the small tier otherwise', () => {
+    const { context, setSlot } = createPickerContext();
+    setSlot('emotion', 'custom', 'my-small-model');
+    assert.deepEqual(plain(context.resolveSlotModelState('agentSmall')), {
+        defaultModelId: 'my-small-model', acceptsTypedModelId: false, fixedModelProvider: '',
+    });
+
+    setSlot('agent', 'custom', 'my-agent-model');
+    setSlot('agentSmall', 'follow_agent');
+    assert.equal(context.resolveSlotModelState('agentSmall').defaultModelId, 'my-agent-model');
+
+    setSlot('agentSmall', 'follow_assist', 'ignored');
+    assert.equal(context.resolveSlotModelState('agentSmall').defaultModelId, 'qwen/qwen3.5-9b');
+
+    // custom with a blank model ID runs the recognition model resolved for the emotion slot;
+    // the connectivity check must test that same model, not an empty one.
+    setSlot('agentSmall', 'custom', '');
+    assert.deepEqual(plain(context.resolveSlotModelState('agentSmall')), {
+        defaultModelId: 'my-small-model', acceptsTypedModelId: true, fixedModelProvider: '',
+    });
+    assert.equal(context.getResolvedCustomModelId('agentSmall', 'custom'), 'my-small-model');
+    setSlot('agentSmall', 'custom', 'typed-small');
+    assert.equal(context.getResolvedCustomModelId('agentSmall', 'custom'), 'typed-small');
+});
+
+test('following the familiar slot on a fixed-model provider resolves the familiar tier model', () => {
+    const { context, el, setSlot } = createPickerContext();
+    setSlot('agent', 'fixedduo');
+    setSlot('agentSmall', 'follow_agent');
+    assert.equal(context.getResolvedCustomModelId('agentSmall', 'follow_agent'), 'duo-agent');
+    setSlot('emotion', 'fixedduo');
+    setSlot('agentSmall', 'follow_emotion');
+    assert.equal(context.getResolvedCustomModelId('agentSmall', 'follow_emotion'), 'duo-small');
+
+    setSlot('agentSmall', 'follow_agent', 'typed');
+    assert.equal(context.applyFixedModelProviderUi('agentSmall', 'follow_agent'), true);
+    assert.equal(el('agentSmallModelId').value, 'duo-agent');
+
+    // A custom slot mirrors only the recognition model name; it stays a typed field, so it
+    // must not show the fixed-model notice of the provider it falls back to.
+    setSlot('agentSmall', 'custom', '');
+    assert.deepEqual(plain(context.resolveSlotModelState('agentSmall')), {
+        defaultModelId: 'duo-small', acceptsTypedModelId: true, fixedModelProvider: '',
+    });
 });
 
 test('game slots keep the fixed-model marker of the text slot they mirror', () => {

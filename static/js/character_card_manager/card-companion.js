@@ -1506,7 +1506,7 @@ function _companionAppendError(state, err) {
     let msg = (err && err.message) || String(err || '');
     if (err && err.code === 'assist_api_not_configured') {
         msg = _cardAssistT('character.aiAssistApiMissing',
-            '辅助 API 尚未配置。请在「API Key 设置」里完成配置后再试。');
+            '通用模型供应商尚未配置。请在「API Key 设置」里完成配置后再试。');
     }
     const bubble = document.createElement('div');
     bubble.className = 'card-companion-bubble-system card-companion-error';

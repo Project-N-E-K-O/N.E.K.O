@@ -255,6 +255,9 @@ async def test_a_commission_that_needs_a_change_in_the_copy_is_handed_back_with_
     assert "`write` was not carried out" not in json.dumps(scripts[RENAME].requests[1], ensure_ascii=False)
     types = await _types(host, second.id)
     assert types.index("hand_back_told") < types.index("handed_back")
+    # Which copy it came back from, for a replay: the commission is the session's now.
+    [back] = [event.payload for event in await host.ledger.events(second.id) if event.type == "handed_back"]
+    assert (back["copy"], back["to"]) == (copy_id, main.id)
 
     release.set()
     await wait_status(host, first.id, "done")

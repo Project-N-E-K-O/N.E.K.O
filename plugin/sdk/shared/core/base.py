@@ -139,11 +139,13 @@ class NekoPluginBase:
         return {}
 
     def include_router(self, router: RouterProtocol, *, prefix: str = "") -> None:
-        if prefix != "":
-            router.set_prefix(prefix)
+        # Bind first: binding can fail, and a failed include must not leave
+        # the router with a changed prefix.
         binder = getattr(router, "_bind", None)
         if callable(binder):
             binder(self)
+        if prefix != "":
+            router.set_prefix(prefix)
         self._routers.append(router)
 
     def exclude_router(self, router: RouterProtocol | str) -> bool:

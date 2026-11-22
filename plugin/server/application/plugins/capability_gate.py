@@ -1,10 +1,11 @@
-"""The one host entry point for call-chain capability decisions (observe only).
+"""The one host entry point for call-chain permission decisions (observe only).
 
 Judged uses (the RPC operations in ``CAPABILITY_BY_OPERATION`` and the
 MESSAGE_PUSH route) all go through ``check``. It reads only the host's call
 registry and the consent store, never plugin-supplied ``_ctx`` or views. It
-never refuses a call, and a failure in here is logged by type and ignored, so
-the caller sees exactly what it saw before. See docs/design/plugin-call-chain.md.
+runs whatever the master switch says, and never refuses a call yet; a failure
+in here is logged by type and ignored, so the caller sees exactly what it saw
+before. Permission ids come from ``plugin.sdk.shared.permissions``.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import time
 
 from plugin.core.call_registry import CallLink, CallRecord, CallRegistry, Origin
 from plugin.core.capability_policy import Decision, current_mode, decide
+from plugin.sdk.shared.permissions import PLUGIN_PERMISSION_DENIED, legacy_name, normalize_permission
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins import call_audit
 
@@ -23,14 +25,18 @@ logger = get_logger("server.plugins.capability_gate")
 
 registry = CallRegistry()
 
+MEMORY_READ = "plugin_sdk.main_agent.memory:read"
+CONVERSATIONS_READ = "plugin_sdk.main_agent.conversations:read"
+MESSAGES_PUSH = "plugin_sdk.main_agent.messages:push"
+
 # One row per judged control-RPC operation; all wrapped the same way.
 CAPABILITY_BY_OPERATION = {
-    "MEMORY_QUERY": "memory.read",
-    "MEMORY_SEARCH": "memory.read",
-    "MEMORY_PERSONA_GET": "memory.read",
-    "USER_CONTEXT_GET": "memory.read",
-    "CONVERSATION_REPLY_GET": "conversations.read",
-    "CONVERSATION_INTERACTION_GET": "conversations.read",
+    "MEMORY_QUERY": MEMORY_READ,
+    "MEMORY_SEARCH": MEMORY_READ,
+    "MEMORY_PERSONA_GET": MEMORY_READ,
+    "USER_CONTEXT_GET": MEMORY_READ,
+    "CONVERSATION_REPLY_GET": CONVERSATIONS_READ,
+    "CONVERSATION_INTERACTION_GET": CONVERSATIONS_READ,
 }
 
 # Codes the host and the standard executor produce; anything else is "ERROR".
@@ -39,7 +45,7 @@ _RESULT_CODES = frozenset({
     "CONNECTION_CLOSED", "TRANSPORT_ERROR", "TRANSPORT_TIMEOUT", "BUSY",
     "SERIALIZATION_FAILED", "PLUGIN_UNAVAILABLE", "PLUGIN_NOT_READY",
     "CALL_DEPTH_EXCEEDED", "REQUEST_FAILED", "INVALID_REQUEST", "UNKNOWN_OPERATION",
-    "INTERNAL_ERROR", "PLUGIN_OUTPUT_SCHEMA_VIOLATION",
+    "INTERNAL_ERROR", "PLUGIN_OUTPUT_SCHEMA_VIOLATION", PLUGIN_PERMISSION_DENIED,
 })
 _DEDUP_SECONDS = 60.0
 _last_written: dict[tuple, float] = {}
@@ -49,7 +55,11 @@ _consent_failed_at = -_CONSENT_RETRY_SECONDS
 
 
 def granted_capabilities(plugin_id: str) -> tuple[frozenset[str], bool]:
-    """Approved capabilities from plugin_consents.json, and whether the read worked."""
+    """Approved permission ids from plugin_consents.json, and whether the read worked.
+
+    The store keeps the earlier capability names; they are mapped to
+    permission ids here, and names outside the vocabulary are dropped.
+    """
     global _consent_failed_at
     if time.monotonic() - _consent_failed_at < _CONSENT_RETRY_SECONDS:
         return frozenset(), False
@@ -67,7 +77,7 @@ def granted_capabilities(plugin_id: str) -> tuple[frozenset[str], bool]:
         approved = record.get("approved_capabilities") or []
         if not isinstance(approved, list) or not all(isinstance(c, str) for c in approved):
             return frozenset(), False  # malformed record: unknown, for this plugin only
-        return frozenset(approved), True
+        return frozenset(filter(None, map(normalize_permission, approved))), True
     except Exception:  # only this plugin's record is malformed
         return frozenset(), False
 
@@ -126,8 +136,15 @@ def chain_payload(record: CallRecord) -> dict:
         "depth": record.depth,
         "origin": {"kind": record.origin.kind, "ref": record.origin.ref},
         "hops": [list(hop) for hop in record.hops],
-        "rights": sorted(record.rights) if record.rights is not None else None,
+        "rights": _wire_rights(record.rights),
     }
+
+
+def _wire_rights(rights: frozenset[str] | None) -> list[str] | None:
+    """Permission ids plus, for one release, their earlier names."""
+    if rights is None:
+        return None
+    return sorted(rights | {name for name in map(legacy_name, rights) if name})
 
 
 def result_code(exc: BaseException | None) -> str:
@@ -173,9 +190,7 @@ def end_call(record: CallRecord | None, code: str, started: float) -> None:
 
 
 def check(plugin_id: str, parent_request_id: object, capability: str, operation: str) -> Decision | None:
-    """Judge one use and audit it. Never raises; returns None when off or on failure."""
-    if current_mode() == "off":
-        return None
+    """Judge one use and audit it. Never raises; returns None on failure."""
     try:
         record = registry.lookup(plugin_id, parent_request_id)
         flags = set()

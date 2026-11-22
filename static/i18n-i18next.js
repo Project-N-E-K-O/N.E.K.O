@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并表情包制作与百炼业务空间配置的八语言资源后，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-22-emote-maker-bailian-sync';
+    // 合并表情包制作、使魔模型与记忆浏览器的八语言资源后，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-11-22-emote-maker-model-memory-sync';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

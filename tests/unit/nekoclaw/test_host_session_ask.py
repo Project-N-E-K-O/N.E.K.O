@@ -975,8 +975,8 @@ async def test_external_input_rotates_startup_authority_without_cancelling_the_t
     read_brief = host.space.brief
     reads = []
 
-    async def reading(project):
-        value = await read_brief(project)
+    async def reading(project, **kwargs):
+        value = await read_brief(project, **kwargs)
         reads.append(value)
         if when == "during_brief" and len(reads) == 1:
             owner, = manager._sessions

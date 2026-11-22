@@ -177,7 +177,10 @@ test('renders every top-level route without unresolved Element Plus components',
   const resolutionWarnings = collectVueResolutionWarnings(page)
 
   const routes = [
-    { path: '/', selector: '.dashboard' },
+    { path: '/', selector: '.power-home' },
+    { path: '/familiars/space', selector: '.familiar-space' },
+    { path: '/familiars/runtime', selector: '.familiar-runtime' },
+    { path: '/plugins/_overview', selector: '.dashboard' },
     { path: '/plugins', selector: '.plugin-workbench' },
     { path: '/runs', selector: '.runs-page' },
     { path: '/packages', selector: '.package-manager' },

@@ -256,6 +256,147 @@ commission have caps of their own (``SPACE_BRIEF_MAX_TOKENS``,
 TASK_AGENT_SESSION_NAME_MAX_TOKENS = 16
 """Cap on the name a session is given from the title of its first commission."""
 
+# -- presets, templates and the card of a session -----------------------------
+
+TASK_AGENT_SESSION_INSTRUCTIONS_MAX_TOKENS = 3600
+"""Cap on the host's own part of a session's system prompt: how the gateway is
+reached, whom the task agent works for, the presets it may start a task agent
+with and what its own preset says of its role. With every part at its cap
+(the list of presets ``TASK_AGENT_PRESET_ROSTER_MAX_TOKENS``, a role
+``TEMPLATE_BODY_MAX_TOKENS``) that comes to some 3200; the built-in
+presets alone make it some 670 for the session of a project. What the task
+agent space adds has a cap of its own (``SPACE_BRIEF_MAX_TOKENS``)."""
+
+TASK_AGENT_PRESET_ROSTER_MAX_TOKENS = 2200
+"""Cap on the list of presets in a session's system prompt, its opening words
+and the names included: whole lines, as many as fit. The descriptions may come
+to ``TEMPLATE_DESCRIPTIONS_TOTAL_MAX_TOKENS``; names and the words around
+them come on top and are counted here, so with very many templates the last
+of them are left out of the list (they can still be named). With this and
+a role at its cap the host's part stays within
+``TASK_AGENT_SESSION_INSTRUCTIONS_MAX_TOKENS``, so the list never cuts off
+what the session is told of its own role, which comes after it."""
+
+TEMPLATE_DESCRIPTION_MAX_TOKENS = 100
+"""Cap on the one sentence of a template that says when it is used. A longer
+one is an error of the template, not cut: it is what a task agent chooses by."""
+
+TEMPLATE_DESCRIPTIONS_TOTAL_MAX_TOKENS = 1500
+"""Cap on those sentences of all templates in effect for one project taken
+together (the built-in ones, the user's own, the project's): they are in the
+system prompt of every session that may start task agents. The template that
+goes past it is an error, in the order built-in, the user's, the project's."""
+
+TEMPLATE_BODY_MAX_TOKENS = 800
+"""Cap on the text of a template below its front matter: what a session of
+that preset is told of its role, after the host's own part of its system
+prompt. A longer one is an error of the template."""
+
+TEMPLATE_LABEL_MAX_TOKENS = 20
+"""Cap on the name a template of the user's is shown under."""
+
+TEMPLATE_FILE_MAX_BYTES = 32_000
+"""A template file larger than this is not read: its text may be 800 tokens."""
+
+TEMPLATE_FILES_MAX = 40
+"""How many template files one directory may hold. Those past it, by name,
+are listed as errors and not read."""
+
+TEMPLATE_MAX_REQUESTS_CAP = 500
+"""The most model requests a template may allow one run of a session."""
+
+CARD_TITLE_MAX_TOKENS = 16
+"""Cap on the title on a session's card (a short name for what it is to the
+user; some 12 tokens are asked for)."""
+
+CARD_DUTY_MAX_TOKENS = 60
+"""Cap on the line of a session's card that says what kind of work it takes."""
+
+CARD_SUMMARY_MAX_TOKENS = 160
+"""Cap on the summary on a session's card: what it has done so far and where
+that stands (100 words at most are asked for, some 135 tokens of English)."""
+
+BOARD_DOING_MAX_TOKENS = 60
+"""Cap on what a card says its session is doing right now: the title of the
+commission in hand, the item of its todo list that is in progress, and the
+tool it used last. Put together from the ledger; no model is asked."""
+
+BOARD_DOING_EVENTS = 80
+"""How many of the latest events of the commission in hand are read for
+that: the last todo list and the last tool call are looked for in these and
+no further back."""
+
+BOARD_DOING_PART_MAX_TOKENS = 28
+"""Cap on each of its parts (the title, the todo item, the tool and what it
+was used on)."""
+
+BOARD_RECENT_SECONDS = 3 * 24 * 3600.0
+"""A session of one commission that belongs to no project is on the board
+while a commission is under way in it, and for this long after it was last
+in use."""
+
+BOARD_LOOSE_MAX = 30
+"""Most such sessions on the board, the ones last in use."""
+
+BOARD_LOOSE_CARDS_MAX = 60
+"""Most cards those sessions have on the board taken together, the task
+agents they started and their copies counted in: each session first, then
+what is shown under it, until the board has this many."""
+
+BOARD_CHILD_RECENT_SECONDS = 600.0
+"""The session of a task agent another one started is on the board while
+the commission that started it is under way, and for this long after that
+one ended."""
+
+BOARD_CHILDREN_MAX = 8
+"""Most such sessions shown under one session, the ones last in use."""
+
+BOARD_MEMBERS_MAX = 24
+"""Most cards one project has on the board, its own session first."""
+
+BOARD_ARCHIVED_PROJECTS_MAX = 20
+"""Most archived projects on the board, the ones archived last."""
+
+BOARD_REVISION_KEPT_SECONDS = 10.0
+"""For how long the board is taken to be unchanged while the cheap marks of
+a change stand still (the ledger's count of writes, the dates of the project
+and template files). What those marks do not show (the model that is
+configured, a session getting old) is seen once this is over."""
+
+SESSION_DRAFT_INPUT_MAX_TOKENS = 2000
+"""Cap on everything sent to the model to fill in the form of a new session
+(``NekoClawHost.draft_session``), the instructions included."""
+
+SESSION_DRAFT_TEXT_MAX_TOKENS = 600
+"""Cap on what the user wrote of the session to be, within that."""
+
+SESSION_DRAFT_LISTING_MAX_TOKENS = 400
+"""Cap on the list of what the folder given holds (names and sizes; no file
+is opened), within that."""
+
+SESSION_DRAFT_PRESETS_MAX_TOKENS = 500
+"""Cap on the presets the form may name, as that call is told of them (one
+line each): the built-in ones are some 130 tokens, and of the user's own as
+many more as fit. One that is not told of is not offered."""
+
+SESSION_DRAFT_LISTING_ENTRIES = 60
+"""How many entries of that folder are looked at, by name."""
+
+SESSION_DRAFT_OUTPUT_MAX_TOKENS = 500
+"""``max_completion_tokens`` of that call. What may be kept of an answer (a
+name, the card's title and duty, a project description and
+``SESSION_DRAFT_RULES_MAX_TOKENS`` of rules) comes to some 390 with the JSON
+around it."""
+
+SESSION_DRAFT_RULES_MAX_TOKENS = 220
+"""Cap on the draft of rules for the new session, as it is handed back."""
+
+SESSION_DRAFT_SECONDS = 45.0
+"""How long that call may take before it is given up as failed."""
+
+SESSION_DRAFT_MODEL_SLOT = "summary"
+"""Which of the user's configured models fills in that form."""
+
 TASK_AGENT_CONTINUED_RESULT_MAX_TOKENS = 500
 """Cap on what a commission is told of the outcome of the one it follows up,
 when the session's record of that one was removed since. More than a result
@@ -611,6 +752,23 @@ SESSION_NOTICE_TEXT_MAX_TOKENS = 300
 """Cap on what the sender of a note is told of how the turn it began ended:
 the last words of that turn."""
 
+TIMELINE_PAGE_ROWS = 200
+"""Entries of the timeline of sessions (``NekoClawHost.timeline``) in a page
+when the caller does not say how many."""
+
+TIMELINE_PAGE_MAX_ROWS = 1000
+"""Most entries of the timeline in one page; a caller that asks for more gets
+this many."""
+
+TIMELINE_TEXT_MAX_TOKENS = 120
+"""Cap on the text of one timeline entry or wait (what was asked, said,
+reported, written): enough for a line on a screen, not the whole of it."""
+
+WAITS_MAX_ROWS = 500
+"""Most waits ``NekoClawHost.waits`` gives at once, the longest waiting
+first. The task agents at work at one time, with their children, questions
+and queues, come to far fewer."""
+
 SESSION_WAKE_BATCH_ROWS = 10
 """How many waiting things (notes, times that came) are handed to a session
 in one go. What is left over follows with the next."""
@@ -618,8 +776,9 @@ in one go. What is left over follows with the next."""
 SESSION_LIST_ROWS = 10
 """Sessions on one page of ``list_sessions``."""
 
-SESSION_LIST_ROW_MAX_TOKENS = 80
-"""Cap on one row of ``list_sessions``: name, character, project, where it
+SESSION_LIST_ROW_MAX_TOKENS = 140
+"""Cap on one row of ``list_sessions``: name, character, project, its preset
+and what it takes (``CARD_DUTY_MAX_TOKENS`` of that at most), where it
 stands, its latest commission, when it was last in use."""
 
 SESSION_LIST_LOOKED_AT = 300
@@ -884,9 +1043,17 @@ TASK_AGENT_REVIEW_FAILED_AFTER_SECONDS = 24 * 3600.0
 commission is often taken up again; reviewed at once, the review would miss
 how it ended, and every commission is reviewed once at most."""
 
-TASK_AGENT_REVIEW_INPUT_MAX_TOKENS = 7000
+TASK_AGENT_REVIEW_INPUT_MAX_TOKENS = 7600
 """Cap on everything sent to the model for one review, the instructions
-included."""
+included. (600 of it came with the card of the session, which the review is
+shown and writes anew in the same call: some 340 tokens of instructions,
+and the card as it stands.)"""
+
+TASK_AGENT_REVIEW_CARD_MAX_TOKENS = 330
+"""Cap on the card of the session as the review is shown it: its title,
+what it takes, its summary and what its project is about, each within the
+cap it is kept with, the words around them, and after a line that is not
+the review's to write a few words that say so."""
 
 TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS = 3100
 """Cap on the account of what the task agent did within that input. Of a
@@ -913,12 +1080,13 @@ TASK_AGENT_REVIEW_FILED_MAX_TOKENS = 200
 """Cap on the list of what the commission filed itself, shown to the review
 so that it does not file the same again."""
 
-TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS = 1500
+TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS = 1900
 """``max_completion_tokens`` of a review: the review itself, up to
-``TASK_AGENT_REVIEW_MAX_ENTRIES`` entries and the project. What may be kept
-of an answer (the caps below, and those of a title, a description, the
-files an entry rests on and a project) comes to some 1230 tokens with the
-JSON around it; a test keeps it within the cap. The fifth that is left over
+``TASK_AGENT_REVIEW_MAX_ENTRIES`` entries, the project and the card of the
+session. What may be kept of an answer (the caps below, and those of a
+title, a description, the files an entry rests on, a project and the card)
+comes to some 1530 tokens with the JSON around it; a test keeps it within
+the cap. The fifth that is left over
 is for the provider counting otherwise than this code does, Chinese above
 all: an answer cut off inside its JSON is worse than room that is not
 used. An answer that is cut off all the same is not thrown away whole: the

@@ -11,7 +11,7 @@ its final reply.
 | | `@plugin_entry` | `@llm_tool` |
 |---|---|---|
 | What it is | A runtime entry of the plugin | A tool in the main dialogue model's tool list (main_server's `/api/tools` registry) |
-| Who uses it | Plugin Manager, other plugins, Hosted UI actions, and the Agent (NekoClaw) plugin selection, where the Agent's model picks and calls it | The main dialogue model, which calls it directly during a chat |
+| Who uses it | Plugin Manager, other plugins, Hosted UI actions, and the Agent (NekoPower) plugin selection, where the Agent's model picks and calls it | The main dialogue model, which calls it directly during a chat |
 | When to use | **The default, recommended form** for a plugin's capabilities | **Sparingly**, only for the few capabilities the main dialogue model must call directly |
 
 The schema of every registered LLM tool is sent to the model with its

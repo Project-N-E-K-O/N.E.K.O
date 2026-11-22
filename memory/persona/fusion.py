@@ -299,7 +299,7 @@ class ExternalFusionMixin:
         """Run the fusion LLM (UNLOCKED). Returns parsed ``[{text, importance}]`` or None.
 
         None = call/parse failure (caller raises ExternalMemoryFusionError). Mirrors
-        the reflection promote-merge LLM shape: correction tier + thinking + single
+        the reflection promote-merge LLM shape: summary tier + thinking + single
         shot (max_retries=0) + robust JSON parse.
         """
         from memory.thinking_llm import ainvoke_thinking
@@ -347,12 +347,12 @@ class ExternalFusionMixin:
         )
 
         set_call_type("persona_external_fusion")
-        # Client construction (including reading correction-model config) can also raise (e.g. invalid configuration); handle it
+        # Client construction (including reading summary-model config) can also raise (e.g. invalid configuration); handle it
         # like ainvoke and return None, or it bypasses ExternalMemoryFusionError — for the second
         # entity (after the first has been persisted), the endpoint would return generic 500 instead of external_import_partial,
         # losing the partial metadata needed by the frontend to retry (Codex P2).
         try:
-            api_config = await self._config_manager.aget_model_api_config("correction")
+            api_config = await self._config_manager.aget_model_api_config("summary")
         except Exception as exc:
             logger.warning(f"[PersonaFusion] {name}/{entity} 融合 LLM 构造失败: {exc}")
             return None

@@ -1,6 +1,6 @@
 # Entries & Parameters
 
-An entry point is a callable operation a loaded plugin exposes to Plugin Manager, other plugins, and the Agent (NekoClaw). It is identified by the runtime `entry_id` from `@plugin_entry(id=...)`.
+An entry point is a callable operation a loaded plugin exposes to Plugin Manager, other plugins, and the Agent (NekoPower). It is identified by the runtime `entry_id` from `@plugin_entry(id=...)`.
 
 Do not confuse this with `[plugin].entry` in `plugin.toml`, which is the `module.path:ClassName` used by the host to import the plugin class. Also do not confuse it with `@llm_tool`: LLM tools are registered with main_server's `/api/tools` registry and are called by the main dialogue model during a conversation, while the Agent selects a plugin runtime entry when a task has been handed over to it. See [Choosing between `@plugin_entry` and `@llm_tool`](/plugins/tool-calling#choosing-an-entry-type).
 
@@ -262,7 +262,7 @@ Use `self.unregister_dynamic_entry(entry_id)` to remove them.
 
 ## How the Agent calls an entry
 
-The Agent (NekoClaw) looks for an entry only when the main dialogue model hands a task over: the model called its `dispatch_task` tool, or it agreed out loud and the turn check dispatched for it. Finished turns are not analysed automatically. [Agent System](/architecture/agent-system) describes the whole path; how plugins are filtered is described in [plugin.toml](./plugin-toml). Entries whose ID starts with `__llm_tool__` (the ones `@llm_tool` creates) never take part; only the main dialogue model calls them.
+The Agent (NekoPower) looks for an entry only when the main dialogue model hands a task over: the model called its `dispatch_task` tool, or it agreed out loud and the turn check dispatched for it. Finished turns are not analysed automatically. [Agent System](/architecture/agent-system) describes the whole path; how plugins are filtered is described in [plugin.toml](./plugin-toml). Entries whose ID starts with `__llm_tool__` (the ones `@llm_tool` creates) never take part; only the main dialogue model calls them.
 
 ### Which entries the Agent can see
 
