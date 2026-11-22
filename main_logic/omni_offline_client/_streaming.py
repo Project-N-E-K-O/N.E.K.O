@@ -2529,6 +2529,19 @@ class _StreamingMixin:
                         # switched to is not the chat model's: it keeps the raw error.
                         # The rejected pictures leave history (text and receipts
                         # stay), or every later text turn would carry them again.
+                        # Share it with the other image paths (screenshots,
+                        # proactive chat), which then skip or go text-only.
+                        from utils.legacy_vision import mark_chat_image_refused
+                        _choice = getattr(self, "_image_choice", None)
+                        mark_chat_image_refused(
+                            _choice.conversation if _choice is not None else {
+                                "model": self.model,
+                                "base_url": getattr(self, "base_url", None),
+                                "api_key": getattr(self, "api_key", None),
+                                "provider_type": getattr(self, "provider_type", None),
+                            },
+                            "offline chat",
+                        )
                         _drop_pixels = getattr(self, "_drop_history_image_pixels", None)
                         if _drop_pixels is not None:
                             _dropped = _drop_pixels()

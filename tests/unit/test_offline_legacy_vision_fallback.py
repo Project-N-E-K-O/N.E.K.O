@@ -112,6 +112,8 @@ async def test_chat_model_refusing_images_gets_a_clear_status():
     client.switch_model.assert_not_awaited()
     assert len(client.requests) == 1
     assert {"code": "CHAT_MODEL_IMAGE_UNSUPPORTED"} in _statuses(client)
+    # Shared with screenshots and proactive chat.
+    assert lv.chat_refuses_images(CHAT)
 
 
 async def test_other_errors_keep_their_status():
@@ -171,6 +173,8 @@ async def test_refusal_on_the_separate_vision_config_is_not_blamed_on_the_chat_m
     codes = [s.get("code") for s in _statuses(client)]
     assert "CHAT_MODEL_IMAGE_UNSUPPORTED" not in codes
     assert "TEXT_GEN_ERROR" in codes
+    # A refusal from the separate vision route says nothing about the chat model.
+    assert not lv.chat_refuses_images(CHAT)
 
 
 async def test_failed_switch_does_not_spend_the_notice():
@@ -263,3 +267,13 @@ async def test_older_image_turns_without_recorded_kinds_are_cleaned_too():
 
     assert image_count(old.content) == 0
     assert "以前发过的图" in str(old.content)
+
+
+async def test_refusal_without_an_image_choice_marks_the_client_route():
+    client = _session()
+    client._image_choice = None
+    client._pending_images = [_png_b64(4, 4)]
+    client.script = [_refusal()]
+
+    await client.stream_text("看看这个")
+    assert lv.chat_refuses_images(CHAT)
