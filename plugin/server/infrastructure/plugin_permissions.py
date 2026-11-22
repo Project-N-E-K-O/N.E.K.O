@@ -158,7 +158,8 @@ def _validate_document(raw: Any) -> dict:
         ):
             raise ValueError("Invalid permission record")
         for entry in record.get("permissions", {}).values():
-            if not isinstance(entry, dict) or entry.get("state") not in _STORED_STATES:
+            state = entry.get("state") if isinstance(entry, dict) else None
+            if not isinstance(state, str) or state not in _STORED_STATES:
                 raise ValueError("Invalid permission entry")
     return raw
 
@@ -194,6 +195,8 @@ class PluginPermissionStore:
         self._lock = threading.RLock()
         self._path = None
         self._document: dict | None = None
+        # True while a first-use import is held in memory only.
+        self._unsaved = False
 
     # ------------------------------------------------------------------
     # Loading
@@ -225,16 +228,28 @@ class PluginPermissionStore:
                 type(exc).__name__,
             )
             raise _load_error(exc) from exc
+        unsaved = False
         if document is None:
             document = self._initial_document(path.with_name(LEGACY_FILENAME))
             try:
                 self._save(manager, document)
             except ServerDomainError:
-                # Serve the imported decisions from memory; the next successful
-                # write persists them. Until then a restart simply imports the
-                # unchanged legacy file again.
+                # Reads are served from memory; every write first persists the
+                # import (see _load_for_write). Until then a restart simply
+                # imports the unchanged legacy file again.
                 logger.error("imported plugin permissions are held in memory until the next save")
+                unsaved = True
         self._path, self._document = path, document
+        self._unsaved = unsaved
+        return manager
+
+    def _load_for_write(self):
+        """Load for a mutation: an import still held in memory is saved first,
+        so a write never reports success while the store is not on disk."""
+        manager = self._load()
+        if self._unsaved:
+            self._save(manager, self._document)
+            self._unsaved = False
         return manager
 
     def _initial_document(self, legacy_path) -> dict:
@@ -363,6 +378,7 @@ class PluginPermissionStore:
         # Persist first; the cache only moves once the disk has the change.
         self._save(manager, document)
         self._document = document
+        self._unsaved = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -410,7 +426,7 @@ class PluginPermissionStore:
           rebound to ``current``.
         """
         with self._lock:
-            manager = self._load()
+            manager = self._load_for_write()
             cached = self._document["plugins"].get(plugin_id)
             if cached is None or current is None:
                 return copy.deepcopy(cached or {})
@@ -473,7 +489,7 @@ class PluginPermissionStore:
         if condition not in CONDITIONS:
             raise ValueError(f"Unsupported permission condition: {condition!r}")
         with self._lock:
-            manager = self._load()
+            manager = self._load_for_write()
             document = copy.deepcopy(self._document)
             record = document["plugins"].get(plugin_id)
             if record is None:
@@ -502,7 +518,7 @@ class PluginPermissionStore:
         """
         permission_id = normalize_permission(permission_id)
         with self._lock:
-            manager = self._load()
+            manager = self._load_for_write()
             record = self._document["plugins"].get(plugin_id)
             if record is None:
                 return {}
@@ -534,6 +550,7 @@ class PluginPermissionStore:
         decision: str | None,
         capabilities: list[str] | tuple[str, ...] = (),
         *,
+        newly_approved: list[str] | tuple[str, ...] | None = None,
         source: PluginSource | None = None,
     ) -> dict:
         """Mirror a decision made through the existing consent flow.
@@ -542,7 +559,10 @@ class PluginPermissionStore:
         remove together with that dialog.
 
         ``decision`` is ``"approved"`` (``capabilities`` are the legacy names
-        approved in total), ``"denied"`` or ``None`` (revoked). Only entries
+        approved in total, ``newly_approved`` the ones the user was asked
+        about this time; only those create grants, earlier approvals are kept
+        only if they are still stored, e.g. not discarded by a source
+        change), ``"denied"`` or ``None`` (revoked). Only entries
         that came from the consent flow (``legacy_any``) and the
         ``legacy_denied`` marker are touched; decisions made in the permission
         flow itself are kept. Saving uses the same failure rules as any
@@ -551,7 +571,15 @@ class PluginPermissionStore:
         if decision not in ("approved", "denied", None):
             raise ValueError(f"Unsupported consent decision: {decision!r}")
         approved: set[str] = set()
+        asked: set[str] = set()
         if decision == "approved":
+            if newly_approved is None:
+                newly_approved = capabilities
+            asked = {
+                LEGACY_PERMISSION_NAMES[name]
+                for name in newly_approved
+                if name in LEGACY_PERMISSION_NAMES
+            }
             for name in capabilities:
                 permission_id = LEGACY_PERMISSION_NAMES.get(name)
                 if permission_id is None:
@@ -562,7 +590,7 @@ class PluginPermissionStore:
                     continue
                 approved.add(permission_id)
         with self._lock:
-            manager = self._load()
+            manager = self._load_for_write()
             document = copy.deepcopy(self._document)
             plugins = document["plugins"]
             record = plugins.get(plugin_id)
@@ -582,7 +610,7 @@ class PluginPermissionStore:
             ]:
                 if permission_id not in approved:
                     del permissions[permission_id]
-            for permission_id in sorted(approved):
+            for permission_id in sorted(approved & asked):
                 if permission_id in permissions:
                     continue  # already mirrored, or decided in the permission flow
                 permissions[permission_id] = {
@@ -605,7 +633,7 @@ class PluginPermissionStore:
     def forget(self, plugin_id: str) -> dict | None:
         """Drop every grant of ``plugin_id``; returns the removed record."""
         with self._lock:
-            manager = self._load()
+            manager = self._load_for_write()
             if plugin_id not in self._document["plugins"]:
                 return None
             document = copy.deepcopy(self._document)
@@ -613,10 +641,15 @@ class PluginPermissionStore:
             self._commit(manager, document)
             return removed
 
-    def restore(self, plugin_id: str, record: dict) -> None:
-        """Put back a record returned by :meth:`forget` (rollback only)."""
+    def restore(self, plugin_id: str, record: dict | None) -> None:
+        """Put back an earlier record (rollback only); ``None`` removes it."""
         with self._lock:
-            manager = self._load()
+            manager = self._load_for_write()
+            if self._document["plugins"].get(plugin_id) == record:
+                return
             document = copy.deepcopy(self._document)
-            document["plugins"][plugin_id] = copy.deepcopy(record)
+            if record is None:
+                document["plugins"].pop(plugin_id, None)
+            else:
+                document["plugins"][plugin_id] = copy.deepcopy(record)
             self._commit(manager, document)

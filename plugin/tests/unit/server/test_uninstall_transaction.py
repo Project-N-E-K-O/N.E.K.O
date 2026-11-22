@@ -1600,3 +1600,44 @@ async def test_uninstall_rollback_without_registry_refresh_flags_permissions(
 
     assert "plugin_sdk.main_agent.memory:read" in _demo_grants()["permissions"]
     assert _details_of(captured.value)["permission_rollback"] == "incomplete"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_aborts_when_a_cold_import_cannot_be_saved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Cold load, legacy file without the target plugin, first save fails."""
+    import json
+
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import PluginPermissionStore
+
+    class _FailingManager:
+        def get_runtime_config_path(self, name: str) -> Path:
+            return tmp_path / "perm" / name
+
+        def save_json_config(self, name: str, data: object) -> None:
+            raise OSError("disk full")
+
+    legacy = tmp_path / "perm" / "plugin_consents.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        json.dumps({"schema_version": 2, "plugins": {"other": {"decision": "denied"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        permission_service, "permission_store", PluginPermissionStore(_FailingManager())
+    )
+    harness = _Harness(tmp_path)
+    harness.running.add("demo")
+    harness.install(monkeypatch)
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.code == "PLUGIN_PERMISSIONS_WRITE_FAILED"
+    assert captured.value.stage == "forget_permissions"
+    assert harness.stop_calls == []
+    assert harness.manager.marked_removed == []
+    assert harness.plugin_dir.is_dir()

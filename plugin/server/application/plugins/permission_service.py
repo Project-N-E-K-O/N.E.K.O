@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from typing import Callable
 
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
@@ -144,17 +145,32 @@ def reconcile_permission_source(plugin_id: str) -> None:
 
 
 def mirror_consent_decision(
-    plugin_id: str, decision: str | None, capabilities: list[str] | tuple[str, ...] = ()
-) -> None:
+    plugin_id: str,
+    decision: str | None,
+    capabilities: list[str] | tuple[str, ...] = (),
+    *,
+    newly_approved: list[str] | tuple[str, ...] | None = None,
+) -> Callable[[], None]:
     """Keep the permission store in step with the consent flow.
 
     Transitional: remove together with the consent dialog. Called under the
-    plugin operation lock before the consent record is written, so a failure
-    leaves both stores unchanged and a retry applies both.
+    plugin operation lock before the consent record is written. Returns an
+    undo that puts the previous permission record back; call it when the
+    consent write fails, so a failed request leaves both files unchanged.
     """
+    previous = permission_store.read(plugin_id) or None
     permission_store.apply_legacy_decision(
-        plugin_id, decision, capabilities, source=current_source(plugin_id)
+        plugin_id,
+        decision,
+        capabilities,
+        newly_approved=newly_approved,
+        source=current_source(plugin_id),
     )
+
+    def undo() -> None:
+        permission_store.restore(plugin_id, previous)
+
+    return undo
 
 
 def decide_permission(
