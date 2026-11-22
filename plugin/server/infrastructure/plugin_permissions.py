@@ -1,0 +1,437 @@
+"""Persistent per-plugin permission grants.
+
+Grants live in ``plugin_permissions.json`` under the runtime config directory.
+Each plugin has one record that is bound to the plugin's install source
+(channel plus a stable fingerprint); a grant only applies to the source it was
+given for.
+
+Document shape (``schema_version`` 1)::
+
+    {
+      "schema_version": 1,
+      "imported_at": "<iso>",            # when legacy decisions were imported
+      "legacy_import": {"status": "...", "plugins": 0, "skipped": 0},
+      "plugins": {
+        "<plugin_id>": {
+          "source": {"channel": "market", "fingerprint": "..."} | null,
+          "legacy_denied": true,       # optional, see LEGACY_DENIED
+          "permissions": {
+            "<permission id>": {
+              "state": "granted" | "denied",
+              "condition": "anytime" | "in_use",
+              "legacy_any": true,      # optional
+              "scope": "all",
+              "decided_at": "<iso>"
+            }
+          },
+          "updated_at": "<iso>"
+        }
+      }
+    }
+
+A permission missing from ``permissions`` is undecided.
+
+On the first load the decisions recorded in the legacy ``plugin_consents.json``
+are imported once. The legacy file is only ever read here, never written.
+"""
+
+from __future__ import annotations
+
+import copy
+import threading
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Callable
+
+from plugin.logging_config import get_logger
+from plugin.server.domain.errors import ServerDomainError
+from utils.file_utils import read_json_tolerating_replace
+
+logger = get_logger("server.infrastructure.plugin_permissions")
+
+FILENAME = "plugin_permissions.json"
+SCHEMA_VERSION = 1
+
+LEGACY_FILENAME = "plugin_consents.json"
+LEGACY_SCHEMA_VERSION = 2
+
+# Permission ids that legacy capability names map to.
+# TODO: reference the shared permission vocabulary once it lands in the SDK.
+MEMORY_READ = "plugin_sdk.main_agent.memory:read"
+CONVERSATIONS_READ = "plugin_sdk.main_agent.conversations:read"
+MESSAGES_PUSH = "plugin_sdk.main_agent.messages:push"
+
+LEGACY_PERMISSION_IDS: dict[str, str] = {
+    "conversations.read": CONVERSATIONS_READ,
+    "memory.read": MEMORY_READ,
+    "messages.push": MESSAGES_PUSH,
+}
+
+STATE_GRANTED = "granted"
+STATE_DENIED = "denied"
+STATES = frozenset({STATE_GRANTED, STATE_DENIED})
+
+CONDITION_ANYTIME = "anytime"
+CONDITION_IN_USE = "in_use"
+CONDITIONS = frozenset({CONDITION_ANYTIME, CONDITION_IN_USE})
+
+SCOPE_ALL = "all"
+
+# Set on a plugin record imported from a legacy whole-plugin denial: every
+# implicitly declared permission of that plugin counts as denied unless the
+# record holds an explicit decision for it.
+LEGACY_DENIED = "legacy_denied"
+
+
+def normalize_permission_id(name: str) -> str:
+    """Map a legacy capability name to its permission id; other ids pass through."""
+    return LEGACY_PERMISSION_IDS.get(name, name)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass(frozen=True)
+class PluginSource:
+    """Where an installed plugin came from: install channel + stable fingerprint."""
+
+    channel: str
+    fingerprint: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"channel": self.channel, "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "PluginSource | None":
+        if not isinstance(value, dict) or not isinstance(value.get("channel"), str):
+            return None
+        fingerprint = value.get("fingerprint")
+        return cls(value["channel"], fingerprint if isinstance(fingerprint, str) else None)
+
+
+SourceResolver = Callable[[str], "PluginSource | None"]
+
+
+def _read_failed(message: str) -> ServerDomainError:
+    return ServerDomainError("PLUGIN_PERMISSIONS_READ_FAILED", message, 503)
+
+
+def _validate_document(raw: Any) -> dict:
+    if not isinstance(raw, dict) or raw.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError("Unsupported permission document")
+    plugins = raw.get("plugins")
+    if not isinstance(plugins, dict):
+        raise ValueError("Invalid permission document")
+    for record in plugins.values():
+        if not isinstance(record, dict) or not isinstance(
+            record.get("permissions", {}), dict
+        ):
+            raise ValueError("Invalid permission record")
+    return raw
+
+
+class PluginPermissionStore:
+    def __init__(self, manager=None, *, source_resolver: SourceResolver | None = None):
+        self._manager_override = manager
+        self._source_resolver = source_resolver
+        self._lock = threading.RLock()
+        self._path = None
+        self._document: dict | None = None
+
+    # ------------------------------------------------------------------
+    # Loading
+    # ------------------------------------------------------------------
+
+    def _location(self):
+        from utils.config_manager import get_config_manager
+
+        try:
+            manager = self._manager_override or get_config_manager()
+            path = manager.get_runtime_config_path(FILENAME)
+        except (OSError, ValueError) as exc:
+            raise _read_failed("Plugin permission storage is unavailable") from exc
+        return manager, path
+
+    def _load(self):
+        manager, path = self._location()
+        if self._document is not None and self._path == path:
+            return manager
+        try:
+            document = _validate_document(read_json_tolerating_replace(path))
+        except FileNotFoundError:
+            document = None
+        except (OSError, ValueError, UnicodeError) as exc:
+            # The file is left untouched: overwriting it would drop every
+            # grant on disk. Nothing is cached, so the next call reads again.
+            logger.error(
+                "plugin permission store could not be read: error={}",
+                type(exc).__name__,
+            )
+            raise _read_failed("Plugin permission records could not be read") from exc
+        if document is None:
+            document = self._initial_document(path.with_name(LEGACY_FILENAME))
+            try:
+                self._save(manager, document)
+            except ServerDomainError:
+                # Serve the imported decisions from memory; the next successful
+                # write persists them. Until then a restart simply imports the
+                # unchanged legacy file again.
+                logger.error("imported plugin permissions are held in memory until the next save")
+        self._path, self._document = path, document
+        return manager
+
+    def _initial_document(self, legacy_path) -> dict:
+        plugins, summary = self._import_legacy(legacy_path)
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "imported_at": _now(),
+            "legacy_import": summary,
+            "plugins": plugins,
+        }
+
+    def _import_legacy(self, legacy_path) -> tuple[dict, dict]:
+        """Read legacy consent decisions; the legacy file is never modified."""
+        try:
+            raw = read_json_tolerating_replace(legacy_path)
+        except FileNotFoundError:
+            return {}, {"status": "absent", "plugins": 0, "skipped": 0}
+        except OSError as exc:
+            # Possibly transient: do not create the new file, so the import is
+            # attempted again on the next load instead of being lost.
+            logger.error(
+                "legacy plugin consents could not be read: error={}",
+                type(exc).__name__,
+            )
+            raise _read_failed("Legacy plugin consent records could not be read") from exc
+        except (ValueError, UnicodeError) as exc:
+            logger.error(
+                "legacy plugin consents are not valid JSON and were not imported: error={}",
+                type(exc).__name__,
+            )
+            return {}, {"status": "invalid", "plugins": 0, "skipped": 0}
+        if (
+            not isinstance(raw, dict)
+            or raw.get("schema_version") != LEGACY_SCHEMA_VERSION
+            or not isinstance(raw.get("plugins"), dict)
+        ):
+            logger.error("legacy plugin consents have an unsupported shape and were not imported")
+            return {}, {"status": "invalid", "plugins": 0, "skipped": 0}
+
+        plugins: dict[str, dict] = {}
+        skipped = 0
+        for plugin_id, legacy in raw["plugins"].items():
+            record = self._import_legacy_record(plugin_id, legacy)
+            if record is None:
+                skipped += 1
+                continue
+            plugins[plugin_id] = record
+        if skipped:
+            logger.warning(
+                "skipped {} legacy plugin consent record(s) during import", skipped
+            )
+        return plugins, {"status": "imported", "plugins": len(plugins), "skipped": skipped}
+
+    def _import_legacy_record(self, plugin_id, legacy) -> dict | None:
+        if not isinstance(plugin_id, str) or not plugin_id or not isinstance(legacy, dict):
+            return None
+        decision = legacy.get("decision")
+        now = _now()
+        decided_at = legacy.get("decided_at")
+        if not isinstance(decided_at, str) or not decided_at:
+            decided_at = now
+        record: dict[str, Any] = {"permissions": {}, "updated_at": now}
+        if decision == "approved":
+            names = legacy.get("approved_capabilities")
+            if not isinstance(names, list):
+                return None
+            for name in names:
+                permission_id = LEGACY_PERMISSION_IDS.get(name) if isinstance(name, str) else None
+                if permission_id is None:
+                    logger.warning(
+                        "legacy capability {!r} has no permission mapping; not imported",
+                        name,
+                    )
+                    continue
+                record["permissions"][permission_id] = {
+                    "state": STATE_GRANTED,
+                    "condition": CONDITION_ANYTIME,
+                    "legacy_any": True,
+                    "scope": SCOPE_ALL,
+                    "decided_at": decided_at,
+                }
+        elif decision == "denied":
+            record[LEGACY_DENIED] = True
+        else:
+            return None
+        source = self._resolve_source(plugin_id)
+        record["source"] = source.to_dict() if source is not None else None
+        return record
+
+    def _resolve_source(self, plugin_id: str) -> PluginSource | None:
+        if self._source_resolver is None:
+            return None
+        try:
+            return self._source_resolver(plugin_id)
+        except Exception as exc:
+            logger.warning(
+                "could not resolve plugin source: plugin_id={}, error={}",
+                plugin_id,
+                type(exc).__name__,
+            )
+            return None
+
+    # ------------------------------------------------------------------
+    # Saving
+    # ------------------------------------------------------------------
+
+    def _save(self, manager, document: dict) -> None:
+        try:
+            manager.save_json_config(FILENAME, document)
+        except Exception as exc:
+            logger.error(
+                "plugin permission store could not be saved: error={}",
+                type(exc).__name__,
+            )
+            raise ServerDomainError(
+                "PLUGIN_PERMISSIONS_WRITE_FAILED",
+                "Plugin permission records could not be saved",
+                503,
+            ) from exc
+
+    def _commit(self, manager, document: dict) -> None:
+        # Persist first; the cache only moves once the disk has the change.
+        self._save(manager, document)
+        self._document = document
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def legacy_import(self) -> dict:
+        with self._lock:
+            self._load()
+            return {
+                "imported_at": self._document.get("imported_at"),
+                **copy.deepcopy(self._document.get("legacy_import") or {}),
+            }
+
+    def read(self, plugin_id: str) -> dict:
+        with self._lock:
+            self._load()
+            return copy.deepcopy(self._document["plugins"].get(plugin_id, {}))
+
+    def sync_source(self, plugin_id: str, current: PluginSource | None) -> dict:
+        """Reconcile a record with the plugin's current source and return it.
+
+        * ``current is None`` (source unavailable): keep the last known source.
+        * Record has no source yet: bind ``current``; this is not a change.
+        * Both known and different: the grants are discarded and the record is
+          rebound to ``current``.
+        """
+        with self._lock:
+            manager = self._load()
+            record = self._document["plugins"].get(plugin_id)
+            if record is None or current is None:
+                return copy.deepcopy(record or {})
+            document = copy.deepcopy(self._document)
+            record = document["plugins"][plugin_id]
+            if not self._apply_source(record, current):
+                return copy.deepcopy(record)
+            self._commit(manager, document)
+            return copy.deepcopy(record)
+
+    @staticmethod
+    def _apply_source(record: dict, current: PluginSource | None) -> bool:
+        if current is None:
+            return False
+        known = PluginSource.from_dict(record.get("source"))
+        if known == current:
+            return False
+        now = _now()
+        if known is not None:
+            record["permissions"] = {}
+            record.pop(LEGACY_DENIED, None)
+            record["source_changed_at"] = now
+        record["source"] = current.to_dict()
+        record["updated_at"] = now
+        return True
+
+    def decide(
+        self,
+        plugin_id: str,
+        permission_id: str,
+        state: str,
+        *,
+        condition: str = CONDITION_IN_USE,
+        source: PluginSource | None = None,
+    ) -> dict:
+        """Record a user decision for one permission.
+
+        The decision replaces any previous one, including an imported
+        ``legacy_any`` grant.
+        """
+        if not plugin_id:
+            raise ValueError("plugin_id is required")
+        permission_id = normalize_permission_id(permission_id)
+        if not permission_id:
+            raise ValueError("permission_id is required")
+        if state not in STATES:
+            raise ValueError(f"Unsupported permission state: {state!r}")
+        if condition not in CONDITIONS:
+            raise ValueError(f"Unsupported permission condition: {condition!r}")
+        with self._lock:
+            manager = self._load()
+            document = copy.deepcopy(self._document)
+            record = document["plugins"].get(plugin_id)
+            if record is None:
+                record = document["plugins"][plugin_id] = {
+                    "source": source.to_dict() if source is not None else None,
+                    "permissions": {},
+                }
+            else:
+                self._apply_source(record, source)
+            now = _now()
+            record.setdefault("permissions", {})[permission_id] = {
+                "state": state,
+                "condition": condition,
+                "scope": SCOPE_ALL,
+                "decided_at": now,
+            }
+            record["updated_at"] = now
+            self._commit(manager, document)
+            return copy.deepcopy(record)
+
+    def clear(self, plugin_id: str, permission_id: str) -> dict:
+        """Return one permission to undecided."""
+        permission_id = normalize_permission_id(permission_id)
+        with self._lock:
+            manager = self._load()
+            record = self._document["plugins"].get(plugin_id)
+            if record is None or permission_id not in record.get("permissions", {}):
+                return copy.deepcopy(record or {})
+            document = copy.deepcopy(self._document)
+            record = document["plugins"][plugin_id]
+            del record["permissions"][permission_id]
+            record["updated_at"] = _now()
+            self._commit(manager, document)
+            return copy.deepcopy(record)
+
+    def forget(self, plugin_id: str) -> dict | None:
+        """Drop every grant of ``plugin_id``; returns the removed record."""
+        with self._lock:
+            manager = self._load()
+            if plugin_id not in self._document["plugins"]:
+                return None
+            document = copy.deepcopy(self._document)
+            removed = document["plugins"].pop(plugin_id)
+            self._commit(manager, document)
+            return removed
+
+    def restore(self, plugin_id: str, record: dict) -> None:
+        """Put back a record returned by :meth:`forget` (rollback only)."""
+        with self._lock:
+            manager = self._load()
+            document = copy.deepcopy(self._document)
+            document["plugins"][plugin_id] = copy.deepcopy(record)
+            self._commit(manager, document)

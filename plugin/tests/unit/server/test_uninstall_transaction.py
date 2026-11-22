@@ -1323,3 +1323,130 @@ async def test_uninstall_missing_staged_code_revokes_hot_reload_recovery(
     assert captured.value.filesystem_rollback == "incomplete"
     assert not harness.plugin_dir.exists()
     assert not lifecycle_module.plugin_needs_hot_reload_recovery("demo")
+
+
+def _grant_demo() -> None:
+    from plugin.server.application.plugins import permission_service
+
+    permission_service.permission_store.decide(
+        "demo", "plugin_sdk.main_agent.memory:read", "granted"
+    )
+
+
+def _demo_grants() -> dict:
+    from plugin.server.application.plugins import permission_service
+
+    return permission_service.permission_store.read("demo")
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_clears_permission_grants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    _grant_demo()
+
+    await uninstall_plugin("demo")
+
+    assert _demo_grants() == {}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_aborts_when_permission_grants_cannot_be_saved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    _grant_demo()
+
+    def _fail(_plugin_id: str) -> None:
+        raise ServerDomainError(
+            "PLUGIN_PERMISSIONS_WRITE_FAILED", "Plugin permission records could not be saved", 503
+        )
+
+    monkeypatch.setattr(uninstall_module, "forget_permissions", _fail)
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.code == "PLUGIN_PERMISSIONS_PERSIST_FAILED"
+    assert captured.value.filesystem_rollback == "completed"
+    assert harness.plugin_dir.is_dir()
+    assert "plugin_sdk.main_agent.memory:read" in _demo_grants()["permissions"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_proceeds_when_permission_store_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+
+    def _fail(_plugin_id: str) -> None:
+        raise ServerDomainError(
+            "PLUGIN_PERMISSIONS_READ_FAILED", "Plugin permission records could not be read", 503
+        )
+
+    monkeypatch.setattr(uninstall_module, "forget_permissions", _fail)
+
+    result = await uninstall_plugin("demo")
+
+    assert result.deleted_from_disk is True
+    assert harness.plugin_dir.exists() is False
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_rollback_restores_permission_grants(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    _grant_demo()
+    before = _demo_grants()
+
+    def _fail(_plugin_id: str) -> None:
+        raise OSError("override disk full")
+
+    monkeypatch.setattr(uninstall_module, "clear_runtime_override", _fail)
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.filesystem_rollback == "completed"
+    assert "permission_rollback" not in _details_of(captured.value)
+    assert _demo_grants() == before
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_reports_incomplete_permission_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    _grant_demo()
+
+    def _fail_clear(_plugin_id: str) -> None:
+        raise OSError("override disk full")
+
+    def _fail_restore(_plugin_id: str, _record: dict) -> None:
+        raise ServerDomainError(
+            "PLUGIN_PERMISSIONS_WRITE_FAILED", "Plugin permission records could not be saved", 503
+        )
+
+    monkeypatch.setattr(uninstall_module, "clear_runtime_override", _fail_clear)
+    monkeypatch.setattr(uninstall_module, "restore_permissions", _fail_restore)
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert _details_of(captured.value)["permission_rollback"] == "incomplete"

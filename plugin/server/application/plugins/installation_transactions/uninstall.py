@@ -21,6 +21,10 @@ from plugin.server.application.install_source import (
 from plugin.server.application.install_source.models import LockEntry
 from plugin.server.application.install_source.scanner import PluginDirectoryScanner
 from plugin.server.application.plugins.consent_service import forget_plugin
+from plugin.server.application.plugins.permission_service import (
+    forget_permissions,
+    restore_permissions,
+)
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.domain.errors import ServerDomainError
@@ -775,6 +779,33 @@ async def _rollback_precommit(
     )
 
 
+async def _forget_permissions_precommit(plugin_id: str) -> dict | None:
+    """Clear the plugin's permission grants before the uninstall commits.
+
+    A failed write aborts the uninstall (it is rolled back like any other
+    pre-commit failure). An unreadable store cannot be cleaned without
+    overwriting it; the uninstall proceeds and the failure is logged.
+    """
+    try:
+        return await asyncio.to_thread(forget_permissions, plugin_id)
+    except ServerDomainError as exc:
+        if exc.code == "PLUGIN_PERMISSIONS_READ_FAILED":
+            logger.error(
+                "uninstall could not read plugin permissions; grants of {} were "
+                "not cleared",
+                plugin_id,
+            )
+            return None
+        # A domain error, so the caller's rollback reports its outcome with it.
+        raise ServerDomainError(
+            "PLUGIN_PERMISSIONS_PERSIST_FAILED",
+            "uninstall could not clear the plugin's permission grants; "
+            "refusing to commit",
+            500,
+            details={"plugin_id": plugin_id},
+        ) from exc
+
+
 @serialized_plugin_operation
 async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     """Uninstall the exact managed user candidate with a pre-commit rollback."""
@@ -867,6 +898,8 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     preference_update_attempted = False
     autostart_was_pending = False
     autostart_gate_rollback: str | None = None
+    removed_permissions: dict | None = None
+    permission_rollback: str | None = None
     try:
         stage = "stop"
         if was_running:
@@ -913,6 +946,8 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
                 status_code=500,
                 stage=stage,
             )
+        # Grants belong to the uninstalled plugin; a reinstall starts from scratch.
+        removed_permissions = await _forget_permissions_precommit(plugin_id)
         preference_action: PreferenceAction = (
             "preserved" if restored_builtin else "cleared"
         )
@@ -960,10 +995,27 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
                     "been started by the user",
                     plugin_id,
                 )
+        if removed_permissions is not None and await asyncio.to_thread(plugin_dir.exists):
+            # Same criterion as the autostart record: restore only when the
+            # rollback actually brought the plugin back.
+            try:
+                await asyncio.to_thread(
+                    restore_permissions, plugin_id, removed_permissions
+                )
+            except Exception as restore_exc:
+                permission_rollback = "incomplete"
+                logger.error(
+                    "uninstall rollback restored plugin {} but could not restore "
+                    "its permission grants: error={}",
+                    plugin_id,
+                    type(restore_exc).__name__,
+                )
         gate_details = (
             {} if autostart_gate_rollback is None
             else {"autostart_gate_rollback": autostart_gate_rollback}
         )
+        if permission_rollback is not None:
+            gate_details["permission_rollback"] = permission_rollback
         if isinstance(exc, UninstallPluginError):
             exc.details.update(gate_details)
         if not isinstance(exc, Exception) or isinstance(exc, UninstallPluginError):
