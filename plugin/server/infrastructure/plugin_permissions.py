@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from plugin.logging_config import get_logger
+from plugin.sdk.shared.permissions import LEGACY_PERMISSION_NAMES, normalize_permission
 from plugin.server.domain.errors import ServerDomainError
 from utils.file_utils import read_json_tolerating_replace
 
@@ -56,19 +57,6 @@ SCHEMA_VERSION = 1
 
 LEGACY_FILENAME = "plugin_consents.json"
 LEGACY_SCHEMA_VERSION = 2
-
-# Permission ids that legacy capability names map to.
-# TODO: import these from plugin.sdk.shared.permissions (catalog) once it lands;
-# names and values here mirror that vocabulary so the swap is a pure import.
-MEMORY_READ = "plugin_sdk.main_agent.memory:read"
-CONVERSATIONS_READ = "plugin_sdk.main_agent.conversations:read"
-MESSAGES_PUSH = "plugin_sdk.main_agent.messages:push"
-
-LEGACY_PERMISSION_NAMES: dict[str, str] = {
-    "conversations.read": CONVERSATIONS_READ,
-    "memory.read": MEMORY_READ,
-    "messages.push": MESSAGES_PUSH,
-}
 
 STATE_GRANTED = "granted"
 STATE_DENIED = "denied"
@@ -88,9 +76,17 @@ SCOPE_ALL = "all"
 LEGACY_DENIED = "legacy_denied"
 
 
-def normalize_permission(name: str) -> str:
-    """Map a legacy capability name to its permission id; other ids pass through."""
-    return LEGACY_PERMISSION_NAMES.get(name, name)
+def _known_permission(name: object) -> str:
+    """The vocabulary id for ``name`` (an id or a legacy name).
+
+    Writes only ever store vocabulary ids. Ids already on disk that this
+    version does not know (e.g. saved by a newer version) are kept as they
+    are when the document is read and rewritten.
+    """
+    permission_id = normalize_permission(name)
+    if permission_id is None:
+        raise ValueError(f"Unknown permission: {name!r}")
+    return permission_id
 
 
 def _now() -> str:
@@ -454,6 +450,25 @@ class PluginPermissionStore:
             self._commit(manager, document)
             return copy.deepcopy(record)
 
+    def bind_unbound_source(self, plugin_id: str, source: PluginSource) -> bool:
+        """Bind a record that has no source yet to ``source`` and save it.
+
+        For a caller that has confirmed the plugin's source by other means
+        before changing it. A record that already has a source, or no record,
+        is left alone. Unlike :meth:`sync_source`, a failed save raises.
+        Returns whether the record was bound.
+        """
+        with self._lock:
+            self._load()
+            cached = self._document["plugins"].get(plugin_id)
+            if cached is None or PluginSource.from_dict(cached.get("source")) is not None:
+                return False
+            document = copy.deepcopy(self._document)
+            self._apply_source(document["plugins"][plugin_id], source)
+            manager = self._load_for_write()
+            self._commit(manager, document)
+            return True
+
     @staticmethod
     def _apply_source(record: dict, current: PluginSource | None) -> bool:
         if current is None:
@@ -482,13 +497,12 @@ class PluginPermissionStore:
         """Record a user decision for one permission.
 
         The decision replaces any previous one, including an imported
-        ``legacy_any`` grant.
+        ``legacy_any`` grant. ``permission_id`` is a vocabulary id or a
+        legacy capability name; anything else is rejected.
         """
         if not plugin_id:
             raise ValueError("plugin_id is required")
-        permission_id = normalize_permission(permission_id)
-        if not permission_id:
-            raise ValueError("permission_id is required")
+        permission_id = _known_permission(permission_id)
         if state not in STATES:
             raise ValueError(f"Unsupported permission state: {state!r}")
         if condition not in CONDITIONS:
@@ -521,7 +535,7 @@ class PluginPermissionStore:
         On a ``legacy_denied`` record a missing entry still means denied, so
         an explicit ``undecided`` entry is stored instead of deleting it.
         """
-        permission_id = normalize_permission(permission_id)
+        permission_id = _known_permission(permission_id)
         with self._lock:
             manager = self._load_for_write()
             record = self._document["plugins"].get(plugin_id)

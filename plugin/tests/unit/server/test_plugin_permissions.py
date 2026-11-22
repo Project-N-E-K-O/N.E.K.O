@@ -14,17 +14,19 @@ from plugin.server.application.install_source.models import (
 )
 from plugin.server.application.plugins import permission_service
 from plugin.server.domain.errors import ServerDomainError
+from plugin.sdk.shared import permissions as vocabulary
+from plugin.server.infrastructure import plugin_permissions as store_module
 from plugin.server.infrastructure.plugin_permissions import (
-    CONVERSATIONS_READ,
     LEGACY_DENIED,
-    MEMORY_READ,
-    MESSAGES_PUSH,
     PluginPermissionStore,
     PluginSource,
-    normalize_permission,
 )
 
 pytestmark = pytest.mark.plugin_unit
+
+MEMORY_READ = vocabulary.LEGACY_PERMISSION_NAMES["memory.read"]
+CONVERSATIONS_READ = vocabulary.LEGACY_PERMISSION_NAMES["conversations.read"]
+MESSAGES_PUSH = vocabulary.LEGACY_PERMISSION_NAMES["messages.push"]
 
 MARKET = PluginSource("market", "m-1")
 MANUAL = PluginSource("manual")
@@ -491,10 +493,69 @@ def test_clear_returns_a_permission_to_undecided(manager):
     assert store.clear("x", MEMORY_READ)["permissions"] == {}
 
 
-def test_normalize_permission_maps_legacy_names_only():
-    assert normalize_permission("memory.read") == MEMORY_READ
-    assert normalize_permission(MEMORY_READ) == MEMORY_READ
-    assert normalize_permission("system.fs:read") == "system.fs:read"
+def test_store_uses_the_shared_permission_vocabulary():
+    assert store_module.LEGACY_PERMISSION_NAMES is vocabulary.LEGACY_PERMISSION_NAMES
+    assert store_module.normalize_permission is vocabulary.normalize_permission
+
+
+def test_decide_and_clear_store_vocabulary_ids_for_legacy_names(manager):
+    store = PluginPermissionStore(manager)
+
+    record = store.decide("x", "memory.read", "granted")
+    assert set(record["permissions"]) == {MEMORY_READ}
+    record = store.decide("x", "system.fs:read", "denied")
+    assert set(record["permissions"]) == {MEMORY_READ, "system.fs:read"}
+    assert set(store.clear("x", "memory.read")["permissions"]) == {"system.fs:read"}
+
+
+@pytest.mark.parametrize("unknown", ["screen.capture", "plugin_sdk.unknown:read", "", None])
+def test_decide_rejects_names_outside_the_vocabulary(manager, unknown):
+    store = PluginPermissionStore(manager)
+
+    with pytest.raises(ValueError):
+        store.decide("x", unknown, "granted")
+    assert store.read("x") == {}
+
+
+@pytest.mark.parametrize("legacy_denied", [False, True])
+def test_clear_rejects_names_outside_the_vocabulary(manager, legacy_denied):
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted")
+    if legacy_denied:
+        store.apply_legacy_decision("x", "denied")
+    before = store.read("x")
+
+    with pytest.raises(ValueError):
+        store.clear("x", "screen.capture")
+    assert store.read("x") == before
+
+
+def test_ids_unknown_to_this_version_are_kept_on_disk(manager):
+    """A record saved by a newer version may hold ids this version does not
+    know: the store still loads, and writes keep those entries."""
+    future = "plugin_sdk.future:read"
+    path = manager.root / "plugin_permissions.json"
+    manager.root.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "plugins": {
+                    "x": {
+                        "source": None,
+                        "permissions": {future: {"state": "granted", "scope": "all"}},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = PluginPermissionStore(manager)
+
+    store.decide("x", MEMORY_READ, "granted")
+
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert set(on_disk["plugins"]["x"]["permissions"]) == {future, MEMORY_READ}
 
 
 # ---------------------------------------------------------------------------
@@ -1290,3 +1351,55 @@ def test_unavailable_snapshot_only_matters_when_the_store_may_have_changed():
 
     assert snapshot.restore("x", store_may_have_changed=False) is True
     assert snapshot.restore("x") is False
+
+
+# ---------------------------------------------------------------------------
+# Binding a record to a source the caller has confirmed
+# ---------------------------------------------------------------------------
+
+
+def test_bind_unbound_source_binds_only_records_without_a_source(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("unbound", MEMORY_READ, "granted", source=None)
+    store.decide("bound", MEMORY_READ, "granted", source=MARKET)
+
+    assert store.bind_unbound_source("unbound", PluginSource("builtin")) is True
+    assert store.bind_unbound_source("bound", PluginSource("builtin")) is False
+    assert store.bind_unbound_source("absent", PluginSource("builtin")) is False
+
+    reloaded = PluginPermissionStore(manager)
+    assert reloaded.read("unbound")["source"] == {"channel": "builtin", "fingerprint": None}
+    assert MEMORY_READ in reloaded.read("unbound")["permissions"]
+    assert reloaded.read("bound")["source"] == MARKET.to_dict()
+    assert reloaded.read("absent") == {}
+    # A later different source is now a source change, not a first binding.
+    assert reloaded.sync_source("unbound", MARKET)["permissions"] == {}
+
+
+def test_bind_unbound_source_raises_when_it_cannot_save(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted", source=None)
+    manager.fail = OSError("disk full")
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        store.bind_unbound_source("x", PluginSource("builtin"))
+
+    assert exc_info.value.code == "PLUGIN_PERMISSIONS_WRITE_FAILED"
+    assert store.read("x")["source"] is None
+
+
+def test_bind_unbound_source_binds_a_legacy_record_imported_without_a_source(manager):
+    _write_legacy(
+        manager,
+        {
+            "schema_version": 2,
+            "plugins": {"x": {"decision": "approved", "approved_capabilities": ["memory.read"]}},
+        },
+    )
+    store = PluginPermissionStore(manager, source_resolver=lambda _plugin_id: None)
+
+    assert store.bind_unbound_source("x", PluginSource("builtin")) is True
+
+    record = PluginPermissionStore(manager).read("x")
+    assert record["source"] == {"channel": "builtin", "fingerprint": None}
+    assert record["permissions"][MEMORY_READ]["legacy_any"] is True
