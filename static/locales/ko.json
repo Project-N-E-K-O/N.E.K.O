@@ -2919,6 +2919,7 @@
         "starMapLabeling": "주제 이름 짓는 중...",
         "starMapLabelSuccess": "성운 주제가 업데이트되었습니다",
         "starMapLabelFailed": "주제 새로고침 실패 — 요약 모델 설정을 확인해 주세요",
+        "starMapLabelCooldown": "{{seconds}}초 후에 다시 주제를 새로고침해 주세요",
         "starMapResetView": "시점 초기화",
         "starMapClickHint": "별을 클릭하면 담긴 기억과 연결된 순간들을 볼 수 있어요",
         "starMapRelatedStars": "연결된 기억",

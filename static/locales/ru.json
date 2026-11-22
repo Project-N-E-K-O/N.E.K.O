@@ -2919,6 +2919,7 @@
         "starMapLabeling": "Подбираем названия...",
         "starMapLabelSuccess": "Названия тем обновлены",
         "starMapLabelFailed": "Не удалось обновить темы — проверьте настройки модели summary",
+        "starMapLabelCooldown": "Подождите {{seconds}} с перед повторным обновлением тем",
         "starMapResetView": "Сбросить вид",
         "starMapClickHint": "Нажмите на любую звезду, чтобы увидеть воспоминание и связи",
         "starMapRelatedStars": "Связанные воспоминания",

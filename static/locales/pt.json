@@ -2919,6 +2919,7 @@
         "starMapLabeling": "Nomeando temas...",
         "starMapLabelSuccess": "Temas do mapa atualizados",
         "starMapLabelFailed": "Falha ao atualizar temas — verifique o modelo summary",
+        "starMapLabelCooldown": "Aguarde {{seconds}} s antes de atualizar os temas novamente",
         "starMapResetView": "Redefinir vista",
         "starMapClickHint": "Clique em qualquer estrela para ver a lembrança e suas conexões",
         "starMapRelatedStars": "Memórias conectadas",

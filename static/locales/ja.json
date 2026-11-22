@@ -2919,6 +2919,7 @@
         "starMapLabeling": "テーマ名を生成中...",
         "starMapLabelSuccess": "星雲テーマ名を更新しました",
         "starMapLabelFailed": "テーマ更新に失敗しました。要約モデル設定を確認してください",
+        "starMapLabelCooldown": "{{seconds}} 秒後にもう一度テーマを更新してください",
         "starMapResetView": "視点をリセット",
         "starMapClickHint": "星をクリックすると、その記憶とつながる断片を表示します",
         "starMapRelatedStars": "つながっている記憶",
