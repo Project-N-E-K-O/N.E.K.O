@@ -15,7 +15,7 @@ const HUD_SOURCE = fs.readFileSync(path.join(PROJECT_ROOT, 'static/common-ui-hud
 const UI_V2_SOURCE = fs.readFileSync(path.join(PROJECT_ROOT, 'static/js/agent_ui_v2.js'), 'utf8');
 const KEY = 'neko-agent-taskhud-visible';
 
-function load({ stored, checkbox = true, storage = new Map(), saveOk = true } = {}) {
+function load({ stored, checkbox = true, storage = new Map(), saveOk = true, held = null } = {}) {
     if (stored !== undefined) storage.set(KEY, stored);
     const localStorage = {
         getItem(key) { return storage.has(key) ? storage.get(key) : null; },
@@ -44,6 +44,8 @@ function load({ stored, checkbox = true, storage = new Map(), saveOk = true } = 
     };
     const fetch = (url, init) => {
         sent.push({ url, body: init && init.body ? JSON.parse(init.body) : null });
+        // Answers held back, to be let through in an order the test chooses.
+        if (held) return new Promise((resolve) => held.push((ok) => resolve({ ok, json: () => Promise.resolve({}) })));
         return saveOk.length === undefined
             ? Promise.resolve({ ok: !!saveOk, json: () => Promise.resolve({ success: !!saveOk }) })
             : Promise.resolve({ ok: !!saveOk[sent.length - 1], json: () => Promise.resolve({}) });
@@ -151,6 +153,25 @@ test('the popup box that could not be saved is put back, rather than reverted la
     assert.deepEqual(harness.sent.map((item) => item.body), [{ command: 'set_task_hud_visible', value: false }]);
     assert.equal(checkbox.checked, true);
     assert.equal(harness.storage.get(KEY), 'true');
+});
+
+test('a late failure of an earlier click does not undo the last one', async () => {
+    const held = [];
+    const harness = load({ held });
+    const { checkbox, change } = popupCheckbox(harness);
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    checkbox.checked = false; change(); // 1st: off
+    checkbox.checked = true; change();  // 2nd: on
+    checkbox.checked = false; change(); // 3rd: off, as the 1st
+    held[2](true);  // the last one is saved
+    held[1](true);
+    await settle();
+    held[0](false); // the first one's failure comes back last
+    await settle();
+
+    assert.equal(checkbox.checked, false);
+    assert.equal(harness.storage.get(KEY), 'false');
 });
 
 test('the popup box that was saved stays as it is', async () => {

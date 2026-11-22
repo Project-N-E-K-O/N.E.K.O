@@ -510,9 +510,13 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 taskHudCheckbox.addEventListener('change', (event) => {
                     setAgentTaskHudVisiblePreferenceEnabled(taskHudCheckbox.checked);
                     // 不交给后端的话，下一份状态快照会把它改回去；没存上就当场改回，不让它悄悄变回去。
+                    // 只有最后一次改动的回复能改回去：连点几下时，先发的请求可能后回来。
                     const wanted = taskHudCheckbox.checked;
+                    const change = (taskHudCheckbox._taskHudChange || 0) + 1;
+                    taskHudCheckbox._taskHudChange = change;
                     window.AgentHUD.saveTaskHudPreference(wanted).then((saved) => {
-                        if (saved || taskHudCheckbox.checked !== wanted) return;
+                        if (saved || taskHudCheckbox._taskHudChange !== change) return;
+                        if (taskHudCheckbox.checked !== wanted) return;
                         taskHudCheckbox.checked = !wanted;
                         if (typeof taskHudCheckbox._updateStyle === 'function') {
                             taskHudCheckbox._updateStyle();
