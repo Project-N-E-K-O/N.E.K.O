@@ -68,6 +68,9 @@ _PRECONNECT_IDLE_SECONDS = 15.0
 # thinking, so it can afford to wait out a slow ``tts.connection.done`` that
 # the 1s bound on the speech path would give up on and reconnect.
 _PRECONNECT_HANDSHAKE_TIMEOUT_SECONDS = 3.0
+# How long a speech waits for ``tts.connection.done`` once its socket is
+# connected, or for a preconnected socket still mid-handshake when it adopts it.
+_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS = 1.0
 
 # Lanlan free servers finish the WebSocket handshake first and only then apply
 # their limits, so a rejection arrives as a close frame, never as an HTTP
@@ -639,9 +642,14 @@ def run_step_protocol_tts_worker(
         async def _take_spare_socket():
             """Hand the spare to a new speech, waiting for it if still connecting.
 
-            A spare still mid-handshake started earlier than a fresh connect
-            would, so waiting for it is never slower than replacing it.
-            Returns (ws, session_id) or None.
+            A spare still mid-handshake gets the same confirmation window a
+            fresh socket gets after connecting (_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS),
+            counted from now: it started earlier, so that is never slower than
+            connecting anew. Its own longer handshake bound only applies while
+            nothing waits on it. Returns (ws, session_id) or None; raises
+            asyncio.TimeoutError, with the spare cancelled, when the window
+            passes, so the caller treats it exactly like a fresh socket's
+            confirmation timeout.
             """
             nonlocal spare_task, spare_expiry_task
             task = spare_task
@@ -652,7 +660,21 @@ def run_step_protocol_tts_worker(
             spare_expiry_task = None
             if expiry is not None and not expiry.done():
                 expiry.cancel()
-            result = await task
+            if not task.done():
+                try:
+                    await asyncio.wait({task}, timeout=_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS)
+                except asyncio.CancelledError:
+                    # Nothing references the spare any more; do not leave its
+                    # socket open behind a cancelled worker.
+                    task.cancel()
+                    raise
+                if not task.done():
+                    task.cancel()
+                    # The task closes its half-open socket on cancellation;
+                    # asyncio.wait does not raise for that cancellation.
+                    await asyncio.wait({task})
+                    raise asyncio.TimeoutError
+            result = task.result()
             if result is None:
                 return None
             spare_ws, spare_session_id = result
@@ -1028,10 +1050,17 @@ def run_step_protocol_tts_worker(
                     try:
                         candidate_session_id = None
                         candidate_rejected = False
-                        spare = await _take_spare_socket()
+                        handshake_timed_out = False
+                        try:
+                            spare = await _take_spare_socket()
+                        except asyncio.TimeoutError:
+                            # Already cancelled and closed by the take; same
+                            # path as a fresh socket that missed the window.
+                            spare = None
+                            handshake_timed_out = True
                         if spare is not None:
                             candidate_ws, candidate_session_id = spare
-                        else:
+                        elif not handshake_timed_out:
                             candidate_ws = await websockets.connect(
                                 tts_url,
                                 additional_headers=headers,
@@ -1055,23 +1084,28 @@ def run_step_protocol_tts_worker(
                                     logger.debug("等待新 TTS 连接确认失败: %s", e)
 
                             try:
-                                await asyncio.wait_for(wait_conn(), timeout=1.0)
-                            except asyncio.TimeoutError:
-                                logger.warning("新连接超时")
-                                control_preempted = _defer_queued_work_until_control()
-                                retired_candidate_ws = candidate_ws
-                                candidate_ws = None
-                                await _close_candidate_best_effort(
-                                    retired_candidate_ws,
-                                    "关闭握手超时的 TTS socket 失败",
+                                await asyncio.wait_for(
+                                    wait_conn(), timeout=_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS,
                                 )
-                                if not control_preempted:
-                                    control_preempted = _defer_queued_work_until_control()
-                                if control_preempted:
-                                    continue
-                                if finish_requested:
-                                    await _queue_finish_retry(current_speech_id)
+                            except asyncio.TimeoutError:
+                                handshake_timed_out = True
+
+                        if handshake_timed_out:
+                            logger.warning("新连接超时")
+                            control_preempted = _defer_queued_work_until_control()
+                            retired_candidate_ws = candidate_ws
+                            candidate_ws = None
+                            await _close_candidate_best_effort(
+                                retired_candidate_ws,
+                                "关闭握手超时的 TTS socket 失败",
+                            )
+                            if not control_preempted:
+                                control_preempted = _defer_queued_work_until_control()
+                            if control_preempted:
                                 continue
+                            if finish_requested:
+                                await _queue_finish_retry(current_speech_id)
+                            continue
 
                         if not candidate_session_id:
                             control_preempted = _defer_queued_work_until_control()

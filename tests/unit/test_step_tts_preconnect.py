@@ -211,6 +211,27 @@ def test_failed_spare_handshake_falls_back_to_a_normal_connect_silently(monkeypa
     assert _errors(responses) == []
 
 
+def test_spare_still_handshaking_gets_only_the_normal_confirm_window(monkeypatch):
+    # Its own handshake bound is long because it normally runs while the LLM
+    # thinks; once a speech waits on it, it must not hold that speech (or a
+    # queued interrupt) longer than a fresh socket's confirmation window.
+    _route_to_lanlan_app(monkeypatch)
+    monkeypatch.setattr(_step_protocol, "_PRECONNECT_HANDSHAKE_TIMEOUT_SECONDS", 5.0)
+    monkeypatch.setattr(_step_protocol, "_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS", 0.1)
+    stuck = _StatefulSocket()  # never sends tts.connection.done
+    fresh = _socket("fresh", final_events=_app_round_end("fresh"))
+    _install_sockets(monkeypatch, _warmup_socket(), stuck, fresh)
+
+    started = time.monotonic()
+    _run(_Requests(_PRECONNECT, ("speech-1", _OPENING), (None, None)), queue.Queue())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.5, f"waited {elapsed:.1f}s on a spare stuck in its handshake"
+    assert stuck.closed.is_set()
+    assert stuck.send_attempts == 0
+    assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
+
+
 def test_repeated_preconnects_open_one_spare(monkeypatch):
     _route_to_lanlan_app(monkeypatch)
     spare = _socket("spare", final_events=_app_round_end("spare"))
