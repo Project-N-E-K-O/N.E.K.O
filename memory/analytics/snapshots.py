@@ -525,6 +525,7 @@ def _restore_snapshot_files_sync(
     fact_store=None,
     directives_manager=None,
     event_log=None,
+    progress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     char_dir = memory_dir / character_name
     # Read and validate ALL recorded snapshot files BEFORE creating pre_restore.
@@ -578,6 +579,10 @@ def _restore_snapshot_files_sync(
             restored, removed = _swap_live_files(
                 char_dir, view["target_bytes"], view["orig_bytes"], view["all_targets"],
             )
+            if progress is not None:
+                # The files are replaced from here on, even if the sentinel
+                # write after this callback fails.
+                progress["swapped"] = True
             view["restored_files"] = restored
             view["removed_files"] = removed
             _drop_thread_locked_caches(character_name, fact_store, directives_manager)
@@ -928,6 +933,7 @@ async def arestore_snapshot(
 
         # Shield the worker thread across repeated cancellations so AsyncExitStack
         # cannot release manager locks while the thread is still swapping files.
+        progress: dict[str, Any] = {}
         worker = asyncio.create_task(
             asyncio.to_thread(
                 _restore_snapshot_files_sync,
@@ -939,6 +945,7 @@ async def arestore_snapshot(
                 fact_store=fact_store,
                 directives_manager=dm,
                 event_log=event_log,
+                progress=progress,
             )
         )
         cancelled = False
@@ -947,11 +954,17 @@ async def arestore_snapshot(
                 await asyncio.shield(worker)
             except asyncio.CancelledError:
                 cancelled = True
+            except Exception:
+                # Read below through worker.exception(); the cleanup that
+                # follows must still run when the swap landed.
+                pass
 
         worker_exc = None if worker.cancelled() else worker.exception()
-        if worker_exc is None and not worker.cancelled():
-            # Always invalidate async-locked manager caches while still holding locks
-            # whenever the worker committed disk changes, even if cancelled mid-flight.
+        if progress.get("swapped") or (worker_exc is None and not worker.cancelled()):
+            # Invalidate async-locked manager caches while still holding locks
+            # whenever the files were swapped: even if cancelled mid-flight, and
+            # even if a step after the swap (the sentinel write) raised. A cached
+            # pre-restore persona would otherwise be saved back over the restore.
             if persona_manager is not None:
                 personas_cache = getattr(persona_manager, "_personas", None)
                 if isinstance(personas_cache, dict):
@@ -988,6 +1001,9 @@ async def arestore_snapshot(
                         await asyncio.shield(rebuild_task)
                     except asyncio.CancelledError:
                         cancelled = True
+                    except Exception:
+                        # Logged below; a derived-index failure must not fail the restore.
+                        pass
                 if not rebuild_task.cancelled():
                     rebuild_exc = rebuild_task.exception()
                     if rebuild_exc is not None:

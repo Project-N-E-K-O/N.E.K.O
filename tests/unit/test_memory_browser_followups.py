@@ -661,3 +661,70 @@ def test_compaction_keeps_only_the_newest_restore_record(tmp_path):
     assert [e["event_id"] for e in _journal(tmp_path)] == ["r2", "anchor"]
     # A later full replay still starts at the restore record.
     assert [r["event_id"] for r in log.read_since(NAME, None)] == ["r2", "anchor"]
+
+
+@pytest.mark.asyncio
+async def test_restore_clears_caches_when_the_step_after_the_swap_fails(tmp_path):
+    from memory.analytics.snapshots import arestore_snapshot
+
+    log = _event_log(tmp_path)
+    char_dir = _seed_memory(tmp_path, "likes jazz", "drinks oolong")
+    meta = await _snapshot(tmp_path)
+    _write_json(char_dir / "facts.json", [{"id": "f2", "text": "new"}])
+    persona, facts = _Persona(), _Facts()
+    facts._time_indexed = MagicMock()
+    facts._time_indexed.arebuild_fact_index = AsyncMock()
+
+    def _broken_sentinel(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    log._write_sentinel_unlocked = _broken_sentinel
+    with patch("memory.analytics.snapshots.assert_cloudsave_writable"), pytest.raises(OSError):
+        await arestore_snapshot(
+            NAME, meta["snapshot_id"], config_manager=_cm(tmp_path), memory_dir=tmp_path,
+            persona_manager=persona, fact_store=facts, event_log=log,
+            directives_manager=MagicMock(spec=[]),
+        )
+    assert _read_json(char_dir / "facts.json")[0]["id"] == "f1"
+    assert NAME not in persona._personas and NAME not in facts._facts
+    facts._time_indexed.arebuild_fact_index.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pending_restore_is_finished_ahead_of_startup_rewrites(tmp_path):
+    from memory.analytics.snapshots import register_snapshot_restore_replay
+    from memory.event_log import EVT_REFLECTION_EVIDENCE_UPDATED, Reconciler
+
+    log, char_dir, _meta, pre, _target, _payload = await _restored_with_event(tmp_path)
+    events = _journal(tmp_path)
+    restore_line = (char_dir / "events.ndjson").read_text(encoding="utf-8")
+    # Crash during the restore: an unapplied event sits between the sentinel and
+    # the restore record, and facts.json is still the pre-restore version.
+    anchor = log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"reflection_id": "anchor"})
+    stale = log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"reflection_id": "stale"})
+    lines = (char_dir / "events.ndjson").read_text(encoding="utf-8").splitlines()
+    body = [lines[1], lines[2], restore_line.strip()]
+    (char_dir / "events.ndjson").write_bytes(("\n".join(body) + "\n").encode("utf-8"))
+    _write_json(char_dir / "events_applied.json", {"last_applied_event_id": anchor})
+    (char_dir / "facts.json").write_bytes(pre["facts.json"])
+
+    assert [r["event_id"] for r in log.read_since(NAME, anchor)] == [events[0]["event_id"]]
+
+    reconciler = Reconciler(log)
+    seen = []
+    reconciler.register(EVT_REFLECTION_EVIDENCE_UPDATED, lambda n, p: seen.append(p["reflection_id"]) or False)
+    register_snapshot_restore_replay(
+        reconciler, fact_store=_Facts(), persona_manager=_Persona(),
+        directives_manager_fn=lambda: None, memory_dir_fn=lambda: tmp_path,
+    )
+    assert await reconciler.arun_pending_ahead(NAME, "memory.snapshot_restored") is True
+    assert _read_json(char_dir / "facts.json")[0]["id"] == "f1"
+    assert log.read_sentinel(NAME) == anchor
+
+    # A startup step rewriting persona.json now no longer hides the restore.
+    persona = _read_json(char_dir / "persona.json")
+    persona["master"]["facts"].append({"id": "card", "text": "card sync", "source": "character_card"})
+    _write_json(char_dir / "persona.json", persona)
+    assert await reconciler.areconcile(NAME) == 0
+    assert seen == [] and stale not in seen
+    assert log.read_sentinel(NAME) == events[0]["event_id"]

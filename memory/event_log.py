@@ -102,8 +102,8 @@ EVT_PERSONA_ENTRY_UPDATED = "persona.entry_updated"
 # Retired sync event: recognized only so old journals can drain without applying it.
 EVT_LONG_TERM_MEMORY_REPLACED = "memory.long_term_replaced"
 # Memory Browser snapshot restore: the whole set of managed files was replaced.
-# A full replay (sentinel missing or not in the body) starts at the newest one,
-# because every event before it describes files the restore overwrote.
+# Every replay tail (read_since) starts at the newest one, because every event
+# before it describes files the restore overwrote.
 EVT_MEMORY_SNAPSHOT_RESTORED = "memory.snapshot_restored"
 
 ALL_EVENT_TYPES: frozenset[str] = frozenset({
@@ -332,9 +332,8 @@ def _body_keeps_tail(body: str, sentinel: str, old_tail_ids: list) -> bool:
 def _from_latest_restore(name: str, records: list[dict]) -> list[dict]:
     """Drop every record in front of the newest snapshot-restore record.
 
-    Used only for a full replay. The restore record itself stays: its
-    handler finishes a restore that was interrupted and does nothing
-    otherwise.
+    The restore record itself stays: its handler finishes a restore that
+    was interrupted and does nothing otherwise.
     """
     for i in range(len(records) - 1, -1, -1):
         if records[i].get('type') == EVT_MEMORY_SNAPSHOT_RESTORED:
@@ -598,17 +597,18 @@ class EventLog:
         other reason (hand edits, a restore that brought back only one of
         the two files); every record in the body is then treated as unapplied.
 
-        A full replay starts at the newest ``memory.snapshot_restored`` record
-        instead of the first line: that restore replaced every managed file,
-        so the records in front of it describe a state that no longer exists
-        and replaying them would write it back over the restored files.
+        Whatever the tail, it starts at its newest ``memory.snapshot_restored``
+        record: that restore replaced every managed file, so unapplied records
+        in front of it (a full replay, or a crash during the restore itself)
+        describe a state that no longer exists, and replaying them would
+        write it back over the restored files.
         """
         with self._get_lock(name):
             records = self._read_all_records(self._events_path(name))
         if after_event_id is not None:
             for i, rec in enumerate(records):
                 if rec.get('event_id') == after_event_id:
-                    return records[i + 1:]
+                    return _from_latest_restore(name, records[i + 1:])
             # The sentinel names an event that is not in the body. Compaction
             # always keeps that line, so this is not its doing.
             # Safe default: replay everything currently in the body.
@@ -1268,6 +1268,30 @@ class Reconciler:
                 f"[Reconciler] 注册未登记事件类型 {event_type!r}（handler 仍生效，但请检查 typo）"
             )
         self._handlers[event_type] = handler
+
+    async def arun_pending_ahead(self, name: str, event_type: str) -> bool:
+        """Run the handler of the newest unapplied ``event_type`` record now.
+
+        For startup steps that rewrite views before areconcile runs: they
+        would otherwise change files a pending event still needs to find in
+        the state it left them. Runs under the character lock and leaves the
+        sentinel alone, so areconcile replays the record again in order
+        (handlers are idempotent). Returns what the handler returned; False
+        when there is no such record or no handler.
+        """
+        handler = self._handlers.get(event_type)
+        if handler is None:
+            return False
+        sentinel = await self._event_log.aread_sentinel(name)
+        tail = await self._event_log.aread_since(name, sentinel)
+        record = next((r for r in reversed(tail) if r.get('type') == event_type), None)
+        if record is None:
+            return False
+        payload = record.get('payload') or {}
+        return await self._event_log.aapply_and_advance(
+            name, record.get('event_id'), lambda: handler(name, payload),
+            expected_sentinel=sentinel, advance=False,
+        )
 
     async def areconcile(self, name: str) -> int:
         """P2.a.1 scaffold: dispatch tail events to registered handlers,

@@ -1244,6 +1244,25 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             character_data = await _config_manager.aload_characters()
             catgirl_names = list(character_data.get('猫娘', {}).keys())
             if catgirl_names:
+                # A Memory Browser restore interrupted by a crash is finished
+                # before the persona check below can rewrite persona.json
+                # (card sync, cold-copy drop); its replay handler would then
+                # see a third version and leave memories from two points in
+                # time. The full reconcile further down replays it again as a
+                # no-op and advances the sentinel.
+                from memory.event_log import EVT_MEMORY_SNAPSHOT_RESTORED
+
+                async def _finish_pending_restore(n: str):
+                    try:
+                        if await reconciler.arun_pending_ahead(n, EVT_MEMORY_SNAPSHOT_RESTORED):
+                            logger.info(f"[Memory] {n}: 已补完上次被打断的快照恢复")
+                    except Exception as e:
+                        logger.warning(f"[Memory] {n}: 补完被打断的快照恢复失败: {e}")
+
+                await asyncio.gather(
+                    *(_finish_pending_restore(n) for n in catgirl_names),
+                    return_exceptions=True,
+                )
                 results = await asyncio.gather(
                     *(persona_manager.aensure_persona(n) for n in catgirl_names),
                     return_exceptions=True,
