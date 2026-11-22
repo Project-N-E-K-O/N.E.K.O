@@ -52,6 +52,11 @@ class PluginExecutionError(PluginError):
 # error contract: keep the string stable.
 OUTPUT_SCHEMA_VIOLATION_CODE = "PLUGIN_OUTPUT_SCHEMA_VIOLATION"
 
+# Plugin contract error codes that /runs reports as-is, with the plugin's
+# details. Every other plugin failure stays INTERNAL on /runs. Only add codes
+# whose details carry no user data.
+RUNS_PASSTHROUGH_ERROR_CODES = frozenset({OUTPUT_SCHEMA_VIOLATION_CODE})
+
 
 class PluginOutputSchemaError(PluginExecutionError):
     """An entry with ``strict_output=True`` returned data its output_schema rejects.

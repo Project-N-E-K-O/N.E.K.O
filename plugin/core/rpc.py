@@ -158,6 +158,18 @@ class RpcRemoteError(RuntimeError):
         super().__init__(self.message)
 
 
+def remote_error_details(exc: BaseException) -> dict[str, object]:
+    """Details the peer attached to the remote error that caused ``exc``.
+
+    Callers merge these under their own identifying keys, so local values such
+    as ``plugin_id`` always win over what the peer reported.
+    """
+    cause = exc.__cause__
+    if isinstance(cause, RpcRemoteError) and isinstance(cause.details, Mapping):
+        return dict(cause.details)
+    return {}
+
+
 @dataclass
 class _CallScope:
     request_id: str

@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from plugin._types.exceptions import OUTPUT_SCHEMA_VIOLATION_CODE, PluginExecutionError
+from plugin.core.rpc import RpcRemoteError
 from plugin.runs import trigger_service as module
 from plugin.sdk.shared.core.events import EventMeta
 
@@ -165,3 +167,96 @@ async def test_trigger_plugin_records_redacted_args_but_executes_with_raw_args(
         "permission_mode": "open",
     }
     assert result.args == captured_event["args"]
+
+
+class _FailingHost:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def trigger(
+        self,
+        entry_id: str,
+        args: dict[str, object],
+        timeout: float | None,
+    ) -> dict[str, object]:
+        raise self.error
+
+
+def _remote_failure(error: dict[str, object]) -> PluginExecutionError:
+    # Same wrapping as the host's command channel: the plugin's error reply
+    # becomes RpcRemoteError, re-raised as PluginExecutionError from it.
+    remote = RpcRemoteError(error)
+    try:
+        raise PluginExecutionError("dummy_plugin", "entry run", remote.message) from remote
+    except PluginExecutionError as exc:
+        return exc
+
+
+async def _trigger_failing(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> dict[str, object]:
+    monkeypatch.setattr(
+        module.state,
+        "get_event_handlers_snapshot_cached",
+        lambda timeout=1.0: {},
+    )
+    response = await module._execute_trigger(
+        host=_FailingHost(error),
+        plugin_id="dummy_plugin",
+        entry_id="run",
+        args={},
+        trace_id="trace-err",
+    )
+    assert isinstance(response, dict)
+    return response
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_execute_trigger_passes_through_output_schema_violation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issues = [{"path": "$.items[0].name", "type": "type_mismatch"}]
+    response = await _trigger_failing(monkeypatch, _remote_failure({
+        "code": OUTPUT_SCHEMA_VIOLATION_CODE,
+        "message": "output does not match output_schema",
+        "details": {
+            "plugin_id": "spoofed",
+            "event_id": "spoofed_entry",
+            "error_type": "PluginOutputSchemaError",
+            "issues": issues,
+        },
+    }))
+
+    assert response["success"] is False
+    assert response["code"] == 500
+    error = response["error"]
+    assert error["code"] == OUTPUT_SCHEMA_VIOLATION_CODE
+    assert error["details"] == {
+        "plugin_id": "dummy_plugin",
+        "entry_id": "run",
+        "event_id": "run",
+        "error_type": "PluginOutputSchemaError",
+        "type": "PluginExecutionError",
+        "issues": issues,
+    }
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_execute_trigger_keeps_other_plugin_errors_internal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = await _trigger_failing(monkeypatch, _remote_failure({
+        "code": "PLUGIN_EXECUTION_FAILED",
+        "message": "boom",
+        "details": {"plugin_id": "dummy_plugin", "event_id": "run", "error_type": "ValueError"},
+    }))
+
+    error = response["error"]
+    assert error["code"] == "INTERNAL"
+    assert error["details"] == {
+        "plugin_id": "dummy_plugin",
+        "entry_id": "run",
+        "type": "PluginExecutionError",
+    }
