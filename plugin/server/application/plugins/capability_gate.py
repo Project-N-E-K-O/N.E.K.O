@@ -17,7 +17,12 @@ import time
 
 from plugin.core.call_registry import CallLink, CallRecord, CallRegistry, Origin
 from plugin.core.capability_policy import Decision, current_mode, decide
-from plugin.sdk.shared.permissions import PLUGIN_PERMISSION_DENIED, legacy_name, normalize_permission
+from plugin.sdk.shared.permissions import (
+    PERMISSIONS,
+    PLUGIN_PERMISSION_DENIED,
+    legacy_name,
+    normalize_permission,
+)
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins import call_audit
 
@@ -25,9 +30,10 @@ logger = get_logger("server.plugins.capability_gate")
 
 registry = CallRegistry()
 
-MEMORY_READ = "plugin_sdk.main_agent.memory:read"
-CONVERSATIONS_READ = "plugin_sdk.main_agent.conversations:read"
-MESSAGES_PUSH = "plugin_sdk.main_agent.messages:push"
+# Looked up in the vocabulary, so an id that leaves it fails at import.
+MEMORY_READ = PERMISSIONS["plugin_sdk.main_agent.memory:read"].id
+CONVERSATIONS_READ = PERMISSIONS["plugin_sdk.main_agent.conversations:read"].id
+MESSAGES_PUSH = PERMISSIONS["plugin_sdk.main_agent.messages:push"].id
 
 # One row per judged control-RPC operation; all wrapped the same way.
 CAPABILITY_BY_OPERATION = {

@@ -44,6 +44,9 @@ MESSAGES_PUSH = "plugin_sdk.main_agent.messages:push"
 # usual source rules reconcile them on the next plugin start.
 _UNUSABLE_STORE_CODES = (CORRUPT, UNSUPPORTED_VERSION)
 
+# A replacement cannot tell which source a source-less grant record belongs to.
+SOURCE_UNKNOWN = "PLUGIN_PERMISSION_SOURCE_UNKNOWN"
+
 
 class _SourceUnknown(Exception):
     pass
@@ -319,6 +322,43 @@ def bind_current_permission_source(plugin_id: str) -> None:
     source = current_source(plugin_id)
     if source is not None:
         bind_permission_source(plugin_id, source)
+
+
+def bind_entry_permission_source(plugin_id: str, entry) -> None:
+    """Before a replacement: bind a record still without a source to the
+    source of ``entry``, the install-source lock entry the caller has
+    validated under the plugin operation lock, so the replacement's source
+    counts as a source change rather than a first binding.
+
+    Unlike :func:`bind_current_permission_source` this does not look the
+    plugin up again. When the entry's source is incomplete (a Market or
+    imported entry without its fingerprint) and the record has no source
+    but still grants a permission, raises ``ServerDomainError`` with
+    ``SOURCE_UNKNOWN`` (409), so the new source cannot take those grants
+    over. A record holding only denials or nothing is left alone. Otherwise
+    raises like :func:`bind_permission_source`.
+    """
+    source = _source_of(entry)
+    if source is not None:
+        bind_permission_source(plugin_id, source)
+        return
+    try:
+        held = permission_store.holds_unbound_grant(plugin_id)
+    except ServerDomainError as exc:
+        if exc.code not in _UNUSABLE_STORE_CODES:
+            raise
+        logger.warning(
+            "plugin permission source not bound plugin_id={} code={}", plugin_id, exc.code
+        )
+        return
+    if held:
+        raise ServerDomainError(
+            SOURCE_UNKNOWN,
+            "the plugin's current install source is incomplete, so its permission "
+            "grants cannot be bound to it before the replacement",
+            409,
+            details={"plugin_id": plugin_id},
+        )
 
 
 def forget_permissions(plugin_id: str) -> dict | None:
