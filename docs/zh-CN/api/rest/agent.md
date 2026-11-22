@@ -50,7 +50,7 @@
 
 ### 任务对象
 
-一个任务就是猫爪台账里一件委托在 HUD 上的样子。`GET /api/agent/tasks` 返回 `{"tasks":[...]}`；状态快照的 `active_tasks` 和 WebSocket 的 `agent_task_update` 消息里是同一种对象。
+一个任务就是喵能力台账里一件委托在 HUD 上的样子。`GET /api/agent/tasks` 返回 `{"tasks":[...]}`；状态快照的 `active_tasks` 和 WebSocket 的 `agent_task_update` 消息里是同一种对象。
 
 | 字段 | 含义 |
 |---|---|

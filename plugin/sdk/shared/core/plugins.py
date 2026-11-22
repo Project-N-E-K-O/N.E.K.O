@@ -9,13 +9,14 @@ from plugin.sdk.shared.models.exceptions import (
     InvalidArgumentError,
     InvalidEntryRefError,
     InvalidEventRefError,
+    PermissionDeniedError,
     PluginCallError,
 )
 
 from .context import ensure_sdk_context
 from .types import EntryRef, EventRef, JsonObject, JsonValue, PluginContextProtocol
 
-PluginOpError = InvalidArgumentError | PluginCallError
+PluginOpError = InvalidArgumentError | PluginCallError | PermissionDeniedError
 
 
 class PluginDescriptor(TypedDict, total=False):
@@ -117,6 +118,9 @@ class Plugins:
                 )
             )
         except (RuntimeError, ValueError, TimeoutError, TypeError, KeyError) as error:
+            denied = PermissionDeniedError.from_exception(error)
+            if denied is not None:
+                return Err(denied)
             return Err(
                 PluginCallError(
                     f"plugin call failed: {error}",

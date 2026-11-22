@@ -16,37 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-# First-batch permission ids.
-# TODO: import from the shared permission vocabulary once it lands, so the
-# ids are defined in exactly one place.
-PERMISSION_IDS: tuple[str, ...] = (
-    "plugin_sdk.main_agent.memory:read",
-    "plugin_sdk.main_agent.conversations:read",
-    "plugin_sdk.main_agent.messages:push",
-    "plugin_sdk.models:invoke",
-    "system.network:connect",
-    "system.fs:read",
-    "system.fs:write",
-    "system.process:spawn",
-    "system.env:read",
-)
-
-# Legacy capability names -> permission ids.
-LEGACY_PERMISSION_NAMES: dict[str, str] = {
-    "conversations.read": "plugin_sdk.main_agent.conversations:read",
-    "memory.read": "plugin_sdk.main_agent.memory:read",
-    "messages.push": "plugin_sdk.main_agent.messages:push",
-}
-
-
-def normalize_permission(name: object) -> str | None:
-    """Permission id for a new id or a legacy name; None when unknown."""
-    if not isinstance(name, str):
-        return None
-    if name in PERMISSION_IDS:
-        return name
-    return LEGACY_PERMISSION_NAMES.get(name)
-
+from plugin.sdk.shared.permissions import PERMISSION_IDS
 
 SECTIONS: tuple[str, ...] = ("require", "ask")
 NETWORK_PERMISSION = "system.network:connect"

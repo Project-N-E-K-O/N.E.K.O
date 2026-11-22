@@ -13,14 +13,17 @@ from threading import Event
 from collections.abc import Iterator
 
 from plugin.core.permission_declarations import (
-    LEGACY_PERMISSION_NAMES,
     PermissionDeclarations,
     PermissionIssue,
     parse_permission_declarations,
 )
+from plugin.sdk.shared.permissions import LEGACY_PERMISSION_NAMES, PERMISSIONS
 from plugin.utils.source_paths import is_vendor_sync_path, iter_plugin_python_files
 
-CAPABILITIES = ("conversations.read", "memory.read", "messages.push")
+# What the analyzer reports, in the earlier capability names that stored
+# reports and approvals use; each maps to a permission id in
+# plugin.sdk.shared.permissions.
+CAPABILITIES = tuple(sorted(spec.legacy_name for spec in PERMISSIONS.values() if spec.legacy_name))
 # Bump when a change to analysis makes persisted reports stale.
 # 5: permission ids, declarations, blind spots; legacy capabilities unchanged.
 ANALYZER_VERSION = 5

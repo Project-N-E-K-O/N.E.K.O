@@ -84,7 +84,7 @@ short_description = "Note management with AI-powered organization."
 keywords = ["note", "笔记", "memo", "record", "メモ"]
 ```
 
-These fields decide how the Agent (NekoClaw) selects the plugin once the host has loaded it:
+These fields decide how the Agent (NekoPower) selects the plugin once the host has loaded it:
 
 - `description` — Full description used in plugin metadata and in the fine selection.
 - `short_description` — Compact description read by the coarse screen, which uses at most 150 tokens of it. **Write one.** If it is absent and `description` is longer than those 150 tokens, the host has the small model write one from `description` in the background, and keeps it in `nekoclaw/plugin_short_descriptions.json` under the data directory: one model request per plugin and description when it succeeds. An answer longer than 150 tokens is kept cut to 150. A request that fails is not kept and is tried again after 10 minutes, each try another request, at most 3 times a day for one version of `description` (restarts included); a changed `description` starts again. Until one is kept, the start of `description` is used instead.

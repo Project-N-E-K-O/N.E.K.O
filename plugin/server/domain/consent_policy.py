@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from plugin.core.permission_declarations import normalize_permission
+from plugin.sdk.shared.permissions import normalize_permission
 
 ANALYZING_STATUSES = frozenset({"queued", "running", "unavailable"})
 INCOMPLETE_STATUSES = frozenset({"partial", "failed"})

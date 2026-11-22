@@ -70,8 +70,13 @@ and stores no `base_url`, `model` or `api_key`; those belong to the main app's
 in `plugin/server/domain/model_config.py`. Plugins and task agents are one
 thing in the main app, so plugins draw only on the familiar tiers: today
 `agent` (the familiar model that task agents, keyboard-and-mouse control and
-the browser use); a smaller familiar tier joins it as one more row there (plus
-the `HostApi` literal). The chat, memory and voice tiers stay the main app's
+the browser use) and `agent_small` (the small familiar model, which is the
+main app's recognition (small) model unless the user configures it
+separately). A further tier is one more
+row there plus the `HostApi` literal, and on the panel side the
+`HostApiSource` type (`frontend/plugin-manager/src/types/model-api.ts`), the
+option in `ModelApi.vue` and the `hostApi` / `hostHint` strings in all eight
+languages (`frontend/plugin-manager/src/i18n/model-api.ts`). The chat, memory and voice tiers stay the main app's
 own and are not followable. Each value is the `model_type` passed to
 `get_model_api_config`. At
 call time the gateway resolves the slot through `get_model_api_config` and
@@ -152,7 +157,7 @@ duplicated.
 
 ### In-process resolution
 
-Callers outside the plugin server (the NekoClaw host in the agent process)
+Callers outside the plugin server (the NekoPower host in the agent process)
 use `plugin/server/infrastructure/model_slot_resolver.py`: it reads the same
 `plugin_models.json` and resolves host-follow slots with the gateway's code,
 so it works whether or not the plugin server runs, and it never writes.

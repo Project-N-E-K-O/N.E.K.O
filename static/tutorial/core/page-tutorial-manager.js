@@ -682,14 +682,14 @@
                 {
                     element: '#coreApiSelect-dropdown-trigger',
                     popover: {
-                        title: this.t('tutorial.settings.step2.title', '核心 API 服务商'),
-                        description: this.t('tutorial.settings.step2.desc', '这是最重要的设置。核心 API 负责对话功能。')
+                        title: this.t('tutorial.settings.step2.title', '语音模型供应商'),
+                        description: this.t('tutorial.settings.step2.desc', '这是最重要的设置。语音模型供应商负责语音对话。')
                     }
                 },
                 {
                     element: '#apiKeyInput',
                     popover: {
-                        title: this.t('tutorial.settings.step3.title', '核心 API Key'),
+                        title: this.t('tutorial.settings.step3.title', '语音模型 API Key'),
                         description: this.t('tutorial.settings.step3.desc', '将您选择的 API 服务商的 API Key 粘贴到这里。如果选择了免费版，这个字段可以留空。')
                     }
                 }

@@ -17,12 +17,12 @@ from plugin.core.capability_analysis import (
     summarize_permissions,
 )
 from plugin.core.permission_declarations import (
-    PERMISSION_IDS,
     narrowing_issues,
     parse_permission_declarations,
     resolve_text,
 )
 from plugin.neko_plugin_cli.commands import _permission_messages as permission_messages
+from plugin.sdk.shared.permissions import PERMISSION_IDS
 from plugin.neko_plugin_cli.commands.validate_cmd import validate_plugin_dir
 
 LOCALES = ("en", "zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt")
@@ -671,7 +671,7 @@ def test_permission_ids_cover_the_legacy_capabilities():
 
 
 def test_normalize_permission_maps_legacy_names():
-    from plugin.core.permission_declarations import LEGACY_PERMISSION_NAMES, normalize_permission
+    from plugin.sdk.shared.permissions import LEGACY_PERMISSION_NAMES, normalize_permission
 
     for legacy, permission in LEGACY_PERMISSION_NAMES.items():
         assert normalize_permission(legacy) == permission
