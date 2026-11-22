@@ -514,21 +514,110 @@ async def test_stale_registration_without_a_reported_id_is_not_removed_broadly()
 
 
 @pytest.mark.asyncio
-async def test_stale_removal_that_meets_yet_another_registration_is_not_ok():
+async def test_stale_removal_follows_registrations_revealed_by_a_follow_up():
+    """The follow-up for one reported id reveals yet another registration
+    holding the name: it is removed too, by its own id."""
     plugin, _ = await _plugin_with_tool()
-    reported = lambda rid: {  # noqa: E731
-        "ok": True, "removed": False, "affected_roles": [], "failed_roles": [],
-        "refused_roles": [{"role": "Lanlan", "owned_by": "plugin:demo_plugin",
-                           "reason": "different registration", "registration_id": rid}],
-    }
-    host = _ScriptedHost(reported("stale"), reported("newer"))
+    host = _ScriptedHost(_held_by("stale"), _held_by("newer"), dict(_CLEANED))
     _install_host(plugin, host)
 
     result = await plugin.unregister_llm_tool_async("tool_a")
 
-    assert result["ok"] is False
-    assert len(host.calls) == 2
+    assert result["ok"] is True
+    assert [c["request_data"].get("expected_registration_id") for c in host.calls[1:]] == ["stale", "newer"]
+    assert _local_names(plugin) == set()
+
+
+def _held_by(*holders, removed=False, affected=()):
+    """An unregister answer where each (role, id) in holders is another
+    registration of this plugin holding the name."""
+    pairs = [h if isinstance(h, tuple) else ("Lanlan", h) for h in holders]
+    return {
+        "ok": True, "removed": removed, "affected_roles": list(affected), "failed_roles": [],
+        "refused_roles": [
+            {"role": role, "owned_by": "plugin:demo_plugin", "reason": "different registration",
+             "registration_id": rid}
+            for role, rid in pairs
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_stale_removal_tries_every_reported_id():
+    """Two roles held by two different registrations (C, D): removing C
+    still reports D, which must then be removed too instead of stopping."""
+    plugin, _ = await _plugin_with_tool()
+    host = _ScriptedHost(
+        _held_by(("R2", "C"), ("R3", "D")),
+        _held_by(("R3", "D"), removed=True, affected=["R2"]),
+        {"ok": True, "removed": True, "affected_roles": ["R3"], "failed_roles": [], "refused_roles": []},
+    )
+    _install_host(plugin, host)
+
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert result["ok"] is True and result["refused_roles"] == []
+    assert [c["request_data"].get("expected_registration_id") for c in host.calls[1:]] == ["C", "D"]
+    assert result["affected_roles"] == ["R2", "R3"]
+
+
+@pytest.mark.asyncio
+async def test_stale_removal_keeps_what_the_first_request_removed():
+    """role=None: the first request removed the held registration on R1
+    while R2 reported another one. If the follow-up fails, the result still
+    says R1 was removed."""
+    plugin, _ = await _plugin_with_tool()
+    host = _ScriptedHost(
+        _held_by(("R2", "stale"), removed=True, affected=["R1"]),
+        TimeoutError("late"),
+    )
+    _install_host(plugin, host)
+
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert result["ok"] is False and result["error"] == "timeout"
+    assert result["removed"] is True and result["affected_roles"] == ["R1"]
+    assert result["refused_roles"] == [
+        {"role": "R2", "owned_by": "plugin:demo_plugin", "reason": "different registration",
+         "registration_id": "stale"},
+    ]
     assert _local_names(plugin) == {"tool_a"}
+
+
+@pytest.mark.asyncio
+async def test_stale_removal_keeps_other_sources_refusals():
+    plugin, _ = await _plugin_with_tool()
+    first = _held_by("stale")
+    first["refused_roles"].append({"role": "R9", "owned_by": "plugin:other"})
+    host = _ScriptedHost(first, dict(_CLEANED))
+    _install_host(plugin, host)
+
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert result["ok"] is True
+    assert result["refused_roles"] == [{"role": "R9", "owned_by": "plugin:other"}]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_also_removes_a_stale_registration_it_meets():
+    """After a failed register, the cleanup's own id is refused because an
+    older registration of this plugin landed late: the cleanup removes it
+    by its reported id, and only reports ok when it is gone."""
+    plugin, _ = _make_plugin()
+    host = _ScriptedHost(_ALL_SYNC_FAILED, _held_by("older"), dict(_CLEANED))
+    _install_host(plugin, host)
+
+    result = await plugin.register_llm_tool_async(**_register_kwargs())
+
+    assert result["ok"] is False
+    assert result["cleanup"]["ok"] is True and result["cleanup"]["removed"] is True
+    assert host.calls[2]["request_data"]["expected_registration_id"] == "older"
+
+    plugin2, _ = _make_plugin()
+    host2 = _ScriptedHost(_ALL_SYNC_FAILED, _held_by("older"), TimeoutError("late"))
+    _install_host(plugin2, host2)
+    failed = await plugin2.register_llm_tool_async(**_register_kwargs())
+    assert failed["cleanup"]["ok"] is False
 
 
 @pytest.mark.asyncio
@@ -574,7 +663,9 @@ async def test_stale_removal_uses_what_is_left_of_request_timeout(monkeypatch):
         def monotonic():
             calls["n"] += 1
             # lock start, lock acquired, deadline base, then "after the first request"
-            return real() + (100.0 if calls["n"] > 3 else 0.0)
+            # 1.5s of the 2s budget used: 0.5s left is under the send
+            # threshold (half the budget), so nothing more is sent.
+            return real() + (1.5 if calls["n"] > 3 else 0.0)
 
     monkeypatch.setattr(base, "time", _Clock)
     late = await plugin2.unregister_llm_tool_async("tool_a", request_timeout=2.0)
@@ -1702,6 +1793,19 @@ async def test_host_unregister_main_server_unavailable_keeps_tracking(monkeypatc
     assert result["ok"] is False
     assert result["error"] == "main_server_unavailable"
     assert registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["", "x" * 65, 123])
+async def test_host_refuses_an_invalid_registration_id_on_register(monkeypatch, registry, bad):
+    """Same rule as for expected_registration_id: a dropped id would make
+    main_server store one the caller does not know."""
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register
+
+    server = _use_main_server(monkeypatch, registry, _FakeMainServer({"ok": True}))
+    result = await handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST, registration_id=bad))
+    assert result["error"] == "invalid_request"
+    assert server.posts == []
 
 
 @pytest.mark.asyncio

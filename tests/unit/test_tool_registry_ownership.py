@@ -466,3 +466,16 @@ async def test_registration_id_mismatch_on_another_source_keeps_the_old_refusal_
         name="x", expected_source="plugin:a", expected_registration_id="mine",
     ))
     assert result["refused_roles"] == [{"role": "Alpha", "owned_by": "plugin:b"}]
+
+
+@pytest.mark.asyncio
+async def test_different_registration_reason_needs_the_same_host_instance(mgr):
+    """A same-source tool of another host instance is not something the
+    caller could remove by id, so it gets the plain refusal."""
+    mgr.tool_registry.register(_tool("x", "plugin:a", registration_id="theirs", host_instance_id="h-2"))
+    mgr.release.set()
+    result = await tr.unregister_tool(tr.ToolUnregisterRequest(
+        name="x", expected_source="plugin:a", expected_host_instance_id="h-1",
+        expected_registration_id="mine",
+    ))
+    assert result["refused_roles"] == [{"role": "Alpha", "owned_by": "plugin:a"}]

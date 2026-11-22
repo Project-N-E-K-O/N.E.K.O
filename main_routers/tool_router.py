@@ -933,6 +933,8 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
             if (
                 req.expected_registration_id is not None
                 and e.existing.metadata.get("source") == req.expected_source
+                and (req.expected_host_instance_id is None
+                     or e.existing.metadata.get("host_instance_id") == req.expected_host_instance_id)
                 and e.existing.metadata.get("registration_id") != req.expected_registration_id
             ):
                 # Same owner, but another registration of the name (e.g. a

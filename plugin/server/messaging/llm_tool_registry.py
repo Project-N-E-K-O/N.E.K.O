@@ -246,9 +246,15 @@ def _registration_id(value: object) -> Optional[str]:
 def parse_register_request(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Normalise an ``LLM_TOOL_REGISTER`` payload into ``register_remote_tool``
     keyword arguments (minus ``plugin_id``). Returns ``None`` when the tool
-    name is missing or invalid."""
+    name or a given ``registration_id`` is missing or invalid."""
     name = msg.get("name")
     if not _valid_tool_name(name):
+        return None
+    raw_id = msg.get("registration_id")
+    if raw_id is not None and _registration_id(raw_id) is None:
+        # Refuse, like an invalid expected_registration_id: dropping it would
+        # store a generated id the caller does not know, so its later
+        # targeted unregister / cleanup could never match.
         return None
     parameters = msg.get("parameters")
     if not isinstance(parameters, dict):

@@ -65,7 +65,9 @@ def _transport_failure(httpx, exc: Exception) -> tuple[str, str]:
 async def handle_llm_tool_register(ctx: RpcContext, request: dict[str, object]) -> object:
     fields = parse_register_request(request)
     if _invalid_name(fields):
-        return _register_result({}, ok=False, error="invalid_request", message="missing or invalid tool name")
+        return _register_result(
+            {}, ok=False, error="invalid_request", message="missing or invalid tool name or registration id",
+        )
     httpx = await ensure_httpx()
     try:
         body = await register_remote_tool(plugin_id=ctx.from_plugin, **fields)
