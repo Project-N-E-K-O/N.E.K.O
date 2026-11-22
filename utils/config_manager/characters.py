@@ -565,7 +565,11 @@ class CharactersMixin:
             return None
         return normalize_language_code(str(language), format="full")
 
-    async def aload_characters(self, character_json_path=None):
+    async def aload_characters(self, character_json_path=None, *, require_authoritative=False):
         """Async wrapper for load_characters: even a cache hit deepcopies the whole dict;
         with N nekos the copy can take several ms — offload to avoid blocking the event loop."""
-        return await asyncio.to_thread(self.load_characters, character_json_path)
+        return await asyncio.to_thread(
+            self.load_characters,
+            character_json_path,
+            require_authoritative=require_authoritative,
+        )

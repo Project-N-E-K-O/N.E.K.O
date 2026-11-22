@@ -7947,7 +7947,10 @@ def test_f0064_rename_refuses_shared_source_directory(tmp_path):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("failure_mode", ["corrupt_json", "unreadable", "missing"])
+@pytest.mark.parametrize(
+    "failure_mode",
+    ["corrupt_json", "unreadable", "missing", "missing_runtime_with_seed"],
+)
 def test_f0064_rename_and_delete_fail_closed_when_character_registry_unavailable(
     tmp_path, monkeypatch, failure_mode
 ):
@@ -7987,20 +7990,50 @@ def test_f0064_rename_and_delete_fail_closed_when_character_registry_unavailable
         config_path.write_text("{corrupt", encoding="utf-8")
     elif failure_mode == "missing":
         config_path.unlink()
+    elif failure_mode == "missing_runtime_with_seed":
+        cm.project_config_dir = tmp_path / "project_seed_config"
+        seed_path = cm.project_config_dir / "characters.json"
+        seed_path.parent.mkdir(parents=True, exist_ok=True)
+        seed_path.write_text(
+            json.dumps(
+                {
+                    "当前猫娘": "SeedOnly",
+                    "猫娘": {
+                        "SeedOnly": {"_reserved": {"character_id": "character_" + "9" * 32}},
+                    },
+                    "主人": {"昵称": "哥哥"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        config_path.unlink()
+        assert Path(cm.get_config_path("characters.json")) == seed_path
     else:
         def _deny_load(*_args, **_kwargs):
             raise PermissionError("characters.json unreadable")
 
         monkeypatch.setattr(cm, "load_characters", _deny_load)
 
-    with pytest.raises((OSError, ValueError)):
+    expected_exc = (
+        FileNotFoundError
+        if failure_mode == "missing_runtime_with_seed"
+        else (OSError, ValueError)
+    )
+    with pytest.raises(expected_exc):
         character_memory.rename_character_memory_storage(cm, "neko", "NewNeko")
     assert not (memory_root / "NewNeko").exists()
     assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
+    if failure_mode == "missing_runtime_with_seed":
+        assert not config_path.exists()
 
-    with pytest.raises((OSError, ValueError)):
-        character_memory.delete_character_memory_storage(cm, "neko")
+    with _isolated_sidecar_stores(memory_root) as stores:
+        with pytest.raises(expected_exc):
+            character_memory.delete_character_memory_storage(cm, "neko")
+        assert all("neko" in store._retired for store in stores)
     assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
+    if failure_mode == "missing_runtime_with_seed":
+        assert not config_path.exists()
     # Recent file locks must not be leaked on fail-closed refusal: acquiring again succeeds immediately.
     acquired = threading.Event()
 
@@ -8014,6 +8047,78 @@ def test_f0064_rename_and_delete_fail_closed_when_character_registry_unavailable
     locker.start()
     assert acquired.wait(1.0)
     locker.join(1.0)
+
+
+@pytest.mark.unit
+def test_f0064_same_directory_entry_and_two_step_rename_guards(tmp_path):
+    """Distinct hard links and symlinks-to-target must never overwrite or leave temp files."""
+    import utils.character_memory as character_memory
+
+    hard_old = tmp_path / "Old.txt"
+    hard_new = tmp_path / "New.txt"
+    hard_old.write_bytes(b"hard-payload")
+    try:
+        os.link(hard_old, hard_new)
+    except OSError as exc:
+        pytest.skip(f"hard links unsupported on this platform: {exc}")
+
+    assert not character_memory._paths_refer_to_same_directory_entry(hard_old, hard_new)
+    with pytest.raises(FileExistsError):
+        character_memory._two_step_samefile_rename(hard_old, hard_new)
+    assert hard_old.read_bytes() == b"hard-payload"
+    assert hard_new.read_bytes() == b"hard-payload"
+    with pytest.raises(FileExistsError):
+        character_memory._move_path(hard_old, hard_new)
+    assert not any(p.name.startswith(".neko_rename_") for p in tmp_path.iterdir())
+
+    case_only = tmp_path / "CaseOnly.txt"
+    case_only.write_bytes(b"case-payload")
+    case_alias = tmp_path / "caseonly.txt"
+    if case_alias.exists():
+        assert character_memory._paths_refer_to_same_directory_entry(case_only, case_alias)
+    else:
+        os.link(case_only, case_alias)
+        assert not character_memory._paths_refer_to_same_directory_entry(case_only, case_alias)
+
+    target = tmp_path / "Target.txt"
+    target.write_bytes(b"real-target")
+    link = tmp_path / "Link.txt"
+    mid = tmp_path / "Mid.txt"
+    other = tmp_path / "OtherLink.txt"
+    dangling = tmp_path / "Dangling.txt"
+    loop = tmp_path / "Loop.txt"
+    try:
+        link.symlink_to(target.name)
+        mid.symlink_to(link.name)
+        other.symlink_to(target.name)
+        dangling.symlink_to("Missing.txt")
+        loop.symlink_to(loop.name)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    assert not character_memory._paths_refer_to_same_directory_entry(link, target)
+    assert character_memory._symlink_chain_reaches_path(link, target)
+    assert character_memory._symlink_chain_reaches_path(mid, target)
+    assert not character_memory._symlink_chain_reaches_path(link, other)
+    assert not character_memory._symlink_chain_reaches_path(loop, target)
+
+    with pytest.raises(FileExistsError):
+        character_memory._move_path(link, target)
+    assert link.is_symlink() and not target.is_symlink()
+    assert target.read_bytes() == b"real-target"
+
+    with pytest.raises(FileExistsError):
+        character_memory._move_path(dangling, tmp_path / "Missing.txt")
+
+    target_dir = tmp_path / "TargetDir"
+    target_dir.mkdir()
+    (target_dir / "file.txt").write_text("keep", encoding="utf-8")
+    link_dir = tmp_path / "LinkDir"
+    link_dir.symlink_to(target_dir.name, target_is_directory=True)
+    with pytest.raises(FileExistsError):
+        character_memory._merge_directories(link_dir, target_dir)
+    assert (target_dir / "file.txt").read_text(encoding="utf-8") == "keep"
+    assert not any(p.name.startswith(".neko_rename_") for p in tmp_path.iterdir())
 
 
 

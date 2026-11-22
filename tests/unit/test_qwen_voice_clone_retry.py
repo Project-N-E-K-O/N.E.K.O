@@ -198,6 +198,9 @@ def test_create_voice_preserves_direct_link_chinese_classification_markers(monke
         assert "timeout" in lower or "responsetimeout" in lower
     else:
         assert "download audio failed" in lower
+    if mode == "http_500_json":
+        assert "InternalError" in message
+        assert "server error" in message
 
 
 @pytest.mark.asyncio

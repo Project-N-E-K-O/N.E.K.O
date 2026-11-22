@@ -19,6 +19,7 @@ import inspect
 import json
 import os
 import shutil
+import stat
 import sys
 import threading
 import unicodedata
@@ -391,6 +392,119 @@ def _paths_refer_to_same_entry(source_path: Path, target_path: Path) -> bool:
         return False
 
 
+def _symlink_chain_reaches_path(
+    source_path: Path,
+    target_path: Path,
+    *,
+    max_hops: int = 40,
+) -> bool:
+    """Return True if following symlinks starting from ``source_path`` reaches ``target_path``."""
+    source_path = Path(source_path)
+    target_path = Path(target_path)
+    try:
+        if not source_path.is_symlink():
+            return False
+        src_lstat = os.lstat(source_path)
+    except OSError:
+        return False
+
+    try:
+        tgt_lstat = os.lstat(target_path)
+    except OSError:
+        tgt_lstat = None
+
+    if tgt_lstat is not None and os.path.samestat(src_lstat, tgt_lstat):
+        return False
+
+    try:
+        target_unresolved_norm: str | None = os.path.normcase(
+            os.fspath(target_path.parent.resolve(strict=False) / target_path.name)
+        )
+    except OSError:
+        target_unresolved_norm = None
+
+    current = source_path
+    visited: set[tuple[int, int]] = set()
+    for _ in range(max_hops):
+        try:
+            cur_lstat = os.lstat(current)
+            node_id = (cur_lstat.st_dev, cur_lstat.st_ino)
+            if node_id in visited:
+                break
+            visited.add(node_id)
+            raw_target = os.readlink(current)
+        except OSError:
+            break
+
+        raw_path = Path(raw_target)
+        next_path = raw_path if raw_path.is_absolute() else current.parent / raw_path
+
+        if tgt_lstat is not None:
+            try:
+                if os.path.samestat(os.lstat(next_path), tgt_lstat):
+                    return True
+            except OSError:
+                pass
+
+        if target_unresolved_norm is not None:
+            try:
+                next_unresolved_norm = os.path.normcase(
+                    os.fspath(next_path.parent.resolve(strict=False) / next_path.name)
+                )
+            except OSError:
+                next_unresolved_norm = None
+            if next_unresolved_norm == target_unresolved_norm:
+                return True
+
+        current = next_path
+        try:
+            if not current.is_symlink():
+                break
+        except OSError:
+            break
+
+    return False
+
+
+def _paths_refer_to_same_directory_entry(source_path: Path, target_path: Path) -> bool:
+    """Return True when two paths denote the exact same directory entry."""
+    source_path = Path(source_path)
+    target_path = Path(target_path)
+    if not _paths_refer_to_same_entry(source_path.parent, target_path.parent):
+        return False
+    try:
+        src_lstat = os.lstat(source_path)
+        tgt_lstat = os.lstat(target_path)
+    except OSError:
+        return False
+    if not os.path.samestat(src_lstat, tgt_lstat):
+        return False
+    if source_path.name == target_path.name:
+        return True
+    if stat.S_ISDIR(src_lstat.st_mode):
+        return True
+    try:
+        with os.scandir(source_path.parent) as entries:
+            matching_names: list[str] = []
+            for entry in entries:
+                try:
+                    if os.path.samestat(entry.stat(follow_symlinks=False), src_lstat):
+                        matching_names.append(entry.name)
+                except OSError:
+                    continue
+    except OSError:
+        return False
+    if len(matching_names) == 1:
+        return True
+    if source_path.name in matching_names and target_path.name in matching_names:
+        return False
+    src_key = _normalize_collision_key(source_path.name)
+    tgt_key = _normalize_collision_key(target_path.name)
+    if src_key != tgt_key:
+        return False
+    return sum(1 for name in matching_names if _normalize_collision_key(name) == src_key) == 1
+
+
 def _iter_registered_catgirl_names(
     config_manager,
     *,
@@ -402,6 +516,7 @@ def _iter_registered_catgirl_names(
         return []
     if require_authoritative:
         accepts_authoritative = False
+        accepts_path = False
         try:
             params = inspect.signature(load_characters).parameters.values()
             accepts_authoritative = any(
@@ -409,13 +524,41 @@ def _iter_registered_catgirl_names(
                 or param.kind is inspect.Parameter.VAR_KEYWORD
                 for param in params
             )
+            accepts_path = any(
+                param.name == "character_json_path"
+                or param.kind is inspect.Parameter.VAR_KEYWORD
+                for param in params
+            )
         except (TypeError, ValueError):
             accepts_authoritative = False
-        characters = (
-            load_characters(require_authoritative=True)
-            if accepts_authoritative
-            else load_characters()
-        )
+            accepts_path = False
+
+        runtime_path: str | None = None
+        get_runtime_path = getattr(config_manager, "get_runtime_config_path", None)
+        if callable(get_runtime_path):
+            candidate = get_runtime_path("characters.json")
+            if isinstance(candidate, (str, os.PathLike)):
+                runtime_path = os.fspath(candidate)
+
+        kwargs: dict[str, Any] = {}
+        if accepts_authoritative:
+            kwargs["require_authoritative"] = True
+        else:
+            logger.warning(
+                "[CharacterMemory] %s.load_characters does not accept require_authoritative; "
+                "falling back to plain load_characters()",
+                type(config_manager).__name__,
+            )
+        if runtime_path is not None:
+            if accepts_path:
+                kwargs["character_json_path"] = runtime_path
+            else:
+                logger.warning(
+                    "[CharacterMemory] %s.load_characters does not accept character_json_path; "
+                    "cannot pin authoritative read to runtime characters.json",
+                    type(config_manager).__name__,
+                )
+        characters = load_characters(**kwargs)
         if not isinstance(characters, dict) or not isinstance(characters.get("猫娘"), dict):
             raise ValueError("character_config_not_authoritative: invalid catgirl registry")
         catgirls = characters["猫娘"]
@@ -529,15 +672,20 @@ def _two_step_samefile_rename(source_path: Path, target_path: Path) -> bool:
     """
     parent_dir = source_path.parent
     temp_path = parent_dir / f".neko_rename_{uuid.uuid4().hex}_{source_path.name}"
-    while temp_path.exists():
+    while os.path.lexists(temp_path):
         temp_path = parent_dir / f".neko_rename_{uuid.uuid4().hex}_{source_path.name}"
 
     os.replace(str(source_path), str(temp_path))
     try:
+        if os.path.lexists(target_path):
+            raise FileExistsError(
+                f"Refusing two-step rename {source_path} -> {target_path}: "
+                f"target entry still exists independently"
+            )
         os.replace(str(temp_path), str(target_path))
     except BaseException:
         try:
-            if temp_path.exists() and not source_path.exists():
+            if os.path.lexists(temp_path) and not os.path.lexists(source_path):
                 os.replace(str(temp_path), str(source_path))
         except OSError:
             logger.warning(
@@ -551,25 +699,30 @@ def _two_step_samefile_rename(source_path: Path, target_path: Path) -> bool:
 
 
 paths_refer_to_same_entry = _paths_refer_to_same_entry
+paths_refer_to_same_directory_entry = _paths_refer_to_same_directory_entry
+symlink_chain_reaches_path = _symlink_chain_reaches_path
 two_step_samefile_rename = _two_step_samefile_rename
 
 
 def _move_path(source_path: Path, target_path: Path) -> bool:
+    if _symlink_chain_reaches_path(source_path, target_path):
+        raise FileExistsError(
+            f"Refusing to move symlink {source_path} onto its own target {target_path}"
+        )
+
     if not source_path.exists():
         return False
 
     if source_path.is_dir():
         return _merge_directories(source_path, target_path)
 
-    if _paths_refer_to_same_entry(source_path, target_path):
-        if _paths_refer_to_same_entry(source_path.parent, target_path.parent):
-            if source_path.name == target_path.name:
-                return False
-            return _two_step_samefile_rename(source_path, target_path)
-        return False
+    if _paths_refer_to_same_directory_entry(source_path, target_path):
+        if source_path.name == target_path.name:
+            return False
+        return _two_step_samefile_rename(source_path, target_path)
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    if target_path.exists():
+    if target_path.exists() or target_path.is_symlink():
         raise FileExistsError(
             f"Refusing to overwrite existing memory file while moving "
             f"{source_path} -> {target_path}"
@@ -580,15 +733,18 @@ def _move_path(source_path: Path, target_path: Path) -> bool:
 
 
 def _merge_directories(source_dir: Path, target_dir: Path) -> bool:
+    if _symlink_chain_reaches_path(source_dir, target_dir):
+        raise FileExistsError(
+            f"Refusing to move symlink {source_dir} onto its own target {target_dir}"
+        )
+
     if not source_dir.exists():
         return False
 
-    if _paths_refer_to_same_entry(source_dir, target_dir):
-        if _paths_refer_to_same_entry(source_dir.parent, target_dir.parent):
-            if source_dir.name == target_dir.name:
-                return False
-            return _two_step_samefile_rename(source_dir, target_dir)
-        return False
+    if _paths_refer_to_same_directory_entry(source_dir, target_dir):
+        if source_dir.name == target_dir.name:
+            return False
+        return _two_step_samefile_rename(source_dir, target_dir)
 
     if not target_dir.exists():
         target_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -1156,30 +1312,35 @@ def delete_character_memory_storage(
     keep_recent_locks: bool = False,
     recent_transaction: dict[str, Any] | None = None,
 ) -> list[Path] | tuple[list[Path], dict[str, Any]]:
-    registered_names = _iter_registered_catgirl_names(
-        config_manager,
-        require_authoritative=True,
-    )
     transaction = recent_transaction or begin_character_recent_transaction(
         config_manager, character_name,
     )
     recent_candidates = transaction["recent_paths"]
-    unshared_recent_candidates = [
-        recent_path
-        for recent_path in recent_candidates
-        if not _is_recent_path_shared_with_other(
-            config_manager,
-            character_name,
-            recent_path,
-            existing_names=registered_names,
-        )
-    ]
-    redirect_snapshot, deletion_scope, deletion_snapshot = (
-        fence_recent_deletions_and_clear_redirects(unshared_recent_candidates)
-    )
+    redirect_snapshot: dict[str, str] = {}
+    deletion_scope: list[Path] = []
+    deletion_snapshot: set[str] = set()
+    fenced_recent = False
     pending_snapshot: dict[Path, list[Any]] = {}
     try:
         retire_character_runtime_caches(character_name)
+        registered_names = _iter_registered_catgirl_names(
+            config_manager,
+            require_authoritative=True,
+        )
+        unshared_recent_candidates = [
+            recent_path
+            for recent_path in recent_candidates
+            if not _is_recent_path_shared_with_other(
+                config_manager,
+                character_name,
+                recent_path,
+                existing_names=registered_names,
+            )
+        ]
+        redirect_snapshot, deletion_scope, deletion_snapshot = (
+            fence_recent_deletions_and_clear_redirects(unshared_recent_candidates)
+        )
+        fenced_recent = True
         pending_snapshot = {
             path: deepcopy(get_recent_pending_unlocked(path))
             for path in unshared_recent_candidates
@@ -1220,8 +1381,9 @@ def delete_character_memory_storage(
             return removed_paths, transaction
         return removed_paths
     except BaseException:
-        restore_recent_redirects(redirect_snapshot)
-        restore_recent_deletions(list(deletion_scope), deletion_snapshot)
+        if fenced_recent:
+            restore_recent_redirects(redirect_snapshot)
+            restore_recent_deletions(list(deletion_scope), deletion_snapshot)
         for path, messages in pending_snapshot.items():
             set_recent_pending_unlocked(path, messages)
         if not keep_recent_locks:

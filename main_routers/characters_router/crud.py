@@ -38,7 +38,9 @@ from .notify import (
 from .voice_registry import _is_current_catgirl_voice_session_starting, _voice_session_starting_response
 
 import functools
+import inspect
 import json
+import os
 import shutil
 import asyncio
 import copy
@@ -73,11 +75,12 @@ from utils.character_memory import (
     find_character_name_collision,
     find_character_shared_memory_owner,
     list_character_memory_paths,
-    paths_refer_to_same_entry,
+    paths_refer_to_same_directory_entry,
     rename_character_memory_storage,
     release_character_recent_transaction,
     rollback_character_recent_delete,
     rollback_character_recent_rename,
+    symlink_chain_reaches_path,
     two_step_samefile_rename,
 )
 from utils.config_manager import (
@@ -875,7 +878,7 @@ def _build_character_tombstones_state(config_manager, character_name: str) -> di
 async def _rollback_character_operation(
     config_manager,
     *,
-    characters_snapshot: dict,
+    characters_snapshot: dict | None = None,
     memory_snapshot_records,
     tombstone_snapshot: dict | None = None,
     recent_delete_result: dict | None = None,
@@ -929,15 +932,18 @@ async def _rollback_character_operation(
         except Exception as exc:
             rollback_errors.append(f"memory restore failed: {exc}")
 
-        try:
-            await asyncio.to_thread(
-                config_manager.save_characters,
-                characters_snapshot,
-                bypass_write_fence=True,
-            )
-        except Exception as exc:
-            rollback_errors.append(f"characters restore failed: {exc}")
-        else:
+        config_restored = True
+        if characters_snapshot is not None:
+            try:
+                await asyncio.to_thread(
+                    config_manager.save_characters,
+                    characters_snapshot,
+                    bypass_write_fence=True,
+                )
+            except Exception as exc:
+                config_restored = False
+                rollback_errors.append(f"characters restore failed: {exc}")
+        if config_restored:
             # The name is back in characters.json, so it is a LIVE identity again.
             # The delete path retired it in every sidecar store before removing
             # anything, and this restore goes through save_characters rather than
@@ -1087,10 +1093,93 @@ async def rename_catgirl(old_name: str, request: Request):
             end_character_mutation(old_name, new_name)
 
 
+async def _aload_authoritative_characters(config_manager) -> dict:
+    """Load authoritative persisted character config, pinned to runtime characters.json when available."""
+    aload_characters = getattr(config_manager, "aload_characters", None)
+    if not callable(aload_characters):
+        raise ValueError("character_config_not_authoritative: missing aload_characters")
+    accepts_authoritative = False
+    accepts_path = False
+    try:
+        params = inspect.signature(aload_characters).parameters.values()
+        accepts_authoritative = any(
+            param.name == "require_authoritative"
+            or param.kind is inspect.Parameter.VAR_KEYWORD
+            for param in params
+        )
+        accepts_path = any(
+            param.name == "character_json_path"
+            or param.kind is inspect.Parameter.VAR_KEYWORD
+            for param in params
+        )
+    except (TypeError, ValueError):
+        accepts_authoritative = False
+        accepts_path = False
+
+    runtime_path: str | None = None
+    get_runtime_path = getattr(config_manager, "get_runtime_config_path", None)
+    if callable(get_runtime_path):
+        candidate = get_runtime_path("characters.json")
+        if isinstance(candidate, (str, os.PathLike)):
+            runtime_path = os.fspath(candidate)
+
+    kwargs: dict[str, object] = {}
+    if accepts_authoritative:
+        kwargs["require_authoritative"] = True
+    else:
+        logger.warning(
+            "[CharacterCRUD] %s.aload_characters does not accept require_authoritative; "
+            "falling back to plain aload_characters()",
+            type(config_manager).__name__,
+        )
+    if runtime_path is not None and accepts_path:
+        kwargs["character_json_path"] = runtime_path
+
+    characters = await aload_characters(**kwargs)
+    if not isinstance(characters, dict) or not isinstance(characters.get("猫娘"), dict):
+        raise ValueError("character_config_not_authoritative: invalid catgirl registry")
+    return characters
+
+
+def _find_self_referential_card_symlink(
+    config_manager,
+    old_name: str,
+    new_name: str,
+) -> Path | None:
+    """Return source cover/meta path if it is a symlink resolving to its own rename target."""
+    card_faces_dir = getattr(config_manager, "card_faces_dir", None)
+    if isinstance(card_faces_dir, (str, os.PathLike)):
+        faces_root = Path(card_faces_dir)
+        old_face = faces_root / f"{old_name}.png"
+        new_face = faces_root / f"{new_name}.png"
+        if symlink_chain_reaches_path(old_face, new_face):
+            return old_face
+    card_face_meta_path = getattr(config_manager, "card_face_meta_path", None)
+    if callable(card_face_meta_path):
+        old_meta = card_face_meta_path(old_name)
+        new_meta = card_face_meta_path(new_name)
+        if isinstance(old_meta, (str, os.PathLike)) and isinstance(
+            new_meta, (str, os.PathLike)
+        ):
+            old_meta_path = Path(old_meta)
+            if symlink_chain_reaches_path(old_meta_path, Path(new_meta)):
+                return old_meta_path
+    return None
+
+
 async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commit=None):
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
-    characters = await _config_manager.aload_characters()
+    try:
+        characters = await _aload_authoritative_characters(_config_manager)
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        logger.warning("角色重命名前权威读取 characters.json 失败: %r", exc)
+        return JSONResponse(
+            {'success': False, 'error': f'无法读取角色配置，已阻止重命名: {exc}'},
+            status_code=500,
+        )
     if old_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '原猫娘不存在'}, status_code=404)
     if old_name == new_name or await asyncio.to_thread(
@@ -1105,6 +1194,17 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commi
     if shared_owner is not None:
         return JSONResponse(
             {'success': False, 'error': f'原档案的记忆存储与现有角色「{shared_owner}」共享，无法直接重命名'},
+            status_code=400,
+        )
+    unsafe_card_asset = await asyncio.to_thread(
+        _find_self_referential_card_symlink, _config_manager, old_name, new_name,
+    )
+    if unsafe_card_asset is not None:
+        return JSONResponse(
+            {
+                'success': False,
+                'error': f'角色卡面资源「{unsafe_card_asset.name}」是指向目标路径的符号链接，无法安全重命名',
+            },
             status_code=400,
         )
 
@@ -1194,14 +1294,18 @@ def _migrate_renamed_card_file_sync(
     backup_path: Path,
 ) -> str:
     """Migrate a character cover or metadata file without self-backing-up same-entry case renames."""
+    if symlink_chain_reaches_path(old_path, new_path):
+        raise ValueError(
+            f"Refusing to rename symlink {old_path} onto its own target {new_path}"
+        )
     if not old_path.exists():
         return "none"
-    if paths_refer_to_same_entry(old_path, new_path):
+    if paths_refer_to_same_directory_entry(old_path, new_path):
         if old_path.name != new_path.name:
             two_step_samefile_rename(old_path, new_path)
             return "samefile"
         return "none"
-    if new_path.exists():
+    if new_path.exists() or new_path.is_symlink():
         new_path.rename(backup_path)
         old_path.rename(new_path)
         return "backup_and_rename"
@@ -1288,6 +1392,7 @@ async def _rename_catgirl_transaction(
     # delaying it.
     retired_names: tuple[str, ...] = ()
     reretire_names: tuple[str, ...] = ()
+    characters_save_attempted = False
     rename_committed = False
     released_memory_handle = False
     release_claim_token = create_derived_task_claim_token()
@@ -1387,6 +1492,7 @@ async def _rename_catgirl_transaction(
             # Update the current neko too if it is the renamed character.
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name
+            characters_save_attempted = True
             if sync_commit is None:
                 await _await_thread_mutation(_config_manager.save_characters, characters)
             else:
@@ -1449,7 +1555,7 @@ async def _rename_catgirl_transaction(
             if not memory_server_reloaded:
                 rollback_error = await _rollback_character_operation(
                     _config_manager,
-                    characters_snapshot=characters_snapshot,
+                    characters_snapshot=characters_snapshot if characters_save_attempted else None,
                     memory_snapshot_records=memory_snapshot_records,
                     recent_rename_result=memory_rename_result,
                     recent_transaction=recent_transaction,
@@ -1500,7 +1606,7 @@ async def _rename_catgirl_transaction(
                 await _await_cleanup_to_completion(
                     _rollback_character_operation(
                         _config_manager,
-                        characters_snapshot=characters_snapshot,
+                        characters_snapshot=characters_snapshot if characters_save_attempted else None,
                         memory_snapshot_records=memory_snapshot_records,
                         recent_rename_result=memory_rename_result,
                         recent_transaction=recent_transaction,
@@ -1519,7 +1625,7 @@ async def _rename_catgirl_transaction(
                 await _await_coroutine_to_completion(
                     _rollback_character_operation(
                         _config_manager,
-                        characters_snapshot=characters_snapshot,
+                        characters_snapshot=characters_snapshot if characters_save_attempted else None,
                         memory_snapshot_records=memory_snapshot_records,
                         recent_rename_result=memory_rename_result,
                         recent_transaction=recent_transaction,
@@ -1543,7 +1649,7 @@ async def _rename_catgirl_transaction(
                 await _await_coroutine_to_completion(
                     _rollback_character_operation(
                         _config_manager,
-                        characters_snapshot=characters_snapshot,
+                        characters_snapshot=characters_snapshot if characters_save_attempted else None,
                         memory_snapshot_records=memory_snapshot_records,
                         recent_rename_result=memory_rename_result,
                         recent_transaction=recent_transaction,
@@ -2209,7 +2315,16 @@ async def _cleanup_deleted_chat_avatar(directory, uid):
 
 async def _delete_catgirl_by_name_serialized(name: str):
     _config_manager = get_config_manager()
-    characters = await _config_manager.aload_characters()
+    try:
+        characters = await _aload_authoritative_characters(_config_manager)
+    except MaintenanceModeError:
+        raise
+    except Exception as exc:
+        logger.warning("角色删除前权威读取 characters.json 失败: %r", exc)
+        return JSONResponse(
+            {'success': False, 'error': f'无法读取角色配置，已阻止删除: {exc}'},
+            status_code=500,
+        )
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
@@ -2294,11 +2409,13 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 unsafe_targets,
                 Path(temp_dir),
             )
+            unsafe_config_save_attempted = False
             unsafe_config_deleted = False
             try:
                 # Invalid-name recovery must still delete character-owned theater data; those files already enter the transaction snapshot.
                 await purge_numeric_v2_character_data(numeric_purge)
                 del characters['猫娘'][name]
+                unsafe_config_save_attempted = True
                 _, save_cancelled = await _await_coroutine_to_completion(
                     _config_manager.asave_characters(characters)
                 )
@@ -2321,7 +2438,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             except MaintenanceModeError as exc:
                 rollback_error = await _rollback_character_operation(
                     _config_manager,
-                    characters_snapshot=characters_snapshot,
+                    characters_snapshot=characters_snapshot if unsafe_config_save_attempted else None,
                     memory_snapshot_records=memory_snapshot_records,
                     reason=f"维护模式：救援删除非法角色名回滚 {name}",
                 )
@@ -2331,7 +2448,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             except Exception as exc:
                 rollback_error = await _rollback_character_operation(
                     _config_manager,
-                    characters_snapshot=characters_snapshot,
+                    characters_snapshot=characters_snapshot if unsafe_config_save_attempted else None,
                     memory_snapshot_records=memory_snapshot_records,
                     reason=f"救援删除非法角色名回滚: {name}",
                 )
@@ -2385,6 +2502,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         # fence, destroying a concurrently recorded decision.
         retired_names: tuple[str, ...] = ()
         memory_server_reloaded = False
+        characters_save_attempted = False
         delete_committed = False
         released_memory_handle = False
         release_claim_token = create_derived_task_claim_token()
@@ -2501,6 +2619,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
 
             # Delete character configuration.
             del characters['猫娘'][name]
+            characters_save_attempted = True
             await _await_thread_mutation(
                 _config_manager.save_characters, characters,
             )
@@ -2530,7 +2649,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 await _await_cleanup_to_completion(
                     _rollback_character_operation(
                         _config_manager,
-                        characters_snapshot=characters_snapshot,
+                        characters_snapshot=characters_snapshot if characters_save_attempted else None,
                         memory_snapshot_records=memory_snapshot_records,
                         tombstone_snapshot=tombstone_snapshot,
                         recent_delete_result=recent_delete_result,
@@ -2552,7 +2671,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 await _await_coroutine_to_completion(
                     _rollback_character_operation(
                         _config_manager,
-                        characters_snapshot=characters_snapshot,
+                        characters_snapshot=characters_snapshot if characters_save_attempted else None,
                         memory_snapshot_records=memory_snapshot_records,
                         tombstone_snapshot=tombstone_snapshot,
                         recent_delete_result=recent_delete_result,
@@ -2577,7 +2696,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 await _await_coroutine_to_completion(
                     _rollback_character_operation(
                         _config_manager,
-                        characters_snapshot=characters_snapshot,
+                        characters_snapshot=characters_snapshot if characters_save_attempted else None,
                         memory_snapshot_records=memory_snapshot_records,
                         tombstone_snapshot=tombstone_snapshot,
                         recent_delete_result=recent_delete_result,

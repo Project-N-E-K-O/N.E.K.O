@@ -165,17 +165,13 @@ async def test_case_only_rename_migrates_card_face_and_meta_without_conflict_bac
     new_meta = cm.card_face_meta_path("OLD")
     meta_bytes = b'{"author":"tester"}'
     old_meta.write_bytes(meta_bytes)
-    if not new_meta.exists():
-        # Exercise the same-entry branch on case-sensitive Linux CI as well as macOS/Windows.
-        os.link(old_meta, new_meta)
+    case_insensitive_fs = new_meta.exists()
 
     old_face = cm.card_faces_dir / "Old.png"
     new_face = cm.card_faces_dir / "OLD.png"
     face_bytes = b"fake-png-bytes"
     if mode == "both":
         old_face.write_bytes(face_bytes)
-        if not new_face.exists():
-            os.link(old_face, new_face)
 
     status, body = await _rename(cm, "Old", "OLD")
     assert status == 200 and body["success"] is True
@@ -183,12 +179,16 @@ async def test_case_only_rename_migrates_card_face_and_meta_without_conflict_bac
 
     names = set(os.listdir(cm.card_faces_dir))
     assert not any("conflict-" in name for name in names)
+    assert not any(name.startswith(".neko_rename_") for name in names)
     assert new_meta.name in names
-    assert old_meta.name not in names or new_meta.samefile(old_meta)
     assert new_meta.read_bytes() == meta_bytes
+    if case_insensitive_fs:
+        assert old_meta.name not in names
     if mode == "both":
         assert new_face.name in names
         assert new_face.read_bytes() == face_bytes
+        if case_insensitive_fs:
+            assert old_face.name not in names
 
 
 async def test_rename_keeps_conflict_backup_for_distinct_existing_card_face(env):
@@ -200,9 +200,156 @@ async def test_rename_keeps_conflict_backup_for_distinct_existing_card_face(env)
     status, body = await _rename(cm, "Old", "New")
     assert status == 200 and body["success"] is True
     assert (cm.card_faces_dir / "New.png").read_bytes() == b"old-face"
+    assert not any(p.name.startswith(".neko_rename_") for p in cm.card_faces_dir.iterdir())
     backups = [p for p in cm.card_faces_dir.iterdir() if p.name.startswith("New.png.conflict-") and p.name.endswith(".bak")]
     assert len(backups) == 1
     assert backups[0].read_bytes() == b"preexisting-new-face"
+
+
+@pytest.mark.parametrize("asset_kind", ["face", "meta"])
+async def test_rename_rejects_source_symlink_targeting_destination_card_asset(env, asset_kind):
+    cm, path, _ = env
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    if asset_kind == "face":
+        old_asset = cm.card_faces_dir / "Old.png"
+        new_asset = cm.card_faces_dir / "New.png"
+    else:
+        old_asset = cm.card_face_meta_path("Old")
+        new_asset = cm.card_face_meta_path("New")
+
+    target_bytes = b"target-real-bytes"
+    new_asset.write_bytes(target_bytes)
+    try:
+        old_asset.symlink_to(new_asset.name)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    before = path.read_bytes()
+    with patch("utils.config_manager._config_manager", cm):
+        crud, (release, reload) = _crud(cm)
+        with release as release_memory, reload as reload_memory:
+            status, body = _result(await crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"})))
+            assert status == 400
+            assert "符号链接" in body["error"]
+            release_memory.assert_not_awaited()
+            reload_memory.assert_not_awaited()
+
+    assert path.read_bytes() == before
+    assert old_asset.is_symlink() and not new_asset.is_symlink()
+    assert new_asset.read_bytes() == target_bytes
+    names = os.listdir(cm.card_faces_dir)
+    assert not any(name.startswith(".neko_rename_") or "conflict-" in name for name in names)
+
+    backup_asset = cm.card_faces_dir / f"{new_asset.name}.conflict-test.bak"
+    with pytest.raises(ValueError, match="symlink"):
+        crud._migrate_renamed_card_file_sync(old_asset, new_asset, backup_asset)
+    assert old_asset.is_symlink() and not new_asset.is_symlink()
+    assert new_asset.read_bytes() == target_bytes
+
+
+@pytest.mark.parametrize("target_name", ["New", "OLD"])
+async def test_rename_hardlinked_card_assets_uses_conflict_backup_without_temp_residue(env, target_name):
+    cm, _, _ = env
+    uid = _uid(cm, "Old")
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    old_face = cm.card_faces_dir / "Old.png"
+    new_face = cm.card_faces_dir / f"{target_name}.png"
+    old_meta = cm.card_face_meta_path("Old")
+    new_meta = cm.card_face_meta_path(target_name)
+    face_bytes = b"hardlinked-face-bytes"
+    meta_bytes = b'{"author":"hardlink"}'
+    old_face.write_bytes(face_bytes)
+    old_meta.write_bytes(meta_bytes)
+    if target_name == "OLD" and new_meta.exists():
+        pytest.skip("case-only distinct hard links require case-sensitive filesystem")
+    try:
+        os.link(old_face, new_face)
+        os.link(old_meta, new_meta)
+    except OSError as exc:
+        pytest.skip(f"hard links unsupported on this platform: {exc}")
+
+    status, body = await _rename(cm, "Old", target_name)
+    assert status == 200 and body["success"] is True
+    assert _uid(cm, target_name) == uid
+
+    names = set(os.listdir(cm.card_faces_dir))
+    assert not any(name.startswith(".neko_rename_") for name in names)
+    assert old_face.name not in names
+    assert old_meta.name not in names
+    assert new_face.read_bytes() == face_bytes
+    assert new_meta.read_bytes() == meta_bytes
+    face_backups = [
+        p for p in cm.card_faces_dir.iterdir()
+        if p.name.startswith(f"{new_face.name}.conflict-") and p.name.endswith(".bak")
+    ]
+    meta_backups = [
+        p for p in cm.card_faces_dir.iterdir()
+        if p.name.startswith(f"{target_name}.conflict-") and p.name.endswith(".bak.json")
+    ]
+    assert len(face_backups) == 1 and face_backups[0].read_bytes() == face_bytes
+    assert len(meta_backups) == 1 and meta_backups[0].read_bytes() == meta_bytes
+
+
+async def test_rename_and_delete_refuse_corrupt_characters_json_without_overwriting_disk(tmp_path):
+    cm, path = _backfilled_manager(tmp_path / "entry", {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}})
+    assert cm.load_characters()["猫娘"]["Old"]
+    path.write_bytes(b"{corrupt")
+
+    with patch("utils.config_manager._config_manager", cm), patch.object(
+        cm, "save_characters", wraps=cm.save_characters
+    ) as save_spy:
+        crud, (release, reload) = _crud(cm)
+        with release, reload:
+            rename_status, _ = _result(await crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"})))
+            delete_status, _ = _result(await crud.delete_catgirl("Old"))
+            assert rename_status == 500
+            assert delete_status == 500
+            save_spy.assert_not_called()
+    assert path.read_bytes() == b"{corrupt"
+
+    cm2, path2 = _backfilled_manager(
+        tmp_path / "post_preflight_rename",
+        {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}},
+    )
+    (Path(cm2.memory_dir) / "Old").mkdir(parents=True, exist_ok=True)
+    (Path(cm2.memory_dir) / "Old" / "facts.json").write_text('["keep-me"]', encoding="utf-8")
+
+    async def corrupt_during_release(*_args, **_kwargs):
+        path2.write_bytes(b"{corrupt")
+        return True
+
+    with patch("utils.config_manager._config_manager", cm2), patch.object(
+        cm2, "save_characters", wraps=cm2.save_characters
+    ) as save_spy2:
+        crud2, (_, reload2) = _crud(cm2)
+        with patch.object(crud2, "release_memory_server_character", side_effect=corrupt_during_release), reload2:
+            status2, _ = _result(await crud2.rename_catgirl("Old", _DummyRequest({"new_name": "New"})))
+            assert status2 == 500
+            save_spy2.assert_not_called()
+    assert path2.read_bytes() == b"{corrupt"
+    assert (Path(cm2.memory_dir) / "Old" / "facts.json").read_text(encoding="utf-8") == '["keep-me"]'
+
+    cm3, path3 = _backfilled_manager(
+        tmp_path / "post_preflight_delete",
+        {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}},
+    )
+    (Path(cm3.memory_dir) / "Old").mkdir(parents=True, exist_ok=True)
+    (Path(cm3.memory_dir) / "Old" / "facts.json").write_text('["keep-delete"]', encoding="utf-8")
+
+    async def corrupt_during_delete_release(*_args, **_kwargs):
+        path3.write_bytes(b"{corrupt")
+        return True
+
+    with patch("utils.config_manager._config_manager", cm3), patch.object(
+        cm3, "save_characters", wraps=cm3.save_characters
+    ) as save_spy3:
+        crud3, (_, reload3) = _crud(cm3)
+        with patch.object(crud3, "release_memory_server_character", side_effect=corrupt_during_delete_release), reload3:
+            status3, _ = _result(await crud3.delete_catgirl("Old"))
+            assert status3 == 500
+            save_spy3.assert_not_called()
+    assert path3.read_bytes() == b"{corrupt"
+    assert (Path(cm3.memory_dir) / "Old" / "facts.json").read_text(encoding="utf-8") == '["keep-delete"]'
 
 
 async def test_rename_refuses_shared_source_memory_before_release(tmp_path):

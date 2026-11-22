@@ -578,8 +578,18 @@ class QwenVoiceCloneClient:
                 timeout=60,
             )
             if response.status_code == 408 or response.status_code >= 500:
+                detail = f"HTTP {response.status_code}"
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = None
+                if isinstance(payload, dict):
+                    code = str(payload.get("code") or "").strip()
+                    message = str(payload.get("message") or "").strip()
+                    if code or message:
+                        detail = f"{detail} {code}: {message}".strip()
                 raise QwenVoiceCloneError(
-                    f"音色注册超时，远端状态未知 (ResponseTimeout: HTTP {response.status_code})"
+                    f"音色注册超时，远端状态未知 (ResponseTimeout: {detail})"
                 )
             if response.status_code == 415:
                 raise QwenVoiceCloneError("无法下载音频文件 (Download audio failed: HTTP 415)")
