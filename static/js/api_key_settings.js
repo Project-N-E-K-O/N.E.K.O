@@ -5091,6 +5091,14 @@ const ConnectivityManager = {
             if (!providerSel) return result;
 
             const provider = providerSel.value;
+            if (
+                mt === 'agentSmall'
+                && provider === 'custom'
+                && !(urlInput && urlInput.value.trim() && modelIdInput && modelIdInput.value.trim())
+            ) {
+                // 与后端一致：使魔模型·小自定义时地址和模型名没填全，整格跟随识别模型
+                return this.resolveEffectiveKey({ type: 'custom', modelType: 'emotion' });
+            }
             result.url = urlInput ? urlInput.value.trim() : '';
 
             if (followedModelType(provider)) {

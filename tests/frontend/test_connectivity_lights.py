@@ -484,6 +484,46 @@ def test_custom_api_deduplicates_same_custom_endpoint_and_model(mock_page: Page,
     assert matching_requests[0]["provider_type"] == "openai_compatible"
 
 
+@pytest.mark.frontend
+def test_incomplete_small_familiar_custom_tests_the_recognition_connection(mock_page: Page, running_server: str):
+    """Custom small familiar without both URL and model is the whole recognition slot at runtime;
+    the connectivity check must test that same connection, not the half-filled inputs."""
+    _goto_and_wait(mock_page, running_server)
+    _wait_for_lights_settled(mock_page, timeout=15000)
+
+    state = mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        if (typeof toggleCustomApi === 'function') toggleCustomApi();
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            el.value = value;
+            el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+        };
+        set('emotionModelProvider', 'custom');
+        set('emotionModelUrl', 'https://emotion.test/v1');
+        set('emotionModelId', 'emotion-model');
+        set('emotionModelApiKey', 'sk-emotion-test');
+        set('agentSmallModelProvider', 'custom');
+        set('agentSmallModelUrl', 'https://emotion.test/v1');
+        set('agentSmallModelId', '');
+        set('agentSmallModelApiKey', '');
+        const pick = r => ({ url: r.url, key: r.key, model: r.model, providerType: r.providerType });
+        const emotion = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'emotion' }));
+        const incomplete = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'agentSmall' }));
+        set('agentSmallModelId', 'own-model');
+        const complete = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'agentSmall' }));
+        return { emotion, incomplete, complete };
+    }""")
+
+    assert state["incomplete"] == state["emotion"]
+    assert state["emotion"]["key"] == "sk-emotion-test"
+    assert state["complete"]["model"] == "own-model"
+    assert state["complete"]["url"] == "https://emotion.test/v1"
+    assert state["complete"]["key"] == ""
+
+
 # ---------------------------------------------------------------------------
 # Test 5: Error display and clearing
 # Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6

@@ -117,15 +117,15 @@ def test_incomplete_custom_small_familiar_falls_back_to_the_recognition_model(co
     assert _endpoint(small) == _endpoint(config_manager.get_model_api_config('emotion'))
 
 
-def test_partial_custom_small_familiar_completes_from_the_recognition_model(config_manager):
-    # Only a URL typed: the model name comes from the recognition tier just resolved,
-    # never from a hardcoded seed (Greptile P1 on #3930).
+def test_partial_custom_small_familiar_is_the_whole_recognition_model(config_manager):
+    # Only a URL typed: own settings are incomplete, so the whole slot (endpoint, model,
+    # key, protocol) is the recognition model; never a hardcoded seed model (Greptile P1).
     _write_core_config(config_manager, {
         **BASE, 'enableCustomApi': True, **EMOTION_CUSTOM,
         'agentSmallModelProvider': 'custom', 'agentSmallModelUrl': 'https://my.test/v1', 'agentSmallModelId': '',
     })
     small = config_manager.get_model_api_config('agent_small')
-    assert (small['model'], small['base_url']) == ('emotion-custom-model', 'https://my.test/v1')
+    assert _endpoint(small) == _endpoint(config_manager.get_model_api_config('emotion'))
 
 
 def test_follow_assist_takes_the_assist_recognition_model(config_manager):
@@ -217,6 +217,7 @@ def test_hand_entered_endpoint_never_inherits_the_recognition_key(config_manager
     _write_core_config(config_manager, {
         **BASE, 'enableCustomApi': True, **EMOTION_CUSTOM,
         'agentSmallModelProvider': 'custom', 'agentSmallModelUrl': 'https://my.test/v1',
+        'agentSmallModelId': 'my-model',
     })
     small = config_manager.get_model_api_config('agent_small')
     assert small['base_url'] == 'https://my.test/v1'
@@ -292,7 +293,7 @@ def test_stale_fields_under_a_follow_choice_never_reach_the_region_scan(config_m
     {'agentSmallModelUrl': 'https://emotion.custom.test/v1', 'agentSmallModelId': '', 'agentSmallModelApiKey': ''},
     {'agentSmallModelUrl': 'https://emotion.custom.test/v1/', 'agentSmallModelId': '', 'agentSmallModelApiKey': ''},
 ])
-def test_blank_key_on_the_recognition_endpoint_uses_the_recognition_key(config_manager, small):
+def test_incomplete_custom_settings_use_the_whole_recognition_connection(config_manager, small):
     _write_core_config(config_manager, {
         **BASE, 'enableCustomApi': True, **EMOTION_CUSTOM, 'agentSmallModelProvider': 'custom', **small,
     })
@@ -301,9 +302,31 @@ def test_blank_key_on_the_recognition_endpoint_uses_the_recognition_key(config_m
     assert result['api_key'] == 'sk-emotion-custom'
 
 
-def test_blank_key_on_a_different_endpoint_stays_blank(config_manager):
+def test_complete_custom_settings_use_only_their_own_key(config_manager):
+    # URL and model both set: the slot stands on its own, like every other custom slot;
+    # a blank key means no key, even when the URL is the recognition endpoint.
+    for url in ('https://my.test/v1', 'https://emotion.custom.test/v1'):
+        _write_core_config(config_manager, {
+            **BASE, 'enableCustomApi': True, **EMOTION_CUSTOM, 'agentSmallModelProvider': 'custom',
+            'agentSmallModelUrl': url, 'agentSmallModelId': 'my-model', 'agentSmallModelApiKey': '',
+        })
+        small = config_manager.get_model_api_config('agent_small')
+        assert (small['base_url'], small['model'], small['api_key']) == (url, 'my-model', '')
+
+
+@pytest.mark.parametrize('emotion', [{}, {'emotionModelProvider': 'custom', 'emotionModelUrl': '', 'emotionModelId': ''}])
+def test_incomplete_custom_follows_a_recognition_tier_that_falls_back_to_assist(config_manager, emotion):
+    # Codex / review round 4: when the recognition tier itself falls back to the assist API,
+    # its snapshot fields are blank; the small familiar slot must still get the working
+    # endpoint and key the recognition tier actually resolves to.
+    from utils.config_manager import get_assist_api_profiles
+
+    assist_url = get_assist_api_profiles()['qwen']['OPENROUTER_URL']
     _write_core_config(config_manager, {
-        **BASE, 'enableCustomApi': True, **EMOTION_CUSTOM, 'agentSmallModelProvider': 'custom',
-        'agentSmallModelUrl': 'https://my.test/v1', 'agentSmallModelId': '', 'agentSmallModelApiKey': '',
+        **BASE, 'enableCustomApi': True, **emotion, 'agentSmallModelProvider': 'custom',
+        'agentSmallModelUrl': assist_url, 'agentSmallModelId': '', 'agentSmallModelApiKey': '',
     })
-    assert config_manager.get_model_api_config('agent_small')['api_key'] == ''
+    recognition = config_manager.get_model_api_config('emotion')
+    small = config_manager.get_model_api_config('agent_small')
+    assert recognition['api_key'] == 'sk-qwen-test'
+    assert _endpoint(small) == _endpoint(recognition)

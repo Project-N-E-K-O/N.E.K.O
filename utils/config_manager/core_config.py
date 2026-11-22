@@ -1512,17 +1512,10 @@ class CoreConfigMixin:
                     config[model_key] = config[url_key] = config[apikey_key] = ''
                     continue
                 if prefix == 'agentSmall':
-                    # Blank or partial small-familiar fields complete from the small
-                    # (emotion) model resolved above, never from a hardcoded seed.
-                    config[model_key] = config.get('EMOTION_MODEL', '')
-                    config[url_key] = config.get('EMOTION_MODEL_URL', '')
-                    config[apikey_key] = config.get('EMOTION_MODEL_API_KEY', '')
-                    own_url = str(core_cfg.get('agentSmallModelUrl') or '').strip()
-                    if own_url and own_url != config[url_key]:
-                        # A typed endpoint never inherits another endpoint's key, whatever the
-                        # provider: a named provider whose URL is foreign gets no ledger key
-                        # either, and must not fall back to this inherited one.
-                        config[apikey_key] = ''
+                    # Own settings start blank: only a URL and model the user (or the chosen
+                    # provider) actually supplies count. Anything incomplete is handed whole to
+                    # the recognition tier at runtime, never patched field by field.
+                    config[model_key] = config[url_key] = config[apikey_key] = ''
                 if prefix == 'tts' and provider == 'deepseek':
                     # The hosted worker uses the DeepSeek key book and fixed endpoint.
                     # Retain a saved DashScope slot for existing CosyVoice clones,
@@ -1720,20 +1713,6 @@ class CoreConfigMixin:
                         config[apikey_key] = _derived_book
                     elif cfg_key is not None:
                         config[apikey_key] = cfg_key
-
-            # The small familiar tier pointed at the recognition endpoint (left blank or
-            # typed as the same endpoint) with no key of its own uses the recognition key:
-            # the settings page saves a blank key field as '' and that must not leave the
-            # inherited endpoint unauthenticated. A different endpoint never gets it.
-            if str(config.get('agentSmallModelProvider') or '') not in ('', 'follow_emotion', 'follow_agent'):
-                _small_url = str(config.get('AGENT_SMALL_MODEL_URL') or '').strip()
-                _emotion_url = str(config.get('EMOTION_MODEL_URL') or '').strip()
-                if (
-                    _small_url
-                    and not str(config.get('AGENT_SMALL_MODEL_API_KEY') or '').strip()
-                    and same_endpoint(_small_url, _emotion_url)
-                ):
-                    config['AGENT_SMALL_MODEL_API_KEY'] = config.get('EMOTION_MODEL_API_KEY', '')
 
             # TTS Voice ID serves as fallback for character voice_id.
             if core_cfg.get('ttsVoiceId') is not None:
@@ -2000,13 +1979,6 @@ class CoreConfigMixin:
             prefix = prefix_by_type.get(target_model_type, target_model_type)
             provider = str(core_config.get(f'{prefix}ModelProvider') or '').strip()
             if provider == 'custom':
-                if target_model_type == 'agent_small' and same_endpoint(
-                    str(core_config.get('AGENT_SMALL_MODEL_URL') or '').strip(),
-                    str(core_config.get('EMOTION_MODEL_URL') or '').strip(),
-                ):
-                    # The endpoint was left blank and inherited from the recognition
-                    # tier: its protocol comes along with it.
-                    return _resolved_provider_type_for_model('emotion', seen)
                 return 'openai_compatible'
             if provider == 'follow_conversation':
                 if target_model_type == 'conversation':
@@ -2113,10 +2085,17 @@ class CoreConfigMixin:
             # (small) model; follow_agent makes it the familiar model instead. Delegating
             # keeps each followed tier's own endpoint rules (region rewrite, pinned agent URL).
             provider = str(core_config.get('agentSmallModelProvider') or 'follow_emotion').strip()
-            if not treat_as_custom or provider == 'follow_emotion':
+            if not treat_as_custom:
                 return self.get_model_api_config('emotion', _core_config=core_config)
             if provider == 'follow_agent':
                 return self.get_model_api_config('agent', _core_config=core_config)
+            if not (
+                str(core_config.get('AGENT_SMALL_MODEL') or '').strip()
+                and str(core_config.get('AGENT_SMALL_MODEL_URL') or '').strip()
+            ):
+                # Its own settings count only when complete (URL and model); otherwise the
+                # whole slot is the recognition model, key and protocol included.
+                return self.get_model_api_config('emotion', _core_config=core_config)
         
         # Agent always uses dedicated AGENT_MODEL_URL, but is_custom is True only with enableCustomApi.
         # AGENT_MODEL_URL does **not** undergo region rewriting: _normalize_agent_url
