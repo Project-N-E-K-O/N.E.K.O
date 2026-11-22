@@ -602,20 +602,26 @@ class WorktreeManager:
                 # its start as it was, so the same conflict can be prepared
                 # again: one piece no further cancellation cuts.
                 async def put_back() -> None:
-                    back = await self._git(
-                        worktree.path,
-                        "checkout",
-                        "--force",
-                        "--detach",
-                        "--no-recurse-submodules",
-                        conflict.result,
-                        check=False,
-                        timeout=settings.WORKTREE_GIT_WORK_SECONDS,
-                    )
-                    if not back.ok:
-                        error.add_note(f"the worktree could not be put back: {_failure('checkout', back.stderr)}")
-                    # Each step is tried whatever the one before did; what
-                    # fails is said, and the index's copy is kept.
+                    # Each step is tried whatever the one before did (a git
+                    # that times out or cannot start included); what fails
+                    # is said, and the index's copy is kept.
+                    try:
+                        back = await self._git(
+                            worktree.path,
+                            "checkout",
+                            "--force",
+                            "--detach",
+                            "--no-recurse-submodules",
+                            conflict.result,
+                            check=False,
+                            timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+                        )
+                        if not back.ok:
+                            error.add_note(
+                                f"the worktree could not be put back: {_failure('checkout', back.stderr)}"
+                            )
+                    except Exception as failed:
+                        error.add_note(f"the worktree could not be put back: {failed}")
                     nonlocal keep_saved
                     # Back on its branch (which preparing never moved), or at
                     # its commit when it was detached.
@@ -631,8 +637,9 @@ class WorktreeManager:
                                     worktree.path, "update-ref", "--no-deref", "HEAD", own_head, check=False
                                 )
                             if not head.ok:
+                                how = "symbolic-ref" if own_branch else "update-ref"
                                 error.add_note(f"the worktree's HEAD could not be put back to {was}: "
-                                               f"{_failure('update-ref', head.stderr)}")
+                                               f"{_failure(how, head.stderr)}")
                         except Exception as failed:
                             error.add_note(f"the worktree's HEAD could not be put back to {was}: {failed}")
                     if had_index:

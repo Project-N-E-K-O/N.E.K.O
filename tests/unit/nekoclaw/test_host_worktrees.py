@@ -2972,3 +2972,33 @@ async def test_a_failed_prepare_puts_the_worktree_back_on_its_branch(
     assert git(tree.path, "symbolic-ref", "HEAD").strip() == "refs/heads/side"
     assert git(tree.path, "rev-parse", "side").strip() == tip
     assert read(tree.path / "a.txt") == b"worktree\n"
+
+
+async def test_a_put_back_checkout_that_never_answers_does_not_stop_the_rest(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "staged\n")
+    git(tree.path, "add", "a.txt")
+    write(tree.path / "a.txt", "working\n")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    head = git(tree.path, "rev-parse", "HEAD").strip()
+    original = manager._git
+
+    async def stuck(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("update-ref", f"{REF_PREFIX}w1/start") and args[2] == conflict.current:
+            raise worktrees.GitError(args, 128, b"cannot lock ref")
+        if args[:1] == ("checkout",) and args[-1] == conflict.result:
+            raise worktrees.GitError(args, None, "no answer within 600 seconds")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", stuck)
+    with pytest.raises(worktrees.GitError) as raised:
+        await manager.prepare_conflicts(tree, conflict)
+    monkeypatch.setattr(manager, "_git", original)
+    notes = " ".join(getattr(raised.value, "__notes__", []))
+    assert "the worktree could not be put back" in notes
+    assert git(tree.path, "show", ":a.txt") == "staged\n"
+    assert git(tree.path, "rev-parse", "HEAD").strip() == head
+    assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == conflict.base
