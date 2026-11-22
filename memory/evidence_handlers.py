@@ -73,6 +73,94 @@ _PERSONA_ENTRY_SNAPSHOT_KEYS = _EVIDENCE_SNAPSHOT_KEYS + (
     'event_when_raw', 'event_start_at', 'event_end_at',
 )
 
+# Where a text-rewrite event stands against the view (see _rewrite_state).
+_REWRITE_NONE = 'none'                  # event carries no text hash
+_REWRITE_APPLIED = 'applied'            # view holds the new text
+_REWRITE_PENDING = 'pending'            # view holds the replaced text
+_REWRITE_SUPERSEDED = 'superseded'      # view holds a later text
+_REWRITE_UNVERIFIABLE = 'unverifiable'  # old event, hash mismatch, no text
+
+
+def text_sha256(text) -> str:
+    """Hash used by every text-rewrite event payload."""
+    return hashlib.sha256((text or '').encode('utf-8')).hexdigest()
+
+
+def _rewrite_state(
+    current_text,
+    payload: dict,
+    expected_sha,
+    *,
+    text_key: str = 'rewrite_text',
+    previous_key: str = 'previous_text_sha256',
+) -> str:
+    if not expected_sha:
+        return _REWRITE_NONE
+    current_sha = text_sha256(current_text)
+    if current_sha == expected_sha:
+        return _REWRITE_APPLIED
+    new_text = payload.get(text_key)
+    previous_sha = payload.get(previous_key)
+    if not isinstance(new_text, str) or not previous_sha:
+        return _REWRITE_UNVERIFIABLE
+    if current_sha == previous_sha and text_sha256(new_text) == expected_sha:
+        return _REWRITE_PENDING
+    return _REWRITE_SUPERSEDED
+
+
+def _log_skipped_rewrite(name: str, event: str, entry_id, state: str) -> None:
+    if state == _REWRITE_UNVERIFIABLE:
+        logger.warning(
+            f"[Reconciler] {name}/{event}: {entry_id} 文本哈希与视图不符且事件不带文本，"
+            f"跳过该事件"
+        )
+    else:
+        logger.info(
+            f"[Reconciler] {name}/{event}: {entry_id} 之后又被改写过，跳过该事件"
+        )
+
+
+def _replay_persona_rewrite(persona_manager, entry: dict, payload: dict) -> None:
+    """Write a lost persona rewrite back, as the live writer did."""
+    from config import PERSONA_VERSION_HISTORY_MAX
+
+    new_text = payload['rewrite_text']
+    # Present only when the writer appended a history row; the view holds
+    # the very text it replaced, so the row is rebuilt from it.
+    reason = payload.get('history_reason')
+    old_text = str(entry.get('text') or '').strip()
+    if reason:
+        history = list(entry.get('version_history') or [])
+        history.append({
+            'text': old_text,
+            'replaced_at': payload.get('replaced_at') or '',
+            'reason': reason,
+        })
+        entry['version_history'] = history[-PERSONA_VERSION_HISTORY_MAX:]
+    entry['text'] = new_text
+    for hook, keys in (
+        ('_invalidate_token_count_cache',
+         ('token_count', 'token_count_text_sha256', 'token_count_tokenizer')),
+        ('_invalidate_embedding_cache',
+         ('embedding', 'embedding_text_sha256', 'embedding_model_id')),
+    ):
+        fn = getattr(persona_manager, hook, None)
+        if callable(fn):
+            fn(entry)
+        else:
+            for key in keys:
+                entry[key] = None
+
+
+def _replay_reflection_rewrite(entry: dict, new_text: str) -> None:
+    """Write a lost reflection rewrite back, as the live writers did."""
+    from memory._embeddings.schema import clear_embedding_fields
+
+    entry['text'] = new_text
+    clear_embedding_fields(entry)
+    entry.pop('embedding_model', None)
+    entry.pop('embedding_text_hash', None)
+
 
 def make_reflection_evidence_handler(reflection_engine):
     """Build the `reflection.evidence_updated` apply handler bound to an
@@ -148,6 +236,14 @@ def make_reflection_state_changed_handler(reflection_engine):
         for r in data:
             if not isinstance(r, dict) or r.get('id') != rid:
                 continue
+            # Text first: a rewrite the view has moved past means the whole
+            # event is stale, status included.
+            text_state = _rewrite_state(
+                r.get('text'), payload, payload.get('rewrite_text_sha256'),
+            )
+            if text_state in (_REWRITE_SUPERSEDED, _REWRITE_UNVERIFIABLE):
+                _log_skipped_rewrite(name, 'reflection.state_changed', rid, text_state)
+                return False
             if r.get('status') != to_status:
                 r['status'] = to_status
                 changed = True
@@ -178,16 +274,9 @@ def make_reflection_state_changed_handler(reflection_engine):
                 if r.get('reject_reason') != payload['reject_explanation']:
                     r['reject_reason'] = payload['reject_explanation']
                     changed = True
-            if payload.get('rewrite_text_sha256'):
-                current_sha = hashlib.sha256(
-                    (r.get('text') or '').encode('utf-8'),
-                ).hexdigest()
-                if current_sha != payload['rewrite_text_sha256']:
-                    raise RuntimeError(
-                        f"[Reconciler] {name}/reflection.state_changed: "
-                        f"reflection {rid} text sha256 mismatch; "
-                        f"view drifted from log, manual inspection required"
-                    )
+            if text_state == _REWRITE_PENDING:
+                _replay_reflection_rewrite(r, payload['rewrite_text'])
+                changed = True
             break
         if changed:
             atomic_write_json(path, data, indent=2, ensure_ascii=False)
@@ -288,10 +377,20 @@ def make_persona_suppressed_handler(persona_manager):
 def make_persona_entry_handler(persona_manager):
     """Build the `persona.entry_updated` apply handler.
 
-    RFC §3.3.6: text is not in the payload; rewrite_text_sha256 verifies whether
-    the view has already applied it. Mismatch → raise, pausing the reconciler
-    for manual intervention. PR-1 only handles evidence fields; PR-3's
-    merge-on-promote will actually rewrite the text.
+    ``rewrite_text_sha256`` tells whether the view already holds the new
+    wording. Events written since the Memory Browser follow-up also carry
+    the new text (``rewrite_text``) and the hash of the text it replaced
+    (``previous_text_sha256``), so the handler has three outcomes:
+
+      - view already holds the new text: apply the snapshot fields only;
+      - view still holds the replaced text: the save was lost in a crash,
+        so write the new text (and the version-history row the writer
+        added) back along with the snapshot fields;
+      - anything else: the entry was rewritten again afterwards; log and
+        skip the event.
+
+    Older events without the text skip on a mismatch with a warning. None
+    of these raise, so one drifted entry cannot pause replay.
     """
 
     def _apply(name: str, payload: dict) -> bool:
@@ -324,21 +423,18 @@ def make_persona_entry_handler(persona_manager):
         for e in facts:
             if not isinstance(e, dict) or e.get('id') != entry_id:
                 continue
-            if expected_sha:
-                current_sha = hashlib.sha256(
-                    (e.get('text') or '').encode('utf-8'),
-                ).hexdigest()
-                if current_sha != expected_sha:
-                    raise RuntimeError(
-                        f"[Reconciler] {name}/persona.entry_updated: "
-                        f"entry {entry_id} text sha256 mismatch; "
-                        f"view drifted from log, manual inspection required"
-                    )
+            state = _rewrite_state(e.get('text'), payload, expected_sha)
+            if state in (_REWRITE_SUPERSEDED, _REWRITE_UNVERIFIABLE):
+                _log_skipped_rewrite(name, 'persona.entry_updated', entry_id, state)
+                return False
             changed = False
             for k in _PERSONA_ENTRY_SNAPSHOT_KEYS:
                 if k in payload and e.get(k) != payload[k]:
                     e[k] = payload[k]
                     changed = True
+            if state == _REWRITE_PENDING:
+                _replay_persona_rewrite(persona_manager, e, payload)
+                changed = True
             if 'speaker_provenance' in payload:
                 provenance = payload.get('speaker_provenance')
                 if not isinstance(provenance, dict):
@@ -402,18 +498,18 @@ def make_reflection_archive_handler(reflection_engine):
             # this handler; PR-3 may add handlers for promoted/denied.
             return False
 
-        # Step 0: if this archive is part of a reflection duplicate merge, verify that
-        # the surviving reflection's merged wording was persisted before allowing the
-        # destructive archive replay to advance (RFC §3.3.6).
+        # Step 0: if this archive is part of a reflection duplicate merge, check
+        # the surviving reflection's wording (RFC §3.3.6). Still the replaced
+        # text: the merge's save was lost, so its merged text is written back
+        # in step 3. A later text, or a survivor archived since: the merge
+        # landed and only the shard self-heal below is left. An older event
+        # without the merged text cannot tell those apart, so it is skipped
+        # whole rather than archive ``drop`` without its merge.
         merged_keep_id = payload.get('merged_keep_id')
         merged_keep_sha = payload.get('merged_keep_text_sha256')
         path = reflection_engine._reflections_path(name)
-        if merged_keep_id and merged_keep_sha:
-            if not os.path.exists(path):
-                raise RuntimeError(
-                    f"[ArchiveHandler] {name}/reflection.merge: {path} missing while "
-                    f"verifying survivor {merged_keep_id}; pausing replay"
-                )
+        survivor_rewrite = None
+        if merged_keep_id and merged_keep_sha and os.path.exists(path):
             with open(path, encoding='utf-8') as f:
                 pre_data = json.load(f)
             if not isinstance(pre_data, list):
@@ -426,16 +522,23 @@ def make_reflection_archive_handler(reflection_engine):
                 None,
             )
             if survivor is None:
-                raise RuntimeError(
-                    f"[ArchiveHandler] {name}/reflection.merge: survivor {merged_keep_id} "
-                    f"missing from active view; pausing replay"
+                logger.info(
+                    f"[ArchiveHandler] {name}/reflection.merge: 保留条 {merged_keep_id} "
+                    f"已不在活跃视图，按合并已落盘处理"
                 )
-            cur_sha = hashlib.sha256((survivor.get('text') or '').encode('utf-8')).hexdigest()
-            if cur_sha != merged_keep_sha:
-                raise RuntimeError(
-                    f"[ArchiveHandler] {name}/reflection.merge: survivor {merged_keep_id} "
-                    f"text sha256 mismatch; view drifted from log, manual inspection required"
+            else:
+                keep_state = _rewrite_state(
+                    survivor.get('text'), payload, merged_keep_sha,
+                    text_key='merged_keep_text',
+                    previous_key='merged_keep_previous_text_sha256',
                 )
+                if keep_state == _REWRITE_UNVERIFIABLE:
+                    _log_skipped_rewrite(name, 'reflection.merge', merged_keep_id, keep_state)
+                    return False
+                if keep_state == _REWRITE_SUPERSEDED:
+                    _log_skipped_rewrite(name, 'reflection.merge', merged_keep_id, keep_state)
+                elif keep_state == _REWRITE_PENDING:
+                    survivor_rewrite = payload['merged_keep_text']
 
         # Step 1+2: shard self-heal (write entry into the named shard
         # if missing). Skipped if the event lacks the snapshot fields
@@ -484,6 +587,13 @@ def make_reflection_archive_handler(reflection_engine):
         before = len(data)
         data = [r for r in data if not (isinstance(r, dict) and r.get('id') == rid)]
         view_changed = len(data) != before
+        if survivor_rewrite is not None:
+            for r in data:
+                if isinstance(r, dict) and r.get('id') == merged_keep_id:
+                    if r.get('text') != survivor_rewrite:
+                        _replay_reflection_rewrite(r, survivor_rewrite)
+                        view_changed = True
+                    break
         if view_changed:
             atomic_write_json(path, data, indent=2, ensure_ascii=False)
         return view_changed or shard_changed

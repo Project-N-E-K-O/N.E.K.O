@@ -844,6 +844,12 @@ class FactsMixin:
                 'entity_key': entity_key,
                 'entry_id': canonical_entry_id,
                 'rewrite_text_sha256': new_text_sha,
+                # Lets replay write a merge back that a crash kept off disk,
+                # and tell that apart from a later rewrite.
+                'rewrite_text': merged_text or '',
+                'previous_text_sha256': hashlib.sha256(
+                    str(target_entry.get('text') or '').encode('utf-8'),
+                ).hexdigest(),
                 'reinforcement': float(merged_reinforcement),
                 'disputation': float(merged_disputation),
                 # Both clocks bumped — the merge IS a fresh signal on this
@@ -1215,6 +1221,12 @@ class FactsMixin:
                 'entity_key': entity_key,
                 'entry_id': entry_id,
                 'rewrite_text_sha256': hashlib.sha256(cleaned.encode('utf-8')).hexdigest(),
+                'rewrite_text': cleaned,
+                'previous_text_sha256': hashlib.sha256(
+                    str(entry.get('text') or '').encode('utf-8'),
+                ).hexdigest(),
+                'history_reason': 'manual_edit',
+                'replaced_at': now_iso,
                 'source': 'manual_edit',
             }
 
@@ -1304,6 +1316,12 @@ class FactsMixin:
                     'entity_key': entity_key,
                     'entry_id': keep_id,
                     'rewrite_text_sha256': hashlib.sha256(cleaned.encode('utf-8')).hexdigest(),
+                    'rewrite_text': cleaned,
+                    'previous_text_sha256': hashlib.sha256(
+                        str(keep_entry.get('text') or '').encode('utf-8'),
+                    ).hexdigest(),
+                    'history_reason': 'manual_merge',
+                    'replaced_at': now_iso,
                     'source': 'manual_merge',
                 }
 
@@ -1456,8 +1474,15 @@ class FactsMixin:
                 'entity_key': entity_key,
                 'entry_id': entry_id,
                 'rewrite_text_sha256': hashlib.sha256(restored_text.encode('utf-8')).hexdigest(),
+                'rewrite_text': restored_text,
+                'previous_text_sha256': hashlib.sha256(
+                    str(entry.get('text') or '').encode('utf-8'),
+                ).hexdigest(),
                 'source': 'manual_restore',
             }
+            if current_text and current_text != restored_text:
+                payload['history_reason'] = 'manual_restore'
+                payload['replaced_at'] = now_iso
 
             def _sync_load(_n: str):
                 return persona

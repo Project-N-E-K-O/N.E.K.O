@@ -455,6 +455,10 @@ class EvidenceFlowMixin:
                     if text_changed and cleaned is not None:
                         import hashlib
                         payload["rewrite_text_sha256"] = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
+                        payload["rewrite_text"] = cleaned
+                        payload["previous_text_sha256"] = hashlib.sha256(
+                            str(entry.get("text") or "").encode("utf-8"),
+                        ).hexdigest()
 
                     def _sync_load(_n: str):
                         return reflections_full
@@ -580,6 +584,10 @@ class EvidenceFlowMixin:
                 "entry_snapshot": archive_entry,
                 "merged_keep_id": keep_id,
                 "merged_keep_text_sha256": hashlib.sha256(cleaned.encode("utf-8")).hexdigest(),
+                "merged_keep_text": cleaned,
+                "merged_keep_previous_text_sha256": hashlib.sha256(
+                    str(keep_entry.get("text") or "").encode("utf-8"),
+                ).hexdigest(),
             }
 
             def _sync_load(_n: str):

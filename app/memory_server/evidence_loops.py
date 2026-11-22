@@ -1003,10 +1003,14 @@ _STAR_MAP_LABEL_PROBE_MIN_INTERVAL_SECONDS = 86400
 async def _amaybe_refresh_star_map_labels(name: str, now: datetime) -> None:
     """Weekly low-cost Star Map theme label cache refresh piggybacked on ArchiveSweep.
 
-    Runs regardless of ``powerful_memory_enabled``; skips at zero LLM cost when
-    fewer than ``STAR_MAP_MIN_EMBEDDED_ENTRIES`` entries have vectors, when the
-    corpus hash has not changed, or when cached labels are newer than 7 days.
+    Runs only while ``powerful_memory_enabled`` is on: with it off this makes no
+    model call at all. Otherwise skips at zero LLM cost when fewer than
+    ``STAR_MAP_MIN_EMBEDDED_ENTRIES`` entries have vectors, when the corpus hash
+    has not changed, when cached labels are newer than 7 days, or when the last
+    automatic attempt failed less than 7 days ago.
     """
+    if not await gates._ais_powerful_memory_enabled():
+        return
     last = _star_map_label_last_probe.get(name)
     if (
         last is not None

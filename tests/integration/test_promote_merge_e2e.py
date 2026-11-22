@@ -192,19 +192,12 @@ async def test_reconciler_replay_idempotent_after_full_apply(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reconciler_text_drift_raises_per_rfc_red_line(tmp_path):
-    """S15-S17 PART B — RFC §3.3.6 + red line 4: when the on-disk view
-    has drifted away from what the event log says (e.g. process crashed
-    between event-append and view-save, then text was edited or rolled
-    back manually), the persona.entry_updated handler MUST raise rather
-    than silently re-apply, because the event payload deliberately
-    omits the merged plaintext (red line 4: no plaintext in event log).
-
-    This is operator-intervention territory by design — the reconciler
-    refuses to advance the sentinel and surfaces the divergence so a
-    human can audit the event log and decide. The bot proposed putting
-    plaintext in the event payload; we explicitly reject that and
-    document the trade-off here.
+async def test_reconciler_replays_lost_merge_text_and_skips_later_rewrite(tmp_path):
+    """S15-S17 PART B: a merge whose persona.json save was lost (events
+    appended, view still pre-merge) is written back on replay, because the
+    entry_updated payload carries the merged text and the hash of the text
+    it replaced. A view rewritten to something else afterwards is left
+    alone and replay keeps going instead of pausing.
     """
     from memory.event_log import Reconciler
     from memory.evidence_handlers import register_evidence_handlers
@@ -237,39 +230,37 @@ async def test_reconciler_text_drift_raises_per_rfc_red_line(tmp_path):
         outcome = await re._apromote_with_merge('小天', R)
     assert outcome == 'merge_into'
 
-    # Roll persona.json back to pre-merge state + sentinel reset:
-    # event log claims merge happened, view says it didn't.
-    with open(persona_path, 'w', encoding='utf-8') as f:
-        f.write(persona_pre)
-    with open(sentinel_path, 'w', encoding='utf-8') as f:
-        json.dump({'last_applied_event_id': None, 'ts': 'reset'}, f)
-    pm._personas.pop('小天', None)
+    def _rollback(text_on_disk):
+        data = json.loads(persona_pre)
+        data['master']['facts'][0]['text'] = text_on_disk
+        with open(persona_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+        with open(sentinel_path, 'w', encoding='utf-8') as f:
+            json.dump({'last_applied_event_id': None, 'ts': 'reset'}, f)
+        pm._personas.pop('小天', None)
 
+    # 1. Crash: the view still holds the text the merge replaced.
+    _rollback('orig text')
     reconciler = Reconciler(_ev)
     register_evidence_handlers(reconciler, pm, re)
+    await reconciler.areconcile('小天')
+    entry = (await pm.aget_persona('小天'))['master']['facts'][0]
+    assert entry['text'] == '合并后的文本'
+    assert 'ref_crash' in entry['merged_from_ids']
+    assert entry.get('embedding') is None
+    with open(sentinel_path, encoding='utf-8') as f:
+        last = json.load(f)['last_applied_event_id']
+    with open(os.path.join(str(tmp_path), '小天', 'events.ndjson'), encoding='utf-8') as f:
+        assert last == json.loads(f.read().splitlines()[-1])['event_id']
 
-    # Reconciler must stop at the divergent event (entry_updated's
-    # sha256 mismatch) and NOT auto-rewrite the text. Since round-4's
-    # event order was changed to emit evidence_updated FIRST (see
-    # memory/persona.py amerge_into docstring), the reconciler applies
-    # the idempotent evidence snapshot before hitting the diverging
-    # entry_updated — so `applied` is 1, not 0. The critical invariant
-    # is still: text remains un-rewritten and the sentinel stays pinned
-    # at the pre-mismatch event so a human can audit.
-    applied = await reconciler.areconcile('小天')
-    assert applied == 1, (
-        "reconciler applies the idempotent evidence_updated snapshot "
-        "(emitted first post round-4 Major) then stops at the "
-        "sha256-mismatching entry_updated — RFC §3.3.6"
-    )
-
-    # View's text remains in its (pre-merge / drifted) state — no
-    # auto-recovery. Evidence fields DO update from the idempotent
-    # snapshot replay; that is by design (RFC §3.9.6 evidence_updated
-    # is a full snapshot, always safe to replay).
-    persona_after = await pm.aget_persona('小天')
-    entry = persona_after['master']['facts'][0]
-    assert entry['text'] == 'orig text', (
-        "view must NOT be auto-rewritten — RFC red line 4 keeps text "
-        "out of the event payload"
-    )
+    # 2. Later rewrite: the view holds neither text. Replay skips the
+    #    rewrite instead of pausing, and the text stays as the user left it.
+    _rollback('user typed something else')
+    reconciler = Reconciler(_ev)
+    register_evidence_handlers(reconciler, pm, re)
+    await reconciler.areconcile('小天')
+    entry = (await pm.aget_persona('小天'))['master']['facts'][0]
+    assert entry['text'] == 'user typed something else'
+    assert 'ref_crash' not in (entry.get('merged_from_ids') or [])
+    with open(sentinel_path, encoding='utf-8') as f:
+        assert json.load(f)['last_applied_event_id'] is not None

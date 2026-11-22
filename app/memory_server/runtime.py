@@ -568,6 +568,11 @@ async def reload_memory_components(
             _register_evidence_handlers(new_reconciler, new_persona, new_reflection)
             from .long_term_sync import register_replay
             register_replay(new_reconciler, new_persona, new_facts)
+            from memory.analytics.snapshots import register_snapshot_restore_replay
+            register_snapshot_restore_replay(
+                new_reconciler, persona_manager=new_persona, fact_store=new_facts,
+                reflection_engine=new_reflection,
+            )
             # P2 step 2: rebind the existing fact_dedup_resolver to the
             # NEW FactStore in place rather than constructing a new
             # resolver. Going via rebind_fact_store preserves the
@@ -1195,6 +1200,11 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         _register_evidence_handlers(reconciler, persona_manager, reflection_engine)
         from .long_term_sync import register_replay
         register_replay(reconciler, persona_manager, fact_store)
+        from memory.analytics.snapshots import register_snapshot_restore_replay
+        register_snapshot_restore_replay(
+            reconciler, persona_manager=persona_manager, fact_store=fact_store,
+            reflection_engine=reflection_engine,
+        )
 
         try:
             from utils.token_tracker import TokenTracker, install_hooks

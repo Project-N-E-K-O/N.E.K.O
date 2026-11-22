@@ -47,7 +47,7 @@ from config.prompts.prompts_memory import get_star_map_cluster_label_prompt
 from memory.evidence import evidence_score
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json_async
+from utils.file_utils import atomic_write_json, atomic_write_json_async
 from utils.language_utils import get_global_language_full, normalize_language_code
 from utils.llm_client import create_chat_llm_async
 from utils.logger_config import get_module_logger
@@ -494,6 +494,58 @@ def _extract_json_dict(raw: str) -> dict[str, Any] | None:
     return None
 
 
+_LABEL_FAILED_AT_KEY = "last_failed_at"
+
+
+def _record_label_failure_sync(char_dir: Path, now_dt: datetime) -> None:
+    """Stamp the label cache with a failed attempt, keeping any labels already there."""
+    if not char_dir.is_dir():
+        return
+    cache = _load_cluster_label_cache(char_dir)
+    cache[_LABEL_FAILED_AT_KEY] = now_dt.isoformat()
+    atomic_write_json(
+        str(char_dir / _STAR_MAP_CACHE_FILENAME),
+        cache,
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+async def _arequest_cluster_labels(cm, prompt: str, clusters: list[dict[str, Any]]) -> dict[str, str]:
+    """One summary-tier call; returns cleaned labels or raises."""
+    api_config = await cm.aget_model_api_config("summary")
+    set_call_type("star_map_cluster_labels")
+    llm = await create_chat_llm_async(
+        api_config["model"],
+        api_config["base_url"],
+        api_config["api_key"],
+        timeout=STAR_MAP_LABEL_TIMEOUT_SECONDS,
+        max_retries=0,
+        max_completion_tokens=STAR_MAP_LABEL_MAX_TOKENS,
+        provider_type=api_config.get("provider_type"),
+    )
+    try:
+        resp = await llm.ainvoke(prompt)
+    finally:
+        await llm.aclose()
+
+    parsed = _extract_json_dict(str(getattr(resp, "content", "") or ""))
+    if not parsed:
+        raise ValueError("Cluster label model returned invalid JSON")
+
+    clean_labels: dict[str, str] = {}
+    valid_ids = {str(c["id"]) for c in clusters}
+    for k, v in parsed.items():
+        ks = str(k).strip()
+        vs = str(v or "").strip()
+        if ks in valid_ids and vs:
+            clean_labels[ks] = vs[:24]
+
+    if not clean_labels:
+        raise ValueError("Cluster label response contained no valid cluster titles")
+    return clean_labels
+
+
 async def alabel_star_map_clusters(
     character_name: str,
     *,
@@ -508,6 +560,10 @@ async def alabel_star_map_clusters(
     unless:
       1. Star map is ready (embedded_count >= STAR_MAP_MIN_EMBEDDED_ENTRIES) and has clusters.
       2. Either no cached labels exist, OR (age >= STAR_MAP_LABEL_REFRESH_DAYS AND corpus_hash changed).
+      3. The last failed attempt (any caller) is at least STAR_MAP_LABEL_REFRESH_DAYS old.
+
+    A failed call stamps the cache file with the failure time before the
+    error propagates; ``force=True`` ignores that stamp.
     """
     cm = config_manager or get_config_manager()
     memory_dir = Path(cm.memory_dir)
@@ -541,6 +597,18 @@ async def alabel_star_map_clusters(
             except (ValueError, TypeError):
                 # Ignore malformed cached timestamp and fall through to refresh.
                 pass
+        failed_raw = existing_cache.get(_LABEL_FAILED_AT_KEY)
+        if isinstance(failed_raw, str):
+            try:
+                failed_dt = datetime.fromisoformat(failed_raw)
+                if (now_dt - failed_dt) < timedelta(days=STAR_MAP_LABEL_REFRESH_DAYS):
+                    return {
+                        "skipped": True,
+                        "reason": "failure_cooldown",
+                        "labels": prev_labels if isinstance(prev_labels, dict) else {},
+                    }
+            except (ValueError, TypeError):
+                pass
 
     assert_cloudsave_writable(
         cm,
@@ -567,36 +635,17 @@ async def alabel_star_map_clusters(
 
     prompt = template.replace("{CLUSTERS}", clusters_block)
 
-    api_config = await cm.aget_model_api_config("summary")
-    set_call_type("star_map_cluster_labels")
-    llm = await create_chat_llm_async(
-        api_config["model"],
-        api_config["base_url"],
-        api_config["api_key"],
-        timeout=STAR_MAP_LABEL_TIMEOUT_SECONDS,
-        max_retries=0,
-        max_completion_tokens=STAR_MAP_LABEL_MAX_TOKENS,
-        provider_type=api_config.get("provider_type"),
-    )
     try:
-        resp = await llm.ainvoke(prompt)
-    finally:
-        await llm.aclose()
-
-    parsed = _extract_json_dict(str(getattr(resp, "content", "") or ""))
-    if not parsed:
-        raise ValueError("Cluster label model returned invalid JSON")
-
-    clean_labels: dict[str, str] = {}
-    valid_ids = {str(c["id"]) for c in clusters}
-    for k, v in parsed.items():
-        ks = str(k).strip()
-        vs = str(v or "").strip()
-        if ks in valid_ids and vs:
-            clean_labels[ks] = vs[:24]
-
-    if not clean_labels:
-        raise ValueError("Cluster label response contained no valid cluster titles")
+        clean_labels = await _arequest_cluster_labels(cm, prompt, clusters)
+    except Exception:
+        # A failed attempt cools down like a successful one, so the weekly
+        # background hook does not retry it every day. The manual button
+        # (force=True) ignores the mark.
+        try:
+            await asyncio.to_thread(_record_label_failure_sync, char_dir, now_dt)
+        except Exception as mark_exc:
+            logger.debug("[StarMap] failed to record label failure for %s: %s", character_name, mark_exc)
+        raise
 
     cache_payload = {
         "corpus_hash": corpus_hash,

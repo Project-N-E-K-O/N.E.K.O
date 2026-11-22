@@ -101,6 +101,10 @@ EVT_PERSONA_EVIDENCE_UPDATED = "persona.evidence_updated"
 EVT_PERSONA_ENTRY_UPDATED = "persona.entry_updated"
 # Retired sync event: recognized only so old journals can drain without applying it.
 EVT_LONG_TERM_MEMORY_REPLACED = "memory.long_term_replaced"
+# Memory Browser snapshot restore: the whole set of managed files was replaced.
+# A full replay (sentinel missing or not in the body) starts at the newest one,
+# because every event before it describes files the restore overwrote.
+EVT_MEMORY_SNAPSHOT_RESTORED = "memory.snapshot_restored"
 
 ALL_EVENT_TYPES: frozenset[str] = frozenset({
     EVT_FACT_ADDED, EVT_FACT_ABSORBED, EVT_FACT_ARCHIVED,
@@ -110,6 +114,7 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset({
     EVT_CORRECTION_QUEUED, EVT_CORRECTION_RESOLVED,
     EVT_REFLECTION_EVIDENCE_UPDATED, EVT_PERSONA_EVIDENCE_UPDATED,
     EVT_PERSONA_ENTRY_UPDATED, EVT_LONG_TERM_MEMORY_REPLACED,
+    EVT_MEMORY_SNAPSHOT_RESTORED,
 })
 
 
@@ -322,6 +327,24 @@ def _body_keeps_tail(body: str, sentinel: str, old_tail_ids: list) -> bool:
         elif rec.get('event_id') == sentinel:
             found = True
     return found and ids == old_tail_ids
+
+
+def _from_latest_restore(name: str, records: list[dict]) -> list[dict]:
+    """Drop every record in front of the newest snapshot-restore record.
+
+    Used only for a full replay. The restore record itself stays: its
+    handler finishes a restore that was interrupted and does nothing
+    otherwise.
+    """
+    for i in range(len(records) - 1, -1, -1):
+        if records[i].get('type') == EVT_MEMORY_SNAPSHOT_RESTORED:
+            if i:
+                logger.info(
+                    f"[EventLog] {name}: 全量 replay 从最近一次快照恢复事件开始，"
+                    f"跳过其前 {i} 条"
+                )
+            return records[i:]
+    return records
 
 
 # ── Type aliases for _record_and_save callbacks (RFC §3.4) ───────────────
@@ -574,22 +597,26 @@ class EventLog:
         "not found" means the sentinel and the journal disagree for some
         other reason (hand edits, a restore that brought back only one of
         the two files); every record in the body is then treated as unapplied.
+
+        A full replay starts at the newest ``memory.snapshot_restored`` record
+        instead of the first line: that restore replaced every managed file,
+        so the records in front of it describe a state that no longer exists
+        and replaying them would write it back over the restored files.
         """
         with self._get_lock(name):
             records = self._read_all_records(self._events_path(name))
-        if after_event_id is None:
-            return records
-        for i, rec in enumerate(records):
-            if rec.get('event_id') == after_event_id:
-                return records[i + 1:]
-        # The sentinel names an event that is not in the body. Compaction
-        # always keeps that line, so this is not its doing.
-        # Safe default: replay everything currently in the body.
-        logger.info(
-            f"[EventLog] {name}: sentinel event_id {after_event_id} 不在当前 body，"
-            f"回退到全量 replay（{len(records)} 条）"
-        )
-        return records
+        if after_event_id is not None:
+            for i, rec in enumerate(records):
+                if rec.get('event_id') == after_event_id:
+                    return records[i + 1:]
+            # The sentinel names an event that is not in the body. Compaction
+            # always keeps that line, so this is not its doing.
+            # Safe default: replay everything currently in the body.
+            logger.info(
+                f"[EventLog] {name}: sentinel event_id {after_event_id} 不在当前 body，"
+                f"回退到全量 replay（{len(records)} 条）"
+            )
+        return _from_latest_restore(name, records)
 
     def read_sentinel(self, name: str) -> str | None:
         """Load last_applied_event_id from sentinel file. Safe defaults per RFC §3.5."""
@@ -798,8 +825,9 @@ class EventLog:
         age or size, because the journal may hold the only copy of an
         archived entry -- or when it falls inside the retention window
         (_RETAIN_APPLIED_DAYS, capped at _RETAIN_APPLIED_MAX_BYTES, oldest
-        evicted first). ``memory.long_term_replaced`` is never retained.
-        Everything else in front of the anchor goes, including lines replay
+        evicted first). ``memory.long_term_replaced`` is never retained; the
+        newest ``memory.snapshot_restored`` in front of the anchor always is
+        (counted as pinned), older ones never. Everything else in front of the anchor goes, including lines replay
         would skip anyway.
 
         Skips without touching the body when the journal is not due
@@ -1001,6 +1029,7 @@ class EventLog:
         tail: list[str] = []
         old_tail_ids: list = []
         pinned: list[tuple[int, str, str]] = []
+        latest_restore: tuple[int, str, str] | None = None
         window: deque[tuple[int, str, int]] = deque()
         window_bytes = 0
         total_lines = 0
@@ -1033,6 +1062,11 @@ class EventLog:
                     # Reference events are no-ops once their inbox is
                     # consumed; old head-style ones are whole snapshots.
                     continue
+                if rec.get('type') == EVT_MEMORY_SNAPSHOT_RESTORED:
+                    # Only the newest one matters: a full replay starts at
+                    # it (read_since), so it must outlive the lines it hides.
+                    latest_restore = (lineno, raw, str(rec.get('event_id')))
+                    continue
                 if needs_journal_copy is not None and needs_journal_copy(rec):
                     pinned.append((lineno, raw, str(rec.get('event_id'))))
                     continue
@@ -1048,6 +1082,8 @@ class EventLog:
 
         if not anchor_found:
             return CompactionResult('sentinel_not_found')
+        if latest_restore is not None:
+            pinned.append(latest_restore)
 
         kept_before = sorted(
             [(lineno, raw) for lineno, raw, _ in pinned]
