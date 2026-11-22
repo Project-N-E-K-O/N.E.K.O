@@ -678,3 +678,21 @@ def test_derived_mapping_skips_non_string_expression_files(model_dir):
         {"Name": "happy_a", "File": 3}, {"Name": "happy_b", "File": "b.exp3.json"}]}}
     _write(model_dir / "m.model3.json", config)
     assert live2d_router.get_emotion_mapping("m")["config"]["expressions"] == {"happy": ["b.exp3.json"]}
+
+
+_ODD_DISK_CONFIGS = [
+    ([], {"motions": {}, "expressions": {}}),
+    ({"FileReferences": "x"}, {"motions": {}, "expressions": {}}),
+    ({"FileReferences": {"Motions": [1], "Expressions": {"a": 1}}}, {"motions": {}, "expressions": {}}),
+    ({"FileReferences": {"Motions": {"Idle": 5}}}, {"motions": {"Idle": []}, "expressions": {}}),
+    ({"FileReferences": {"Expressions": [{"Name": 3, "File": "e.exp3.json"}]}},
+     {"motions": {}, "expressions": {"neutral": ["e.exp3.json"]}}),
+]
+
+
+@pytest.mark.parametrize("config, expected", _ODD_DISK_CONFIGS)
+def test_get_emotion_mapping_tolerates_unexpected_shapes_on_disk(model_dir, config, expected):
+    _write(model_dir / "m.model3.json", config)
+    result = live2d_router.get_emotion_mapping("m")
+    assert _status(result) == 200
+    assert result["config"] == expected

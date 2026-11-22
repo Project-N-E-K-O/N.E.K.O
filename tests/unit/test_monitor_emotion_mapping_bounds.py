@@ -67,3 +67,17 @@ def test_derived_mapping_skips_non_string_expression_files(model_dir):
     _write(model_dir / "m.model3.json", {"FileReferences": {"Expressions": [
         {"Name": "happy_a", "File": 3}, {"Name": "happy_b", "File": "b.exp3.json"}]}})
     assert monitor.get_emotion_mapping("m")["config"]["expressions"] == {"happy": ["b.exp3.json"]}
+
+
+@pytest.mark.parametrize("config, expected", [
+    ([], {"motions": {}, "expressions": {}}),
+    ({"FileReferences": "x"}, {"motions": {}, "expressions": {}}),
+    ({"FileReferences": {"Motions": {"Idle": 5}, "Expressions": {"a": 1}}}, {"motions": {"Idle": []}, "expressions": {}}),
+    ({"FileReferences": {"Expressions": [{"Name": 3, "File": "e.exp3.json"}]}},
+     {"motions": {}, "expressions": {"neutral": ["e.exp3.json"]}}),
+])
+def test_unexpected_shapes_on_disk_do_not_500(model_dir, config, expected):
+    _write(model_dir / "m.model3.json", config)
+    result = monitor.get_emotion_mapping("m")
+    assert getattr(result, "status_code", 200) == 200
+    assert result["config"] == expected

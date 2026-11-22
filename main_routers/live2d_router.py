@@ -785,16 +785,21 @@ def get_emotion_mapping(model_name: str):
             config_data = json.load(f)
 
         # Prefer EmotionMapping; derive from FileReferences if absent.
-        emotion_mapping = config_data.get('EmotionMapping')
+        emotion_mapping = config_data.get('EmotionMapping') if isinstance(config_data, dict) else None
         if not emotion_mapping:
             derived_mapping = {"motions": {}, "expressions": {}}
-            file_refs = config_data.get('FileReferences', {}) or {}
+            # Unexpected shapes on disk are skipped, never a 500.
+            file_refs = config_data.get('FileReferences') if isinstance(config_data, dict) else None
+            if not isinstance(file_refs, dict):
+                file_refs = {}
 
             # Derive from standard Motions structure.
-            motions = file_refs.get('Motions', {}) or {}
+            motions = file_refs.get('Motions')
+            if not isinstance(motions, dict):
+                motions = {}
             for group_name, items in motions.items():
                 files = []
-                for item in items or []:
+                for item in items if isinstance(items, list) else []:
                     try:
                         file_path = item.get('File') if isinstance(item, dict) else None
                         if file_path:
@@ -804,11 +809,15 @@ def get_emotion_mapping(model_name: str):
                 derived_mapping["motions"][group_name] = files
 
             # Derive standard Expressions, grouping by Name prefixes such as happy_xxx.
-            expressions = file_refs.get('Expressions', []) or []
+            expressions = file_refs.get('Expressions')
+            if not isinstance(expressions, list):
+                expressions = []
             for item in expressions:
                 if not isinstance(item, dict):
                     continue
-                name = item.get('Name') or ''
+                name = item.get('Name')
+                if not isinstance(name, str):
+                    name = ''
                 file_path = item.get('File') or ''
                 if not isinstance(file_path, str) or not file_path:
                     continue
