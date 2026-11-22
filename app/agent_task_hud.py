@@ -38,7 +38,12 @@ logger = get_module_logger(__name__, "Agent")
 
 FILENAME = "agent_task_hud.json"
 
+# Two locks: ``_lock`` only guards what is held in memory and is never held
+# across disk I/O, so the status snapshot (built on the event loop) never waits
+# for a write; ``_write_lock`` puts writes one after another and is held while
+# the file is written.
 _lock = threading.Lock()
+_write_lock = threading.Lock()
 _loaded = False
 _visible: Optional[bool] = None
 
@@ -65,36 +70,41 @@ def get_visible() -> Optional[bool]:
     """
     global _loaded, _visible
     with _lock:
+        if _loaded:
+            return _visible
+    read = _load_from_disk()  # not under ``_lock``
+    with _lock:
         if not _loaded:
-            _visible = _load_from_disk()
+            _visible = read
             _loaded = True
         return _visible
 
 
 def set_visible(value: bool) -> bool:
-    """Keep ``value``; return whether it changed. Written while the lock is held.
+    """Keep ``value``; return whether it changed. Writes go one after another.
 
     The file is written first and what is held only changes once it is: a
     write that fails raises, leaves the setting as it was, and the same value
-    asked for again is tried again. Blocking: call it off the event loop.
+    asked for again is tried again. While the file is being written,
+    ``get_visible`` answers the setting as it was. Blocking: call it off the
+    event loop.
     """
     global _loaded, _visible
-    with _lock:
-        if not _loaded:
-            _visible = _load_from_disk()
-            _loaded = True
-        if _visible is value:
+    with _write_lock:
+        if get_visible() is value:
             return False
         from utils.config_manager import get_config_manager
 
         get_config_manager().save_json_config(FILENAME, {"visible": value})
-        _visible = value
+        with _lock:
+            _visible = value
+            _loaded = True
         return True
 
 
 def reset_cache_for_testing() -> None:
     """Forget what was read; for tests that swap the backing store."""
     global _loaded, _visible
-    with _lock:
+    with _write_lock, _lock:
         _loaded = False
         _visible = None

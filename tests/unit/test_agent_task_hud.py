@@ -80,6 +80,45 @@ def test_a_write_that_fails_changes_nothing_and_the_same_value_is_tried_again(st
     assert json.loads(store.read_text(encoding="utf-8")) == {"visible": False}
 
 
+def test_reading_does_not_wait_for_a_write_in_progress(store: Path, monkeypatch):
+    """The status snapshot reads this on the event loop; a slow disk must not hold it."""
+    import threading
+
+    from app import agent_task_hud
+
+    agent_task_hud.set_visible(True)
+    import utils.config_manager as cm_module
+
+    working = cm_module.get_config_manager()
+    writing = threading.Event()
+    release = threading.Event()
+
+    class _Slow:
+        def load_json_config(self, *args, **kwargs):
+            return working.load_json_config(*args, **kwargs)
+
+        def save_json_config(self, *args, **kwargs):
+            writing.set()
+            assert release.wait(5)
+            return working.save_json_config(*args, **kwargs)
+
+    monkeypatch.setattr("utils.config_manager.get_config_manager", lambda: _Slow())
+    writer = threading.Thread(target=agent_task_hud.set_visible, args=(False,))
+    writer.start()
+    try:
+        assert writing.wait(5)
+        seen: list[bool | None] = []
+        reader = threading.Thread(target=lambda: seen.append(agent_task_hud.get_visible()))
+        reader.start()
+        reader.join(1)
+        assert not reader.is_alive(), "get_visible waited for the write"
+        assert seen == [True]  # the setting as it was until the file is written
+    finally:
+        release.set()
+        writer.join(5)
+    assert agent_task_hud.get_visible() is False
+
+
 @pytest.mark.parametrize("written", [{"visible": "false"}, {"visible": 0}, ["visible"], {}])
 def test_a_file_that_says_nothing_clear_reads_as_never_set(store: Path, written):
     from app import agent_task_hud
