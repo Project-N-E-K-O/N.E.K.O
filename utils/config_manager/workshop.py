@@ -32,6 +32,9 @@ from utils.file_utils import (
 
 from ._shared import logger
 
+# Guards the runtime Steam library root registry (register_steam_workshop_library_roots).
+_STEAM_LIBRARY_ROOTS_LOCK = threading.Lock()
+
 # Protects the lazy creation of the "last-good cache micro-lock" above; see _last_good_workshop_config_lock.
 _LAST_GOOD_LOCK_GUARD = threading.Lock()
 
@@ -460,6 +463,46 @@ class WorkshopMixin:
             logger.info(f"已持久化Steam创意工坊路径到配置文件: {workshop_path}")
         except Exception as e:
             logger.error(f"持久化user_workshop_folder失败: {e}")
+
+    def register_steam_workshop_library_roots(self, roots):
+        """
+        Remember the Workshop content roots of every Steam library seen so far (runtime only).
+
+        Items can be installed in different Steam libraries; each library has its own
+        ``steamapps/workshop/content/<appid>`` folder. The roots only grow during a run,
+        so a URL handed out by a model list stays resolvable.
+
+        Args:
+            roots: iterable of Workshop content root paths
+        """
+        # Startup (worker thread) and the subscribed-items endpoint can register at the
+        # same time; serialize the read-extend-replace so neither loses roots.
+        with _STEAM_LIBRARY_ROOTS_LOCK:
+            current = list(getattr(self, "_steam_workshop_library_roots", None) or [])
+            seen = {os.path.normcase(os.path.normpath(str(root))) for root in current}
+            added = []
+            for root in roots or ():
+                if not root:
+                    continue
+                key = os.path.normcase(os.path.normpath(str(root)))
+                if key in seen:
+                    continue
+                seen.add(key)
+                current.append(str(root))
+                added.append(str(root))
+            if added:
+                self._steam_workshop_library_roots = current
+        if added:
+            logger.info(f"已登记Steam创意工坊库目录（运行时）: {added}")
+
+    def get_steam_workshop_library_roots(self):
+        """
+        Get the Workshop content roots of all known Steam libraries (runtime only).
+
+        Returns:
+            list[str]: roots in registration order
+        """
+        return list(getattr(self, "_steam_workshop_library_roots", None) or [])
 
     def get_steam_workshop_path(self):
         """

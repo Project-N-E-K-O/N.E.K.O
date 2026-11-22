@@ -322,6 +322,14 @@ def persist_user_workshop_folder(workshop_path):
     """Persist the actual Steam Workshop path into the config file (written only once per startup)"""
     return get_config_manager().persist_user_workshop_folder(workshop_path)
 
+def register_steam_workshop_library_roots(roots):
+    """Remember the Workshop content roots of all Steam libraries (runtime)"""
+    return get_config_manager().register_steam_workshop_library_roots(roots)
+
+def get_steam_workshop_library_roots():
+    """Get the Workshop content roots of all known Steam libraries (runtime)"""
+    return get_config_manager().get_steam_workshop_library_roots()
+
 def get_steam_workshop_path():
     """Get the Steam Workshop root directory path (runtime)"""
     return get_config_manager().get_steam_workshop_path()
