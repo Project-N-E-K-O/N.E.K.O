@@ -905,21 +905,24 @@ def _remove_unused_emotion_mapping(config_mgr, mmd_dir: Path, model_name: str) -
     key = model_name.replace("..", "_")
     mapping_dir = mmd_dir / "emotion_config"
     mapping = mapping_dir / f"{key}.json"
-    if not mapping.is_file() or not mapping.resolve().is_relative_to(mapping_dir.resolve()):
-        return
-    roots = [mmd_dir, config_mgr.project_root / "static" / "mmd"]
-    for folder in (config_mgr.get_steam_workshop_path(), config_mgr.get_workshop_path()):
-        if folder:
-            roots.append(Path(folder))
-    for root in dict.fromkeys(roots):
-        for path in root.rglob("*"):
-            if root == mmd_dir and path.relative_to(root).parts[0].lower() in RESERVED_DIRS:
-                continue
-            if (path.suffix.lower() in ALLOWED_MODEL_EXTENSIONS
-                    and path.stem.replace("..", "_").casefold() == key.casefold() and path.is_file()):
-                return
-    mapping.unlink(missing_ok=True)
-    logger.info("删除 MMD 情感映射配置: %s", mapping.name)
+    try:
+        if not mapping.is_file() or not mapping.resolve().is_relative_to(mapping_dir.resolve()):
+            return
+        roots = [mmd_dir, config_mgr.project_root / "static" / "mmd"]
+        for folder in (config_mgr.get_steam_workshop_path(), config_mgr.get_workshop_path()):
+            if folder:
+                roots.append(Path(folder))
+        for root in dict.fromkeys(roots):
+            for path in root.rglob("*"):
+                if root == mmd_dir and path.relative_to(root).parts[0].lower() in RESERVED_DIRS:
+                    continue
+                if (path.suffix.lower() in ALLOWED_MODEL_EXTENSIONS
+                        and path.stem.replace("..", "_").casefold() == key.casefold() and path.is_file()):
+                    return
+        mapping.unlink(missing_ok=True)
+        logger.info("删除 MMD 情感映射配置: %s", mapping.name)
+    except OSError as exc:
+        logger.warning("清理 MMD 情感映射配置失败，保留原文件 %s: %s", mapping.name, exc)
 
 
 def _delete_subdir_model_sync(safe_path: Path, top_subdir: Path) -> int:

@@ -132,3 +132,36 @@ async def test_f0210_delete_solo_subdir_and_top_level_model(monkeypatch, tmp_pat
     assert json.loads(resp_root.body)["deleted_files"] == 1
     assert not root_a.exists()
     assert root_b.exists()
+
+
+@pytest.mark.asyncio
+async def test_f0210_delete_model_succeeds_and_keeps_mapping_on_scan_oserror(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    mmd_dir = _setup_mmd_env(monkeypatch, tmp_path)
+    workshop_dir = tmp_path / "workshop"
+    workshop_dir.mkdir()
+    cm = mmd_router.get_config_manager()
+    cm.get_steam_workshop_path = lambda: str(workshop_dir)
+
+    model = mmd_dir / "Solo.pmx"
+    model.write_bytes(b"solo")
+    mapping = mmd_dir / "emotion_config" / "Solo.json"
+    mapping.parent.mkdir()
+    mapping.write_text('{"happy":1}')
+
+    real_rglob = Path.rglob
+
+    def guarded_rglob(self, pattern):
+        if self == workshop_dir:
+            raise PermissionError("workshop locked")
+        return real_rglob(self, pattern)
+
+    monkeypatch.setattr(Path, "rglob", guarded_rglob)
+
+    resp = await mmd_router.delete_mmd_model(_DummyRequest({"url": "/user_mmd/Solo.pmx"}))
+    body = json.loads(resp.body)
+    assert resp.status_code == 200
+    assert body["success"] is True
+    assert not model.exists()
+    assert mapping.read_text() == '{"happy":1}'

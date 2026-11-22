@@ -872,6 +872,8 @@ async def _upload_pending(
                     _load_json, visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX),
                 )
             except OSError as exc:
+                # Defer to next startup recovery rather than retry_later: background retry uploads
+                # .upload.json directly without comparing it against the residual .upload.jsonl stream.
                 logger.warning("visit recovery: cannot inspect sealed upload %s: %s", visit_id, exc)
                 sealed.discard(visit_id)
                 pending.add(visit_id)
@@ -888,6 +890,17 @@ async def _upload_pending(
                 # Use the same reason when resealing mismatched files too: valid file format with other field mismatches
                 # must not change normally ended visits to crash either.
                 reseal_reason = sealed_reason if reason in (None, "crash") else reason
+                if owner is None or char_uid is None:
+                    # Consult memory spool header before falling back to sealed_doc, so an intact
+                    # spool header still overrides a tampered sealed envelope; only take identity
+                    # from the verified sealed_doc when state.json and memory spool both lack it.
+                    owner, char_uid = await asyncio.to_thread(
+                        _with_header_fallback, spool_dir, visit_id, owner, char_uid,
+                    )
+                    if owner is None:
+                        owner = _owner_or_none(sealed_doc.get("own_visit_uid"))
+                    if char_uid is None:
+                        char_uid = _owner_or_none(sealed_doc.get("own_char_uid"))
                 try:
                     expected = await asyncio.to_thread(
                         _stream_doc_sync, spool_dir, visit_id, reseal_reason, owner, char_uid,
