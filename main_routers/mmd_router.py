@@ -976,7 +976,8 @@ def _tree_has_model_named(root: Path, key: str, skip_top_dirs: frozenset[str] = 
         for name in filenames:
             candidate = Path(name)
             if (candidate.suffix.lower() in ALLOWED_MODEL_EXTENSIONS
-                    and candidate.stem.replace("..", "_").casefold() == wanted):
+                    and candidate.stem.replace("..", "_").casefold() == wanted
+                    and os.path.isfile(os.path.join(dirpath, name))):
                 return True
     if errors:
         raise errors[0]
