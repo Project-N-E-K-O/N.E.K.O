@@ -172,6 +172,10 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "glm-5v-turbo": EXTRA_BODY_CLAUDE,
     "glm-5.1": EXTRA_BODY_CLAUDE,
     "glm-5.2": EXTRA_BODY_CLAUDE,
+    # glm-5.3-flash always thinks: thinking.type=disabled returns 400 code 1210
+    # ("始终思考，不支持关闭思考；请使用 low、high 或 max", observed 2026-11-22).
+    # reasoning_effort=low is the floor, for ordinary and focused turns alike.
+    "glm-5.3-flash": EXTRA_BODY_STEP_LOW,
     # Kimi family.
     "kimi-k2-0905-preview": EXTRA_BODY_CLAUDE,
     "kimi-k2.5": EXTRA_BODY_CLAUDE,
@@ -186,6 +190,8 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
     "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
     "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_OPENAI,
+    # V4.1 Flash reads images; enable_thinking=False reaches 0 reasoning tokens (2026-11-22).
+    "deepseek-ai/DeepSeek-V4.1-Flash": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-122B-A10B": EXTRA_BODY_OPENAI,
     # Silicon emotion preset (replaces delisted inclusionAI/Ling-mini-2.0); hybrid

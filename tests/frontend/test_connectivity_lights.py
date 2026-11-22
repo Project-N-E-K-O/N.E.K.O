@@ -296,13 +296,14 @@ def test_custom_api_test_button(mock_page: Page, running_server: str):
     summary_count = mock_page.evaluate("""() => {
         return document.querySelectorAll('.connectivity-summary-light').length;
     }""")
-    assert summary_count == 11, "Summary lights should cover all custom model slots"
+    # Ten slots: the retired vision slot has no card or light any more.
+    assert summary_count == 10, "Summary lights should cover all custom model slots"
 
     tooltip_state = mock_page.evaluate("""() => {
         const summaryLight = document.querySelector('.connectivity-summary-light[data-model-type="conversation"]');
         const coreInput = document.getElementById('apiKeyInput');
         const coreLight = coreInput?.closest('.connectivity-input-row')?.querySelector('.connectivity-light');
-        const label = window.t ? window.t('api.conversationModelConfig', '文本聊天模型') : '文本聊天模型';
+        const label = window.t ? window.t('api.conversationModelConfig', '聊天模型') : '聊天模型';
         const status = window.t ? window.t('connectivity.status.connected', '已连通') : '已连通';
         const modelIdLabel = window.t ? window.t('api.modelId', '模型ID') : '模型ID';
         return {
@@ -354,7 +355,6 @@ def test_custom_api_summary_lights_navigate_to_model_config(mock_page: Page, run
         "gameSummary": "game-summary-model-content",
         "emotion": "emotion-model-content",
         "decision": "decision-model-content",
-        "vision": "vision-model-content",
         "agent": "agent-model-content",
         "agentSmall": "agent-small-model-content",
         "omni": "omni-model-content",

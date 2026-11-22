@@ -4503,7 +4503,7 @@ async def test_vision_guess_external_cancellation_propagates_and_releases_sessio
 async def test_vision_endpoint_uses_image_url_guess(monkeypatch):
     class _FakeConfigManager:
         async def aget_model_api_config(self, model_type):
-            assert model_type == "vision"
+            assert model_type in ("conversation", "vision")
             return {
                 "model": "test-vision-model",
                 "base_url": "https://vision.example.test/v1",
@@ -4572,7 +4572,7 @@ async def test_vision_endpoint_uses_image_url_guess(monkeypatch):
 async def test_ai_drawing_review_uses_blind_vision_candidates_and_accepts_match(monkeypatch):
     class _FakeConfigManager:
         async def aget_model_api_config(self, model_type):
-            assert model_type == "vision"
+            assert model_type in ("conversation", "vision")
             return {
                 "model": "test-vision-model",
                 "base_url": "https://vision.example.test/v1",
@@ -4672,7 +4672,7 @@ async def test_ai_drawing_review_invalid_image_is_unavailable_without_model_call
 async def test_vision_endpoint_falls_back_when_payload_unparseable(monkeypatch):
     class _FakeConfigManager:
         async def aget_model_api_config(self, model_type):
-            assert model_type == "vision"
+            assert model_type in ("conversation", "vision")
             return {
                 "model": "test-vision-model",
                 "base_url": "https://vision.example.test/v1",

@@ -324,6 +324,8 @@ class ProactiveModelConfig:
     vision_api_key: str = ""
     vision_provider_type: str | None = None
     vision_is_custom: bool = False
+    # utils.legacy_vision.ImageModelChoice behind the vision_* fields, if any.
+    image_choice: Any = None
 
     @property
     def has_vision_model(self) -> bool:
@@ -332,6 +334,36 @@ class ProactiveModelConfig:
         return bool(
             self.vision_model and (self.vision_api_key or self.vision_is_custom)
         )
+
+
+def _chat_image_refusal_hook(model_config: ProactiveModelConfig) -> Callable[[], None] | None:
+    """Remember a screenshot refusal when the screenshot went to the chat model itself.
+
+    A refusal from a separately configured (retired) vision route says nothing
+    about the chat model, so no hook is returned for it.
+    """
+    choice = model_config.image_choice
+    if choice is not None:
+        if choice.using_legacy:
+            return None
+    elif (
+        model_config.vision_model != model_config.conversation_model
+        or (model_config.vision_base_url or None) != (model_config.conversation_base_url or None)
+        or (model_config.vision_api_key or None) != (model_config.conversation_api_key or None)
+        or (model_config.vision_provider_type or None) != (model_config.conversation_provider_type or None)
+    ):
+        return None
+    chat = {
+        "model": model_config.conversation_model,
+        "base_url": model_config.conversation_base_url,
+        "api_key": model_config.conversation_api_key,
+        "provider_type": model_config.conversation_provider_type,
+    }
+
+    def mark() -> None:
+        from utils.legacy_vision import mark_chat_image_refused
+        mark_chat_image_refused(chat, "proactive screenshot")
+    return mark
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,6 +474,11 @@ async def _make_proactive_llm(
         await _check_proactive_vision_consent(live_consent_check)
     require_current_round()
     if use_vision and model_config.has_vision_model:
+        if model_config.image_choice is not None:
+            # The screenshot is about to be sent: only now is a retired,
+            # separately configured vision route actually used.
+            from utils.legacy_vision import note_legacy_vision_use
+            note_legacy_vision_use(model_config.image_choice, "proactive screenshot")
         model = model_config.vision_model
         base_url = model_config.vision_base_url
         api_key = model_config.vision_api_key
@@ -875,6 +912,7 @@ async def _run_phase2_generation(
         screenshot_b64=screenshot_b64,
         log=active_logger,
         on_model_reply=on_model_reply,
+        on_image_refused=_chat_image_refusal_hook(model_config),
     )
     if generated.result is not None:
         return Phase2GuardedOutput(result=generated.result)
@@ -994,6 +1032,7 @@ async def _generate_phase2_stream(
     screenshot_b64: str | None,
     log: logging.Logger | None = None,
     on_model_reply: Callable[[], None] | None = None,
+    on_image_refused: Callable[[], None] | None = None,
 ) -> Phase2Generation:
     """Run the guarded Phase 2 stream and preserve its legacy abort semantics.
 
@@ -1159,6 +1198,11 @@ async def _generate_phase2_stream(
             type(exc).__name__,
             exc,
         )
+        if phase2_use_vision and on_image_refused is not None:
+            from utils.legacy_vision import is_image_unsupported_error
+            if is_image_unsupported_error(exc):
+                # Phase 2 never retries; later rounds talk without the screenshot.
+                on_image_refused()
         _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
 
     if pass_probe and not aborted:

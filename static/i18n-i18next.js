@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 新增「使魔模型·小」（api.agentSmall* / api.customModelProviderFollowEmotion / api.customModelProviderFollowAgent）八语言文案，
-    // 并入记忆浏览器那批文案后的 key 结构，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-22-capture-self-ui-mask-toggle';
+    // 新增「截图遮住聊天记录」开关（settings.toggles.captureSelfUiMask / captureSelfUiMaskTooltip）八语言文案，
+    // 并入对话模型改名那批文案后的 key 结构，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-11-22-capture-mask-toggle-after-model-rename';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
