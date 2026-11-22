@@ -699,6 +699,7 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "socket.create_server",
             "urllib.request.urlopen",
             "urllib.request.build_opener",
+            "urllib.request.urlretrieve",
             "http.client.HTTPConnection",
             "http.client.HTTPSConnection",
             "asyncio.open_connection",
@@ -751,6 +752,14 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "asyncio.create_subprocess_exec",
             "asyncio.create_subprocess_shell",
             "multiprocessing.Process",
+            "multiprocessing.Pool",
+            "multiprocessing.pool.Pool",
+            "multiprocessing.get_context",
+            "concurrent.futures.ProcessPoolExecutor",
+            "concurrent.futures.process.ProcessPoolExecutor",
+            "os.fork",
+            "os.forkpty",
+            "pty.fork",
             "pty.spawn",
         ),
     ),
@@ -828,6 +837,7 @@ _IMPORT_HINTS = {
     "ftplib": _NETWORK,
     "smtplib": _NETWORK,
     "subprocess": _PROCESS,
+    "multiprocessing": _PROCESS,
 }
 # Builtins the scan cares about; only when the name is not rebound.
 _BUILTINS = frozenset({"open", "eval", "exec", "compile", "getattr", "__import__"})
@@ -853,6 +863,7 @@ _CONTEXT_LOSS = (
     "_thread.start_new_thread",
     "concurrent.futures.ThreadPoolExecutor",
     "concurrent.futures.ProcessPoolExecutor",
+    "concurrent.futures.process.ProcessPoolExecutor",
     "concurrent.futures.thread.ThreadPoolExecutor",
     "multiprocessing.pool.ThreadPool",
 )

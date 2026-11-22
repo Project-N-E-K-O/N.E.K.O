@@ -1441,3 +1441,33 @@ def test_cli_rejects_permissions_on_every_sdk_decorator(tmp_path):
     assert any(message.startswith("@before_entry in worker.py:6: the plugin SDK does not accept permissions=") for message in errors)
     # Subset checks stay limited to components that narrow.
     assert not any("permissions= lists" in message for message in errors)
+
+
+@pytest.mark.parametrize(
+    "source,permission",
+    [
+        ("import multiprocessing\nmultiprocessing.Pool(2).map(print, [1])", "system.process:spawn"),
+        ("from multiprocessing.pool import Pool\nPool(2)", "system.process:spawn"),
+        ("import multiprocessing as mp\nmp.get_context('spawn').Process(target=print).start()", "system.process:spawn"),
+        ("from concurrent.futures import ProcessPoolExecutor\nProcessPoolExecutor().submit(print)", "system.process:spawn"),
+        ("import os\nos.fork()", "system.process:spawn"),
+        ("import os\nos.forkpty()", "system.process:spawn"),
+        ("from urllib.request import urlretrieve\nurlretrieve('https://a', 'f')", "system.network:connect"),
+    ],
+)
+def test_process_pools_forks_and_downloads_are_direct_evidence(tmp_path, source, permission):
+    report = _scan(tmp_path, source, '[permissions.require]\n"system.env:read" = { reason = "x" }\n')
+    assert _bases(report)[permission] == "resolved_call"
+    assert any(issue.code == "used_undeclared" and issue.params["permission"] == permission
+               for issue in compare_declarations(report))
+    assert scan_note(report) != "no_extra_usage"
+
+
+def test_process_pool_executor_is_still_a_context_loss_blind_spot(tmp_path):
+    report = _scan(tmp_path, "from concurrent.futures import ProcessPoolExecutor\nProcessPoolExecutor()")
+    assert [spot["type"] for spot in report["blind_spots"]] == ["context_loss"]
+
+
+def test_importing_multiprocessing_alone_is_a_weak_hint(tmp_path):
+    report = _scan(tmp_path, "import multiprocessing\nN = multiprocessing.cpu_count()")
+    assert _bases(report) == {"system.process:spawn": "import_only"}
