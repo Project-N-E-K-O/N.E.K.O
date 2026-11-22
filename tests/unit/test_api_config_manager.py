@@ -294,7 +294,6 @@ class TestRequestyResolution:
         for task, model in {
             'conversation': 'google/gemini-2.5-flash',
             'summary': 'google/gemini-2.5-flash',
-            'correction': 'google/gemini-2.5-flash',
             'emotion': 'google/gemini-2.5-flash-lite',
             'vision': 'google/gemini-2.5-flash',
             'agent': 'google/gemini-3.8-flash',
@@ -374,7 +373,7 @@ class TestOpperResolution:
             core_key if core_provider != 'free' else ''
         )
         assert cfg['AGENT_MODEL_API_KEY'] == opper_key
-        for task in ('conversation', 'summary', 'correction', 'emotion', 'vision', 'agent'):
+        for task in ('conversation', 'summary', 'emotion', 'vision', 'agent'):
             resolved = config_manager.get_model_api_config(task)
             assert resolved['api_key'] == opper_key, task
             assert resolved['base_url'] == 'https://api.opper.ai/v3/compat', task
@@ -468,7 +467,6 @@ class TestAtlasCloudResolution:
         for task, model in {
             'conversation': 'google/gemini-3.1-flash-lite',
             'summary': 'deepseek-ai/deepseek-v4-flash',
-            'correction': 'deepseek-ai/deepseek-v4-flash',
             'emotion': 'google/gemini-2.5-flash-lite',
             'vision': 'google/gemini-3.1-flash-lite',
             'agent': 'google/gemini-3-flash-preview',
@@ -615,7 +613,6 @@ class TestCustomApiToggle:
             ('summary', 'SUMMARY_MODEL'),
             ('gameMain', 'GAME_MAIN_MODEL'),
             ('gameSummary', 'GAME_SUMMARY_MODEL'),
-            ('correction', 'CORRECTION_MODEL'),
             ('emotion', 'EMOTION_MODEL'),
             ('decision', 'DECISION_MODEL'),
             ('vision', 'VISION_MODEL'),

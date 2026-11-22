@@ -1472,7 +1472,7 @@
         "customModelProviderFollowCore": "Seguir o provedor de modelo de voz",
         "customModelProviderFollowAssist": "Seguir o provedor de modelo geral",
         "customModelProviderFollowConversation": "Seguir modelo de diálogo de texto",
-        "customModelProviderFollowSummary": "Seguir modelo de resumo",
+        "customModelProviderFollowSummary": "Seguir modelo de organização da memória",
         "customModelProviderCustom": "API personalizada",
         "keyAutoFilledFromModel": "A Key segue a configuração do modelo selecionado",
         "keyBook": {
@@ -1524,8 +1524,7 @@
         "baseUrlExamplePlaceholder": "por exemplo, https://api.openai.com/v1",
         "modelExamplePlaceholder": "por exemplo, gpt-3.5-turbo, qwen-turbo, glm-4-flash",
         "conversationApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
-        "summaryApiKeyPlaceholder": "Insira a chave de API de resumo",
-        "correctionApiKeyPlaceholder": "Insira a chave da API de correção",
+        "summaryApiKeyPlaceholder": "Insira a chave de API de organização da memória",
         "emotionApiKeyPlaceholder": "Insira a chave da API Emotion",
         "visionModelExamplePlaceholder": "por exemplo, gpt-4-vision-preview, qwen-vl-plus",
         "visionApiKeyPlaceholder": "Insira a chave da API Vision",
@@ -1554,11 +1553,10 @@
             "message": "Você está usando a API dos EUA da Alibaba, que não oferece suporte a TTS nem voz em tempo real. Recomendamos mudar para a API de Singapura da Alibaba."
         },
         "conversationModelConfig": "Modelo de chat de texto",
-        "summaryModelConfig": "Modelo de resumo",
+        "summaryModelConfig": "Organização da memória (modelo grande)",
         "gameModelsConfig": "Modelo de minijogo",
         "gameMainModelConfig": "Modelo de chat de minijogos",
         "gameSummaryModelConfig": "Modelo de memória de minijogos",
-        "correctionModelConfig": "Modelo de correção",
         "emotionModelConfig": "Modelo de reconhecimento (pequeno)",
         "decisionModelConfig": "Modelo de decisão (pequeno)",
         "visionModelConfig": "Modelo de chat visual",
@@ -1575,7 +1573,6 @@
         "summaryModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
         "gameMainModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
         "gameSummaryModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
-        "correctionModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
         "emotionModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
         "decisionModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
         "visionModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
@@ -4771,8 +4768,8 @@
                 "desc": "Marque esta opção para ativar. Depois, você poderá escolher um modelo separado para recursos como chat, memória e reconhecimento."
             },
             "step9": {
-                "title": "📝 Modelo de resumo",
-                "desc": "O modelo de resumo gera resumos de conversas e gerencia a memória. Configure o serviço de API independente para tarefas de resumo."
+                "title": "📝 Organização da memória (modelo grande)",
+                "desc": "O modelo de organização da memória cuida da memória dela: comprime o histórico de conversa, extrai fatos, reflete e revisa a persona e as lembranças. Você pode configurar um serviço de API independente para ele."
             }
         },
         "voice_clone": {

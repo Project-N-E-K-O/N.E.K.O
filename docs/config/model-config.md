@@ -6,8 +6,7 @@ N.E.K.O. resolves models by **role**, not through one global model string. The s
 | --- | --- |
 | Core | `CORE_MODEL` |
 | Conversation | `CONVERSATION_MODEL` |
-| Summary | `SUMMARY_MODEL` |
-| Correction | `CORRECTION_MODEL` |
+| Memory upkeep (formerly summary and correction) | `SUMMARY_MODEL` |
 | Emotion | `EMOTION_MODEL` |
 | Vision | `VISION_MODEL` |
 | Agent | `AGENT_MODEL` |
