@@ -85,7 +85,10 @@ def handle_check(args: argparse.Namespace) -> int:
             ),
             ignored_paths=ignored_paths or (),
         )
-        if ignored_paths is None:
+        # Only when it matters: some link was reported as an error.
+        if ignored_paths is None and any(
+            message.startswith("plugin source must not contain symbolic links") for _, message in issues
+        ):
             issues.append(
                 ("warning", "could not read gitignored paths from git, so links inside them are reported as errors")
             )

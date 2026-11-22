@@ -3519,7 +3519,8 @@ def test_link_scan_still_reports_a_tracked_link_that_matches_an_ignore_rule(
     subprocess.run(["git", "add", "-f", "node_modules/.pnpm/pkg"], cwd=plugin_dir, check=True, capture_output=True)
 
     assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 1
-    assert f"symbolic links: {Path('node_modules/.pnpm/pkg')}" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert f"plugin source must not contain symbolic links: {Path('node_modules/.pnpm/pkg')}\n" in err
 
 
 def test_link_scan_ignores_no_paths_in_the_builtin_root(
@@ -3690,7 +3691,17 @@ def test_check_says_when_git_cannot_list_ignored_paths(
     assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 1
     captured = capsys.readouterr()
     assert "could not read gitignored paths from git, so links inside them are reported as errors" in captured.out
-    assert f"symbolic links: {Path('node_modules/.pnpm/pkg')}" in captured.err
+    # Sorted, whatever order the filesystem lists them in.
+    assert (
+        "plugin source must not contain symbolic links: "
+        f"{Path('assets/pkg')}, {Path('node_modules/.pnpm/pkg')}\n"
+    ) in captured.err
+
+    # No link to report: nothing to explain either.
+    (plugin_dir / "assets" / "pkg").unlink()
+    (plugin_dir / "node_modules" / ".pnpm" / "pkg").unlink()
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "could not read gitignored paths" not in capsys.readouterr().out
 
 
 def test_link_scan_ignores_no_paths_when_the_repository_is_the_neko_checkout(
@@ -3738,7 +3749,13 @@ def test_every_cli_git_call_ignores_an_inherited_repository_location(
         subprocess.run(["git", *args], cwd=outer, check=True, capture_output=True)
     monkeypatch.setenv("GIT_DIR", str(outer / ".git"))
     monkeypatch.setenv("GIT_WORK_TREE", str(outer))
+    # A `git -c` wrapper and its newer numbered form.
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'neko.leaked'='outer'")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "neko.leaked")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "outer")
 
+    assert publish_cmd._git_config_values(plugin_dir, "neko.leaked") == []
     assert Path(publish_cmd._git(plugin_dir, "rev-parse", "--show-toplevel")).resolve() == plugin_dir.resolve()
     init_cmd._run_git(["config", "neko.test", "init"], cwd=plugin_dir)
     project._run_git(["config", "neko.test2", "project"], cwd=plugin_dir)
@@ -3758,3 +3775,59 @@ def test_every_cli_git_call_ignores_an_inherited_repository_location(
     assert config(plugin_dir, "neko.test2") == "project"
     assert config(outer, "neko.test") == ""
     assert config(outer, "neko.test2") == ""
+
+
+def test_ignored_link_warning_skips_what_the_build_excludes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A venv in the plugin (ignored by the scaffolded .gitignore) holds links,
+    # but the build never packages .venv/, so the warning must not count it;
+    # the same for [tool.neko.build] excludes. A link the build would copy
+    # still counts.
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    plugin_dir = _init_committed(tmp_path, "build_excludes")
+    with (plugin_dir / ".gitignore").open("a", encoding="utf-8") as gitignore:
+        gitignore.write(".venv/\nscratch/\nlocal_cache/\n*.lnk\n")
+    with (plugin_dir / "pyproject.toml").open("a", encoding="utf-8") as pyproject:
+        pyproject.write('\n[tool.neko.build]\nexclude_dirs = ["scratch"]\nexclude = ["*.lnk"]\n')
+    _commit_all(plugin_dir)
+    target = tmp_path / "outside.txt"
+    target.write_text("outside\n", encoding="utf-8")
+    try:
+        (plugin_dir / ".venv" / "bin").mkdir(parents=True)
+        (plugin_dir / ".venv" / "bin" / "python").symlink_to(target)
+        (plugin_dir / ".venv" / "lib64").symlink_to(plugin_dir / ".venv" / "bin", target_is_directory=True)
+        (plugin_dir / "scratch").mkdir()
+        (plugin_dir / "scratch" / "data").symlink_to(target)
+        (plugin_dir / "notes.lnk").symlink_to(target)
+        (plugin_dir / "local_cache").mkdir()
+        (plugin_dir / "local_cache" / "config.txt").symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks are not available here")
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    captured = capsys.readouterr()
+    assert "symbolic links" not in captured.err
+    assert f"[WARNING] 1 symbolic link(s) in gitignored paths ({Path('local_cache/config.txt')})" in captured.out
+
+    # Build-excluded ignored directories are not even walked by the link scan.
+    from plugin.neko_plugin_cli.core.build_rules import load_build_rules
+    from plugin.neko_plugin_cli.core.toml_utils import load_toml
+    from plugin.neko_plugin_cli.repo_state import ignored_untracked_paths
+
+    ignored_paths = ignored_untracked_paths(plugin_dir)
+    rules = load_build_rules(load_toml(plugin_dir / "pyproject.toml"))
+    real_scandir = os.scandir
+
+    def scandir(path):
+        assert Path(path) not in {plugin_dir / ".venv", plugin_dir / "scratch"}
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    issues = []
+    validate_cmd._check_symlink_tree(plugin_dir, issues, ignored_paths=ignored_paths, build_rules=rules)
+    assert [severity for severity, _ in issues] == ["warning"]
