@@ -4263,7 +4263,7 @@
             "slopFilter": "Expressão natural",
             "slopFilterTooltip": "Reduz formas de dizer repetitivas e estereotipadas nas respostas anteriores para que ela se expresse com mais naturalidade.",
             "captureSelfUiMask": "Ocultar chat nas capturas",
-            "captureSelfUiMaskTooltip": "Quando ela olha sua tela, o histórico de chat e as opções do N.E.K.O são cobertos antes de a imagem ir para o modelo. A caixa de texto continua visível.",
+            "captureSelfUiMaskTooltip": "Quando ela olha sua tela, o histórico de chat e as opções do N.E.K.O são cobertos antes de a imagem ir para o modelo, desde que dê para saber onde eles estão na tela. Se não der (por exemplo, o navegador não está em primeiro plano ao compartilhar a tela inteira), a imagem é enviada sem cobertura. A caixa de texto continua visível.",
             "catSettings": "Configurações de gata",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Vira um gatinho automaticamente após um tempo de inatividade",

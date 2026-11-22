@@ -4263,7 +4263,7 @@
             "slopFilter": "自然表达",
             "slopFilterTooltip": "减少历史回复中重复、套路化的说法，让她表达得更自然。",
             "captureSelfUiMask": "截图遮住聊天记录",
-            "captureSelfUiMaskTooltip": "看屏幕时，先把 N.E.K.O 自己的聊天记录和选项区域涂掉，再把画面发给模型。输入框不遮。",
+            "captureSelfUiMaskTooltip": "看屏幕时，能确定 N.E.K.O 自己的聊天记录和选项区域在画面里的位置，就先涂掉再把画面发给模型；确定不了（例如整屏共享时浏览器不在最前面）就照原样发送，不涂。输入框不遮。",
             "catSettings": "猫咪设置",
             "autoCat": "自动变猫",
             "autoCatTooltip": "一段时间无互动后自动变成小猫",
