@@ -358,6 +358,7 @@ def test_macos_remove_reports_unregister_failure(
     # The bundle is kept so a rerun of --remove can still unregister it.
     assert app_dir.exists()
     assert f"rm -rf '{app_dir}'" in out
+    assert "Only if lsregister is" in out
 
 
 def test_macos_remove_without_app_skips_lsregister(monkeypatch, tmp_path) -> None:
@@ -542,3 +543,22 @@ def test_linux_remove_does_not_follow_planted_temp_symlink(monkeypatch, tmp_path
         "mimeapps.list",
         "mimeapps.list.neko-tmp",
     ]
+
+
+def test_linux_remove_handles_utf8_bom(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    config_list.write_bytes(
+        b"\xef\xbb\xbf[Default Applications]\n"
+        b"x-scheme-handler/neko=neko-protocol-handler.desktop\n"
+        b"text/html=firefox.desktop\n"
+    )
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert config_list.read_bytes() == (
+        b"\xef\xbb\xbf[Default Applications]\n"
+        b"text/html=firefox.desktop\n"
+    )

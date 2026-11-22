@@ -285,7 +285,10 @@ def _remove_macos() -> bool:
         if not _run_required([LSREGISTER, "-u", str(app_dir)], "lsregister"):
             print("[FAIL] neko:// protocol was not removed (macOS)")
             print(f"     App bundle left at: {app_dir}")
-            print("     Rerun --remove once lsregister works, or delete it manually:")
+            # Deleting the bundle first would hide it from later --remove runs
+            # and leave the Launch Services record behind.
+            print("     Rerun --remove once lsregister works. Only if lsregister is")
+            print("     unavailable for good, delete the bundle manually:")
             print(f"     rm -rf {_posix_shell_quote(str(app_dir))}")
             return False
         shutil.rmtree(app_dir)
@@ -355,7 +358,8 @@ def _drop_mimeapps_association(path: Path) -> None:
     """Remove our desktop file from the neko:// entries of a mimeapps.list.
 
     Other handlers listed for the scheme and every other line are kept as is.
-    Raises OSError / UnicodeError when the file cannot be read or written.
+    Raises OSError when the file cannot be read or written; bytes that are
+    not valid UTF-8 are carried through unchanged.
     """
     if not path.is_file():
         return
@@ -375,6 +379,9 @@ def _drop_mimeapps_association(path: Path) -> None:
     kept: list[str] = []
     for index, line in enumerate(lines):
         stripped = line.strip()
+        if index == 0:
+            # A leading UTF-8 BOM would otherwise hide the first group header.
+            stripped = stripped.removeprefix("\ufeff").strip()
         if stripped.startswith("["):
             group = stripped
         key, sep, value = line.partition("=")
@@ -427,7 +434,7 @@ def _remove_linux() -> bool:
     for mimeapps in _linux_mimeapps_paths():
         try:
             _drop_mimeapps_association(mimeapps)
-        except (OSError, UnicodeError) as exc:
+        except OSError as exc:
             print(f"[FAIL] Could not remove the neko:// association from {mimeapps}: {exc}")
             ok = False
     if desktop_file.exists():
