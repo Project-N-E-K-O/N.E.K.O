@@ -61,9 +61,13 @@ async def _finish_catgirl_runtime_refresh(
             if init_one_catgirl:
                 await await_retirement(init_one_catgirl(name, is_new=False))
                 refreshed = True
-    finally:
+    except Exception as exc:
         if cancelled:
-            raise asyncio.CancelledError
+            logger.warning("取消后刷新角色 %s 运行时配置失败: %s", name, exc, exc_info=exc)
+            raise asyncio.CancelledError from exc
+        raise
+    if cancelled:
+        raise asyncio.CancelledError
     return refreshed
 
 
@@ -667,7 +671,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 )
                 _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
 
-            await _finish_catgirl_runtime_refresh(
+            applied_runtime = await _finish_catgirl_runtime_refresh(
                 name,
                 apply_runtime=apply_runtime,
                 cancelled=cancelled,
@@ -676,7 +680,7 @@ async def update_catgirl_l2d(name: str, request: Request):
             return JSONResponse(content={
                 'success': True,
                 'idle_animation_updated': True,
-                'applied_runtime': apply_runtime,
+                'applied_runtime': applied_runtime,
             })
 
         live2d_model = data.get('live2d')
@@ -1052,7 +1056,7 @@ async def update_catgirl_l2d(name: str, request: Request):
         except Exception:
             pass  # Telemetry must never affect saving the model.
         # Fast path: refresh only the edited character's session_manager (avatar configuration), without iterating over the other N-1 entries.
-        await _finish_catgirl_runtime_refresh(
+        applied_runtime = await _finish_catgirl_runtime_refresh(
             name,
             apply_runtime=apply_runtime,
             cancelled=cancelled,
@@ -1071,7 +1075,7 @@ async def update_catgirl_l2d(name: str, request: Request):
         return JSONResponse(content={
             'success': True,
             'message': message,
-            'applied_runtime': apply_runtime,
+            'applied_runtime': applied_runtime,
         })
 
     except MaintenanceModeError:

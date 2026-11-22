@@ -272,3 +272,44 @@ async def test_f0210_delete_subdir_model_handles_unreadable_symlinks_by_extensio
     assert not solo2.exists()
     assert pack2_dir.exists()
     assert unreadable_sibling.exists()
+
+
+@pytest.mark.asyncio
+async def test_f0210_delete_subdir_model_keeps_dir_when_hidden_subdir_cannot_be_listed(
+    monkeypatch, tmp_path,
+):
+    import os
+
+    mmd_dir = _setup_mmd_env(monkeypatch, tmp_path)
+    pack_dir = mmd_dir / "PackWithLockedSubdir"
+    tex_dir = pack_dir / "tex"
+    hidden_dir = pack_dir / "hidden"
+    tex_dir.mkdir(parents=True)
+    hidden_dir.mkdir(parents=True)
+    solo_model = pack_dir / "Solo.pmx"
+    skin = tex_dir / "skin.png"
+    hidden_sibling = hidden_dir / "Other.pmx"
+    solo_model.write_bytes(b"solo")
+    skin.write_bytes(b"tex")
+    hidden_sibling.write_bytes(b"other")
+
+    real_scandir = os.scandir
+
+    def guarded_scandir(path="."):
+        if os.path.abspath(os.fspath(path)) == os.path.abspath(hidden_dir):
+            raise PermissionError(13, "Permission denied", os.fspath(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
+
+    resp = await mmd_router.delete_mmd_model(
+        _DummyRequest({"url": "/user_mmd/PackWithLockedSubdir/Solo.pmx"})
+    )
+    body = json.loads(resp.body)
+    assert resp.status_code == 200
+    assert body["success"] is True
+    assert body["deleted_files"] == 1
+    assert not solo_model.exists()
+    assert pack_dir.exists()
+    assert skin.exists()
+    assert hidden_sibling.exists()

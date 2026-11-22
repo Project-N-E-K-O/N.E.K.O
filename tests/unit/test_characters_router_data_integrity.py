@@ -734,3 +734,65 @@ async def test_update_master_and_touch_set_refresh_runtime_after_cancellation_du
     saved_touch = get_reserved(cm_touch.load_characters()["猫娘"]["测试猫娘"], "touch_set")
     assert saved_touch["mao"] == {"default": {"motions": ["m1"]}}
     assert touch_refreshed == [("测试猫娘", False, False)]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_save_failure_propagates_cancellation_with_cause(monkeypatch):
+    name = "测试猫娘"
+    lock = asyncio.Lock()
+    monkeypatch.setattr(voice_registry_module, "character_config_mutation_lock", lock)
+
+    # 1. Cancelled during save that then fails with OSError must raise CancelledError (with __cause__), not HTTP 500 JSON
+    cm = DummyConfigManager(_base_characters())
+    cm.allow_save_finish.clear()
+    mgr = DummySessionMgr(is_active=True)
+    refresh_calls = []
+
+    def fail_save(_characters, _path=None):
+        raise OSError("disk full")
+
+    async def refresh(char_name, *, is_new):
+        refresh_calls.append((char_name, is_new))
+
+    monkeypatch.setattr(cm, "save_characters", fail_save)
+    monkeypatch.setattr(voice_registry_module, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(voice_registry_module, "get_session_manager", lambda: {name: mgr})
+    monkeypatch.setattr(voice_registry_module, "get_init_one_catgirl", lambda: refresh)
+
+    async with asyncio.timeout(None):
+        task = asyncio.create_task(voice_registry_module.unregister_voice(name))
+        await asyncio.wait_for(cm.save_started.wait(), 2)
+        task.cancel()
+        cm.allow_save_finish.set()
+        with pytest.raises(asyncio.CancelledError) as exc_info:
+            await task
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert "disk full" in str(exc_info.value.__cause__)
+    assert not lock.locked()
+    assert mgr.ended is False
+    assert refresh_calls == []
+
+    # 2. Cancelled during successful save whose post-save refresh raises must also propagate CancelledError with __cause__
+    cm2 = DummyConfigManager(_base_characters())
+    cm2.allow_save_finish.clear()
+    mgr2 = DummySessionMgr(is_active=False)
+
+    async def failing_refresh(_char_name, *, is_new):
+        raise RuntimeError("reload boom")
+
+    monkeypatch.setattr(voice_registry_module, "get_config_manager", lambda: cm2)
+    monkeypatch.setattr(voice_registry_module, "get_session_manager", lambda: {name: mgr2})
+    monkeypatch.setattr(voice_registry_module, "get_init_one_catgirl", lambda: failing_refresh)
+
+    task2 = asyncio.create_task(voice_registry_module.unregister_voice(name))
+    await asyncio.wait_for(cm2.save_started.wait(), 2)
+    task2.cancel()
+    cm2.allow_save_finish.set()
+    with pytest.raises(asyncio.CancelledError) as exc_info2:
+        await task2
+
+    assert isinstance(exc_info2.value.__cause__, RuntimeError)
+    assert "reload boom" in str(exc_info2.value.__cause__)
+    assert not lock.locked()
+    assert get_reserved(cm2.load_characters()["猫娘"][name], "voice_id") == ""

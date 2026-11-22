@@ -1749,9 +1749,13 @@ async def update_master(request: Request):
     # Automatically reload configuration.
     try:
         await await_retirement(initialize_character_data())
-    finally:
+    except Exception as exc:
         if cancelled:
-            raise asyncio.CancelledError
+            logger.warning("取消后重载主人配置失败: %s", exc, exc_info=exc)
+            raise asyncio.CancelledError from exc
+        raise
+    if cancelled:
+        raise asyncio.CancelledError
     return {"success": True}
 
 

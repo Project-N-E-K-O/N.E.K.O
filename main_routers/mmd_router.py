@@ -1019,15 +1019,32 @@ def _is_other_model(candidate: Path, resolved_target: Path) -> bool:
         return True
 
 
+def _tree_has_other_model(root: Path, resolved_target: Path) -> bool:
+    """Whether root contains another model file or cannot be scanned completely.
+
+    Uses os.walk instead of Path.rglob: on Python 3.11 rglob silently skips
+    unreadable subdirectories, which could hide a sibling model and cause rmtree
+    to destroy shared textures. Any listing error or unreadable model-extension
+    candidate conservatively returns True so the directory is preserved.
+    """
+    errors: list[OSError] = []
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=errors.append):
+        for name in filenames:
+            candidate = Path(dirpath, name)
+            if candidate.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
+                continue
+            if _file_check(candidate) is False:
+                continue
+            if _is_other_model(candidate, resolved_target):
+                return True
+    return bool(errors)
+
+
 def _delete_subdir_model_sync(safe_path: Path, top_subdir: Path) -> int:
     """Delete an MMD model in a subdirectory, removing the directory only if no sibling model remains."""
     resolved_target = safe_path.resolve()
     resolved_top = top_subdir.resolve()
-    has_sibling_model = any(
-        _is_other_model(candidate, resolved_target)
-        for candidate in _iter_model_files(top_subdir)
-    )
-    if not has_sibling_model:
+    if not _tree_has_other_model(top_subdir, resolved_target):
         return _count_and_rmtree(top_subdir)
 
     safe_path.unlink()

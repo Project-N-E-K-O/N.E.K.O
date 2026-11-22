@@ -122,12 +122,17 @@ async def update_catgirl_voice_id(name: str, request: Request):
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
 
     try:
-        return await await_retirement(
+        result = await await_retirement(
             _refresh_character_voice(name, session_manager, is_current_catgirl, old_voice_id, voice_id)
         )
-    finally:
+    except Exception as exc:
         if cancelled:
-            raise asyncio.CancelledError
+            logger.warning("取消后刷新角色 %s 音色状态失败: %s", name, exc, exc_info=exc)
+            raise asyncio.CancelledError from exc
+        raise
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
 
 
 async def _refresh_character_voice(
@@ -260,7 +265,7 @@ async def unregister_voice(name: str):
             is_current_catgirl = (name == characters.get('当前猫娘', ''))
 
         try:
-            return await await_retirement(
+            result = await await_retirement(
                 _refresh_character_voice(
                     name,
                     session_manager,
@@ -270,9 +275,14 @@ async def unregister_voice(name: str):
                     cleared=True,
                 )
             )
-        finally:
+        except Exception as exc:
             if cancelled:
-                raise asyncio.CancelledError
+                logger.warning("取消后刷新角色 %s 音色注销状态失败: %s", name, exc, exc_info=exc)
+                raise asyncio.CancelledError from exc
+            raise
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
 
     except MaintenanceModeError:
         raise
@@ -308,9 +318,13 @@ async def clear_voice_ids():
             # Automatically reload the configuration.
             initialize_character_data = get_initialize_character_data()
             await await_retirement(initialize_character_data())
-        finally:
+        except Exception as exc:
             if cancelled:
-                raise asyncio.CancelledError
+                logger.warning("取消后完成清空音色刷新失败: %s", exc, exc_info=exc)
+                raise asyncio.CancelledError from exc
+            raise
+        if cancelled:
+            raise asyncio.CancelledError
 
         return JSONResponse({
             'success': True,

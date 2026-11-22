@@ -31,8 +31,11 @@ async def await_completion_with_cancel(coro):
     operation = asyncio.create_task(coro)
     try:
         return await asyncio.shield(operation), False
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as cancel_exc:
         while not operation.done():
             with suppress(asyncio.CancelledError):
                 await asyncio.wait({operation})
-        return operation.result(), True
+        try:
+            return operation.result(), True
+        except Exception as exc:
+            raise cancel_exc from exc
