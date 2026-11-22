@@ -47,7 +47,7 @@ from config.prompts.prompts_memory import get_star_map_cluster_label_prompt
 from memory.evidence import evidence_score
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
-from utils.file_utils import atomic_write_json, atomic_write_json_async
+from utils.file_utils import atomic_write_json
 from utils.language_utils import get_global_language_full, normalize_language_code
 from utils.llm_client import create_chat_llm_async
 from utils.logger_config import get_module_logger
@@ -501,18 +501,35 @@ class StarMapLabelModelNotConfigured(RuntimeError):
     """The summary model has no model or base URL yet; no call was made."""
 
 
+# Serializes the failure stamp's read-modify-write with the success write, so
+# a stamp never writes back a cache read before new labels were saved.
+_LABEL_CACHE_WRITE_LOCK = threading.Lock()
+
+
 def _record_label_failure_sync(char_dir: Path, now_dt: datetime) -> None:
     """Stamp the label cache with a failed attempt, keeping any labels already there."""
-    if not char_dir.is_dir():
-        return
-    cache = _load_cluster_label_cache(char_dir)
-    cache[_LABEL_FAILED_AT_KEY] = now_dt.isoformat()
-    atomic_write_json(
-        str(char_dir / _STAR_MAP_CACHE_FILENAME),
-        cache,
-        indent=2,
-        ensure_ascii=False,
-    )
+    with _LABEL_CACHE_WRITE_LOCK:
+        if not char_dir.is_dir():
+            return
+        cache = _load_cluster_label_cache(char_dir)
+        cache[_LABEL_FAILED_AT_KEY] = now_dt.isoformat()
+        atomic_write_json(
+            str(char_dir / _STAR_MAP_CACHE_FILENAME),
+            cache,
+            indent=2,
+            ensure_ascii=False,
+        )
+
+
+def _write_label_cache_sync(char_dir: Path, cache_payload: dict[str, Any]) -> None:
+    with _LABEL_CACHE_WRITE_LOCK:
+        char_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(
+            str(char_dir / _STAR_MAP_CACHE_FILENAME),
+            cache_payload,
+            indent=2,
+            ensure_ascii=False,
+        )
 
 
 async def _arequest_cluster_labels(cm, prompt: str, clusters: list[dict[str, Any]]) -> dict[str, str]:
@@ -665,13 +682,7 @@ async def alabel_star_map_clusters(
         "language": prompt_lang,
         "labels": clean_labels,
     }
-    await asyncio.to_thread(char_dir.mkdir, parents=True, exist_ok=True)
-    await atomic_write_json_async(
-        str(char_dir / _STAR_MAP_CACHE_FILENAME),
-        cache_payload,
-        indent=2,
-        ensure_ascii=False,
-    )
+    await asyncio.to_thread(_write_label_cache_sync, char_dir, cache_payload)
 
     refreshed = await abuild_star_map(character_name, memory_dir=memory_dir, now=now_dt)
     return {
