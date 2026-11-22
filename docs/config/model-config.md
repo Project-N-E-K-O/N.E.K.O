@@ -6,8 +6,8 @@ N.E.K.O. resolves models by **role**, not through one global model string. The s
 | --- | --- |
 | Core | `CORE_MODEL` |
 | Conversation | `CONVERSATION_MODEL` |
-| Memory upkeep (formerly summary and correction) | `SUMMARY_MODEL` |
-| Emotion | `EMOTION_MODEL` |
+| Memory upkeep (formerly summary and correction) | `MEMORY_MODEL` |
+| Recognition (small) | `RECOGNITION_MODEL` |
 | Vision (deprecated: images go to the chat model; a vision model configured separately before the slot was retired keeps taking images until the release, with a deprecation warning and a once-per-start notice) | `VISION_MODEL` |
 | Agent | `AGENT_MODEL` |
 | Agent (small) | `AGENT_SMALL_MODEL` |
@@ -27,7 +27,7 @@ A saved resolved provider URL is reused only while it remains in the current pro
 
 ## Blank model IDs
 
-When a role's model ID is left blank in the Per-Feature Models section, the role uses the same-tier default of the provider it actually points at: *follow assist* uses the assist provider's default, *follow core* uses the core provider's default, and a named provider uses its own default. The free tier and fixed-model providers (such as Kimi Code) always use their own models and ignore saved model IDs. A *custom* endpoint has no provider default; a blank model ID there keeps the assist API's current model name, so fill it in explicitly. The exception is Agent (small) (`agent_small`): a custom endpoint with a blank model ID (or a blank URL) is not used at all, and the whole role follows the recognition model (`emotion`), including its URL and key.
+When a role's model ID is left blank in the Per-Feature Models section, the role uses the same-tier default of the provider it actually points at: *follow assist* uses the assist provider's default, *follow core* uses the core provider's default, and a named provider uses its own default. The free tier and fixed-model providers (such as Kimi Code) always use their own models and ignore saved model IDs. A *custom* endpoint has no provider default; a blank model ID there keeps the assist API's current model name, so fill it in explicitly. The exception is Agent (small) (`agent_small`): a custom endpoint with a blank model ID (or a blank URL) is not used at all, and the whole role follows the recognition model (`recognition`), including its URL and key.
 
 ## Model ID pickers
 

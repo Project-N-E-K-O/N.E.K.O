@@ -2180,12 +2180,14 @@ def test_which_model_reviews_and_which_summarises_is_said_in_the_settings(monkey
             await llm._client(tier, 100)
 
     asyncio.run(run())
-    assert asked == ["summary", "summary", "summary", "emotion"]
+    # Review and archive name their slot in settings (now "memory"); TIER_FINE / TIER_COARSE fall back
+    # to the old names hard-coded in nekoclaw/host/decision.py, which stays untouched and runs on the aliases.
+    assert asked == ["memory", "memory", "summary", "emotion"]
 
     asked.clear()
     monkeypatch.setattr(settings, "TASK_AGENT_REVIEW_MODEL_SLOT", "emotion")
     asyncio.run(run())
-    assert asked == ["emotion", "summary", "summary", "emotion"]
+    assert asked == ["emotion", "memory", "summary", "emotion"]
 
     asked.clear()
     monkeypatch.setattr(settings, "SPACE_ARCHIVE_MODEL_SLOT", "emotion")

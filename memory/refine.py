@@ -468,7 +468,7 @@ class MemoryRefineEngine:
         # and a long timeout. Match PersonaManager.resolve_corrections
         # call configuration.
         set_call_type("memory_refine")
-        api_config = await self._cm.aget_model_api_config('summary')
+        api_config = await self._cm.aget_model_api_config('memory')
         # Enable thinking explicitly, as for correction; see memory.thinking_llm for budgets and fallback.
         resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (refine clusters bounded upstream).
             api_config, prompt,

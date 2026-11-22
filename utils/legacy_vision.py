@@ -105,7 +105,7 @@ def _usable(cfg: dict | None) -> bool:
 
 
 # Vision-slot dropdown values meaning "not configured here, follow another slot".
-_FOLLOW_PROVIDERS = frozenset({"follow_assist", "follow_core", "follow_conversation", "follow_summary"})
+_FOLLOW_PROVIDERS = frozenset({"follow_assist", "follow_core", "follow_conversation", "follow_memory"})
 
 
 def legacy_vision_differs(

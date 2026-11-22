@@ -45,14 +45,14 @@ def test_follow_assist_uses_resolved_provider_url_instead_of_stale_saved_url():
             "conversationModelUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
             "conversationModelId": "qwen3.6-plus",
             "conversationModelApiKey": "sk-intl",
-            "emotionModelProvider": "follow_assist",
-            "emotionModelUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-            "emotionModelId": "qwen3.6-flash",
-            "emotionModelApiKey": "sk-intl",
+            "recognitionModelProvider": "follow_assist",
+            "recognitionModelUrl": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "recognitionModelId": "qwen3.6-flash",
+            "recognitionModelApiKey": "sk-intl",
         })
 
         assert cm.get_model_api_config("conversation")["base_url"] == us_url
-        assert cm.get_model_api_config("emotion")["base_url"] == us_url
+        assert cm.get_model_api_config("recognition")["base_url"] == us_url
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)
 
@@ -71,10 +71,10 @@ def test_follow_assist_uses_saved_model_id_for_text_tiers():
             "conversationModelUrl": "https://api.deepseek.com/v1",
             "conversationModelId": "deepseek-v4-flash",
             "conversationModelApiKey": "sk-deepseek",
-            "summaryModelProvider": "follow_assist",
-            "summaryModelUrl": "https://api.deepseek.com/v1",
-            "summaryModelId": "summary-override-model",
-            "summaryModelApiKey": "sk-deepseek",
+            "memoryModelProvider": "follow_assist",
+            "memoryModelUrl": "https://api.deepseek.com/v1",
+            "memoryModelId": "summary-override-model",
+            "memoryModelApiKey": "sk-deepseek",
             "agentModelProvider": "follow_assist",
             "agentModelUrl": "https://api.deepseek.com/v1",
             "agentModelId": "deepseek-v4-flash",
@@ -82,7 +82,7 @@ def test_follow_assist_uses_saved_model_id_for_text_tiers():
         })
 
         assert cm.get_model_api_config("conversation")["model"] == "deepseek-v4-flash"
-        assert cm.get_model_api_config("summary")["model"] == "summary-override-model"
+        assert cm.get_model_api_config("memory")["model"] == "summary-override-model"
         assert cm.get_model_api_config("agent")["model"] == "deepseek-v4-flash"
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)
@@ -102,10 +102,10 @@ def test_free_follow_assist_ignores_stale_saved_model_id_for_text_tiers():
             "conversationModelUrl": "https://www.lanlan.tech/text/v1",
             "conversationModelId": "deepseek-v4-pro",
             "conversationModelApiKey": "free-access",
-            "emotionModelProvider": "follow_assist",
-            "emotionModelUrl": "https://www.lanlan.tech/text/v1",
-            "emotionModelId": "deepseek-v4-pro",
-            "emotionModelApiKey": "free-access",
+            "recognitionModelProvider": "follow_assist",
+            "recognitionModelUrl": "https://www.lanlan.tech/text/v1",
+            "recognitionModelId": "deepseek-v4-pro",
+            "recognitionModelApiKey": "free-access",
             "agentModelProvider": "follow_assist",
             "agentModelUrl": "https://www.lanlan.tech/text/v1",
             "agentModelId": "deepseek-v4-pro",
@@ -113,7 +113,7 @@ def test_free_follow_assist_ignores_stale_saved_model_id_for_text_tiers():
         })
 
         assert cm.get_model_api_config("conversation")["model"] == "free-model"
-        assert cm.get_model_api_config("emotion")["model"] == "free-mini-model"
+        assert cm.get_model_api_config("recognition")["model"] == "free-mini-model"
         assert cm.get_model_api_config("agent")["model"] == "free-agent-model"
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)
@@ -133,10 +133,10 @@ def test_follow_core_uses_saved_model_id_for_text_tiers():
             "conversationModelUrl": "https://api.deepseek.com/v1",
             "conversationModelId": "deepseek-v4-flash",
             "conversationModelApiKey": "sk-deepseek",
-            "summaryModelProvider": "follow_core",
-            "summaryModelUrl": "https://api.deepseek.com/v1",
-            "summaryModelId": "summary-override-model",
-            "summaryModelApiKey": "sk-deepseek",
+            "memoryModelProvider": "follow_core",
+            "memoryModelUrl": "https://api.deepseek.com/v1",
+            "memoryModelId": "summary-override-model",
+            "memoryModelApiKey": "sk-deepseek",
             "agentModelProvider": "follow_core",
             "agentModelUrl": "https://api.deepseek.com/v1",
             "agentModelId": "deepseek-v4-flash",
@@ -144,7 +144,7 @@ def test_follow_core_uses_saved_model_id_for_text_tiers():
         })
 
         assert cm.get_model_api_config("conversation")["model"] == "deepseek-v4-flash"
-        assert cm.get_model_api_config("summary")["model"] == "summary-override-model"
+        assert cm.get_model_api_config("memory")["model"] == "summary-override-model"
         assert cm.get_model_api_config("agent")["model"] == "deepseek-v4-flash"
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)

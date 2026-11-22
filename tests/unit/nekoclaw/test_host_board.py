@@ -1231,7 +1231,7 @@ def test_the_form_is_filled_in_on_the_summary_model_under_a_name_of_its_own(monk
     asyncio.run(llm.complete(TIER_SESSION_DRAFT, []))
 
     # The model it asks is the one the setting names, with the budget of this call, counted under its own name.
-    assert named == ["task_agent_session_draft"] and slots == ["summary"] and budgets == [500]
+    assert named == ["task_agent_session_draft"] and slots == ["memory"] and budgets == [500]
     monkeypatch.setattr("config.nekoclaw_settings.SESSION_DRAFT_OUTPUT_MAX_TOKENS", 321)
     monkeypatch.setattr("config.nekoclaw_settings.SESSION_DRAFT_MODEL_SLOT", "emotion")
     asyncio.run(llm.complete(TIER_SESSION_DRAFT, []))

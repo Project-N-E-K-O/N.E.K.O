@@ -548,22 +548,22 @@ class _StreamingMixin:
             return None
 
         # Each provider in config/api_providers.json has an emotion configuration
-        # `emotion_model` field; config_manager returns the current provider's
+        # `recognition_model` field; config_manager returns the current provider's
         # emotion subconfiguration (model/base_url/api_key).
         try:
             from utils.config_manager import get_config_manager  # Lazy import avoids circular dependencies.
             cfg_mgr = get_config_manager()
-            emotion_config = await cfg_mgr.aget_model_api_config('emotion') if cfg_mgr else None
+            emotion_config = await cfg_mgr.aget_model_api_config('recognition') if cfg_mgr else None
         except Exception as e:
             logger.warning("summary: 取 emotion 配置失败: %s", e)
             return None
         if not emotion_config:
             return None
         emotion_api_key = emotion_config.get('api_key')
-        emotion_model = emotion_config.get('model')
+        recognition_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
         emotion_provider_type = emotion_config.get('provider_type')
-        if not (emotion_api_key and emotion_model):
+        if not (emotion_api_key and recognition_model):
             logger.info("summary: emotion 模型/Key 未配置，跳过长回复摘要")
             return None
 
@@ -610,7 +610,7 @@ class _StreamingMixin:
         # suitable temperature and need no caller intervention.
         try:
             llm = await create_chat_llm_async(
-                emotion_model, emotion_base_url, emotion_api_key,
+                recognition_model, emotion_base_url, emotion_api_key,
                 max_completion_tokens=120,
                 timeout=30,
                 provider_type=emotion_provider_type,

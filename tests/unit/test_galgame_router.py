@@ -35,7 +35,7 @@ class FakeConfigManager:
 
     def get_model_api_config(self, model_type):
         self.calls.append(model_type)
-        if model_type == "emotion":
+        if model_type == "recognition":
             return self._summary_config
         raise AssertionError(f"Unexpected model type: {model_type}")
 
@@ -121,7 +121,7 @@ async def test_galgame_uses_summary_model_without_temperature(monkeypatch):
     assert captured["base_url"] == "http://127.0.0.1:11434/v1"
     assert captured["api_key"] == ""
     assert captured["kwargs"] == _expected_llm_kwargs()
-    assert config_manager.calls == ["emotion"]
+    assert config_manager.calls == ["recognition"]
     assert "刚才那件事你怎么看？" in captured["messages"][1].content
 
 
@@ -554,7 +554,7 @@ async def test_galgame_options_skipped_when_session_takeover_active(monkeypatch)
     assert data["reason"] == "session_takeover"
     assert _option_texts(data) == list(get_galgame_fallback_options("zh"))
     # The guard must short-circuit before resolving the model config; do not read that tier's config.
-    assert "emotion" not in config_manager.calls
+    assert "recognition" not in config_manager.calls
 
 
 @pytest.mark.unit

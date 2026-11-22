@@ -151,12 +151,16 @@ def _resolve_custom_target(req: ModelListRequest, core_cfg: dict) -> dict[str, A
 
     submitted_key = req.api_key if isinstance(req.api_key, str) else ""
     if is_core_config_secret_placeholder(submitted_key):
-        model_type = (req.model_type or "").strip()
+        from utils.config_manager.tier_renames import canonical_model_type, migrate_renamed_tier_fields
+        model_type = canonical_model_type((req.model_type or "").strip())
+        # A file still under the old tier names (emotion / summary) holds the key there.
+        saved = dict(core_cfg)
+        migrate_renamed_tier_fields(saved)
         stored_url = ""
         stored_key = ""
         if model_type in CORE_CONFIG_MODEL_TYPES:
-            stored_url = str(core_cfg.get(f"{model_type}ModelUrl") or "").strip()
-            stored_key = str(core_cfg.get(f"{model_type}ModelApiKey") or "").strip()
+            stored_url = str(saved.get(f"{model_type}ModelUrl") or "").strip()
+            stored_key = str(saved.get(f"{model_type}ModelApiKey") or "").strip()
         # Saved keys belong only to their saved endpoints: reusing one after editing the URL would send credentials elsewhere.
         if not (stored_url and stored_key and same_endpoint(url, stored_url)):
             return _failure("key_required", "已保存的 Key 只能用于保存时的地址，请重新填写 API Key")

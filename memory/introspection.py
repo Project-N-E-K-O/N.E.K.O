@@ -629,7 +629,7 @@ async def _ainvoke(config_manager, prompt: str, *, name: str, round_no: int):
     # rewrite long-term persona and are not undone automatically. A larger
     # output allowance than the shared one, since the whole injected block
     # is under review.
-    api_config = await config_manager.aget_model_api_config('summary')
+    api_config = await config_manager.aget_model_api_config('memory')
     resp, cap = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt built by _build_prompt, which truncates the memory block to MEMORY_INTROSPECTION_INPUT_MAX_TOKENS.
         api_config, prompt,
         timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,

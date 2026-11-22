@@ -527,7 +527,7 @@ async def test_refine_pass_llm_config_is_lite():
     create = AsyncMock(return_value=llm)
     with patch('utils.llm_client.create_chat_llm_async', create):
         await engine.refine_pass(buckets, apply_fn=_apply, scope_label='t')
-    engine._cm.aget_model_api_config.assert_awaited_once_with('summary')
+    engine._cm.aget_model_api_config.assert_awaited_once_with('memory')
     kwargs = create.await_args.kwargs
     assert 'extra_body' not in kwargs
     assert kwargs['timeout'] == SCOPED_REFINE_LLM_TIMEOUT_SECONDS

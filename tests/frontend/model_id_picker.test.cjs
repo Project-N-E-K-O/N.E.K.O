@@ -9,7 +9,7 @@ const SOURCE_PATH = path.join(PROJECT_ROOT, 'static', 'js', 'api_key_settings.js
 const source = fs.readFileSync(SOURCE_PATH, 'utf8');
 
 const MASKED = '__NEKO_SECRET_MASKED__';
-const MODEL_TYPES = ['conversation', 'vision', 'summary', 'emotion', 'omni', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary'];
+const MODEL_TYPES = ['conversation', 'vision', 'memory', 'recognition', 'omni', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary'];
 
 function sourceBetween(startMarker, endMarker) {
     const start = source.indexOf(startMarker);
@@ -23,45 +23,45 @@ const ASSIST_PROVIDERS = {
     free: {
         is_free_version: true,
         conversation_model: 'free-model',
-        summary_model: 'free-model',
-        emotion_model: 'free-mini-model',
+        memory_model: 'free-model',
+        recognition_model: 'free-mini-model',
         vision_model: 'free-vision-model',
         agent_model: 'free-agent-model',
     },
     openrouter: {
         conversation_model: 'google/gemini-2.5-flash',
         vision_model: 'google/gemini-2.5-flash',
-        summary_model: 'deepseek/deepseek-v4-flash',
-        emotion_model: 'qwen/qwen3.5-9b',
+        memory_model: 'deepseek/deepseek-v4-flash',
+        recognition_model: 'qwen/qwen3.5-9b',
         agent_model: 'google/gemini-3.8-flash',
     },
     qwen: {
         conversation_model: 'qwen3.8-flash',
         vision_model: 'qwen3.8-flash',
-        summary_model: 'qwen3.8-flash',
-        emotion_model: 'qwen3.7-flash',
+        memory_model: 'qwen3.8-flash',
+        recognition_model: 'qwen3.7-flash',
         agent_model: 'qwen3.8-flash',
     },
     kimi: {
         conversation_model: 'kimi-k3',
         vision_model: 'kimi-k3',
-        summary_model: 'kimi-k3',
-        emotion_model: 'kimi-k3',
+        memory_model: 'kimi-k3',
+        recognition_model: 'kimi-k3',
         agent_model: '',
     },
     fixedduo: {
         fixed_model: true,
         openrouter_url: 'https://fixedduo.test/v1',
         conversation_model: 'duo-chat',
-        emotion_model: 'duo-small',
+        recognition_model: 'duo-small',
         agent_model: 'duo-agent',
     },
     kimi_code: {
         fixed_model: true,
         conversation_model: 'kimi-for-coding',
         vision_model: 'kimi-for-coding',
-        summary_model: 'kimi-for-coding',
-        emotion_model: 'kimi-for-coding',
+        memory_model: 'kimi-for-coding',
+        recognition_model: 'kimi-for-coding',
         agent_model: 'kimi-for-coding',
     },
     mimo: { conversation_model: 'mimo-v2.5' },
@@ -174,10 +174,10 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
         MASKED_SECRET_SENTINEL: MASKED,
         MODEL_PROVIDER_FIELD_BY_TYPE: {
             conversation: 'conversation_model',
-            summary: 'summary_model',
+            memory: 'memory_model',
             gameMain: 'conversation_model',
-            gameSummary: 'summary_model',
-            emotion: 'emotion_model',
+            gameSummary: 'memory_model',
+            recognition: 'recognition_model',
             vision: 'vision_model',
             agent: 'agent_model',
             omni: 'core_model',
@@ -230,8 +230,8 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
     };
     MODEL_TYPES.forEach(modelType => select(`${modelType}ModelProvider`, 'follow_assist'));
     select('gameMainModelProvider', 'follow_conversation');
-    select('gameSummaryModelProvider', 'follow_summary');
-    select('agentSmallModelProvider', 'follow_emotion');
+    select('gameSummaryModelProvider', 'follow_memory');
+    select('agentSmallModelProvider', 'follow_recognition');
     select('omniModelProvider', 'follow_core');
     select('coreApiSelect', 'qwen');
     select('assistApiSelect', 'openrouter');
@@ -253,13 +253,13 @@ function plain(value) {
 
 test('follow_assist text slots use the tier default of the selected assist provider', () => {
     const { context, select } = createPickerContext();
-    assert.deepEqual(plain(context.resolveSlotModelState('summary')), {
+    assert.deepEqual(plain(context.resolveSlotModelState('memory')), {
         defaultModelId: 'deepseek/deepseek-v4-flash', acceptsTypedModelId: true, fixedModelProvider: '',
     });
-    assert.equal(context.resolveSlotModelState('emotion').defaultModelId, 'qwen/qwen3.5-9b');
+    assert.equal(context.resolveSlotModelState('recognition').defaultModelId, 'qwen/qwen3.5-9b');
 
     select('assistApiSelect', 'qwen');
-    assert.equal(context.resolveSlotModelState('emotion').defaultModelId, 'qwen3.7-flash');
+    assert.equal(context.resolveSlotModelState('recognition').defaultModelId, 'qwen3.7-flash');
 });
 
 test('agent tier falls back to the vision model when the provider has no agent model', () => {
@@ -270,11 +270,11 @@ test('agent tier falls back to the vision model when the provider has no agent m
 
 test('follow_core text slots stay on the core provider chain and never borrow assist models', () => {
     const { context, setSlot, select } = createPickerContext();
-    setSlot('summary', 'follow_core');
-    assert.equal(context.resolveSlotModelState('summary').defaultModelId, 'qwen3.8-flash');
+    setSlot('memory', 'follow_core');
+    assert.equal(context.resolveSlotModelState('memory').defaultModelId, 'qwen3.8-flash');
 
     select('coreApiSelect', 'step');
-    assert.equal(context.resolveSlotModelState('summary').defaultModelId, 'stepaudio-3-realtime');
+    assert.equal(context.resolveSlotModelState('memory').defaultModelId, 'stepaudio-3-realtime');
 });
 
 test('free and fixed-model sources do not accept a typed model ID', () => {
@@ -285,16 +285,16 @@ test('free and fixed-model sources do not accept a typed model ID', () => {
     });
 
     select('assistApiSelect', 'openrouter');
-    setSlot('emotion', 'kimi_code', 'typed');
-    assert.deepEqual(plain(context.resolveSlotModelState('emotion')), {
+    setSlot('recognition', 'kimi_code', 'typed');
+    assert.deepEqual(plain(context.resolveSlotModelState('recognition')), {
         defaultModelId: 'kimi-for-coding', acceptsTypedModelId: false, fixedModelProvider: 'kimi_code',
     });
 });
 
 test('named and custom slots fall back the same way as the backend snapshot', () => {
     const { context, setSlot } = createPickerContext();
-    setSlot('summary', 'qwen');
-    assert.equal(context.resolveSlotModelState('summary').defaultModelId, 'qwen3.8-flash');
+    setSlot('memory', 'qwen');
+    assert.equal(context.resolveSlotModelState('memory').defaultModelId, 'qwen3.8-flash');
 
     setSlot('agent', 'mimo');
     assert.equal(context.resolveSlotModelState('agent').defaultModelId, 'mimo-v2.5');
@@ -357,7 +357,7 @@ test('game slots mirror or follow the text slots and ignore their own input in f
 
 test('the small familiar slot mirrors the recognition slot by default, the familiar slot on request, and has the small tier otherwise', () => {
     const { context, setSlot } = createPickerContext();
-    setSlot('emotion', 'custom', 'my-small-model');
+    setSlot('recognition', 'custom', 'my-small-model');
     assert.deepEqual(plain(context.resolveSlotModelState('agentSmall')), {
         defaultModelId: 'my-small-model', acceptsTypedModelId: false, fixedModelProvider: '',
     });
@@ -385,9 +385,9 @@ test('following the familiar slot on a fixed-model provider resolves the familia
     setSlot('agent', 'fixedduo');
     setSlot('agentSmall', 'follow_agent');
     assert.equal(context.getResolvedCustomModelId('agentSmall', 'follow_agent'), 'duo-agent');
-    setSlot('emotion', 'fixedduo');
-    setSlot('agentSmall', 'follow_emotion');
-    assert.equal(context.getResolvedCustomModelId('agentSmall', 'follow_emotion'), 'duo-small');
+    setSlot('recognition', 'fixedduo');
+    setSlot('agentSmall', 'follow_recognition');
+    assert.equal(context.getResolvedCustomModelId('agentSmall', 'follow_recognition'), 'duo-small');
 
     setSlot('agentSmall', 'follow_agent', 'typed');
     assert.equal(context.applyFixedModelProviderUi('agentSmall', 'follow_agent'), true);
@@ -419,10 +419,10 @@ test('game summary follows the same assist conversation model when its summary t
     for (const summary of ['', undefined]) {
         const { context, setSlot, select } = createPickerContext();
         context._assistModelDefaults.extra_provider = {
-            CONVERSATION_MODEL: 'provider-chat-model', SUMMARY_MODEL: summary,
+            CONVERSATION_MODEL: 'provider-chat-model', MEMORY_MODEL: summary,
         };
         select('assistApiSelect', 'extra_provider');
-        setSlot('summary', 'follow_core', 'core-summary');
+        setSlot('memory', 'follow_core', 'core-summary');
         setSlot('gameSummary', 'follow_assist');
         assert.equal(context.resolveSlotModelState('gameSummary').defaultModelId, 'provider-chat-model');
     }
@@ -463,13 +463,13 @@ test('translation helper interpolates its fallback when i18n is unavailable', ()
 test('provider requests come from the provider table and switch MiMo to its token plan node', () => {
     const { context, select, state, setSlot } = createPickerContext();
     state.customKey = 'sk-typed';
-    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('summary')), {
+    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('memory')), {
         body: { provider_key: 'openrouter', api_key: 'sk-typed' },
     });
 
     select('assistApiSelect', 'mimo');
     state.tokenPlan = true;
-    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('summary')), {
+    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('memory')), {
         body: { provider_key: 'mimo', api_key: 'sk-typed', url: 'https://token-plan-cn.xiaomimimo.com/v1' },
     });
 
@@ -480,21 +480,21 @@ test('provider requests come from the provider table and switch MiMo to its toke
     });
 
     select('assistApiSelect', 'kimi_code');
-    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('summary')), { reason: 'fixed' });
+    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('memory')), { reason: 'fixed' });
 });
 
 test('custom slots send the masked sentinel only together with their own endpoint', () => {
     const { context, el, setSlot } = createPickerContext();
-    setSlot('summary', 'custom');
-    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('summary')), { reason: 'missingUrl' });
+    setSlot('memory', 'custom');
+    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('memory')), { reason: 'missingUrl' });
 
-    el('summaryModelUrl').value = 'wss://example.test/realtime';
-    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('summary')), { reason: 'unsupported' });
+    el('memoryModelUrl').value = 'wss://example.test/realtime';
+    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('memory')), { reason: 'unsupported' });
 
-    el('summaryModelUrl').value = 'https://example.test/v1';
-    el('summaryModelApiKey').dataset.maskedSecret = 'true';
-    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('summary')), {
-        body: { url: 'https://example.test/v1', api_key: MASKED, model_type: 'summary', provider_type: 'openai_compatible' },
+    el('memoryModelUrl').value = 'https://example.test/v1';
+    el('memoryModelApiKey').dataset.maskedSecret = 'true';
+    assert.deepEqual(plain(context.resolveSlotModelPickerRequest('memory')), {
+        body: { url: 'https://example.test/v1', api_key: MASKED, model_type: 'memory', provider_type: 'openai_compatible' },
     });
 });
 
@@ -572,23 +572,23 @@ test('model list failures are mapped to error codes and not cached', async () =>
 
 test('named and follow_core slots read the merged defaults whichever assist provider is selected', () => {
     const { context, select, setSlot } = createPickerContext();
-    context._assistModelDefaults.qwen = { SUMMARY_MODEL: '', CONVERSATION_MODEL: 'merged-qwen' };
+    context._assistModelDefaults.qwen = { MEMORY_MODEL: '', CONVERSATION_MODEL: 'merged-qwen' };
     for (const assistProvider of ['qwen', 'openrouter']) {
         select('assistApiSelect', assistProvider);
         for (const mode of ['follow_core', 'qwen']) {
-            setSlot('summary', mode);
-            assert.equal(context.resolveSlotModelState('summary').defaultModelId, 'merged-qwen');
+            setSlot('memory', mode);
+            assert.equal(context.resolveSlotModelState('memory').defaultModelId, 'merged-qwen');
         }
     }
 });
 
 test('follow_core picker uses the core input and marks stored credential origin', () => {
     const { context, el, state, setSlot } = createPickerContext();
-    setSlot('summary', 'follow_core');
+    setSlot('memory', 'follow_core');
     state.customKey = 'other-book-key';
     el('apiKeyInput').value = 'core-draft-key';
-    assert.equal(context.resolveSlotModelPickerRequest('summary').body.api_key, 'core-draft-key');
-    assert.equal(context.resolveSlotModelPickerRequest('summary').body.key_source, 'core');
+    assert.equal(context.resolveSlotModelPickerRequest('memory').body.api_key, 'core-draft-key');
+    assert.equal(context.resolveSlotModelPickerRequest('memory').body.key_source, 'core');
 });
 
 test('a model-list 404 adds a URL path hint to the localized error', () => {

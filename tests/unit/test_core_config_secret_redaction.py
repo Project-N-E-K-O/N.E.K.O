@@ -22,7 +22,7 @@ _ASSIST_API_KEY_FIELDS = (
 )
 
 _MODEL_TYPES = (
-    'conversation', 'summary', 'gameMain', 'gameSummary', 'emotion',
+    'conversation', 'memory', 'gameMain', 'gameSummary', 'recognition',
     'decision', 'vision', 'agent', 'agentSmall', 'omni', 'tts', 'image',
 )
 
